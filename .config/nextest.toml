@@ -32,6 +32,24 @@ max-threads = 4
 [test-groups.substrate-e2e-ci]
 max-threads = 2
 
+# `syneroym-roym-web::dual_build_parity` builds a full dual (WASM + native)
+# Roym stack per test -- six WASM component engines, a native App host, its
+# own SQLite store, and an MQTT broker -- and, unlike the substrate e2e
+# suite above, had no concurrency cap: nextest's default thread count let
+# every one of its ~170 tests race for CPU at once. Under CI's shared
+# runner this reproduces the same CPU-starvation class the row above
+# already root-caused for substrate e2e (see the deferred backlog): a
+# `payment.request`/`payment.acknowledge` call that starves for scheduling
+# time returns an internal error on whichever build (wasm or native) drew
+# the short straw, which the parity assertion then reports as a mismatch
+# rather than as a timeout. Local runs keep a higher cap; CI matches the
+# substrate-e2e-ci group's conservative value.
+[test-groups.dual-build-parity]
+max-threads = 4
+
+[test-groups.dual-build-parity-ci]
+max-threads = 2
+
 [profile.default]
 # A test that has not finished in 90s is reported; one still running at
 # 6 * 90s = 9min is killed (a hung node, not a slow one). Local runs do
@@ -41,6 +59,10 @@ slow-timeout = { period = "90s", terminate-after = 6 }
 [[profile.default.overrides]]
 filter = 'package(syneroym-substrate) & kind(test)'
 test-group = 'substrate-e2e'
+
+[[profile.default.overrides]]
+filter = 'package(syneroym-roym-web) & kind(test)'
+test-group = 'dual-build-parity'
 
 [profile.ci]
 # CI shows every failure at the end again, and never stops early -- one
@@ -54,4 +76,9 @@ failure-output = "immediate-final"
 # hiding a real regression, which fails every time.
 filter = 'package(syneroym-substrate) & kind(test)'
 test-group = 'substrate-e2e-ci'
+retries = { backoff = "fixed", count = 2, delay = "5s" }
+
+[[profile.ci.overrides]]
+filter = 'package(syneroym-roym-web) & kind(test)'
+test-group = 'dual-build-parity-ci'
 retries = { backoff = "fixed", count = 2, delay = "5s" }

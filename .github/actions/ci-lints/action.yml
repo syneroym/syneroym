@@ -10,10 +10,11 @@ runs:
     - name: Setup Nightly rustfmt
       uses: dtolnay/rust-toolchain@nightly
       with:
+        toolchain: nightly-2026-04-06
         components: rustfmt
 
     - name: Check Formatting
-      run: cargo +nightly fmt --all -- --check
+      run: cargo +nightly-2026-04-06 fmt --all -- --check
       shell: bash
 
     - name: Clippy Lints
