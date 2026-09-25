@@ -179,6 +179,9 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
     if p.provider_did != agr.provider_did || p.consumer_did != agr.consumer_did {
         return refuse_card(host, msg_id, row, "names the wrong parties").await;
     }
+    if p.conversation != conversation || p.conversation != agr.conversation {
+        return refuse_card(host, msg_id, row, "card names another conversation").await;
+    }
     if !payment::matches_terms(&p.currency, p.amount_minor, None, &agr.terms) {
         return refuse_card(host, msg_id, row, "amount-mismatch").await;
     }
@@ -254,6 +257,9 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
         Some(p) => p,
         None => return refuse_card(host, msg_id, row, "missing payload").await,
     };
+    if p.conversation != conversation {
+        return refuse_card(host, msg_id, row, "card names another conversation").await;
+    }
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let agr = match validate_ack_agreement(agr, p) {
         Ok(a) => a,
@@ -283,7 +289,7 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
         Role::Provider => &mut payments.provider,
     };
 
-    let first = match append_ack_half(versions, env.supersedes.as_deref(), envelope, &v, p, now) {
+    let _first = match append_ack_half(versions, env.supersedes.as_deref(), envelope, &v, p, now) {
         AckAppendResult::First => true,
         AckAppendResult::Subsequent => false,
         AckAppendResult::Refuse(reason) => return refuse_card(host, msg_id, row, reason).await,
@@ -301,7 +307,7 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     row.data = serde_json::to_value(p).ok();
     put_row(host, CARDS, msg_id, &row).await?;
 
-    if first && owner == agr.provider_did && p.role == Role::Consumer {
+    if owner == agr.provider_did && p.role == Role::Consumer {
         let _ = booking_ops::transition(
             host,
             &p.agreement,
@@ -368,6 +374,9 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     if p.provider_did != agr.provider_did || p.consumer_did != agr.consumer_did {
         return refuse_card(host, msg_id, row, "names the wrong parties").await;
     }
+    if p.conversation != conversation || p.conversation != agr.conversation {
+        return refuse_card(host, msg_id, row, "card names another conversation").await;
+    }
     if p.terms != agr.terms {
         return refuse_card(host, msg_id, row, "terms differ from the agreement").await;
     }
@@ -387,7 +396,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         Role::Provider => &mut fulfilments.provider,
     };
 
-    let first = if let Some(ex) = existing {
+    let _first = if let Some(ex) = existing {
         if ex.record_id == rec_id {
             false
         } else {
@@ -411,7 +420,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     row.data = serde_json::to_value(p).ok();
     put_row(host, CARDS, msg_id, &row).await?;
 
-    if first && owner == agr.provider_did && p.role == Role::Consumer {
+    if owner == agr.provider_did && p.role == Role::Consumer {
         let _ = booking_ops::transition(
             host,
             &p.agreement,
@@ -444,6 +453,9 @@ fn validate_ack_agreement(
     }
     if p.provider_did != agr.provider_did || p.consumer_did != agr.consumer_did {
         return Err(("names the wrong parties", false));
+    }
+    if p.conversation != agr.conversation {
+        return Err(("card names another conversation", false));
     }
     if !payment::matches_terms(&p.currency, p.amount_minor, p.method.as_deref(), &agr.terms) {
         return Err(("amount-mismatch", false));
@@ -505,6 +517,8 @@ fn append_ack_half(
                 AckAppendResult::Subsequent
             } else if versions.iter().any(|x| x.record_id == rec_id) {
                 AckAppendResult::Subsequent
+            } else if versions.iter().any(|x| x.record_id == prev) {
+                AckAppendResult::Refuse("superseded version was already corrected")
             } else {
                 AckAppendResult::Defer("corrects a version this node does not hold")
             }

@@ -192,13 +192,7 @@ pub fn track_window_end(schedule: Option<&TimeWindow>, scheduled_at_secs: u64) -
 /// True when the state is terminal and will receive no further transitions.
 #[must_use]
 pub fn is_terminal(state: BookingState) -> bool {
-    matches!(
-        state,
-        BookingState::Completed
-            | BookingState::Cancelled
-            | BookingState::Conflict
-            | BookingState::EndedUnconfirmed
-    )
+    state.is_terminal()
 }
 
 /// The first snapshot, seq 1: `scheduled`, or `conflict` with its reason.

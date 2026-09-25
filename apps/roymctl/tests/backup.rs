@@ -16,7 +16,8 @@ fn test_restore_data_notice_matches_canonical() {
         RESTORE_DATA_SUCCESS_NOTICE,
         "Your history and records are restored and can be read. Conversations from before the \
          restore cannot continue: this installation has new addresses. Share your new address \
-         with the people you talk to, and start new conversations with them."
+         with the people you talk to, and start new conversations with them. Repeated imports are \
+         safe to run if a previous restore was interrupted."
     );
 }
 
@@ -117,6 +118,29 @@ fn test_restore_identity_cli_round_trip() -> Result<(), Box<dyn Error>> {
         .assert()
         .failure()
         .stderr(contains("could not decrypt"));
+
+    // Restore using --recovery-key-file
+    let key_file_path = temp_dir.path().join("recovery.key");
+    fs::write(&key_file_path, &encoded_key)?;
+    let restored_file_key_path = temp_dir.path().join("restored_from_file.key");
+
+    let mut cmd_file = Command::cargo_bin("roymctl")?;
+    cmd_file
+        .arg("roym")
+        .arg("backup")
+        .arg("restore-identity")
+        .arg("--in")
+        .arg(&archive_path)
+        .arg("--recovery-key-file")
+        .arg(&key_file_path)
+        .arg("--out")
+        .arg(&restored_file_key_path)
+        .assert()
+        .success()
+        .stdout(contains("Identity restored to"));
+
+    let restored_file_bytes = fs::read(&restored_file_key_path)?;
+    assert_eq!(restored_file_bytes, master_bytes);
 
     Ok(())
 }

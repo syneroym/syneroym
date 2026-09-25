@@ -8,7 +8,7 @@ use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
     signing,
-    transaction::{QuotePayload, Role, pair_state},
+    transaction::{PaymentTiming, QuotePayload, Role, pair_state},
 };
 
 use super::{
@@ -167,6 +167,9 @@ pub(crate) async fn transition<H: AppHost>(
 
         if next.state == BookingState::Cancelled
             && let (Some(slot), Some(seat)) = (&row.slot_id, row.seat)
+            && let Ok(Some(current_seat)) =
+                get_row::<LedgerRow, _>(host, LEDGER, &seat_id(slot, seat)).await
+            && current_seat.agreement == row.agreement
         {
             let _ = AppDataLayer::delete(host, LEDGER.to_string(), seat_id(slot, seat)).await;
         }
@@ -213,10 +216,7 @@ pub(crate) fn booking_view(
     let next_step_enum = match snapshot {
         Some(s) => booking::next_step(s, agr.terms.payment_timing, role),
         None => match role {
-            Role::Provider
-                if agr.terms.payment_timing
-                    == syneroym_roym_core::transaction::PaymentTiming::BeforeWork =>
-            {
+            Role::Provider if agr.terms.payment_timing == PaymentTiming::BeforeWork => {
                 NextStep::RequestPayment
             }
             Role::Provider => NextStep::Nothing,

@@ -15,6 +15,7 @@ use syneroym_identity::{
     backup::{self, IdentityBackup, SealedBlob},
     substrate,
 };
+use syneroym_roym_core::clock;
 
 use crate::{
     DEFAULT_GATEWAY_URL,
@@ -26,7 +27,8 @@ pub const ARCHIVE_INFO: &[u8] = b"syneroym-roym-archive-v1";
 pub const RESTORE_DATA_SUCCESS_NOTICE: &str =
     "Your history and records are restored and can be read. Conversations from before the restore \
      cannot continue: this installation has new addresses. Share your new address with the people \
-     you talk to, and start new conversations with them.";
+     you talk to, and start new conversations with them. Repeated imports are safe to run if a \
+     previous restore was interrupted.";
 
 const EXPORT_SERVICES: &[&str] =
     &["profile", "catalog", "conversation", "transaction", "directory"];
@@ -61,7 +63,9 @@ pub enum BackupCommands {
         #[arg(long = "in", value_name = "PATH")]
         r#in: PathBuf,
         #[arg(long)]
-        recovery_key: String,
+        recovery_key: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        recovery_key_file: Option<PathBuf>,
         #[arg(long, value_name = "PATH")]
         out: PathBuf,
     },
@@ -70,7 +74,9 @@ pub enum BackupCommands {
         #[arg(long = "in", value_name = "PATH")]
         r#in: PathBuf,
         #[arg(long)]
-        recovery_key: String,
+        recovery_key: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        recovery_key_file: Option<PathBuf>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
         gateway_url: String,
         #[arg(long)]
@@ -86,6 +92,21 @@ pub fn data_aad_bytes(archive_version: u32, subject_did: &str, produced_at_secs:
     });
     let canonical = substrate::canonicalize_json_value(&val);
     serde_json::to_vec(&canonical).unwrap_or_default()
+}
+
+fn resolve_recovery_key(
+    recovery_key: Option<&str>,
+    recovery_key_file: Option<&Path>,
+) -> Result<String> {
+    if let Some(rk) = recovery_key {
+        return Ok(rk.trim().to_string());
+    }
+    if let Some(path) = recovery_key_file {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("reading recovery key file from {}", path.display()))?;
+        return Ok(content.trim().to_string());
+    }
+    anyhow::bail!("either --recovery-key or --recovery-key-file must be provided")
 }
 
 pub(super) async fn handle_backup(
@@ -108,25 +129,28 @@ pub(super) async fn handle_backup(
             )
             .await
         }
-        BackupCommands::RestoreIdentity { r#in: in_path, recovery_key, out } => {
-            handle_restore_identity(in_path, recovery_key, out)
+        BackupCommands::RestoreIdentity { r#in: in_path, recovery_key, recovery_key_file, out } => {
+            let key = resolve_recovery_key(recovery_key.as_deref(), recovery_key_file.as_deref())?;
+            handle_restore_identity(in_path, &key, out)
         }
-        BackupCommands::RestoreData { r#in: in_path, recovery_key, gateway_url, host } => {
-            handle_restore_data(
-                in_path,
-                recovery_key,
-                gateway_url,
-                host.as_deref(),
-                dir,
-                run_as,
-                ucan_path,
-            )
-            .await
+        BackupCommands::RestoreData {
+            r#in: in_path,
+            recovery_key,
+            recovery_key_file,
+            gateway_url,
+            host,
+        } => {
+            let key = resolve_recovery_key(recovery_key.as_deref(), recovery_key_file.as_deref())?;
+            handle_restore_data(in_path, &key, gateway_url, host.as_deref(), dir, run_as, ucan_path)
+                .await
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI command handler takes individual option arguments directly"
+)]
 async fn handle_create(
     master: &Path,
     out: &Path,
@@ -145,7 +169,7 @@ async fn handle_create(
 
     let bundles = fetch_service_bundles(gateway_url, host, dir, run_as, ucan_path).await?;
     let payload = serde_json::to_vec(&json!({ "bundles": bundles }))?;
-    let now_secs = syneroym_roym_core::clock::now_secs();
+    let now_secs = clock::now_secs();
     let aad = data_aad_bytes(ARCHIVE_VERSION, &subject_did, now_secs);
     let sealed_data = backup::seal(&payload, &recovery_key, ARCHIVE_INFO, &aad)?;
 
@@ -157,13 +181,13 @@ async fn handle_create(
         data: sealed_data,
     };
 
-    let json_str = serde_json::to_string_pretty(&archive)?;
-    write_secret_file(out, json_str.as_bytes(), "roym archive")?;
-
     let encoded = backup::encode_recovery_key(&recovery_key);
     if let Some(rk_out) = recovery_key_out {
         write_secret_file(rk_out, encoded.as_bytes(), "recovery key file")?;
     }
+
+    let json_str = serde_json::to_string_pretty(&archive)?;
+    write_secret_file(out, json_str.as_bytes(), "roym archive")?;
 
     println!("Archive exported to {}", out.display());
     println!("Recovery key (save this now; it is shown once and cannot be recovered):");

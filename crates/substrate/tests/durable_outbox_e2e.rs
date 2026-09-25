@@ -420,7 +420,14 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
     // asserts there can only have come from the queue worker. High
     // queue_max_attempts for the same reason as the first boot: managed-b
     // is still rebooting when this worker's first ticks fire.
+    let sup_ports = [
+        supervisor_node.ports().iroh,
+        supervisor_node.ports().registry,
+        supervisor_node.ports().gateway,
+        supervisor_node.ports().quic,
+    ];
     supervisor_node.teardown().await;
+    common::rehold_ports(&sup_ports);
     let mut supervisor_node =
         supervisor_builder.supervisor(supervisor_role(3600, 100)).boot().await;
 

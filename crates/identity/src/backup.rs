@@ -123,17 +123,15 @@ fn seal_with_params(
     let salt_z32 = z32::encode(&salt);
     let nonce_z32 = z32::encode(&nonce);
 
-    let mut derived_key = [0u8; 32];
+    let mut derived_key = Zeroizing::new([0u8; 32]);
     let hkdf = Hkdf::<Sha256>::new(Some(&salt), recovery_key);
-    hkdf.expand(info, &mut derived_key).map_err(|_| BackupError::Decrypt)?;
+    hkdf.expand(info, &mut *derived_key).map_err(|_| BackupError::Decrypt)?;
 
-    let cipher = Aes256Gcm::new_from_slice(&derived_key).map_err(|_| BackupError::Decrypt)?;
+    let cipher = Aes256Gcm::new_from_slice(&derived_key[..]).map_err(|_| BackupError::Decrypt)?;
     let nonce_ga = aes_gcm::Nonce::from_slice(&nonce);
     let ct = cipher
         .encrypt(nonce_ga, Payload { msg: plaintext, aad })
         .map_err(|_| BackupError::Decrypt)?;
-
-    derived_key.zeroize();
 
     Ok(SealedBlob {
         kdf: KDF_HKDF_SHA256.to_string(),
@@ -176,16 +174,14 @@ pub fn open(
     let nonce = z32::decode(blob.nonce_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
     let ct = z32::decode(blob.ciphertext_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
 
-    let mut derived_key = [0u8; 32];
+    let mut derived_key = Zeroizing::new([0u8; 32]);
     let hkdf = Hkdf::<Sha256>::new(Some(&salt), recovery_key);
-    hkdf.expand(info, &mut derived_key).map_err(|_| BackupError::Decrypt)?;
+    hkdf.expand(info, &mut *derived_key).map_err(|_| BackupError::Decrypt)?;
 
-    let cipher = Aes256Gcm::new_from_slice(&derived_key).map_err(|_| BackupError::Decrypt)?;
+    let cipher = Aes256Gcm::new_from_slice(&derived_key[..]).map_err(|_| BackupError::Decrypt)?;
     let nonce_ga = aes_gcm::Nonce::from_slice(&nonce);
     let secret =
         cipher.decrypt(nonce_ga, Payload { msg: &ct, aad }).map_err(|_| BackupError::Decrypt)?;
-
-    derived_key.zeroize();
 
     Ok(Zeroizing::new(secret))
 }
@@ -201,9 +197,8 @@ pub fn export(identity: &Identity, recovery_key: &[u8; 32]) -> Result<IdentityBa
     let aad =
         aad_bytes(IDENTITY_BACKUP_VERSION, &did, KDF_HKDF_SHA256, CIPHER_AES_256_GCM, &salt_z32);
 
-    let mut secret = identity.to_bytes();
-    let blob = seal_with_params(&secret, recovery_key, HKDF_INFO, salt, nonce, &aad)?;
-    secret.zeroize();
+    let secret = Zeroizing::new(identity.to_bytes());
+    let blob = seal_with_params(&secret[..], recovery_key, HKDF_INFO, salt, nonce, &aad)?;
 
     Ok(IdentityBackup {
         backup_version: IDENTITY_BACKUP_VERSION,

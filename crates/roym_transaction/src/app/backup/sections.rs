@@ -10,7 +10,7 @@ use syneroym_roym_core::{
     booking,
     envelope::Response,
     fulfilment, payment,
-    transaction::{AgreedTerms, Role},
+    transaction::{AgreedTerms, ReceiptHalf, Role},
 };
 
 use super::{
@@ -23,13 +23,29 @@ use super::{
     QuotesByRecordId,
 };
 
-pub(crate) async fn import_payments<H: AppHost>(
-    host: &H,
+type HistoryEntry = (String, String, String);
+type ValidatedPayments = (Vec<(String, PaymentsRow)>, Vec<HistoryEntry>);
+type ValidatedFulfilments = (Vec<(String, FulfilmentsRow)>, Vec<HistoryEntry>);
+type ValidatedLedgerAndBookings =
+    (Vec<(String, LedgerRow)>, Vec<(String, BookingRow)>, Vec<HistoryEntry>);
+type ValidatedProgress = (Vec<(String, ProgressRow)>, Vec<HistoryEntry>);
+
+pub(crate) struct ValidatedVerticalSections {
+    pub(crate) payments: Vec<(String, PaymentsRow)>,
+    pub(crate) fulfilments: Vec<(String, FulfilmentsRow)>,
+    pub(crate) ledger: Vec<(String, LedgerRow)>,
+    pub(crate) bookings: Vec<(String, BookingRow)>,
+    pub(crate) progress: Vec<(String, ProgressRow)>,
+    pub(crate) history_entries: Vec<HistoryEntry>,
+}
+
+fn validate_payments(
     payment_rows: Vec<Value>,
     agreements: &HashMap<String, AgreementRow>,
-    imported_history: &mut HashMap<String, (String, String)>,
     now: u64,
-) -> Result<(), Response> {
+) -> Result<ValidatedPayments, Response> {
+    let mut validated = Vec::new();
+    let mut history = Vec::new();
     for r in payment_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
@@ -71,10 +87,11 @@ pub(crate) async fn import_payments<H: AppHost>(
                     "payments '{id}' request amount/currency mismatch"
                 )));
             }
-            imported_history.insert(
+            history.push((
                 req_half.record_id.clone(),
-                ("payment-request".to_string(), req_half.envelope.clone()),
-            );
+                "payment-request".to_string(),
+                req_half.envelope.clone(),
+            ));
         }
 
         verify_payment_half_chain(
@@ -82,7 +99,7 @@ pub(crate) async fn import_payments<H: AppHost>(
             Role::Consumer,
             &agr.terms,
             id,
-            imported_history,
+            &mut history,
             now,
         )?;
         verify_payment_half_chain(
@@ -90,23 +107,21 @@ pub(crate) async fn import_payments<H: AppHost>(
             Role::Provider,
             &agr.terms,
             id,
-            imported_history,
+            &mut history,
             now,
         )?;
 
-        if let Err(e) = put_row(host, PAYMENTS, id, &row).await {
-            return Err(Response::internal_error(e));
-        }
+        validated.push((id.to_string(), row));
     }
-    Ok(())
+    Ok((validated, history))
 }
 
 fn verify_payment_half_chain(
-    halves: &[syneroym_roym_core::transaction::ReceiptHalf],
+    halves: &[ReceiptHalf],
     expected_role: Role,
     terms: &AgreedTerms,
     id: &str,
-    imported_history: &mut HashMap<String, (String, String)>,
+    history: &mut Vec<(String, String, String)>,
     now: u64,
 ) -> Result<(), Response> {
     let mut prev_payload = None;
@@ -145,21 +160,22 @@ fn verify_payment_half_chain(
             )));
         }
         prev_payload = Some(p.clone());
-        imported_history.insert(
+        history.push((
             half.record_id.clone(),
-            ("payment-acknowledgement".to_string(), half.envelope.clone()),
-        );
+            "payment-acknowledgement".to_string(),
+            half.envelope.clone(),
+        ));
     }
     Ok(())
 }
 
-pub(crate) async fn import_fulfilments<H: AppHost>(
-    host: &H,
+fn validate_fulfilments(
     fulfilment_rows: Vec<Value>,
     agreements: &HashMap<String, AgreementRow>,
-    imported_history: &mut HashMap<String, (String, String)>,
     now: u64,
-) -> Result<(), Response> {
+) -> Result<ValidatedFulfilments, Response> {
+    let mut validated = Vec::new();
+    let mut history = Vec::new();
     for r in fulfilment_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
@@ -202,10 +218,11 @@ pub(crate) async fn import_fulfilments<H: AppHost>(
                     "fulfilments '{id}' consumer receipt mismatch"
                 )));
             }
-            imported_history.insert(
+            history.push((
                 c.record_id.clone(),
-                ("fulfilment-receipt".to_string(), c.envelope.clone()),
-            );
+                "fulfilment-receipt".to_string(),
+                c.envelope.clone(),
+            ));
         }
 
         if let Some(ref p_half) = row.provider {
@@ -228,26 +245,25 @@ pub(crate) async fn import_fulfilments<H: AppHost>(
                     "fulfilments '{id}' provider receipt mismatch"
                 )));
             }
-            imported_history.insert(
+            history.push((
                 p_half.record_id.clone(),
-                ("fulfilment-receipt".to_string(), p_half.envelope.clone()),
-            );
+                "fulfilment-receipt".to_string(),
+                p_half.envelope.clone(),
+            ));
         }
 
-        if let Err(e) = put_row(host, FULFILMENTS, id, &row).await {
-            return Err(Response::internal_error(e));
-        }
+        validated.push((id.to_string(), row));
     }
-    Ok(())
+    Ok((validated, history))
 }
 
-pub(crate) async fn import_ledger_and_bookings<H: AppHost>(
-    host: &H,
+fn validate_ledger_and_bookings(
     ledger_rows: Vec<Value>,
     quotes_by_record_id: &QuotesByRecordId,
-    imported_history: &mut HashMap<String, (String, String)>,
     now: u64,
-) -> Result<(), Response> {
+) -> Result<ValidatedLedgerAndBookings, Response> {
+    let mut validated_ledger = Vec::new();
+    let mut history = Vec::new();
     let mut highest_steps: HashMap<String, (StepRow, Option<String>, Option<u32>, u64)> =
         HashMap::new();
     let mut decisions: HashMap<String, (Option<String>, Option<u32>, u64)> = HashMap::new();
@@ -277,25 +293,23 @@ pub(crate) async fn import_ledger_and_bookings<H: AppHost>(
                     v.reason
                 )));
             }
-            let quote = match quotes_by_record_id.get(&row.agreement) {
-                Some(q) => q,
-                None => {
-                    return Err(Response::invalid_params(format!(
-                        "ledger step '{id}' references unknown quote '{}'",
-                        row.agreement
-                    )));
-                }
-            };
-            if v.signer_did.as_deref() != quote.signer_did.as_deref() {
+            if !quotes_by_record_id.contains_key(&row.agreement) {
                 return Err(Response::invalid_params(format!(
-                    "ledger step '{id}' not signed by the service that signed the quote"
+                    "ledger step '{id}' references unknown quote '{}'",
+                    row.agreement
+                )));
+            }
+            if v.payload.as_ref().map(|p| p.agreement.as_str()) != Some(&row.agreement) {
+                return Err(Response::invalid_params(format!(
+                    "ledger step '{id}' agreement does not match envelope payload"
                 )));
             }
 
-            imported_history.insert(
+            history.push((
                 step.record_id.clone(),
-                ("booking-progress".to_string(), step.envelope.clone()),
-            );
+                "booking-progress".to_string(),
+                step.envelope.clone(),
+            ));
 
             let entry = highest_steps.entry(row.agreement.clone()).or_insert_with(|| {
                 (step.clone(), row.slot_id.clone(), row.seat, row.created_at_secs)
@@ -305,11 +319,10 @@ pub(crate) async fn import_ledger_and_bookings<H: AppHost>(
             }
         }
 
-        if let Err(e) = put_row(host, LEDGER, id, &row).await {
-            return Err(Response::internal_error(e));
-        }
+        validated_ledger.push((id.to_string(), row));
     }
 
+    let mut validated_bookings = Vec::new();
     for (agr_id, (step, slot_id, seat, created_at)) in highest_steps {
         let (dec_slot, dec_seat, dec_created) =
             decisions.get(&agr_id).cloned().unwrap_or((slot_id, seat, created_at));
@@ -323,22 +336,20 @@ pub(crate) async fn import_ledger_and_bookings<H: AppHost>(
             progress_record_id: step.record_id,
             updated_at_secs: dec_created,
         };
-        if let Err(e) = put_row(host, BOOKINGS, &agr_id, &booking_row).await {
-            return Err(Response::internal_error(e));
-        }
+        validated_bookings.push((agr_id, booking_row));
     }
 
-    Ok(())
+    Ok((validated_ledger, validated_bookings, history))
 }
 
-pub(crate) async fn import_progress<H: AppHost>(
-    host: &H,
+fn validate_progress(
     progress_rows: Vec<Value>,
     quotes_by_record_id: &QuotesByRecordId,
-    imported_history: &mut HashMap<String, (String, String)>,
     owner: &str,
     now: u64,
-) -> Result<(), Response> {
+) -> Result<ValidatedProgress, Response> {
+    let mut validated = Vec::new();
+    let mut history = Vec::new();
     for r in progress_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
@@ -361,48 +372,79 @@ pub(crate) async fn import_progress<H: AppHost>(
                 "progress '{id}' owner did not match consumer did"
             )));
         }
-        let quote = match quotes_by_record_id.get(&row.agreement) {
-            Some(q) => q,
-            None => {
-                return Err(Response::invalid_params(format!(
-                    "progress '{id}' references unknown quote '{}'",
-                    row.agreement
-                )));
-            }
-        };
-        if v.signer_did.as_deref() != quote.signer_did.as_deref() {
+        if !quotes_by_record_id.contains_key(&row.agreement) {
             return Err(Response::invalid_params(format!(
-                "progress '{id}' not signed by the service that signed the quote"
+                "progress '{id}' references unknown quote '{}'",
+                row.agreement
+            )));
+        }
+        if v.payload.as_ref().map(|p| p.agreement.as_str()) != Some(&row.agreement) {
+            return Err(Response::invalid_params(format!(
+                "progress '{id}' agreement does not match envelope payload"
             )));
         }
 
-        imported_history
-            .insert(row.record_id.clone(), ("booking-progress".to_string(), row.envelope.clone()));
-
-        if let Err(e) = put_row(host, PROGRESS, id, &row).await {
-            return Err(Response::internal_error(e));
-        }
+        history.push((row.record_id.clone(), "booking-progress".to_string(), row.envelope.clone()));
+        validated.push((id.to_string(), row));
     }
-    Ok(())
+    Ok((validated, history))
 }
 
-pub(crate) async fn import_vertical_sections<H: AppHost>(
-    host: &H,
+pub(crate) fn validate_vertical_sections(
     bundle_sections: &std::collections::BTreeMap<String, Vec<Value>>,
     agreements_map: &HashMap<String, AgreementRow>,
     quotes_by_record_id: &QuotesByRecordId,
-    imported_history: &mut HashMap<String, (String, String)>,
     owner: &str,
     now: u64,
-) -> Result<(), Response> {
+) -> Result<ValidatedVerticalSections, Response> {
     let pay_rows = bundle_sections.get(SECTION_PAYMENTS).cloned().unwrap_or_default();
     let ful_rows = bundle_sections.get(SECTION_FULFILMENTS).cloned().unwrap_or_default();
     let led_rows = bundle_sections.get(SECTION_LEDGER).cloned().unwrap_or_default();
     let prog_rows = bundle_sections.get(SECTION_PROGRESS).cloned().unwrap_or_default();
 
-    import_payments(host, pay_rows, agreements_map, imported_history, now).await?;
-    import_fulfilments(host, ful_rows, agreements_map, imported_history, now).await?;
-    import_ledger_and_bookings(host, led_rows, quotes_by_record_id, imported_history, now).await?;
-    import_progress(host, prog_rows, quotes_by_record_id, imported_history, owner, now).await?;
+    let mut history_entries = Vec::new();
+    let (payments, h_pay) = validate_payments(pay_rows, agreements_map, now)?;
+    history_entries.extend(h_pay);
+    let (fulfilments, h_ful) = validate_fulfilments(ful_rows, agreements_map, now)?;
+    history_entries.extend(h_ful);
+    let (ledger, bookings, h_led) =
+        validate_ledger_and_bookings(led_rows, quotes_by_record_id, now)?;
+    history_entries.extend(h_led);
+    let (progress, h_prog) = validate_progress(prog_rows, quotes_by_record_id, owner, now)?;
+    history_entries.extend(h_prog);
+
+    Ok(ValidatedVerticalSections {
+        payments,
+        fulfilments,
+        ledger,
+        bookings,
+        progress,
+        history_entries,
+    })
+}
+
+pub(crate) async fn write_vertical_sections<H: AppHost>(
+    host: &H,
+    validated: ValidatedVerticalSections,
+    imported_history: &mut HashMap<String, (String, String)>,
+) -> Result<(), Response> {
+    for (rid, rtype, env) in validated.history_entries {
+        imported_history.insert(rid, (rtype, env));
+    }
+    for (id, row) in validated.payments {
+        put_row(host, PAYMENTS, &id, &row).await.map_err(Response::internal_error)?;
+    }
+    for (id, row) in validated.fulfilments {
+        put_row(host, FULFILMENTS, &id, &row).await.map_err(Response::internal_error)?;
+    }
+    for (id, row) in validated.ledger {
+        put_row(host, LEDGER, &id, &row).await.map_err(Response::internal_error)?;
+    }
+    for (id, row) in validated.bookings {
+        put_row(host, BOOKINGS, &id, &row).await.map_err(Response::internal_error)?;
+    }
+    for (id, row) in validated.progress {
+        put_row(host, PROGRESS, &id, &row).await.map_err(Response::internal_error)?;
+    }
     Ok(())
 }

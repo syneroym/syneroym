@@ -57,7 +57,7 @@ export async function renderBackup(container: HTMLElement) {
   box.appendChild(
     text(
       "p",
-      "The five bundles below are exported separately today; a single signed bundle that combines them comes later.",
+      "Each bundle below is signed by you when it is exported, and is refused on import if it was changed. An encrypted backup of everything, including your identity, is made with `roymctl roym backup create`.",
       "backup-separate-note",
     ),
   );

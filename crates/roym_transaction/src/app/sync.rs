@@ -560,9 +560,8 @@ async fn file_agreement_receipt_card<H: AppHost>(
     row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
     row.issuer = v.issuer;
     row.record_id = v.record_id;
-    row.revocation_status = v.revocation_status;
-    put_row(host, CARDS, msg_id, &row).await?;
     let countersigned = maybe_countersign(host, &mut row_agr, &qv, now, owner).await?;
+    put_row(host, CARDS, msg_id, &row).await?;
     Ok(FileCardResult {
         filed: true,
         refused: false,

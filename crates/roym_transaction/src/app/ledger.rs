@@ -13,6 +13,7 @@ pub(crate) enum LedgerKind {
     Decision,
     Seat,
     Step,
+    Fence,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,6 +246,9 @@ pub(crate) async fn roll_forward<H: AppHost>(host: &H, row: &mut BookingRow) -> 
     if seq > initial_seq + 1 {
         if row.state == BookingState::Cancelled
             && let (Some(slot), Some(seat)) = (&row.slot_id, row.seat)
+            && let Ok(Some(current_seat)) =
+                get_row::<LedgerRow, _>(host, LEDGER, &seat_id(slot, seat)).await
+            && current_seat.agreement == row.agreement
         {
             let _ = AppDataLayer::delete(host, LEDGER.to_string(), seat_id(slot, seat)).await;
         }
@@ -297,6 +301,9 @@ pub(crate) async fn load_booking<H: AppHost>(
     };
     if row.state == BookingState::Cancelled
         && let (Some(slot), Some(seat)) = (&row.slot_id, row.seat)
+        && let Ok(Some(current_seat)) =
+            get_row::<LedgerRow, _>(host, LEDGER, &seat_id(slot, seat)).await
+        && current_seat.agreement == row.agreement
     {
         let _ = AppDataLayer::delete(host, LEDGER.to_string(), seat_id(slot, seat)).await;
     }

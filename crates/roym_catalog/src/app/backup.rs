@@ -62,7 +62,6 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     let mut bundle = Bundle {
         manifest: BundleManifest {
             bundle_version: BUNDLE_VERSION,
-            produced_at_secs: now,
             subject_did: owner,
             sections: manifest_sections,
         },

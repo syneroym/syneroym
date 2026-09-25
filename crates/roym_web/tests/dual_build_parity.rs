@@ -29,5 +29,7 @@ mod profile;
 mod transaction;
 #[path = "dual_build_parity/transaction_cards.rs"]
 mod transaction_cards;
+#[path = "dual_build_parity/transaction_validation.rs"]
+mod transaction_validation;
 #[path = "dual_build_parity/wire_origin.rs"]
 mod wire_origin;

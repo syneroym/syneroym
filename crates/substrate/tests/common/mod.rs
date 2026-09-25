@@ -134,14 +134,14 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
         % (span as u128)) as u16;
     let _ = NEXT_PORT_HINT.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
     loop {
-        let block_size = 16u16.max(N as u16);
+        let block_size = N as u16;
         let offset = NEXT_PORT_HINT.fetch_add(block_size, Ordering::Relaxed) % span;
         let start = PORT_POOL_START + offset;
         if start as u32 + block_size as u32 > PORT_POOL_END as u32 {
             continue; // wrapped mid-block; the next fetch_add tries elsewhere
         }
 
-        let mut listeners = Vec::with_capacity(block_size as usize);
+        let mut listeners = Vec::with_capacity(N);
         let mut all_free = true;
         for port in start..start + block_size {
             match probe_bind(port) {
@@ -156,10 +156,9 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
             continue;
         }
 
-        let mut selected: Vec<StdTcpListener> = listeners.into_iter().take(N).collect();
         let ports: Vec<u16> =
-            selected.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
-        PROBE_LISTENERS.lock().expect("probe listener registry").append(&mut selected);
+            listeners.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
+        PROBE_LISTENERS.lock().expect("probe listener registry").append(&mut listeners);
         return ports.try_into().expect("exactly N ports collected");
     }
 }
@@ -172,6 +171,23 @@ pub fn release_held_ports(ports: &[u16]) {
     PROBE_LISTENERS.lock().expect("probe listener registry").retain(|l| {
         if let Ok(addr) = l.local_addr() { !ports.contains(&addr.port()) } else { false }
     });
+}
+
+/// Re-probe and hold listeners for the specified port numbers so other tests
+/// running concurrently cannot claim them between a teardown and a reboot.
+pub fn rehold_ports(ports: &[u16]) {
+    let mut listeners = Vec::with_capacity(ports.len());
+    for &port in ports {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Some(l) = probe_bind(port) {
+                listeners.push(l);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    PROBE_LISTENERS.lock().expect("probe listener registry").extend(listeners);
 }
 
 pub struct SubstrateTestContext {

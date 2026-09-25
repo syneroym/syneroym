@@ -49,7 +49,6 @@ pub struct SectionDigest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
     pub bundle_version: u32,
-    pub produced_at_secs: u64,
     /// The person this bundle belongs to. Checked on import against the
     /// identity the importing node holds -- an import that would graft
     /// one person's data onto another's node is refused, not merged.
@@ -215,7 +214,6 @@ mod tests {
         Bundle {
             manifest: BundleManifest {
                 bundle_version: BUNDLE_VERSION,
-                produced_at_secs: 1000,
                 subject_did: "did:key:z6M123".to_string(),
                 sections: sections_digest,
             },
@@ -303,7 +301,6 @@ mod tests {
         Bundle {
             manifest: BundleManifest {
                 bundle_version: BUNDLE_VERSION,
-                produced_at_secs: 1000,
                 subject_did: "did:key:z6M123".to_string(),
                 sections: digests,
             },
@@ -390,8 +387,16 @@ mod tests {
             Err(BundleError::WrongSubject { .. })
         ));
 
-        // Mutated manifest after signing
-        b.manifest.produced_at_secs = 9999;
+        // Mutated manifest subject_did after signing
+        b.manifest.subject_did = "did:key:zMutated".to_string();
+        assert!(matches!(
+            b.verify_manifest_signature(1000),
+            Err(BundleError::SignerNotSubject { .. })
+        ));
+
+        // Mutated manifest payload with matching subject_did
+        b.manifest.subject_did = issuer;
+        b.manifest.bundle_version = 999;
         assert!(matches!(
             b.verify_manifest_signature(1000),
             Err(BundleError::SignedManifestDiffers)

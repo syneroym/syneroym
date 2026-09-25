@@ -65,6 +65,15 @@ pub(crate) async fn fulfilment_sign<H: AppHost>(host: &H, req: &Request) -> Resp
         Role::Provider => &fulfilments.provider,
     };
     if let Some(half) = existing {
+        if owner == agr.provider_did {
+            let _ = booking_ops::transition(
+                host,
+                &p.agreement,
+                BookingEvent::Half { track: Track::Fulfilment, role: Role::Provider },
+                now,
+            )
+            .await;
+        }
         return Response::ok(json!({
             "record_id": half.record_id,
             "role": role,

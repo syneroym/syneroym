@@ -10,7 +10,7 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     backup::{
         BUNDLE_VERSION, Bundle, BundleManifest, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE,
-        SECTION_REPORTS,
+        SECTION_REPORTS, check_signed_bundle,
     },
     clock,
     envelope::{Request, Response},
@@ -107,7 +107,6 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
 
     let manifest = BundleManifest {
         bundle_version: BUNDLE_VERSION,
-        produced_at_secs: now,
         subject_did: owner,
         sections: manifest_sections,
     };
@@ -227,7 +226,7 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e.to_string()),
     };
 
-    if let Err(e) = syneroym_roym_core::backup::check_signed_bundle(&bundle, &owner, now) {
+    if let Err(e) = check_signed_bundle(&bundle, &owner, now) {
         return Response::invalid_params(e.to_string());
     }
 

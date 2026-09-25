@@ -396,9 +396,13 @@ async fn assert_post_restore_operations(
     archive: &RoymArchive,
     recovery_key: &[u8; 32],
     bundles: &serde_json::Map<String, Value>,
-) {
+) -> serde_json::Map<String, Value> {
     let tick_view = node_y2.rpc_ok("booking.get", json!({ "agreement": tx.quote_record_id })).await;
     assert_eq!(&tick_view["seq"], initial_seq);
+
+    let start_view =
+        node_y2.rpc_ok("booking.start", json!({ "agreement": tx.quote_record_id })).await;
+    assert_eq!(start_view["state"], "in-progress");
 
     let payment_after =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id })).await;
@@ -439,7 +443,8 @@ async fn assert_post_restore_operations(
     assert!(tampered_open.is_err(), "a flipped ciphertext byte must not decrypt");
 
     let unchanged = node_y2.rpc_ok("booking.get", json!({ "agreement": tx.quote_record_id })).await;
-    assert_eq!(unchanged["seq"], tick_view["seq"]);
+    assert_eq!(unchanged["seq"], start_view["seq"]);
+    second_export
 }
 
 #[tokio::test]
@@ -476,7 +481,7 @@ async fn a_provider_transaction_survives_an_encrypted_backup_and_restore() {
     let mut node_y2 = Node::boot(
         "node-y2",
         dir_y2.path().to_path_buf(),
-        cluster.shared_registry,
+        cluster.shared_registry.clone(),
         restored_identity,
         fast_conversation_role(3600),
     )
@@ -488,7 +493,7 @@ async fn a_provider_transaction_survives_an_encrypted_backup_and_restore() {
 
     // Step 4: the durability suite.
     assert_durability_parity(&node_y2, &before, &tx).await;
-    assert_post_restore_operations(
+    let second_export = assert_post_restore_operations(
         &node_y2,
         &tx,
         &before.booking["seq"],
@@ -498,9 +503,30 @@ async fn a_provider_transaction_survives_an_encrypted_backup_and_restore() {
     )
     .await;
 
+    // Step 5: export from Y2 and verify import onto a clean node Y3.
+    let (archive_y2, recovery_key_y2) = seal_archive(&node_y2.owner, &owner_y_did, second_export);
+    let restored_identity_y3 =
+        identity_backup::import(&archive_y2.identity, &recovery_key_y2).unwrap();
+    let dir_y3 = tempfile::tempdir().unwrap();
+    let mut node_y3 = Node::boot(
+        "node-y3",
+        dir_y3.path().to_path_buf(),
+        cluster.shared_registry,
+        restored_identity_y3,
+        fast_conversation_role(3600),
+    )
+    .await;
+    node_y3.full_bring_up().await;
+    let restore_bundles_y3 = open_archive_bundles(&archive_y2, &recovery_key_y2).unwrap();
+    import_bundles(&node_y3, &restore_bundles_y3).await;
+    let y3_booking =
+        node_y3.rpc_ok("booking.get", json!({ "agreement": tx.quote_record_id })).await;
+    assert_eq!(y3_booking["state"], "in-progress");
+
     node_x.teardown().await;
     node_y.teardown().await;
     node_y2.teardown().await;
+    node_y3.teardown().await;
 }
 
 async fn post_restore_correction_envelope(node: &Node, agreement: &str) -> String {

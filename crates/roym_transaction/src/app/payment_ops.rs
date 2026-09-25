@@ -3,8 +3,11 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use syneroym_app_host::{
-    AppHost, AppSigning,
-    types::signing::{Principal, RecordDraft},
+    AppDataLayer, AppHost, AppSigning,
+    types::{
+        data_layer::RecordWriteValue,
+        signing::{Principal, RecordDraft},
+    },
 };
 use syneroym_roym_core::{
     booking::{BookingEvent, BookingState, Track, TrackState},
@@ -17,9 +20,10 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BookingRow, PAYMENTS, PROGRESS, PaymentsRow, ProgressRow,
-    booking_ops, get_row, ledger::load_booking, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    AGREEMENTS, AgreementRow, BookingRow, LEDGER, PAYMENTS, PROGRESS, PaymentsRow, ProgressRow,
+    booking_ops, get_row,
+    ledger::{LedgerKind, LedgerRow, load_booking},
+    put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +82,10 @@ pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Resp
         }));
     }
 
+    if let Err(resp) = claim_payment_request_fence(host, &p.agreement, now).await {
+        return resp;
+    }
+
     let payload = PaymentRequestPayload {
         agreement: p.agreement.clone(),
         conversation: agr.conversation.clone(),
@@ -132,6 +140,65 @@ struct AcknowledgeParams {
     supersedes: Option<String>,
 }
 
+struct AckContext {
+    principal: Principal,
+    owner: String,
+    agr: AgreementRow,
+    role: Role,
+    payments: PaymentsRow,
+}
+
+async fn load_ack_context<H: AppHost>(
+    host: &H,
+    agreement_id: &str,
+    now: u64,
+) -> Result<AckContext, Response> {
+    let (principal, owner) = match resolve_principal_and_owner(host, now).await {
+        Ok(res) => res,
+        Err(resp) => return Err(resp),
+    };
+    let agr: AgreementRow = match get_row(host, AGREEMENTS, agreement_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    let role = match check_acknowledgement_preconditions(host, agreement_id, &agr, &owner).await {
+        Ok(r) => r,
+        Err(resp) => return Err(resp),
+    };
+    let payments: PaymentsRow = match get_row(host, PAYMENTS, agreement_id).await {
+        Ok(Some(py)) => py,
+        Ok(None) => PaymentsRow {
+            agreement: agreement_id.to_string(),
+            conversation: agr.conversation.clone(),
+            request: None,
+            consumer: Vec::new(),
+            provider: Vec::new(),
+            updated_at_secs: now,
+        },
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    Ok(AckContext { principal, owner, agr, role, payments })
+}
+
+async fn maybe_transition_provider_ack<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    owner: &str,
+    provider_did: &str,
+    now: u64,
+) {
+    if owner == provider_did {
+        let _ = booking_ops::transition(
+            host,
+            agreement,
+            BookingEvent::Half { track: Track::Payment, role: Role::Provider },
+            now,
+        )
+        .await;
+    }
+}
+
 pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> Response {
     let p: AcknowledgeParams = match serde_json::from_value(req.params.clone()) {
         Ok(v) => v,
@@ -139,36 +206,12 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
     };
 
     let now = clock::now_secs();
-    let (principal, owner) = match resolve_principal_and_owner(host, now).await {
-        Ok(res) => res,
-        Err(resp) => return resp,
-    };
+    let AckContext { principal, owner, agr, role, mut payments } =
+        match load_ack_context(host, &p.agreement, now).await {
+            Ok(ctx) => ctx,
+            Err(resp) => return resp,
+        };
 
-    let agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await {
-        Ok(Some(a)) => a,
-        Ok(None) => return Response::invalid_params("no-such-agreement"),
-        Err(e) => return Response::internal_error(e),
-    };
-
-    let role = match check_acknowledgement_preconditions(host, &p.agreement, &agr, &owner).await {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-
-    let mut payments: PaymentsRow = match get_row(host, PAYMENTS, &p.agreement).await {
-        Ok(Some(py)) => py,
-        Ok(None) => PaymentsRow {
-            agreement: p.agreement.clone(),
-            conversation: agr.conversation.clone(),
-            request: None,
-            consumer: Vec::new(),
-            provider: Vec::new(),
-            updated_at_secs: now,
-        },
-        Err(e) => return Response::internal_error(e),
-    };
-
-    let is_first = p.supersedes.is_none();
     let versions = match role {
         Role::Consumer => &mut payments.consumer,
         Role::Provider => &mut payments.provider,
@@ -180,7 +223,22 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
             Err(resp) => return resp,
         }
     {
+        maybe_transition_provider_ack(host, &p.agreement, &owner, &agr.provider_did, now).await;
         return early_resp;
+    }
+
+    if let Err(resp) = claim_payment_ack_fence(
+        host,
+        &p.agreement,
+        role,
+        p.supersedes.as_deref(),
+        now,
+        &owner,
+        &agr.provider_did,
+    )
+    .await
+    {
+        return resp;
     }
 
     let payload = match build_payment_ack_payload(&p, &agr, role, now) {
@@ -221,15 +279,7 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
         Err(resp) => return resp,
     };
 
-    if is_first && owner == agr.provider_did {
-        let _ = booking_ops::transition(
-            host,
-            &p.agreement,
-            BookingEvent::Half { track: Track::Payment, role: Role::Provider },
-            now,
-        )
-        .await;
-    }
+    maybe_transition_provider_ack(host, &p.agreement, &owner, &agr.provider_did, now).await;
 
     Response::ok(json!({
         "record_id": record_id,
@@ -574,4 +624,94 @@ async fn record_and_send_ack<H: AppHost>(
     .await;
 
     Ok((message_id, send_state))
+}
+
+async fn claim_payment_request_fence<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    now: u64,
+) -> Result<(), Response> {
+    let fence_key = format!("payreq:{agreement}");
+    let fence_row = LedgerRow {
+        kind: LedgerKind::Fence,
+        agreement: agreement.to_string(),
+        slot_id: None,
+        seat: None,
+        step: None,
+        created_at_secs: now,
+    };
+    let fence_write = match serde_json::to_vec(&fence_row) {
+        Ok(b) => RecordWriteValue { id: fence_key, payload: b },
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    match AppDataLayer::create(host, LEDGER.to_string(), vec![fence_write]).await {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => {
+            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await
+                && let Some(existing) = &py.request
+            {
+                return Err(Response::ok(json!({
+                    "record_id": existing.record_id,
+                    "message_id": Value::Null,
+                    "state": "already-recorded",
+                })));
+            }
+            Err(Response::invalid_params("payment-request-in-flight"))
+        }
+        Err(e) => Err(Response::internal_error(e.to_string())),
+    }
+}
+
+async fn claim_payment_ack_fence<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    role: Role,
+    supersedes: Option<&str>,
+    now: u64,
+    owner: &str,
+    provider_did: &str,
+) -> Result<(), Response> {
+    let ver_tag = supersedes.unwrap_or("first");
+    let role_str = match role {
+        Role::Consumer => "consumer",
+        Role::Provider => "provider",
+    };
+    let ack_fence_key = format!("ack:{agreement}:{role_str}:{ver_tag}");
+    let ack_fence_row = LedgerRow {
+        kind: LedgerKind::Fence,
+        agreement: agreement.to_string(),
+        slot_id: None,
+        seat: None,
+        step: None,
+        created_at_secs: now,
+    };
+    let ack_fence_write = match serde_json::to_vec(&ack_fence_row) {
+        Ok(b) => RecordWriteValue { id: ack_fence_key, payload: b },
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    match AppDataLayer::create(host, LEDGER.to_string(), vec![ack_fence_write]).await {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => {
+            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await {
+                let v = match role {
+                    Role::Consumer => &py.consumer,
+                    Role::Provider => &py.provider,
+                };
+                if let Ok(Some(early)) = check_acknowledgement_version(supersedes, v, role) {
+                    if owner == provider_did {
+                        let _ = booking_ops::transition(
+                            host,
+                            agreement,
+                            BookingEvent::Half { track: Track::Payment, role: Role::Provider },
+                            now,
+                        )
+                        .await;
+                    }
+                    return Err(early);
+                }
+            }
+            Err(Response::invalid_params("payment-acknowledgement-in-flight"))
+        }
+        Err(e) => Err(Response::internal_error(e.to_string())),
+    }
 }

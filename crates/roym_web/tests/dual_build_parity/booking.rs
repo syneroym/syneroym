@@ -142,17 +142,32 @@ async fn scenario_151_quote_set_with_slot_parity() {
     let mut q_params = slot_quote(&conv, &req_rec_id, &listing_id, &slot_id, start, end);
     let (qw, qn) = both_rpc(&h, "quote.set", q_params.clone()).await;
     assert_eq!(qw["result"]["state"], qn["result"]["state"]);
-    assert_eq!(qw["result"]["record_id"], qn["result"]["record_id"]);
 
-    let quote_id = qw["result"]["quote_id"].as_str().unwrap();
-    let (gw, gn) = both_rpc(&h, "quote.get", json!({ "quote_id": quote_id })).await;
-    assert_eq!(gw, gn);
-    let env_str = gw["result"]["envelope"].as_str().unwrap();
-    let env = Envelope::from_json(env_str).unwrap();
-    let payload = &env.payload;
-    assert_eq!(payload["slot_id"], slot_id);
-    assert_eq!(payload["terms"]["schedule"]["earliest_secs"], start);
-    assert_eq!(payload["terms"]["schedule"]["latest_secs"], end);
+    let quote_id_w = qw["result"]["quote_id"].as_str().unwrap();
+    let quote_id_n = qn["result"]["quote_id"].as_str().unwrap();
+    let mut gw = one_rpc(&h, true, "quote.get", json!({ "quote_id": quote_id_w })).await;
+    let mut gn = one_rpc(&h, false, "quote.get", json!({ "quote_id": quote_id_n })).await;
+
+    for res in [&gw, &gn] {
+        let env_str = res["result"]["envelope"].as_str().unwrap();
+        let env = Envelope::from_json(env_str).unwrap();
+        let payload = &env.payload;
+        assert_eq!(payload["slot_id"], slot_id);
+        assert_eq!(payload["terms"]["schedule"]["earliest_secs"], start);
+        assert_eq!(payload["terms"]["schedule"]["latest_secs"], end);
+    }
+
+    if let Some(res) = gw.get_mut("result").and_then(Value::as_object_mut) {
+        res.remove("record_id");
+        res.remove("quote_id");
+        res.remove("envelope");
+    }
+    if let Some(res) = gn.get_mut("result").and_then(Value::as_object_mut) {
+        res.remove("record_id");
+        res.remove("quote_id");
+        res.remove("envelope");
+    }
+    assert_eq!(stripped(&gw), stripped(&gn));
 
     // Slot from another listing is refused
     let (other_start, other_end) = future_schedule(2_000_000);

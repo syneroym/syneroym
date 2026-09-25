@@ -11,6 +11,7 @@ use syneroym_roym_core::{
         BUNDLE_VERSION, Bundle, BundleManifest, SECTION_AGREEMENTS, SECTION_BOOKINGS,
         SECTION_CARDS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS, SECTION_PROGRESS,
         SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_REQUEST_HISTORY, SECTION_REQUESTS,
+        check_signed_bundle,
     },
     booking, clock,
     envelope::{Request, Response},
@@ -104,7 +105,6 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     let mut bundle = Bundle {
         manifest: BundleManifest {
             bundle_version: BUNDLE_VERSION,
-            produced_at_secs: now,
             subject_did: owner,
             sections: manifest_sections,
         },
@@ -165,6 +165,19 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
             Err(e) => return e,
         };
 
+    let agreements_map: HashMap<String, AgreementRow> =
+        verified_agreements.iter().cloned().collect();
+    let validated_vertical = match sections::validate_vertical_sections(
+        &bundle.sections,
+        &agreements_map,
+        &quotes_by_record_id,
+        &owner,
+        now,
+    ) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+
     let mut imported_history: HashMap<String, (String, String)> = HashMap::new();
     if let Err(resp) = import_negotiation_sections(
         host,
@@ -180,17 +193,8 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         return resp;
     }
 
-    let agreements_map: HashMap<String, AgreementRow> = verified_agreements.into_iter().collect();
-    if let Err(resp) = sections::import_vertical_sections(
-        host,
-        &bundle.sections,
-        &agreements_map,
-        &quotes_by_record_id,
-        &mut imported_history,
-        &owner,
-        now,
-    )
-    .await
+    if let Err(resp) =
+        sections::write_vertical_sections(host, validated_vertical, &mut imported_history).await
     {
         return resp;
     }
@@ -203,7 +207,7 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 fn validate_bundle_header(bundle: &Bundle, owner: &str, now: u64) -> Result<(), Response> {
-    if let Err(e) = syneroym_roym_core::backup::check_signed_bundle(bundle, owner, now) {
+    if let Err(e) = check_signed_bundle(bundle, owner, now) {
         return Err(Response::invalid_params(e.to_string()));
     }
     for (name, declared) in &bundle.manifest.sections {
@@ -393,7 +397,6 @@ fn verify_imported_requests(
 pub(crate) struct ImportedQuote {
     pub(crate) provider_did: String,
     pub(crate) payload: QuotePayload,
-    pub(crate) signer_did: Option<String>,
 }
 
 pub(crate) type QuotesByRecordId = HashMap<String, ImportedQuote>;
@@ -451,11 +454,7 @@ fn verify_imported_quotes(
 
         quotes_by_record_id.insert(
             verified_record_id.to_string(),
-            ImportedQuote {
-                provider_did: row.issuer.clone(),
-                payload: p.clone(),
-                signer_did: v.signer_did,
-            },
+            ImportedQuote { provider_did: row.issuer.clone(), payload: p.clone() },
         );
         verified_quotes.push((p.quote_id.clone(), row));
     }

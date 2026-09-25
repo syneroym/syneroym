@@ -222,6 +222,9 @@ pub fn verify_payment_request(
     if verified.expires_at_secs.is_some() {
         return RecordVerdict::refused("a payment request may not declare an expiry");
     }
+    if verified.supersedes.is_some() {
+        return RecordVerdict::refused("a payment request cannot be corrected");
+    }
     if verified.issuer != payload.provider_did {
         return RecordVerdict::refused("payment request issuer does not match provider_did");
     }

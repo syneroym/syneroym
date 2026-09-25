@@ -22,8 +22,6 @@ export interface PaymentRequestData {
   provider_did?: string;
   currency?: string;
   amount_minor?: number;
-  amount?: string | number;
-  url?: string;
   note?: string;
   /// Sibling fields on the card row, not part of the signed payload.
   agreement_payee?: string;
@@ -43,18 +41,6 @@ export function renderPaymentRequest(data?: PaymentRequestData): HTMLElement {
     amountP.className = "payment-request-amount";
     amountP.textContent = `Amount: ${formatMinor(data.amount_minor, data.currency)}`;
     card.appendChild(amountP);
-  } else if (data?.amount !== undefined && data?.amount !== null && data?.amount !== "") {
-    const amountP = document.createElement("p");
-    amountP.className = "payment-request-amount";
-    amountP.textContent = data.currency ? `Amount: ${data.amount} ${data.currency}` : `Amount: ${data.amount}`;
-    card.appendChild(amountP);
-  }
-
-  if (data?.url) {
-    const pLink = document.createElement("p");
-    pLink.className = "payment-link";
-    pLink.appendChild(renderLink(data.url));
-    card.appendChild(pLink);
   }
 
   const oneNoticeP = document.createElement("p");

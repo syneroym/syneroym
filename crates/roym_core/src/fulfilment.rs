@@ -102,6 +102,9 @@ pub fn verify_fulfilment_receipt(
     if verified.expires_at_secs.is_some() {
         return RecordVerdict::refused("a fulfilment receipt may not declare an expiry");
     }
+    if verified.supersedes.is_some() {
+        return RecordVerdict::refused("a fulfilment receipt cannot be corrected");
+    }
     let expected_issuer = match payload.role {
         Role::Consumer => &payload.consumer_did,
         Role::Provider => &payload.provider_did,
