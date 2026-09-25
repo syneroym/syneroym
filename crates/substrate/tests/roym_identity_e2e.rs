@@ -38,7 +38,7 @@ use syneroym_sdk::{
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
 
 mod common;
-use common::{SubstrateTestContext, alloc_ports};
+use common::{SubstrateTestContext, alloc_ports, roym::roym_artifacts_present};
 
 const SESSION_COOKIE_NAME: &str = "syneroym_session";
 
@@ -268,6 +268,11 @@ async fn login_local(gateway_url: &str, identity: &str) -> String {
 #[tokio::test]
 #[expect(clippy::too_many_lines, reason = "linear roym identity lifecycle end-to-end scenario")]
 async fn test_roym_identity_e2e() {
+    if !roym_artifacts_present() {
+        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
+        return;
+    }
+
     let RoymDeployment {
         ctx,
         gateway_url,

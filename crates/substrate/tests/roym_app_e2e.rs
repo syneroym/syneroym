@@ -52,7 +52,7 @@ use syneroym_sdk::{
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
 
 mod common;
-use common::{SubstrateTestContext, alloc_ports};
+use common::{SubstrateTestContext, alloc_ports, roym::roym_artifacts_present};
 
 const SESSION_COOKIE_NAME: &str = "syneroym_session";
 
@@ -302,6 +302,11 @@ async fn deploy_roym_app() -> RoymDeployment {
 #[tokio::test]
 #[expect(clippy::too_many_lines, reason = "linear roym app lifecycle end-to-end scenario")]
 async fn test_roym_app_e2e_lifecycle() {
+    if !roym_artifacts_present() {
+        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
+        return;
+    }
+
     let RoymDeployment {
         ctx,
         gateway_url,
@@ -534,6 +539,11 @@ async fn test_roym_app_e2e_lifecycle() {
 /// see the deferred-backlog for the tracking row.
 #[tokio::test]
 async fn an_unaffiliated_caller_resolves_directorys_public_record_but_not_profiles() {
+    if !roym_artifacts_present() {
+        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
+        return;
+    }
+
     let RoymDeployment { ctx, registry_url, dir_did, profile_did, .. } = deploy_roym_app().await;
 
     let unaffiliated_caller = RegistryClient::new(false, Some(registry_url));

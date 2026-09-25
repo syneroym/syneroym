@@ -108,10 +108,14 @@ pub(crate) async fn fulfilment_sign<H: AppHost>(host: &H, req: &Request) -> Resp
         issued_at_secs: env.issued_at_secs,
     };
 
-    if let Err(resp) =
-        claim_fulfilment_fence(host, &p.agreement, role, &half, now, &owner, &agr.provider_did)
-            .await
-    {
+    let fence_claim = FulfilmentFenceClaim {
+        agreement: &p.agreement,
+        conversation: &agr.conversation,
+        role,
+        owner: &owner,
+        provider_did: &agr.provider_did,
+    };
+    if let Err(resp) = claim_fulfilment_fence(host, fence_claim, &half, now).await {
         return resp;
     }
 
@@ -300,15 +304,21 @@ async fn sign_fulfilment_receipt<H: AppHost>(
     Ok((env_json, env, record_id))
 }
 
+struct FulfilmentFenceClaim<'a> {
+    agreement: &'a str,
+    conversation: &'a str,
+    role: Role,
+    owner: &'a str,
+    provider_did: &'a str,
+}
+
 async fn claim_fulfilment_fence<H: AppHost>(
     host: &H,
-    agreement: &str,
-    role: Role,
+    claim: FulfilmentFenceClaim<'_>,
     half: &ReceiptHalf,
     now: u64,
-    owner: &str,
-    provider_did: &str,
 ) -> Result<(), Response> {
+    let FulfilmentFenceClaim { agreement, conversation, role, owner, provider_did } = claim;
     let role_str = match role {
         Role::Consumer => "consumer",
         Role::Provider => "provider",
@@ -333,19 +343,78 @@ async fn claim_fulfilment_fence<H: AppHost>(
             if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &fence_key).await
                 && let Some(existing) = &fence.half
             {
-                return Err(already_recorded_fulfilment_response(
-                    host,
-                    agreement,
-                    owner,
-                    provider_did,
-                    role,
-                    &existing.record_id,
-                    now,
-                )
-                .await);
+                let ctx =
+                    FulfilmentRecordCtx { agreement, conversation, role, owner, provider_did };
+                return Err(ensure_fulfilment_recorded(host, ctx, existing, now).await);
             }
             Err(Response::invalid_params("fulfilment-sign-in-flight"))
         }
         Err(e) => Err(Response::internal_error(e.to_string())),
     }
+}
+
+struct FulfilmentRecordCtx<'a> {
+    agreement: &'a str,
+    conversation: &'a str,
+    role: Role,
+    owner: &'a str,
+    provider_did: &'a str,
+}
+
+/// Mirrors `payment_ops::ensure_payment_ack_recorded`: a crash between
+/// claiming the fulfilment fence and writing the shared `FULFILMENTS` row
+/// would otherwise strand a signed half that no retry ever files or
+/// sends -- every later call would just answer `already-recorded` against
+/// a row nothing ever wrote. Called only from the fence's "already
+/// claimed" branch.
+async fn ensure_fulfilment_recorded<H: AppHost>(
+    host: &H,
+    ctx: FulfilmentRecordCtx<'_>,
+    half: &ReceiptHalf,
+    now: u64,
+) -> Response {
+    let FulfilmentRecordCtx { agreement, conversation, role, owner, provider_did } = ctx;
+    let mut f: FulfilmentsRow = match get_row(host, FULFILMENTS, agreement).await {
+        Ok(Some(row)) => row,
+        Ok(None) => FulfilmentsRow {
+            agreement: agreement.to_string(),
+            conversation: conversation.to_string(),
+            consumer: None,
+            provider: None,
+            updated_at_secs: now,
+        },
+        Err(e) => return Response::internal_error(e),
+    };
+    let slot = match role {
+        Role::Consumer => &mut f.consumer,
+        Role::Provider => &mut f.provider,
+    };
+    let already_present = slot.as_ref().is_some_and(|h| h.record_id == half.record_id);
+    if !already_present {
+        *slot = Some(half.clone());
+        f.updated_at_secs = now;
+        if let Err(e) = put_row(host, FULFILMENTS, agreement, &f).await {
+            return Response::internal_error(e);
+        }
+    }
+
+    maybe_transition_provider_fulfilment(host, agreement, owner, provider_did, now).await;
+
+    if already_present {
+        return Response::ok(json!({
+            "record_id": half.record_id,
+            "role": role,
+            "message_id": Value::Null,
+            "state": "already-recorded",
+        }));
+    }
+    let (message_id, send_state, _) =
+        send_card_and_file(host, conversation, "fulfilment-receipt", 1, &half.envelope, now, None)
+            .await;
+    Response::ok(json!({
+        "record_id": half.record_id,
+        "role": role,
+        "message_id": message_id,
+        "state": send_state,
+    }))
 }

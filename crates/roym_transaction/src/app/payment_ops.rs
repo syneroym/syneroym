@@ -1,13 +1,13 @@
 //! Payment request, acknowledgement, retrieval, and verification operations.
 
+mod fence;
+
+use fence::{AckFenceClaim, claim_payment_ack_fence, claim_payment_request_fence};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use syneroym_app_host::{
-    AppDataLayer, AppHost, AppSigning,
-    types::{
-        data_layer::RecordWriteValue,
-        signing::{Principal, RecordDraft},
-    },
+    AppHost, AppSigning,
+    types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
     booking::{BookingEvent, BookingState, Track, TrackState},
@@ -20,10 +20,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BookingRow, LEDGER, PAYMENTS, PROGRESS, PaymentsRow, ProgressRow,
-    booking_ops, get_row,
-    ledger::{LedgerKind, LedgerRow, load_booking},
-    put_row, resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRow, BookingRow, PAYMENTS, PROGRESS, PaymentsRow, ProgressRow,
+    booking_ops, get_row, ledger::load_booking, put_row, resolve_principal_and_owner,
+    send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -108,7 +107,9 @@ pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Resp
         issued_at_secs: env.issued_at_secs,
     };
 
-    if let Err(resp) = claim_payment_request_fence(host, &p.agreement, &half, now).await {
+    if let Err(resp) =
+        claim_payment_request_fence(host, &p.agreement, &agr.conversation, &half, now).await
+    {
         return resp;
     }
 
@@ -256,6 +257,7 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
 
     let ack_fence_claim = AckFenceClaim {
         agreement: &p.agreement,
+        conversation: &agr.conversation,
         role,
         supersedes: p.supersedes.as_deref(),
         owner: &owner,
@@ -625,131 +627,4 @@ async fn record_and_send_ack<H: AppHost>(
     .await;
 
     Ok((message_id, send_state))
-}
-
-async fn claim_payment_request_fence<H: AppHost>(
-    host: &H,
-    agreement: &str,
-    half: &ReceiptHalf,
-    now: u64,
-) -> Result<(), Response> {
-    let fence_key = format!("payreq:{agreement}");
-    let fence_row = LedgerRow {
-        kind: LedgerKind::Fence,
-        agreement: agreement.to_string(),
-        slot_id: None,
-        seat: None,
-        step: None,
-        half: Some(half.clone()),
-        created_at_secs: now,
-    };
-    let fence_write = match serde_json::to_vec(&fence_row) {
-        Ok(b) => RecordWriteValue { id: fence_key.clone(), payload: b },
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-    match AppDataLayer::create(host, LEDGER.to_string(), vec![fence_write]).await {
-        Ok(None) => Ok(()),
-        Ok(Some(_)) => {
-            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &fence_key).await
-                && let Some(existing) = &fence.half
-            {
-                return Err(Response::ok(json!({
-                    "record_id": existing.record_id,
-                    "message_id": Value::Null,
-                    "state": "already-recorded",
-                })));
-            }
-            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await
-                && let Some(existing) = &py.request
-            {
-                return Err(Response::ok(json!({
-                    "record_id": existing.record_id,
-                    "message_id": Value::Null,
-                    "state": "already-recorded",
-                })));
-            }
-            Err(Response::invalid_params("payment-request-in-flight"))
-        }
-        Err(e) => Err(Response::internal_error(e.to_string())),
-    }
-}
-
-struct AckFenceClaim<'a> {
-    agreement: &'a str,
-    role: Role,
-    supersedes: Option<&'a str>,
-    owner: &'a str,
-    provider_did: &'a str,
-}
-
-async fn claim_payment_ack_fence<H: AppHost>(
-    host: &H,
-    claim: AckFenceClaim<'_>,
-    half: &ReceiptHalf,
-    now: u64,
-) -> Result<(), Response> {
-    let AckFenceClaim { agreement, role, supersedes, owner, provider_did } = claim;
-    let ver_tag = supersedes.unwrap_or("first");
-    let role_str = match role {
-        Role::Consumer => "consumer",
-        Role::Provider => "provider",
-    };
-    let ack_fence_key = format!("ack:{agreement}:{role_str}:{ver_tag}");
-    let ack_fence_row = LedgerRow {
-        kind: LedgerKind::Fence,
-        agreement: agreement.to_string(),
-        slot_id: None,
-        seat: None,
-        step: None,
-        half: Some(half.clone()),
-        created_at_secs: now,
-    };
-    let ack_fence_write = match serde_json::to_vec(&ack_fence_row) {
-        Ok(b) => RecordWriteValue { id: ack_fence_key.clone(), payload: b },
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-    match AppDataLayer::create(host, LEDGER.to_string(), vec![ack_fence_write]).await {
-        Ok(None) => Ok(()),
-        Ok(Some(_)) => {
-            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &ack_fence_key).await
-                && let Some(h) = &fence.half
-            {
-                if owner == provider_did {
-                    let _ = booking_ops::transition(
-                        host,
-                        agreement,
-                        BookingEvent::Half { track: Track::Payment, role: Role::Provider },
-                        now,
-                    )
-                    .await;
-                }
-                return Err(Response::ok(json!({
-                    "record_id": h.record_id,
-                    "role": role,
-                    "message_id": Value::Null,
-                    "state": "already-recorded",
-                })));
-            }
-            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await {
-                let v = match role {
-                    Role::Consumer => &py.consumer,
-                    Role::Provider => &py.provider,
-                };
-                if let Ok(Some(early)) = check_acknowledgement_version(supersedes, v, role) {
-                    if owner == provider_did {
-                        let _ = booking_ops::transition(
-                            host,
-                            agreement,
-                            BookingEvent::Half { track: Track::Payment, role: Role::Provider },
-                            now,
-                        )
-                        .await;
-                    }
-                    return Err(early);
-                }
-            }
-            Err(Response::invalid_params("payment-acknowledgement-in-flight"))
-        }
-        Err(e) => Err(Response::internal_error(e.to_string())),
-    }
 }
