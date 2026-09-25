@@ -1,7 +1,11 @@
 [tools]
 # We can use Mise to manage Rust as well, but cargo/rustup usually uses rust-toolchain.toml.
 # Adding it here ensures users without rustup get it installed via Mise.
-rust = "stable"
+# The second entry is `cargo +nightly-2026-04-06 fmt` (CI, xtask verify,
+# both git hooks) -- pinned to match .github/actions/ci-lints/action.yml,
+# not "nightly", which always means "whatever build is newest today" and
+# is what drifted CI's fmt gate in the first place.
+rust = ["stable", "nightly-2026-04-06"]
 "cargo:wasm-tools" = "latest"
 "cargo:cargo-component" = "0.21"
 "cargo:cargo-audit" = "latest"
