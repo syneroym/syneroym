@@ -24,14 +24,11 @@ crates/roym_web/tests/dual_build_parity/directory.rs 1137
 crates/roym_web/tests/dual_build_parity/helpers.rs 1494
 crates/roym_web/tests/dual_build_parity/profile.rs 1121
 crates/roym_web/tests/dual_build_parity/transaction.rs 901
-crates/roym_web/tests/dual_build_parity/transaction_cards.rs 1023
 crates/sandbox_wasm/src/engine/tests.rs 858
 crates/sandbox_wasm/tests/abac_integration.rs 850
 crates/substrate/tests/gateway_session_e2e.rs 1477
 crates/substrate/tests/guest_http_e2e.rs 989
 crates/substrate/tests/http_passthrough_e2e.rs 844
 crates/substrate/tests/multi_substrate_placement_e2e.rs 838
-crates/substrate/tests/roym_conversation_e2e.rs 1084
-crates/substrate/tests/roym_directory_e2e.rs 1021
-crates/substrate/tests/roym_transaction_e2e.rs 967
 crates/ucan/src/token/tests.rs 1087
+

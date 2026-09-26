@@ -39,8 +39,10 @@ mise run verify -- --skip e2e --skip nextest
 cargo build
 
 # Format (nightly required — stable cargo fmt silently ignores the unstable
-# import-grouping options this repo relies on)
-cargo +nightly fmt --all
+# import-grouping options this repo relies on). Pinned to a fixed date
+# (see .github/actions/ci-lints/action.yml) so local formatting always
+# matches CI instead of drifting with whatever nightly is newest.
+cargo +nightly-2026-04-06 fmt --all
 
 # Lint (must be clean; correctness/suspicious lints are deny-level workspace-wide)
 cargo clippy --workspace --all-targets --all-features

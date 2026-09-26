@@ -37,27 +37,28 @@ describe("renderLink", () => {
     expect(node.textContent).toBe("not a url");
   });
 
-  it("renders payment-request card with a safe URL as a link", () => {
+  it("renders payment-request card with a safe URL payee as a link", () => {
     const el = renderPaymentRequest({
-      amount: "100",
+      amount_minor: 10000,
       currency: "USD",
-      url: "https://pay.example.com/invoice1",
+      agreement_payee: "https://pay.example.com/invoice1",
     });
-    const link = el.querySelector(".payment-link a") as HTMLAnchorElement | null;
+    const link = el.querySelector(".payment-request-payee a") as HTMLAnchorElement | null;
     expect(link).not.toBeNull();
     expect(link?.href).toBe("https://pay.example.com/invoice1");
     expect(link?.textContent).toBe("https://pay.example.com/invoice1");
   });
 
-  it("renders payment-request card via renderCard with javascript: URL as plain text", () => {
+  it("renders payment-request card via renderCard with javascript: payee as plain text", () => {
     const el = renderCard({
       type: "payment-request",
       version: 1,
-      data: { amount: 50, url: "javascript:evil()" },
+      agreement_payee: "javascript:evil()",
+      data: { amount_minor: 5000, currency: "USD" },
     });
-    const link = el.querySelector(".payment-link a");
+    const link = el.querySelector(".payment-request-payee a");
     expect(link).toBeNull();
-    const paymentLinkP = el.querySelector(".payment-link");
-    expect(paymentLinkP?.textContent).toBe("javascript:evil()");
+    const payeeP = el.querySelector(".payment-request-payee");
+    expect(payeeP?.textContent).toContain("javascript:evil()");
   });
 });

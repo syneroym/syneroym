@@ -59,15 +59,21 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
             Err(e) => return Response::internal_error(e.to_string()),
         }
     }
-    let bundle = Bundle {
+    let mut bundle = Bundle {
         manifest: BundleManifest {
             bundle_version: BUNDLE_VERSION,
-            produced_at_secs: now,
             subject_did: owner,
             sections: manifest_sections,
         },
         sections,
+        manifest_signature: None,
     };
+    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
+        if matches!(e, CertificateError::NotEnrolled) {
+            return Response::invalid_params("signing-not-enrolled");
+        }
+        return Response::internal_error(e.to_string());
+    }
     match serde_json::to_value(&bundle) {
         Ok(v) => Response::ok(v),
         Err(e) => Response::internal_error(e.to_string()),
@@ -83,18 +89,13 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(b) => b,
         Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
     };
-    if let Err(e) = bundle.check_integrity() {
-        return Response::invalid_params(e.to_string());
-    }
+    let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
     };
-    if bundle.manifest.subject_did != owner {
-        return Response::invalid_params(format!(
-            "bundle belongs to '{}', this node holds '{}'",
-            bundle.manifest.subject_did, owner
-        ));
+    if let Err(e) = syneroym_roym_core::backup::check_signed_bundle(&bundle, &owner, now) {
+        return Response::invalid_params(e.to_string());
     }
     for (name, declared) in &bundle.manifest.sections {
         if declared.schema_version != SCHEMA_VERSION {

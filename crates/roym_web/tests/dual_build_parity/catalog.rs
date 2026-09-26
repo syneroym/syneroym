@@ -278,6 +278,8 @@ async fn scenario_49_catalog_export_integrity_parity() {
         assert!(sections.contains_key("availability"));
     }
 
+    verify_and_strip_manifest_signature(&mut w);
+    verify_and_strip_manifest_signature(&mut n);
     strip_volatile(&mut w);
     strip_volatile(&mut n);
     assert_eq!(w, n);

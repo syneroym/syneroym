@@ -12,6 +12,10 @@ export interface CardObject {
   type: string;
   version: number;
   data?: unknown;
+  /// Sibling fields on the thread's card row (never inside the signed
+  /// `data`), threaded through only for the payment-request template.
+  agreement_payee?: string;
+  agreement_payment_methods?: string[];
 }
 
 export function renderCard(card: CardObject): HTMLElement {
@@ -30,7 +34,11 @@ export function renderCard(card: CardObject): HTMLElement {
     case "booking-progress":
       return renderBookingProgress(card.data as BookingProgressData | undefined);
     case "payment-request":
-      return renderPaymentRequest(card.data as PaymentRequestData | undefined);
+      return renderPaymentRequest({
+        ...(card.data as PaymentRequestData | undefined),
+        agreement_payee: card.agreement_payee,
+        agreement_payment_methods: card.agreement_payment_methods,
+      });
     case "payment-acknowledgement":
       return renderPaymentAcknowledgement(card.data as PaymentAcknowledgementData | undefined);
     case "fulfilment-receipt":

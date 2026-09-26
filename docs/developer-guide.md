@@ -36,8 +36,10 @@ cargo build
 The project has strict import rules. Imports are grouped and separated by module, crate, and external library. Use the nightly formatting command to apply them. Standard stable `cargo fmt` ignores these unstable features. Using it can lead to disjointed newlines.
 
 ```bash
-# Aggressively format all Rust code, merging and strictly grouping imports
-cargo +nightly fmt --all
+# Aggressively format all Rust code, merging and strictly grouping imports.
+# Pinned to a fixed date (see .github/actions/ci-lints/action.yml) so this
+# matches CI instead of drifting with whatever nightly is newest.
+cargo +nightly-2026-04-06 fmt --all
 ```
 
 ### Security & License Audits

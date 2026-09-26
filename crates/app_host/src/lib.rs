@@ -198,6 +198,12 @@ pub trait AppDataLayer {
         mutations: Vec<Mutation>,
     ) -> impl Future<Output = Result<(), DataLayerError>> + Send;
 
+    fn create(
+        &self,
+        collection: String,
+        values: Vec<RecordWriteValue>,
+    ) -> impl Future<Output = Result<Option<String>, DataLayerError>> + Send;
+
     fn execute_ddl(&self, sql: String) -> impl Future<Output = Result<(), DataLayerError>> + Send;
 
     fn query_raw(

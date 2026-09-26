@@ -112,6 +112,14 @@ impl AppDataLayer for GuestHost {
         dl::batch_mutate(&collection, &mutations)
     }
 
+    async fn create(
+        &self,
+        collection: String,
+        values: Vec<RecordWriteValue>,
+    ) -> Result<Option<String>, DataLayerError> {
+        dl::create(&collection, &values)
+    }
+
     async fn execute_ddl(&self, sql: String) -> Result<(), DataLayerError> {
         dl::execute_ddl(&sql)
     }

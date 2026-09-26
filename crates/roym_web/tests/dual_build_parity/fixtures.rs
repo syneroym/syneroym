@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use syneroym_identity::{
@@ -29,9 +29,15 @@ impl<D: Driver> Driver for Mutant<'_, D> {
 /// POSTs one JSON-RPC method to both stacks' `/rpc` with the owner session
 /// and returns each build's parsed response.
 pub(crate) async fn both_rpc(h: &Harness, method: &str, params: Value) -> (Value, Value) {
+    let ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_millis();
+    if ms >= 850 {
+        tokio::time::sleep(Duration::from_millis((1005 - ms) as u64)).await;
+    }
     let req = json!({ "method": method, "params": params }).to_string().into_bytes();
-    let w = h.wasm_http.post("/rpc", req.clone(), Some(h.caller())).await;
-    let n = h.native_http.post("/rpc", req, Some(h.caller())).await;
+    let (w, n) = tokio::join!(
+        h.wasm_http.post("/rpc", req.clone(), Some(h.caller())),
+        h.native_http.post("/rpc", req, Some(h.caller())),
+    );
     (serde_json::from_slice(&w.body).unwrap(), serde_json::from_slice(&n.body).unwrap())
 }
 
@@ -663,4 +669,124 @@ pub(crate) async fn fan_out(h: &Harness, sources: &[&str]) -> (String, String, V
     let (rw, mw) = fan_out_one(h, true, sources).await;
     let (rn, mn) = fan_out_one(h, false, sources).await;
     (rw, rn, mw, mn)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn peer_signed_payment_ack(
+    conv: &str,
+    agreement: &str,
+    consumer_did: &str,
+    provider_did: &str,
+    role: &str,
+    currency: &str,
+    amount_minor: i64,
+    observed_at_secs: u64,
+    method: Option<&str>,
+    reference: Option<&str>,
+    supersedes: Option<String>,
+    issued_at: u64,
+) -> (String, String) {
+    let payload = json!({
+        "agreement": agreement, "conversation": conv, "consumer_did": consumer_did,
+        "provider_did": provider_did, "role": role, "currency": currency,
+        "amount_minor": amount_minor, "observed_at_secs": observed_at_secs,
+        "method": method, "reference": reference,
+    });
+    let draft = RecordDraft {
+        version: syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
+        record_type: syneroym_roym_core::record::RECORD_PAYMENT_ACKNOWLEDGEMENT.to_string(),
+        subject: agreement.to_string(),
+        payload,
+        expires_at_secs: None,
+        supersedes,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, peer_did(), None, issued_at).unwrap();
+    env.attach_signature(z32::encode(&peer_identity().sign(&bytes).to_bytes())).unwrap();
+    (env.record_id().unwrap(), env.to_json().unwrap())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn peer_signed_fulfilment(
+    conv: &str,
+    agreement: &str,
+    consumer_did: &str,
+    provider_did: &str,
+    role: &str,
+    terms: Value,
+    issued_at: u64,
+) -> (String, String) {
+    let payload = json!({
+        "agreement": agreement, "conversation": conv, "consumer_did": consumer_did,
+        "provider_did": provider_did, "role": role, "terms": terms,
+    });
+    let draft = RecordDraft {
+        version: syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
+        record_type: syneroym_roym_core::record::RECORD_FULFILMENT_RECEIPT.to_string(),
+        subject: agreement.to_string(),
+        payload,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, peer_did(), None, issued_at).unwrap();
+    env.attach_signature(z32::encode(&peer_identity().sign(&bytes).to_bytes())).unwrap();
+    (env.record_id().unwrap(), env.to_json().unwrap())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn peer_signed_progress(
+    conv: &str,
+    agreement: &str,
+    consumer_did: &str,
+    provider_did: &str,
+    seq: u32,
+    state: &str,
+    conflict: Option<&str>,
+    payment: &str,
+    fulfilment: &str,
+    window_ends: u64,
+    signer_identity: &Identity,
+    issued_at: u64,
+) -> (String, String) {
+    let mut payload = json!({
+        "agreement": agreement, "conversation": conv, "consumer_did": consumer_did,
+        "provider_did": provider_did, "seq": seq, "state": state,
+        "payment": payment, "fulfilment": fulfilment, "track_window_ends_at_secs": window_ends,
+    });
+    if let Some(c) = conflict {
+        payload["conflict"] = json!(c);
+    }
+    let draft = RecordDraft {
+        version: syneroym_roym_core::booking::BOOKING_PROGRESS_VERSION,
+        record_type: syneroym_roym_core::record::RECORD_BOOKING_PROGRESS.to_string(),
+        subject: agreement.to_string(),
+        payload,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let issuer = derive_did_key(&signer_identity.public_key());
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, issued_at).unwrap();
+    env.attach_signature(z32::encode(&signer_identity.sign(&bytes).to_bytes())).unwrap();
+    (env.record_id().unwrap(), env.to_json().unwrap())
+}
+
+pub(crate) fn valid_quote_params(conv: &str, req_rec_id: &str) -> Value {
+    let _ = conv;
+    json!({ "request_record_id": req_rec_id, "expires_in_secs": 3600, "terms": sample_quote_terms() })
+}
+
+pub(crate) async fn deliver_peer_card(
+    h: &Harness,
+    msg_id: &str,
+    conv: &str,
+    sender_did: &str,
+    record_type: &str,
+    version: u32,
+    env_json: &str,
+) {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static TS: AtomicI64 = AtomicI64::new(1_000);
+    let ts = TS.fetch_add(10, Ordering::Relaxed);
+    let card_msg = inbound_card(msg_id, conv, sender_did, ts, record_type, version, env_json);
+    h.deliver(true, card_msg.clone()).await;
+    h.deliver(false, card_msg).await;
 }

@@ -136,6 +136,24 @@ pub(super) async fn dispatch<H: AppHost>(
                 AppDataLayer::get(host, SCRATCH.into(), id_b).await.map_err(fmt_err)?.is_some();
             Ok(json!({ "a_found": a_found, "b_found": b_found }))
         }
+        Request::CreateFence { id } => {
+            ensure_collection(host, SCRATCH).await?;
+            let r1 = host
+                .create(
+                    SCRATCH.into(),
+                    vec![RecordWriteValue { id: id.clone(), payload: b"{\"v\":1}".to_vec() }],
+                )
+                .await
+                .map_err(fmt_err)?;
+            let r2 = host
+                .create(
+                    SCRATCH.into(),
+                    vec![RecordWriteValue { id: id.clone(), payload: b"{\"v\":2}".to_vec() }],
+                )
+                .await
+                .map_err(fmt_err)?;
+            Ok(json!([r1, r2]))
+        }
         Request::DeleteMany { id } => {
             ensure_collection(host, SCRATCH).await?;
             host.put(SCRATCH.into(), RecordWriteValue { id: id.clone(), payload: b"{}".to_vec() })

@@ -13,14 +13,16 @@ use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
         data_layer::{CollectionSchema, RecordWriteValue},
-        signing::Principal,
+        signing::{Principal, RecordDraft},
     },
 };
 use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
 
 use crate::{
+    backup::{BUNDLE_MANIFEST_VERSION, Bundle},
     clock,
     envelope::{Request, Response},
+    record,
 };
 
 pub const CERTIFICATES: &str = "signing_certificates";
@@ -206,6 +208,32 @@ pub async fn person_principal<H: AppHost>(
     Ok((Principal::Delegated(stored.certificate), stored.master_did))
 }
 
+/// Signs `bundle.manifest` as the person and stores the envelope in
+/// `bundle.manifest_signature`. Refuses with the same `CertificateError`
+/// words every signing verb uses when this service is not enrolled.
+pub async fn sign_bundle<H: AppHost>(
+    host: &H,
+    bundle: &mut Bundle,
+    now_secs: u64,
+) -> Result<(), CertificateError> {
+    let (principal, _owner) = person_principal(host, now_secs).await?;
+    let payload =
+        bundle.manifest_payload().map_err(|e| CertificateError::Storage(e.to_string()))?;
+    let draft = RecordDraft {
+        version: BUNDLE_MANIFEST_VERSION,
+        record_type: record::RECORD_BUNDLE_MANIFEST.to_string(),
+        subject: bundle.manifest.subject_did.clone(),
+        payload,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let signed = AppSigning::sign_record(host, draft, principal)
+        .await
+        .map_err(|e| CertificateError::Storage(e.to_string()))?;
+    bundle.manifest_signature = Some(signed);
+    Ok(())
+}
+
 pub async fn owner_did<H: AppHost>(host: &H) -> Result<String, CertificateError> {
     let id = AppSigning::signing_identity(host)
         .await
@@ -389,6 +417,13 @@ pub(crate) mod tests {
             _col: String,
             _muts: Vec<Mutation>,
         ) -> Result<(), DataLayerError> {
+            unimplemented!()
+        }
+        async fn create(
+            &self,
+            _col: String,
+            _values: Vec<RecordWriteValue>,
+        ) -> Result<Option<String>, DataLayerError> {
             unimplemented!()
         }
         async fn execute_ddl(&self, _sql: String) -> Result<(), DataLayerError> {

@@ -160,6 +160,20 @@ interface store {
     /// back every mutation in the batch, not just the offending one.
     batch-mutate: func(collection: string, mutations: list<mutation>) -> result<_, data-layer-error>;
 
+    /// Creates every row in `values` in one transaction, but only if none
+    /// of their ids exists yet. Returns `none` when every row was created.
+    /// When any id already exists -- including an id that appears twice in
+    /// `values` -- creates nothing and returns that id.
+    ///
+    /// This is the one write in this interface that is not
+    /// last-write-wins, so it is the fence a component uses when two
+    /// concurrent calls must not both succeed. Same `MAX_BATCH_SIZE` limit
+    /// as `batch-mutate`. Under a deployed FDAE policy (ADR-0017 §4) each
+    /// row is authorized as a `put` that creates, inside the same
+    /// transaction; the first denial rolls back every row.
+    create: func(collection: string, values: list<record-write-value>)
+        -> result<option<string>, data-layer-error>;
+
     /// Executes arbitrary DDL statements.
     ///
     /// SECURITY: The host must strictly validate that the caller holds the

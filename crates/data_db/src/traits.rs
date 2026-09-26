@@ -267,6 +267,16 @@ pub trait ServiceStore: Send + Sync {
         auth: Option<&QueryAuth<'_>>,
     ) -> Result<(), host_store::DataLayerError>;
 
+    /// See the WIT doc on `create`. Returns the first id that already
+    /// existed, having written nothing, or `None` when every row was created.
+    async fn create(
+        &self,
+        collection: &str,
+        values: &[host_store::RecordWriteValue],
+        creator_id: &str,
+        auth: Option<&QueryAuth<'_>>,
+    ) -> Result<Option<String>, host_store::DataLayerError>;
+
     /// Executes a privileged read-only raw-SQL query (ADR-0011). Callers must
     /// have already verified the `data-layer/admin` capability -- this method
     /// trusts its caller for authorization but enforces two invariants

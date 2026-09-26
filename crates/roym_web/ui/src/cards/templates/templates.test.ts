@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { formatMinor } from "../../money.js";
 import { renderRefusedCard } from "../refused.js";
 import { renderAgreementReceipt } from "./agreement_receipt.js";
+import { renderBookingProgress } from "./booking_progress.js";
+import { renderFulfilmentReceipt } from "./fulfilment_receipt.js";
+import { renderPaymentAcknowledgement } from "./payment_acknowledgement.js";
+import { renderPaymentRequest } from "./payment_request.js";
 import { renderQuote } from "./quote.js";
 import { renderRequest } from "./request.js";
 
@@ -181,6 +185,174 @@ describe("Card templates", () => {
       const anchors = el.querySelectorAll(".receipt-payee a");
       expect(anchors.length).toBe(0);
       expect(el.querySelector(".receipt-payee")?.textContent).toContain("javascript:alert(1)");
+    });
+  });
+
+  describe("renderPaymentRequest", () => {
+    it("renders fields and never says verified", () => {
+      const data = {
+        currency: "USD",
+        amount_minor: 5000,
+        agreement_payee: "did:key:zProvider123",
+        note: "Initial deposit",
+      };
+      const el = renderPaymentRequest(data);
+
+      expect(el.classList.contains("card-payment-request")).toBe(true);
+      expect(el.textContent).toContain("50.00 USD");
+      expect(el.textContent).toContain("did:key:zProvider123");
+      expect(el.textContent).toContain("Initial deposit");
+      expect(el.textContent?.toLowerCase()).not.toContain("verif");
+    });
+
+    it("renders malicious payload as plain text with no img elements", () => {
+      const xss = "<img src=x onerror=alert(1)>";
+      const data = {
+        currency: "USD",
+        amount_minor: 1000,
+        agreement_payee: xss,
+        note: xss,
+      };
+      const el = renderPaymentRequest(data);
+
+      expect(el.querySelectorAll("img").length).toBe(0);
+      expect(el.textContent).toContain(xss);
+    });
+
+    it("renders javascript: payee as a text node, not an anchor", () => {
+      const el = renderPaymentRequest({
+        currency: "USD",
+        amount_minor: 1000,
+        agreement_payee: "javascript:alert(1)",
+      });
+
+      const anchors = el.querySelectorAll(".payment-request-payee a");
+      expect(anchors.length).toBe(0);
+      expect(el.querySelector(".payment-request-payee")?.textContent).toContain("javascript:alert(1)");
+    });
+  });
+
+  describe("renderPaymentAcknowledgement", () => {
+    it("renders fields and never says verified", () => {
+      const data = {
+        role: "provider" as const,
+        currency: "EUR",
+        amount_minor: 12500,
+        observed_at_secs: 1700000000,
+        method: "bank-transfer",
+        reference: "TX-9988",
+      };
+      const el = renderPaymentAcknowledgement(data);
+
+      expect(el.classList.contains("card-payment-acknowledgement")).toBe(true);
+      expect(el.textContent).toContain("125.00 EUR");
+      expect(el.textContent).toContain("bank-transfer");
+      expect(el.textContent).toContain("TX-9988");
+      expect(el.textContent).toContain(new Date(1700000000 * 1000).toISOString());
+      expect(el.textContent?.toLowerCase()).not.toContain("verif");
+    });
+
+    it("renders malicious payload as plain text with no img elements", () => {
+      const xss = "<img src=x onerror=alert(1)>";
+      const data = {
+        role: "consumer" as const,
+        currency: "USD",
+        amount_minor: 1000,
+        method: xss,
+        reference: xss,
+      };
+      const el = renderPaymentAcknowledgement(data);
+
+      expect(el.querySelectorAll("img").length).toBe(0);
+      expect(el.textContent).toContain(xss);
+    });
+
+    it("renders javascript: reference without anchor", () => {
+      const el = renderPaymentAcknowledgement({
+        reference: "javascript:alert(1)",
+      });
+
+      expect(el.querySelectorAll("a").length).toBe(0);
+      expect(el.textContent).toContain("javascript:alert(1)");
+    });
+  });
+
+  describe("renderFulfilmentReceipt", () => {
+    it("renders fields and never says verified", () => {
+      const data = {
+        role: "provider" as const,
+        terms: {
+          scope: "Replaced faulty electrical panel",
+        },
+      };
+      const el = renderFulfilmentReceipt(data);
+
+      expect(el.classList.contains("card-fulfilment-receipt")).toBe(true);
+      expect(el.textContent).toContain("Replaced faulty electrical panel");
+      expect(el.textContent?.toLowerCase()).not.toContain("verif");
+    });
+
+    it("renders malicious payload as plain text with no img elements", () => {
+      const xss = "<img src=x onerror=alert(1)>";
+      const data = {
+        role: "consumer" as const,
+        terms: {
+          scope: xss,
+        },
+      };
+      const el = renderFulfilmentReceipt(data);
+
+      expect(el.querySelectorAll("img").length).toBe(0);
+      expect(el.textContent).toContain(xss);
+    });
+
+    it("renders javascript: scope without anchor", () => {
+      const el = renderFulfilmentReceipt({
+        terms: {
+          scope: "javascript:alert(1)",
+        },
+      });
+
+      expect(el.querySelectorAll("a").length).toBe(0);
+      expect(el.textContent).toContain("javascript:alert(1)");
+    });
+  });
+
+  describe("renderBookingProgress", () => {
+    it("renders fields and never says verified", () => {
+      const data = {
+        state: "in-progress" as const,
+        payment: "acknowledged" as const,
+        fulfilment: "claimed" as const,
+        cancel_reason: "Rescheduled by mutual agreement",
+      };
+      const el = renderBookingProgress(data);
+
+      expect(el.classList.contains("card-booking-progress")).toBe(true);
+      expect(el.textContent).toContain("In progress");
+      expect(el.textContent).toContain("Rescheduled by mutual agreement");
+      expect(el.textContent?.toLowerCase()).not.toContain("verif");
+    });
+
+    it("renders malicious payload as plain text with no img elements", () => {
+      const xss = "<img src=x onerror=alert(1)>";
+      const data = {
+        state: "cancelled" as const,
+        cancel_reason: xss,
+      };
+      const el = renderBookingProgress(data);
+
+      expect(el.querySelectorAll("img").length).toBe(0);
+      expect(el.textContent).toContain(xss);
+    });
+
+    it("renders javascript: cancel reason without anchor", () => {
+      const el = renderBookingProgress({
+        cancel_reason: "javascript:alert(1)",
+      });
+
+      expect(el.querySelectorAll("a").length).toBe(0);
+      expect(el.textContent).toContain("javascript:alert(1)");
     });
   });
 

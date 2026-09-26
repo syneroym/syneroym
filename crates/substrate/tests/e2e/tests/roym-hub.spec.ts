@@ -214,7 +214,9 @@ test.describe('Roym Hub', () => {
 
     await page.getByRole('button', { name: 'Backup' }).click();
     await expect(page.locator('.backup-screen .bundle-row')).toHaveCount(5);
-    await expect(page.locator('.backup-separate-note')).toContainText('five bundles below are exported separately today');
+    await expect(page.locator('.backup-separate-note')).toContainText(
+      'Each bundle below is signed by you when it is exported',
+    );
 
     // Each bundle exports on its own.
     const downloadPromise = page.waitForEvent('download');

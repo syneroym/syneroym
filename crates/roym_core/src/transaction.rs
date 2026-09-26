@@ -180,6 +180,12 @@ pub struct QuotePayload {
     pub request_record_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listing_id: Option<String>,
+    /// The provider's availability slot this quote offers, when it offers one.
+    /// Re-derivable: `listing::derive_slot_id(listing_id,
+    /// schedule.earliest_secs, schedule.latest_secs)`. Accepting a quote
+    /// that names one books it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_id: Option<String>,
     /// The request's own issuer. This is what names the second party, and
     /// it is what makes the agreement pair checkable.
     pub consumer_did: String,
@@ -342,6 +348,12 @@ pub enum TransactionError {
 
     #[error("data_use_notice is over {MAX_NOTICE_LEN} characters")]
     DataUseNoticeTooLong,
+
+    #[error("slot_id requires both listing_id and terms.schedule")]
+    SlotNeedsListingAndSchedule,
+
+    #[error("slot_id does not match the id derived from listing_id and terms.schedule")]
+    SlotIdMismatch,
 }
 
 impl TimeWindow {
@@ -504,6 +516,24 @@ impl QuotePayload {
             return Err(TransactionError::InvalidDid(self.consumer_did.clone()));
         }
         self.terms.validate()?;
+        if let Some(ref slot_id) = self.slot_id {
+            let listing_id =
+                self.listing_id.as_deref().ok_or(TransactionError::SlotNeedsListingAndSchedule)?;
+            let schedule = self
+                .terms
+                .schedule
+                .as_ref()
+                .ok_or(TransactionError::SlotNeedsListingAndSchedule)?;
+            if schedule.latest_secs <= schedule.earliest_secs {
+                return Err(TransactionError::SlotNeedsListingAndSchedule);
+            }
+            let expected_slot =
+                listing::derive_slot_id(listing_id, schedule.earliest_secs, schedule.latest_secs)
+                    .map_err(|_| TransactionError::SlotIdMismatch)?;
+            if slot_id != &expected_slot {
+                return Err(TransactionError::SlotIdMismatch);
+            }
+        }
         Ok(())
     }
 }
@@ -568,51 +598,7 @@ pub fn halves_agree(a: &AgreementReceiptPayload, b: &AgreementReceiptPayload) ->
         && a.role != b.role
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecordVerdict<P> {
-    pub verified: bool,
-    /// **Expiry is not a refusal here.** A record past its own
-    /// `expires_at_secs` still verifies -- the signature, the issuer and
-    /// the delegation window are all still good -- and this says the
-    /// window has passed. A caller that must decide whether to *act*
-    /// (`agreement.accept`) refuses on this; a caller that must *show
-    /// what was offered* (the card filer, the Hub) does not. Always
-    /// false for a record type that carries no expiry.
-    pub expired: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub revocation_status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issued_at_secs: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at_secs: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub supersedes: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub payload: Option<P>,
-}
-
-impl<P> RecordVerdict<P> {
-    fn refused(reason: impl Into<String>) -> Self {
-        Self {
-            verified: false,
-            expired: false,
-            reason: Some(reason.into()),
-            revocation_status: None,
-            record_id: None,
-            issuer: None,
-            issued_at_secs: None,
-            expires_at_secs: None,
-            supersedes: None,
-            payload: None,
-        }
-    }
-}
+pub use crate::verdict::RecordVerdict;
 
 pub fn verify_request(envelope: &str, now_secs: u64) -> RecordVerdict<RequestPayload> {
     let opts = VerifyOptions::new(now_secs).allowing_expired();
@@ -650,6 +636,7 @@ pub fn verify_request(envelope: &str, now_secs: u64) -> RecordVerdict<RequestPay
         revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
         record_id: Some(verified.record_id),
         issuer: Some(verified.issuer),
+        signer_did: Some(verified.signer_did),
         issued_at_secs: Some(verified.issued_at_secs),
         expires_at_secs: None,
         supersedes: verified.supersedes,
@@ -701,6 +688,7 @@ pub fn verify_quote(envelope: &str, now_secs: u64) -> RecordVerdict<QuotePayload
         revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
         record_id: Some(verified.record_id),
         issuer: Some(verified.issuer),
+        signer_did: Some(verified.signer_did),
         issued_at_secs: Some(verified.issued_at_secs),
         expires_at_secs: verified.expires_at_secs,
         supersedes: verified.supersedes,
@@ -758,6 +746,7 @@ pub fn verify_agreement_receipt(
         revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
         record_id: Some(verified.record_id),
         issuer: Some(verified.issuer),
+        signer_did: Some(verified.signer_did),
         issued_at_secs: Some(verified.issued_at_secs),
         expires_at_secs: verified.expires_at_secs,
         supersedes: verified.supersedes,

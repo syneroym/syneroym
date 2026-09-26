@@ -29,7 +29,7 @@ const GATES: &[Gate] = &[
     Gate {
         name: "fmt",
         skip_on_docs_only: false,
-        commands: &[&["cargo", "+nightly", "fmt", "--all", "--", "--check"]],
+        commands: &[&["cargo", "+nightly-2026-04-06", "fmt", "--all", "--", "--check"]],
     },
     Gate {
         name: "clippy",

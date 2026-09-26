@@ -1,20 +1,10 @@
 use super::*;
 
-const SLOT_ID_PREFIX: &str = "slot_";
-
 #[derive(Debug, Deserialize)]
 struct SlotInput {
     start_secs: u64,
     end_secs: u64,
     capacity: u32,
-}
-
-fn slot_id(listing_id: &str, start_secs: u64, end_secs: u64) -> Result<String, String> {
-    content_digest(
-        SLOT_ID_PREFIX,
-        &json!({ "listing_id": listing_id, "start_secs": start_secs, "end_secs": end_secs }),
-    )
-    .map_err(|e| e.to_string())
 }
 
 pub(crate) async fn availability_set<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -37,9 +27,9 @@ pub(crate) async fn availability_set<H: AppHost>(host: &H, req: &Request) -> Res
         if s.end_secs <= s.start_secs {
             return Response::invalid_params("slot end_secs must be after start_secs");
         }
-        let id = match slot_id(&listing_id, s.start_secs, s.end_secs) {
+        let id = match listing::derive_slot_id(&listing_id, s.start_secs, s.end_secs) {
             Ok(id) => id,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Response::internal_error(e.to_string()),
         };
         let row = json!({
             "slot_id": id,
@@ -108,4 +98,25 @@ pub(crate) async fn availability_remove<H: AppHost>(host: &H, req: &Request) -> 
         return Response::internal_error(e.to_string());
     }
     Response::ok(json!({ "removed": existed }))
+}
+
+pub(crate) async fn availability_get<H: AppHost>(host: &H, req: &Request) -> Response {
+    let slot_id = match req.params.get("slot_id").and_then(Value::as_str) {
+        Some(id) => id.to_string(),
+        None => return Response::invalid_params("slot_id is required"),
+    };
+    if let Err(e) = ensure_availability(host).await {
+        return Response::internal_error(e);
+    }
+    match AppDataLayer::get(host, AVAILABILITY.to_string(), slot_id).await {
+        Ok(Some(row)) => {
+            let val: Value = match serde_json::from_slice(&row.payload) {
+                Ok(v) => v,
+                Err(e) => return Response::internal_error(e.to_string()),
+            };
+            Response::ok(val)
+        }
+        Ok(None) => Response::ok(Value::Null),
+        Err(e) => Response::internal_error(e.to_string()),
+    }
 }

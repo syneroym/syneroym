@@ -38,6 +38,7 @@ pub const MAX_SERVICE_LIST_ITEM_LEN: usize = 128;
 /// The id prefix, so a listing id can never be mistaken for a record id or
 /// a report id.
 const LISTING_ID_PREFIX: &str = "lst_";
+pub const SLOT_ID_PREFIX: &str = "slot_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -382,6 +383,20 @@ impl ListingPayload {
 /// edit path, not a duplicate.
 pub fn derive_listing_id(issuer: &str, slug: &str) -> Result<String, EnvelopeError> {
     content_digest(LISTING_ID_PREFIX, &json!({ "issuer": issuer, "slug": slug }))
+}
+
+/// One definition for the slot id, shared by the catalog that stores the
+/// slot and the quote that names it, so a consumer can re-derive it from
+/// signed fields.
+pub fn derive_slot_id(
+    listing_id: &str,
+    start_secs: u64,
+    end_secs: u64,
+) -> Result<String, EnvelopeError> {
+    content_digest(
+        SLOT_ID_PREFIX,
+        &json!({ "listing_id": listing_id, "start_secs": start_secs, "end_secs": end_secs }),
+    )
 }
 
 /// Lowercases, keeps `[a-z0-9]`, collapses runs of anything else to `-`,

@@ -247,6 +247,35 @@ pub(super) fn do_batch_mutate(
     Ok(())
 }
 
+pub(super) fn do_create(
+    conn: &mut Connection,
+    collection: &str,
+    values: &[host_store::RecordWriteValue],
+    creator_id: &str,
+    sieve: Option<&CompiledSieve>,
+) -> Result<Option<String>, host_store::DataLayerError> {
+    validate_identifier(collection)?;
+    if values.len() > MAX_BATCH_SIZE {
+        return Err(host_store::DataLayerError::SchemaViolation(format!(
+            "batch exceeds MAX_BATCH_SIZE ({MAX_BATCH_SIZE})"
+        )));
+    }
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    for value in values {
+        if row_exists(&tx, collection, &value.id)? {
+            // Dropping `tx` rolls back every row created above.
+            return Ok(Some(value.id.clone()));
+        }
+        // The same arguments `do_batch_mutate` passes for a `Put` whose
+        // row did not exist.
+        authorize_and_mutate(&tx, collection, &value.id, sieve, false, true, false, |c| {
+            do_put(c, collection, value, creator_id)
+        })?;
+    }
+    tx.commit().map_err(map_rusqlite_error)?;
+    Ok(None)
+}
+
 /// The unsieved create-vs-update probe: decides *which* rule applies
 /// (pre-image required, or not), not whether the write is allowed --
 /// both branches still end in `PermissionDenied` on failure, so this leaks

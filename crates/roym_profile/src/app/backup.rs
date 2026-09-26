@@ -10,12 +10,12 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     backup::{
         BUNDLE_VERSION, Bundle, BundleManifest, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE,
-        SECTION_REPORTS,
+        SECTION_REPORTS, check_signed_bundle,
     },
     clock,
     envelope::{Request, Response},
     record::{RECORD_PROFILE, VerifyOptions, verify_json},
-    signing,
+    signing::{self, CertificateError},
 };
 
 use super::{BLOCKS, CONTACTS, PROFILES, REPORTS, SCHEMA_VERSION, ensure_coll};
@@ -107,12 +107,17 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
 
     let manifest = BundleManifest {
         bundle_version: BUNDLE_VERSION,
-        produced_at_secs: now,
         subject_did: owner,
         sections: manifest_sections,
     };
 
-    let bundle = Bundle { manifest, sections };
+    let mut bundle = Bundle { manifest, sections, manifest_signature: None };
+    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
+        if matches!(e, CertificateError::NotEnrolled) {
+            return Response::invalid_params("signing-not-enrolled");
+        }
+        return Response::internal_error(e.to_string());
+    }
     match serde_json::to_value(&bundle) {
         Ok(v) => Response::ok(v),
         Err(e) => Response::internal_error(e.to_string()),
@@ -215,14 +220,15 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
     };
 
-    if let Err(e) = bundle.check_integrity() {
-        return Response::invalid_params(e.to_string());
-    }
-
+    let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
     };
+
+    if let Err(e) = check_signed_bundle(&bundle, &owner, now) {
+        return Response::invalid_params(e.to_string());
+    }
 
     if let Err(resp) = validate_bundle_manifest(&bundle, &owner) {
         return resp;

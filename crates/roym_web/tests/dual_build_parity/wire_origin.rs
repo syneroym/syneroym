@@ -98,6 +98,7 @@ async fn scenario_73_guard_no_c5_verb_answers_method_not_found_or_wire_refused()
         ] }),
         ),
         ("availability.list", json!({ "listing_id": listing_id })),
+        ("availability.get", json!({ "slot_id": "slot_missing" })),
         ("availability.remove", json!({ "slot_id": "slot_missing" })),
         ("catalog.export", json!({})),
         ("catalog.signing-status", json!({})),

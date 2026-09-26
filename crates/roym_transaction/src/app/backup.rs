@@ -1,31 +1,32 @@
 //! Transaction data backup: export and import.
 
+pub(crate) mod sections;
+
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Value, json};
-use syneroym_app_host::AppHost;
+use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::QueryOptions};
 use syneroym_roym_core::{
     backup::{
-        BUNDLE_VERSION, Bundle, BundleManifest, SECTION_AGREEMENTS, SECTION_CARDS, SECTION_QUOTES,
-        SECTION_REQUESTS,
+        BUNDLE_VERSION, Bundle, BundleManifest, SECTION_AGREEMENTS, SECTION_BOOKINGS,
+        SECTION_CARDS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS, SECTION_PROGRESS,
+        SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_REQUEST_HISTORY, SECTION_REQUESTS,
+        check_signed_bundle,
     },
-    clock,
+    booking, clock,
     envelope::{Request, Response},
-    signing,
+    fulfilment, payment,
+    signing::{self, CertificateError},
     transaction::{self, QuotePayload, ReceiptHalf, Role},
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, REQUESTS,
-    RecordPointerRow, SCHEMA_VERSION, collect, ensure_collections, get_bytes, put_bytes, put_row,
+    AGREEMENTS, AgreementRow, BOOKINGS, CARDS, CardRow, FULFILMENTS, LEDGER, PAYMENTS, PROGRESS,
+    QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, REQUESTS, RecordPointerRow, SCHEMA_VERSION, collect,
+    ensure_collections, get_bytes, put_bytes, put_row,
 };
 
-/// Exports transaction data: requests, quotes, agreements, and cards.
-///
-/// Note: `request_history` and `quote_history` are not exported as their
-/// own sections because every envelope in them is reachable from a
-/// `requests`/`quotes` pointer row or an `agreements` half. On import,
-/// they are re-populated from the imported rows.
+/// Exports transaction data: requests, quotes, agreements, cards, and history.
 pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
@@ -39,7 +40,15 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
+    let request_history = match collect_history(host, REQUEST_HISTORY).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
     let quotes = match collect(host, QUOTES).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    let quote_history = match collect_history(host, QUOTE_HISTORY).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
@@ -51,11 +60,38 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
+    let ledger = match collect(host, LEDGER).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    let bookings = match collect(host, BOOKINGS).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    let progress = match collect(host, PROGRESS).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    let payments = match collect(host, PAYMENTS).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    let fulfilments = match collect(host, FULFILMENTS).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
     let sections = BTreeMap::from([
         (SECTION_REQUESTS.to_string(), requests),
+        (SECTION_REQUEST_HISTORY.to_string(), request_history),
         (SECTION_QUOTES.to_string(), quotes),
+        (SECTION_QUOTE_HISTORY.to_string(), quote_history),
         (SECTION_AGREEMENTS.to_string(), agreements),
         (SECTION_CARDS.to_string(), cards),
+        (SECTION_LEDGER.to_string(), ledger),
+        (SECTION_BOOKINGS.to_string(), bookings),
+        (SECTION_PROGRESS.to_string(), progress),
+        (SECTION_PAYMENTS.to_string(), payments),
+        (SECTION_FULFILMENTS.to_string(), fulfilments),
     ]);
     let mut manifest_sections = BTreeMap::new();
     for (k, v) in &sections {
@@ -66,15 +102,21 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
             Err(e) => return Response::internal_error(e.to_string()),
         }
     }
-    let bundle = Bundle {
+    let mut bundle = Bundle {
         manifest: BundleManifest {
             bundle_version: BUNDLE_VERSION,
-            produced_at_secs: now,
             subject_did: owner,
             sections: manifest_sections,
         },
         sections,
+        manifest_signature: None,
     };
+    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
+        if matches!(e, CertificateError::NotEnrolled) {
+            return Response::invalid_params("signing-not-enrolled");
+        }
+        return Response::internal_error(e.to_string());
+    }
     match serde_json::to_value(&bundle) {
         Ok(v) => Response::ok(v),
         Err(e) => Response::internal_error(e.to_string()),
@@ -90,29 +132,15 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(b) => b,
         Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
     };
-    if let Err(e) = bundle.check_integrity() {
-        return Response::invalid_params(e.to_string());
-    }
+    let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
     };
-    if bundle.manifest.subject_did != owner {
-        return Response::invalid_params(format!(
-            "bundle belongs to '{}', this node holds '{}'",
-            bundle.manifest.subject_did, owner
-        ));
-    }
-    for (name, declared) in &bundle.manifest.sections {
-        if declared.schema_version != SCHEMA_VERSION {
-            return Response::invalid_params(format!(
-                "section '{name}' has schema version {}, this node requires {SCHEMA_VERSION}",
-                declared.schema_version
-            ));
-        }
+    if let Err(resp) = validate_bundle_header(&bundle, &owner, now) {
+        return resp;
     }
 
-    let now = clock::now_secs();
     if let Err(e) = ensure_collections(host).await {
         return Response::internal_error(e);
     }
@@ -137,41 +165,174 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
             Err(e) => return e,
         };
 
+    let agreements_map: HashMap<String, AgreementRow> =
+        verified_agreements.iter().cloned().collect();
+    let validated_vertical = match sections::validate_vertical_sections(
+        &bundle.sections,
+        &agreements_map,
+        &quotes_by_record_id,
+        &owner,
+        now,
+    ) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+
     let mut imported_history: HashMap<String, (String, String)> = HashMap::new();
-    if let Err(e) = write_imported_pointers(
+    if let Err(resp) = import_negotiation_sections(
         host,
-        REQUESTS,
-        REQUEST_HISTORY,
-        "request",
+        &bundle.sections,
         verified_requests,
-        &mut imported_history,
-    )
-    .await
-    {
-        return e;
-    }
-    if let Err(e) = write_imported_pointers(
-        host,
-        QUOTES,
-        QUOTE_HISTORY,
-        "quote",
         verified_quotes,
+        &verified_agreements,
         &mut imported_history,
+        now,
     )
     .await
     {
-        return e;
+        return resp;
     }
-    if let Err(e) =
-        write_imported_agreements(host, verified_agreements, &mut imported_history).await
+
+    if let Err(resp) =
+        sections::write_vertical_sections(host, validated_vertical, &mut imported_history).await
     {
-        return e;
+        return resp;
     }
+
     if let Err(e) = write_imported_cards(host, card_rows, &imported_history, now).await {
         return e;
     }
 
     Response::ok(json!({ "imported": true }))
+}
+
+fn validate_bundle_header(bundle: &Bundle, owner: &str, now: u64) -> Result<(), Response> {
+    if let Err(e) = check_signed_bundle(bundle, owner, now) {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    for (name, declared) in &bundle.manifest.sections {
+        if declared.schema_version != SCHEMA_VERSION {
+            return Err(Response::invalid_params(format!(
+                "section '{name}' has schema version {}, this node requires {SCHEMA_VERSION}",
+                declared.schema_version
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn import_negotiation_sections<H: AppHost>(
+    host: &H,
+    sections: &BTreeMap<String, Vec<Value>>,
+    verified_requests: Vec<(String, RecordPointerRow)>,
+    verified_quotes: Vec<(String, RecordPointerRow)>,
+    verified_agreements: &[(String, AgreementRow)],
+    imported_history: &mut HashMap<String, (String, String)>,
+    now: u64,
+) -> Result<(), Response> {
+    let req_hist_rows = sections.get(SECTION_REQUEST_HISTORY).cloned().unwrap_or_default();
+    let quote_hist_rows = sections.get(SECTION_QUOTE_HISTORY).cloned().unwrap_or_default();
+
+    import_history_section(host, REQUEST_HISTORY, "request", req_hist_rows, imported_history, now)
+        .await?;
+    import_history_section(host, QUOTE_HISTORY, "quote", quote_hist_rows, imported_history, now)
+        .await?;
+    write_imported_pointers(
+        host,
+        REQUESTS,
+        REQUEST_HISTORY,
+        "request",
+        verified_requests,
+        imported_history,
+    )
+    .await?;
+    write_imported_pointers(
+        host,
+        QUOTES,
+        QUOTE_HISTORY,
+        "quote",
+        verified_quotes,
+        imported_history,
+    )
+    .await?;
+    write_imported_agreements(host, verified_agreements.to_vec(), imported_history).await?;
+    Ok(())
+}
+
+async fn collect_history<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
+    let mut out = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = AppDataLayer::query(
+            host,
+            collection.to_string(),
+            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        for r in page.records {
+            let env_str = String::from_utf8_lossy(&r.payload).into_owned();
+            out.push(json!({ "id": r.id, "payload": { "envelope": env_str } }));
+        }
+        if page.next_cursor.is_none() || page.next_cursor == cursor {
+            break;
+        }
+        cursor = page.next_cursor;
+    }
+    Ok(out)
+}
+
+async fn import_history_section<H: AppHost>(
+    host: &H,
+    collection: &str,
+    kind: &str,
+    rows: Vec<Value>,
+    imported_history: &mut HashMap<String, (String, String)>,
+    now: u64,
+) -> Result<(), Response> {
+    for r in rows {
+        let row_id = r.get("id").and_then(Value::as_str).unwrap_or("");
+        let payload = r.get("payload").cloned().unwrap_or(Value::Null);
+        let env_str = match payload.get("envelope").and_then(Value::as_str) {
+            Some(s) => s,
+            None => {
+                return Err(Response::invalid_params(format!(
+                    "{kind}_history '{row_id}': missing envelope"
+                )));
+            }
+        };
+
+        let (verified, reason, rec_id) = match kind {
+            "request" => {
+                let v = transaction::verify_request(env_str, now);
+                (v.verified, v.reason, v.record_id)
+            }
+            "quote" => {
+                let v = transaction::verify_quote(env_str, now);
+                (v.verified, v.reason, v.record_id)
+            }
+            _ => (false, Some("unknown kind".to_string()), None),
+        };
+
+        if !verified {
+            return Err(Response::invalid_params(format!(
+                "{kind}_history '{row_id}' does not verify: {}",
+                reason.as_deref().unwrap_or("unknown")
+            )));
+        }
+        if rec_id.as_deref() != Some(row_id) {
+            return Err(Response::invalid_params(format!(
+                "{kind}_history id '{row_id}' does not match envelope record_id '{:?}'",
+                rec_id
+            )));
+        }
+
+        if let Err(e) = put_bytes(host, collection, row_id, env_str.as_bytes()).await {
+            return Err(Response::internal_error(e));
+        }
+        imported_history.insert(row_id.to_string(), (kind.to_string(), env_str.to_string()));
+    }
+    Ok(())
 }
 
 /// Verifies each bundled request row's signed envelope and refreshes its
@@ -230,8 +391,15 @@ fn verify_imported_requests(
     Ok(verified_requests)
 }
 
-/// A verified quote's issuer DID and payload, indexed by its record id.
-type QuotesByRecordId = HashMap<String, (String, QuotePayload)>;
+/// A verified quote's issuer DID, payload, and signer DID, indexed by its
+/// record id.
+#[derive(Debug, Clone)]
+pub(crate) struct ImportedQuote {
+    pub(crate) provider_did: String,
+    pub(crate) payload: QuotePayload,
+}
+
+pub(crate) type QuotesByRecordId = HashMap<String, ImportedQuote>;
 
 /// Verifies each bundled quote row's signed envelope, refreshes its pointer
 /// fields, and indexes it by record id for agreement-row cross-checks.
@@ -284,7 +452,10 @@ fn verify_imported_quotes(
         row.request_record_id = Some(p.request_record_id.clone());
         row.consumer_did = Some(p.consumer_did.clone());
 
-        quotes_by_record_id.insert(verified_record_id.to_string(), (row.issuer.clone(), p.clone()));
+        quotes_by_record_id.insert(
+            verified_record_id.to_string(),
+            ImportedQuote { provider_did: row.issuer.clone(), payload: p.clone() },
+        );
         verified_quotes.push((p.quote_id.clone(), row));
     }
     Ok((verified_quotes, quotes_by_record_id))
@@ -301,7 +472,7 @@ async fn resolve_quote_for_agreement<H: AppHost>(
     now: u64,
 ) -> Result<(String, QuotePayload), Response> {
     if let Some(entry) = quotes_by_record_id.get(quote_record_id) {
-        return Ok(entry.clone());
+        return Ok((entry.provider_did.clone(), entry.payload.clone()));
     }
     let bytes = match get_bytes(host, QUOTE_HISTORY, quote_record_id).await {
         Ok(Some(b)) => b,
@@ -540,6 +711,14 @@ async fn write_imported_cards<H: AppHost>(
                     "request" => transaction::verify_request(env, now).verified,
                     "quote" => transaction::verify_quote(env, now).verified,
                     "agreement-receipt" => transaction::verify_agreement_receipt(env, now).verified,
+                    "booking-progress" => booking::verify_booking_progress(env, now).verified,
+                    "payment-request" => payment::verify_payment_request(env, now).verified,
+                    "payment-acknowledgement" => {
+                        payment::verify_payment_acknowledgement(env, now).verified
+                    }
+                    "fulfilment-receipt" => {
+                        fulfilment::verify_fulfilment_receipt(env, now).verified
+                    }
                     _ => false,
                 };
                 row.verified = is_verified;

@@ -15,7 +15,7 @@ use aes_gcm::{
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{keys::Identity, substrate};
 
@@ -23,6 +23,15 @@ pub const IDENTITY_BACKUP_VERSION: u32 = 1;
 pub const KDF_HKDF_SHA256: &str = "hkdf-sha256";
 pub const CIPHER_AES_256_GCM: &str = "aes-256-gcm";
 const HKDF_INFO: &[u8] = b"syneroym-identity-backup-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedBlob {
+    pub kdf: String,
+    pub cipher: String,
+    pub salt_z32: String,
+    pub nonce_z32: String,
+    pub ciphertext_z32: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityBackup {
@@ -103,36 +112,28 @@ fn aad_bytes(version: u32, did: &str, kdf: &str, cipher: &str, salt_z32: &str) -
     serde_json::to_vec(&canonical).unwrap_or_default()
 }
 
-pub fn export(identity: &Identity, recovery_key: &[u8; 32]) -> Result<IdentityBackup, BackupError> {
-    let did = substrate::derive_did_key(&identity.public_key());
-    let mut salt = [0u8; 16];
-    getrandom::fill(&mut salt).map_err(|e| BackupError::Getrandom(e.to_string()))?;
-    let mut nonce = [0u8; 12];
-    getrandom::fill(&mut nonce).map_err(|e| BackupError::Getrandom(e.to_string()))?;
-
+fn seal_with_params(
+    plaintext: &[u8],
+    recovery_key: &[u8; 32],
+    info: &[u8],
+    salt: [u8; 16],
+    nonce: [u8; 12],
+    aad: &[u8],
+) -> Result<SealedBlob, BackupError> {
     let salt_z32 = z32::encode(&salt);
     let nonce_z32 = z32::encode(&nonce);
 
-    let mut derived_key = [0u8; 32];
+    let mut derived_key = Zeroizing::new([0u8; 32]);
     let hkdf = Hkdf::<Sha256>::new(Some(&salt), recovery_key);
-    hkdf.expand(HKDF_INFO, &mut derived_key).map_err(|_| BackupError::Decrypt)?;
+    hkdf.expand(info, &mut *derived_key).map_err(|_| BackupError::Decrypt)?;
 
-    let aad =
-        aad_bytes(IDENTITY_BACKUP_VERSION, &did, KDF_HKDF_SHA256, CIPHER_AES_256_GCM, &salt_z32);
-
-    let mut secret = identity.to_bytes();
-    let cipher = Aes256Gcm::new_from_slice(&derived_key).map_err(|_| BackupError::Decrypt)?;
+    let cipher = Aes256Gcm::new_from_slice(&derived_key[..]).map_err(|_| BackupError::Decrypt)?;
     let nonce_ga = aes_gcm::Nonce::from_slice(&nonce);
     let ct = cipher
-        .encrypt(nonce_ga, Payload { msg: &secret, aad: &aad })
+        .encrypt(nonce_ga, Payload { msg: plaintext, aad })
         .map_err(|_| BackupError::Decrypt)?;
 
-    secret.zeroize();
-    derived_key.zeroize();
-
-    Ok(IdentityBackup {
-        backup_version: IDENTITY_BACKUP_VERSION,
-        did,
+    Ok(SealedBlob {
         kdf: KDF_HKDF_SHA256.to_string(),
         cipher: CIPHER_AES_256_GCM.to_string(),
         salt_z32,
@@ -141,25 +142,86 @@ pub fn export(identity: &Identity, recovery_key: &[u8; 32]) -> Result<IdentityBa
     })
 }
 
+/// HKDF-SHA256(salt, recovery_key, info) -> AES-256-GCM over `plaintext`
+/// with `aad`. `info` separates uses of one recovery key.
+pub fn seal(
+    plaintext: &[u8],
+    recovery_key: &[u8; 32],
+    info: &[u8],
+    aad: &[u8],
+) -> Result<SealedBlob, BackupError> {
+    let mut salt = [0u8; 16];
+    getrandom::fill(&mut salt).map_err(|e| BackupError::Getrandom(e.to_string()))?;
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).map_err(|e| BackupError::Getrandom(e.to_string()))?;
+    seal_with_params(plaintext, recovery_key, info, salt, nonce, aad)
+}
+
+pub fn open(
+    blob: &SealedBlob,
+    recovery_key: &[u8; 32],
+    info: &[u8],
+    aad: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, BackupError> {
+    if blob.kdf != KDF_HKDF_SHA256 {
+        return Err(BackupError::UnknownKdf(blob.kdf.clone()));
+    }
+    if blob.cipher != CIPHER_AES_256_GCM {
+        return Err(BackupError::UnknownCipher(blob.cipher.clone()));
+    }
+
+    let salt = z32::decode(blob.salt_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
+    let nonce = z32::decode(blob.nonce_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
+    let ct = z32::decode(blob.ciphertext_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
+
+    let mut derived_key = Zeroizing::new([0u8; 32]);
+    let hkdf = Hkdf::<Sha256>::new(Some(&salt), recovery_key);
+    hkdf.expand(info, &mut *derived_key).map_err(|_| BackupError::Decrypt)?;
+
+    let cipher = Aes256Gcm::new_from_slice(&derived_key[..]).map_err(|_| BackupError::Decrypt)?;
+    let nonce_ga = aes_gcm::Nonce::from_slice(&nonce);
+    let secret =
+        cipher.decrypt(nonce_ga, Payload { msg: &ct, aad }).map_err(|_| BackupError::Decrypt)?;
+
+    Ok(Zeroizing::new(secret))
+}
+
+pub fn export(identity: &Identity, recovery_key: &[u8; 32]) -> Result<IdentityBackup, BackupError> {
+    let did = substrate::derive_did_key(&identity.public_key());
+    let mut salt = [0u8; 16];
+    getrandom::fill(&mut salt).map_err(|e| BackupError::Getrandom(e.to_string()))?;
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).map_err(|e| BackupError::Getrandom(e.to_string()))?;
+
+    let salt_z32 = z32::encode(&salt);
+    let aad =
+        aad_bytes(IDENTITY_BACKUP_VERSION, &did, KDF_HKDF_SHA256, CIPHER_AES_256_GCM, &salt_z32);
+
+    let secret = Zeroizing::new(identity.to_bytes());
+    let blob = seal_with_params(&secret[..], recovery_key, HKDF_INFO, salt, nonce, &aad)?;
+
+    Ok(IdentityBackup {
+        backup_version: IDENTITY_BACKUP_VERSION,
+        did,
+        kdf: blob.kdf,
+        cipher: blob.cipher,
+        salt_z32: blob.salt_z32,
+        nonce_z32: blob.nonce_z32,
+        ciphertext_z32: blob.ciphertext_z32,
+    })
+}
+
 pub fn import(backup: &IdentityBackup, recovery_key: &[u8; 32]) -> Result<Identity, BackupError> {
     if backup.backup_version != IDENTITY_BACKUP_VERSION {
         return Err(BackupError::UnknownVersion(backup.backup_version));
     }
-    if backup.kdf != KDF_HKDF_SHA256 {
-        return Err(BackupError::UnknownKdf(backup.kdf.clone()));
-    }
-    if backup.cipher != CIPHER_AES_256_GCM {
-        return Err(BackupError::UnknownCipher(backup.cipher.clone()));
-    }
-
-    let salt = z32::decode(backup.salt_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
-    let nonce = z32::decode(backup.nonce_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
-    let ct = z32::decode(backup.ciphertext_z32.as_bytes()).map_err(|_| BackupError::Decrypt)?;
-
-    let mut derived_key = [0u8; 32];
-    let hkdf = Hkdf::<Sha256>::new(Some(&salt), recovery_key);
-    hkdf.expand(HKDF_INFO, &mut derived_key).map_err(|_| BackupError::Decrypt)?;
-
+    let blob = SealedBlob {
+        kdf: backup.kdf.clone(),
+        cipher: backup.cipher.clone(),
+        salt_z32: backup.salt_z32.clone(),
+        nonce_z32: backup.nonce_z32.clone(),
+        ciphertext_z32: backup.ciphertext_z32.clone(),
+    };
     let aad = aad_bytes(
         backup.backup_version,
         &backup.did,
@@ -168,13 +230,7 @@ pub fn import(backup: &IdentityBackup, recovery_key: &[u8; 32]) -> Result<Identi
         &backup.salt_z32,
     );
 
-    let cipher = Aes256Gcm::new_from_slice(&derived_key).map_err(|_| BackupError::Decrypt)?;
-    let nonce_ga = aes_gcm::Nonce::from_slice(&nonce);
-    let mut secret = cipher
-        .decrypt(nonce_ga, Payload { msg: &ct, aad: &aad })
-        .map_err(|_| BackupError::Decrypt)?;
-
-    derived_key.zeroize();
+    let mut secret = open(&blob, recovery_key, HKDF_INFO, &aad)?;
 
     if secret.len() != 32 {
         secret.zeroize();
@@ -266,5 +322,22 @@ mod tests {
         backup.backup_version = 2;
 
         assert!(matches!(import(&backup, &recovery_key), Err(BackupError::UnknownVersion(2))));
+    }
+
+    #[test]
+    fn seal_and_open_round_trip() {
+        let key = generate_recovery_key().unwrap();
+        let payload = b"hello secret data";
+        let info = b"test-info";
+        let aad = b"test-aad";
+
+        let blob = seal(payload, &key, info, aad).unwrap();
+        let opened = open(&blob, &key, info, aad).unwrap();
+        assert_eq!(&*opened, payload);
+
+        // Wrong info fails
+        assert!(matches!(open(&blob, &key, b"wrong-info", aad), Err(BackupError::Decrypt)));
+        // Wrong aad fails
+        assert!(matches!(open(&blob, &key, info, b"wrong-aad"), Err(BackupError::Decrypt)));
     }
 }

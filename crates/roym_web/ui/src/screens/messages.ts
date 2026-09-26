@@ -79,6 +79,8 @@ export interface CardRow {
   stored_at_secs: number;
   declined?: boolean;
   version_count?: number;
+  agreement_payee?: string;
+  agreement_payment_methods?: string[];
 }
 
 function errText(err: unknown): string {
@@ -430,6 +432,8 @@ function messageElement(
             type: cardRow.card_type,
             version: cardRow.version,
             data: cardRow.data,
+            agreement_payee: cardRow.agreement_payee,
+            agreement_payment_methods: cardRow.agreement_payment_methods,
           }),
         );
       } else if (cardRow.known && !cardRow.verified) {

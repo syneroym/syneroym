@@ -184,6 +184,21 @@ impl AppDataLayer for NativeAppHost {
         .map_err(convert::data_layer_error_out)
     }
 
+    async fn create(
+        &self,
+        collection: String,
+        values: Vec<RecordWriteValue>,
+    ) -> Result<Option<String>, DataLayerError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostStore::create(
+            &mut *state,
+            collection,
+            values.into_iter().map(convert::record_write_value_in).collect(),
+        )
+        .await
+        .map_err(convert::data_layer_error_out)
+    }
+
     async fn execute_ddl(&self, sql: String) -> Result<(), DataLayerError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostStore::execute_ddl(&mut *state, sql).await.map_err(convert::data_layer_error_out)

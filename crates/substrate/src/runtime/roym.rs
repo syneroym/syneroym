@@ -411,6 +411,24 @@ async fn init_roym_directory(
 
 // ── Topology and UI bundle wiring ────────────────────────────────────────────
 
+#[cfg(feature = "roym")]
+fn singleton_entry(name: &str) -> syneroym_app_orchestration::TopologyEntry {
+    use std::time::Duration;
+
+    use syneroym_app_orchestration::{
+        TopologyEntry, TopologyEpoch, TopologyMode, models::ServiceId,
+    };
+
+    TopologyEntry {
+        mode: TopologyMode::Singleton,
+        members: vec![ServiceId::new(roym_dispatch_id(name))],
+        sharding_strategy: None,
+        epoch: TopologyEpoch(1),
+        cache_ttl: Duration::from_secs(60),
+        not_after: None,
+    }
+}
+
 /// Registers the Roym app context for every service and persists all
 /// intra-app dependency bindings so they survive a restart.
 #[cfg(feature = "roym")]
@@ -419,12 +437,7 @@ async fn wire_roym_topology(
     endpoint_registry: &EndpointRegistry,
     web_id: &str,
 ) -> anyhow::Result<()> {
-    use std::time::Duration;
-
-    use syneroym_app_orchestration::{
-        AppInstanceId, LogicalServiceName, TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
-        models::ServiceId,
-    };
+    use syneroym_app_orchestration::{AppInstanceId, LogicalServiceName, TopologyKey};
     use syneroym_roym_core::services;
 
     for svc in services::ALL {
@@ -437,14 +450,7 @@ async fn wire_roym_topology(
             .await?;
     }
     for dep in services::SIBLINGS {
-        let entry = TopologyEntry {
-            mode: TopologyMode::Singleton,
-            members: vec![ServiceId::new(roym_dispatch_id(dep.name))],
-            sharding_strategy: None,
-            epoch: TopologyEpoch(1),
-            cache_ttl: Duration::from_secs(60),
-            not_after: None,
-        };
+        let entry = singleton_entry(dep.name);
         shared.logical_resolver().register(
             TopologyKey::local(
                 AppInstanceId::new(ROYM_APP_INSTANCE),
@@ -457,19 +463,8 @@ async fn wire_roym_topology(
             .await?;
     }
 
-    // `conversation` and `catalog` each declare a `profile` dependency in
-    // the manifest; resolution already works without the binding (`web`
-    // declares it), but the native build's persisted bindings should
-    // match the manifest all the same.
-    let profile_entry = TopologyEntry {
-        mode: TopologyMode::Singleton,
-        members: vec![ServiceId::new(roym_dispatch_id(services::PROFILE.name))],
-        sharding_strategy: None,
-        epoch: TopologyEpoch(1),
-        cache_ttl: Duration::from_secs(60),
-        not_after: None,
-    };
-    let profile_entry_json = serde_json::to_string(&profile_entry)?;
+    // `conversation` and `catalog` each declare a `profile` dependency.
+    let profile_entry_json = serde_json::to_string(&singleton_entry(services::PROFILE.name))?;
     for consumer in [services::CONVERSATION.name, services::CATALOG.name] {
         endpoint_registry
             .save_binding(
@@ -481,23 +476,33 @@ async fn wire_roym_topology(
             .await?;
     }
 
-    // `directory` declares a `catalog` dependency: a provider's own
-    // `directory.publish-to-source` reads the signed envelope from
-    // `catalog` through this edge before sending it to a chosen source.
-    let catalog_entry = TopologyEntry {
-        mode: TopologyMode::Singleton,
-        members: vec![ServiceId::new(roym_dispatch_id(services::CATALOG.name))],
-        sharding_strategy: None,
-        epoch: TopologyEpoch(1),
-        cache_ttl: Duration::from_secs(60),
-        not_after: None,
-    };
+    // `directory` declares a `catalog` dependency.
+    let catalog_entry_json = serde_json::to_string(&singleton_entry(services::CATALOG.name))?;
     endpoint_registry
         .save_binding(
             &roym_dispatch_id(services::DIRECTORY.name),
             ROYM_APP_INSTANCE,
             services::CATALOG.name,
-            &serde_json::to_string(&catalog_entry)?,
+            &catalog_entry_json,
+        )
+        .await?;
+
+    // `transaction` declares `conversation` and `catalog` dependencies.
+    let conv_entry_json = serde_json::to_string(&singleton_entry(services::CONVERSATION.name))?;
+    endpoint_registry
+        .save_binding(
+            &roym_dispatch_id(services::TRANSACTION.name),
+            ROYM_APP_INSTANCE,
+            services::CONVERSATION.name,
+            &conv_entry_json,
+        )
+        .await?;
+    endpoint_registry
+        .save_binding(
+            &roym_dispatch_id(services::TRANSACTION.name),
+            ROYM_APP_INSTANCE,
+            services::CATALOG.name,
+            &catalog_entry_json,
         )
         .await?;
 

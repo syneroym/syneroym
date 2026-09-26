@@ -826,47 +826,9 @@ async fn scenario_137_unknown_card_type_filed_unknown_unverified_parity() {
     assert!(cards[0]["data"].is_null());
 }
 
-#[tokio::test]
-async fn scenario_138_known_card_type_without_producer_filed_unverified_parity() {
-    let h = harness().await;
-    enrol_signing(&h, "conversation").await;
-    enrol_signing(&h, "transaction").await;
-    let conv = open_conv(&h, &peer_did()).await;
-
-    let raw_body = json!({
-        "card_version": 1,
-        "type": "payment-request",
-        "version": 1,
-        "envelope": "{}",
-    })
-    .to_string();
-    let msg = ConversationMessage {
-        id: "m-no-producer-138".to_string(),
-        conversation: conv.clone(),
-        author: peer_did(),
-        sender_timestamp: 1_000,
-        received_at: 1_000,
-        content_type: card::CARD_CONTENT_TYPE.to_string(),
-        body: raw_body.into_bytes(),
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    };
-    h.deliver(true, msg.clone()).await;
-    h.deliver(false, msg).await;
-
-    let (sw, sn) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
-    assert_eq!(sw, sn);
-    assert_eq!(sw["result"]["refused"], 1);
-
-    let (tw, tn) = both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
-    assert_eq!(stripped(&tw), stripped(&tn));
-    let cards = tw["result"]["cards"].as_array().unwrap();
-    assert_eq!(cards.len(), 1);
-    assert_eq!(cards[0]["known"], true);
-    assert_eq!(cards[0]["verified"], false);
-    assert!(cards[0]["reason"].as_str().unwrap().contains("no producer"));
-}
+// Every known card type now has a producer, so `file_incoming_card`'s
+// fallback arm ("a known type with no producer") is unreachable today; it
+// stays in the code as the honest answer for a type added later.
 
 #[tokio::test]
 async fn scenario_139_card_payload_names_different_conversation_filed_refused_parity() {

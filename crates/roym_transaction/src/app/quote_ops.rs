@@ -15,13 +15,13 @@ use syneroym_roym_core::{
     signing::{self, CertificateError},
     transaction::{
         self, AgreedTerms, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS, QUOTE_VERSION,
-        QuotePayload, RecordVerdict, RequestPayload,
+        QuotePayload, RecordVerdict, RequestPayload, TimeWindow,
     },
 };
 
 use super::{
     AGREEMENTS, AgreementRow, ListParams, QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, RecordPointerRow,
-    collect_record_history, collect_typed, conversation_mine_filter, count_mine,
+    catalog_call, collect_record_history, collect_typed, conversation_mine_filter, count_mine,
     ensure_collections, get_bytes, get_row, put_bytes, put_row, resolve_principal_and_owner,
     send_card_and_file,
 };
@@ -33,6 +33,8 @@ struct QuoteSetParams {
     quote_id: Option<String>,
     #[serde(default)]
     listing_id: Option<String>,
+    #[serde(default)]
+    slot_id: Option<String>,
     expires_in_secs: u64,
     terms: Value,
 }
@@ -79,10 +81,17 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e.to_string()),
     };
 
-    let terms = match parse_quote_terms(params.terms, expires_at_secs) {
+    let mut terms = match parse_quote_terms(params.terms, expires_at_secs) {
         Ok(t) => t,
         Err(resp) => return resp,
     };
+
+    if let Some(ref slot_id) = params.slot_id
+        && let Err(resp) =
+            validate_and_apply_slot(host, slot_id, params.listing_id.as_deref(), &mut terms).await
+    {
+        return resp;
+    }
 
     let payload = QuotePayload {
         quote_id: quote_id.clone(),
@@ -90,6 +99,7 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         sequence,
         request_record_id: params.request_record_id.clone(),
         listing_id: params.listing_id,
+        slot_id: params.slot_id,
         consumer_did: consumer_did.clone(),
         terms,
     };
@@ -221,6 +231,39 @@ fn parse_quote_terms(terms: Value, expires_at_secs: u64) -> Result<AgreedTerms, 
     terms_map.insert("quote_expires_at_secs".to_string(), json!(expires_at_secs));
     serde_json::from_value(Value::Object(terms_map))
         .map_err(|e| Response::invalid_params(format!("invalid terms: {e}")))
+}
+
+async fn validate_and_apply_slot<H: AppHost>(
+    host: &H,
+    slot_id: &str,
+    listing_id: Option<&str>,
+    terms: &mut AgreedTerms,
+) -> Result<(), Response> {
+    let listing_id = match listing_id {
+        Some(lid) => lid,
+        None => return Err(Response::invalid_params("slot requires listing_id")),
+    };
+    let slot_resp =
+        match catalog_call(host, "availability.get", json!({ "slot_id": slot_id })).await {
+            Ok(r) => r,
+            Err(e) => return Err(Response::internal_error(e)),
+        };
+    let slot = match slot_resp.result {
+        Some(Value::Object(map)) => map,
+        _ => return Err(Response::invalid_params("no-such-slot")),
+    };
+    if slot.get("listing_id").and_then(Value::as_str) != Some(listing_id) {
+        return Err(Response::invalid_params("slot-not-in-listing"));
+    }
+    let start_secs = slot.get("start_secs").and_then(Value::as_u64).unwrap_or(0);
+    let end_secs = slot.get("end_secs").and_then(Value::as_u64).unwrap_or(0);
+    if let Some(ref sched) = terms.schedule
+        && (sched.earliest_secs != start_secs || sched.latest_secs != end_secs)
+    {
+        return Err(Response::invalid_params("schedule-differs-from-slot"));
+    }
+    terms.schedule = Some(TimeWindow { earliest_secs: start_secs, latest_secs: end_secs });
+    Ok(())
 }
 
 /// A freshly signed quote envelope, plus the identifiers callers need to

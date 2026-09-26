@@ -1,5 +1,7 @@
 //! Transaction synchronization across conversation history.
 
+pub(crate) mod receipts;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use syneroym_app_host::{AppDataLayer, AppHost};
@@ -26,11 +28,13 @@ struct SyncParams {
     full: bool,
 }
 
-struct FileCardResult {
-    filed: bool,
-    refused: bool,
-    unknown: bool,
-    countersigned: bool,
+#[derive(Debug, Default)]
+pub(crate) struct FileCardResult {
+    pub(crate) filed: bool,
+    pub(crate) refused: bool,
+    pub(crate) unknown: bool,
+    pub(crate) countersigned: bool,
+    pub(crate) deferred: bool,
 }
 
 pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -51,66 +55,36 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
     };
 
     let start = if params.full { 0 } else { sync_state.scanned_count.saturating_sub(SYNC_OVERLAP) };
-
-    let page_resp = match conversation_call(
-        host,
-        "conversation.history",
-        json!({
-            "conversation": params.conversation,
-            "limit": SYNC_WINDOW,
-            "cursor": start,
-        }),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
+    let messages = match fetch_sync_messages(host, &params.conversation, start).await {
+        Ok(m) => m,
+        Err(resp) => return resp,
     };
-
-    if let Some(err) = page_resp.error {
-        return Response::internal_error(err.message);
-    }
-
-    let res = page_resp.result.unwrap_or(Value::Null);
-    let messages = res.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
 
     let mut card_count = match count_cards_for_conversation(host, &params.conversation).await {
         Ok(c) => c,
         Err(e) => return Response::internal_error(e),
     };
 
-    let mut scanned: u32 = 0;
-    let mut filed: u32 = 0;
-    let mut refused: u32 = 0;
-    let mut unknown: u32 = 0;
-    let mut countersigned: u32 = 0;
-
+    let mut stats = SyncStats::default();
     let mut offset = start;
     let mut first_declined: Option<u64> = None;
     let owner = signing::owner_did(host).await.unwrap_or_default();
 
     for m in messages {
         offset += 1;
-        scanned += 1;
+        stats.scanned += 1;
         match classify_sync_message(host, &m, &params.conversation, now, &owner, card_count).await {
             Ok(SyncOutcome::Skip) => {}
             Ok(SyncOutcome::Declined) => {
                 first_declined = first_declined.or(Some(offset - 1));
             }
+            Ok(SyncOutcome::Deferred) => {
+                first_declined = first_declined.or(Some(offset - 1));
+                stats.deferred += 1;
+            }
             Ok(SyncOutcome::Filed(file_res)) => {
                 card_count += 1;
-                if file_res.filed {
-                    filed += 1;
-                }
-                if file_res.refused {
-                    refused += 1;
-                }
-                if file_res.unknown {
-                    unknown += 1;
-                }
-                if file_res.countersigned {
-                    countersigned += 1;
-                }
+                stats.record_filed(&file_res);
             }
             Err(e) => return Response::internal_error(e),
         }
@@ -132,13 +106,69 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
     }
 
     Response::ok(json!({
-        "scanned": scanned,
-        "filed": filed,
-        "refused": refused,
-        "unknown": unknown,
-        "countersigned": countersigned,
+        "scanned": stats.scanned,
+        "filed": stats.filed,
+        "refused": stats.refused,
+        "unknown": stats.unknown,
+        "countersigned": stats.countersigned,
+        "deferred": stats.deferred,
         "scanned_count": new_scanned_count,
     }))
+}
+
+async fn fetch_sync_messages<H: AppHost>(
+    host: &H,
+    conversation: &str,
+    start: u64,
+) -> Result<Vec<Value>, Response> {
+    let page_resp = match conversation_call(
+        host,
+        "conversation.history",
+        json!({
+            "conversation": conversation,
+            "limit": SYNC_WINDOW,
+            "cursor": start,
+        }),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+
+    if let Some(err) = page_resp.error {
+        return Err(Response::internal_error(err.message));
+    }
+
+    let res = page_resp.result.unwrap_or(Value::Null);
+    Ok(res.get("messages").and_then(Value::as_array).cloned().unwrap_or_default())
+}
+
+#[derive(Default)]
+struct SyncStats {
+    scanned: u32,
+    filed: u32,
+    refused: u32,
+    unknown: u32,
+    countersigned: u32,
+    deferred: u32,
+}
+
+impl SyncStats {
+    fn record_filed(&mut self, res: &FileCardResult) {
+        if res.filed {
+            self.filed += 1;
+        }
+        if res.refused {
+            self.refused += 1;
+        }
+        if res.unknown {
+            self.unknown += 1;
+        }
+        if res.countersigned {
+            self.countersigned += 1;
+        }
+    }
 }
 
 /// What a single history message meant for sync, once it has been classified.
@@ -148,6 +178,9 @@ enum SyncOutcome {
     /// A card this node would otherwise file, but the conversation is at its
     /// card-count cap.
     Declined,
+    /// A card whose prerequisite is missing but still within the deferral
+    /// window.
+    Deferred,
     /// Filed (successfully or as a refusal); carries the counters to fold in.
     Filed(FileCardResult),
 }
@@ -185,16 +218,10 @@ async fn classify_sync_message<H: AppHost>(
     }
 
     let file_res = file_incoming_card(host, m, conversation, now, owner).await?;
-    Ok(SyncOutcome::Filed(file_res))
+    if file_res.deferred { Ok(SyncOutcome::Deferred) } else { Ok(SyncOutcome::Filed(file_res)) }
 }
 
-async fn file_incoming_card<H: AppHost>(
-    host: &H,
-    m: &Value,
-    conversation: &str,
-    now: u64,
-    owner: &str,
-) -> Result<FileCardResult, String> {
+fn init_card_row(m: &Value, conversation: &str, now: u64) -> (String, CardRow) {
     let msg_id = m.get("id").and_then(Value::as_str).unwrap_or("").to_string();
     let direction_str = m.get("direction").and_then(Value::as_str).unwrap_or("incoming");
     let direction =
@@ -202,7 +229,7 @@ async fn file_incoming_card<H: AppHost>(
     let sender_timestamp_ms =
         m.get("sender_timestamp_ms").and_then(Value::as_i64).unwrap_or(now as i64 * 1000);
 
-    let mut row = CardRow {
+    let row = CardRow {
         message_id: msg_id.clone(),
         conversation: conversation.to_string(),
         direction,
@@ -220,7 +247,92 @@ async fn file_incoming_card<H: AppHost>(
         stored_at_secs: now,
         declined: None,
         version_count: None,
+        agreement_payee: None,
+        agreement_payment_methods: Vec::new(),
     };
+    (msg_id, row)
+}
+
+async fn dispatch_known_card<H: AppHost>(
+    host: &H,
+    msg_id: &str,
+    row: CardRow,
+    card: &card::Card,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+) -> Result<FileCardResult, String> {
+    match card.card_type.as_str() {
+        "request" => {
+            file_request_card(host, msg_id, row, &card.envelope, conversation, now, owner).await
+        }
+        "quote" => {
+            file_quote_card(host, msg_id, row, &card.envelope, conversation, now, owner).await
+        }
+        "agreement-receipt" => {
+            file_agreement_receipt_card(host, msg_id, row, &card.envelope, conversation, now, owner)
+                .await
+        }
+        "booking-progress" => {
+            receipts::file_progress_card(
+                host,
+                msg_id,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
+        }
+        "payment-request" => {
+            receipts::file_payment_request_card(
+                host,
+                msg_id,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
+        }
+        "payment-acknowledgement" => {
+            receipts::file_payment_ack_card(
+                host,
+                msg_id,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
+        }
+        "fulfilment-receipt" => {
+            receipts::file_fulfilment_card(
+                host,
+                msg_id,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
+        }
+        _ => refuse_card(host, msg_id, row, "a known card type this build does not file").await,
+    }
+}
+
+async fn file_incoming_card<H: AppHost>(
+    host: &H,
+    m: &Value,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+) -> Result<FileCardResult, String> {
+    let (msg_id, mut row) = init_card_row(m, conversation, now);
 
     let body = match m.get("body").and_then(Value::as_str) {
         Some(b) => b,
@@ -242,37 +354,15 @@ async fn file_incoming_card<H: AppHost>(
             refused: false,
             unknown: true,
             countersigned: false,
+            deferred: false,
         });
     }
 
-    match card.card_type.as_str() {
-        "request" => {
-            file_request_card(host, &msg_id, row, &card.envelope, conversation, now, owner).await
-        }
-        "quote" => {
-            file_quote_card(host, &msg_id, row, &card.envelope, conversation, now, owner).await
-        }
-        "agreement-receipt" => {
-            file_agreement_receipt_card(
-                host,
-                &msg_id,
-                row,
-                &card.envelope,
-                conversation,
-                now,
-                owner,
-            )
-            .await
-        }
-        _ => {
-            refuse_card(host, &msg_id, row, "a known card type with no producer in this build")
-                .await
-        }
-    }
+    dispatch_known_card(host, &msg_id, row, &card, conversation, now, owner).await
 }
 
 /// Stores `row` with `reason` and reports it as filed-but-refused.
-async fn refuse_card<H: AppHost>(
+pub(crate) async fn refuse_card<H: AppHost>(
     host: &H,
     msg_id: &str,
     mut row: CardRow,
@@ -280,7 +370,13 @@ async fn refuse_card<H: AppHost>(
 ) -> Result<FileCardResult, String> {
     row.reason = Some(reason.into());
     put_row(host, CARDS, msg_id, &row).await?;
-    Ok(FileCardResult { filed: true, refused: true, unknown: false, countersigned: false })
+    Ok(FileCardResult {
+        filed: true,
+        refused: true,
+        unknown: false,
+        countersigned: false,
+        deferred: false,
+    })
 }
 
 async fn file_request_card<H: AppHost>(
@@ -316,7 +412,13 @@ async fn file_request_card<H: AppHost>(
     row.record_id = v.record_id;
     row.revocation_status = v.revocation_status;
     put_row(host, CARDS, msg_id, &row).await?;
-    Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned: false })
+    Ok(FileCardResult {
+        filed: true,
+        refused: false,
+        unknown: false,
+        countersigned: false,
+        deferred: false,
+    })
 }
 
 async fn file_quote_card<H: AppHost>(
@@ -370,7 +472,13 @@ async fn file_quote_card<H: AppHost>(
     row.record_id = v.record_id;
     row.revocation_status = v.revocation_status;
     put_row(host, CARDS, msg_id, &row).await?;
-    Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned: false })
+    Ok(FileCardResult {
+        filed: true,
+        refused: false,
+        unknown: false,
+        countersigned: false,
+        deferred: false,
+    })
 }
 
 async fn file_agreement_receipt_card<H: AppHost>(
@@ -453,7 +561,13 @@ async fn file_agreement_receipt_card<H: AppHost>(
     row.issuer = v.issuer;
     row.record_id = v.record_id;
     row.revocation_status = v.revocation_status;
-    put_row(host, CARDS, msg_id, &row).await?;
     let countersigned = maybe_countersign(host, &mut row_agr, &qv, now, owner).await?;
-    Ok(FileCardResult { filed: true, refused: false, unknown: false, countersigned })
+    put_row(host, CARDS, msg_id, &row).await?;
+    Ok(FileCardResult {
+        filed: true,
+        refused: false,
+        unknown: false,
+        countersigned,
+        deferred: false,
+    })
 }

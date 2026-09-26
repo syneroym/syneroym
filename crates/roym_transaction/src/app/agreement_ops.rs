@@ -9,6 +9,7 @@ use syneroym_app_host::{
     types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
+    booking::BookingState,
     card::{self, CARD_CONTENT_TYPE},
     clock,
     envelope::{Request, Response},
@@ -21,9 +22,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, QUOTE_HISTORY, collect_typed, conversation_call, default_list_limit,
-    ensure_collections, file_own_card, get_bytes, get_row, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    AGREEMENTS, AgreementRow, QUOTE_HISTORY, booking_ops, collect_typed, conversation_call,
+    default_list_limit, ensure_collections, file_own_card, get_bytes, get_row, put_row,
+    resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +71,17 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         return resp;
     }
 
+    let booking_view_val = if role == Role::Provider {
+        match prepare_provider_booking(host, &row, &quote_payload, &params.quote_record_id, now)
+            .await
+        {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        }
+    } else {
+        Value::Null
+    };
+
     let half =
         match sign_agreement_receipt(host, principal, &params.quote_record_id, &row, &owner, role)
             .await
@@ -103,6 +115,7 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         "role": role,
         "record_id": record_id,
         "pair": pair,
+        "booking": booking_view_val,
         "message_id": message_id,
         "state": state,
     });
@@ -352,6 +365,42 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
     Response::ok(json!({ "agreements": page }))
 }
 
+async fn prepare_provider_booking<H: AppHost>(
+    host: &H,
+    row: &AgreementRow,
+    quote_payload: &QuotePayload,
+    quote_record_id: &str,
+    now: u64,
+) -> Result<Value, Response> {
+    if quote_payload.slot_id.is_some() && row.consumer.is_none() {
+        return Err(Response::invalid_params(
+            "provider cannot accept a slot quote before the consumer accepts",
+        ));
+    }
+    if row.consumer.is_some() {
+        let b = match booking_ops::decide_booking(host, row, quote_payload, now).await {
+            Ok(b) => b,
+            Err(e) => return Err(Response::internal_error(e)),
+        };
+        if b.state == BookingState::Conflict {
+            return Err(Response::invalid_params("slot-unavailable"));
+        }
+        let view = booking_ops::booking_view(
+            quote_record_id,
+            Some(&b.snapshot),
+            Some(&b.progress_record_id),
+            Some("self"),
+            row,
+            Role::Provider,
+        );
+        return Ok(view);
+    }
+    Ok(Value::Null)
+}
+
+/// Attempts to countersign an agreement on the provider's node when the
+/// consumer has accepted. Refused, and left to the person, when the slot the
+/// quote names is already full.
 pub(crate) async fn maybe_countersign<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
@@ -359,20 +408,25 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
     now: u64,
     owner: &str,
 ) -> Result<bool, String> {
-    if row.provider.is_some() {
-        return Ok(false);
-    }
     if row.consumer.is_none() {
-        return Ok(false);
-    }
-    if owner.is_empty() || owner != row.provider_did {
         return Ok(false);
     }
     let q_payload = match qv.payload.as_ref() {
         Some(p) => p,
         None => return Ok(false),
     };
+    if row.provider.is_some() {
+        let _ = booking_ops::decide_booking(host, row, q_payload, now).await;
+        return Ok(false);
+    }
+    if owner.is_empty() || owner != row.provider_did {
+        return Ok(false);
+    }
     if now >= row.terms.quote_expires_at_secs {
+        return Ok(false);
+    }
+    let booking = booking_ops::decide_booking(host, row, q_payload, now).await?;
+    if booking.state == BookingState::Conflict {
         return Ok(false);
     }
     let (principal, _master) = match signing::person_principal(host, now).await {

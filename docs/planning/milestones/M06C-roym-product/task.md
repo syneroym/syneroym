@@ -218,6 +218,20 @@ credential, revocation, or moderation record. This milestone starts from
 nothing on the product side, which is the expected state, recorded so the
 size is not underestimated.
 
+**Gap 9 — closed by C8 (2026-09-24).** No write in `data-layer` was
+anything but last-write-wins: `put` and `batch-mutate` both upsert, so no
+guest code could arbitrate two concurrent writers racing for one row (the
+provider's booking decision over a shared availability slot, concretely).
+Closed by a new `create` function on `interface store`
+(`crates/wit_interfaces/wit/data-layer/data-layer.wit`): creates every row
+in `values` in one transaction only if none of their ids already exists,
+returning the first colliding id otherwise. Backed by the single writer
+thread every `ServiceStore` already serializes writes through
+(`crates/data_db/src/sqlite/service_store.rs`), so the fence needed no new
+locking. Threaded through every `AppHost` layer (`app_host`, `guest.rs`,
+`app_host_native`, `sandbox_wasm`, the native-dispatch verb table) and
+proven identical on both builds by the dual-build shim fixture.
+
 ### Carried forward from M06B, with eyes open
 
 These shipped as accepted limits and the product will feel them. They are
@@ -337,7 +351,7 @@ sections list, plus what M06B ruled out and what this document adds:
 | **C5** | **Catalog and conversation in the product (R1 rows 2 and 3).** The versioned listing schema across all seven dimensions the spec names (booking, payment, product, service, location, relationship, service-record), signed and editable. 1:1 conversation over B4: `pending`/`delivered`/`failed` visible and never optimistic, surviving a restart on both sides. Roym's own copy of conversation content (D-06C-5), which is what export, search, and delete act on. **Complete (2026-09-03)** — [slice-c5-implementation-plan.md](slice-c5-implementation-plan.md), `status.md` evidence. The `syneroym:invocation` host interface and `admit::require_internal` (every `api.invoke` is local-only, `api.status` stays open), the `roym_core` listing/area/conversation vocabulary, `roym_catalog`, `roym_conversation` and its inbox, the two `depends_on` edges, `roymctl` enrolment across three services plus `roym address`, 37 cross-build parity scenarios, a two-substrate e2e, and the Hub's Messages/Listings tabs | **R1** | C4 |
 | **C6** | **Directory: the search half (R1 row 5).** The SynOrg service, its member list, provider-initiated listing publication (S7 — publishing is the *provider's* action), and `search` by category, area, and filters, built on the existing filter DSL over a derived projection, because the raw-SQL path is unreachable from a verb (Gap 7, corrected). Results carry source and freshness. The consumer's node queries each directory it was given and merges the answers. Missing evidence renders as unknown, never as a positive default. Optional by construction. **Partial (2026-09-05)** — the Rust core (server half, client half, admission rule, `roymctl`) is built and verified by 25 new parity scenarios; the Hub UI and the three-substrate e2e (`D-06C-6a`'s own proof at that level) were not built — see [status.md](status.md)'s C6 section | **R1** | C5 |
 | **C7** | **A need becomes an offer, and the card contract (R1 row 4).** Signed `request` → `quote` → `agreement-receipt`, each versioned, with a material change producing a new version rather than an edit. The seven card types and the unknown-type rule land here on the producing side and in C2's renderer on the consuming side (D-06C-3). The signing shape every one of these records uses — a single-issuer attestation, with `agreement-receipt` as a pair of them — is fixed by **D-06C-12**. **Complete (2026-09-08)** — [implementation plan](slice-c7-implementation-plan.md), `status.md` evidence. Signed `request`/`quote`/`agreement-receipt` record pipeline, 25-verb `syneroym-roym-transaction` service, watermark sync with `conversation`, `roymctl roym transaction` (25 subcommands), 28 dual-build parity scenarios (116–143, 143 total), two-substrate integration suite (`roym_transaction_e2e.rs`), Hub UI card templates and Playwright tests (`roym-hub.spec.ts` cases 24–27, 29–32). R1's acceptance gate closed across all six rows. | **Complete (2026-09-08)** | C5, C6 |
-| **C8** | **The transaction vertical (R2, all five rows).** The state machine with one named writer on the provider's substrate, permitted transitions, expiry, idempotency keys, and a named conflict for a losing concurrent booking. **D-06C-12** fixes the record shape and **D-06C-13** the two independent payment/fulfilment tracks, the against-interest rule, and the named terminals; the deposit question in the open design points must be closed first. `payment-acknowledgement`, separate from settlement, with the payee bound into the signed agreement and a UI that never says "verified". Mutually signed `fulfilment-receipt`. Versioned, integrity-checked export and import of conversations, agreements, and receipts. Encrypted backup with a restore path tested on a clean node | **R2** | C7 |
+| **C8** | **The transaction vertical (R2, all five rows). Complete (2026-09-24)** — [slice-c8-implementation-plan.md](slice-c8-implementation-plan.md), `status.md` evidence. The state machine with one named writer on the provider's substrate, permitted transitions, expiry, idempotency keys, and a named conflict for a losing concurrent booking. **D-06C-12** fixes the record shape and **D-06C-13** the two independent payment/fulfilment tracks, the against-interest rule, and the named terminals; the deposit question in the open design points is closed (one payment per agreement). `payment-acknowledgement`, separate from settlement, with the payee bound into the signed agreement and a UI that never says "verified". Mutually signed `fulfilment-receipt`. Versioned, integrity-checked export and import of conversations, agreements, and receipts. Encrypted backup with a restore path tested on a clean node | **R2** | C7 |
 | **C9** | **Cross-installation trust (R3, all three rows) and the inherited cross-node cases.** The full R1+R2 flow with consumer, provider, and SynOrg owner on three separate installations, resolving each other through the discovery overlay. Signed `membership-credential` (issuer, scope, expiry) and signed `revocation`; the consumer's **own** node verifies, never the directory. Signed, scoped `moderation-decision`; a suspended member vanishes from that directory's results and cached copies show the revocation on next check — with the product saying plainly that instant removal is not promised. Adopts M06B's 13 uncovered cross-node cases except alias canonicalization (D-06C-7) | **R3** | C8 |
 | **C10** | **Private group chat in the product (R4, all five rows).** Group conversations over B5: no server in the path, byte-identical transcripts, joiner and removed-member key boundaries, membership as visible events, offline catch-up. Product-side: group naming and roster UI, the owner's read access stated in the UI, and the carried-forward limits above surfaced honestly rather than hidden | **R4** | C5, C9 |
 
@@ -452,24 +466,29 @@ discovery bug. Keeping the gates keeps each failure attributable.
   `catalog → profile` dependency) when the caller omits it, so a listing
   found by direct link carries an attributable address with no directory
   in the path.
-- **Whether one agreement can carry more than one payment.** D-06C-13's
-  payment track holds exactly one pair, so a deposit plus a balance does not
-  fit inside it. R2 excludes escrow and refunds but says nothing about
-  deposits, and a deposit is ordinary for service work. The recommendation is
-  one payment per agreement for the first release, said plainly in the quote
-  UI, with deposits taking a backlog row. It is a product call rather than a
-  technical one, so C8 must close it — and record the backlog row if the
-  answer is "one" — before it builds the track.
+- **Whether one agreement can carry more than one payment — closed by C8
+  (2026-09-24, `D-C8-1`): one payment per agreement.** D-06C-13's payment
+  track holds exactly one pair, so a deposit plus a balance does not fit
+  inside it. R2 excludes escrow and refunds but says nothing about deposits,
+  and a deposit is ordinary for service work. The quote UI says so in one
+  sentence (`ONE_PAYMENT_NOTICE`); deposits and part payments are a backlog
+  row (§6, "Deposits / more than one payment per agreement").
 - **How the native build receives an inbound HTTP request.** The WASM build
   exports `incoming-handler`. The native side has no equivalent anywhere in
   the tree, so C1 is inventing one, and C2's entrypoint is shaped by whatever
   it invents. This is the single largest unknown in the milestone's first two
   slices. Whatever the answer is, the same integration suite must run against
   both builds and pass identically — the rule the shim was built for.
-- **Whether the export bundle is one format or several.** R2 exports
-  conversations, agreements, and receipts. One envelope with a manifest, or
-  a bundle per record family. Integrity checking (a signed manifest over
-  content hashes) is required either way.
+- **Whether the export bundle is one format or several — closed by C8
+  (2026-09-24, `D-C8-17`): one bundle format, one per service, composed
+  into a single encrypted archive on the client.** R2 exports conversations,
+  agreements, and receipts. `roymctl roym backup create` seals every
+  service's own signed bundle (`profile`, `catalog`, `conversation`,
+  `transaction`, `directory`) plus the encrypted identity backup under one
+  recovery key, needing no new substrate verb and no browser crypto that
+  must match Rust byte for byte. Integrity checking is a signed manifest
+  over per-section content hashes (`bundle-manifest`, `D-C8-16`), on every
+  person-signed service's own export.
 - **How a natively linked Roym gets an FDAE policy and a `RowAuthorizer`.**
   Two backlog rows already target `M06C` by name: a linked native app has no
   deploy record to load a compiled policy from, and the only `RowAuthorizer`
@@ -704,7 +723,7 @@ document; the per-slice ones are owed as each slice completes.
 | C5 completes | **Done 2026-09-03.** §10's `[PRD-SAF]` row narrows further: the inbox enforcement point and the catalog-side publication caller both ship; the directory-side publication half retargets to C6. The C5-7 review row (whole-collection scans) is restated, not closed, with a "before C6 puts a search on top" trigger. New rows: `conversation`/`catalog` read verbs scan whole collections; `publications` never pruned; three unfenced read-modify-writes; `catalog.export` drops three collections; the wire-side-authorization backlog row (targeted at C5 by C4) moves to "Recently resolved" |
 | C6 completes | **Partial, 2026-09-05 — see [status.md](status.md)'s C6 section for the full account.** Gap 7 rewritten (this document, above): the FTS5/R\*Tree mechanism named by the original gap and by this row's own C6 scope text is unreachable from a service verb on either build; search ships on the existing filter DSL over a derived projection instead. `[PRD-SAF]`'s publication half closes (directory-side caller shipped, keyed on the record's issuer) and the whole row moves to "Recently resolved" in the backlog. The C5-7 row is restated again, not closed: the filter fix landed for the named call sites in both `catalog` and `directory`, but `F4` shows a filter does not make a query use an index, so the index-usability half retargets to the M6 substrate spec. New backlog rows (§11): `execute-ddl`/`query-raw` unreachable; declared collection indexes never used; a guest dispatch cannot loop over a network call (why the fan-out loop lives in the client); the Hub/`roymctl` loop-parity row; page-past-cap and current-version-only limits; no offline search; narrower-than-it-sounds filters; `versions_differ` unresolved; `search_runs` pruned by age not completion; the two-directory parity harness gap; the missing three-substrate e2e; the missing Hub UI (the single largest gap this slice leaves); WO5 not attempted. **Closed in the post-C6 follow-up and two review passes (2026-09-06):** the Hub Directory + SynOrg tabs, the two-directory parity harness, the three-substrate `roym_directory_e2e.rs`, and WO5 all shipped (`bc3d6c2`, `23a1f5f`, `75c02ad`, `8864d73`); a 35-finding review (28 + N1-N8) is fully incorporated. R1 row 5's two blockers — the rendered half of its acceptance test and the cross-installation half — are now both covered (`roym-hub.spec.ts` cases 13-23b; `roym_directory_e2e.rs` all 14 §11.3 steps). Gates green: workspace 152/0, parity 115/0 both builds, e2e 42+4. **R1 row 5's acceptance test can be marked passed; R1 as a whole still gates at the end of C7** (row 4). Shipped as PR #161 |
 | C7 completes | **Done 2026-09-08.** R1 marked passed in the spec's scope table (all six rows closed). Currency exponent validation in `roym_core::money` resolved in backlog; 12 new transaction backlog items added (§12); forged cards covered in §11 |
-| C8 completes | R2 marked passed. Export/backup rows in the backlog resolved |
+| C8 completes | **Done 2026-09-24.** R2 marked passed in the spec's scope table (all five rows closed). Gap 9 added above and marked closed by the new `create` data-layer fence. The two open design points ("one payment or several", "one export format or several") answered (`D-C8-1`, `D-C8-17`). Export/backup rows in the backlog resolved: the unsigned-bundle row (four of five services — `directory`'s stays open, retargeted to C9), the missing restored-identity-signing e2e row, the correction-path row, the `payment-request` `RECORD_TYPES` row, and the unproduced-card-type row all move to "Recently resolved" |
 | C9 completes | R3 marked passed. The cross-node-coverage row moved to "Recently resolved", minus alias canonicalization |
 | C10 completes | R4 marked passed. The B5 carried-forward limits re-examined against what the product actually hit, and either closed or restated with real evidence |
 | Each slice | `status.md`, plus a `slice-cN-implementation-plan.md` in this directory |

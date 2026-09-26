@@ -11,7 +11,8 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    CARDS, CardRow, QUOTES, REQUESTS, RecordPointerRow, collect_typed, ensure_collections,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTES, REQUESTS, RecordPointerRow, collect_typed,
+    ensure_collections,
 };
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +57,14 @@ pub(crate) async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
     let request_map: HashMap<String, RecordPointerRow> =
         request_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
 
+    let agreement_rows: Vec<AgreementRow> =
+        match collect_typed(host, AGREEMENTS, Some(filter.clone())).await {
+            Ok(v) => v,
+            Err(e) => return e,
+        };
+    let agreement_map: HashMap<String, AgreementRow> =
+        agreement_rows.into_iter().map(|a| (a.quote_record_id.clone(), a)).collect();
+
     let mut rows: Vec<CardRow> = match collect_typed(host, CARDS, Some(filter.clone())).await {
         Ok(v) => v,
         Err(e) => return e,
@@ -90,6 +99,14 @@ pub(crate) async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
             && row.version_count.is_none()
         {
             row.version_count = Some(pointer.version_count);
+        } else if row.card_type == "payment-request"
+            && row.verified
+            && let Some(agr_id) =
+                row.data.as_ref().and_then(|p| p.get("agreement")).and_then(Value::as_str)
+            && let Some(agr) = agreement_map.get(agr_id)
+        {
+            row.agreement_payee = Some(agr.terms.payee.clone());
+            row.agreement_payment_methods = agr.terms.payment_methods.clone();
         }
     }
 

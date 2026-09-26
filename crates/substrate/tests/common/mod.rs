@@ -27,6 +27,8 @@ mod fixtures;
 /// Shared deploy helpers: `deploy_app`, `try_deploy_app`.
 mod deploy;
 
+pub mod roym;
+
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     sync::{
@@ -125,21 +127,31 @@ fn probe_bind(port: u16) -> Option<StdTcpListener> {
 ///   verified-free port number from the pool.
 pub fn alloc_ports<const N: usize>() -> [u16; N] {
     let span = PORT_POOL_END - PORT_POOL_START;
-    let seed = (std::time::SystemTime::now()
+    // `NEXT_PORT_HINT` is one static per test *binary*, i.e. per OS process
+    // (see this module's own doc comment) -- nextest launches many of these
+    // processes at once, and a millisecond-resolution wall-clock seed gives
+    // two of them starting in the same millisecond the same seed, so they
+    // scan the same port block and race each other's binds. Nanosecond
+    // resolution plus the pid (hashed, so its low bits spread across the
+    // whole range instead of just nudging the seed by a small integer)
+    // decorrelates same-millisecond processes without needing them to talk
+    // to each other.
+    let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis()
-        % (span as u128)) as u16;
+        .as_nanos();
+    let pid_hash = (std::process::id() as u128).wrapping_mul(2_654_435_761);
+    let seed = (nanos.wrapping_add(pid_hash) % (span as u128)) as u16;
     let _ = NEXT_PORT_HINT.compare_exchange(0, seed, Ordering::Relaxed, Ordering::Relaxed);
     loop {
-        let block_size = 16u16.max(N as u16);
+        let block_size = N as u16;
         let offset = NEXT_PORT_HINT.fetch_add(block_size, Ordering::Relaxed) % span;
         let start = PORT_POOL_START + offset;
         if start as u32 + block_size as u32 > PORT_POOL_END as u32 {
             continue; // wrapped mid-block; the next fetch_add tries elsewhere
         }
 
-        let mut listeners = Vec::with_capacity(block_size as usize);
+        let mut listeners = Vec::with_capacity(N);
         let mut all_free = true;
         for port in start..start + block_size {
             match probe_bind(port) {
@@ -154,10 +166,9 @@ pub fn alloc_ports<const N: usize>() -> [u16; N] {
             continue;
         }
 
-        let mut selected: Vec<StdTcpListener> = listeners.into_iter().take(N).collect();
         let ports: Vec<u16> =
-            selected.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
-        PROBE_LISTENERS.lock().expect("probe listener registry").append(&mut selected);
+            listeners.iter().map(|l| l.local_addr().expect("bound listener").port()).collect();
+        PROBE_LISTENERS.lock().expect("probe listener registry").append(&mut listeners);
         return ports.try_into().expect("exactly N ports collected");
     }
 }
@@ -170,6 +181,23 @@ pub fn release_held_ports(ports: &[u16]) {
     PROBE_LISTENERS.lock().expect("probe listener registry").retain(|l| {
         if let Ok(addr) = l.local_addr() { !ports.contains(&addr.port()) } else { false }
     });
+}
+
+/// Re-probe and hold listeners for the specified port numbers so other tests
+/// running concurrently cannot claim them between a teardown and a reboot.
+pub fn rehold_ports(ports: &[u16]) {
+    let mut listeners = Vec::with_capacity(ports.len());
+    for &port in ports {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if let Some(l) = probe_bind(port) {
+                listeners.push(l);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    PROBE_LISTENERS.lock().expect("probe listener registry").extend(listeners);
 }
 
 pub struct SubstrateTestContext {

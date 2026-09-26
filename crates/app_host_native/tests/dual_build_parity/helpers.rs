@@ -811,14 +811,13 @@ pub(crate) const SCENARIOS: &[(&str, &str)] = &[
     ("unsubscribe", r#"{"op":"unsubscribe","topic":"scratch-topic"}"#),
     ("patch", r#"{"op":"patch","id":"p1"}"#),
     ("batch-mutate", r#"{"op":"batch-mutate","id_a":"b1","id_b":"b2"}"#),
+    ("create-fence", r#"{"op":"create-fence","id":"cf1"}"#),
     ("delete-many", r#"{"op":"delete-many","id":"dm1"}"#),
     ("drop-collection", r#"{"op":"drop-collection"}"#),
     ("delete-blob", r#"{"op":"delete-blob","body":"blob to delete"}"#),
     ("abort-upload", r#"{"op":"abort-upload","chunks":["ab","cd"]}"#),
-    // `open-direct`'s id is derived from `(SERVICE_ID,
-    // peer_address)` alone -- deterministic, so unlike `send-message`
-    // (whose message id includes a random nonce) it belongs in this
-    // byte-comparison table.
+    // `open-direct`'s id is derived from `(SERVICE_ID, peer_address)` alone --
+    // deterministic, so unlike `send-message` it belongs in this byte-comparison table.
     ("list-conversations", r#"{"op":"list-conversations"}"#),
     ("open-conversation", r#"{"op":"open-conversation","peer_address":"peer-parity-scenario"}"#),
     // `retry`/`delivery-status`/`read-history` against an id that was never
