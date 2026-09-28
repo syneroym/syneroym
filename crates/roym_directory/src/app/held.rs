@@ -176,6 +176,7 @@ async fn stale_or_unknown<H: AppHost>(
     error: String,
 ) -> Response {
     let key = held_key(source, member_did);
+    let _ = ensure_coll(host, HELD_MEMBERSHIPS, &[]).await;
     let stored: Option<HeldMembershipRow> =
         get_json(host, HELD_MEMBERSHIPS, &key).await.ok().flatten();
     let mut row = stored.unwrap_or(HeldMembershipRow {

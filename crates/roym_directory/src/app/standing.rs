@@ -103,6 +103,7 @@ pub(in crate::app) async fn rebuild_all<H: AppHost>(host: &H) -> Result<u64, Str
     for c in [CREDENTIALS, REVOCATIONS, DECISIONS] {
         ensure_coll(host, c, &issued_record_indexes()).await?;
     }
+    ensure_coll(host, STANDING, &[]).await?;
     AppDataLayer::delete_many(host, STANDING.to_string(), json!({}).to_string())
         .await
         .map_err(|e| e.to_string())?;

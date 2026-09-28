@@ -261,14 +261,26 @@ async fn roym_directory_search_half_across_three_substrates() {
     assert_eq!(x_verify["conversation_address"], y_conv_did);
     deliver_one_message(&node_x, "node-y", &y_conv_did, "hello via direct link").await;
 
-    // --- Step 5: Z adds Y to the roster. No credential is issued
-    //     (a later cross-installation-trust concern). ------------------
+    // --- Step 5: Z adds Y to the roster and issues a membership
+    //     credential -- a publish now needs one. -----------------------
     let member = node_z
         .rpc_ok("member.add", json!({ "did": owner_y_did, "note": "verified provider" }))
         .await;
     assert_eq!(member["did"], owner_y_did);
     let z_info_after = node_x.rpc_ok("directory.probe-info", json!({ "did": z_dir_did })).await;
     assert_eq!(z_info_after["member_count"], 1, "info reports the roster size, not the roster");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let credential = node_z
+        .rpc_ok(
+            "credential.issue",
+            json!({
+                "member_did": owner_y_did,
+                "categories": ["cycling", "plumbing"],
+                "expires_at_secs": now + 30 * 24 * 3600,
+            }),
+        )
+        .await;
+    assert!(credential["record_id"].is_string(), "Z issues Y a credential: {credential}");
 
     // --- Step 6: Y publishes to Z through directory.publish-to-source,
     //     over the wire, verified. --------------------------------------
@@ -303,7 +315,10 @@ async fn roym_directory_search_half_across_three_substrates() {
     assert_eq!(hit["listing_id"], y_listing_id);
     assert_eq!(hit["issuer"], owner_y_did);
     assert_eq!(hit["revocation_status"], "unknown", "revocation renders unknown, never positive");
-    assert_eq!(hit["credential"], "unknown", "membership renders unknown, never positive");
+    assert_eq!(
+        hit["sources"][0]["membership"]["state"], "valid",
+        "X's own check of the credential Z issued Y in step 5: {hit}"
+    );
     assert!(hit["verified"].as_bool().unwrap_or(false), "X's own verdict, not Z's: {hit}");
     assert!(
         hit["age_secs"].as_u64().unwrap() < 3600,
@@ -438,6 +453,20 @@ async fn roym_directory_search_half_across_three_substrates() {
                 "dispute_path": "n/a",
                 "retention_secs": 30 * 24 * 3600,
                 "publication_limits": { "window_secs": 24 * 3600, "max_per_window": 20 },
+            }),
+        )
+        .await;
+    // Y issues itself a credential from its own new SynOrg -- a publish
+    // needs one even for the owner's own directory.
+    let y_now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    node_y
+        .rpc_ok(
+            "credential.issue",
+            json!({
+                "member_did": owner_y_did,
+                "categories": ["cycling"],
+                "expires_at_secs": y_now + 30 * 24 * 3600,
             }),
         )
         .await;
