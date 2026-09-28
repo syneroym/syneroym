@@ -1,5 +1,5 @@
 //! Client half: the membership checks this person has made against their
-//! sources, cached and re-evaluated on read (D-C9-6, D-C9-4).
+//! sources, cached and re-evaluated on read.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

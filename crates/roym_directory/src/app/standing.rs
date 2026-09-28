@@ -30,7 +30,7 @@ pub(in crate::app) fn issued_record_indexes() -> [IndexDefinition; 2] {
 
 /// Rebuilds `STANDING[member_did]` from the three issued-record
 /// collections, then rewrites that member's `search_index` listed
-/// windows (D-C9-9) so a standing change and the index it drives land in
+/// windows so a standing change and the index it drives land in
 /// the same call.
 pub(in crate::app) async fn rebuild_for<H: AppHost>(
     host: &H,
@@ -151,7 +151,7 @@ pub(in crate::app) async fn standing_verb<H: AppHost>(host: &H, req: &Request) -
     }))
 }
 
-/// The directory judging its own member (D-C9-9): the owner is the
+/// The directory judging its own member: the owner is the
 /// issuer.
 pub(in crate::app) async fn own_verdict<H: AppHost>(
     host: &H,

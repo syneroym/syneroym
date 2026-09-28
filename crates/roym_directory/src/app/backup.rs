@@ -188,7 +188,7 @@ pub(in crate::app) async fn import<H: AppHost>(host: &H, req: &Request) -> Respo
     }
     // `standing` and `search_index` are both derived, and nothing else
     // populates them from an imported bundle. Standing first: the index
-    // rows read the standing to compute their listed window (D-C9-9).
+    // rows read the standing to compute their listed window.
     let standing_rebuilt = match standing::rebuild_all(host).await {
         Ok(n) => n,
         Err(e) => return Response::internal_error(e),

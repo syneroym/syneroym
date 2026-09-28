@@ -30,7 +30,7 @@ pub enum DirectoryCommands {
         #[arg(long)]
         label: Option<String>,
         /// Pin the SynOrg's issuer DID now, rather than trusting whatever
-        /// this directory's `info` claims (D-C9-4).
+        /// this directory's `info` claims.
         #[arg(long)]
         issuer: Option<String>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]

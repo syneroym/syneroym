@@ -58,7 +58,7 @@ pub(in crate::app) struct SearchIndexRow {
     /// The listed window from `membership::listed_window` over the
     /// member's standing. `(0, 0)` = not listed. Rewritten whenever the
     /// member's standing changes; time-based changes need no rewrite
-    /// (D-C9-9).
+    /// changes.
     listed_from_secs: u64,
     listed_until_secs: u64,
 }
@@ -450,7 +450,7 @@ async fn standing_by_issuer<'a, H: AppHost>(
     Ok(out)
 }
 
-/// D-C9-9: membership only, listing-scoped suspension included, scope not
+/// Membership only, listing-scoped suspension included, scope not
 /// judged (the index row carries no payload to judge it against). This
 /// is the guest-side second guard: the host filter has already removed
 /// rows outside their listed window, so this re-checks the returned hits

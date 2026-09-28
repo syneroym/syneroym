@@ -110,7 +110,7 @@ pub enum MembershipVerdict {
         scope: MembershipScope,
         expires_at_secs: u64,
         /// When this node last fetched the issuer's withdrawals. Not a
-        /// claim that none exist (D-C9-6).
+        /// claim that none exist.
         revocations_checked_as_of_secs: u64,
     },
     Expired {
@@ -147,7 +147,7 @@ pub enum MembershipVerdict {
 }
 
 /// What is being judged. `categories`/`areas` are `None` when the caller
-/// does not judge scope (the directory's search filter, D-C9-9, and a
+/// does not judge scope (the directory's search filter, and a
 /// listing-free membership check).
 #[derive(Debug, Clone, Copy)]
 pub struct ListingRef<'a> {
@@ -555,7 +555,7 @@ pub fn evaluate(evidence: &MembershipEvidence, input: &CheckInput<'_>) -> Member
 /// The time window in which one listing of this member may appear in
 /// this directory's search, as `(listed_from_secs, listed_until_secs)`.
 /// `(0, 0)` means "not listed". Used only by the directory on its own
-/// evidence (D-C9-9), so the search filter can run at the host.
+/// evidence, so the search filter can run at the host.
 pub fn listed_window(
     evidence: &MembershipEvidence,
     issuer: &str,

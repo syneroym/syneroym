@@ -3,8 +3,8 @@
 //! drive. Two-directory hostile-source scenarios (a canned trust source
 //! serving forged/expired/out-of-scope/wrong-SynOrg evidence, and a
 //! consumer pinning a *second* SynOrg's own issuer) need `directory2` to
-//! have its own distinct owner (§8.1's "second directory gets its own
-//! owner"), which is not yet built -- see the backlog. This file covers
+//! have its own distinct owner, which is not yet built -- see the
+//! backlog. This file covers
 //! the credential lifecycle, the publish gate, the search filter, and
 //! the consumer's own held-copy re-evaluation on the single directory the
 //! harness already gives every other C9-agnostic scenario.

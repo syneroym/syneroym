@@ -50,7 +50,7 @@ pub(in crate::app) struct SearchRunRow {
     pub(in crate::app) reason: Option<String>,
     pub(in crate::app) revocation_status: String,
     /// The consumer's own verdict, computed on this node from the hit's
-    /// signed evidence (D-C9-4/D-C9-9). `None` on a refused hit, which
+    /// signed evidence. `None` on a refused hit, which
     /// never reaches a membership check at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::app) membership: Option<MembershipVerdict>,

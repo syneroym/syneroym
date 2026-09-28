@@ -1,5 +1,5 @@
 //! Server half: `member.suspend` / `member.lift` / `member.decisions` --
-//! a SynOrg's signed moderation decisions about its own members (D-C9-5).
+//! a SynOrg's signed moderation decisions about its own members.
 
 use super::*;
 use crate::app::{credential_ops::sign_as_synorg, standing::IssuedRecordRow};

@@ -24,7 +24,7 @@ pub(in crate::app) struct SourceRow {
     pub(in crate::app) last_ok_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::app) last_error: Option<SourceError>,
-    /// D-C9-4: trust on first use, pinned once and never changed by a
+    /// Trust on first use, pinned once and never changed by a
     /// later reply. Absent until this node learns it (from an explicit
     /// `issuer_did` parameter, or from `directory.info`'s own field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -137,7 +137,7 @@ pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> R
         Err(_) => last_error = Some(SourceError::TimedOut),
     };
 
-    // D-C9-4: an explicit `issuer_did` wins; failing that, re-adding an
+    // An explicit `issuer_did` wins; failing that, re-adding an
     // already-known source keeps its existing pin (a reply never re-pins
     // silently); only then does a first-time probe's own claim pin it.
     let issuer_did = explicit_issuer

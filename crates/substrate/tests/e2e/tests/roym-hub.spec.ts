@@ -16,6 +16,28 @@ async function loginWithDelegatedKey(page: Page) {
   await expect(page.locator('.session-bar')).toContainText('delegated');
 }
 
+// One JSON-RPC method over the logged-in session's own bearer token, the
+// same shape scenario 1's own whoami check uses -- for a setup step the
+// Hub has no screen for yet (issuing this node's own membership
+// credential).
+async function rpcCall(page: Page, method: string, params: unknown) {
+  return page.evaluate(
+    async ({ method, params }) => {
+      const win = window as unknown as {
+        RoymSession?: { authHeaders: () => Record<string, string> };
+      };
+      const headers = win.RoymSession?.authHeaders() ?? {};
+      const res = await fetch('/rpc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+      });
+      return res.json();
+    },
+    { method, params },
+  );
+}
+
 test.describe('Roym Hub', () => {
   test.beforeAll(() => {
     const ports = readE2EPorts();
@@ -391,6 +413,16 @@ test.describe('Roym Hub', () => {
       await page.getByRole('button', { name: 'Save settings' }).click();
       await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
       await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+      // A publish now also needs a membership credential from this SynOrg.
+      // The Hub has no screen for issuing one yet, so this grants the
+      // node's own owner one directly, over the wire this test already
+      // authenticates with.
+      const whoami = await rpcCall(page, 'session.whoami', {});
+      await rpcCall(page, 'credential.issue', {
+        member_did: whoami.result?.did,
+        categories: ['cycling'],
+        expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
+      });
     }
     // Every test shares this one node, so publications from earlier tests
     // sit in the 24 h ledger. Keep the limit generous so a fresh publish
@@ -634,6 +666,12 @@ test.describe('Roym Hub', () => {
       await page.locator('.synorg-rules').fill('rules');
       await page.getByRole('button', { name: 'Save settings' }).click();
       await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
+      const whoami = await rpcCall(page, 'session.whoami', {});
+      await rpcCall(page, 'credential.issue', {
+        member_did: whoami.result?.did,
+        categories: ['cycling'],
+        expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
+      });
     }
 
     await page.getByRole('button', { name: 'Listings' }).click();

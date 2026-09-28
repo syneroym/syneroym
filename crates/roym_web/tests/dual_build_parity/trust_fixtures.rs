@@ -16,7 +16,7 @@ use super::{fixtures::*, helpers::*};
 
 /// The categories `full_listing_params` (and so `publish_listing_to_*`)
 /// signs. A SynOrg that does not list these itself refuses `credential.
-/// issue` for them (D-C9-1), so every fixture that expects a listing to
+/// issue` for them, so every fixture that expects a listing to
 /// publish grants exactly these.
 pub(crate) const FIXTURE_CATEGORIES: &[&str] = &["gardening", "outdoor"];
 
@@ -171,7 +171,7 @@ pub(crate) fn assert_hit_carries_no_verdict(hit: &Value, context: &Value) {
     }
 }
 
-/// Every section name `directory.export`'s manifest carries (§5.9),
+/// Every section name `directory.export`'s manifest carries,
 /// including the four C9 added -- `standing` is derived and not exported.
 pub(crate) const DIRECTORY_BUNDLE_SECTIONS: &[&str] = &[
     "synorg",

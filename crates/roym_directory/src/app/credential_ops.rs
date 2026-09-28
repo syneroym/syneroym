@@ -1,11 +1,11 @@
 //! Server half: `credential.*` and `revocation.*` -- a SynOrg issuing and
 //! withdrawing signed membership statements about its own members
-//! (D-C9-1).
+//! its own members.
 
 use super::*;
 use crate::app::standing::IssuedRecordRow;
 
-/// Signs `payload` as this SynOrg (the installation's owner, D-C9-1).
+/// Signs `payload` as this SynOrg (the installation's owner).
 /// Returns the envelope JSON and its derived record id.
 pub(in crate::app) async fn sign_as_synorg<H: AppHost>(
     host: &H,

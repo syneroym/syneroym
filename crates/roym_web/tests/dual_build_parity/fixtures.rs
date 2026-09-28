@@ -532,7 +532,7 @@ pub(crate) async fn publish_signed_listing(h: &Harness, envelope: &str) -> (Valu
 /// `directory.publish` refuses on a node that has never declared itself a
 /// SynOrg (no `settings` row) -- call this before publishing in any
 /// scenario that expects the publish to succeed. Since C9, a publish also
-/// needs a membership credential (D-C9-9): this enrols the directory's
+/// needs a membership credential: this enrols the directory's
 /// own signing certificate and issues one to `owner_did()` and
 /// `peer_did()`, covering `trust_fixtures::FIXTURE_CATEGORIES`.
 pub(crate) async fn ensure_synorg(h: &Harness) {
@@ -569,7 +569,7 @@ pub(crate) async fn wire_invoke(
 /// Since C9, also enrols its signing certificate and issues membership
 /// credentials the same way `ensure_synorg` does for the primary
 /// directory -- `directory2` shares the fixtures' single owner today
-/// (§8.1's "second directory gets its own owner" is not yet built; see
+/// (a distinct second-directory owner is not yet built; see
 /// the backlog), so this is a local dispatch through `dir2_local` rather
 /// than `both_rpc`.
 pub(crate) async fn ensure_dir2_synorg(h: &Harness) {
