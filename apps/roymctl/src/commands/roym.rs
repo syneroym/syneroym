@@ -12,8 +12,10 @@ pub mod address;
 pub mod backup;
 pub mod booking;
 pub mod directory;
+pub mod find;
 pub mod signing;
 pub mod transaction;
+pub mod trust;
 
 #[cfg(test)]
 mod tests;
@@ -30,6 +32,7 @@ pub(crate) use syneroym_sdk::DeployedService;
 pub use transaction::TransactionCommands;
 #[cfg(test)]
 pub(crate) use transaction::{parse_minor_units, parse_window};
+pub use trust::CredentialCommands;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum RoymCommands {
