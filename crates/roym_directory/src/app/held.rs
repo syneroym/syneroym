@@ -192,13 +192,17 @@ async fn stale_or_unknown<H: AppHost>(
     let verdict = if row.as_of_secs == 0 {
         MembershipVerdict::Unknown { reason: "could not reach this directory".to_string() }
     } else {
+        // Judged at this node's real clock, not at the stale fetch time --
+        // otherwise a directory that stops answering keeps an expired
+        // credential or an ended suspension looking exactly as it did when
+        // last fetched, for as long as it stays unreachable.
         membership::evaluate(
             &row.evidence,
             &CheckInput {
                 pinned_issuer,
                 member_did,
                 listing: None,
-                now_secs: row.as_of_secs,
+                now_secs: clock::now_secs(),
                 evidence_as_of_secs: row.as_of_secs,
             },
         )

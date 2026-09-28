@@ -1,15 +1,16 @@
-//! C9 fixtures: membership credentials, the second directory's signing
-//! enrolment, and the directory verb lists scenario 118 checks. Split out
-//! of `fixtures.rs` (792 lines before this slice, no room to grow) and
-//! kept out of `directory.rs` (already at its own cap).
+//! Cross-installation trust fixtures: membership credentials, the second
+//! directory's signing enrolment, and the directory verb lists scenario
+//! 118 checks. Split out of `fixtures.rs` (792 lines before this slice, no
+//! room to grow) and kept out of `directory.rs` (already at its own cap).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use syneroym_data_db::host_store::QueryOptions;
 use syneroym_identity::{
+    Identity,
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
-    substrate::resolve_did_key,
+    substrate::{derive_did_key, resolve_did_key},
 };
 
 use super::{fixtures::*, helpers::*};
@@ -27,6 +28,18 @@ pub(crate) const FIXTURE_CATEGORIES: &[&str] = &["gardening", "outdoor"];
 /// future date eventually stops being far enough in the future.
 pub(crate) fn fixture_credential_expires_at_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 365 * 24 * 3600
+}
+
+/// A third person `ensure_synorg` never grants a credential -- `owner_did()`
+/// and `peer_did()` both get one, so a scenario asserting the "unknown
+/// member" path needs someone else entirely. Fixed bytes so both builds
+/// mint the same DID.
+pub(crate) fn stranger_identity() -> Identity {
+    Identity::from_bytes(&[99; 32])
+}
+
+pub(crate) fn stranger_did() -> String {
+    derive_did_key(&stranger_identity().public_key())
 }
 
 /// Enrols the primary directory's signing certificate and issues
@@ -148,8 +161,7 @@ pub(crate) const ALL_DIRECTORY_VERBS: &[&str] = &[
 ];
 
 /// The whole security claim of this slice: exactly these four verbs
-/// answer anything other than `-32013` over the wire (C9 adds
-/// `directory.standing`).
+/// answer anything other than `-32013` over the wire.
 pub(crate) const WIRE_REACHABLE_DIRECTORY_VERBS: &[&str] =
     &["directory.search", "directory.info", "directory.publish", "directory.standing"];
 
@@ -171,8 +183,8 @@ pub(crate) fn assert_hit_carries_no_verdict(hit: &Value, context: &Value) {
     }
 }
 
-/// Every section name `directory.export`'s manifest carries,
-/// including the four C9 added -- `standing` is derived and not exported.
+/// Every section name `directory.export`'s manifest carries -- `standing`
+/// is derived and not exported.
 pub(crate) const DIRECTORY_BUNDLE_SECTIONS: &[&str] = &[
     "synorg",
     "publications",

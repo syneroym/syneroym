@@ -418,11 +418,12 @@ test.describe('Roym Hub', () => {
       // node's own owner one directly, over the wire this test already
       // authenticates with.
       const whoami = await rpcCall(page, 'session.whoami', {});
-      await rpcCall(page, 'credential.issue', {
+      const issued = await rpcCall(page, 'credential.issue', {
         member_did: whoami.result?.did,
         categories: ['cycling'],
         expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
       });
+      expect(issued.result?.record_id).toBeTruthy();
     }
     // Every test shares this one node, so publications from earlier tests
     // sit in the 24 h ledger. Keep the limit generous so a fresh publish
@@ -667,11 +668,12 @@ test.describe('Roym Hub', () => {
       await page.getByRole('button', { name: 'Save settings' }).click();
       await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
       const whoami = await rpcCall(page, 'session.whoami', {});
-      await rpcCall(page, 'credential.issue', {
+      const issued = await rpcCall(page, 'credential.issue', {
         member_did: whoami.result?.did,
         categories: ['cycling'],
         expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
       });
+      expect(issued.result?.record_id).toBeTruthy();
     }
 
     await page.getByRole('button', { name: 'Listings' }).click();

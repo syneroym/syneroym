@@ -6,7 +6,13 @@ use super::*;
 use crate::app::standing::IssuedRecordRow;
 
 /// Signs `payload` as this SynOrg (the installation's owner).
-/// Returns the envelope JSON and its derived record id.
+/// Returns the envelope JSON and its derived record id. The envelope's
+/// own `issued_at_secs` is the host's signing clock, not `clock::
+/// now_secs()` -- the wasm and native stacks pin that signing clock
+/// independently, so it is not safe to reuse for a stored row a
+/// byte-for-byte parity assertion later compares; callers stamp the row
+/// with `clock::now_secs()` instead, which both stacks read from the
+/// same real wall clock.
 pub(in crate::app) async fn sign_as_synorg<H: AppHost>(
     host: &H,
     record_type: &str,
@@ -179,6 +185,7 @@ pub(in crate::app) async fn issue<H: AppHost>(host: &H, req: &Request) -> Respon
         member_did: member_did.clone(),
         about: String::new(),
         issued_at_secs: now,
+        until_secs: None,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, CREDENTIALS, &record_id, &row).await {
@@ -239,9 +246,42 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
             Err(e) => return Response::internal_error(e),
         };
     if let Some(existing) = existing.into_iter().next() {
+        // Idempotent retry after a partial failure: the record already
+        // exists, but the standing rebuild that should have followed it
+        // may not have run. Always re-run it before returning early, or a
+        // retry after `rewrite_listed_windows` failed leaves the member
+        // looking unrevoked until someone runs `directory.reindex` by hand.
+        if let Err(e) = standing::rebuild_for(host, &row.member_did).await {
+            return Response::internal_error(e);
+        }
         return Response::ok(
             json!({ "record_id": existing.record_id, "envelope": existing.envelope }),
         );
+    }
+
+    // A credential another one of the member's credentials `supersedes`
+    // is already ignored by `pick_current`, so revoking it would sign a
+    // real record that changes no verdict anywhere. Refuse and name the
+    // credential that actually needs revoking.
+    let siblings: Vec<IssuedRecordRow> = match collect_raw_where(
+        host,
+        CREDENTIALS,
+        &json!({ "member_did": row.member_did }),
+    )
+    .await
+    {
+        Ok(v) => v.into_iter().filter_map(|(_, v)| serde_json::from_value(v).ok()).collect(),
+        Err(e) => return Response::internal_error(e),
+    };
+    if let Some(newer) = siblings.iter().find(|sib| {
+        Envelope::from_json(&sib.envelope)
+            .is_ok_and(|env| env.supersedes.as_deref() == Some(credential_record_id.as_str()))
+    }) {
+        return Response::invalid_params(format!(
+            "credential '{credential_record_id}' has been replaced by '{}'; revoke the current \
+             credential instead",
+            newer.record_id
+        ));
     }
 
     let payload = membership::RevocationPayload {
@@ -272,6 +312,7 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
         member_did: row.member_did.clone(),
         about: credential_record_id,
         issued_at_secs: now,
+        until_secs: None,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, REVOCATIONS, &record_id, &out_row).await {

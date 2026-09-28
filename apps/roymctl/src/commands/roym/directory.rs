@@ -334,7 +334,7 @@ pub(super) async fn handle_directory(
 }
 
 /// The four `DirectoryCommands` variants that are cross-installation
-/// trust surfaces (C9), split out of `handle_directory` to keep that
+/// trust surfaces, split out of `handle_directory` to keep that
 /// function under the 100-line limit.
 async fn handle_directory_trust(
     command: &DirectoryCommands,

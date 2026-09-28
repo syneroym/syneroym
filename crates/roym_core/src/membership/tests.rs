@@ -278,6 +278,32 @@ fn a_revocation_of_this_credential_wins_but_another_credentials_revocation_does_
 }
 
 #[test]
+fn revocations_past_the_credential_cap_are_never_checked() {
+    let (issuer_key, issuer_did) = generate();
+    let member = did();
+    let now = 1_000_000;
+    let cred =
+        credential_env(&issuer_key, &issuer_did, &member, &["cycling"], now + 1_000, now, None);
+    let cred_id = record_id_of(&cred);
+    // `MAX_EVIDENCE_CREDENTIALS` unrelated revocations ahead of the real
+    // one in the array: `find_revocation` takes only the same number of
+    // entries the credentials themselves are bounded to (one revocation
+    // per surviving credential is ever meaningful), so a source cannot
+    // make a consumer pay for an unbounded number of signature checks per
+    // reply.
+    let mut revocations: Vec<String> = (0..MAX_EVIDENCE_CREDENTIALS)
+        .map(|i| {
+            revocation_env(&issuer_key, &issuer_did, &format!("rec_padding{i}"), &member, now + 1)
+        })
+        .collect();
+    revocations.push(revocation_env(&issuer_key, &issuer_did, &cred_id, &member, now + 1));
+    let evidence =
+        MembershipEvidence { credentials: vec![cred], revocations, ..Default::default() };
+    let input = base_input(&issuer_did, &member, now + 10);
+    assert!(matches!(evaluate(&evidence, &input), MembershipVerdict::Valid { .. }));
+}
+
+#[test]
 fn a_revocation_signed_by_a_different_issuer_is_ignored() {
     let (issuer_key, issuer_did) = generate();
     let (impostor_key, _impostor_did) = generate();

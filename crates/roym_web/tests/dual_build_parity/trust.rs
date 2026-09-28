@@ -1,16 +1,20 @@
-//! Cross-installation trust (C9): the directory's own signed credential,
+//! Cross-installation trust: the directory's own signed credential,
 //! revocation and moderation-decision verbs, and the search filter they
 //! drive. Two-directory hostile-source scenarios (a canned trust source
 //! serving forged/expired/out-of-scope/wrong-SynOrg evidence, and a
 //! consumer pinning a *second* SynOrg's own issuer) need `directory2` to
 //! have its own distinct owner, which is not yet built -- see the
-//! backlog. This file covers
-//! the credential lifecycle, the publish gate, the search filter, and
-//! the consumer's own held-copy re-evaluation on the single directory the
-//! harness already gives every other C9-agnostic scenario.
+//! backlog. This file covers the credential lifecycle, the publish gate,
+//! the search filter, and the consumer's own held-copy re-evaluation on
+//! the single directory the harness already gives every other scenario.
 
 use serde_json::json;
-use syneroym_roym_core::{directory::MAX_HITS_PER_QUERY, services};
+use syneroym_roym_core::{
+    directory::MAX_HITS_PER_QUERY,
+    membership::{MAX_EVIDENCE_CREDENTIALS, MAX_EVIDENCE_DECISIONS},
+    services,
+};
+use syneroym_rpc::framing::MAX_FRAME_SIZE;
 
 use super::{fixtures::*, helpers::*, trust_fixtures::*};
 
@@ -99,19 +103,32 @@ async fn scenario_175_standing_over_the_wire_is_open_and_bounded_parity() {
     assert_eq!(stripped(&w), stripped(&n));
     assert_eq!(w["result"]["evidence"]["credentials"].as_array().unwrap().len(), 1, "{w}");
 
-    // Unknown member -> empty evidence, not an error.
+    // Unknown member (nobody `ensure_synorg` granted a credential) ->
+    // empty evidence, not an error.
     let (w, _) = wire_invoke(
         &h,
         services::DIRECTORY,
-        &env("directory.standing", json!({ "member_did": peer_did() })),
+        &env("directory.standing", json!({ "member_did": stranger_did() })),
     )
     .await;
-    assert_eq!(w["result"]["evidence"]["credentials"].as_array().unwrap().len(), 1, "{w}");
+    assert_eq!(w["result"]["evidence"]["credentials"].as_array().unwrap().len(), 0, "{w}");
 
-    // Bounded: issuing more credentials than the cap still answers at most
-    // MAX_EVIDENCE_CREDENTIALS (4).
-    for _ in 0..6 {
-        issue_credential(&h, &owner_did()).await;
+    // Bounded: issuing more credentials than the cap still answers exactly
+    // MAX_EVIDENCE_CREDENTIALS (4), not fewer. Each iteration's expiry is
+    // nudged by `i` seconds so the six new envelopes cannot collide on
+    // content -- and so on stored record id -- with each other even when
+    // the harness's pinned signing clock ties their `issued_at_secs`.
+    for i in 0..6u64 {
+        both_rpc(
+            &h,
+            "credential.issue",
+            json!({
+                "member_did": owner_did(),
+                "categories": FIXTURE_CATEGORIES,
+                "expires_at_secs": fixture_credential_expires_at_secs() + i,
+            }),
+        )
+        .await;
     }
     let (w, _) = wire_invoke(
         &h,
@@ -119,7 +136,7 @@ async fn scenario_175_standing_over_the_wire_is_open_and_bounded_parity() {
         &env("directory.standing", json!({ "member_did": owner_did() })),
     )
     .await;
-    assert!(w["result"]["evidence"]["credentials"].as_array().unwrap().len() <= 4, "{w}");
+    assert_eq!(w["result"]["evidence"]["credentials"].as_array().unwrap().len(), 4, "{w}");
 }
 
 #[tokio::test]
@@ -364,30 +381,49 @@ async fn scenario_188_trust_state_round_trips_through_a_signed_export_parity() {
     ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
     publish_listing_to_primary(&h, "hedge-trimming-188", "Hedge trimming").await;
-    both_rpc(
+    // Suspend the owner, who actually holds the published listing -- a
+    // withdrawal about a member with no listing would leave search
+    // unaffected either way, proving nothing about the round trip.
+    let (sw, _) = both_rpc(
         &h,
         "member.suspend",
-        json!({ "member_did": peer_did(), "rule": "r1", "reason": "t" }),
+        json!({ "member_did": owner_did(), "rule": "r1", "reason": "t" }),
     )
     .await;
+    assert!(sw["result"]["record_id"].is_string(), "{sw}");
+
+    let (cw1, _) = both_rpc(&h, "credential.list", json!({})).await;
+    let (rw1, _) = both_rpc(&h, "revocation.list", json!({})).await;
+    let (dw1, _) = both_rpc(&h, "member.decisions", json!({})).await;
 
     let (xw, xn) = both_rpc(&h, "directory.export", json!({})).await;
     assert_eq!(stripped(&xw), stripped(&xn));
 
-    let (iw, in_) = both_rpc(&h, "directory.import", json!({ "bundle": xw["result"] })).await;
+    // Import into a second, empty installation -- re-importing into the
+    // same store it was exported from cannot tell an import that writes
+    // nothing from one that does, because the data is already there.
+    let h2 = harness().await;
+    let (iw, in_) = both_rpc(&h2, "directory.import", json!({ "bundle": xw["result"] })).await;
     assert_eq!(stripped(&iw), stripped(&in_));
     assert!(iw["result"]["reindexed"].as_u64().unwrap() >= 1, "{iw}");
 
-    let (cw, cn) = both_rpc(&h, "credential.list", json!({})).await;
-    assert_eq!(stripped(&cw), stripped(&cn));
-    let (dw, dn) = both_rpc(&h, "member.decisions", json!({})).await;
-    assert_eq!(stripped(&dw), stripped(&dn));
+    let (cw2, cn2) = both_rpc(&h2, "credential.list", json!({})).await;
+    assert_eq!(stripped(&cw2), stripped(&cn2));
+    assert_eq!(cw2["result"]["records"], cw1["result"]["records"], "{cw2}");
+    let (rw2, rn2) = both_rpc(&h2, "revocation.list", json!({})).await;
+    assert_eq!(stripped(&rw2), stripped(&rn2));
+    assert_eq!(rw2["result"]["records"], rw1["result"]["records"], "{rw2}");
+    let (dw2, dn2) = both_rpc(&h2, "member.decisions", json!({})).await;
+    assert_eq!(stripped(&dw2), stripped(&dn2));
+    assert_eq!(dw2["result"]["records"], dw1["result"]["records"], "{dw2}");
 
-    // Search still hides the suspended member -- standing and the index
-    // windows both survived the round trip.
-    let (sw, sn) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(stripped(&sw), stripped(&sn));
-    assert_eq!(sw["result"]["hits"].as_array().unwrap().len(), 1, "the owner's own listing: {sw}");
+    // The fresh installation's own search hides the suspended member --
+    // standing and the index windows were both built from nothing but the
+    // imported bundle.
+    let (sw2, sn2) =
+        wire_invoke(&h2, services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(stripped(&sw2), stripped(&sn2));
+    assert_eq!(sw2["result"]["hits"].as_array().unwrap().len(), 0, "{sw2}");
 }
 
 #[tokio::test]
@@ -458,6 +494,11 @@ async fn scenario_191_search_reply_with_full_page_of_evidence_fits_the_proxy_lim
         .await;
     both_rpc(&h, "listing.set-limits", json!({ "window_secs": 86400, "max_per_window": 200 }))
         .await;
+    // Pad the owner up to the credential cap so each hit's own evidence is
+    // the worst case, not the one-credential common case.
+    for _ in 1..MAX_EVIDENCE_CREDENTIALS {
+        issue_credential(&h, &owner_did()).await;
+    }
     for i in 0..MAX_HITS_PER_QUERY {
         publish_listing_to_primary(&h, &format!("hedge-trimming-191-{i}"), &format!("Listing {i}"))
             .await;
@@ -467,8 +508,8 @@ async fn scenario_191_search_reply_with_full_page_of_evidence_fits_the_proxy_lim
     assert_eq!(hits.len(), MAX_HITS_PER_QUERY as usize, "{}", hits.len());
     let bytes = serde_json::to_vec(&w).unwrap().len();
     assert!(
-        bytes < 256 * 1024,
-        "a full page with evidence must fit the proxy's reply limit: {bytes} bytes"
+        bytes < MAX_FRAME_SIZE as usize,
+        "a full page with evidence must fit the proxy's reply frame limit: {bytes} bytes"
     );
 }
 
@@ -529,4 +570,123 @@ async fn scenario_192_a_suspended_members_index_rows_are_not_listed_parity() {
     let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
     assert_eq!(stripped(&w), stripped(&n));
     assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 0, "{w}");
+}
+
+#[tokio::test]
+async fn scenario_194_an_unlifted_suspension_survives_past_the_decision_cap_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+    publish_listing_to_primary(&h, "hedge-trimming-194", "Hedge trimming").await;
+
+    let (sw, _) = both_rpc(
+        &h,
+        "member.suspend",
+        json!({ "member_did": owner_did(), "rule": "permanent", "reason": "t" }),
+    )
+    .await;
+    let permanent_id = sw["result"]["record_id"].as_str().unwrap().to_string();
+
+    // Push more decisions than the standing cap through afterwards -- a
+    // naive newest-first truncation would drop the never-lifted suspension
+    // above, and the member would look valid again with nobody having
+    // signed a lift.
+    for i in 0..=MAX_EVIDENCE_DECISIONS {
+        let (sw2, _) = both_rpc(
+            &h,
+            "member.suspend",
+            json!({
+                "member_did": owner_did(), "rule": "temp", "reason": "t",
+                "scope": { "kind": "listing", "listing_id": format!("noise-{i}") },
+            }),
+        )
+        .await;
+        let id2 = sw2["result"]["record_id"].as_str().unwrap().to_string();
+        both_rpc(&h, "member.lift", json!({ "decision_record_id": id2, "reason": "ok" })).await;
+    }
+
+    let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
+    assert_eq!(stripped(&w), stripped(&n));
+    assert_eq!(
+        w["result"]["hits"].as_array().unwrap().len(),
+        0,
+        "the never-lifted suspension must still hide the listing: {w}"
+    );
+
+    let (stw, stn) = both_rpc(&h, "directory.standing", json!({ "member_did": owner_did() })).await;
+    assert_eq!(stripped(&stw), stripped(&stn));
+    let still_present =
+        stw["result"]["evidence"]["decisions"].as_array().unwrap().iter().any(|d| {
+            syneroym_signed_record::Envelope::from_json(d.as_str().unwrap()).unwrap().record_id()
+                == Ok(permanent_id.clone())
+        });
+    assert!(still_present, "the permanent suspension's own record must survive: {stw}");
+}
+
+#[tokio::test]
+async fn scenario_195_revoking_a_superseded_credential_is_refused_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+
+    let (cw1, _) = both_rpc(&h, "credential.list", json!({ "member_did": owner_did() })).await;
+    let old_id = cw1["result"]["records"][0]["record_id"].as_str().unwrap().to_string();
+
+    // Reissuing supersedes the old credential; `pick_current` already
+    // ignores it, so revoking it would change no verdict anywhere.
+    let (issue_w, _) = issue_credential(&h, &owner_did()).await;
+    let new_id = issue_w["result"]["record_id"].as_str().unwrap().to_string();
+
+    let (w, n) = both_rpc(
+        &h,
+        "revocation.issue",
+        json!({ "credential_record_id": old_id, "reason": "stale" }),
+    )
+    .await;
+    assert_eq!(stripped(&w), stripped(&n));
+    assert!(is_err(&w, -32602), "revoking a superseded credential must be refused: {w}");
+
+    let (w2, n2) = both_rpc(
+        &h,
+        "revocation.issue",
+        json!({ "credential_record_id": new_id, "reason": "gone" }),
+    )
+    .await;
+    assert_eq!(stripped(&w2), stripped(&n2));
+    assert!(w2["result"]["record_id"].is_string(), "the current credential must revoke: {w2}");
+}
+
+#[tokio::test]
+async fn scenario_196_a_non_numeric_until_secs_is_refused_not_silently_permanent_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+
+    let (w, n) = both_rpc(
+        &h,
+        "member.suspend",
+        json!({
+            "member_did": owner_did(), "rule": "r1", "reason": "t",
+            "until_secs": "1790000000",
+        }),
+    )
+    .await;
+    assert_eq!(stripped(&w), stripped(&n));
+    assert!(
+        is_err(&w, -32602),
+        "a non-numeric until_secs must be refused, not silently become 'until lifted': {w}"
+    );
+}
+
+#[tokio::test]
+async fn scenario_197_directory_standing_refuses_a_member_did_that_is_not_a_did_key_parity() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+
+    let (w, n) = wire_invoke(
+        &h,
+        services::DIRECTORY,
+        &env("directory.standing", json!({ "member_did": "not-a-did" })),
+    )
+    .await;
+    assert_eq!(stripped(&w), stripped(&n));
+    assert!(is_err(&w, -32602), "{w}");
 }

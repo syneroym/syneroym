@@ -38,6 +38,7 @@ use syneroym_roym_core::{
     directory::{self, DIRECTORY_SCHEMA_VERSION},
     envelope::{Request, Response},
     membership::{self, CheckInput, ListingRef, MembershipVerdict},
+    person,
     record::{self, Envelope},
     services,
     signing::{self, CertificateError},
@@ -115,8 +116,8 @@ pub(in crate::app) fn search_runs_indexes() -> [IndexDefinition; 2] {
 /// `SEARCH_INDEX` is created with these everywhere it is created (a
 /// literal list here would let one call site's indexes drift from
 /// another's). `issuer` backs `rewrite_listed_windows`'s per-member
-/// query and `listing_id`/`status` are the pre-C9 shape; `listed_until_secs`
-/// backs the host-side listed-window filter.
+/// query, `listing_id`/`status` back the plain listing lookups, and
+/// `listed_until_secs` backs the host-side listed-window filter.
 pub(in crate::app) fn search_index_indexes() -> [IndexDefinition; 4] {
     [
         idx("listing_id", IndexType::String),

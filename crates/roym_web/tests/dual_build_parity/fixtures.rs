@@ -531,10 +531,10 @@ pub(crate) async fn publish_signed_listing(h: &Harness, envelope: &str) -> (Valu
 
 /// `directory.publish` refuses on a node that has never declared itself a
 /// SynOrg (no `settings` row) -- call this before publishing in any
-/// scenario that expects the publish to succeed. Since C9, a publish also
-/// needs a membership credential: this enrols the directory's
-/// own signing certificate and issues one to `owner_did()` and
-/// `peer_did()`, covering `trust_fixtures::FIXTURE_CATEGORIES`.
+/// scenario that expects the publish to succeed. A publish also needs a
+/// membership credential: this enrols the directory's own signing
+/// certificate and issues one to `owner_did()` and `peer_did()`, covering
+/// `trust_fixtures::FIXTURE_CATEGORIES`.
 pub(crate) async fn ensure_synorg(h: &Harness) {
     both_rpc(
         h,
@@ -566,12 +566,11 @@ pub(crate) async fn wire_invoke(
 
 /// `directory.set-settings` on the second directory, so its `directory.info`
 /// probe answers and `directory.publish` is not refused as "no SynOrg".
-/// Since C9, also enrols its signing certificate and issues membership
-/// credentials the same way `ensure_synorg` does for the primary
-/// directory -- `directory2` shares the fixtures' single owner today
-/// (a distinct second-directory owner is not yet built; see
-/// the backlog), so this is a local dispatch through `dir2_local` rather
-/// than `both_rpc`.
+/// Also enrols its signing certificate and issues membership credentials
+/// the same way `ensure_synorg` does for the primary directory --
+/// `directory2` shares the fixtures' single owner today (a distinct
+/// second-directory owner is not yet built; see the backlog), so this is
+/// a local dispatch through `dir2_local` rather than `both_rpc`.
 pub(crate) async fn ensure_dir2_synorg(h: &Harness) {
     let (w, n) = h
         .dir2_local(

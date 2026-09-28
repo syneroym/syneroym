@@ -1,6 +1,6 @@
-//! Server half: export and import. The bundle is signed (C9): a
-//! directory's own statements about its members are as much this
-//! installation's signed word as anything else it produces.
+//! Server half: export and import. The bundle is signed: a directory's
+//! own statements about its members are as much this installation's
+//! signed word as anything else it produces.
 
 use std::collections::BTreeMap;
 

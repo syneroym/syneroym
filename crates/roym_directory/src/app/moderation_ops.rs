@@ -19,7 +19,16 @@ pub(in crate::app) async fn suspend<H: AppHost>(host: &H, req: &Request) -> Resp
     };
     let rule = req.params.get("rule").and_then(Value::as_str).unwrap_or_default().to_string();
     let reason = req.params.get("reason").and_then(Value::as_str).unwrap_or_default().to_string();
-    let until_secs = req.params.get("until_secs").and_then(Value::as_u64);
+    let until_secs = match req.params.get("until_secs") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(u) => Some(u),
+            // A string or a float silently becoming "until lifted" would
+            // turn a requested timed suspension into a permanent one with
+            // no error at all.
+            None => return Response::invalid_params("until_secs must be a non-negative integer"),
+        },
+    };
     let scope = match parse_scope(req) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -73,6 +82,7 @@ pub(in crate::app) async fn suspend<H: AppHost>(host: &H, req: &Request) -> Resp
         member_did: member_did.clone(),
         about: String::new(),
         issued_at_secs: now,
+        until_secs,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, DECISIONS, &record_id, &row).await {
@@ -131,6 +141,12 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
             Err(e) => return Response::internal_error(e),
         };
     if let Some(existing) = existing.into_iter().next() {
+        // Same idempotent-retry rationale as `credential_ops::revoke`: the
+        // lift record already exists, but the rebuild that should follow
+        // it may not have run yet.
+        if let Err(e) = standing::rebuild_for(host, &row.member_did).await {
+            return Response::internal_error(e);
+        }
         return Response::ok(
             json!({ "record_id": existing.record_id, "envelope": existing.envelope }),
         );
@@ -163,6 +179,7 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
         member_did: row.member_did.clone(),
         about: decision_record_id,
         issued_at_secs: now,
+        until_secs: None,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, DECISIONS, &record_id, &out_row).await {

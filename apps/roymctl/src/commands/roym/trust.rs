@@ -1,6 +1,6 @@
 //! Cross-installation trust: credentials, revocations, moderation
-//! decisions, and the consumer's own standing checks (C9). Handlers only
-//! -- the CLI surface (`CredentialCommands`, and the `DirectoryCommands`/
+//! decisions, and the consumer's own standing checks. Handlers only --
+//! the CLI surface (`CredentialCommands`, and the `DirectoryCommands`/
 //! `MemberCommands` variants that call into these) lives in `directory.rs`.
 
 use std::path::Path;

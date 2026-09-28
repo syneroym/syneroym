@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{area::Area, safety::PublicationLimits};
 
-/// Bumped to 4 by C9: new `credentials`/`revocations`/`moderation_decisions`/
+/// New `credentials`/`revocations`/`moderation_decisions`/
 /// `held_memberships` bundle sections and `SourceRow::issuer_did` /
-/// `SearchHit::membership`, none of which a version-3 bundle carries. A
+/// `SearchHit::membership`, none of which an older bundle carries. A
 /// bundle exported before that change no longer deserializes, and
 /// `import`'s own version gate must say so rather than accept it and fail
 /// row by row.
@@ -77,7 +77,7 @@ pub const RUN_RETENTION_SECS: u64 = 3_600;
 
 /// A SynOrg's own statement about itself. Unsigned app state: the spec's
 /// Records table has no settings row and no roster row. `directory` does
-/// mount a signing certificate (C9) but only to sign the three `membership`
+/// mount a signing certificate, but only to sign the three `membership`
 /// record types, never `settings` itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SynOrgSettings {

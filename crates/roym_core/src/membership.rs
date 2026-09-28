@@ -394,7 +394,11 @@ fn find_revocation(
     member_did: &str,
     now_secs: u64,
 ) -> Option<VerifiedRevocation> {
-    evidence.revocations.iter().find_map(|env| {
+    // One revocation per credential is ever meaningful, so bounding the
+    // scan the same way as the credentials themselves stops a hostile
+    // source from making a consumer pay for a signature check per forged
+    // revocation it stuffs into the reply.
+    evidence.revocations.iter().take(MAX_EVIDENCE_CREDENTIALS).find_map(|env| {
         let r = verify_revocation(env, issuer, now_secs).ok()?;
         (r.payload.credential_record_id == cred.record_id && r.payload.member_did == member_did)
             .then_some(r)
@@ -453,8 +457,8 @@ fn active_suspension(
 /// `(Named, Named)` compares labels; a `Named` paired with a geometric
 /// area cannot show containment either way, so it counts as outside; two
 /// geometric areas fall back to *intersects* (a listing area that pokes
-/// outside the SynOrg's area still counts as in scope -- a backlog row,
-/// not a bug, see the plan's "Flag for review").
+/// outside the SynOrg's area still counts as in scope -- a known
+/// limitation, not a bug, tracked in the deferred backlog).
 fn area_within(listing_area: &Area, scope_area: &Area) -> bool {
     match (listing_area, scope_area) {
         (Area::Named { .. }, Area::Named { .. }) => labels_match(listing_area, scope_area),

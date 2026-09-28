@@ -10,10 +10,16 @@ use super::*;
 pub(in crate::app) struct IssuedRecordRow {
     pub(in crate::app) record_id: String,
     pub(in crate::app) member_did: String,
-    /// `credential_record_id` for a revocation; empty otherwise.
+    /// `credential_record_id` for a revocation, the superseded decision's
+    /// `record_id` for a lift; empty otherwise (a credential, or a suspend
+    /// decision).
     #[serde(default)]
     pub(in crate::app) about: String,
     pub(in crate::app) issued_at_secs: u64,
+    /// A suspend decision's `until_secs` (`None` = until lifted). Absent
+    /// for every other record type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::app) until_secs: Option<u64>,
     pub(in crate::app) envelope: String,
 }
 
@@ -28,6 +34,64 @@ pub(in crate::app) fn issued_record_indexes() -> [IndexDefinition; 2] {
     [idx("member_did", IndexType::String), idx("issued_at_secs", IndexType::Numeric)]
 }
 
+/// Picks which decisions ride in a member's standing bytes, bounded by
+/// `MAX_EVIDENCE_DECISIONS`. Every unlifted suspension that is still
+/// active (no `until_secs`, or `until_secs` still ahead of `now`) is
+/// always kept, however old -- age-based truncation alone could drop it
+/// from the cap while it still governs the member, so a withdrawn member
+/// would look valid again with nobody having signed a lift. The
+/// remaining slots go to the newest history; a suspend and its lift are
+/// always kept or dropped together, so a lift never rides without the
+/// decision it lifts.
+fn select_evidence_decisions(all: &[IssuedRecordRow], now: u64) -> Vec<IssuedRecordRow> {
+    let lifts_by_target: std::collections::BTreeMap<&str, &IssuedRecordRow> =
+        all.iter().filter(|d| !d.about.is_empty()).map(|d| (d.about.as_str(), d)).collect();
+
+    struct Group<'a> {
+        suspend: &'a IssuedRecordRow,
+        lift: Option<&'a IssuedRecordRow>,
+        active: bool,
+        recency: u64,
+    }
+    let mut groups: Vec<Group<'_>> = all
+        .iter()
+        .filter(|d| d.about.is_empty())
+        .map(|s| {
+            let lift = lifts_by_target.get(s.record_id.as_str()).copied();
+            let active = lift.is_none() && s.until_secs.is_none_or(|u| now < u);
+            let recency = lift.map_or(s.issued_at_secs, |l| l.issued_at_secs.max(s.issued_at_secs));
+            Group { suspend: s, lift, active, recency }
+        })
+        .collect();
+    groups.sort_by(|a, b| {
+        b.recency.cmp(&a.recency).then(a.suspend.record_id.cmp(&b.suspend.record_id))
+    });
+
+    let mut selected: Vec<IssuedRecordRow> = Vec::new();
+    for g in groups.iter().filter(|g| g.active) {
+        selected.push(g.suspend.clone());
+    }
+    let mut remaining = membership::MAX_EVIDENCE_DECISIONS.saturating_sub(selected.len());
+    for g in groups.iter().filter(|g| !g.active) {
+        if remaining == 0 {
+            break;
+        }
+        let cost = usize::from(g.lift.is_some()) + 1;
+        if cost > remaining {
+            continue;
+        }
+        selected.push(g.suspend.clone());
+        if let Some(l) = g.lift {
+            selected.push(l.clone());
+        }
+        remaining -= cost;
+    }
+    selected.sort_by(|a, b| {
+        b.issued_at_secs.cmp(&a.issued_at_secs).then(a.record_id.cmp(&b.record_id))
+    });
+    selected
+}
+
 /// Rebuilds `STANDING[member_did]` from the three issued-record
 /// collections, then rewrites that member's `search_index` listed
 /// windows so a standing change and the index it drives land in
@@ -40,6 +104,7 @@ pub(in crate::app) async fn rebuild_for<H: AppHost>(
         ensure_coll(host, c, &issued_record_indexes()).await?;
     }
     ensure_coll(host, STANDING, &[]).await?;
+    let now = clock::now_secs();
 
     let mut creds: Vec<IssuedRecordRow> =
         collect_raw_where(host, CREDENTIALS, &json!({ "member_did": member_did }))
@@ -62,18 +127,14 @@ pub(in crate::app) async fn rebuild_for<H: AppHost>(
             .filter(|r: &IssuedRecordRow| cred_ids.contains(&r.about))
             .collect();
 
-    let mut decs: Vec<IssuedRecordRow> =
+    let all_decs: Vec<IssuedRecordRow> =
         collect_raw_where(host, DECISIONS, &json!({ "member_did": member_did }))
             .await?
             .into_iter()
             .filter_map(|(_, v)| serde_json::from_value(v).ok())
             .collect();
-    decs.sort_by(|a, b| {
-        b.issued_at_secs.cmp(&a.issued_at_secs).then(a.record_id.cmp(&b.record_id))
-    });
-    decs.truncate(membership::MAX_EVIDENCE_DECISIONS);
+    let decs = select_evidence_decisions(&all_decs, now);
 
-    let now = clock::now_secs();
     if creds.is_empty() && revs.is_empty() && decs.is_empty() {
         AppDataLayer::delete(host, STANDING.to_string(), member_did.to_string())
             .await
@@ -136,8 +197,9 @@ pub(in crate::app) async fn load<H: AppHost>(
 
 pub(in crate::app) async fn standing_verb<H: AppHost>(host: &H, req: &Request) -> Response {
     let member_did = match req.params.get("member_did").and_then(Value::as_str) {
-        Some(m) if !m.is_empty() => m.to_string(),
-        _ => return Response::invalid_params("member_did is required"),
+        Some(m) if person::is_did_key(m) => m.to_string(),
+        Some(_) => return Response::invalid_params("member_did must be a did:key"),
+        None => return Response::invalid_params("member_did is required"),
     };
     let issuer = issuer_did(host).await;
     let evidence = match load(host, &member_did).await {
