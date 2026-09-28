@@ -22,9 +22,11 @@ choose differently, the section named in the right column changes.
 | Q2 | Does `directory.publish` require the listing's issuer to hold a valid credential from this SynOrg? | **Yes.** The spec says the directory "holds the listings its members published". A withdrawal is still accepted from a non-member. This changes fixtures in ~30 C6 parity scenarios, one e2e, and Hub cases 13–23b (§10.3). | §5.6, §10.3 |
 | Q3 | How does the consumer know which issuer DID a directory should sign with? | **Pinned per source at `directory.add-source`** — from an explicit `issuer_did` parameter if the person gives one, otherwise from `directory.info` (trust on first use). Never re-pinned silently. | §2 D-C9-4, §6.1 |
 | Q4 | R3 row 3 says "cached copies show the **revocation**" after a **suspension**. The Records table has both `revocation` and `moderation-decision`. | **Keep them separate records** (S11 suspend ≠ S13 revoke). The consumer's check shows *either* withdrawal: `revoked` or `suspended`. Test wording: "shows the withdrawal". | §2 D-C9-5 |
-| Q5 | Four inherited cross-node rows (dropped ack, forged author, future/past timestamp) cannot be driven over a real connection through any public interface. | **Add a `test-support` cargo feature to `syneroym-conversation`** with two one-shot hooks, enabled only from `syneroym-substrate`'s `[dev-dependencies]`. Alternative: accept crate-level unit tests as the coverage and record the residual. | §9, §2 D-C9-10 |
+| Q5 | Three inherited cross-node rows (dropped ack, forged author, future/past timestamp) cannot be driven over a real connection through any public interface. | **Add a `test-support` cargo feature to `syneroym-conversation`** with two one-shot hooks, **both on the sending side and keyed by service id** (every test node runs in one process), enabled only from `syneroym-substrate`'s `[dev-dependencies]`. Alternative: accept crate-level unit tests as the coverage and record the residual. | §9, §2 D-C9-10 |
 | Q6 | Two backlog rows are targeted "C9 / follow-on" but are not R3: the Hub transaction action panel (Playwright 33–39) and `conversation.history` reconciliation. | **Do not build them in C9.** Retarget both rows to `TBD` with their existing triggers. | §12 |
 | Q7 | `fct` claims portability row (deferred-backlog §7, "M06C C9 to decide"). | **Decide: not portable.** C9 makes no cross-installation use of `fct`; every cross-install trust statement is a signed record. Move the row to "Recently resolved". | §12 |
+| Q8 | A natively linked Roym has no instance certificate (`deferred-backlog.md:86`), so a native `directory` can neither serve a foreign search nor publish to a foreign directory. Exit criterion 1 asks for both builds. | **State it, do not fix it in C9.** The trust logic is proved on both builds by the parity suite (its foreign-wire routes use `host_for_wire` on native too). The real three-installation proof (§10.2) runs on the WASM build only. Fixing it means `init_roym` installing instance certificates, which is substrate work outside R3. `status.md` and the R3 "Passed" note must both say "WASM build across installations; both builds in parity". | §1, §2 D-C9-13, §12 |
+| Q9 | Spec steps S4–S5 and `task.md` reference-scenario step 5 say "Y **applies** to the SynOrg; Z reviews". Nothing in the tree lets a provider apply. | **Do not build an in-app application in C9.** Y gives Z their DID outside the app (a message, a call); Z reviews and issues. None of R3's three acceptance tests needs an application step. An application verb is a new wire-reachable *write* path that needs its own abuse bounds and a signed person identity (the wire caller is an instance DID, not the person). Backlog row, plus an edit to the task.md reference scenario. | §2 D-C9-14, §12 |
 
 ---
 
@@ -34,7 +36,9 @@ From `task.md` row C9 and the spec's R3 table:
 
 1. **R3 row 1** — the full R1+R2 flow with consumer X, provider Y, and SynOrg
    owner Z on three separate installations, resolving each other through
-   the registry (ADR-0022), not through pre-seeded addresses.
+   the registry (ADR-0022), not through pre-seeded addresses. Across
+   installations this runs on the WASM build; both builds are compared in
+   the parity suite (D-C9-13).
 2. **R3 row 2** — a signed `membership-credential` (issuer, scope, expiry)
    and signed `revocation`s. The consumer's **own** node verifies
    signature, issuer, scope, and expiry. The directory's word is never a
@@ -52,7 +56,8 @@ from-scratch demo script) first.
 
 **Not in C9:** group chat (C10), any new host interface, any new WIT,
 issuer-key revocation through the registry (§2 D-C9-8), a signed
-"complete revocation list" record (§2 D-C9-6).
+"complete revocation list" record (§2 D-C9-6), an in-app "apply to join"
+step (§2 D-C9-14), native-build Roym across installations (§2 D-C9-13).
 
 ---
 
@@ -68,10 +73,12 @@ issuer-key revocation through the registry (§2 D-C9-8), a signed
 | D-C9-6 | **"Signed revocation list" = the set of individually signed `revocation` records the issuer serves.** No signed snapshot record. The consumer's `valid` verdict carries `revocations_checked_as_of_secs` and the UI states that a withheld revocation cannot be detected. | The Records table has `revocation`, not `revocation-list`, and `RECORD_TYPES` is fixed. In R3 the issuer and the directory are the same party, so omission means the issuer hiding its own decision. A snapshot record is a backlog row with trigger "a directory serves credentials it did not issue". |
 | D-C9-7 | **The directory keeps a derived `standing` row per member**: the evidence bytes (credentials, their revocations, the newest decisions) a consumer would receive. It is rebuilt whenever one of that member's records is written, and fully rebuilt on `import` and `reindex`. `directory.search` and `directory.standing` both serve these bytes. | One indexed `get` per distinct issuer at search time, instead of three queries. The same bytes feed the directory's filter and the consumer's check. Derived and rebuildable, like `search_index` (C6's rule). |
 | D-C9-8 | **Issuer-*key* revocation is not checked.** `RevocationSource::check_did` stays `Unknown`. Record-level revocation is computed by the evaluator, not through `RevocationSource`. | Key revocation lives in the registry's master anchor (`crates/core/src/dht_registry.rs`, `revoked_keys`), which no guest can reach. C3's §18 note E said "C9 supplies the real source for both". That is stale (§14 item 2). Backlog row. |
-| D-C9-9 | **The directory's server-side search filter judges membership, not scope.** A hit stays only when `evaluate(.., listing: listing_id only)` is `valid`. Scope is judged by the consumer and by the publish gate. | The index row does not carry the full payload, and parsing each envelope before truncation is expensive on an anonymous path. The publish gate already refuses an out-of-scope listing. |
-| D-C9-10 | **(Q5) A `test-support` feature on `syneroym-conversation`** adds two one-shot hooks: `drop_next_acks(n)` on the receiving side (store, then fail instead of ack), and `override_next_outgoing(OutgoingOverride { author, sender_timestamp_ms })` on the sending side. All hook code is `#[cfg(feature = "test-support")]`. Only `crates/substrate/Cargo.toml` `[dev-dependencies]` enables it. There is no automatic guard against a normal dependency enabling it; the guard is review plus the feature's name. |  Rows 4, 7, 13 need a peer that misbehaves in a precise way. The receiving code is the real code over a real connection; only the misbehaving sender/ack is synthetic. |
+| D-C9-9 | **The directory's search filter judges membership, not scope, and it runs at the host, before the candidate ceiling.** Each `search_index` row carries a *listed window* (`listed_from_secs`, `listed_until_secs`) computed from the member's standing, and the host filter adds `listed_from_secs <= now < listed_until_secs`. The window is rewritten whenever that member's standing changes. The guest-side `evaluate` check on the returned hits stays as a second guard. Scope is judged by the consumer and by the publish gate. | A guest-side filter that runs after `collect_search_candidates` lets rows of suspended, revoked, or non-member providers use up the candidate ceiling (`search_ops.rs:180`). Valid members then drop out, and `truncated` stops meaning what it says. Two numeric columns keep time-based changes (a credential expiring, a suspension's `until_secs` passing) correct without a rewrite at that moment. The index row does not carry the full payload, so scope cannot be judged there. |
+| D-C9-10 | **(Q5) A `test-support` feature on `syneroym-conversation`** adds two one-shot hooks, **both on the sending side and both keyed by the sending service id**: `drop_next_ack(service_id)` (the peer stores the message, and the sender then treats the answer as lost, `Disposition::Unreachable`, so the normal retry runs) and `override_next_send(service_id, SendOverride { author, sender_timestamp_ms })` (applied in `send` **before** the message is signed, so the signature covers the false values). All hook code is `#[cfg(feature = "test-support")]`. Only `crates/substrate/Cargo.toml` `[dev-dependencies]` enables it. There is no automatic guard against a normal dependency enabling it; the guard is review plus the feature's name. | Rows 4, 7, 13 need a peer that misbehaves in a precise way. The receiving code is the real code over a real connection; only the sender's behaviour is synthetic. *Why these exact places:* the message is signed in `send` (`crates/conversation/src/lib.rs:280`) over author and timestamp, so changing them later in `deliver_one` (`transport.rs:156`) breaks the signature. The receiver then refuses for the wrong reason (`transport.rs:237` runs before the timestamp check), and "a year in the past is accepted" fails. A receiver-side error comes back as `ProxyError::Callee`, which `classify` (`transport.rs:490`) makes terminal, not retried. A real lost ack is a timeout. Every test node runs inside one process (`common/node.rs:310` `tokio::spawn`), so an unkeyed hook could fire on the wrong node. |
 | D-C9-11 | **Directory schema version 3 → 4.** New collections and new bundle sections. No migration (pre-release). | `DIRECTORY_SCHEMA_VERSION`'s own comment: a bundle from before a required field must fail at the version gate. |
 | D-C9-12 | **`directory.standing` is the fourth wire-reachable directory method (`WireRule::Open`).** | A credential, a revocation, and a moderation decision are public statements on purpose. Reading them costs the SynOrg nothing to leave open. |
+| D-C9-13 | **(Q8) R3 across installations is proved on the WASM build; the trust logic is proved on both builds by parity.** | `deferred-backlog.md:86`: natively linked Roym services have no instance certificate. Said out loud so exit criterion 1 is not read as met across installations for native. |
+| D-C9-14 | **(Q9) Joining a SynOrg is out of band in C9.** The provider gives the owner their person DID outside the app; the owner reviews and issues. `member.add` keeps working for a roster note with no credential. | See Q9. R3's acceptance tests start at "the SynOrg issued a credential", not at the application. |
 
 ---
 
@@ -258,6 +265,18 @@ impl ModerationDecisionPayload { pub fn validate(&self, now_secs: u64) -> Result
 
 pub fn evaluate(evidence: &MembershipEvidence, input: &CheckInput<'_>) -> MembershipVerdict;
 
+/// The time window in which one listing of this member may appear in
+/// this directory's search, as `(listed_from_secs, listed_until_secs)`.
+/// `(0, 0)` means "not listed". Used only by the directory on its own
+/// evidence (D-C9-9), so the search filter can run at the host.
+pub fn listed_window(
+    evidence: &MembershipEvidence,
+    issuer: &str,
+    member_did: &str,
+    listing_id: &str,
+    now_secs: u64,
+) -> (u64, u64);
+
 /// Words for `roymctl` and a Rust-side assertion; the Hub has its own copy.
 pub fn verdict_word(v: &MembershipVerdict) -> &'static str; // "none" | "valid" | ...
 ```
@@ -337,6 +356,18 @@ fn verify_credential(env, issuer, member, now) -> Result<Cred, String>:
     Ok(Cred { record_id: v.record_id, supersedes: v.supersedes, issued_at: v.issued_at_secs,
               expires_at_secs: exp, payload: p, issuer: v.issuer })
 
+fn listed_window(ev, issuer, member, listing_id, now) -> (u64, u64):
+    // Same verification steps as evaluate 1-3, reusing its private helpers.
+    no good credential, or the current credential is revoked -> (0, 0)
+    until = cred.expires_at_secs
+    from  = 0
+    for each active, not-lifted suspend that applies to (membership | this listing_id):
+        match d.until_secs:
+            None    -> return (0, 0)              // until lifted: a lift rewrites the row
+            Some(u) -> from = max(from, u)        // listed again once it ends
+    if from >= until: return (0, 0)
+    (from, until)
+
 fn verify_revocation / verify_decision: same shape; type/version check;
     revocation: subject == payload.credential_record_id;
     decision:   subject == member && payload.member_did == member;
@@ -376,6 +407,12 @@ local `sign_record` helper that builds `Envelope::unsigned` and signs
 13. category outside scope → `OutOfScope{outside:["x"]}`; area outside → `OutOfScope{outside:["area"]}`; scope not judged when `categories: None`.
 14. two credentials, the newer supersedes the older → newer chosen; the older's revocation no longer matters.
 15. `NO_INSTANT_REMOVAL_NOTICE` and `WITHHELD_REVOCATION_NOTICE` appear verbatim in `../roym_web/ui/src/directory/membership.ts` (same file-read pattern as `router.rs:240`).
+16. `listed_window`: no credential → `(0,0)`; valid → `(0, expires_at)`;
+    revoked → `(0,0)`; suspended until lifted → `(0,0)`; suspended until
+    `u` → `(u, expires_at)`; a listing-scoped suspension affects only its
+    listing; `u >= expires_at` → `(0,0)`. For every case, check that
+    `evaluate(.., listing: Some(listing_id only))` is `Valid` exactly when
+    `from <= now < until`, so the two functions cannot drift apart.
 
 ### 3.3 `crates/roym_core/src/directory.rs`
 
@@ -636,6 +673,11 @@ pub(in crate::app) async fn standing_verb<H: AppHost>(host: &H, req: &Request) -
 pub(in crate::app) async fn own_verdict<H: AppHost>(
     host: &H, member_did: &str, listing: Option<ListingRef<'_>>, now: u64,
 ) -> Result<MembershipVerdict, String>;
+/// `load` + `membership::listed_window` with the own issuer; `(0, 0)`
+/// when this node has no owner.
+pub(in crate::app) async fn listed_window_for<H: AppHost>(
+    host: &H, member_did: &str, listing_id: &str, now: u64,
+) -> Result<(u64, u64), String>;
 ```
 
 `rebuild_for` pseudo-code:
@@ -646,16 +688,21 @@ creds = collect_raw_where(CREDENTIALS, {"member_did": m}) -> IssuedRecordRow
 ids = creds.record_id set
 revs = collect_raw_where(REVOCATIONS, {"member_did": m}) filter about in ids
 decs = collect_raw_where(DECISIONS, {"member_did": m}) sort desc; take MAX_EVIDENCE_DECISIONS
-if creds, revs, decs all empty: delete STANDING[m] (ignore NotFound); return
-put STANDING[m] = StandingRow { member_did: m, evidence: {credentials, revocations, decisions}
-                                 (envelopes only), updated_at_secs: now }
+if creds, revs, decs all empty: delete STANDING[m] (ignore NotFound)
+else: put STANDING[m] = StandingRow { member_did: m, evidence: {credentials, revocations,
+                                      decisions} (envelopes only), updated_at_secs: now }
+// D-C9-9: the member's index rows carry the listed window the host filter reads.
+search_ops::rewrite_listed_windows(host, m, &evidence, now)
 ```
+
+`rebuild_for` is called on every credential issue, revocation, suspend,
+and lift, so a change of standing reaches the index in the same verb.
 
 `rebuild_all`: `delete_many(STANDING, {})`, then distinct `member_did`
 over the three collections → `rebuild_for` each. Called from `import`
-and from `directory.reindex` (`search_ops::reindex` calls both
-`rebuild_search_index` and `standing::rebuild_all`; return
-`{ rebuilt, standing }`).
+and from `directory.reindex`. **Order:** `standing::rebuild_all` first,
+then `rebuild_search_index`, because the index rows read the standing to
+compute their window. `search_ops::reindex` returns `{ rebuilt, standing }`.
 
 `standing_verb` (`directory.standing`, wire-open), params `{ member_did }`:
 
@@ -727,9 +774,55 @@ under the provider's delegation). The credential's subject must be that
 DID. `published_by` (the connection identity) is still what the rate
 limit keys on; do not change that.
 
-### 5.7 Search filter + evidence (`app/search_ops.rs::search`)
+### 5.7 Search filter + evidence (`app/search_ops.rs`)
 
-After `let by_listing = refine_by_listing(..)` (line ~187), before sort:
+**Host-side filter (D-C9-9).** `SearchIndexRow` gains two fields:
+
+```rust
+    /// The listed window from `membership::listed_window` over the
+    /// member's standing. `(0, 0)` = not listed. Rewritten whenever the
+    /// member's standing changes; time-based changes need no rewrite.
+    listed_from_secs: u64,
+    listed_until_secs: u64,
+```
+
+- `build_index_rows` gains a `(listed_from_secs, listed_until_secs)`
+  parameter. Its two callers compute it first with
+  `standing::listed_window_for(host, issuer, listing_id, now)` (a thin
+  wrapper: `load` + `membership::listed_window` with the own issuer):
+  `publication_ops::store_publication_and_index` and
+  `rebuild_search_index`.
+- `build_search_filter` gains a `now: u64` parameter and adds two
+  clauses next to `{"status": "active"}`:
+  `{"listed_from_secs": {"$lte": now}}` and
+  `{"listed_until_secs": {"$gt": now}}`.
+- `SEARCH_INDEX` gets `idx("issuer", IndexType::String)` and
+  `idx("listed_until_secs", IndexType::Numeric)` wherever it is created
+  (`publication_ops.rs:163`, `search_ops.rs:160`, `rebuild_search_index`).
+- New:
+
+```rust
+/// Recomputes the listed window on every index row of `member_did`'s
+/// listings. Rows are rewritten with `put` (same key), never deleted, so a
+/// crash half-way leaves some rows with an old window and a later rebuild
+/// fixes them.
+pub(in crate::app) async fn rewrite_listed_windows<H: AppHost>(
+    host: &H,
+    member_did: &str,
+    evidence: &MembershipEvidence,
+    now: u64,
+) -> Result<(), String>;
+// rows = collect_raw_where(SEARCH_INDEX, {"issuer": member_did})
+// for each row: (from, until) = membership::listed_window(evidence, own_issuer,
+//                                   member_did, &row.listing_id, now);
+//               if changed: put_json(SEARCH_INDEX, search_index_key(..), &row)
+```
+
+**Guest-side second guard.** After `let by_listing = refine_by_listing(..)`
+(line ~187), before sort. The host filter has already removed rows that
+are not listed; this re-checks the returned hits against the signed
+evidence the hit will carry, so the stored window can never admit a hit
+the evidence does not support:
 
 ```rust
     let now = clock::now_secs();
@@ -799,8 +892,9 @@ before writing the assertion).
   `syneroym_roym_core::backup::check_signed_bundle(&bundle, &owner, now)`
   (same as catalog `backup.rs:97`). Map the four new section names to
   their collections in the `match name.as_str()` (line ~107). After the
-  writes, call `search_ops::rebuild_search_index` (already done) **and**
-  `standing::rebuild_all`.
+  writes, call `standing::rebuild_all` **first**, then
+  `search_ops::rebuild_search_index` (already called today), so the index
+  windows are computed from the imported standing.
 - Create the new collections (with their indexes) before writing, the
   same way the existing loop does.
 
@@ -969,10 +1063,14 @@ variants that call into it:
 
 `Add` gains `#[arg(long)] issuer: Option<String>` → `issuer_did` param.
 
-`Find` output: print one line per source with `membership::verdict_word`
-(roymctl may depend on `syneroym-roym-core`; check `apps/roymctl/Cargo.toml`
-first — if not already a dependency, print the `state` string instead of
-adding one).
+`Find` output: replace `membership_words(credential: &str)`
+(`apps/roymctl/src/commands/roym/directory.rs:361`) and its caller
+(`:575`, which reads the removed `hit["credential"]`). The new function
+takes one `sources[]` entry's `membership` value and returns the same
+words as the Hub's `membershipWords`, one line per source. Use
+`membership::verdict_word` if `apps/roymctl/Cargo.toml` already depends
+on `syneroym-roym-core`; otherwise match on the `state` string. Do not
+add the dependency just for this.
 
 Add CLI parse tests for every new subcommand in
 `apps/roymctl/src/commands/roym/tests.rs` (this also closes part of the
@@ -1004,8 +1102,23 @@ if it would pass):
   categories the existing listing fixtures use. Find every category string
   used by `full_listing_params` and `publish_listing_to_*` and put all of
   them in the SynOrg's `categories` too.
-- `ensure_dir2_synorg(h)`: same for the second directory (its own owner
-  and its own enrolment through `h.dir2_local`).
+- `ensure_dir2_synorg(h)`: same for the second directory, through
+  `h.dir2_local`.
+
+**The second directory needs its own owner.** Today `directory2` is
+registered with the same `owner_did` as every other service
+(`helpers.rs:1130` WASM, `:1267` native), so both directories issue as
+the same DID and no test can show "a credential from SynOrg A served by
+directory B is refused". Change both lines to
+`set_owner(did_for_service("directory2"), dir2_owner_did())`, with a new
+`dir2_owner_identity()` / `dir2_owner_did()` (fixed seed, like
+`owner_identity()`) in the new `trust_fixtures.rs`. Enrol `directory2`
+with a certificate minted by `dir2_owner_identity()`. **Then re-run the
+C6 two-directory scenarios (98, 102c, 102d, 119, 120)** before writing
+any new one: `directory2`'s local publish now records a different
+`published_by`, and its signing key changes. Fix any expectation that
+silently assumed one shared owner. `helpers.rs` is at 1487 of its 1494
+cap: the two changed lines must stay one line each.
 
 Then run the whole directory module. Any scenario that still fails is one
 whose publisher is neither the owner nor the peer — fix it by issuing a
@@ -1015,13 +1128,13 @@ credential in that scenario, not by weakening the gate.
 
 | Scenario | File | Change |
 |---|---|---|
-| 118 "exactly three directory verbs are wire-reachable" | `directory.rs:640` | Four, including `directory.standing`. Rename the fn to `scenario_118_exactly_four_directory_verbs_are_wire_reachable_parity` |
+| 118 "exactly three directory verbs are wire-reachable" | `directory.rs:640` | Four, including `directory.standing`. Rename the fn to `scenario_118_exactly_four_directory_verbs_are_wire_reachable_parity`. The scenario only tests what the two hand-kept lists name (their own comment says so, `fixtures.rs:560`), so update both: add to `ALL_DIRECTORY_VERBS` (`fixtures.rs:567`) the twelve new verbs `credential.issue`, `credential.list`, `revocation.issue`, `revocation.list`, `member.suspend`, `member.lift`, `member.decisions`, `directory.standing`, `directory.check-standing`, `directory.memberships`, `directory.signing-status`, `directory.install-signing-certificate`; and add `directory.standing` to `WIRE_REACHABLE_DIRECTORY_VERBS` (`fixtures.rs:597`), fixing its "exactly these three" comment. `fixtures.rs` is at 792 lines: move both constants to `trust_fixtures.rs` rather than growing it |
 | 93 "a search response carries no verification verdict" | `directory.rs:392` | Still true: assert `membership` is evidence (arrays of strings) and no `state`/`verified` key appears anywhere in a hit |
 | 97 / 98 / 102c / 102d / 119 | `directory.rs` | Any assertion on `hit["credential"]` becomes `hit["sources"][i]["membership"]["state"]` |
 | 117 export/import round trip | `directory.rs:849` | Schema version 4; bundle is now signed |
 | 170 "directory export unsigned and imports" | `bundles.rs:294` | Rename to `scenario_170_directory_export_is_signed_and_imports_parity`; assert `manifest_signature` present and verifies (`verify_and_strip_manifest_signature`), and an unsigned copy is refused |
 
-### 8.3 New scenarios (173–191) in `trust.rs`
+### 8.3 New scenarios (173–193) in `trust.rs`
 
 Each scenario runs on both builds and compares with `stripped(...)`.
 
@@ -1036,20 +1149,55 @@ Each scenario runs on both builds and compares with `stripped(...)`.
 | 179 | `revocation_removes_the_member_from_search` | hit present → `revocation.issue` → gone; revoke twice is idempotent |
 | 180 | `suspend_hides_and_lift_restores` | membership scope |
 | 181 | `a_listing_scoped_suspension_hides_only_that_listing` | two listings, one hidden |
-| 182 | `a_consumer_sees_valid_membership_per_source` | two-directory harness: `sources[0].membership.state == "valid"`, issuer pinned from `info` |
-| 183 | `a_forged_credential_is_refused_on_the_consumers_node` | `hostile_source_response` serves a credential signed by `peer_identity()` → `refused` (matrix row 1/2) |
-| 184 | `a_directory_asserting_an_expired_credential_does_not_win` | hostile source serves an expired credential (sign via raw `Envelope::unsigned` with past `issued_at`/`expires_at`, pinned issuer = dir2 owner) → `expired` |
+| 182 | `a_consumer_sees_valid_membership_per_source` | two-directory harness, each directory with its own owner (§8.1): `sources[i].membership.state == "valid"` for each, and each verdict's `issuer` is that source's own owner, pinned from `info` |
+| 183 | `a_forged_credential_is_refused_on_the_consumers_node` | trust source serves a validly signed listing with a credential signed by `peer_identity()` → `refused` (matrix row 1/2) |
+| 184 | `a_directory_asserting_an_expired_credential_does_not_win` | trust source serves a credential correctly signed by the pinned trust-source issuer but expired → `expired` |
 | 185 | `a_directory_asserting_an_out_of_scope_credential_does_not_win` | → `out-of-scope` naming the category |
 | 186 | `a_held_copy_shows_the_withdrawal_on_next_check` | search (valid) → owner suspends → `memberships` still `valid` (stale copy, honest `as_of_secs`) → `check-standing` → `suspended`; after revoke → `revoked` |
-| 187 | `a_changed_issuer_is_never_re_pinned` | source added with explicit `issuer_did` X; its info names Y → search membership `unknown` reason `issuer-changed`… (driven through the hostile harness) |
-| 188 | `trust_state_round_trips_through_a_signed_export` | export → import on a wiped store → `credential.list`, `revocation.list`, `member.decisions`, `memberships` verdicts identical; search filter still hides the revoked member (standing rebuilt) |
+| 187 | `a_changed_issuer_is_never_re_pinned` | Uses the two real directories, no canned replies. Add `directory2` as a source with an explicit `issuer_did` = `owner_did()` (the *first* SynOrg's issuer — the wrong one). (a) A search returns `directory2`'s member with membership **`refused`** (issuer mismatch). The search reply names no issuer, so it cannot say `issuer-changed`. (b) `directory.check-standing` against `directory2` returns **`unknown`, reason `issuer-changed`**, because `directory.standing` names `dir2_owner_did()`. (c) `directory.sources` still shows the pin as `owner_did()`: it was not changed |
+| 188 | `trust_state_round_trips_through_a_signed_export` | export → import on a wiped store → `credential.list`, `revocation.list`, `member.decisions`, `memberships` verdicts identical; search still hides the revoked member (standing and index windows rebuilt) |
 | 189 | `member_remove_is_refused_while_a_credential_is_valid` | then ok after revoke |
 | 190 | `lift_of_a_non_suspension_is_refused_and_lift_is_idempotent` | |
 | 191 | `search_reply_with_full_page_of_evidence_fits_the_proxy_limit` | the §5.7 size check |
+| 192 | `a_suspended_member_uses_no_candidate_slot` | D-C9-9. After `member.suspend`, every `search_index` row of that member has `listed_until_secs == 0`; after `member.lift`, the window is back. Read the rows through a raw collection read (generalize `Harness::conv_rows` to take a service name if it is conversation-only). Also: a search with `limit: 1` over one suspended and one valid member returns the valid one and `truncated: false` |
+| 193 | `a_credential_from_one_synorg_served_by_another_directory_is_refused` | trust source pinned to `dir2_owner_did()` serves a valid-looking credential signed by `owner_did()` → `refused` |
 
-If the hostile harness (`helpers.rs:317 hostile_source_response`) cannot
-serve an arbitrary `directory.standing`/search reply for 183–187, extend
-it in a new helper file rather than growing `helpers.rs` (capped at 1494).
+**The canned "trust source" (183–185, 193).** `hostile_source_response`
+(`helpers.rs:317`) cannot serve these: it answers by target only, gives
+the same reply to every method (so it cannot answer `directory.info`
+with an `issuer_did`, which `add-source` needs), and its hits carry
+forged listings, which go to `store_refused_hit` and never get a
+membership verdict. Build a separate canned source in a new file
+`crates/roym_web/tests/dual_build_parity/trust_harness.rs`:
+
+```rust
+/// Fixed targets `did:key:hTrust*`. Parses the inner JSON-RPC frame from
+/// `params` (the proxy method is always `invoke`), and answers:
+///   directory.info     -> { name, issuer_did: trust_issuer_did(target), .. }
+///   directory.search   -> one hit: a correctly signed listing by
+///                         `provider_identity()` (a fixed test identity with a
+///                         record-signing delegation, like `sign_as_peer`),
+///                         plus `membership` evidence built for this target
+///   directory.standing -> the same evidence
+/// Returns the `Value::String` shape real directory calls produce.
+pub(crate) fn trust_source_response(target: &str, params: &Value) -> Option<Value>;
+```
+
+Targets: `hTrustForged` (credential signed by `peer_identity()`),
+`hTrustExpired` and `hTrustOutOfScope` (signed by the target's own
+`trust_issuer_identity()`, which is also what its `info` names), and
+`hTrustWrongSynOrg` (info names `dir2_owner_did()`, credential signed by
+`owner_did()`). Expired credentials are built with `Envelope::unsigned`
+and signed directly, because `RecordDraft::validate` refuses a past
+expiry.
+
+Wire it in by changing the two existing call sites
+(`helpers.rs:837` and `:922`) from
+`hostile_source_response(target)` to
+`canned_source_response(target, &request.params)`, where
+`canned_source_response` lives in `trust_harness.rs` and tries
+`hostile_source_response` first, then `trust_source_response`. That keeps
+`helpers.rs` at its current length (1487 of 1494).
 
 ---
 
@@ -1062,14 +1210,14 @@ Source table: `docs/planning/milestones/M06B-roym-substrate-foundations/slice-b4
 | B4 §10.2 row | Case | Covered today? | C9 action |
 |---|---|---|---|
 | 1, 2, 3, 5, 6 | pending/restart/delivered/never-delivered-while-down/no-broker-leak | Yes — `conversation_e2e.rs` | none |
-| 4 | dropped ack → retry, one copy at B | No | new test, needs Q5 hook `drop_next_acks` |
-| 7 | node C delivers an envelope whose `author` claims A | No (unit only: `transport.rs:229`) | new test, needs Q5 hook `override_next_outgoing(author)` |
+| 4 | dropped ack → retry, one copy at B | No | new test, needs Q5 hook `drop_next_ack(A's service)`: B stores and acks, A treats the ack as lost and retries. Expected: A ends `delivered`, B's history holds exactly one copy |
+| 7 | node C delivers an envelope whose `author` claims A | No (unit only: `transport.rs:229`) | new test, needs Q5 hook `override_next_send(C's service, author = A's address)`. Expected: refused at the author check (`transport.rs:234`); nothing stored at B; C's outbox item `failed` |
 | 8 | a peer re-presents a different signing key for a pinned address | No | new test, **no hook**: deploy the same fixture service (same member master) on a second node, so its instance key differs, and send to B → refused, B's pin unchanged |
 | 9 | guest calls `conversation` on another service via proxy | No | new test: fixture op `ProxyCallCrossServiceNative` targeting B's service, interface `conversation`, method `deliver` → refused by the capability gate |
 | 10 | same-service exemption (`D-B4-26`) | No (unit/parity only) | new test: fixture op `ProxyCallSelf` with `conversation/deliver` → reaches the arm, refused `PermissionDenied` (`transport.rs:223`) |
 | 11 | `prekey-bundle` past the per-peer hourly limit | No | new test: B with `conversation_prekey_requests_per_peer_per_hour = 2`; a stranger `SyneroymClient` calls `conversation/prekey-bundle` 3 times → third refused; then A still establishes a session (pool not drained) |
 | 12 | per-conversation quota isolation | No | new test: A with `conversation_max_pending_per_conversation = 2`, B down; conv1: 2 sends ok, 3rd `quota-exceeded`; conv2 (to a third address) still sends |
-| 13 | `sender_timestamp` a year in the future refused; a year in the past accepted | No | new test, needs Q5 hook `override_next_outgoing(sender_timestamp_ms)` |
+| 13 | `sender_timestamp` a year in the future refused; a year in the past accepted | No | new test, needs Q5 hook `override_next_send(A's service, sender_timestamp_ms)`, applied before signing. Expected: +1 year is refused *by the skew check* (`transport.rs:243`, not the signature check), A's item `failed`; −1 year is delivered and B's history shows that timestamp |
 | 14 | peer offline past `max_pending_age_secs` → `failed`; `retry` re-arms | Half: `roym_conversation_e2e.rs:455` proves `failed` | extend that test with `conversation.retry` → back to `pending` |
 | 15 | send with no installed instance certificate → terminal failure naming the certificate | No | new test: deploy the fixture without `certify_instance`; send → outbox `failed` with a reason containing `instance certificate` (`transport.rs:69`) |
 | 16 | alias canonicalization | — | **excluded** (`D-B4-29`, `D-06C-7`) |
@@ -1078,11 +1226,18 @@ Source table: `docs/planning/milestones/M06B-roym-substrate-foundations/slice-b4
 ### 9.2 Files
 
 - Move `publish_endpoint`, `deploy_fixture`, `publish_master_anchor`,
-  `fixture_run`, `wait_until`, `fixture_wasm`, `FIXTURE_INTERFACE`, and
-  `fast_conversation_role` out of `crates/substrate/tests/conversation_e2e.rs`
-  into `crates/substrate/tests/common/conversation_fixture.rs` (declare in
+  `fixture_run`, `fixture_wasm`, and `FIXTURE_INTERFACE` out of
+  `crates/substrate/tests/conversation_e2e.rs` into
+  `crates/substrate/tests/common/conversation_fixture.rs` (declare in
   `common/mod.rs`). `conversation_e2e.rs` then uses them. `deploy_fixture`
   gains a `certify: bool` parameter for row 15.
+- **Do not move `wait_until` or `fast_conversation_role`.**
+  `common/roym.rs` already has both (`:543`, `:51`). Delete the local
+  copies in `conversation_e2e.rs` and call
+  `common::roym::wait_until` and
+  `common::roym::fast_conversation_role(AppSandboxRole::default().conversation_max_pending_age_secs)`
+  (the shared one takes the age as a parameter). A second copy would fail
+  `cargo xtask check-duplication`.
 - New `crates/substrate/tests/conversation_cross_node_e2e.rs`: one
   `#[tokio::test]` per row (4, 7, 8, 9, 10, 11, 12, 13, 15), each starting
   with `let _serial_guard = common::serial_guard().await;`. Each test ≤ 100
@@ -1109,35 +1264,56 @@ as `#[cfg(feature = "test-support")] pub mod test_support;`:
 ```rust
 //! One-shot misbehaviour for cross-node tests. Compiled only with the
 //! `test-support` feature, which only `syneroym-substrate`'s dev build
-//! enables.
+//! enables. Every hook is keyed by the *sending* service id, because all
+//! test nodes run as tasks inside one process: an unkeyed hook could be
+//! taken by another node's outbox worker.
 
-pub struct OutgoingOverride { pub author: Option<String>, pub sender_timestamp_ms: Option<i64> }
+pub struct SendOverride {
+    pub author: Option<String>,
+    pub sender_timestamp_ms: Option<i64>,
+}
 
-/// The next `n` deliveries this process *receives* are stored and then
-/// answered with an error instead of an ack.
-pub fn drop_next_acks(n: u32);
-/// The next delivery this process *sends* uses these values in its
-/// signed payload.
-pub fn override_next_outgoing(o: OutgoingOverride);
+/// The next delivery `service_id` makes: the peer stores it and answers,
+/// and the sender then behaves as if the answer never arrived.
+pub fn drop_next_ack(service_id: &str);
+/// The next `send` on `service_id` uses these values in the message it
+/// signs and stores.
+pub fn override_next_send(service_id: &str, o: SendOverride);
 
-pub(crate) fn take_drop_ack() -> bool;          // AtomicU32 decrement
-pub(crate) fn take_outgoing_override() -> Option<OutgoingOverride>; // Mutex<Option<_>>
+pub(crate) fn take_drop_ack(service_id: &str) -> bool;                  // Mutex<HashSet<String>>
+pub(crate) fn take_send_override(service_id: &str) -> Option<SendOverride>; // Mutex<HashMap<..>>
 ```
 
 Call sites (each wrapped in `#[cfg(feature = "test-support")]`):
 
-- `transport.rs::peer_deliver_impl` (`:263`): after the store commit and
-  before building the ack → `if test_support::take_drop_ack() { return Err(ConversationError::Unreachable("test: ack dropped".into())) }`.
-- `transport.rs::deliver_one` (`:112`): where the `DeliveryPayload` is
-  built (`:160`), apply `take_outgoing_override()` to `author` and
-  `sender_timestamp_ms` *before* signing, so the envelope is validly
-  signed by the real sender key and only the claims are false.
+- **`lib.rs::send`, before `ids::derive_message_id` (`:270`).** Take
+  `take_send_override(service_id)`. Use the override's author in place of
+  `service_id` as the signed author, and the override's timestamp in
+  place of `now` for the message id, the signature (`:280`), and the
+  stored `sender_timestamp_ms`. Keep the real `now` for the outbox's
+  queue time (the second `now` passed to `insert_outgoing_and_enqueue`,
+  `:300`). The message is then validly signed by the real sender key, and
+  only its claims are false. Check that the stored row's author is what
+  `deliver_one` puts into `DeliveryPayload.author` (`transport.rs:159`);
+  if `insert_outgoing_and_enqueue` takes the author from a different
+  argument, pass the override there too.
+- **`transport.rs::deliver_one`, right after the `deliver` call returns
+  `Ok` (`:172-174`) and before the ack is parsed and the ratchet is
+  committed.** `if test_support::take_drop_ack(svc) { return Err(Disposition::Unreachable) }`.
+  This is what a real lost ack looks like to the sender: a timeout.
+  Confirm in `outbox.rs` that `Disposition::Unreachable` is re-queued with
+  backoff and not settled `failed`. A receiver-side error would come back
+  as `ProxyError::Callee`, which `classify` (`transport.rs:490`) makes
+  terminal. That is why the hook is not on the receiver.
 
-**Process-global caveat:** the hook statics are process-wide, and nextest
-runs one test per process, so this is safe under nextest. Under plain
-`cargo test` two tests in one binary could race — the serial guard
-already serializes the tests in this binary; keep every hook use inside
-the guard.
+**A real finding this test can produce.** On the retry, A has not
+committed its ratchet, so it encrypts the same message again with the
+same message key. B has already used that key. If B decrypts before it
+checks for a duplicate `(author, id)`, the retry fails to decrypt, B
+answers with an error, and A settles `failed` for a message B holds. That
+is exactly the `D-B4-11` property row 4 exists to prove. If it fails,
+record it as a bug in `status.md` and fix it in `transport.rs`. Do not
+weaken the test.
 
 ---
 
@@ -1173,11 +1349,27 @@ Steps and assertions:
 4. **Z** `credential.issue { member_did: Y.owner_did, categories: ["cycling"], expires_at_secs: now+30d }`.
 5. **Y** publish again → ok.
 6. **X** `directory.add-source { did: Z_directory_service_did }` → returned
-   `source.issuer_did == Z.owner_did`. X learns nothing else about Y or Z:
-   Y's addresses come only from the search hit (resolution through the
-   registry — assert X's node has no endpoint for Y before this step by
-   checking the proxy fails, or simply that the test passes no Y address
-   to X).
+   `source.issuer_did == Z.owner_did`. **Resolution through the registry
+   (R3 row 1), all three asserted, none optional:**
+   (a) the only DID the test passes to X is Z's directory service DID —
+   every value X uses for Y after this comes out of a response X received;
+   (b) before step 7, a plain `RegistryClient::lookup` against the shared
+   registry succeeds for Y's `catalog` and `conversation` service DIDs and
+   for Z's `directory` DID (the ADR-0022 Tier-2 records X's proxy will
+   resolve through; `CallTarget::Service` resolves through
+   `RegistryClient` in `crates/router/src/proxy.rs`, not through
+   `supervisor/resolve`);
+   (c) step 8's delivery to Y's address succeeds, which X could only do by
+   resolving that address through the registry.
+6b. **Failure-matrix row 18.** A stranger with a freshly generated
+   identity and no token (`stranger_wire_invoke`, moved to
+   `common::roym_flow` from `roym_directory_e2e.rs`) calls
+   `directory.standing { member_did: Y }` on Z → gets Y's evidence. The
+   same stranger calling `credential.list` → `-32013`. This covers row 18
+   for the new wire verb at the registry-record level. The
+   `topology_visibility = "open"` / `supervisor/resolve` path is not on
+   Roym's cross-installation path at all (step 6(b)), so its backlog row
+   (`deferred-backlog.md:354`) stays open and is restated, not closed (§12).
 7. **X** client loop (search `cycling`) → exactly one hit; its
    `sources[0].membership.state == "valid"`, `issuer == Z.owner_did`,
    `scope.categories == ["cycling"]`, `expires_at_secs` as issued. This is
@@ -1207,9 +1399,9 @@ into its own test.
 
 | Test | Fix |
 |---|---|
-| `crates/substrate/tests/roym_directory_e2e.rs` | Z issues Y a credential before Y's first publish; the "publication past the SynOrg's limit" step needs the credential too. The stranger `VerifiedOnly` publish step now gets `not-admitted` instead of success — update the assertion and its doc comment (the stranger is admitted by the wire rule and then refused by membership) |
-| `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` cases 13–23b | In the directory `beforeAll`, call `credential.issue` for the node's own owner (loopback source) before any publish. Case 21 ("publishes a listing") needs it; check each case that publishes |
-| parity scenarios | §8.1 fixtures |
+| `crates/substrate/tests/roym_directory_e2e.rs` | (1) Z issues Y a credential before Y's first publish; the "publication past the SynOrg's limit" step needs it too. (2) The stranger `VerifiedOnly` publish step now gets `not-admitted` instead of success — update the assertion and the file's doc comment (the stranger is admitted by the wire rule and then refused by membership). (3) Line 306 asserts `hit["credential"] == "unknown"`, a field this slice removes: replace with `hit["sources"][0]["membership"]["state"] == "valid"`. (4) Step 13 (line 446) publishes to **Y's own** directory: Y's SynOrg settings (line ~436) must list `cycling`, and Y must issue a credential to itself before that publish. (5) The step 5 comment that says no credential is issued becomes wrong: rewrite it |
+| `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` | (1) In the directory `beforeAll`, call `credential.issue` for the node's own owner (loopback source) before any publish; check each of cases 13–23b that publishes (case 21 does). (2) Line 473 asserts the text `membership: not checked`, which §11 removes: assert the new valid-membership line from `membershipWords` instead (it starts `Member of`) |
+| parity scenarios | §8.1 fixtures, §8.2 |
 
 ---
 
@@ -1224,6 +1416,7 @@ Files and changes:
 | `crates/roym_web/ui/src/screens/directory.ts:352` | replace `"membership: not checked"` with one line per source from `membershipWords`; add a "Check membership again" button per source → `directory.check-standing` |
 | **new** `crates/roym_web/ui/src/screens/memberships.ts` | the held copies (`directory.memberships`): source, member, verdict words, "checked {age} ago", "Check again", and `NO_INSTANT_REMOVAL_NOTICE` + `WITHHELD_REVOCATION_NOTICE` always visible. Add a tab in `main.ts` next to Directory |
 | **new** `crates/roym_web/ui/src/screens/synorg_members.ts` | called from `synorg.ts`'s roster section: issue credential (categories chosen from the SynOrg's own, expiry days), list credentials, revoke with reason, suspend (membership or one listing, rule, reason, optional until), lift, decision history. Show `NO_INSTANT_REMOVAL_NOTICE` next to suspend and revoke |
+| `crates/roym_web/ui/src/screens/synorg.ts:229-233` | The existing **Remove** button calls `member.remove` and reloads with no error handling. `member.remove` can now be refused (§5.4). Wrap the call in `try/catch` and show the refusal text (`errText(err)`, e.g. *revoke this member's credential first*) on that roster row, then do not reload |
 | `crates/roym_web/ui/src/session/enrolment.ts` | §7 |
 
 All values are rendered with `textContent` (the existing `text()`
@@ -1279,6 +1472,19 @@ New rows:
 | `open-direct` does not refuse an unresolvable address (B4 row 17) — shares `D-B4-29` | same as the alias row | `crates/conversation/src/lib.rs:361` |
 | (only if Q5 = unit-only) rows 4, 7, 13 covered at crate level only | TBD | §9 |
 | Credential renewal is a manual re-issue; no expiry reminder | TBD | `credential_ops::issue` |
+| No in-app "apply to join a SynOrg": the provider gives the owner their DID out of band (spec S4–S5, task.md reference scenario step 5) | TBD, trigger "a SynOrg owner reviews more applicants than they can handle by hand" | §2 D-C9-14 |
+| A `search_index` row's listed window is rewritten when a member's standing changes; a crash between the standing write and the index rewrite leaves stale windows until the next `directory.reindex`. The guest-side guard (§5.7) still stops a wrong hit, but a stale "not listed" window hides a valid member | TBD, trigger "a member reports being missing from search after a suspension was lifted" | `search_ops::rewrite_listed_windows` |
+
+Restate, do not close:
+
+- The native-instance-certificate row (`:86`): add that C9 proves R3
+  across installations on the WASM build only, and that exit criterion 1
+  is met across installations for WASM only (D-C9-13).
+- The `topology_visibility = "open"` row (`:354`): add that Roym's
+  cross-installation calls resolve service DIDs through
+  `RegistryClient` and never use `supervisor/resolve`, so R3 does not
+  depend on it, and that C9's `roym_trust_e2e` step 6b covers
+  failure-matrix row 18 at the registry-record level only.
 
 ### Other documents
 
@@ -1286,8 +1492,8 @@ New rows:
 |---|---|
 | `CLAUDE.md` / `AGENTS.md` architecture paragraph | "a named three-method table" → four, adding `directory.standing`; name the `credential.*`/`revocation.*`/`member.suspend`/`member.lift` verbs as local-only |
 | `docs/roym-integrated-experience-spec.md` | R3 marked **Passed** with slice owner (only after the acceptance tests pass); in the Records table note under `revocation`/`moderation-decision`: "a suspension is a `moderation-decision`; a revocation is permanent; the consumer's check shows either" (Q4); Search section: the issuer pin |
-| `task.md` | C9 row → Complete with evidence pointer; D-06C-7's "13" corrected to the real row list (§14 item 1); "Documents this milestone edits" row for C9 |
-| `status.md` | C9 section: what shipped, evidence table (same shape as C8's), the enrolment-gate consequence (§7), the e2e wall time |
+| `task.md` | C9 row → Complete with evidence pointer; D-06C-7's "13" corrected to the real row list (§14 item 1); reference-scenario step 5 reworded: "Y gives Z their DID outside the app; Z reviews and issues a signed membership credential" (D-C9-14); "Documents this milestone edits" row for C9 |
+| `status.md` | C9 section: what shipped, evidence table (same shape as C8's), the enrolment-gate consequence (§7), the e2e wall time, "R3 across installations: WASM build; both builds in parity" (D-C9-13) |
 | `slice-c3-implementation-plan.md` §18 note E | one dated line: key revocation was not supplied by C9 (D-C9-8) |
 
 ---
@@ -1299,11 +1505,11 @@ banned on `main`).
 
 | WO | Content | Done when |
 |---|---|---|
-| WO1 | §3 (roym_core) | `cargo nextest run -p syneroym-roym-core` green, incl. the 15 evaluator tests |
+| WO1 | §3 (roym_core) | `cargo nextest run -p syneroym-roym-core` green, incl. the 16 membership tests |
 | WO2 | §4, §5 (directory server half) | `cargo clippy -p syneroym-roym-directory` clean; WASM builds (`mise run build:roym`) |
 | WO3 | §6 (client half) | same |
 | WO4 | §7 (enrolment lists, roymctl) | `cargo nextest run -p syneroym-roym-core router` + roymctl tests green |
-| WO5 | §8 parity | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` all green on both builds (167 old + 19 new) |
+| WO5 | §8 parity | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` all green on both builds (167 old + 21 new, 173–193) |
 | WO6 | §10 three-install e2e + §10.3 fixes | `roym_trust_e2e`, `roym_directory_e2e`, `roym_booking_e2e` green |
 | WO7 | §9 inherited cases (after Q5 answer) | new binary green |
 | WO8 | §11 Hub + Playwright | vitest, `npm run build`, `mise run test:e2e` green |
@@ -1317,6 +1523,9 @@ parallel. WO8 needs WO3.
 **Function-length watch list** (100-line limit): `publication_ops::publish`
 is already long — put the gate in `require_member` (§5.6), not inline.
 `search_ops::search` — put the filter in `standing_by_issuer`/`listed`.
+`lib.rs::send` in `syneroym-conversation` — put the Q5 override in a
+small `#[cfg(feature = "test-support")]` helper that returns
+`(author, timestamp)`, not inline.
 `backup::import` — move the section→collection `match` into a
 `fn collection_for(section: &str) -> Option<&'static str>` helper.
 
@@ -1404,7 +1613,8 @@ today.
 - Z opens the **SynOrg** tab and fills in name "Bengaluru Cycle Guild",
   rules, area, category `cycling`, support contact, dispute path, and
   retention. Saving shows the settings back.
-- Out of band (a chat, a phone call), Y gives Z their DID. Z opens
+- Out of band (a chat, a phone call), Y gives Z their DID. This release
+  has no "apply to join" step in the app (D-C9-14). Z opens
   **Members → Issue credential**, pastes Y's DID, picks the category
   `cycling` from the group's own list, and sets an expiry of 365 days.
 - Z sees a new credential row: member, categories, expiry date, and its
@@ -1446,8 +1656,11 @@ today.
   installations: request card → quote card → accept (agreement receipt)
   → book a slot → Y requests payment → both acknowledge payment → both
   sign the fulfilment receipt → the booking shows completed.
-- Z is not in this path at all. Z's node can be switched off after 15.3
-  and the flow still completes.
+- Z's directory is not used in this flow: after the search, every call
+  goes between X and Y directly. (In this setup Z's node also hosts the
+  shared registry that X and Y use to find each other, so switching Z's
+  whole node off would break discovery. That is the registry, not the
+  directory, and this demo does not claim it.)
 
 ### 15.5 Z suspends Y; the result vanishes; X's copy updates only on check (R3 row 3) — *`trust.rs` 180, 181, 186; `roym_trust_e2e` steps 9–11*
 
