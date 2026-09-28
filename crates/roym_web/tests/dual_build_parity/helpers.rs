@@ -166,6 +166,12 @@ pub(crate) fn strip_volatile(val: &mut Value) {
             map.remove("retry_after_secs");
             map.remove("age_secs");
             map.remove("last_ok_secs");
+            // A membership verdict's own "as of" clock read (C9):
+            // `directory.standing`/`directory.search`/`directory.
+            // memberships` all stamp it with `clock::now_secs()` at
+            // request time, which the two builds read a beat apart.
+            map.remove("as_of_secs");
+            map.remove("revocations_checked_as_of_secs");
             for (k, v) in map.iter_mut() {
                 if k != "envelope" && k != "delegation" {
                     strip_volatile(v);

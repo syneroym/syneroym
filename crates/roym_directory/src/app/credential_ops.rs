@@ -101,6 +101,7 @@ async fn upsert_member<H: AppHost>(
     note: &str,
     now: u64,
 ) -> Result<(), String> {
+    ensure_coll(host, MEMBERS, &[]).await?;
     let existing: Option<directory::Member> = get_json(host, MEMBERS, member_did).await?;
     let member = directory::Member {
         did: member_did.to_string(),
@@ -111,7 +112,6 @@ async fn upsert_member<H: AppHost>(
         },
         added_at_secs: existing.map_or(now, |m| m.added_at_secs),
     };
-    ensure_coll(host, MEMBERS, &[]).await?;
     put_json(host, MEMBERS, member_did, &member).await
 }
 

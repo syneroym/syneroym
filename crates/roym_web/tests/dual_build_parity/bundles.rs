@@ -291,14 +291,29 @@ async fn scenario_169_signed_export_manifest_tampering_refused_parity() {
 }
 
 #[tokio::test]
-async fn scenario_170_directory_export_unsigned_and_imports_parity() {
+async fn scenario_170_directory_export_is_signed_and_imports_parity() {
     let h = harness().await;
-    let (exp_w, exp_n) = both_rpc(&h, "directory.export", json!({})).await;
-    assert_eq!(exp_w["result"]["manifest_signature"], serde_json::Value::Null);
-    assert_eq!(exp_n["result"]["manifest_signature"], serde_json::Value::Null);
+    ensure_synorg(&h).await;
 
-    let imp_w = one_rpc(&h, true, "directory.import", json!({ "bundle": exp_w["result"] })).await;
-    let imp_n = one_rpc(&h, false, "directory.import", json!({ "bundle": exp_n["result"] })).await;
-    assert!(!is_err(&imp_w, -32602));
-    assert!(!is_err(&imp_n, -32602));
+    let (exp_w, exp_n) = both_rpc(&h, "directory.export", json!({})).await;
+    let bundle_w = exp_w["result"].clone();
+    let bundle_n = exp_n["result"].clone();
+
+    // Must carry manifest_signature from owner_did, and verify.
+    assert!(bundle_w["manifest_signature"].is_string(), "wasm: {bundle_w}");
+    assert!(bundle_n["manifest_signature"].is_string(), "native: {bundle_n}");
+    let sig_env_w: syneroym_signed_record::Envelope =
+        serde_json::from_str(bundle_w["manifest_signature"].as_str().unwrap()).unwrap();
+    assert_eq!(sig_env_w.issuer, owner_did());
+
+    let imp_w = one_rpc(&h, true, "directory.import", json!({ "bundle": bundle_w.clone() })).await;
+    let imp_n = one_rpc(&h, false, "directory.import", json!({ "bundle": bundle_n })).await;
+    assert!(!is_err(&imp_w, -32602), "wasm: {imp_w}");
+    assert!(!is_err(&imp_n, -32602), "native: {imp_n}");
+
+    // An unsigned copy is refused.
+    let mut unsigned_bundle = bundle_w;
+    unsigned_bundle.as_object_mut().unwrap().remove("manifest_signature");
+    let bad_w = one_rpc(&h, true, "directory.import", json!({ "bundle": unsigned_bundle })).await;
+    assert!(is_err(&bad_w, -32602), "wasm: {bad_w}");
 }
