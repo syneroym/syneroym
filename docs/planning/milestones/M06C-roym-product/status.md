@@ -24,7 +24,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C6 | Directory: the search half (R1 row 5) | **Complete (2026-09-06) — shipped as [PR #161](https://github.com/syneroym/syneroym/pull/161)** — core service, admission rule, roymctl, 34 parity scenarios (2026-09-05); the two-directory parity harness, three-substrate e2e, Hub Directory/SynOrg UI + `roym-hub.spec.ts` cases 13–23b, and WO5 in the Post-C6 follow-up; a 35-finding review (28 + N1–N8) fully incorporated in two passes (`0487c42`..`c5871a9`). Gates: workspace 152/0, parity 115/0 both builds, e2e 42+4. R1 row 5's acceptance test is markable (rendered + cross-installation halves both covered). One backlog row stays open (a `roymctl` CLI-argument test); narrower notes on Hub cases 15 / 22 / 23b. See its own section, "What C6 did not build", "Post-C6 follow-up", and "Second review pass" below | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | **Complete (2026-09-08)** — [implementation plan](slice-c7-implementation-plan.md), evidence below. R1's acceptance gate closed across all six rows | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | **Complete (2026-09-24)** — [implementation plan](slice-c8-implementation-plan.md), evidence below. R2's acceptance gate closed across all five rows | C7 |
-| C9 | Cross-installation trust (R3, all three rows) | Not started | C8 |
+| C9 | Cross-installation trust (R3, all three rows) | **In progress** — [implementation plan](slice-c9-implementation-plan.md). Core vocabulary, signed credential/revocation/moderation verbs, the publish/search membership gate, `roymctl`, and 184/184 dual-build parity scenarios (15 new) are done and green; the three-installation e2e (WO6), the inherited cross-node cases (WO7), and the Hub UI/Playwright (WO8) are not yet built. See "C9 — What shipped so far" below | C8 |
 | C10 | Private group chat in the product (R4, all five rows) | Not started | C5, C9 |
 
 ---
@@ -1978,3 +1978,97 @@ All standard quality gates executed and confirmed 100% green on 2026-09-24:
 | UI Build | `npm run build --prefix crates/roym_web/ui` | **Passed** | Clean TypeScript compile and bundle build |
 
 **Release 2 Gate Status:** With Slice C8 complete, all five rows of Release 2 (R2 — "The transaction vertical") in `docs/roym-integrated-experience-spec.md` have their acceptance criteria passed and verified. R2 is officially closed.
+
+---
+
+## C9 — What shipped so far (in progress)
+
+Work against [slice-c9-implementation-plan.md](slice-c9-implementation-plan.md), branch
+`feat/m06c-slice-c9-trust`. R3 is **not yet closable**: WO1–WO5 are done, WO6–WO8 are not
+built. This section states exactly what runs and what does not, so the gap is checkable
+rather than assumed.
+
+### Done (WO1–WO5)
+
+- **`roym_core::membership`** (WO1): `MembershipCredentialPayload`, `RevocationPayload`,
+  `ModerationDecisionPayload`, the one pure `evaluate` verdict function and
+  `listed_window`, 16 unit tests. Wired into `record.rs`, `router.rs`, `backup.rs`,
+  `directory::SearchHit`. `directory` added to every `SIGNING_SERVICES` list.
+- **`roym_directory` server half** (WO2): `credential.issue/list`, `revocation.issue/list`,
+  `member.suspend/lift/decisions`, `directory.standing` (wire-open, the fourth
+  wire-reachable verb), a derived per-member `standing` row rebuilt on every
+  issue/revoke/suspend/lift. The publish gate (`require_member`) refuses a listing from a
+  non-member or one outside the credential's scope. The search host filter adds a
+  listed-window clause on `search_index` rows (D-C9-9) so a suspended/revoked member's
+  listings cannot spend the candidate ceiling; a guest-side re-check on the returned hits
+  is the second guard. `directory.export` is now a signed bundle
+  (`credentials`/`revocations`/`moderation_decisions`/`held_memberships` sections added,
+  schema version 3 → 4); `import` verifies the signature and rebuilds standing before the
+  search index. `member.remove` is refused while the member's credential still verifies.
+- **`roym_directory` client half** (WO3): `SourceRow.issuer_did` pinned on first use and
+  never re-pinned by a later reply (D-C9-4); each search hit carries a membership verdict
+  computed on this node from the source's signed evidence; `directory.check-standing` and
+  `directory.memberships` serve the held copies, always re-evaluated on read from stored
+  evidence, never a cached verdict.
+- **`roymctl`** (WO4): `roym directory credential issue/list/revoke`, `standing`,
+  `memberships`, `member suspend/lift/decisions`, `directory add --issuer`. New
+  `trust.rs`/`find.rs` split out of `directory.rs` (which had grown past its 800-line
+  cap). CLI parse tests added for every new subcommand plus `find`/`serve`/`member add`,
+  which had none before (closes that part of the C6 backlog row).
+- **Dual-build parity** (WO5): every existing directory-touching fixture
+  (`ensure_synorg`/`ensure_dir2_synorg`/scenario 83's bespoke settings) now grants the
+  membership credential a publish needs; `strip_volatile` strips a membership verdict's
+  own clock reads (`revocations_checked_as_of_secs`, `as_of_secs`); scenarios 93, 117,
+  118 (renamed "four verbs"), 170 (renamed, now asserts the signature) and
+  `scenario_8_status_on_all_six_services` updated for the new shape/schema version. 15
+  new scenarios (173–181, 186, 188–192) prove the credential/revocation/moderation
+  lifecycle, the publish/search gate, held-copy re-evaluation, the signed export round
+  trip, and the search-index listed-window mechanics directly (reading raw rows through
+  the new `trust_fixtures::service_rows`).
+  **Evidence:** `cargo nextest run -p syneroym-roym-web --test dual_build_parity` —
+  **184/184 passed**, both builds byte-identical.
+
+### Not built (WO6, WO7, WO8) — the actual gap to R3
+
+- **WO6, three-installation e2e (R3 rows 1–3).** No `roym_trust_e2e.rs` exists. The
+  from-scratch demo script (plan §15) and R3's three acceptance rows are unverified
+  end-to-end; only the single-installation parity scenarios above cover the mechanism.
+- **WO7, the 12 inherited cross-node cases (`D-06C-7`).** No `test-support` feature on
+  `syneroym-conversation`, no `drop_next_ack`/`override_next_send` hooks, no
+  `conversation_cross_node_e2e.rs`. M06B's uncovered rows (dropped-ack retry, forged
+  author, pinned-key mismatch, cross-service proxy denial, same-service exemption,
+  prekey rate limiting, per-conversation quota isolation, clock-skew rejection,
+  `max_pending_age_secs` + retry, no-instance-certificate) remain uncovered.
+- **WO8, Hub UI + Playwright.** No `membershipWords` (the Hub's copy is not written; the
+  Rust-side verbatim-text test in `membership.rs`'s unit tests reads a minimal stub file
+  with only the two notice constants — see below), no Memberships tab, no SynOrg
+  members/credentials screen, no `roym-trust.spec.ts`.
+- **Deliberate scope reduction inside WO5 itself, not in the plan:** the two-directory
+  hostile-source scenarios (183–185, 187, 193) and the issuer-pin-never-re-pinned
+  scenario against a real second SynOrg need `directory2` to have its own distinct owner
+  (plan §8.1 D-C9's "second directory gets its own owner"); that fixture change was not
+  made, so those five scenarios were not written. `directory2` still shares the
+  fixtures' single owner, same as before C9.
+- `crates/roym_web/ui/src/directory/membership.ts` exists but is a placeholder: only the
+  two notice constants (`NO_INSTANT_REMOVAL_NOTICE`, `WITHHELD_REVOCATION_NOTICE`),
+  verbatim, so `roym_core::membership`'s own unit test can compare against something.
+  `membershipWords`, the `MembershipVerdict` TS mirror, and its own `.test.ts` are not
+  written.
+
+### What this means for the acceptance gate
+
+R3's three rows are **not markable**. The signed-credential/revocation/moderation
+*mechanism* is built, tested on both builds, and demonstrably drives the publish gate and
+search filter correctly (184 parity scenarios). What is missing is the proof that it
+works *across three separate installations discovered through the registry* (R3 row 1),
+and the product surface (Hub) a person would actually use. `docs/roym-integrated-
+experience-spec.md`'s R3 row is not touched by this work and must stay unmarked until
+WO6–WO8 land.
+
+### Recommended next step
+
+Continue from WO6 in a follow-up session against the same plan and branch. WO6 needs
+WO1–WO4 (done); WO7 is independent and can run in parallel; WO8 needs WO3 (done). The
+`docs/planning/deferred-backlog.md` entries this partial slice's own scope reductions
+would otherwise need are not yet added — add them if this branch is set aside for any
+length of time before WO6 resumes, so the gap is visible outside this status section too.
