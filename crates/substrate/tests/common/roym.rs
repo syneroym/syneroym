@@ -32,7 +32,8 @@ use syneroym_sdk::{
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
 use tokio::time;
 
-pub const SIGNING_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transaction"];
+pub const SIGNING_SERVICES: &[&str] =
+    &["profile", "catalog", "conversation", "transaction", "directory"];
 pub const SESSION_COOKIE_NAME: &str = "syneroym_session";
 
 pub fn far_future_not_after() -> u64 {

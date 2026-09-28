@@ -8,11 +8,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{area::Area, safety::PublicationLimits};
 
-/// Bumped to 3 by the code-review fix that added `PublicationRow::
-/// issued_at_secs` (a required field, no serde default): a bundle
-/// exported before that change no longer deserializes, and `import`'s own
-/// version gate must say so rather than accept it and fail row by row.
-pub const DIRECTORY_SCHEMA_VERSION: u32 = 3;
+/// Bumped to 4 by C9: new `credentials`/`revocations`/`moderation_decisions`/
+/// `held_memberships` bundle sections and `SourceRow::issuer_did` /
+/// `SearchHit::membership`, none of which a version-3 bundle carries. A
+/// bundle exported before that change no longer deserializes, and
+/// `import`'s own version gate must say so rather than accept it and fail
+/// row by row.
+pub const DIRECTORY_SCHEMA_VERSION: u32 = 4;
 pub const MAX_SYNORG_NAME_LEN: usize = 128;
 pub const MAX_RULES_LEN: usize = 8192;
 pub const MAX_CONTACT_LEN: usize = 256;
@@ -74,8 +76,9 @@ pub const DISPATCH_HEADROOM_MS: u32 = 1_500;
 pub const RUN_RETENTION_SECS: u64 = 3_600;
 
 /// A SynOrg's own statement about itself. Unsigned app state: the spec's
-/// Records table has no settings row and no roster row, and `directory`
-/// mounts no signing certificate in this slice.
+/// Records table has no settings row and no roster row. `directory` does
+/// mount a signing certificate (C9) but only to sign the three `membership`
+/// record types, never `settings` itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SynOrgSettings {
     pub name: String,
@@ -190,6 +193,10 @@ pub struct SearchHit {
     /// This directory's own clock, its claim, never used for age.
     pub received_at_secs: u64,
     pub area_match: AreaMatch,
+    /// The issuer's own signed statements about this listing's provider,
+    /// exactly as the directory stores them. Never a verdict.
+    #[serde(default)]
+    pub membership: crate::membership::MembershipEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -32,6 +32,10 @@ pub const SECTION_BOOKINGS: &str = "bookings";
 pub const SECTION_PROGRESS: &str = "progress";
 pub const SECTION_PAYMENTS: &str = "payments";
 pub const SECTION_FULFILMENTS: &str = "fulfilments";
+pub const SECTION_CREDENTIALS: &str = "credentials";
+pub const SECTION_REVOCATIONS: &str = "revocations";
+pub const SECTION_DECISIONS: &str = "moderation_decisions";
+pub const SECTION_HELD_MEMBERSHIPS: &str = "held_memberships";
 /// The digest prefix, so a section digest can never be mistaken for a
 /// record id or a report id.
 pub const SECTION_DIGEST_PREFIX: &str = "sec_";
