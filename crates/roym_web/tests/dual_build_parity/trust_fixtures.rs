@@ -6,6 +6,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use syneroym_data_db::host_store::QueryOptions;
 use syneroym_identity::{
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
     substrate::resolve_did_key,
@@ -183,3 +184,28 @@ pub(crate) const DIRECTORY_BUNDLE_SECTIONS: &[&str] = &[
     "moderation_decisions",
     "held_memberships",
 ];
+
+/// Every row of `collection` in `service`'s own store, on the chosen
+/// stack. For collections no verb exposes (`search_index`). Same body as
+/// `Harness::conv_rows`, with `did_for_service(service)` in place of
+/// `did_for_service("conversation")`.
+pub(crate) async fn service_rows(
+    h: &Harness,
+    wasm: bool,
+    service: &str,
+    collection: &str,
+) -> Vec<Value> {
+    let (storage, ks) =
+        if wasm { (&h.wasm_storage, &h.wasm_ks) } else { (&h.native_storage, &h.native_ks) };
+    let db = storage.open_service_db(&did_for_service(service), ks).await.expect("open service db");
+    let opts = QueryOptions { filter: None, limit: Some(500), cursor: None };
+    let page = match db.query(collection, &opts, None).await {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    page.value
+        .records
+        .into_iter()
+        .filter_map(|r| serde_json::from_slice::<Value>(&r.payload).ok())
+        .collect()
+}
