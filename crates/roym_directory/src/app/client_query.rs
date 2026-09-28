@@ -14,12 +14,13 @@ use syneroym_roym_core::{
     },
     envelope::{Request, Response},
     listing::{self, ListingVerdict},
+    membership::{CheckInput, ListingRef, MembershipVerdict, evaluate},
     services,
 };
 
 use super::{
     RUNS, SEARCH_RUNS, SOURCES, client_sources::SourceRow, collect_raw, ensure_coll, get_json,
-    put_json, search_runs_indexes, serde_str,
+    held, put_json, search_runs_indexes, serde_str,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +49,11 @@ pub(in crate::app) struct SearchRunRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::app) reason: Option<String>,
     pub(in crate::app) revocation_status: String,
-    pub(in crate::app) credential: String,
+    /// The consumer's own verdict, computed on this node from the hit's
+    /// signed evidence (D-C9-4/D-C9-9). `None` on a refused hit, which
+    /// never reaches a membership check at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::app) membership: Option<MembershipVerdict>,
     pub(in crate::app) issued_at_secs: u64,
     pub(in crate::app) received_at_secs: u64,
     pub(in crate::app) at_secs: u64,
@@ -119,9 +124,11 @@ pub(in crate::app) async fn query_source<H: AppHost>(host: &H, req: &Request) ->
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    if let Err(resp) = validate_run_and_source(host, &run_id, &source).await {
-        return resp;
-    }
+    let source_row = match validate_run_and_source(host, &run_id, &source).await {
+        Ok(row) => row,
+        Err(resp) => return resp,
+    };
+    let pinned_issuer = source_row.issuer_did.clone();
 
     let params = json!({ "method": "directory.search", "params": query }).to_string();
     let call_result = host
@@ -158,7 +165,17 @@ pub(in crate::app) async fn query_source<H: AppHost>(host: &H, req: &Request) ->
             if verified_count >= MAX_STORED_PER_SOURCE {
                 continue;
             }
-            if store_verified_hit(host, &run_id, &source, hit, verdict, now).await {
+            if store_verified_hit(
+                host,
+                &run_id,
+                &source,
+                pinned_issuer.as_deref(),
+                hit,
+                verdict,
+                now,
+            )
+            .await
+            {
                 verified_count += 1;
             }
         } else {
@@ -209,7 +226,7 @@ async fn validate_run_and_source<H: AppHost>(
     host: &H,
     run_id: &str,
     source: &str,
-) -> Result<(), Response> {
+) -> Result<SourceRow, Response> {
     let run: Option<RunRow> = match get_json(host, RUNS, run_id).await {
         Ok(r) => r,
         Err(e) => return Err(Response::internal_error(e)),
@@ -220,14 +237,12 @@ async fn validate_run_and_source<H: AppHost>(
     if !run.sources.iter().any(|s| s.as_str() == source) {
         return Err(Response::invalid_params("source is not in this person's own sources"));
     }
-    let is_registered_source: Option<SourceRow> = match get_json(host, SOURCES, source).await {
+    let registered_source: Option<SourceRow> = match get_json(host, SOURCES, source).await {
         Ok(s) => s,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    if is_registered_source.is_none() {
-        return Err(Response::invalid_params("source is not in this person's own sources"));
-    }
-    Ok(())
+    registered_source
+        .ok_or_else(|| Response::invalid_params("source is not in this person's own sources"))
 }
 
 /// Turns the raw host-proxied reply into the verified `hits` this node
@@ -302,21 +317,41 @@ async fn refuse_source<H: AppHost>(host: &H, source: &str, error: SourceError) -
 /// whether it was written. The caller must have already checked
 /// `verdict.verified` and the per-source verified cap; this only builds
 /// and writes the row.
+#[allow(clippy::too_many_arguments)]
 async fn store_verified_hit<H: AppHost>(
     host: &H,
     run_id: &str,
     source: &str,
+    pinned_issuer: Option<&str>,
     hit: SearchHit,
     verdict: ListingVerdict,
     now: u64,
 ) -> bool {
     let Some(payload) = verdict.payload else { return false };
+    let issuer = verdict.issuer.unwrap_or_default();
+    let listing_id = verdict.listing_id.unwrap_or_default();
+    let areas = payload.location.as_ref().map(|l| l.service_area.clone()).unwrap_or_default();
+    let membership_verdict = evaluate(
+        &hit.membership,
+        &CheckInput {
+            pinned_issuer,
+            member_did: &issuer,
+            listing: Some(ListingRef {
+                listing_id: &listing_id,
+                categories: Some(&payload.categories),
+                areas: Some(&areas),
+            }),
+            now_secs: now,
+            evidence_as_of_secs: now,
+        },
+    );
+    let _ = held::remember(host, source, &issuer, pinned_issuer, &hit.membership, now).await;
     let row = SearchRunRow {
         run_id: run_id.to_string(),
-        listing_id: verdict.listing_id.unwrap_or_default(),
+        listing_id,
         record_id: verdict.record_id.unwrap_or_default(),
         source: source.to_string(),
-        issuer: verdict.issuer.unwrap_or_default(),
+        issuer,
         title: payload.title,
         summary: payload.summary,
         categories: payload.categories,
@@ -325,7 +360,7 @@ async fn store_verified_hit<H: AppHost>(
         verified: true,
         reason: None,
         revocation_status: verdict.revocation_status.unwrap_or_else(|| "unknown".to_string()),
-        credential: "unknown".to_string(),
+        membership: Some(membership_verdict),
         issued_at_secs: verdict.issued_at_secs.unwrap_or(hit.issued_at_secs),
         received_at_secs: hit.received_at_secs,
         at_secs: now,
@@ -368,7 +403,7 @@ async fn store_refused_hit<H: AppHost>(
         verified: false,
         reason: verdict.reason,
         revocation_status: "unknown".to_string(),
-        credential: "unknown".to_string(),
+        membership: None,
         issued_at_secs: hit.issued_at_secs,
         received_at_secs: hit.received_at_secs,
         at_secs: now,
@@ -402,6 +437,7 @@ async fn load_source_row_or_default<H: AppHost>(host: &H, source: &str, now: u64
         added_at_secs: now,
         last_ok_secs: None,
         last_error: None,
+        issuer_did: None,
     })
 }
 

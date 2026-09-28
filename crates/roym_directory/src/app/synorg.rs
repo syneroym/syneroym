@@ -1,15 +1,17 @@
 //! Server half: settings, roster.
 
 use serde_json::{Value, json};
-use syneroym_app_host::{AppDataLayer, AppHost};
+use syneroym_app_host::{AppDataLayer, AppHost, AppSigning};
 use syneroym_roym_core::{
     clock,
     directory::{Member, SynOrgSettings},
     envelope::{Request, Response},
+    membership::MembershipVerdict,
 };
 
 use super::{
-    MEMBERS, SETTINGS, SETTINGS_KEY, collect_raw, ensure_coll, get_json, publication_ops, put_json,
+    MEMBERS, SETTINGS, SETTINGS_KEY, collect_raw, ensure_coll, get_json, issuer_did,
+    publication_ops, put_json, standing,
 };
 
 pub(in crate::app) async fn load_settings<H: AppHost>(
@@ -67,6 +69,8 @@ pub(in crate::app) async fn info<H: AppHost>(host: &H) -> Response {
         Ok(c) => c,
         Err(e) => return Response::internal_error(e),
     };
+    let issuer = issuer_did(host).await;
+    let signing_did = AppSigning::signing_identity(host).await.ok().map(|id| id.signing_did);
     Response::ok(json!({
         "name": settings.name,
         "rules": settings.rules,
@@ -76,6 +80,8 @@ pub(in crate::app) async fn info<H: AppHost>(host: &H) -> Response {
         "dispute_path": settings.dispute_path,
         "retention_secs": settings.retention_secs,
         "member_count": count,
+        "issuer_did": issuer,
+        "signing_did": signing_did,
     }))
 }
 
@@ -102,6 +108,14 @@ pub(in crate::app) async fn member_remove<H: AppHost>(host: &H, req: &Request) -
     };
     if let Err(e) = ensure_coll(host, MEMBERS, &[]).await {
         return Response::internal_error(e);
+    }
+    let now = clock::now_secs();
+    let verdict = match standing::own_verdict(host, &did, None, now).await {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
+    if matches!(verdict, MembershipVerdict::Valid { .. } | MembershipVerdict::Suspended { .. }) {
+        return Response::invalid_params("revoke this member's credential first");
     }
     let existed = AppDataLayer::get(host, MEMBERS.to_string(), did.clone())
         .await

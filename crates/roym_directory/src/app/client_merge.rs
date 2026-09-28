@@ -212,7 +212,12 @@ fn build_hits(
             let source_list: Vec<Value> = candidates
                 .iter()
                 .map(|r| {
-                    json!({ "directory": r.source, "record_id": r.record_id, "received_at_secs": r.received_at_secs })
+                    json!({
+                        "directory": r.source,
+                        "record_id": r.record_id,
+                        "received_at_secs": r.received_at_secs,
+                        "membership": r.membership,
+                    })
                 })
                 .collect();
             let distinct_record_ids: BTreeSet<&str> =
@@ -228,7 +233,6 @@ fn build_hits(
                 "status": winner.status,
                 "verified": true,
                 "revocation_status": winner.revocation_status,
-                "credential": winner.credential,
                 "age_secs": now.saturating_sub(winner.issued_at_secs),
                 "sources": source_list,
                 "versions_differ": distinct_record_ids.len() > 1,

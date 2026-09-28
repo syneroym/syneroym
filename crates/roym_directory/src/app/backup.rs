@@ -1,4 +1,6 @@
-//! Server half: export and import.
+//! Server half: export and import. The bundle is signed (C9): a
+//! directory's own statements about its members are as much this
+//! installation's signed word as anything else it produces.
 
 use std::collections::BTreeMap;
 
@@ -9,53 +11,64 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     backup::{
-        BUNDLE_VERSION, Bundle, BundleManifest, SECTION_MEMBERS, SECTION_PUBLICATION_LOG,
-        SECTION_PUBLICATIONS, SECTION_SOURCES, SECTION_SYNORG,
+        self, BUNDLE_VERSION, Bundle, BundleManifest, SECTION_CREDENTIALS, SECTION_DECISIONS,
+        SECTION_HELD_MEMBERSHIPS, SECTION_MEMBERS, SECTION_PUBLICATION_LOG, SECTION_PUBLICATIONS,
+        SECTION_REVOCATIONS, SECTION_SOURCES, SECTION_SYNORG,
     },
     clock,
     envelope::{Request, Response},
     listing,
+    signing::{self, CertificateError},
 };
 
 use super::{
-    MEMBERS, PUBLICATION_LOG, PUBLICATIONS, SCHEMA_VERSION, SETTINGS, SOURCES, collect,
-    ensure_coll, owner_did_or_node, search_ops,
+    CREDENTIALS, DECISIONS, HELD_MEMBERSHIPS, MEMBERS, PUBLICATION_LOG, PUBLICATIONS, REVOCATIONS,
+    SCHEMA_VERSION, SETTINGS, SOURCES, collect, ensure_coll, owner_did_or_node, search_ops,
+    standing,
 };
 
 pub(in crate::app) async fn export<H: AppHost>(host: &H) -> Response {
     let subject = owner_did_or_node(host).await;
-    for c in [SETTINGS, MEMBERS, PUBLICATIONS, PUBLICATION_LOG, SOURCES] {
+    let now = clock::now_secs();
+    let collections = [
+        SETTINGS,
+        MEMBERS,
+        PUBLICATIONS,
+        PUBLICATION_LOG,
+        SOURCES,
+        CREDENTIALS,
+        REVOCATIONS,
+        DECISIONS,
+        HELD_MEMBERSHIPS,
+    ];
+    for c in collections {
         if let Err(e) = ensure_coll(host, c, &[]).await {
             return Response::internal_error(e);
         }
     }
-    let synorg = match collect(host, SETTINGS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let members = match collect(host, MEMBERS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let publications = match collect(host, PUBLICATIONS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let publication_log = match collect(host, PUBLICATION_LOG).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let sources = match collect(host, SOURCES).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let sections = BTreeMap::from([
-        (SECTION_SYNORG.to_string(), synorg),
-        (SECTION_MEMBERS.to_string(), members),
-        (SECTION_PUBLICATIONS.to_string(), publications),
-        (SECTION_PUBLICATION_LOG.to_string(), publication_log),
-        (SECTION_SOURCES.to_string(), sources),
-    ]);
+    let mut sections = BTreeMap::new();
+    let names = [
+        (SECTION_SYNORG, SETTINGS),
+        (SECTION_MEMBERS, MEMBERS),
+        (SECTION_PUBLICATIONS, PUBLICATIONS),
+        (SECTION_PUBLICATION_LOG, PUBLICATION_LOG),
+        (SECTION_SOURCES, SOURCES),
+        (SECTION_CREDENTIALS, CREDENTIALS),
+        (SECTION_REVOCATIONS, REVOCATIONS),
+        (SECTION_DECISIONS, DECISIONS),
+        (SECTION_HELD_MEMBERSHIPS, HELD_MEMBERSHIPS),
+    ];
+    for (section, collection) in names {
+        match collect(host, collection).await {
+            Ok(v) => {
+                sections.insert(section.to_string(), v);
+            }
+            Err(e) => return Response::internal_error(e),
+        }
+    }
+    // `standing` is derived from `credentials`/`revocations`/
+    // `moderation_decisions` and is not exported -- `import` rebuilds it.
+
     let mut manifest_sections = BTreeMap::new();
     for (k, v) in &sections {
         match Bundle::digest(SCHEMA_VERSION, v) {
@@ -65,7 +78,7 @@ pub(in crate::app) async fn export<H: AppHost>(host: &H) -> Response {
             Err(e) => return Response::internal_error(e.to_string()),
         }
     }
-    let bundle = Bundle {
+    let mut bundle = Bundle {
         manifest: BundleManifest {
             bundle_version: BUNDLE_VERSION,
             subject_did: subject,
@@ -74,9 +87,30 @@ pub(in crate::app) async fn export<H: AppHost>(host: &H) -> Response {
         sections,
         manifest_signature: None,
     };
+    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
+        if matches!(e, CertificateError::NotEnrolled) {
+            return Response::invalid_params("signing-not-enrolled");
+        }
+        return Response::internal_error(e.to_string());
+    }
     match serde_json::to_value(&bundle) {
         Ok(v) => Response::ok(v),
         Err(e) => Response::internal_error(e.to_string()),
+    }
+}
+
+fn collection_for(section: &str) -> Option<&'static str> {
+    match section {
+        SECTION_SYNORG => Some(SETTINGS),
+        SECTION_MEMBERS => Some(MEMBERS),
+        SECTION_PUBLICATIONS => Some(PUBLICATIONS),
+        SECTION_PUBLICATION_LOG => Some(PUBLICATION_LOG),
+        SECTION_SOURCES => Some(SOURCES),
+        SECTION_CREDENTIALS => Some(CREDENTIALS),
+        SECTION_REVOCATIONS => Some(REVOCATIONS),
+        SECTION_DECISIONS => Some(DECISIONS),
+        SECTION_HELD_MEMBERSHIPS => Some(HELD_MEMBERSHIPS),
+        _ => None,
     }
 }
 
@@ -89,15 +123,10 @@ pub(in crate::app) async fn import<H: AppHost>(host: &H, req: &Request) -> Respo
         Ok(b) => b,
         Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
     };
-    if let Err(e) = bundle.check_integrity() {
-        return Response::invalid_params(e.to_string());
-    }
+    let now = clock::now_secs();
     let owner = owner_did_or_node(host).await;
-    if !owner.is_empty() && bundle.manifest.subject_did != owner {
-        return Response::invalid_params(format!(
-            "bundle belongs to '{}', this node holds '{}'",
-            bundle.manifest.subject_did, owner
-        ));
+    if let Err(e) = backup::check_signed_bundle(&bundle, &owner, now) {
+        return Response::invalid_params(e.to_string());
     }
     for (name, declared) in &bundle.manifest.sections {
         if declared.schema_version != SCHEMA_VERSION {
@@ -110,13 +139,8 @@ pub(in crate::app) async fn import<H: AppHost>(host: &H, req: &Request) -> Respo
 
     let mut prepared: Vec<(&'static str, Vec<Mutation>)> = Vec::new();
     for (name, records) in &bundle.sections {
-        let collection = match name.as_str() {
-            SECTION_SYNORG => SETTINGS,
-            SECTION_MEMBERS => MEMBERS,
-            SECTION_PUBLICATIONS => PUBLICATIONS,
-            SECTION_PUBLICATION_LOG => PUBLICATION_LOG,
-            SECTION_SOURCES => SOURCES,
-            other => return Response::invalid_params(format!("unknown section '{other}'")),
+        let Some(collection) = collection_for(name) else {
+            return Response::invalid_params(format!("unknown section '{name}'"));
         };
         let mut muts = Vec::new();
         for rec in records {
@@ -131,7 +155,7 @@ pub(in crate::app) async fn import<H: AppHost>(host: &H, req: &Request) -> Respo
             if name == SECTION_PUBLICATIONS
                 && let Some(env_str) = payload_val.get("envelope").and_then(Value::as_str)
             {
-                let verdict = listing::verify_envelope(env_str, clock::now_secs());
+                let verdict = listing::verify_envelope(env_str, now);
                 if !verdict.verified {
                     return Response::invalid_params(format!(
                         "publication record '{id}' failed verification: {}",
@@ -162,12 +186,16 @@ pub(in crate::app) async fn import<H: AppHost>(host: &H, req: &Request) -> Respo
             }
         }
     }
-    // `search_index` is derived from `publications`, and nothing else
-    // populates it -- an import that skipped this would leave a fresh
-    // node answering zero hits for listings it demonstrably holds.
+    // `standing` and `search_index` are both derived, and nothing else
+    // populates them from an imported bundle. Standing first: the index
+    // rows read the standing to compute their listed window (D-C9-9).
+    let standing_rebuilt = match standing::rebuild_all(host).await {
+        Ok(n) => n,
+        Err(e) => return Response::internal_error(e),
+    };
     let rebuilt = match search_ops::rebuild_search_index(host).await {
         Ok(n) => n,
         Err(e) => return Response::internal_error(e),
     };
-    Response::ok(json!({ "imported": counts, "reindexed": rebuilt }))
+    Response::ok(json!({ "imported": counts, "reindexed": rebuilt, "standing": standing_rebuilt }))
 }

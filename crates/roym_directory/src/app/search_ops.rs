@@ -14,12 +14,13 @@ use syneroym_roym_core::{
     },
     envelope::{Request, Response},
     listing,
+    membership::{self, CheckInput, ListingRef, MembershipEvidence},
 };
 
 use super::{
-    PUBLICATIONS, SEARCH_INDEX, collect_raw, ensure_coll, get_json,
+    PUBLICATIONS, SEARCH_INDEX, collect_raw, collect_raw_where, ensure_coll, get_json, issuer_did,
     publication_ops::{self, PublicationRow},
-    put_json, serde_str, synorg,
+    put_json, search_index_indexes, serde_str, standing, synorg,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +28,7 @@ pub(in crate::app) struct SearchIndexRow {
     pub(in crate::app) listing_id: String,
     record_id: String,
     pub(in crate::app) area_index: u32,
-    issuer: String,
+    pub(in crate::app) issuer: String,
     status: String,
     issued_at_secs: u64,
     received_at_secs: u64,
@@ -54,6 +55,12 @@ pub(in crate::app) struct SearchIndexRow {
     max_lon_e6: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     area: Option<Area>,
+    /// The listed window from `membership::listed_window` over the
+    /// member's standing. `(0, 0)` = not listed. Rewritten whenever the
+    /// member's standing changes; time-based changes need no rewrite
+    /// (D-C9-9).
+    listed_from_secs: u64,
+    listed_until_secs: u64,
 }
 
 pub(in crate::app) fn search_index_key(listing_id: &str, area_index: u32) -> String {
@@ -66,7 +73,9 @@ pub(in crate::app) fn build_index_rows(
     issuer: &str,
     issued_at_secs: u64,
     received_at_secs: u64,
+    listed_window: (u64, u64),
 ) -> Vec<SearchIndexRow> {
+    let (listed_from_secs, listed_until_secs) = listed_window;
     let status = match payload.status {
         listing::ListingStatus::Active => "active",
         listing::ListingStatus::Withdrawn => "withdrawn",
@@ -104,6 +113,8 @@ pub(in crate::app) fn build_index_rows(
             min_lon_e6: None,
             max_lon_e6: None,
             area: None,
+            listed_from_secs,
+            listed_until_secs,
         }];
     }
     areas
@@ -133,6 +144,8 @@ pub(in crate::app) fn build_index_rows(
                 min_lon_e6: bbox.map(|b| b.min_lon_e6),
                 max_lon_e6: bbox.map(|b| b.max_lon_e6),
                 area: Some(a),
+                listed_from_secs,
+                listed_until_secs,
             }
         })
         .collect()
@@ -156,7 +169,7 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    if let Err(e) = ensure_coll(host, SEARCH_INDEX, &[]).await {
+    if let Err(e) = ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await {
         return Response::internal_error(e);
     }
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
@@ -170,7 +183,9 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         let _ = publication_ops::prune_expired_publications(host, settings.retention_secs).await;
     }
 
-    let filter = match build_search_filter(&query, normalized_text.as_deref()) {
+    let now = clock::now_secs();
+    let own_issuer = issuer_did(host).await;
+    let filter = match build_search_filter(&query, normalized_text.as_deref(), now) {
         Ok(f) => f,
         Err(resp) => return resp,
     };
@@ -185,13 +200,20 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
     };
 
     let by_listing = refine_by_listing(candidates, query.area.as_ref());
-    let mut hits: Vec<(SearchIndexRow, AreaMatch)> = by_listing.into_values().collect();
+    let standing = match standing_by_issuer(host, by_listing.values()).await {
+        Ok(s) => s,
+        Err(e) => return Response::internal_error(e),
+    };
+    let mut hits: Vec<(SearchIndexRow, AreaMatch)> = by_listing
+        .into_values()
+        .filter(|(row, _)| listed(&standing, row, own_issuer.as_deref(), now))
+        .collect();
     hits.sort_by(|a, b| {
         b.0.issued_at_secs.cmp(&a.0.issued_at_secs).then(a.0.listing_id.cmp(&b.0.listing_id))
     });
     let limit = query.limit.unwrap_or(MAX_HITS_PER_QUERY).min(MAX_HITS_PER_QUERY) as usize;
     hits.truncate(limit);
-    let out = hits_with_envelopes(host, hits).await;
+    let out = hits_with_envelopes(host, hits, &standing).await;
 
     let directory_did = match AppSigning::signing_identity(host).await {
         Ok(id) => id.signing_did,
@@ -201,7 +223,7 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         "hits": out,
         "truncated": truncated,
         "directory": directory_did,
-        "answered_at_secs": clock::now_secs(),
+        "answered_at_secs": now,
     }))
 }
 
@@ -253,8 +275,13 @@ fn validate_search_query(query: &SearchQuery) -> Result<Option<String>, Response
 fn build_search_filter(
     query: &SearchQuery,
     normalized_text: Option<&str>,
+    now: u64,
 ) -> Result<Value, Response> {
-    let mut and_clauses: Vec<Value> = vec![json!({ "status": "active" })];
+    let mut and_clauses: Vec<Value> = vec![
+        json!({ "status": "active" }),
+        json!({ "listed_from_secs": { "$lte": now } }),
+        json!({ "listed_until_secs": { "$gt": now } }),
+    ];
     for cat in &query.categories {
         let normalized = normalize_category(cat);
         and_clauses.push(json!({ "categories": { "$regex": category_tokens(&[normalized]) } }));
@@ -408,6 +435,79 @@ fn refine_by_listing(
     by_listing
 }
 
+/// One `get` per distinct issuer among the candidates, never per row.
+async fn standing_by_issuer<'a, H: AppHost>(
+    host: &H,
+    rows: impl Iterator<Item = &'a (SearchIndexRow, AreaMatch)>,
+) -> Result<BTreeMap<String, MembershipEvidence>, String> {
+    let issuers: std::collections::BTreeSet<String> =
+        rows.map(|(row, _)| row.issuer.clone()).collect();
+    let mut out = BTreeMap::new();
+    for issuer in issuers {
+        let evidence = standing::load(host, &issuer).await?;
+        out.insert(issuer, evidence);
+    }
+    Ok(out)
+}
+
+/// D-C9-9: membership only, listing-scoped suspension included, scope not
+/// judged (the index row carries no payload to judge it against). This
+/// is the guest-side second guard: the host filter has already removed
+/// rows outside their listed window, so this re-checks the returned hits
+/// against the signed evidence the hit will carry, and the stored window
+/// can never admit a hit the evidence does not support.
+fn listed(
+    standing: &BTreeMap<String, MembershipEvidence>,
+    row: &SearchIndexRow,
+    issuer: Option<&str>,
+    now: u64,
+) -> bool {
+    let Some(ev) = standing.get(&row.issuer) else { return false };
+    matches!(
+        membership::evaluate(
+            ev,
+            &CheckInput {
+                pinned_issuer: issuer,
+                member_did: &row.issuer,
+                listing: Some(ListingRef {
+                    listing_id: &row.listing_id,
+                    categories: None,
+                    areas: None
+                }),
+                now_secs: now,
+                evidence_as_of_secs: now,
+            },
+        ),
+        membership::MembershipVerdict::Valid { .. }
+    )
+}
+
+/// Recomputes the listed window on every index row of `member_did`'s
+/// listings. Rows are rewritten with `put` (same key), never deleted, so
+/// a crash half-way leaves some rows with an old window and a later
+/// rebuild fixes them.
+pub(in crate::app) async fn rewrite_listed_windows<H: AppHost>(
+    host: &H,
+    member_did: &str,
+    evidence: &MembershipEvidence,
+    now: u64,
+) -> Result<(), String> {
+    let Some(issuer) = issuer_did(host).await else { return Ok(()) };
+    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
+    let rows = collect_raw_where(host, SEARCH_INDEX, &json!({ "issuer": member_did })).await?;
+    for (key, v) in rows {
+        let Ok(mut row) = serde_json::from_value::<SearchIndexRow>(v) else { continue };
+        let (from, until) =
+            membership::listed_window(evidence, &issuer, member_did, &row.listing_id, now);
+        if row.listed_from_secs != from || row.listed_until_secs != until {
+            row.listed_from_secs = from;
+            row.listed_until_secs = until;
+            put_json(host, SEARCH_INDEX, &key, &row).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Attaches each hit's stored envelope, keyed by `record_id` -- a direct
 /// get, not the full-collection scan `load_publication_for_listing` does
 /// for the (rare, owner-only) withdrawal/republish path. A row this node
@@ -417,6 +517,7 @@ fn refine_by_listing(
 async fn hits_with_envelopes<H: AppHost>(
     host: &H,
     hits: Vec<(SearchIndexRow, AreaMatch)>,
+    standing: &BTreeMap<String, MembershipEvidence>,
 ) -> Vec<SearchHit> {
     let mut out = Vec::with_capacity(hits.len());
     for (row, area_match) in hits {
@@ -425,6 +526,7 @@ async fn hits_with_envelopes<H: AppHost>(
             Ok(Some(p)) => p.envelope,
             Ok(None) | Err(_) => continue,
         };
+        let membership = standing.get(&row.issuer).cloned().unwrap_or_default();
         out.push(SearchHit {
             listing_id: row.listing_id,
             record_id: row.record_id,
@@ -432,14 +534,19 @@ async fn hits_with_envelopes<H: AppHost>(
             issued_at_secs: row.issued_at_secs,
             received_at_secs: row.received_at_secs,
             area_match,
+            membership,
         });
     }
     out
 }
 
 pub(in crate::app) async fn reindex<H: AppHost>(host: &H) -> Response {
+    let standing_rebuilt = match standing::rebuild_all(host).await {
+        Ok(n) => n,
+        Err(e) => return Response::internal_error(e),
+    };
     match rebuild_search_index(host).await {
-        Ok(rebuilt) => Response::ok(json!({ "rebuilt": rebuilt })),
+        Ok(rebuilt) => Response::ok(json!({ "rebuilt": rebuilt, "standing": standing_rebuilt })),
         Err(e) => Response::internal_error(e),
     }
 }
@@ -451,7 +558,7 @@ pub(in crate::app) async fn reindex<H: AppHost>(host: &H) -> Response {
 /// listings that are demonstrably present until an owner happened to
 /// notice and reindex by hand.
 pub(in crate::app) async fn rebuild_search_index<H: AppHost>(host: &H) -> Result<u64, String> {
-    ensure_coll(host, SEARCH_INDEX, &[]).await?;
+    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
     AppDataLayer::delete_many(host, SEARCH_INDEX.to_string(), json!({}).to_string())
         .await
         .map_err(|e| e.to_string())?;
@@ -461,12 +568,18 @@ pub(in crate::app) async fn rebuild_search_index<H: AppHost>(host: &H) -> Result
         let Ok(row) = serde_json::from_value::<PublicationRow>(v) else { continue };
         let verdict = listing::verify_envelope(&row.envelope, clock::now_secs());
         let Some(payload) = verdict.payload else { continue };
+        let now = clock::now_secs();
+        let listed_window =
+            standing::listed_window_for(host, &row.issuer, &payload.listing_id, now)
+                .await
+                .unwrap_or((0, 0));
         for index_row in build_index_rows(
             &payload,
             &row.record_id,
             &row.issuer,
             row.issued_at_secs,
             row.received_at_secs,
+            listed_window,
         ) {
             let key = search_index_key(&index_row.listing_id, index_row.area_index);
             if put_json(host, SEARCH_INDEX, &key, &index_row).await.is_ok() {

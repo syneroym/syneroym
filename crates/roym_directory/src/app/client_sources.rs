@@ -10,7 +10,7 @@ use syneroym_roym_core::{
     clock,
     directory::{DEFAULT_SOURCE_TIMEOUT_MS, MAX_SOURCES, SourceError},
     envelope::{Request, Response},
-    services,
+    person, services,
 };
 
 use super::{SOURCES, collect_raw, ensure_coll, put_json};
@@ -24,6 +24,11 @@ pub(in crate::app) struct SourceRow {
     pub(in crate::app) last_ok_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::app) last_error: Option<SourceError>,
+    /// D-C9-4: trust on first use, pinned once and never changed by a
+    /// later reply. Absent until this node learns it (from an explicit
+    /// `issuer_did` parameter, or from `directory.info`'s own field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::app) issuer_did: Option<String>,
 }
 
 /// One `directory.info` call at a chosen address, over the wire, with no
@@ -67,6 +72,11 @@ pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> R
         Some(d) if !d.is_empty() => d.to_string(),
         _ => return Response::invalid_params("did is required"),
     };
+    let explicit_issuer = match req.params.get("issuer_did") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if person::is_did_key(s) => Some(s.clone()),
+        Some(_) => return Response::invalid_params("issuer_did must be a did:key"),
+    };
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
         return Response::internal_error(e);
     }
@@ -78,6 +88,10 @@ pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> R
     if !already_present && existing.len() >= MAX_SOURCES {
         return Response::invalid_params(format!("at most {MAX_SOURCES} sources may be added"));
     }
+    let existing_row: Option<SourceRow> = existing
+        .iter()
+        .find(|(id, _)| id == &did)
+        .and_then(|(_, v)| serde_json::from_value(v.clone()).ok());
 
     // Probe once: `directory.info` over the wire. A transport failure is
     // stored as `last_error`; a successful probe that answers `null` is
@@ -93,6 +107,7 @@ pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> R
     let mut last_error = None;
     let mut probe_note: Option<String> = None;
     let mut label = requested_label.clone();
+    let mut info_issuer: Option<String> = None;
     match probe {
         Ok(raw) => match serde_json::from_str::<Response>(&raw) {
             Ok(resp) if resp.result.as_ref().is_some_and(Value::is_null) => {
@@ -110,13 +125,40 @@ pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> R
                         .unwrap_or_default()
                         .to_string();
                 }
+                info_issuer = resp
+                    .result
+                    .as_ref()
+                    .and_then(|r| r.get("issuer_did"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
             }
             Err(e) => last_error = Some(SourceError::Unreadable { reason: e.to_string() }),
         },
         Err(_) => last_error = Some(SourceError::TimedOut),
     };
 
-    let row = SourceRow { did: did.clone(), label, added_at_secs: now, last_ok_secs, last_error };
+    // D-C9-4: an explicit `issuer_did` wins; failing that, re-adding an
+    // already-known source keeps its existing pin (a reply never re-pins
+    // silently); only then does a first-time probe's own claim pin it.
+    let issuer_did = explicit_issuer
+        .clone()
+        .or_else(|| existing_row.and_then(|r| r.issuer_did))
+        .or(info_issuer.clone());
+    if let (Some(explicit), Some(claimed)) = (&explicit_issuer, &info_issuer)
+        && explicit != claimed
+    {
+        probe_note =
+            Some(format!("this directory says it signs as {claimed}; you chose {explicit}"));
+    }
+
+    let row = SourceRow {
+        did: did.clone(),
+        label,
+        added_at_secs: now,
+        last_ok_secs,
+        last_error,
+        issuer_did,
+    };
     if let Err(e) = put_json(host, SOURCES, &did, &row).await {
         return Response::internal_error(e);
     }
