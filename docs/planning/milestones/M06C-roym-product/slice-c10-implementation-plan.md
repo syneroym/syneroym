@@ -579,11 +579,51 @@ fn sender_now_ms(_service_id: &str) -> i64 {
 }
 ```
 
-Use it in exactly three places in `crates/conversation/src/group.rs`:
-`create_group_impl` (`:134`), `change_membership_impl` (`:264`),
-`send_group` (`:359`). Do **not** use it in `scheduled_rekey_once`, in any
-receive path, in any validation, or in `enqueue_direct` (the 1:1 path; its
-test override is C9's `override_next_send`, which stays as it is).
+**Use it only for the value that gets signed.** Each of the three
+functions below reads one `now` today and feeds it to both the signed
+timestamp and to local times. Split it into two values:
+`let now = now_ms();` (the real clock, for every local time) and
+`let signed_at = sender_now_ms(service_id);` (only for what is signed).
+This is the rule C9 set for 1:1 messages: `received_at` is always this
+node's clock, because the outbox measures a message's age from it
+(`store/message.rs:34-36`), and `claimed_send_fields` keeps the real `now`
+for the queue time.
+
+| Function (`crates/conversation/src/group.rs`) | `signed_at` (skewable) | `now` (real clock, unchanged) |
+|---|---|---|
+| `create_group_impl` (`:134`) | the genesis entry's `sender_timestamp_ms` (`build_membership_entry`) | `derive_group_id`, `get_or_create_group_shell` (`created_at`, `last_activity`), `group_epochs.created_at` (`:175`) |
+| `change_membership_impl` (`:264`) | the membership entry's `sender_timestamp_ms` | `group_epochs.created_at` (`:300`), `conversations.last_activity` (`:305`) |
+| `send_group` (`:359`) | the message entry's `sender_timestamp_ms` (`build_message_entry`) and the `messages.sender_timestamp` column | `messages.received_at`, the outbox queue time (`txq.enqueue(.., now)`), `touch_conversation` |
+
+In `send_group`, the `messages` INSERT binds one value to both
+`sender_timestamp` and `received_at` today (`VALUES (?1, ?2, ?3, ?4, ?4, …`,
+`:397`). Give `received_at` its own parameter bound to `now`, the same
+change C9 made in `insert_outgoing_and_enqueue`. Without it, a member with
+a −90 s offset would see its own message start 90 s "old" in its outbox.
+
+`group_epochs.created_at` must stay on the real clock for two reasons: the
+new WIT field `key-stored-at` says so ("on its own clock"), and the host's
+removed-author cutoff (`removed_epoch_created_at`) reads that column. Do
+not change `scheduled_rekey_once`, any receive path, any validation, or
+`enqueue_direct` (the 1:1 path; its test override is C9's
+`override_next_send`, which stays as it is).
+
+Host unit test in `crates/conversation/src/group/tests.rs`,
+`a_clock_offset_changes_only_signed_times` (behind
+`#[cfg(feature = "test-support")]`; run it with
+`cargo nextest run -p syneroym-conversation --features test-support`, and
+add that command to WO1's "done when"): set an offset of −90 000 ms on the
+owner, create a group, add a member (with a seeded session, as in §4.3's
+test), and send one message. Then assert, against a real-clock reading
+taken just before:
+- the genesis entry, the membership entry, and the message's
+  `sender_timestamp` are about 90 s behind that reading;
+- the message's `received_at`, both `group_epochs.created_at` rows, and
+  `conversations.last_activity` are within a few seconds of it.
+Call `clear_clock_offsets()` at the end.
+
+This is not caught by the skew e2e alone: there the owner Z has offset 0,
+and 90 s is small next to the 30-day age limit.
 
 Feature unification: with `cargo nextest run --workspace` the feature is on
 for every test build in that run. That is harmless (the offset map is empty
@@ -1311,8 +1351,10 @@ still has private copies of `publish_endpoint`, `deploy_fixture`,
 `common/conversation_fixture.rs` and `common/roym.rs` for the other
 conversation tests. C10 runs this binary as a regression gate (§3.2, WO1),
 so switching it to the shared helpers is cheap and lowers the duplication
-count. Skip it if the shared `deploy_fixture` signature does not fit
-(C9 added a `certify` parameter).
+count. The shared `deploy_fixture` takes one more argument than the
+private copy, `mode: Deploy` (`Deploy::Certified` / `Deploy::NoCertificate`,
+`common/conversation_fixture.rs:79-95`); the group test passes
+`Deploy::Certified`.
 
 **Additions to `common/roym.rs`:**
 
@@ -1442,6 +1484,26 @@ and make setup calls with `loginWithDelegatedKey` / `rpcCall` from
 `testMatch` in `crates/substrate/tests/e2e/playwright.config.ts`**, beside
 `'**/roym-trust.spec.ts'`; a spec file not listed there never runs.
 
+**Check the suite's time limits before WO7 is done.** The same config sets
+`globalTimeout: 300_000` (5 minutes for the **whole** run), `timeout:
+60_000` per test, and `workers: 1`, so every spec file adds to one
+5-minute budget. These six tests add to it, and "adding a member who
+cannot be reached" waits for the host's prekey fetch to give up (a 2 s
+timeout, `fetch_prekey_bundle` in `crates/conversation/src/lib.rs`, plus
+the proxy's own lookup of an address the registry does not know). After
+adding the file:
+1. Run `mise run test:e2e > target/e2e-run.log 2>&1` twice and read the
+   total time Playwright prints at the end.
+2. If the total is above about 80% of `globalTimeout` (4 minutes), raise
+   `globalTimeout` in `playwright.config.ts`, in the same commit, with a
+   one-line comment that says what the budget covers (not a count of
+   tests or a number of minutes used, per AGENTS.md's comment rule).
+3. If the unreachable-member test alone takes more than 20 s, give it a
+   shorter wait by using an address that fails at lookup (a well-formed
+   `did:key` with no registry record) rather than one that resolves but
+   never answers.
+Record the measured time in `status.md`.
+
 | Test name | What it checks |
 |---|---|
 | `creating a group lists it and states that the owner can read it` | Create "Street Garden" → it is listed; the info panel says the person is the owner and shows `OWNER_CAN_READ_NOTICE` character for character |
@@ -1529,13 +1591,13 @@ and make setup calls with `loginWithDelegatedKey` / `rpcCall` from
 | WO | Scope | Needs | Done when |
 |---|---|---|---|
 | **WO0** | Gap 10 spike (§3) | — | Branch A or B chosen and written in `status.md` |
-| **WO1** | Host: `group-info` and `get-message` (§4.1–4.2), pinned-key add (§4.3), removal catch-up (§4.4), clock hook (§5) | — | `cargo nextest run -p syneroym-conversation -p syneroym-app-host-native` green; both fixture builds rebuilt; `cargo nextest run -p syneroym-substrate --test group_conversation_e2e` still green |
+| **WO1** | Host: `group-info` and `get-message` (§4.1–4.2), pinned-key add (§4.3), removal catch-up (§4.4), clock hook (§5) | — | `cargo nextest run -p syneroym-conversation -p syneroym-app-host-native` green; `cargo nextest run -p syneroym-conversation --features test-support` green (the clock-offset test, §5); both fixture builds rebuilt; `cargo nextest run -p syneroym-substrate --test group_conversation_e2e` still green |
 | **WO2** | `roym_core` (§6) | WO1 | `cargo nextest run -p syneroym-roym-core` green |
 | **WO3** | `roym_conversation` (§7), router (§6.3), `wire_origin` (§8), transaction guard (§9) | WO2 | `mise run build:roym` then parity suite green |
 | **WO4** | `roymctl roym group` (§10) | WO3 | parse tests green |
 | **WO5** | Parity 201–214 + 60 rewrite + `scenario_73` additions (§11.2, §8) | WO3 | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` green, both builds identical |
 | **WO6** | e2e (§11.3) | WO3, WO0 | both binaries green |
-| **WO7** | Hub + vitest + Playwright (§12) | WO3 | `mise run test:roym-ui` and `mise run test:e2e` green |
+| **WO7** | Hub + vitest + Playwright (§12) | WO3 | `mise run test:roym-ui` and `mise run test:e2e` green, and the suite's total time checked against `globalTimeout` (§12.3) |
 | **WO8** | Backlog and docs (§13); import cleanup pass; `cargo dupes` recipe on changed files | all | `mise run verify` (no `--skip`) green |
 
 WO0 and WO1 can run in parallel. WO4, WO5, WO6, WO7 can run in parallel
