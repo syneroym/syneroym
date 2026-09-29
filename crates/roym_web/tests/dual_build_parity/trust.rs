@@ -7,12 +7,12 @@
 //! backlog. This file covers the credential lifecycle, the publish gate,
 //! the search filter, and the consumer's own held-copy re-evaluation on
 //! the single directory the harness already gives every other scenario.
+//! The member-standing decision cap has its own scenarios in
+//! `trust_evidence_cap.rs`.
 
 use serde_json::json;
 use syneroym_roym_core::{
-    directory::MAX_HITS_PER_QUERY,
-    membership::{MAX_EVIDENCE_CREDENTIALS, MAX_EVIDENCE_DECISIONS},
-    services,
+    directory::MAX_HITS_PER_QUERY, membership::MAX_EVIDENCE_CREDENTIALS, services,
 };
 use syneroym_rpc::framing::MAX_FRAME_SIZE;
 
@@ -499,9 +499,23 @@ async fn scenario_191_search_reply_with_full_page_of_evidence_fits_the_proxy_lim
     for _ in 1..MAX_EVIDENCE_CREDENTIALS {
         issue_credential(&h, &owner_did()).await;
     }
+    // Measured independently of the search reply itself, before any
+    // per-hit duplication (see the deferred-backlog row on that) can
+    // enter the number: one credential's own envelope, in isolation.
+    let (cw, _) = both_rpc(&h, "credential.list", json!({ "member_did": owner_did() })).await;
+    let one_credential_bytes = cw["result"]["records"][0]["envelope"].as_str().unwrap().len();
+
+    let mut one_listing_bytes = 0;
     for i in 0..MAX_HITS_PER_QUERY {
-        publish_listing_to_primary(&h, &format!("hedge-trimming-191-{i}"), &format!("Listing {i}"))
-            .await;
+        let e = publish_listing_to_primary(
+            &h,
+            &format!("hedge-trimming-191-{i}"),
+            &format!("Listing {i}"),
+        )
+        .await;
+        if i == 0 {
+            one_listing_bytes = e.len();
+        }
     }
     let (w, _) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
     let hits = w["result"]["hits"].as_array().unwrap();
@@ -511,17 +525,23 @@ async fn scenario_191_search_reply_with_full_page_of_evidence_fits_the_proxy_lim
         bytes < MAX_FRAME_SIZE as usize,
         "a full page with evidence must fit the proxy's reply frame limit: {bytes} bytes"
     );
-    // A tighter, measured budget than the frame limit alone: every hit
-    // here carries the same owner's evidence, so the whole reply should
-    // not run far past one hit's own size times the page -- this is what
-    // would actually catch an accidental per-hit duplication of shared
-    // evidence (see the deferred-backlog row on that), which the frame
-    // limit alone is far too large to ever trip on.
-    let one_hit_bytes = serde_json::to_vec(&hits[0]).unwrap().len();
+    // A tighter budget than the frame limit alone, built only from
+    // quantities the reply under test cannot inflate: one credential's
+    // and one listing's own size (each measured before the search that
+    // is being checked even runs), times the known per-hit credential cap
+    // and per-page hit cap, plus a factor for the rest of one hit's own
+    // JSON (sources, flags, age) and the reply's own wrapper. This is a
+    // rough upper bound, not a tight one -- it is sized to still pass a
+    // legitimate hit's own overhead, but a further, accidental full
+    // duplicate of one hit's evidence (2x the true per-hit cost) is
+    // enough to trip it.
+    let one_hit_floor = one_credential_bytes * MAX_EVIDENCE_CREDENTIALS + one_listing_bytes;
+    let budget = one_hit_floor * MAX_HITS_PER_QUERY as usize * 3 / 2;
     assert!(
-        bytes < one_hit_bytes * hits.len() * 2,
-        "a full page is {bytes} bytes, more than twice {} hits at {one_hit_bytes} bytes each",
-        hits.len()
+        bytes < budget,
+        "a full page is {bytes} bytes, over the {budget}-byte budget for {MAX_HITS_PER_QUERY} \
+         hits at a floor of {one_hit_floor} bytes each ({MAX_EVIDENCE_CREDENTIALS} credentials at \
+         {one_credential_bytes} bytes plus one listing at {one_listing_bytes} bytes)"
     );
 }
 
@@ -582,181 +602,4 @@ async fn scenario_192_a_suspended_members_index_rows_are_not_listed_parity() {
     let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
     assert_eq!(stripped(&w), stripped(&n));
     assert_eq!(w["result"]["hits"].as_array().unwrap().len(), 0, "{w}");
-}
-
-#[tokio::test]
-async fn scenario_194_an_unlifted_suspension_survives_past_the_decision_cap_parity() {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-    enrol_signing(&h, "catalog").await;
-    publish_listing_to_primary(&h, "hedge-trimming-194", "Hedge trimming").await;
-
-    let (sw, _) = both_rpc(
-        &h,
-        "member.suspend",
-        json!({ "member_did": owner_did(), "rule": "permanent", "reason": "t" }),
-    )
-    .await;
-    let permanent_id = sw["result"]["record_id"].as_str().unwrap().to_string();
-
-    // Push more decisions than the standing cap through afterwards -- a
-    // naive newest-first truncation would drop the never-lifted suspension
-    // above, and the member would look valid again with nobody having
-    // signed a lift.
-    for i in 0..=MAX_EVIDENCE_DECISIONS {
-        let (sw2, _) = both_rpc(
-            &h,
-            "member.suspend",
-            json!({
-                "member_did": owner_did(), "rule": "temp", "reason": "t",
-                "scope": { "kind": "listing", "listing_id": format!("noise-{i}") },
-            }),
-        )
-        .await;
-        let id2 = sw2["result"]["record_id"].as_str().unwrap().to_string();
-        both_rpc(&h, "member.lift", json!({ "decision_record_id": id2, "reason": "ok" })).await;
-    }
-
-    let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(stripped(&w), stripped(&n));
-    assert_eq!(
-        w["result"]["hits"].as_array().unwrap().len(),
-        0,
-        "the never-lifted suspension must still hide the listing: {w}"
-    );
-
-    let (stw, stn) = both_rpc(&h, "directory.standing", json!({ "member_did": owner_did() })).await;
-    assert_eq!(stripped(&stw), stripped(&stn));
-    let still_present =
-        stw["result"]["evidence"]["decisions"].as_array().unwrap().iter().any(|d| {
-            syneroym_signed_record::Envelope::from_json(d.as_str().unwrap()).unwrap().record_id()
-                == Ok(permanent_id.clone())
-        });
-    assert!(still_present, "the permanent suspension's own record must survive: {stw}");
-}
-
-#[tokio::test]
-async fn scenario_195_revoking_a_superseded_credential_is_refused_parity() {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-
-    let (cw1, _) = both_rpc(&h, "credential.list", json!({ "member_did": owner_did() })).await;
-    let old_id = cw1["result"]["records"][0]["record_id"].as_str().unwrap().to_string();
-
-    // Reissuing supersedes the old credential; `pick_current` already
-    // ignores it, so revoking it would change no verdict anywhere.
-    let (issue_w, _) = issue_credential(&h, &owner_did()).await;
-    let new_id = issue_w["result"]["record_id"].as_str().unwrap().to_string();
-
-    let (w, n) = both_rpc(
-        &h,
-        "revocation.issue",
-        json!({ "credential_record_id": old_id, "reason": "stale" }),
-    )
-    .await;
-    assert_eq!(stripped(&w), stripped(&n));
-    assert!(is_err(&w, -32602), "revoking a superseded credential must be refused: {w}");
-
-    let (w2, n2) = both_rpc(
-        &h,
-        "revocation.issue",
-        json!({ "credential_record_id": new_id, "reason": "gone" }),
-    )
-    .await;
-    assert_eq!(stripped(&w2), stripped(&n2));
-    assert!(w2["result"]["record_id"].is_string(), "the current credential must revoke: {w2}");
-}
-
-#[tokio::test]
-async fn scenario_196_a_non_numeric_until_secs_is_refused_not_silently_permanent_parity() {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-
-    let (w, n) = both_rpc(
-        &h,
-        "member.suspend",
-        json!({
-            "member_did": owner_did(), "rule": "r1", "reason": "t",
-            "until_secs": "1790000000",
-        }),
-    )
-    .await;
-    assert_eq!(stripped(&w), stripped(&n));
-    assert!(
-        is_err(&w, -32602),
-        "a non-numeric until_secs must be refused, not silently become 'until lifted': {w}"
-    );
-}
-
-#[tokio::test]
-async fn scenario_197_directory_standing_refuses_a_member_did_that_is_not_a_did_key_parity() {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-
-    let (w, n) = wire_invoke(
-        &h,
-        services::DIRECTORY,
-        &env("directory.standing", json!({ "member_did": "not-a-did" })),
-    )
-    .await;
-    assert_eq!(stripped(&w), stripped(&n));
-    assert!(is_err(&w, -32602), "{w}");
-}
-
-#[tokio::test]
-async fn scenario_198_a_membership_wide_suspension_survives_many_concurrent_listing_suspensions_parity()
- {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-    enrol_signing(&h, "catalog").await;
-    publish_listing_to_primary(&h, "hedge-trimming-198", "Hedge trimming").await;
-
-    let (sw, _) = both_rpc(
-        &h,
-        "member.suspend",
-        json!({ "member_did": owner_did(), "rule": "permanent", "reason": "t" }),
-    )
-    .await;
-    let membership_suspension_id = sw["result"]["record_id"].as_str().unwrap().to_string();
-
-    // MAX_EVIDENCE_DECISIONS listing-scoped suspensions, left active (never
-    // lifted) -- together with the membership-wide one above, that is one
-    // more decision than the cap, and every single one is active.
-    for i in 0..MAX_EVIDENCE_DECISIONS {
-        both_rpc(
-            &h,
-            "member.suspend",
-            json!({
-                "member_did": owner_did(), "rule": "temp", "reason": "t",
-                "scope": { "kind": "listing", "listing_id": format!("other-listing-{i}") },
-            }),
-        )
-        .await;
-    }
-
-    // The membership-wide suspension alone must still hide every listing,
-    // however many listing-scoped suspensions also exist.
-    let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
-    assert_eq!(stripped(&w), stripped(&n));
-    assert_eq!(
-        w["result"]["hits"].as_array().unwrap().len(),
-        0,
-        "the membership-wide suspension must still hide every listing: {w}"
-    );
-
-    let (stw, stn) = both_rpc(&h, "directory.standing", json!({ "member_did": owner_did() })).await;
-    assert_eq!(stripped(&stw), stripped(&stn));
-    let decisions = stw["result"]["evidence"]["decisions"].as_array().unwrap();
-    assert!(
-        decisions.len() <= MAX_EVIDENCE_DECISIONS,
-        "the standing reply must stay within the cap: {stw}"
-    );
-    let membership_decision_present = decisions.iter().any(|d| {
-        syneroym_signed_record::Envelope::from_json(d.as_str().unwrap()).unwrap().record_id()
-            == Ok(membership_suspension_id.clone())
-    });
-    assert!(
-        membership_decision_present,
-        "the membership-wide suspension's own record must ride in the evidence: {stw}"
-    );
 }

@@ -2138,17 +2138,131 @@ corrected here.
   than one), so the array can never exceed the number of credentials it
   was built from.
 
+**A third review round found the fix above for the reader/writer gap was
+itself still one case short, and that a new test added in the second
+round could not fail.**
+
+- The membership-scope shortcut added above treated *any* active
+  membership-scope suspension as sufficient on its own -- but that is
+  only true while it stays active. A *timed* membership suspension (one
+  with a real `until_secs`) stops applying at that time, same as any
+  other decision; if it was newer than an older *permanent* membership
+  suspension on the same member, the shortcut picked the timed one,
+  dropped the permanent one for being "redundant", and once the timed
+  one ended nothing was left to keep the member hidden -- nobody ever
+  lifted the permanent suspension, it was simply never in the evidence
+  anymore. Fixed by requiring the shortcut's suspension have no end date
+  at all: a timed membership suspension no longer qualifies for it, no
+  matter how new. When a permanent one is present the shortcut still
+  fires on that permanent suspension alone, exactly as before; the timed
+  one (and everything else) is then picked up separately by the
+  remaining-slots step that already ran after the shortcut, unchanged.
+  Only when *no* permanent membership suspension exists at all does
+  selection fall through to the general active-suspension path below.
+  New parity scenario 199 issues a permanent membership suspension,
+  seven listing-scope ones, then a newer timed membership suspension,
+  and asserts the permanent one still rides in the evidence.
+- Scenario 191's tighter budget (added in the second round) compared the
+  full reply's byte size against `hits[0]`'s own size times the hit
+  count -- but `hits[0]` already carries its own copy of the per-hit
+  evidence the budget was meant to bound, so the comparison scaled with
+  whatever the reply actually produced and could not fail regardless of
+  how much duplication existed. Replaced with a budget built from a
+  quantity the reply under test cannot inflate: one credential's byte
+  size, measured from `credential.list` before the search runs at all,
+  times the known hit and credential caps.
+
+**A fourth review round found the shortcut's own fallback path had the
+same shape of bug it was written to fix, one level down, and that the
+third round's own tighter budget was still loose enough to hide a
+genuine full duplication.**
+
+- The general path used when no permanent membership suspension exists
+  (the `else` branch of the shortcut above) picked which active
+  suspensions to keep by recency alone, same as the very first version
+  of this function. With more than `MAX_EVIDENCE_DECISIONS` active
+  suspensions and no permanent one among them, a *timed* membership
+  suspension could still be the oldest of the group and get dropped for
+  newer listing-scope ones, even though it alone was hiding every
+  listing while it lasted. Fixed by ranking active suspensions for this
+  path the same way the shortcut already does: membership-scope ones
+  first, then the one that ends latest (no end date ranks above any
+  timed one) -- age only breaks a tie. New parity scenario 200 issues a
+  timed membership suspension first, then `MAX_EVIDENCE_DECISIONS`
+  newer listing-scope ones, and asserts the membership suspension still
+  rides in the evidence and the member is still hidden entirely.
+- Scenario 191's budget from the third round measured one hit's own size
+  against the reply's own first hit, so it scaled with whatever the
+  reply produced and could never fail. The fourth round's fix (above)
+  still measured only a credential's size, understating a hit's real
+  floor by leaving out the listing's own fields entirely -- loose enough
+  that one extra full copy of a hit's evidence would still fit under it.
+  Now also measures one listing's own envelope size (again before the
+  search that is being checked runs at all) and sets the budget at 1.5x
+  the resulting per-hit floor, times the hit cap -- tight enough that a
+  genuine full duplication of a hit's evidence would trip it (measured:
+  the real reply lands at about half this budget), while leaving room
+  for a hit's own field overhead the floor does not account for. The
+  comment now calls this a rough upper bound rather than an exact one.
+- One inaccuracy in this section's own previous write-up, caught by the
+  same round: it described scenario 199's timed membership suspension as
+  "falling through to the general path" alongside the permanent one --
+  the general path above runs only when *no* permanent membership
+  suspension exists, so scenario 199 (which has one) never reaches it at
+  all. The permanent suspension takes the shortcut alone; the timed one
+  is picked up separately by the ordinary remaining-slots step that
+  already ran after the shortcut, unchanged by any of this. Corrected
+  above.
+
+**A fifth review round found that the parity scenarios proving the F1,
+N5 and N7 fixes cannot reliably catch a regression in them, for a reason
+specific to this harness.** Both dual-build parity stacks sign every
+record in one scenario with the same pinned clock
+(`RecordClock::Fixed(wall_now + 240)`, `helpers.rs`), and since the row's
+`issued_at_secs` is read from that signed envelope, every decision in one
+of these scenarios ends up with the *same* `issued_at_secs`.
+`select_evidence_decisions`'s "newest first" ordering then degrades to
+comparing `record_id` -- a content hash -- which has no relationship to
+which decision was actually issued more recently. Checked directly:
+scenario 199 and 200 both still passed when the fix they exist to prove
+was reverted, purely because the hash tie-break happened to still favour
+the right decision that run. `select_evidence_decisions` is a pure
+function, so it does not need the harness at all: new unit tests in
+`crates/roym_directory/src/app/standing/tests.rs` build rows by hand
+with explicit, distinct `issued_at_secs`/`until_secs` values, covering an
+old permanent suspension against many newer lifted pairs (F1); a
+permanent suspension against a newer timed one, with enough filler
+decisions that a wrong shortcut choice provably has no room left for the
+permanent one (N5); a timed membership suspension against newer
+listing-scope ones in the fallback, and the same ranked-fallback case
+with no membership-scope suspension in the mix at all so the shortcut
+never fires (N7); and that a suspend/lift pair is never split by the cap
+in either direction. Each was checked the same way scenario 199/200
+should have been -- reverting the fix it targets and confirming the test
+fails, then restoring the fix and confirming it passes again. The parity
+scenarios stay: they are still the check that both builds agree with
+each other, just not, on their own, a check that either build is right.
+**Evidence:** `cargo nextest run -p syneroym-roym-directory standing::`
+-- **8/8 passed**.
+
+A follow-up finding on the same tests: three of their names and doc
+comments started with the review's own finding labels (`f1_`, `n5_`,
+`n7_`, "F1:", "N5:", "N7:") -- exactly the kind of reference AGENTS.md's
+no-planning-ref rule exists for, just not one the `check-planning-refs.py`
+gate's current keyword list happens to catch. Renamed to describe only
+what each test does; the rest of each name already did that on its own.
+
 **Verification note.** These fixes surfaced a trap worth calling out on
 its own: `crates/roym_web/tests/dual_build_parity` loads pre-built
 `wasm32-wasip2` component artifacts for the wasm half of each scenario,
 so a source change to `roym_directory`/`roym_core` silently runs stale
-wasm-side code until `mise run build:roym` rebuilds them. Both review
-rounds hit this the same way -- a genuine fix "failing" only on the wasm
-side because the wasm binary predates the fix -- and both times the
-wrong diagnosis (clock drift, a real regression) was tried first before
-the stale artifact was found. Re-run after a rebuild:
+wasm-side code until `mise run build:roym` rebuilds them. Every review
+round hit this the same way -- a genuine fix "failing" only on the wasm
+side because the wasm binary predates the fix -- and each time the wrong
+diagnosis (clock drift, a real regression) was tried first before the
+stale artifact was found. Re-run after a rebuild:
 `cargo nextest run -p syneroym-roym-web --test dual_build_parity` --
-**189/189 passed**, both builds byte-identical.
+**191/191 passed**, both builds byte-identical.
 
 ### Not built (WO6, WO7, WO8) — the actual gap to R3
 

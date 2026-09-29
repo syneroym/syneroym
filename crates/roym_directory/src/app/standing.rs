@@ -72,16 +72,38 @@ fn select_evidence_decisions(all: &[IssuedRecordRow], now: u64) -> Vec<IssuedRec
     });
 
     let mut selected: Vec<IssuedRecordRow> = Vec::new();
-    // An active membership-scope suspension makes every listing-scope
-    // suspension redundant -- `applies(Membership, _)` is always true, so
-    // no per-listing decision can change what `evaluate` sees while it
-    // holds. Keeping just this one guarantees it a slot no matter how
-    // many listing-scope suspensions also exist (the exact way a bare
-    // age-based cap used to lose it).
-    if let Some(g) = groups.iter().find(|g| g.active && g.suspend.is_membership_scope) {
+    // An active membership-scope suspension with no end date makes every
+    // other suspension redundant for as long as it holds -- `applies(
+    // Membership, _)` is always true, and it never stops applying on its
+    // own. Keeping just this one guarantees it a slot no matter how many
+    // other suspensions also exist (the exact way a bare age-based cap
+    // used to lose it). A *timed* membership suspension does not qualify
+    // for this shortcut, even if it is the newest or the only one active
+    // right now: it stops applying at its own `until_secs`, and whatever
+    // it would have shadowed -- an older permanent suspension, or another
+    // decision that outlasts it -- needs its own slot to still be seen
+    // once it does.
+    if let Some(g) = groups
+        .iter()
+        .find(|g| g.active && g.suspend.is_membership_scope && g.suspend.until_secs.is_none())
+    {
         selected.push(g.suspend.clone());
     } else {
-        for g in groups.iter().filter(|g| g.active) {
+        // No permanent membership suspension exists, so nothing here is
+        // provably redundant on its own: a *timed* membership suspension
+        // still covers every listing for as long as it lasts, and one
+        // that ends later matters more than one that ends sooner. Rank
+        // both ahead of plain age, or a cap-forced drop could lose an
+        // active membership suspension while several newer listing-scope
+        // ones survive instead.
+        let mut active: Vec<&Group<'_>> = groups.iter().filter(|g| g.active).collect();
+        active.sort_by(|a, b| {
+            let key = |g: &&Group<'_>| {
+                (g.suspend.is_membership_scope, g.suspend.until_secs.unwrap_or(u64::MAX))
+            };
+            key(b).cmp(&key(a)).then(a.suspend.record_id.cmp(&b.suspend.record_id))
+        });
+        for g in active {
             if selected.len() >= membership::MAX_EVIDENCE_DECISIONS {
                 break;
             }
@@ -288,3 +310,6 @@ pub(in crate::app) async fn listed_window_for<H: AppHost>(
     let evidence = load(host, member_did).await?;
     Ok(membership::listed_window(&evidence, &issuer, member_did, listing_id, now))
 }
+
+#[cfg(test)]
+mod tests;

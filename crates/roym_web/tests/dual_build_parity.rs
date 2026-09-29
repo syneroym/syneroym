@@ -35,5 +35,7 @@ mod transaction_cards;
 mod transaction_validation;
 #[path = "dual_build_parity/trust.rs"]
 mod trust;
+#[path = "dual_build_parity/trust_evidence_cap.rs"]
+mod trust_evidence_cap;
 #[path = "dual_build_parity/wire_origin.rs"]
 mod wire_origin;
