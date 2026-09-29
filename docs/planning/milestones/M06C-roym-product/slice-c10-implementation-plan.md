@@ -438,16 +438,19 @@ removed **author** (`removed_epoch_created_at`, `group/entry.rs`).
 
 **What this does and does not promise.** It trusts the sender's signed
 timestamp. An honest lagging member signs its real time, which is after
-the removal, so its message is held back. Two cases remain, and neither is
-made worse by this rule:
-- **Clock difference.** If X's clock runs behind the owner's, a message X
-  sent just after the removal can carry a timestamp just before it, and is
-  then served. The exposure is bounded by the clock difference between X
-  and the owner (and at most `max_clock_skew_secs`).
-- **The existing direct-push race (B5).** A lagging X still lists Y as a
-  member, so X's own outbox pushes its new message to Y directly, once,
-  until X applies the removal. That is unchanged by C10, and a dishonest
-  member could send to Y directly in any case.
+the removal, so its message is held back. Two cases remain:
+- **Clock difference — a small leftover of this rule.** If X's clock runs
+  behind the owner's, a message X sent just after the removal can carry a
+  timestamp just before it, and is then served. This is partly new in
+  C10: before, such a message reached Y only through X's one direct push
+  (the next case), which fails if Y is offline; with §4.4, Y can also get
+  it by sync later. It still needs a lagging sender, and the exposure is
+  bounded by the clock difference between X and the owner (at most
+  `max_clock_skew_secs`), so the risk stays small.
+- **The existing direct-push race (from B5).** A lagging X still lists Y
+  as a member, so X's own outbox pushes its new message to Y directly,
+  once, until X applies the removal. That is unchanged by C10, and a
+  dishonest member could send to Y directly in any case.
 
 Both go into the removed-member backlog row (§13).
 
@@ -457,7 +460,7 @@ New store functions in `crates/conversation/src/store/dag_store.rs`:
   the row with `removed_epoch IS NOT NULL`, returning its real key (never a
   zero placeholder: return `None` for `zeroblob`) and `removed_epoch`.
 - `removal_entry_timestamp(conv, address, removed_epoch) -> Result<Option<i64>>`:
-  the `sender_timestamp_ms` of the membership entry at `removed_epoch`
+  the `sender_timestamp` column (milliseconds) of the membership entry at `removed_epoch`
   whose payload action is `remove` and subject is `address`. Read it from
   the stored DAG entry (the same row `membership_history` reads), not from
   `group_epochs.created_at`, which is local time and differs per member.
@@ -467,10 +470,14 @@ New store functions in `crates/conversation/src/store/dag_store.rs`:
   AND (
     (kind = 'membership' AND epoch <= ?removed_epoch)
     OR (kind = 'message' AND epoch < ?removed_epoch
-                         AND sender_timestamp_ms <= ?removed_at_ms)
+                         AND sender_timestamp <= ?removed_at_ms)
   )
   ```
-  (match how `entries_after_seq` stores `kind` and the timestamp column).
+  Column names are the real ones in `dag_entries`
+  (`crates/conversation/src/store/schema.rs:125-140`): the timestamp column
+  is `sender_timestamp` (milliseconds; the Rust field is
+  `sender_timestamp_ms`), and `kind` is stored as the text `'message'` /
+  `'membership'` (`dag_store.rs:254-255`).
   The only membership entry at `removed_epoch` is the removal itself,
   because each membership change opens its own epoch. Membership entries
   keep the epoch-only rule: they are unencrypted and owner-signed, and the
@@ -1071,9 +1078,10 @@ changed to build the whole map once — do not call it per member).
   back online and reaches any member). Until then its UI cannot know. The
   window is stated in the backlog (§13), not hidden. R4 row 3 is about
   reading: the removed member never gets the new key, and §4.4 serves it
-  no message signed after the removal. The two narrow pre-C10 exceptions
-  (a lagging member's one direct push, and a clock running behind the
-  owner's) are in §4.4 and the same backlog row.
+  no message signed after the removal. Two narrow exceptions remain: a
+  lagging member's one direct push (from B5), and a small leftover of
+  §4.4's timestamp rule when a member's clock runs behind the owner's.
+  Both are in §4.4 and the same backlog row.
 
 ### 7.6 Changes to existing `conversation.*` verbs (`app/messages.rs`)
 
@@ -1446,7 +1454,7 @@ reserved for the transaction action panel row in the backlog.
 |---|---|---|
 | §5 | **A group message's delivery state is one aggregate** — `failed` can mean one member was offline past `max_pending_age_secs` even if it later got the message by sync. No per-recipient view. Trigger: "a person needs to know which member has a message". | TBD |
 | §5 | **A member cannot leave a group; they can only hide it here** (D-C10-7). Trigger: "a member-initiated leave is designed (it needs an owner-side rekey)". | TBD |
-| §5 | **A removed member that was offline at removal can still post until it learns of the removal, and the other members accept those posts** while their timestamp is within `max_clock_skew_secs` (1 day) of the removal. They are signed in the last epoch the author belonged to, so `member_sig_key_at` accepts them, and only the `removed_epoch_created_at + max_skew` cutoff (`group/entry.rs`) stops them later. It is never given a key after the removal, and §4.4's sync rule serves it only messages signed no later than the removal. Two narrow ways it can still read a message sent just after the removal, both from before C10: a member that has not applied the removal yet pushes its new old-epoch message to it directly, once (B5's race); and a member whose clock runs behind the owner's can sign such a message with a time just before the removal, which the sync rule then serves (bounded by that clock difference, at most `max_clock_skew_secs`). With §4.4 it learns the removal on its first sync after it comes back (≤ `conversation_group_sync_secs`); until then its own UI still shows it as a member. Trigger: "a removed member must stop posting at once" (it needs a durable, retried removal notice over the 1:1 channel, and a tighter cutoff than the clock-skew allowance). | TBD |
+| §5 | **A removed member that was offline at removal can still post until it learns of the removal, and the other members accept those posts** while their timestamp is within `max_clock_skew_secs` (1 day) of the removal. They are signed in the last epoch the author belonged to, so `member_sig_key_at` accepts them, and only the `removed_epoch_created_at + max_skew` cutoff (`group/entry.rs`) stops them later. It is never given a key after the removal, and §4.4's sync rule serves it only messages signed no later than the removal. Two narrow ways it can still read a message sent just after the removal: a member that has not applied the removal yet pushes its new old-epoch message to it directly, once (B5's race, from before C10); and, as a small leftover of §4.4's timestamp rule, a member whose clock runs behind the owner's can sign such a message with a time just before the removal, which the sync rule then serves even if the removed member was offline for the direct push (bounded by that clock difference, at most `max_clock_skew_secs`). With §4.4 it learns the removal on its first sync after it comes back (≤ `conversation_group_sync_secs`); until then its own UI still shows it as a member. Trigger: "a removed member must stop posting at once" (it needs a durable, retried removal notice over the 1:1 channel, and a tighter cutoff than the clock-skew allowance). | TBD |
 | §5 | **Adding a person you have never talked to needs them online** (Q11 narrows but does not remove it). | TBD |
 | §5 | **Anybody who can reach your address can add you to a group underneath**; Roym hides it by the first-contact rule (D-C10-6) but the host has joined. Same shape and same fix as the admit-hook row (`D-06C-8`). | TBD (with the admit-hook row) |
 | §13 | **Eight hand-kept copies of `conversation.wit`**; no gate checks they match (§15 item 17). | TBD |
