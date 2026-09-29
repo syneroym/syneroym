@@ -14,59 +14,20 @@
 //! a named conflict, and the winner's booking runs to completion through
 //! both tracks. No directory is deployed anywhere.
 
-use std::time::Duration;
-
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate};
-use syneroym_roym_core::transaction::DEFAULT_DATA_USE_NOTICE;
 
 mod common;
 
-use common::roym::{
-    RoymNode as Node, fast_conversation_role, roym_artifacts_present, wait_delivered, wait_until,
+use common::{
+    roym::{RoymNode as Node, fast_conversation_role, roym_artifacts_present},
+    roym_flow::{
+        accept_quote, assert_no_directory, complete_winner_lifecycle, open_request_conv,
+        provider_conv_for, quote_terms, request_record_on_provider, send_quote,
+        wait_and_verify_winner_scheduled,
+    },
 };
-
-async fn open_request_conv(node: &Node, y_conv_did: &str, description: &str) -> (String, String) {
-    let opened = node.rpc_ok("conversation.open", json!({ "address": y_conv_did })).await;
-    let conv_id = opened["conversation_id"].as_str().unwrap().to_string();
-    let req = node
-        .rpc_ok(
-            "request.set",
-            json!({
-                "conversation": conv_id,
-                "description": description,
-                "categories": ["gardening"],
-                "data_use_notice": DEFAULT_DATA_USE_NOTICE,
-            }),
-        )
-        .await;
-    let msg_id = req["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node, &msg_id).await, "request delivered to provider");
-    (conv_id, req["record_id"].as_str().unwrap().to_string())
-}
-
-async fn provider_conv_for(y: &Node, peer_address: &str) -> String {
-    let found = wait_until(Duration::from_secs(20), || async {
-        let list = y.rpc_ok("conversation.list", json!({})).await;
-        list["conversations"]
-            .as_array()
-            .map(|cs| cs.iter().any(|c| c["peer_address"] == peer_address))
-            .unwrap_or(false)
-    })
-    .await;
-    assert!(found, "provider sees a conversation with {peer_address}");
-    let list = y.rpc_ok("conversation.list", json!({})).await;
-    list["conversations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["peer_address"] == peer_address)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
 
 struct BootedCluster {
     node_x: Node,
@@ -181,98 +142,26 @@ async fn exchange_quotes_and_accept(
     let w_conv_did = node_w.dids["conversation"].clone();
     let y_conv_did = node_y.dids["conversation"].clone();
 
-    let (x_conv_id, _x_req) = open_request_conv(node_x, &y_conv_did, "Clear the back garden").await;
+    let (x_conv_id, _x_req) =
+        open_request_conv(node_x, &y_conv_did, "Clear the back garden", &["gardening"]).await;
     let (w_conv_id, _w_req) =
-        open_request_conv(node_w, &y_conv_did, "Clear the front garden").await;
+        open_request_conv(node_w, &y_conv_did, "Clear the front garden", &["gardening"]).await;
 
     let y_conv_for_x = provider_conv_for(node_y, &x_conv_did).await;
     let y_conv_for_w = provider_conv_for(node_y, &w_conv_did).await;
 
-    let x_sync = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_for_x })).await;
-    assert_eq!(x_sync["filed"], 1);
-    let w_sync = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_for_w })).await;
-    assert_eq!(w_sync["filed"], 1);
+    let x_req_record_id = request_record_on_provider(node_y, &y_conv_for_x).await;
+    let w_req_record_id = request_record_on_provider(node_y, &y_conv_for_w).await;
 
-    let x_thread =
-        node_y.rpc_ok("transaction.thread", json!({ "conversation": y_conv_for_x })).await;
-    let x_req_record_id =
-        x_thread["cards"].as_array().unwrap().iter().find(|c| c["card_type"] == "request").unwrap()
-            ["record_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-    let w_thread =
-        node_y.rpc_ok("transaction.thread", json!({ "conversation": y_conv_for_w })).await;
-    let w_req_record_id =
-        w_thread["cards"].as_array().unwrap().iter().find(|c| c["card_type"] == "request").unwrap()
-            ["record_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+    let x_quote_record_id =
+        send_quote(node_y, &x_req_record_id, listing_id, slot_id, quote_terms("Y Gardens", 6000))
+            .await;
+    let w_quote_record_id =
+        send_quote(node_y, &w_req_record_id, listing_id, slot_id, quote_terms("Y Gardens", 6000))
+            .await;
 
-    let quote_terms = |amount: u64| {
-        json!({
-            "scope": "Clear garden waste and green bin collection",
-            "currency": "EUR",
-            "amount_minor": amount,
-            "tax_minor": 0,
-            "fees_minor": 0,
-            "payment_methods": ["cash"],
-            "payee": "Y Gardens",
-            "payment_timing": "after-work",
-            "location": { "where": "at-customer", "address": "1 Garden Lane" },
-            "cancellation_terms": "24 hours notice required",
-            "refund_terms": "Full refund if work not completed",
-            "dispute_path": "Informal mediation",
-        })
-    };
-
-    let x_quote = node_y
-        .rpc_ok(
-            "quote.set",
-            json!({
-                "request_record_id": x_req_record_id,
-                "listing_id": listing_id,
-                "slot_id": slot_id,
-                "expires_in_secs": 3600,
-                "terms": quote_terms(6000),
-            }),
-        )
-        .await;
-    let x_quote_msg = x_quote["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_y, &x_quote_msg).await, "X's quote delivered");
-    let x_quote_record_id = x_quote["record_id"].as_str().unwrap().to_string();
-
-    let w_quote = node_y
-        .rpc_ok(
-            "quote.set",
-            json!({
-                "request_record_id": w_req_record_id,
-                "listing_id": listing_id,
-                "slot_id": slot_id,
-                "expires_in_secs": 3600,
-                "terms": quote_terms(6000),
-            }),
-        )
-        .await;
-    let w_quote_msg = w_quote["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_y, &w_quote_msg).await, "W's quote delivered");
-    let w_quote_record_id = w_quote["record_id"].as_str().unwrap().to_string();
-
-    node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
-    node_w.rpc_ok("transaction.sync", json!({ "conversation": w_conv_id })).await;
-
-    let x_accept =
-        node_x.rpc_ok("agreement.accept", json!({ "quote_record_id": x_quote_record_id })).await;
-    assert_eq!(x_accept["pair"]["state"], "half");
-    let x_accept_msg = x_accept["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_x, &x_accept_msg).await, "X's accept delivered");
-
-    let w_accept =
-        node_w.rpc_ok("agreement.accept", json!({ "quote_record_id": w_quote_record_id })).await;
-    assert_eq!(w_accept["pair"]["state"], "half");
-    let w_accept_msg = w_accept["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_w, &w_accept_msg).await, "W's accept delivered");
+    accept_quote(node_x, &x_conv_id, &x_quote_record_id).await;
+    accept_quote(node_w, &w_conv_id, &w_quote_record_id).await;
 
     QuoteExchange {
         x_conv_id,
@@ -284,103 +173,6 @@ async fn exchange_quotes_and_accept(
     }
 }
 
-async fn complete_winner_lifecycle(
-    winner_node: &Node,
-    node_y: &Node,
-    winner_quote_record_id: &str,
-    winner_conv_id: &str,
-    winner_conv_on_y: &str,
-) {
-    let pay_req =
-        node_y.rpc_ok("payment.request", json!({ "agreement": winner_quote_record_id })).await;
-    let pay_req_msg = pay_req["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_y, &pay_req_msg).await, "payment request delivered");
-
-    winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
-    let winner_thread =
-        winner_node.rpc_ok("transaction.thread", json!({ "conversation": winner_conv_id })).await;
-    let pay_req_card = winner_thread["cards"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["card_type"] == "payment-request")
-        .expect("payment-request card in winner's thread");
-    assert_eq!(pay_req_card["agreement_payee"], "Y Gardens");
-
-    let x_ack = winner_node
-        .rpc_ok("payment.acknowledge", json!({ "agreement": winner_quote_record_id }))
-        .await;
-    let x_ack_msg = x_ack["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(winner_node, &x_ack_msg).await, "consumer's payment ack delivered");
-
-    node_y.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_on_y })).await;
-    let y_payment_after_consumer =
-        node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(y_payment_after_consumer["track"], "claimed");
-
-    let y_ack =
-        node_y.rpc_ok("payment.acknowledge", json!({ "agreement": winner_quote_record_id })).await;
-    assert_ne!(y_ack["state"], "already-recorded");
-    let y_payment_after_provider =
-        node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(y_payment_after_provider["track"], "acknowledged");
-
-    let y_fulfil =
-        node_y.rpc_ok("fulfilment.sign", json!({ "agreement": winner_quote_record_id })).await;
-    let y_fulfil_msg = y_fulfil["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_y, &y_fulfil_msg).await, "provider's fulfilment sign delivered");
-
-    winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
-    let x_fulfil =
-        winner_node.rpc_ok("fulfilment.sign", json!({ "agreement": winner_quote_record_id })).await;
-    let x_fulfil_msg = x_fulfil["message_id"].as_str().unwrap().to_string();
-    assert!(
-        wait_delivered(winner_node, &x_fulfil_msg).await,
-        "consumer's fulfilment sign delivered"
-    );
-
-    let synced = wait_until(Duration::from_secs(30), || async {
-        node_y.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_on_y })).await;
-        let b = node_y.rpc_ok("booking.get", json!({ "agreement": winner_quote_record_id })).await;
-        b["state"] == "completed"
-    })
-    .await;
-    assert!(synced, "provider's booking reaches completed");
-
-    let synced_consumer = wait_until(Duration::from_secs(30), || async {
-        winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
-        let b =
-            winner_node.rpc_ok("booking.get", json!({ "agreement": winner_quote_record_id })).await;
-        b["state"] == "completed"
-    })
-    .await;
-    assert!(synced_consumer, "winner's own progress reaches completed");
-}
-
-async fn wait_and_verify_winner_scheduled(
-    node_y: &Node,
-    owner_y_did: &str,
-    winner_node: &Node,
-    winner_quote_record_id: &str,
-    winner_conv_id: &str,
-    winner_conv_on_y: &str,
-) {
-    let y_thread_winner =
-        node_y.rpc_ok("transaction.thread", json!({ "conversation": winner_conv_on_y })).await;
-    let y_cards_winner = y_thread_winner["cards"].as_array().unwrap();
-    let y_prov_card = y_cards_winner
-        .iter()
-        .find(|c| c["card_type"] == "agreement-receipt" && c["issuer"] == owner_y_did)
-        .expect("provider card in Y thread for winner");
-    let prov_msg_id = y_prov_card["message_id"].as_str().unwrap();
-    assert!(wait_delivered(node_y, prov_msg_id).await, "countersigned receipt delivered to winner");
-
-    winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
-    let winner_booking =
-        winner_node.rpc_ok("booking.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(winner_booking["state"], "scheduled");
-}
-
 async fn assert_loser_retry(node_y: &Node, loser_node: &Node, loser_quote_record_id: &str) {
     let loser_retry = loser_node
         .rpc_ok("agreement.accept", json!({ "quote_record_id": loser_quote_record_id }))
@@ -389,14 +181,6 @@ async fn assert_loser_retry(node_y: &Node, loser_node: &Node, loser_quote_record
     let loser_booking_after =
         node_y.rpc_ok("booking.get", json!({ "agreement": loser_quote_record_id })).await;
     assert_eq!(loser_booking_after["state"], "conflict");
-}
-
-async fn assert_no_directory(nodes: &[&Node]) {
-    for node in nodes {
-        let sources = node.rpc_ok("directory.sources", json!({})).await;
-        let empty = sources["sources"].as_array().map(Vec::is_empty).unwrap_or(true);
-        assert!(empty, "{} has no directory sources", node.label);
-    }
 }
 
 #[tokio::test]
@@ -504,6 +288,7 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
         &winner_quote_record_id,
         &winner_conv_id,
         &winner_conv_on_y,
+        "Y Gardens",
     )
     .await;
 

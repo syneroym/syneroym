@@ -29,6 +29,7 @@ mod deploy;
 
 pub mod conversation_fixture;
 pub mod roym;
+pub mod roym_flow;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
