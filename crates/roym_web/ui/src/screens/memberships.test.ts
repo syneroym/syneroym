@@ -125,7 +125,7 @@ describe("the Memberships screen", () => {
     expect(row.querySelector(".membership-checked")?.textContent).toBe("checked 2 hours ago");
   });
 
-  it("says a changed issuer is a different group, not the held copy or an outage", async () => {
+  it("keeps the held copy on screen when the issuer changed, and says why", async () => {
     stubRpc({
       "directory.memberships": () => ({ memberships: [HELD] }),
       "directory.sources": () => ({ sources: [] }),
@@ -137,13 +137,17 @@ describe("the Memberships screen", () => {
     const host = await render();
     const row = host.querySelector(".membership-row") as HTMLElement;
     (row.querySelector(".check-again") as HTMLButtonElement).click();
-    await vi.waitFor(() => expect(row.dataset.state).toBe("unknown"));
+    await vi.waitFor(() =>
+      expect(row.querySelector(".membership-check-status")?.textContent).toContain("different group"),
+    );
 
     const status = row.querySelector(".membership-check-status")?.textContent ?? "";
-    expect(status).toContain("different group");
     expect(status).not.toContain("copy you already held");
     expect(status).not.toContain("Could not reach");
-    expect(row.querySelector(".membership-checked")?.textContent).toBe("");
+    // What a reload would show: the row is unchanged.
+    expect(row.dataset.state).toBe("valid");
+    expect(row.querySelector(".membership-words")?.textContent).toContain("Member of Cycling Guild");
+    expect(row.querySelector(".membership-checked")?.textContent).toBe("checked 2 hours ago");
   });
 
   it("renders a hostile group name as text, never as markup", async () => {

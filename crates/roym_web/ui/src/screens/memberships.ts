@@ -105,14 +105,13 @@ function buildRow(row: HeldMembership, label: string): HTMLElement {
         source: row.source,
         member_did: row.member_did,
       });
-      line.dataset.state = res.verdict.state;
-      words.textContent = membershipWords(res.verdict, label);
       if (issuerChanged(res)) {
-        // The directory answered, so this is not the held copy and has no
-        // check time of its own.
-        checked.textContent = "";
+        // The reply was not used, so the row keeps showing the held copy
+        // (the one a reload shows) and only the status line says why.
         status.textContent = ISSUER_CHANGED_CHECK_WORDS;
       } else {
+        line.dataset.state = res.verdict.state;
+        words.textContent = membershipWords(res.verdict, label);
         checked.textContent = res.refreshed ? "checked moments ago" : checkedWords(res.as_of_secs ?? 0);
         status.textContent = res.refreshed
           ? "Checked just now."
