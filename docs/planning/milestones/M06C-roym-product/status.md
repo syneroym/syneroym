@@ -2324,16 +2324,27 @@ the replaced session's pre-key message is still refused).
 **Review of part 2 found that fix incomplete, and the sender is now fixed too.** Until the
 sender's next message reached the receiver, the receiver held session 1 and the sender held
 session 2 (or none). A reply the receiver sent in that time went out on session 1 and the
-sender refused it for good, so a request-then-quote flow could stick. `deliver_one` now
-persists the session **before** the call, so a retry continues the same session and both sides
-always agree. A receiver accepts a ratchet that is ahead of what it has seen, so a call that
-never arrived costs nothing. This reverses the earlier reasoning against persisting at
-`begin_session`, whose worry was a stale session that names a prekey the peer has dropped. That
-is met differently: a `Terminal` refusal of a session the peer has never answered on
-(`Session::peer_has_replied`) deletes the stored session, so the next delivery starts from a
-fresh bundle. The receiver-side replacement stays, for a sender that lost its state. The e2e
-now sends the peer's reply between the lost first ack and the sender's next message; it fails
-with the sender fix reverted.
+sender refused it for good, so a request-then-quote flow could stick. The sender now saves its
+session **before** the call, so a retry continues the same session and both sides always agree.
+
+That first sender fix had a flaw of its own, found in the second review round: it encrypted and
+saved on every attempt, so each attempt at an unreachable peer moved the ratchet one step, and
+vodozemac refuses a message more than 2000 steps ahead of what the receiver has seen. A message
+pending for about a week (or ten for a day) would then fail for good when the peer came back.
+The message is now encrypted **once**: `sealed_envelope` stores the envelope in the new
+`outbound_envelopes` table and every retry resends the same bytes. The session is saved before
+the envelope, so a crash between the two wastes one step and never reuses a message key. The
+envelope is deleted when the message settles, either way. This also stops two pending messages
+from sharing one message key. The unit test `attempts_at_an_unreachable_peer_do_not_move_the_ratchet`
+makes 2,500 attempts and then checks the next message still decrypts; it fails if the stored
+envelope is ignored.
+
+The earlier worry about persisting early was a stale session that names a prekey the peer has
+dropped. That is met differently: a `Terminal` refusal of a session the peer has never answered
+on (`Session::peer_has_replied`) deletes the stored session and the next delivery starts from a
+fresh bundle. The receiver-side replacement stays, now for a sender that lost or deleted its
+session state. The e2e sends the peer's reply between the lost first ack and the sender's next
+message; it fails with the sender fix reverted.
 
 **A second, smaller defect the row-13 test exposed.** `insert_outgoing_and_enqueue` set a
 message's `received_at` from its *claimed* sender timestamp, and the outbox ages a pending
@@ -2351,7 +2362,7 @@ Eleven findings. Each was fixed unless said otherwise.
 
 | # | Finding | Decision |
 |---|---|---|
-| F1 | After a lost first ack the peer's replies on its own session are refused | **Fixed** on the sender (above); e2e step added and checked to fail without the fix |
+| F1 | After a lost first ack the peer's replies on its own session are refused | **Fixed** on the sender (above); e2e step added and checked to fail without the fix. The follow-up N1 (ratchet moved on every attempt) is fixed by storing the envelope; N2 (a stale comment) and N3 (the Memberships tab showed `unknown` for an `issuer-changed` reply while the status line said the reply was not used; it now keeps the held copy on screen, as a reload does) are fixed too |
 | F2 | `conversation.retry` on an age-expired message never made an attempt | **Fixed**: `ConversationStore::restart_pending` resets `received_at`, which the outbox ages from. Roym's `conversation.retry` also moved its own cached row to `pending`: a history read never walks a `failed` row back, so the Hub kept showing `failed` for a message the host was attempting. The e2e asserts `pending` two seconds after the retry, inside the new window |
 | F3 | Two wasmtime advisories ignored with no backlog row | **Fixed**: row added in the backlog's security section |
 | F4 | "Check membership again" on a card replaced the listing's own verdict | **Fixed** in the Hub: the card keeps its listing-judged line, and the fresh answer goes on a separate line labelled as not tied to the listing. `check-standing` still takes no listing; judging one server-side is not built |
@@ -2433,7 +2444,7 @@ which the plan says to split step 8 out. The shared flow steps moved to
 | What | Command | Result |
 |---|---|---|
 | Parity, both builds byte-identical | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` | **197/197** |
-| Conversation crate | `cargo nextest run -p syneroym-conversation --all-features` | **55/55** |
+| Conversation crate | `cargo nextest run -p syneroym-conversation --all-features` | **57/57** |
 | Cross-node conversation cases | `cargo nextest run -p syneroym-substrate --test conversation_cross_node_e2e` | **9/9** |
 | Three installations | `cargo nextest run -p syneroym-substrate --test roym_trust_e2e` | **1/1**, 58.7 s |
 | Other conversation and Roym e2e touched | `conversation_e2e`, `group_conversation_e2e`, `roym_conversation_e2e`, `roym_directory_e2e`, `roym_booking_e2e` | all pass |
