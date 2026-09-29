@@ -4,6 +4,7 @@ import {
   slotFromLocalDatetimes,
   type ListingForm,
 } from "../listings/editor";
+import { publishRefusalWords } from "../directory/membership";
 import { call, RpcError } from "../rpc";
 
 interface ListingListRow {
@@ -205,7 +206,7 @@ function publishToDirectory(listingId: string): HTMLElement {
       await call("directory.publish-to-source", { source, listing_id: listingId });
       status.textContent = "Published.";
     } catch (err) {
-      status.textContent = `Not published: ${errText(err)}`;
+      status.textContent = `Not published: ${publishRefusalWords(err, errText(err))}`;
     }
     btn.disabled = false;
   };

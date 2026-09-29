@@ -7,6 +7,7 @@ export default defineConfig({
     '**/wasm-app.spec.ts',
     '**/keepalive-session.spec.ts',
     '**/roym-hub.spec.ts',
+    '**/roym-trust.spec.ts',
   ],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

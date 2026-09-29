@@ -8,7 +8,13 @@ export const NOT_LOCAL_MESSAGE =
   "this installation refused a request that did not come from you";
 
 export class RpcError extends Error {
-  constructor(public code: number, message: string, public type: RpcErrorType) {
+  constructor(
+    public code: number,
+    message: string,
+    public type: RpcErrorType,
+    /// The refusal's own structured detail, when the service gave one.
+    public data?: unknown,
+  ) {
     super(message);
     this.name = "RpcError";
   }
@@ -39,7 +45,7 @@ export async function call<T = unknown>(method: string, params: Record<string, u
     else if (code === -32011) type = "NotOwner";
     else if (code === -32012) type = "NoOwner";
     else if (code === -32013) type = "NotLocal";
-    throw new RpcError(code, type === "NotLocal" ? NOT_LOCAL_MESSAGE : msg, type);
+    throw new RpcError(code, type === "NotLocal" ? NOT_LOCAL_MESSAGE : msg, type, json.error.data);
   }
 
   return json.result as T;

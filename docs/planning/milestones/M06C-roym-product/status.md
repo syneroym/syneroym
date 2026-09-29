@@ -24,7 +24,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C6 | Directory: the search half (R1 row 5) | **Complete (2026-09-06) — shipped as [PR #161](https://github.com/syneroym/syneroym/pull/161)** — core service, admission rule, roymctl, 34 parity scenarios (2026-09-05); the two-directory parity harness, three-substrate e2e, Hub Directory/SynOrg UI + `roym-hub.spec.ts` cases 13–23b, and WO5 in the Post-C6 follow-up; a 35-finding review (28 + N1–N8) fully incorporated in two passes (`0487c42`..`c5871a9`). Gates: workspace 152/0, parity 115/0 both builds, e2e 42+4. R1 row 5's acceptance test is markable (rendered + cross-installation halves both covered). One backlog row stays open (a `roymctl` CLI-argument test); narrower notes on Hub cases 15 / 22 / 23b. See its own section, "What C6 did not build", "Post-C6 follow-up", and "Second review pass" below | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | **Complete (2026-09-08)** — [implementation plan](slice-c7-implementation-plan.md), evidence below. R1's acceptance gate closed across all six rows | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | **Complete (2026-09-24)** — [implementation plan](slice-c8-implementation-plan.md), evidence below. R2's acceptance gate closed across all five rows | C7 |
-| C9 | Cross-installation trust (R3, all three rows) | **In progress** — [implementation plan](slice-c9-implementation-plan.md). Core vocabulary, signed credential/revocation/moderation verbs, the publish/search membership gate, `roymctl`, and 184/184 dual-build parity scenarios (15 new) are done and green; the three-installation e2e (WO6), the inherited cross-node cases (WO7), and the Hub UI/Playwright (WO8) are not yet built. See "C9 — What shipped so far" below | C8 |
+| C9 | Cross-installation trust (R3, all three rows) | **Done 2026-09-29** — [implementation plan](slice-c9-implementation-plan.md). The signed credential/revocation/moderation mechanism, the publish/search membership gate and `roymctl` (WO1-WO4); 197 dual-build parity tests including the two-SynOrg and hostile-trust-source scenarios (WO5); the three-installation e2e (WO6); the inherited cross-node conversation cases (WO7); the Hub screens with vitest and Playwright (WO8). See "C9" below | C8 |
 | C10 | Private group chat in the product (R4, all five rows) | Not started | C5, C9 |
 
 ---
@@ -1981,12 +1981,13 @@ All standard quality gates executed and confirmed 100% green on 2026-09-24:
 
 ---
 
-## C9 — What shipped so far (in progress)
+## C9 — Cross-installation trust (done)
 
 Work against [slice-c9-implementation-plan.md](slice-c9-implementation-plan.md), branch
-`feat/m06c-slice-c9-trust`. R3 is **not yet closable**: WO1–WO5 are done, WO6–WO8 are not
-built. This section states exactly what runs and what does not, so the gap is checkable
-rather than assumed.
+`feat/m06c-slice-c9-trust`. R3's three acceptance rows are met: the mechanism is proven on
+both builds by the parity suite, and across three separate installations discovered through
+the registry by `roym_trust_e2e`. WO1-WO5 below were written when only the mechanism
+existed; the sections after the code-review rounds record what was built to finish the slice.
 
 ### Done (WO1–WO5)
 
@@ -2264,46 +2265,159 @@ stale artifact was found. Re-run after a rebuild:
 `cargo nextest run -p syneroym-roym-web --test dual_build_parity` --
 **191/191 passed**, both builds byte-identical.
 
-### Not built (WO6, WO7, WO8) — the actual gap to R3
+### WO5 fixture gap: `directory2` has its own owner, and the trust-source scenarios (2026-09-29)
 
-- **WO6, three-installation e2e (R3 rows 1–3).** No `roym_trust_e2e.rs` exists. The
-  from-scratch demo script (plan §15) and R3's three acceptance rows are unverified
-  end-to-end; only the single-installation parity scenarios above cover the mechanism.
-- **WO7, the 12 inherited cross-node cases (`D-06C-7`).** No `test-support` feature on
-  `syneroym-conversation`, no `drop_next_ack`/`override_next_send` hooks, no
-  `conversation_cross_node_e2e.rs`. M06B's uncovered rows (dropped-ack retry, forged
-  author, pinned-key mismatch, cross-service proxy denial, same-service exemption,
-  prekey rate limiting, per-conversation quota isolation, clock-skew rejection,
-  `max_pending_age_secs` + retry, no-instance-certificate) remain uncovered.
-- **WO8, Hub UI + Playwright.** No `membershipWords` (the Hub's copy is not written; the
-  Rust-side verbatim-text test in `membership.rs`'s unit tests reads a minimal stub file
-  with only the two notice constants — see below), no Memberships tab, no SynOrg
-  members/credentials screen, no `roym-trust.spec.ts`.
-- **Deliberate scope reduction inside WO5 itself, not in the plan:** the two-directory
-  hostile-source scenarios (183–185, 187, 193) and the issuer-pin-never-re-pinned
-  scenario against a real second SynOrg need `directory2` to have its own distinct owner
-  (plan §8.1 D-C9's "second directory gets its own owner"); that fixture change was not
-  made, so those five scenarios were not written. `directory2` still shares the
-  fixtures' single owner, same as before C9.
-- `crates/roym_web/ui/src/directory/membership.ts` exists but is a placeholder: only the
-  two notice constants (`NO_INSTANT_REMOVAL_NOTICE`, `WITHHELD_REVOCATION_NOTICE`),
-  verbatim, so `roym_core::membership`'s own unit test can compare against something.
-  `membershipWords`, the `MembershipVerdict` TS mirror, and its own `.test.ts` are not
-  written.
+- **`directory2` is a distinct SynOrg.** `trust_fixtures.rs` gained a fixed-seed
+  `dir2_owner_identity()`/`dir2_owner_did()`; `helpers.rs` registers `directory2` under it
+  (both builds); `dir2_enrol_signing` mints its record-signing certificate with that
+  owner. One more change the plan did not name was needed: `dir2_local` presents the
+  **second** owner's session (`dir2_owner_caller()`), because the signing host refuses a
+  certificate whose master is not the calling session's subject.
+- **A canned trust source, in `trust_harness.rs`.** The C6 hostile-source block moved out
+  of `helpers.rs` (whose length cap then ratcheted down) into this file, beside the new
+  `trust_source_response`: five fixed targets that each serve a **genuine, validly signed
+  listing** and membership evidence with one chosen defect — `hTrustValid` (the control,
+  so a failing target is never failing for a reason in the fixture), `hTrustForged`
+  (credential signed by the wrong key), `hTrustExpired`, `hTrustOutOfScope`,
+  `hTrustWrongSynOrg` (info names the second owner, credential signed by the first).
+- **Six scenarios**, in a new `trust_sources.rs`: 182 (each real directory's own owner
+  shows as that source's issuer, pinned from its own `info`), 183, 184, 185, 187 (a changed
+  issuer is never re-pinned: refused on search, `issuer-changed` on `check-standing`, the
+  pin untouched even by a second `add-source`), 193.
+- **The C6 two-directory scenarios (98, 102c, 102d, 119, 120) were re-run** after the owner
+  change and needed no edit.
 
-### What this means for the acceptance gate
+### WO7: the inherited cross-node cases
 
-R3's three rows are **not markable**. The signed-credential/revocation/moderation
-*mechanism* is built, tested on both builds, and demonstrably drives the publish gate and
-search filter correctly (184 parity scenarios). What is missing is the proof that it
-works *across three separate installations discovered through the registry* (R3 row 1),
-and the product surface (Hub) a person would actually use. `docs/roym-integrated-
-experience-spec.md`'s R3 row is not touched by this work and must stay unmarked until
-WO6–WO8 land.
+`crates/conversation` gained a `test-support` feature (enabled only by
+`syneroym-substrate`'s dev-dependency) with two one-shot hooks keyed by the sending
+service id: `drop_next_ack` and `override_next_send`. `conversation_cross_node_e2e.rs` has
+nine tests over real substrates, each with a control that shows the refusal is the
+refusal under test and not something else:
 
-### Recommended next step
+| B4 §10.2 row | Test | Shown |
+|---|---|---|
+| 4 | `a_lost_ack_is_retried_and_stored_once_for_a_new_and_an_existing_session` | both cases (first message on a new session; a later one), one copy held, **and the follow-up message delivered** |
+| 7 | `a_delivery_claiming_another_nodes_authorship_is_refused_and_stores_nothing` | forged send `failed` on C, nothing under A's name at B, C's honest messages before and after delivered |
+| 8 | `a_different_signing_key_for_a_pinned_address_is_refused_and_the_pin_holds` | a second node under the same master is refused; the real A still delivers afterwards. Reverting the pinned-key check makes it fail |
+| 9 | `a_guest_calling_conversation_on_another_service_is_denied_by_the_proxy` | `PermissionDenied` naming the native-capability policy; nothing reaches B |
+| 10 | `a_guest_reaching_its_own_deliver_arm_is_still_refused_by_the_arm` | passes the proxy gate, refused by the arm (`permission denied`) |
+| 11 | `prekey_requests_past_the_hourly_limit_are_refused_and_do_not_starve_an_honest_peer` | third request refused; A still establishes a session |
+| 12 | `the_pending_quota_of_one_conversation_does_not_block_another` | third send `QuotaExceeded`; a second conversation still sends |
+| 13 | `a_future_sender_timestamp_is_refused_and_a_past_one_is_kept` | +1 year refused, -1 year delivered and kept as claimed (the two differ only in the timestamp) |
+| 14 | `roym_conversation_e2e.rs`, extended | `conversation.retry` re-arms a failed message, which the outbox attempts and settles `failed` again |
+| 15 | `a_send_with_no_instance_certificate_fails_naming_the_certificate` | `failed` with a reason naming the instance certificate |
+| 16, 17 | not built | alias canonicalization and `open-direct` resolution: `D-B4-29`, one backlog row |
 
-Continue from WO6 in a follow-up session against the same plan and branch. WO6 needs
-WO1–WO4 (done); WO7 is independent and can run in parallel; WO8 needs WO3 (done). The
-`docs/planning/deferred-backlog.md` entries for this partial slice's own scope
-reductions, and for the code-review round above, are now recorded there (§11).
+**Row 4 exposed a real defect, and it is fixed.** After a lost first ack, the sender's retry
+built a *second* session from a fresh prekey bundle (the first was never committed, since
+commit waits for the ack), and continued on it. The receiver already held the first session
+for that sender, so the sender's next message — a pre-key message for a session the receiver
+had never seen — failed to decrypt and the message was refused for good. The dedup fence
+answered the retry with the stored ack without decrypting, which is why nothing failed until
+the follow-up. The plan expected the fix in `transport.rs`; it is on the **receiver** in
+`crypto.rs::session_for_envelope` instead: a pre-key message that names a session other than
+the stored one now opens a new inbound session, after the pinned-signing-key check and
+subject to the payload signature. Persisting the sender's session at `begin_session` would
+have fixed this case but leaves a stale session pointing at a one-time key the peer may
+later discard, so a peer that was slow once could stay unreachable. Covered by two unit
+tests (`a_second_session_from_the_same_pinned_sender_replaces_the_first`, and that a replay of
+the replaced session's pre-key message is still refused); the first was checked to fail with
+the fix reverted, and the e2e fails the same way.
+
+**A second, smaller defect the row-13 test exposed.** `insert_outgoing_and_enqueue` set a
+message's `received_at` from its *claimed* sender timestamp, and the outbox ages a pending
+message from `received_at`. A message claiming a timestamp a year in the past therefore read
+as expired the moment it was sent. `received_at` is now this node's own clock.
+
+Test-harness finding worth keeping: the fixture guest is reached through the registry, so a
+second node running the same service id must have its **own** registry (or `fixture_run`
+lands on the first node), and then needs the other peer's endpoint record, master anchor
+and node record copied in (`publish_node_record`).
+
+### WO6: three installations, R3 rows 1-3
+
+`roym_trust_e2e.rs`: one test, `a_consumer_hires_a_member_found_through_a_synorg_on_a_third_installation`,
+calling one helper per plan step (Z hosts the registry; X and Y resolve through it):
+
+1. Z declares its SynOrg; Y has a profile, a `cycling` listing and one slot.
+2. Y's publish is refused with `admission: not-admitted` and `membership.state: none`; Z issues a
+   credential; the same publish is accepted.
+3. X adds Z knowing only Z's directory DID; `source.issuer_did` is Z's owner; the registry
+   resolves Y's `catalog` and `conversation` and Z's `directory` (R3 row 1, all three
+   asserted).
+4. A stranger with no token reads Y's evidence from Z through `directory.standing`, gets `-32013`
+   from `credential.list`, and can neither look up nor dial Y's `profile`, which publishes no
+   registry record (failure-matrix row 18, both halves).
+5. X's search returns one hit whose membership is `valid`, issued by Z's owner, scoped to
+   `cycling`, expiring as issued — computed on X's node (R3 row 2).
+6. X hires Y from the hit's own conversation address through payment and both fulfilment
+   signatures to `completed`.
+7. Z suspends Y; X's next search shows nothing, X's held copy still reads `valid` with its old
+   date, and only `check-standing` shows `suspended` (R3 row 3). Z then revokes the
+   credential; X's next check shows `revoked`.
+8. X exports all five services and restores onto a clean node under X's owner identity: the
+   held membership for Y reads `revoked` there (re-evaluated from stored evidence) and the
+   finished booking is `completed`.
+
+**Wall time: about 59 s** on this machine (58.7 s under nextest), well under the 4-minute line at
+which the plan says to split step 8 out. The shared flow steps moved to
+`common/roym_flow.rs`, called by this file, `roym_booking_e2e.rs` and `roym_directory_e2e.rs`
+(which are shorter by the copies they no longer hold).
+
+### WO8: the Hub
+
+- **`membership.ts`** now holds the verdict type (mirroring the Rust enum), `membershipWords`,
+  `refusalWords`, `publishRefusalWords`, `pinnedIssuerWords` and `checkedWords`, with the two
+  notices still verbatim (the Rust test that compares them is unchanged and green). No line
+  it produces uses the word "verified", asserted for every verdict and for a missing one.
+- **Directory screen:** the hit card's fixed `membership: not checked` line is now one
+  verdict line per source, with a "Check membership again" button that calls
+  `directory.check-standing`.
+- **Memberships tab** (`screens/memberships.ts`): the held copies with their age, the issuer
+  as "the group this directory said it is when you added it", a "Check again" button per row,
+  and both notices always on screen.
+- **SynOrg members panel** (`screens/synorg_members.ts`): issue a credential (categories from
+  the SynOrg's own, days), the credentials issued with `current`/`replaced`/`revoked`, revoke
+  with a reason, suspend (whole membership or one listing, rule, reason, optional end), lift,
+  and the decision history; the no-instant-removal notice sits above them.
+- **Refusals in words:** `RpcError` now carries the refusal's `data`, so a publish refused
+  because the group does not admit the listing reads `this group did not admit this listing.`
+  followed by the person's own membership in words, and **`member.remove`'s refusal** shows on
+  its roster row instead of vanishing (the button called it with no error handling).
+- Small shared helpers (`text`, `errText`, `field`) moved to `src/dom.ts`, and `ageWords` to
+  `directory/words.ts`; the screens that had their own copies import them.
+- **Playwright** (`roym-trust.spec.ts`, six tests, run serially against the suite's one node):
+  the listing refusal in words; issue-then-search shows `Member of ... checked on your node`;
+  suspending removes the result and the held copy changes only after "Check again"; lifting
+  brings the result back; revoking shows `revoked` on the next check; no membership line ever
+  uses the word "verified". **One deliberate difference from the plan's wording:** the first
+  test refuses a member whose credential was *revoked*, not a never-member, because the suite's
+  earlier specs already issued this node's owner a credential and there is only one identity to
+  publish as; the never-member refusal is asserted at the wire in `roym_trust_e2e` (step 2) and
+  as words in vitest. `roym-hub.spec.ts`'s `membership: not checked` assertion became
+  `Member of ... checked on your node`, and the login and RPC helpers both specs use moved to
+  `hub-helpers.ts`.
+
+### Evidence
+
+| What | Command | Result |
+|---|---|---|
+| Parity, both builds byte-identical | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` | **197/197** |
+| Conversation crate | `cargo nextest run -p syneroym-conversation` | **53/53** (two new crypto tests) |
+| Cross-node conversation cases | `cargo nextest run -p syneroym-substrate --test conversation_cross_node_e2e` | **9/9** |
+| Three installations | `cargo nextest run -p syneroym-substrate --test roym_trust_e2e` | **1/1**, 58.7 s |
+| Other conversation and Roym e2e touched | `conversation_e2e`, `group_conversation_e2e`, `roym_conversation_e2e`, `roym_directory_e2e`, `roym_booking_e2e` | all pass |
+| Hub unit tests | `npm test` in `crates/roym_web/ui` | **104/104**; `eslint` and `tsc` clean |
+| Hub in a browser | `npx playwright test tests/roym-trust.spec.ts` | **6/6** |
+
+### What R3 rests on
+
+| R3 row | Where it is proven |
+|---|---|
+| 1. Three installations resolve each other through the registry; the consumer's node checks the signed credential | `roym_trust_e2e` steps 3, 5 (only Z's directory DID is given to X; every value used for Y comes out of a response) |
+| 2. A directory asserting a credential is valid does not make it valid | Parity 183-185 and 193 (forged, expired, out-of-scope, wrong-SynOrg evidence) and 187 (a changed issuer); `roym_trust_e2e` step 5 |
+| 3. A suspended member vanishes from search; a held copy shows it on next check; the product says instant removal is not promised | `roym_trust_e2e` step 7; parity 180, 181, 186; the Hub notice and `roym-trust.spec.ts` |
+
+**R3 across installations is proven on the WASM build; both builds agree on the mechanism**
+through the parity suite (`D-C9-13`).
