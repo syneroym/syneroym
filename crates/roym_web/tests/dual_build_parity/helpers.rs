@@ -51,7 +51,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
 
-use super::fixtures::*;
+use super::{fixtures::*, trust_fixtures, trust_harness};
 
 pub(crate) fn did_for_service(name: &str) -> String {
     format!("did:key:zRoym{name}")
@@ -256,6 +256,12 @@ pub(crate) fn custom_caller(did: &str) -> CallerContext {
     }
 }
 
+/// The second directory's own owner, presented on its local dispatches:
+/// its record-signing certificate must chain to the caller's own subject.
+pub(crate) fn dir2_owner_caller() -> CallerContext {
+    custom_caller(&trust_fixtures::dir2_owner_did())
+}
+
 /// The identity a fan-out `query-source` / `publish-to-source` call
 /// presents to a *foreign* directory over the wire -- deliberately not
 /// this node's own owner, so a directory's publication limiter (keyed on
@@ -290,60 +296,6 @@ pub(crate) fn foreign_wire_route(target: &str) -> Option<(String, bool)> {
         "did:key:hForeignWire2" => Some((did_for_service("directory2"), false)),
         _ => None,
     }
-}
-
-/// How many forged hits a hostile fake source returns per `query-source`.
-pub(crate) const HOSTILE_SOURCE_FORGERIES: usize = 15;
-
-/// A few shapes a forged envelope can take, cycled across a hostile
-/// source's hits so the consumer's verification is exercised past its
-/// outermost JSON parse: not-an-object, an object with no signature, an
-/// object with an unusable signature, a wrong record type, and an
-/// issued-at far in the future.
-pub(crate) const FORGED_ENVELOPE_SHAPES: &[&str] = &[
-    "{\"not\":\"a signed listing envelope\"}",
-    "\"just a string\"",
-    "{\"payload\":{\"record_type\":\"listing\"},\"delegation\":null}",
-    "{\"payload\":{\"record_type\":\"listing\"},\"signature\":\"!!not-base64!!\"}",
-    "{\"payload\":{\"record_type\":\"profile\"},\"signature\":\"AAAA\"}",
-    "{\"payload\":{\"record_type\":\"listing\",\"issued_at_secs\":9999999999},\"signature\":\"\
-     AAAA\"}",
-];
-
-/// Canned response for the hostile fake sources `did:key:hForge1` /
-/// `did:key:hForge2`, and the `did:key:hTrunc` source that answers with
-/// no hits but `truncated: true`. A real second directory cannot serve
-/// forgeries -- its own `directory.publish` verifies every envelope at
-/// the door -- so a canned page is the only way to drive "a source that
-/// returns nothing but forgeries" or "a source that had more matches
-/// than it would return". The consumer's own verification in
-/// `query-source`, not the source, is what must reject a forgery.
-/// Returned as the `Value::String` shape both real directory calls
-/// produce, so the two builds see byte-identical input.
-pub(crate) fn hostile_source_response(target: &str) -> Option<Value> {
-    if target == "did:key:hTrunc" {
-        return Some(Value::String(
-            json!({ "result": { "hits": [], "truncated": true } }).to_string(),
-        ));
-    }
-    let tag = match target {
-        "did:key:hForge1" => "a",
-        "did:key:hForge2" => "b",
-        _ => return None,
-    };
-    let hits: Vec<Value> = (0..HOSTILE_SOURCE_FORGERIES)
-        .map(|i| {
-            json!({
-                "listing_id": format!("forged-{tag}-{i}"),
-                "record_id": format!("forged-rec-{tag}-{i}"),
-                "envelope": FORGED_ENVELOPE_SHAPES[i % FORGED_ENVELOPE_SHAPES.len()],
-                "issued_at_secs": 4_000_000_000u64,
-                "received_at_secs": 4_000_000_000u64,
-                "area_match": { "kind": "not-queried" }
-            })
-        })
-        .collect();
-    Some(Value::String(json!({ "result": { "hits": hits } }).to_string()))
 }
 
 pub(crate) trait Driver {
@@ -726,7 +678,7 @@ impl Harness {
                 &did_for_service("directory2"),
                 services::DIRECTORY.interface,
                 &req,
-                Some(caller()),
+                Some(dir2_owner_caller()),
             )
             .await
             .expect("wasm dir2 local invoke");
@@ -736,7 +688,7 @@ impl Harness {
                 interface: services::DIRECTORY.interface.to_string(),
                 method: "invoke".to_string(),
                 params: json!([env_str]),
-                caller: caller(),
+                caller: dir2_owner_caller(),
             })
             .await
             .expect("native dir2 local invoke");
@@ -840,7 +792,7 @@ impl ServiceProxy for TestWasmServiceProxy {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
 
-        if let Some(canned) = hostile_source_response(target) {
+        if let Some(canned) = trust_harness::canned_source_response(target, &request.params) {
             return Ok(canned);
         }
 
@@ -925,7 +877,7 @@ impl ServiceProxy for TestNativeServiceProxy {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
 
-        if let Some(canned) = hostile_source_response(target) {
+        if let Some(canned) = trust_harness::canned_source_response(target, &request.params) {
             return Ok(canned);
         }
 
@@ -1133,7 +1085,10 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         )
         .await
         .unwrap();
-    wasm_reg.set_owner(did_for_service("directory2"), owner_did.clone()).await.unwrap();
+    wasm_reg
+        .set_owner(did_for_service("directory2"), trust_fixtures::dir2_owner_did())
+        .await
+        .unwrap();
 
     let wasm_conversation =
         test_conversation_service(wasm_storage.clone(), wasm_ks.clone(), wasm_reg.clone());
@@ -1270,7 +1225,10 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         )
         .await
         .unwrap();
-    native_reg.set_owner(did_for_service("directory2"), owner_did.clone()).await.unwrap();
+    native_reg
+        .set_owner(did_for_service("directory2"), trust_fixtures::dir2_owner_did())
+        .await
+        .unwrap();
 
     let native_conversation =
         test_conversation_service(native_storage.clone(), native_ks.clone(), native_reg.clone());

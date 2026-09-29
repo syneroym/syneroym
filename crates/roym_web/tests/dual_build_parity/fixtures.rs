@@ -567,10 +567,10 @@ pub(crate) async fn wire_invoke(
 /// `directory.set-settings` on the second directory, so its `directory.info`
 /// probe answers and `directory.publish` is not refused as "no SynOrg".
 /// Also enrols its signing certificate and issues membership credentials
-/// the same way `ensure_synorg` does for the primary directory --
-/// `directory2` shares the fixtures' single owner today (a distinct
-/// second-directory owner is not yet built; see the backlog), so this is
-/// a local dispatch through `dir2_local` rather than `both_rpc`.
+/// the same way `ensure_synorg` does for the primary directory. The
+/// second directory has its own owner (`trust_fixtures::dir2_owner_did`),
+/// so it issues as a different SynOrg, and this is a local dispatch
+/// through `dir2_local` rather than `both_rpc`.
 pub(crate) async fn ensure_dir2_synorg(h: &Harness) {
     let (w, n) = h
         .dir2_local(

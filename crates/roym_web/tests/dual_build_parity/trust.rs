@@ -1,14 +1,11 @@
 //! Cross-installation trust: the directory's own signed credential,
 //! revocation and moderation-decision verbs, and the search filter they
-//! drive. Two-directory hostile-source scenarios (a canned trust source
-//! serving forged/expired/out-of-scope/wrong-SynOrg evidence, and a
-//! consumer pinning a *second* SynOrg's own issuer) need `directory2` to
-//! have its own distinct owner, which is not yet built -- see the
-//! backlog. This file covers the credential lifecycle, the publish gate,
-//! the search filter, and the consumer's own held-copy re-evaluation on
-//! the single directory the harness already gives every other scenario.
-//! The member-standing decision cap has its own scenarios in
-//! `trust_evidence_cap.rs`.
+//! drive. This file covers the credential lifecycle, the publish gate, the
+//! search filter, and the consumer's own held-copy re-evaluation on the
+//! single directory the harness gives every other scenario. Scenarios that
+//! need a second SynOrg, or a canned source serving defective evidence, are
+//! in `trust_sources.rs`; the member-standing decision cap has its own
+//! scenarios in `trust_evidence_cap.rs`.
 
 use serde_json::json;
 use syneroym_roym_core::{

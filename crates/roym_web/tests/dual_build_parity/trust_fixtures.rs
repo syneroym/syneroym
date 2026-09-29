@@ -42,6 +42,19 @@ pub(crate) fn stranger_did() -> String {
     derive_did_key(&stranger_identity().public_key())
 }
 
+/// The second directory's own owner: a distinct SynOrg, so a credential
+/// one directory issues is provably not the other's. `directory2` is
+/// registered under this DID (`helpers.rs`), which is also the master its
+/// signing certificate must chain to. Fixed bytes so both builds mint the
+/// same DID.
+pub(crate) fn dir2_owner_identity() -> Identity {
+    Identity::from_bytes(&[43; 32])
+}
+
+pub(crate) fn dir2_owner_did() -> String {
+    derive_did_key(&dir2_owner_identity().public_key())
+}
+
 /// Enrols the primary directory's signing certificate and issues
 /// `owner_did()` a `FIXTURE_CATEGORIES` credential on it -- the one-liner
 /// a scenario that builds its own (non-`ensure_synorg`) settings needs
@@ -89,7 +102,9 @@ pub(crate) async fn issue_dir2_credential(h: &Harness, member: &str) -> (Value, 
 /// `enrol_signing`'s own shape (mint against the signing key `<service>.
 /// signing-status` reports, install through `both_rpc`), but through
 /// `dir2_local` since the second directory is a separate instance, not
-/// reachable through `both_rpc`'s single `/rpc` per stack.
+/// reachable through `both_rpc`'s single `/rpc` per stack, and minted by
+/// `dir2_owner_identity()`: the signing host refuses a certificate whose
+/// master is not the instance's own recorded owner.
 pub(crate) async fn dir2_enrol_signing(h: &Harness) {
     let (w, _) = h.dir2_local("directory.signing-status", json!({})).await;
     let signing_did = w["result"]["signing_did"]
@@ -97,7 +112,7 @@ pub(crate) async fn dir2_enrol_signing(h: &Harness) {
         .unwrap_or_else(|| panic!("no signing_did from dir2 directory.signing-status: {w}"));
     let signing_pubkey = resolve_did_key(signing_did).unwrap();
     let cert = DelegationCertificate::issue(
-        &h.owner,
+        &dir2_owner_identity(),
         signing_pubkey,
         86_400 * 365 * 4,
         SCOPE_RECORD_SIGNING.to_string(),
