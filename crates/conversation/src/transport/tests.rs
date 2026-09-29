@@ -284,3 +284,60 @@ async fn group_push_with_unregistered_assertion_sender_is_refused() {
     let res = service.group_push_impl("svc:receiver", "svc:stranger", req).await;
     assert!(matches!(res, Err(ConversationError::PermissionDenied)));
 }
+
+fn pending_message(id: &str, body: &[u8]) -> StoredMessage {
+    StoredMessage {
+        id: id.to_string(),
+        conversation_id: "conv:1".to_string(),
+        author: "svc-a".to_string(),
+        sender_timestamp_ms: 1_000,
+        received_at_ms: 1_000,
+        content_type: "text/plain".to_string(),
+        body: body.to_vec(),
+        signature: [0u8; 64],
+        outgoing: true,
+        verified: true,
+        state: crate::ConversationDeliveryState::Pending,
+        last_error: None,
+        system: false,
+        entry_id: None,
+    }
+}
+
+/// A peer that is away gets many delivery attempts for one message. vodozemac
+/// refuses a message more than 2000 steps ahead of what the receiver has
+/// seen, so an attempt must never move the ratchet: the message is encrypted
+/// once, and the same bytes are sent every time.
+#[tokio::test]
+async fn attempts_at_an_unreachable_peer_do_not_move_the_ratchet() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let store_a = service.store_for("svc-a").await.unwrap();
+    let crypto_b = X3dhDoubleRatchetCrypto::new();
+    let store_b = test_store();
+    let bundle = crypto_b.prekey_bundle(&store_b).await.unwrap();
+    let session = service.crypto.begin_session(&store_a, "svc-a", "svc-b", &bundle).await.unwrap();
+    service.crypto.commit(&store_a, &session).await.unwrap();
+
+    let first = pending_message("msg:1", b"first");
+    let sealed = service.sealed_envelope("svc-a", &store_a, "svc-b", &first).await.unwrap();
+    for _ in 0..2_500 {
+        let again = service.sealed_envelope("svc-a", &store_a, "svc-b", &first).await.unwrap();
+        assert_eq!(again, sealed, "a retry resends the stored bytes");
+    }
+
+    let second = pending_message("msg:2", b"second");
+    let next = service.sealed_envelope("svc-a", &store_a, "svc-b", &second).await.unwrap();
+    for (label, value) in [("first", sealed), ("second", next)] {
+        let env: Envelope = serde_json::from_value(value).unwrap();
+        let mut at_b = crypto_b.session_for_envelope(&store_b, &env).await.unwrap();
+        let payload = crypto_b
+            .decrypt(&mut at_b, &env)
+            .unwrap_or_else(|e| panic!("the {label} message must decrypt: {e}"));
+        assert_eq!(payload.message_id, if label == "first" { "msg:1" } else { "msg:2" });
+        crypto_b.commit(&store_b, &at_b).await.unwrap();
+    }
+
+    store_a.delete_outbound_envelope("msg:1").unwrap();
+    assert!(store_a.outbound_envelope("msg:1").unwrap().is_none());
+}

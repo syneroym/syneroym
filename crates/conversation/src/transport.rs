@@ -109,52 +109,62 @@ impl ConversationService {
         proxy.invoke(request).await.map_err(classify)
     }
 
-    /// The sending side of one delivery attempt. Never called on the hot
-    /// dispatch path — only from the outbox worker.
-    pub(crate) async fn deliver_one(
+    /// The session to encrypt on: the stored one, or a new one built from
+    /// the peer's prekey bundle.
+    async fn session_to_peer(
         &self,
         svc: &str,
+        store: &ConversationStore,
         peer_address: &str,
-        msg: &StoredMessage,
-    ) -> Result<(), Disposition> {
-        let store = self.store_for(svc).await.map_err(|_| Disposition::Retry)?;
-
-        let existing_session = self
+    ) -> Result<Session, Disposition> {
+        let existing = self
             .crypto
-            .session_for(&store, svc, peer_address)
+            .session_for(store, svc, peer_address)
             .await
             .map_err(|_| Disposition::Retry)?;
-        let mut session = match existing_session {
-            Some(session) => session,
-            None => {
-                let bundle_json = match self
-                    .call_peer(
-                        svc,
-                        peer_address,
-                        "prekey-bundle",
-                        serde_json::json!({}),
-                        None,
-                        None,
-                    )
-                    .await
-                {
-                    Ok(json) => json,
-                    Err(Disposition::Delivered) => return Err(Disposition::Retry),
-                    Err(other) => return Err(other),
-                };
-                let bundle: PrekeyBundle = serde_json::from_value(bundle_json).map_err(|_| {
-                    Disposition::Terminal("peer returned an undecodable prekey bundle".to_string())
-                })?;
-                self.crypto.begin_session(&store, svc, peer_address, &bundle).await.map_err(
-                    |_| {
-                        Disposition::Terminal(
-                            "could not establish a session from the peer's bundle".to_string(),
-                        )
-                    },
-                )?
-            }
+        if let Some(session) = existing {
+            return Ok(session);
+        }
+        let bundle_json = match self
+            .call_peer(svc, peer_address, "prekey-bundle", serde_json::json!({}), None, None)
+            .await
+        {
+            Ok(json) => json,
+            Err(Disposition::Delivered) => return Err(Disposition::Retry),
+            Err(other) => return Err(other),
         };
+        let bundle: PrekeyBundle = serde_json::from_value(bundle_json).map_err(|_| {
+            Disposition::Terminal("peer returned an undecodable prekey bundle".to_string())
+        })?;
+        self.crypto.begin_session(store, svc, peer_address, &bundle).await.map_err(|_| {
+            Disposition::Terminal(
+                "could not establish a session from the peer's bundle".to_string(),
+            )
+        })
+    }
 
+    /// The encrypted envelope for `msg`, made once and stored until the
+    /// message settles. Every retry resends the same bytes. Encrypting again
+    /// on each attempt would move the ratchet one step per attempt, and a
+    /// peer that was away long enough would then find the sender further
+    /// ahead than it will accept. The session is saved before the envelope,
+    /// so a crash in between wastes one step and never reuses a message key.
+    /// The session is saved before the call for a second reason: after a
+    /// lost ack the retry must continue this session, or the peer's replies
+    /// on it would be refused.
+    async fn sealed_envelope(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        peer_address: &str,
+        msg: &StoredMessage,
+    ) -> Result<serde_json::Value, Disposition> {
+        if let Some(bytes) = store.outbound_envelope(&msg.id).map_err(|_| Disposition::Retry)?
+            && let Ok(env_json) = serde_json::from_slice(&bytes)
+        {
+            return Ok(env_json);
+        }
+        let mut session = self.session_to_peer(svc, store, peer_address).await?;
         let payload = DeliveryPayload {
             message_id: msg.id.clone(),
             conversation_id: msg.conversation_id.clone(),
@@ -170,27 +180,47 @@ impl ConversationService {
             .map_err(|_| Disposition::Terminal("could not encrypt outbound payload".to_string()))?;
         let env_json = serde_json::to_value(&env)
             .map_err(|_| Disposition::Terminal("could not serialize envelope".to_string()))?;
+        self.crypto.commit(store, &session).await.map_err(|_| Disposition::Retry)?;
+        let bytes = serde_json::to_vec(&env_json).map_err(|_| Disposition::Retry)?;
+        store.put_outbound_envelope(&msg.id, &bytes).map_err(|_| Disposition::Retry)?;
+        Ok(env_json)
+    }
 
-        // Persist the session before the call, not after the ack. The peer
-        // may store the message and its answer be lost; the retry must then
-        // continue this same session. A session the sender only builds
-        // after the ack would leave the peer on a session the sender never
-        // held, and the peer's replies on it would be refused. A receiver
-        // accepts a ratchet that is ahead of what it has seen, so a call
-        // that never arrived costs nothing.
-        self.crypto.commit(&store, &session).await.map_err(|_| Disposition::Retry)?;
+    /// A peer that refuses a session it has never answered on may have
+    /// dropped the prekey the session names, and every retry would name it
+    /// again. Forget the session so the next delivery starts from a fresh
+    /// bundle.
+    async fn forget_unanswered_session(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        peer_address: &str,
+    ) {
+        if let Ok(Some(session)) = self.crypto.session_for(store, svc, peer_address).await
+            && !session.peer_has_replied()
+        {
+            let _ = store.delete_session(peer_address);
+        }
+    }
+
+    /// The sending side of one delivery attempt. Never called on the hot
+    /// dispatch path — only from the outbox worker.
+    pub(crate) async fn deliver_one(
+        &self,
+        svc: &str,
+        peer_address: &str,
+        msg: &StoredMessage,
+    ) -> Result<(), Disposition> {
+        let store = self.store_for(svc).await.map_err(|_| Disposition::Retry)?;
+        let env_json = self.sealed_envelope(svc, &store, peer_address, msg).await?;
 
         let call = self
             .call_peer(svc, peer_address, "deliver", env_json, Some(msg.id.clone()), None)
             .await;
         let ack_json = match call {
             Ok(json) => json,
-            Err(Disposition::Terminal(reason)) if !session.peer_has_replied() => {
-                // A refusal of a session the peer never confirmed: the peer
-                // may have dropped the prekey it names, and every retry on
-                // this session would name it again. Start over from a fresh
-                // bundle next time.
-                let _ = store.delete_session(peer_address);
+            Err(Disposition::Terminal(reason)) => {
+                self.forget_unanswered_session(svc, &store, peer_address).await;
                 return Err(Disposition::Terminal(reason));
             }
             Err(other) => return Err(other),

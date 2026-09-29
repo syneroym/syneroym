@@ -165,10 +165,12 @@ impl ConversationService {
             return;
         }
         let Ok(Some(msg)) = store.get_message(&parsed.message_id) else {
+            let _ = store.delete_outbound_envelope(&parsed.message_id);
             let _ = store.queue().complete(item.id);
             return;
         };
         if msg.state != ConversationDeliveryState::Pending {
+            let _ = store.delete_outbound_envelope(&msg.id);
             let _ = store.queue().complete(item.id);
             return;
         }
@@ -242,6 +244,7 @@ impl ConversationService {
         is_group: bool,
         peer_address: &str,
     ) {
+        let _ = store.delete_outbound_envelope(&msg.id);
         if is_group {
             let _ = store.set_recipient_state(
                 &msg.id,
@@ -296,6 +299,7 @@ impl ConversationService {
         is_group: bool,
         peer_address: &str,
     ) {
+        let _ = store.delete_outbound_envelope(message_id);
         if is_group {
             let _ = store.set_recipient_state(
                 message_id,

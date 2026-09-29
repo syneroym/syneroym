@@ -586,3 +586,13 @@ fn delete_session_forgets_only_that_peer() {
     assert!(s.session("did:key:zB").unwrap().is_some());
     s.delete_session("did:key:zA").expect("deleting an absent session is not an error");
 }
+
+#[test]
+fn an_outbound_envelope_is_kept_until_deleted() {
+    let s = store();
+    assert!(s.outbound_envelope("msg:1").unwrap().is_none());
+    s.put_outbound_envelope("msg:1", b"sealed").unwrap();
+    assert_eq!(s.outbound_envelope("msg:1").unwrap().as_deref(), Some(&b"sealed"[..]));
+    s.delete_outbound_envelope("msg:1").unwrap();
+    assert!(s.outbound_envelope("msg:1").unwrap().is_none());
+}

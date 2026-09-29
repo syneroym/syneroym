@@ -359,11 +359,12 @@ impl SessionCrypto for X3dhDoubleRatchetCrypto {
             let existing = session_from_row(row, env.peer_address.clone(), local_sig_key)?;
             // A pre-key message names the session it opens. One for a
             // session this address has not used with us is a new session,
-            // not a failure: a sender whose first delivery landed but whose
-            // acknowledgement was lost retries on a session it builds
-            // afresh, and continues on that one. Only the pinned signing
-            // key (checked above) and the payload signature vouch for the
-            // sender, so replacing the session gives it no new authority.
+            // not a failure: a sender that lost or deleted its session
+            // state (a restore from a backup, or a session dropped after
+            // the peer refused it) starts over with a fresh one. Only the
+            // pinned signing key (checked above) and the payload signature
+            // vouch for the sender, so replacing the session gives it no
+            // new authority.
             let opens_new_session = matches!(
                 &env.message,
                 OlmMessage::PreKey(pre_key) if pre_key.session_id() != existing.inner.session_id()
