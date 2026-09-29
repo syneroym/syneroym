@@ -146,3 +146,22 @@ export function checkedWords(asOfSecs: number, nowSecs: number = Math.floor(Date
   if (!asOfSecs) return "never checked";
   return `checked ${ageWords(Math.max(0, nowSecs - asOfSecs))}`;
 }
+
+/// What `directory.check-standing` answers. `refreshed: false` means the
+/// verdict is not fresh: either the directory could not be reached (the
+/// held copy is shown, with `error`), or it answered as a different group
+/// than the one first pinned (`issuer-changed`, no copy involved).
+export interface CheckStandingReply {
+  verdict: MembershipVerdict;
+  as_of_secs?: number;
+  refreshed: boolean;
+  error?: string;
+}
+
+export const ISSUER_CHANGED_CHECK_WORDS =
+  "This directory now says it speaks for a different group than the one you first saw. Its answer was not used.";
+
+/// The one `refreshed: false` reply where the directory *was* reached.
+export function issuerChanged(res: CheckStandingReply): boolean {
+  return !res.refreshed && res.verdict.state === "unknown" && res.verdict.reason === "issuer-changed";
+}

@@ -125,6 +125,27 @@ describe("the Memberships screen", () => {
     expect(row.querySelector(".membership-checked")?.textContent).toBe("checked 2 hours ago");
   });
 
+  it("says a changed issuer is a different group, not the held copy or an outage", async () => {
+    stubRpc({
+      "directory.memberships": () => ({ memberships: [HELD] }),
+      "directory.sources": () => ({ sources: [] }),
+      "directory.check-standing": () => ({
+        verdict: { state: "unknown", reason: "issuer-changed" },
+        refreshed: false,
+      }),
+    });
+    const host = await render();
+    const row = host.querySelector(".membership-row") as HTMLElement;
+    (row.querySelector(".check-again") as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(row.dataset.state).toBe("unknown"));
+
+    const status = row.querySelector(".membership-check-status")?.textContent ?? "";
+    expect(status).toContain("different group");
+    expect(status).not.toContain("copy you already held");
+    expect(status).not.toContain("Could not reach");
+    expect(row.querySelector(".membership-checked")?.textContent).toBe("");
+  });
+
   it("renders a hostile group name as text, never as markup", async () => {
     const hostile = { ...VALID, synorg_name: "<img src=x onerror=window.evil=1>" };
     stubRpc({

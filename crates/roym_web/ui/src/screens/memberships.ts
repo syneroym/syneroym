@@ -1,9 +1,12 @@
 import {
   checkedWords,
+  ISSUER_CHANGED_CHECK_WORDS,
+  issuerChanged,
   membershipWords,
   NO_INSTANT_REMOVAL_NOTICE,
   pinnedIssuerWords,
   WITHHELD_REVOCATION_NOTICE,
+  type CheckStandingReply,
   type MembershipVerdict,
 } from "../directory/membership";
 import { errText, text } from "../dom";
@@ -19,13 +22,6 @@ interface HeldMembership {
   as_of_secs: number;
   last_error?: string | null;
   verdict: MembershipVerdict;
-}
-
-interface CheckStandingReply {
-  verdict: MembershipVerdict;
-  as_of_secs?: number;
-  refreshed: boolean;
-  error?: string;
 }
 
 async function sourceLabels(): Promise<Map<string, string>> {
@@ -111,10 +107,17 @@ function buildRow(row: HeldMembership, label: string): HTMLElement {
       });
       line.dataset.state = res.verdict.state;
       words.textContent = membershipWords(res.verdict, label);
-      checked.textContent = res.refreshed ? "checked moments ago" : checkedWords(res.as_of_secs ?? 0);
-      status.textContent = res.refreshed
-        ? "Checked just now."
-        : "Could not reach this directory; this is the copy you already held.";
+      if (issuerChanged(res)) {
+        // The directory answered, so this is not the held copy and has no
+        // check time of its own.
+        checked.textContent = "";
+        status.textContent = ISSUER_CHANGED_CHECK_WORDS;
+      } else {
+        checked.textContent = res.refreshed ? "checked moments ago" : checkedWords(res.as_of_secs ?? 0);
+        status.textContent = res.refreshed
+          ? "Checked just now."
+          : "Could not reach this directory; this is the copy you already held.";
+      }
     } catch (err) {
       status.textContent = `Could not check: ${errText(err)}`;
     }

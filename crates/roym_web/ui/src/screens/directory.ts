@@ -7,7 +7,13 @@ import {
   type SourceOutcome,
 } from "../directory/search";
 import { errText, text } from "../dom";
-import { checkedWords, membershipWords, type MembershipVerdict } from "../directory/membership";
+import {
+  checkedWords,
+  ISSUER_CHANGED_CHECK_WORDS,
+  issuerChanged,
+  membershipWords,
+  type CheckStandingReply,
+} from "../directory/membership";
 import { ageWords } from "../directory/words";
 import { call } from "../rpc";
 
@@ -22,19 +28,18 @@ interface SourceRow {
 /// names the directory the way the person knows it.
 const sourceLabels = new Map<string, string>();
 
-interface CheckStandingReply {
-  verdict: MembershipVerdict;
-  as_of_secs?: number;
-  refreshed: boolean;
-}
-
 /// One line per source: what that directory's own signed evidence shows
 /// about the provider, judged on this node, and a button that asks again.
-function membershipLine(source: MergedHit["sources"][number], hit: MergedHit): HTMLElement {
+/// The line is judged against this listing (scope, listing-scoped
+/// suspensions). The re-check is not: `directory.check-standing` judges the
+/// provider's membership alone, so its answer goes on a separate line and
+/// never replaces the listing's own verdict.
+export function membershipLine(source: MergedHit["sources"][number], hit: MergedHit): HTMLElement {
   const label = sourceLabels.get(source.directory) || source.directory;
   const line = document.createElement("div");
   line.className = "evidence-membership-row";
   const words = text("div", membershipWords(source.membership, label), "evidence-membership");
+  const fresh = text("div", "", "evidence-membership-fresh");
   const status = text("div", "", "membership-check-status");
   const again = text("button", "Check membership again", "button check-membership") as HTMLButtonElement;
   again.onclick = async () => {
@@ -45,17 +50,23 @@ function membershipLine(source: MergedHit["sources"][number], hit: MergedHit): H
         source: source.directory,
         member_did: hit.issuer,
       });
-      words.textContent = membershipWords(res.verdict, label);
-      status.textContent = res.refreshed
-        ? "Checked just now."
-        : `Could not reach this directory. Showing what was ${checkedWords(res.as_of_secs ?? 0)}.`;
+      fresh.textContent = issuerChanged(res)
+        ? ""
+        : `Membership on its own, not tied to this listing: ${membershipWords(res.verdict, label)}`;
+      status.textContent = checkOutcomeWords(res);
     } catch (err) {
       status.textContent = `Could not check: ${errText(err)}`;
     }
     again.disabled = false;
   };
-  line.append(words, again, status);
+  line.append(words, again, fresh, status);
   return line;
+}
+
+function checkOutcomeWords(res: CheckStandingReply): string {
+  if (res.refreshed) return "Checked just now.";
+  if (issuerChanged(res)) return ISSUER_CHANGED_CHECK_WORDS;
+  return `Could not reach this directory. Showing what was ${checkedWords(res.as_of_secs ?? 0)}.`;
 }
 
 function sourceErrorWords(kind: string): string {
