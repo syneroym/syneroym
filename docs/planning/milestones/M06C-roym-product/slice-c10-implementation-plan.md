@@ -20,7 +20,7 @@ choose differently, the section in the right column changes.
 | # | Question | Recommendation | Changes |
 |---|---|---|---|
 | Q1 | R4 row 1 says: *"With no coordinator reachable, members who can reach each other still exchange and order messages."* **The substrate cannot do this today** (§3). Every cross-node call looks the peer up in the registry again (no cache), and a published record carries only the relay as a dial path. With the registry and relay down, every group push and every sync fails with `ServiceNotFound`. | **Spike first, with a stop gate (WO0, 3 days).** If the fix stays inside the proxy/registry client (a last-good lookup cache plus dialing with direct paths the long-lived iroh endpoint already learned), build it in C10. If it needs direct IP addresses **published** in registry records, stop: that is a privacy decision for an ADR. Then narrow the acceptance test with a spec edit (the `D-06C-2` pattern) and add a backlog row. Either way, record **Gap 10** in `task.md`. | §3, §11.3 test 5, §13 |
-| Q2 | The product must show who owns a group (spec: *"The group's UI should say who the owner is"*), and a test must see that a scheduled rekey changed the key. The WIT exposes neither the owner nor the epoch. | **Add one additive host function `group-info`** to `syneroym:conversation` (same pattern as C8's `create`). Deriving the owner from `membership-history`'s first event is unreliable: a new member may not have synced the genesis entry when its first message arrives. | §4 |
+| Q2 | The product must show who owns a group (spec: *"The group's UI should say who the owner is"*), and a test must see that a scheduled rekey changed the key. The WIT exposes neither the owner nor the epoch. | **Add one additive host function `group-info`** to `syneroym:conversation` (same pattern as C8's `create`). Deriving the owner from `membership-history`'s first event is unreliable: a new member may not have synced the genesis entry when its first message arrives. (Q13 adds a second function, `get-message`.) | §4 |
 | Q3 | A group needs a name every member sees. The host has no group name. | **The owner sends the name as a message of a reserved content type** (`application/vnd.roym.group-profile+json`) inside the group. It is honoured only when the author is the owner. The newest one by the ADR-0013 sort key wins. The owner sends it again after every `add-member`, because a new member cannot read anything from before it joined. | §2 D-C10-4, §7.4 |
 | Q4 | The host joins you to a group as soon as its owner sends you a key. **Anybody who can reach your address can add you to a group.** Nothing asks you. | **Treat being added as a first contact from the owner.** The first time Roym sees a group, it calls `contacts.admit-first-contact` for the owner (same rule and same budget as 1:1). A refused group is stored as `refused` and not shown. Add `group.hide` / `group.unhide` so a person can hide a group they do not want. You stay a member underneath until the owner removes you; the UI says so. | §2 D-C10-6, §7.3, §7.5 |
 | Q5 | Membership changes must be visible (R4 row 4), and the transcript must be identical everywhere (row 2). The host never sends membership changes to `on-message`. | **Copy every membership event into Roym's own message store as a row** of a reserved content type (`application/vnd.roym.membership-event+json`), with the entry id as row id and the owner as author. Then history, export, import, and the one sort rule all work with no second list. | §2 D-C10-5, §7.2 |
@@ -30,6 +30,8 @@ choose differently, the section in the right column changes.
 | Q9 | The spec says *"Each release must pass its acceptance tests before the next begins."* R3 is **not** passed: C9 is partial (WO6–WO8 not built). | **Start C10's code now, but do not mark R4 passed before R3 is passed.** C10 needs C9's merged code only, not C9's e2e or Hub. The C10 `status.md` section and the spec's R4 row must say this. | §13 |
 | Q10 | How does a person (or a test) check "every member has the same transcript"? | **Add `conversation.transcript-digest`**: a hash over the ordered list of `(id, author, sender_timestamp_ms, content_type)` of the rows this installation holds. The Hub shows it in the group's info panel as a short "transcript check" code. Members compare it by eye. It is also exactly what the acceptance test compares. | §2 D-C10-9, §6.2 |
 | Q11 | `add-member` always fetches the new member's prekey bundle over the network (`crates/conversation/src/group.rs:207`), so **the owner can add only a person who is online at that moment**. | **When this node already holds a 1:1 session with the new member, use the key pinned in that session and skip the fetch.** Small host change with a host unit test. A person you have never talked to must still be online when you add them; the UI says so. | §4.3 |
+| Q12 | **A removed member can miss its own removal forever.** The owner pushes the removal entry to the removed member once and ignores the result (`crates/conversation/src/outbox.rs:99-123`). `group-sync` refuses a removed member, because `member_sig_key` reads only rows with `removed_epoch IS NULL` (`crates/conversation/src/store/dag_store.rs:32-45`, then `PermissionDenied` at `transport/group_sync.rs:363`). A member offline at removal time keeps `is_member = true` and a working-looking composer. | **Small host change: `group-sync` answers a removed member with membership entries only, up to and including the epoch that removed it.** No message entry, and no membership entry from after the removal. The removed member already held everything up to that epoch, so nothing new leaks. | §4.4 |
+| Q13 | Roym's own row for a message it just sent takes `sender_timestamp` and `author` from the host outbox. If the message has already left the outbox, it falls back to the local clock in whole seconds and possibly to author `"self"` (`crates/roym_conversation/src/app/messages.rs:162-179`). Under a skewed clock that row differs from every receiver's row, so the R4 row 2 check fails sometimes. | **Add a second additive host function, `get-message`** (read one message by id). `send` reads its own row through it, with no fallback. It also lets `group.unhide` fill in messages that arrived while a group was hidden. | §4.1, §7.6, D-C10-7 |
 
 ---
 
@@ -79,19 +81,21 @@ Keep it that way; a reviewer should reject any change that reads
 | # | Decision | Why |
 |---|---|---|
 | D-C10-1 | **Group verbs live in the `conversation` service under a new `group.` method prefix.** `group.create`, `group.rename`, `group.add-member`, `group.remove-member`, `group.info`, `group.sync`, `group.hide`, `group.unhide`. Sending, reading, deleting, and exporting reuse the existing `conversation.*` verbs, which already accept a group conversation id. | The spec's service table puts group keys in Conversation. A separate prefix keeps `conversation.*` meaning "any conversation" and makes the group-only verbs easy to find. |
-| D-C10-2 | **One additive host function, `group-info`, and nothing else on the WIT** (Q2). The stale `conversation-kind` comment is corrected at the same time. | Additive functions keep old components deployable. The owner and the epoch are facts only the host holds. |
+| D-C10-2 | **Two additive host functions, `group-info` (Q2) and `get-message` (Q13), and nothing else on the WIT.** The stale `conversation-kind` comment is corrected at the same time. Two host behaviour changes ride with them: the pinned-key add (Q11, §4.3) and removal catch-up (Q12, §4.4). | Additive functions keep old components deployable. The owner, the epoch, and a sent message's signed timestamp are facts only the host holds. |
 | D-C10-3 | **A Roym `ConversationRow` gains `kind` (required) and `group: Option<GroupMeta>`.** For a group, `peer_address` holds the **owner's** address and `peer_person_did` the owner's person DID when a contact carries it. `SCHEMA_VERSION` of the `conversation` service goes 2 → 3. No migration: pre-release, and an older bundle fails at the existing version gate (`backup.rs` `import`). | One collection for both kinds keeps `conversation.list`, export, and import unchanged in shape. The owner is the one party a group's trust hangs on, and the one the first-contact decision is made against (D-C10-6). |
 | D-C10-4 | **Group name = the newest owner-authored `group-profile` message by sort key** (Q3). Body is exactly `{"name": "<text>", "version": 1}`. Name is 1–80 characters after trimming, with no control characters. It is always displayed as text. A profile message from a non-owner is refused (`refused_messages` reason `not-owner`) and changes nothing. | Every member that can read the message computes the same name. The owner is the only writer, so there is no conflict rule to design. Text-only display follows the card rule (`D-06C-3`). |
-| D-C10-5 | **Membership events are rows in Roym's own copy** (Q5): id = DAG entry id, author = owner, `sender_timestamp_ms` = the event's own timestamp, content type `application/vnd.roym.membership-event+json`, body `{"action","subject","epoch"}` (canonical key order). They are written by `sync_membership_rows` (§7.2), which runs on every group message, on `conversation.history` of a group, and after every group verb. These rows cannot be deleted and do not count in `message_count`. | Keeps one list and one sort rule (`roym_core::conversation::sort_key`). Export and restore carry them for free. |
-| D-C10-6 | **Being added to a group is a first contact from its owner** (Q4). On the first message Roym sees in a group it has no row for: owner = self → `shown`; otherwise one `contacts.admit-first-contact` call with `sender_address = owner` → `allow` = `shown`, `blocked` = `refused{blocked}`, anything else = `refused{rate-limited}`. The decision is stored, so it runs once per group. After that, each message's **author** is checked with `block.check`, exactly like 1:1 (`D-06C-8`). | Same rule and same budget as 1:1, so a stranger cannot bypass the first-contact limit by using a group. Storing the decision stops a refused group from spending the budget again on every message. |
-| D-C10-7 | **`group.hide` sets `admission = hidden`. New messages in a hidden group are refused into `refused_messages` (reason `group-hidden`). `group.unhide` sets it back to `shown`. Messages that arrived while hidden are not shown after unhide.** | The host keeps storing them underneath (Gap 4); Roym has no way to read one host message by id. Saying so is cheaper and more honest than a backfill that pages the whole host history. |
+| D-C10-5 | **Membership events are rows in Roym's own copy** (Q5): id = DAG entry id, author = owner, `sender_timestamp_ms` = the event's own timestamp, content type `application/vnd.roym.membership-event+json`, body `{"action","subject","epoch"}` (canonical key order). They are written by `sync_membership_rows` (§7.2), which runs on every group message, on `conversation.list`, on `conversation.history` of a group, and after every group verb. These rows cannot be deleted and do not count in `message_count`. | Keeps one list and one sort rule (`roym_core::conversation::sort_key`). Export and restore carry them for free. |
+| D-C10-6 | **Being added to a group is a first contact from its owner** (Q4). The first time Roym sees a group it has no row for — either a message arrives in it, or `conversation.list` / `group.info` finds it in the host's `conversations()` (`adopt_new_groups`, §7.2) — it decides once: owner = self → `shown`; otherwise one `contacts.admit-first-contact` call with `sender_address = owner` → `allow` = `shown`, `blocked` = `refused{blocked}`, anything else = `refused{rate-limited}`. The decision is stored. After that, each message's **author** is checked with `block.check`, exactly like 1:1 (`D-06C-8`). | Same rule and same budget as 1:1, so a stranger cannot bypass the first-contact limit by using a group. Storing the decision stops a refused group from spending the budget again. Adopting from the host list means a new member sees the group as soon as it is added, not only after the first message (review finding 12). |
+| D-C10-7 | **`group.hide` sets `admission = hidden`. New messages in a hidden group are refused into `refused_messages` (reason `group-hidden`). `group.unhide` sets it back to `shown` and then fills in the messages refused while hidden or unadmitted**, reading each one from the host with `get-message` (Q13). Messages refused because their **author** is blocked are never filled in. | The host keeps storing them underneath (Gap 4). With `get-message` the fill-in costs one host read per refused row, so there is no reason to lose them. |
 | D-C10-8 | **Group delivery words** (Q6): `pending` → "Not yet delivered to every member"; `delivered` → "Delivered to every member"; `failed` → "Not delivered to every member" + Retry. The words never name a member, never say "trying to reach", and never say "read" or "verified". | The host's group state is an aggregate. The carried-forward limit (a removed member's pending item settles `failed` only after the age window) must not be shown as progress toward a current member. These words are true in every case. |
 | D-C10-9 | **Transcript check** (Q10): `transcript_digest(rows)` = `content_digest("roym-transcript:", [ {id, author, sender_timestamp_ms, content_type} ... ])` over the rows sorted by `sort_key`. Bodies are left out: a group row id is the DAG entry id, which is already a hash over the ciphertext, and leaving the body out means a local delete does not change the check. Rows refused locally (a blocked author) are not in the list, so the check differs for a member who blocked someone; the UI says so. | One number both a person and a test can compare. Reuses `syneroym_signed_record::content_digest`, already a `roym_core` dependency. |
 | D-C10-10 | **Member signing keys are trust-on-first-use, and the UI says so in different words than a signed record.** Group messages are shown with no "verified" word. The info panel carries `GROUP_KEY_TRUST_NOTICE`. | Carried-forward limit 3 in `task.md`: two strengths, two words. |
 | D-C10-11 | **Cards are 1:1 only** (Q8). `conversation.send` refuses `application/vnd.roym.card+json`, the group-profile type, and the membership-event type when the target is a group, and refuses the membership-event type everywhere. `transaction.sync` refuses a group conversation. | The transaction single-writer model is between two parties. Refusing at the one send choke point covers every producer. |
 | D-C10-12 | **A restored group is history only.** After an import onto a clean node, the host does not know the group. `group.info` then returns `restored_only: true` and the Hub shows `GROUP_RESTORED_NOTICE`. | Group keys and the DAG live in the host store, which no backup carries (backlog §5, "Conversations cannot continue after a substrate moves to a new machine"). |
-| D-C10-13 | **The Hub gets a separate Groups tab** (`crates/roym_web/ui/src/screens/groups.ts`). The Messages tab lists only direct conversations. | `messages.ts` is already 846 lines. A group thread also needs a roster panel the 1:1 thread does not. |
-| D-C10-14 | **(Q1) Gap 10 fix, only if the spike keeps it inside `crates/core` / `crates/router`.** Otherwise the acceptance row is narrowed by a spec edit. | See §3. |
+| D-C10-13 | **The Hub gets a separate Groups tab** (`crates/roym_web/ui/src/screens/groups.ts`). The Messages tab lists and searches only direct conversations. The Groups tab has no search box (R4 excludes message search). | `messages.ts` is already 842 lines. A group thread also needs a roster panel the 1:1 thread does not. |
+| D-C10-14 | **(Q1) Gap 10 fix, only if the spike keeps it inside `crates/core` / `crates/router` and passes the regression gate in §3.2.** Otherwise the acceptance row and every other "no coordinator" claim are narrowed by a spec edit (§3.3). | See §3. |
+| D-C10-15 | **Roym checks membership before it sends into a group.** `conversation.send` and the deletion request in `delete-message` call `group_info` first. When `is_member` is false, they refuse with `GROUP_REMOVED_NOTICE` and send nothing. | The host does not return `PermissionDenied` for a removed member. It returns `Internal("no key for the current epoch")` (`group.rs:347-356`), which says nothing a person can use (review finding 1). |
+| D-C10-16 | **A repeated group name is shown once.** The rows stay (the transcript must stay identical), but the Hub renders a profile row only when its name differs from the name before it in the thread. | The owner re-sends the name after each add (Q3), so without this every join adds a "named the group" line with no change (review finding 14). |
 
 ---
 
@@ -147,11 +151,29 @@ lookup. R4 row 1, read literally, fails.
    after each successful call, save the peer's known direct addresses
    from the endpoint's own remote info into the same cache entry, and pass
    them in the `EndpointAddr` on the next dial. Re-run step 2.
-5. **Stop gate.** If A1 + A2 pass step 2 within the time box and touch
-   only `crates/core/src/dht_registry/client.rs`, `crates/router/src/net_iroh.rs`,
-   and `crates/router/src/proxy/*`, keep them (with unit tests for the
-   cache and breaker) and go to §11.3 test 5. Otherwise revert and take
-   **branch B**.
+5. **Regression gate.** `RegistryClient` serves every registry lookup in
+   the node, not only conversation calls. C9's directory resolution and
+   the visibility rules go through it too. So Fix A1 must follow three
+   rules, each with a unit test in `crates/core/src/dht_registry/`:
+   - The cache is read **only** after a transport failure. While the
+     registry answers, every lookup goes to it, as today.
+   - A clean "not found" (or "not visible to this caller") answer is never
+     replaced by a cached value, and it removes the cached entry.
+   - A successful lookup always overwrites the cached entry, so a
+     republished record (higher `generation`) wins at once.
+
+   Then run, and require green, the existing cross-node suites that
+   resolve through the registry:
+   `cargo nextest run -p syneroym-substrate --test roym_app_e2e`
+   (it holds `an_unaffiliated_caller_resolves_directorys_public_record_but_not_profiles`),
+   `--test roym_directory_e2e`, `--test conversation_e2e`,
+   `--test group_conversation_e2e`, `--test proxy_outbox_e2e`. C9's
+   `roym_trust_e2e.rs` does not exist yet; if it lands before WO0 ends, add
+   it to this list.
+6. **Stop gate.** If A1 + A2 pass step 2 and step 5 within the time box and
+   touch only `crates/core/src/dht_registry/client.rs`,
+   `crates/router/src/net_iroh.rs`, and `crates/router/src/proxy/*`, keep
+   them and go to §11.3 test 5. Otherwise revert and take **branch B**.
 
 ### 3.3 Branch B (only if the stop gate fails)
 
@@ -161,6 +183,20 @@ lookup. R4 row 1, read literally, fails.
   messages member to member; no node other than members stores or orders
   a group message."* State the reason: the substrate needs the registry to
   find a peer and the relay to dial it.
+- The same narrowing, in the same commit, everywhere else the claim is
+  made (review finding 8):
+  - `task.md` Goal paragraph (`:37-38`, *"a private group of at least
+    three members holds a conversation with no server in the path"*) — add
+    "other than the registry and relay it uses to find and reach members,
+    which never hold a message".
+  - `task.md` exit criterion 9 (*"no server in the path"*) — same wording.
+  - `task.md` reference scenario step 19 (*"with no coordinator
+    reachable"*) — replace with "with the registry and relay reachable
+    and holding no message".
+  - `task.md` slice table, row C10 (*"no server in the path"*) — same.
+  - The spec's R4 row 1 goal column (*"no central chat server"*) stays: it
+    is still true. Only the acceptance column changes.
+  - This plan's §1 item 1 and §16.6 (drop §16.6 from the demo).
 - Backlog row §1 "Cross-node calls need the registry and relay on every
   call", trigger "a group must keep talking through a registry outage",
   with the spike's findings.
@@ -171,7 +207,7 @@ lookup. R4 row 1, read literally, fails.
 
 ---
 
-## §4 Host: `group-info` and the pinned-key add (WO1)
+## §4 Host: `group-info`, `get-message`, the pinned-key add, and removal catch-up (WO1)
 
 ### 4.1 WIT
 
@@ -215,8 +251,9 @@ Changes:
        /// a membership entry.
        epoch: u64,
        /// The newest epoch this substrate holds a key for. Lower than
-       /// `epoch` after this service was removed: it saw the removal but
-       /// was not given the new key.
+       /// `epoch` once this service has learned it was removed: it holds
+       /// the removal entry but was not given the new key. Until it learns
+       /// (it may have been offline), `is-member` stays true.
        key-epoch: u64,
        /// When this substrate stored the key for `key-epoch`, in Unix
        /// milliseconds on its own clock. For the owner, when the key was
@@ -229,9 +266,24 @@ Changes:
    /// `invalid-argument` for a direct conversation, `not-found` for an
    /// unknown id.
    group-info: func(conversation: conversation-id) -> result<group-info, conversation-error>;
+
+   /// One message this service stored, sent or received, in any state.
+   /// `not-found` for an unknown id and for a system message (a group key).
+   get-message: func(message: message-id) -> result<message, conversation-error>;
    ```
 
 ### 4.2 Call sites (every one must change, or the workspace does not build)
+
+Each row below is for `group-info`. **`get-message` follows the same rows**
+with these differences: the rpc trait method is
+`async fn get_message(&self, service_id: &str, message: &str) -> Result<ConversationMessage, ConversationError>`
+(no new rpc type); the host impl is
+`store.get_message(message)?.filter(|m| !m.system).map(StoredMessage::into_wire).ok_or(NotFound)`
+in `crates/conversation/src/lib.rs`; the WASM and native mappings reuse the
+existing message converters (`conversation_wire`'s message mapper and
+`convert::conversation::message_out`, or whatever the `outbox` path uses
+today); the fixture op is `get-message`; the parity check compares a sent
+message read back on both builds.
 
 | File | Change |
 |---|---|
@@ -242,9 +294,10 @@ Changes:
 | `crates/sandbox_wasm/src/host_capabilities.rs` | `NeverConstructedConversationHost` (`:124`): same. |
 | `crates/sandbox_wasm/src/host_capabilities/capabilities_messaging.rs` | `impl wit_conversation::Host for HostState` (`:102`): `async fn group_info(&mut self, conversation: String) -> Result<wit_conversation::GroupInfo, wit_conversation::ConversationError>` — upgrade `self.conversation` exactly like `membership_history` (`:228`), call `conv.group_info(&self.component_id, &conversation)`, map with a new `conversation_wire::map_group_info` beside `map_membership_event` (`:89`). Read-only is **not** checked (it is a read). |
 | `crates/app_host/src/types.rs` | Add `GroupInfo` to the `conversation` re-export list (`:20-24`). |
-| `crates/app_host/src/lib.rs` | `trait AppConversation` (`:293`): `fn group_info(&self, conversation: String) -> impl Future<Output = Result<GroupInfo, ConversationError>> + Send;` |
+| `crates/app_host/src/lib.rs` | Add `GroupInfo` to the `types::conversation::{..}` import (`:25-28`). `trait AppConversation` (`:293`): `fn group_info(&self, conversation: String) -> impl Future<Output = Result<GroupInfo, ConversationError>> + Send;` |
 | `crates/app_host/src/guest.rs` | `impl AppConversation for GuestHost` (`:228`): `async fn group_info(&self, conversation: String) -> Result<GroupInfo, ConversationError> { conv::group_info(&conversation) }`. |
 | `crates/app_host_native/src/host.rs` | `impl AppConversation for NativeAppHost` (`:382`): lock state, `HostConversation::group_info(&mut *state, conversation).await.map(convert::group_info_out).map_err(convert::conversation_error_out)`. |
+| `crates/app_host_native/src/convert.rs` | Add `GroupInfo as GuestGroupInfo` to the guest import list (`:8-13`) and `GroupInfo as HostGroupInfo` to the host import list (`:37-42`). |
 | `crates/app_host_native/src/convert/conversation.rs` | New `pub(crate) fn group_info_out(v: HostGroupInfo) -> GuestGroupInfo`, beside `membership_event_out` (`:63`). |
 | `crates/roym_core/src/signing.rs` | `#[cfg(test)] impl AppConversation for TestHost` (`:506`): add `group_info` returning `Err(ConversationError::NotFound)`. |
 | `test-components/dual-build-fixture/src/app.rs` | New request variant `GroupInfo { conversation: String }` (serde `op = "group-info"`), beside `SyncNow` (`:163`). |
@@ -315,6 +368,66 @@ pinned peer signing key. Host unit test:
 give the service a proxy that fails every call, assert `add-member`
 succeeds and the membership entry's `subject_sig_key` equals the pinned
 key).
+
+### 4.4 A removed member learns its removal by sync (Q12)
+
+Today a removed member learns its removal only from the one relay push
+(`crates/conversation/src/outbox.rs:99-123`, result ignored). After that,
+every peer refuses its `group-sync` (`transport/group_sync.rs:161-162` →
+`pinned_member_sig_key` → `PermissionDenied`, because `member_sig_key`
+reads only `removed_epoch IS NULL` rows).
+
+Change `group_sync_impl` (`transport/group_sync.rs:133-184`):
+
+```rust
+let (sender_sig_key, removed_at_epoch) =
+    match pinned_member_sig_key(&store, &conv.id, &req.from.address, req.from.sig_key) {
+        Ok(k) => (k, None),
+        Err(ConversationError::PermissionDenied) => {
+            // A removed member may still learn *that* it was removed, and
+            // nothing after. It held every entry up to that epoch already.
+            let (k, removed_epoch) = store
+                .removed_member_sig_key(&conv.id, &req.from.address)
+                .map_err(internal)?
+                .ok_or(ConversationError::PermissionDenied)?;
+            (k, Some(removed_epoch))
+        }
+        Err(e) => return Err(e),
+    };
+// ... verify the peer assertion under `sender_sig_key`, unchanged ...
+let entries = match removed_at_epoch {
+    None => store.entries_after_seq(&req.group, req.after_seq, limit + 1),
+    Some(max_epoch) => store.membership_entries_after_seq(
+        &req.group, req.after_seq, max_epoch, limit + 1),
+}.map_err(internal)?;
+```
+
+New store functions in `crates/conversation/src/store/dag_store.rs`:
+
+- `removed_member_sig_key(conv, address) -> Result<Option<([u8; 32], u64)>>`:
+  the row with `removed_epoch IS NOT NULL`, returning its real key (never a
+  zero placeholder: return `None` for `zeroblob`) and `removed_epoch`.
+- `membership_entries_after_seq(conv, after_seq, max_epoch, limit)`: the
+  same query as `entries_after_seq` plus `AND kind = 'membership' AND
+  epoch <= ?max_epoch`. Filtering in SQL, not after the page is read,
+  keeps the requester's cursor moving: its `highest_applied_seq` then
+  steps over membership seqs only (`group_sync.rs:295-328`).
+
+`group_push_impl` is **not** changed: a removed member cannot push.
+
+On the removed member's side nothing changes: `run_group_sync` still calls
+every member in its own (stale) member list until the removal applies,
+then `current_members` no longer lists it and it keeps calling the others
+at the periodic rate, which answer with nothing new.
+
+Host unit tests in `crates/conversation/src/transport/tests.rs`:
+`a_removed_member_can_sync_its_own_removal` (owner removes B; B's sync
+request gets the removal entry and no message entry, even with a message
+entry sent after the removal sitting between them in `seq` order);
+`a_removed_member_gets_no_membership_entry_after_its_removal` (owner
+removes B then adds C; B's sync answer stops at B's removal);
+`a_stranger_is_still_refused` (an address never in the group gets
+`PermissionDenied`).
 
 ---
 
@@ -598,22 +711,31 @@ must still pass unchanged.
 
 Every function ≤ 100 lines; every match arm ≤ 10 lines (AGENTS.md).
 
-### 7.2 `sync_membership_rows` (in `app/group.rs`)
+### 7.2 `sync_membership_rows` and `adopt_new_groups` (in `app/group.rs`)
+
+**`sync_membership_rows` changes `row` in memory and never writes it.**
+Every caller writes the row itself with `put_conversation`, once, after all
+its own changes (message count, activity time, a new name). An earlier
+draft wrote the row inside this function and returned early when nothing
+had changed, which lost the caller's changes in the common case (review
+finding 3).
 
 ```rust
 /// Copies host membership events Roym does not hold yet into its own
-/// `messages` collection (D-C10-5). Cheap when nothing changed: compares
-/// the host's event count with `meta.membership_events_copied`.
+/// `messages` collection (D-C10-5), and updates `row` in memory. The
+/// caller writes `row`. Cheap when nothing changed: compares the host's
+/// event count with `meta.membership_events_copied`.
 pub(crate) async fn sync_membership_rows<H: AppHost>(
     host: &H,
     row: &mut ConversationRow,
     info: &GroupInfo,
-) -> Result<(), String> {
+) -> Result<u32, String> {                       // number of rows copied
     let events = AppConversation::membership_history(host, row.id.clone()).await
         .map_err(|e| format!("{e:?}"))?;
-    let meta = row.group.as_mut().ok_or("not a group row")?;
-    if events.len() as u32 == meta.membership_events_copied { return Ok(()) }
+    let seen = row.group.as_ref().ok_or("not a group row")?.membership_events_copied;
+    if events.len() as u32 == seen { return Ok(0) }
     let direction = if info.is_owner { Direction::Outgoing } else { Direction::Incoming };
+    let mut copied = 0;
     for ev in &events {
         if load_message(host, &ev.entry).await?.is_some() { continue }
         put_message(host, &MessageRow {
@@ -630,11 +752,46 @@ pub(crate) async fn sync_membership_rows<H: AppHost>(
             stored_at_secs: clock::now_secs(),
         }).await?;
         row.last_activity_ms = row.last_activity_ms.max(ev.sender_timestamp);
+        copied += 1;
     }
-    meta.membership_events_copied = events.len() as u32;
-    put_conversation(host, row).await     // new small helper, see below
+    if let Some(meta) = row.group.as_mut() { meta.membership_events_copied = events.len() as u32 }
+    Ok(copied)
 }
 ```
+
+A unit-sized check for this rule lives in parity scenario 204 (§11.2): after
+two injected messages with no membership change, `message_count` is 2 and
+`last_activity_ms` is the second message's timestamp.
+
+**`adopt_new_groups`** — a new member must see the group as soon as it is
+added, not only after the first message (review finding 12).
+
+```rust
+/// Gives every host group that has no Roym row one, with the same
+/// once-only admission decision the inbox makes (D-C10-6). Called from
+/// `conversation.list` (unless `kind == "direct"`) and from `group.info`
+/// when the id has no row.
+pub(crate) async fn adopt_new_groups<H: AppHost>(host: &H) -> Result<(), String> {
+    let host_groups = AppConversation::conversations(host).await
+        .map_err(|e| format!("{e:?}"))?
+        .into_iter().filter(|c| c.kind == ConversationKind::Group);
+    for c in host_groups {
+        if load_conversation(host, &c.id).await?.is_some() { continue }
+        let info = AppConversation::group_info(host, c.id.clone()).await
+            .map_err(|e| format!("{e:?}"))?;
+        let mut row = new_group_row(host, &c.id, &info, clock::now_secs()).await?;
+        sync_membership_rows(host, &mut row, &info).await?;
+        put_conversation(host, &row).await?;
+    }
+    Ok(())
+}
+```
+
+`new_group_row` (§7.3) moves to `app/group.rs` so the inbox and
+`adopt_new_groups` share it, and it no longer writes the row (the caller
+does). Cost: one host `conversations()` call per `conversation.list`, plus
+one `group_info` per group seen for the first time. The host list is
+already read once per inbound message today (`inbox.rs:80`).
 
 Add `pub(crate) async fn put_conversation<H: AppHost>(host, row: &ConversationRow)`
 to `app.rs` beside `put_message`, and make `upsert_conversation`,
@@ -651,10 +808,17 @@ pub(super) async fn on_group_message<H: AppHost>(
     let info = AppConversation::group_info(host, msg.conversation.clone()).await
         .map_err(|e| format!("group-info: {e:?}"))?;
 
-    // 1. First sight: admit once, against the owner (D-C10-6).
+    // 1. First sight: admit once, against the owner (D-C10-6). The row is
+    //    written at the end (step 4), or right here when the message is
+    //    refused, so a refused group keeps its decision.
     let mut row = match load_conversation(host, &msg.conversation).await? {
         Some(r) => r,
-        None => new_group_row(host, &msg.conversation, &info, now).await?,
+        None => {
+            let mut r = new_group_row(host, &msg.conversation, &info, now).await?;
+            sync_membership_rows(host, &mut r, &info).await?;
+            put_conversation(host, &r).await?;
+            r
+        }
     };
     let admission = row.group.as_ref().map(|g| g.admission.clone());
     match admission {
@@ -691,14 +855,17 @@ pub(super) async fn on_group_message<H: AppHost>(
         // falls through: the profile message is stored, and shown as an event
     }
 
-    // 4. Store, then catch up membership rows.
+    // 4. Store the message, catch up membership rows, then write the
+    //    conversation row once with every change (count, activity, name).
     put_message(host, &incoming_row(msg, now)).await?;                  // extract from inbox.rs
     row.message_count += 1;
     row.last_activity_ms = row.last_activity_ms.max(msg.sender_timestamp);
-    sync_membership_rows(host, &mut row, &info).await                   // also writes `row`
+    sync_membership_rows(host, &mut row, &info).await?;
+    put_conversation(host, &row).await
 }
 
-async fn new_group_row<H: AppHost>(host: &H, id: &str, info: &GroupInfo, now: u64)
+// In app/group.rs (shared with `adopt_new_groups`). Does not write the row.
+pub(crate) async fn new_group_row<H: AppHost>(host: &H, id: &str, info: &GroupInfo, now: u64)
     -> Result<ConversationRow, String>
 {
     let owner_did = person_did_for_address(host, &info.owner).await;
@@ -715,15 +882,26 @@ async fn new_group_row<H: AppHost>(host: &H, id: &str, info: &GroupInfo, now: u6
             admission: admission_for_new_group(info.is_owner, answer.as_deref()),
             membership_events_copied: 0 }),
     };
-    put_conversation(host, &row).await?;
     Ok(row)
 }
 ```
+
+The same `message_count` / `last_activity_ms` loss can happen between two
+concurrent inbound messages (read-modify-write with no fence). That is the
+existing backlog row "Three read-modify-write sequences in Roym's
+`conversation` / `catalog` are unfenced", and C10 does not make it worse.
 
 **Refactors in `inbox.rs` so the two branches share code** (the duplication
 gate counts shape, not text): extract `is_blocked`, `honour_deletion_request`,
 and `incoming_row(msg, now) -> MessageRow` from `on_message_inner`
 (`:74-169`). The direct branch calls the same three.
+
+**Steps 2–4 above become one function**,
+`pub(crate) async fn store_group_message(host, row: &mut ConversationRow, info: &GroupInfo, msg: &Message, now) -> Result<Stored, String>`
+(`Stored` = `Kept | Refused(reason) | Ignored`), which does not write
+`row`. `on_group_message` calls it after the admission check and then
+writes `row`; `group.unhide`'s fill-in (§7.4) calls it for each message it
+reads back with `get-message`, and writes `row` once at the end.
 
 A group row's `peer_address` is the owner, so the direct branch's
 `load_conversation(...).is_none()` first-contact test is never reached for a
@@ -737,13 +915,14 @@ Every verb returns `Response`. `resolve_member_address` is the existing
 
 | Verb | Params | Result | Rules |
 |---|---|---|---|
-| `group.create` | `name?` | `{conversation_id, owner_address}` | Validate `name` if given. `AppConversation::create_group`. `group_info`. Write the row (`kind: Group`, admission `Shown`, `name_source: {now_ms, owner, "local"}` if named). `sync_membership_rows` (writes the genesis row). |
+| `group.create` | `name?` | `{conversation_id, owner_address}` | Validate `name` if given. `AppConversation::create_group`. `group_info`. `new_group_row` (admission `Shown`: owner), set the name with `name_source: {now_ms, owner, "local"}` if named, `sync_membership_rows` (copies the genesis row), `put_conversation`. Every verb below that changes the row ends with one `put_conversation`. |
 | `group.rename` | `conversation`, `name` | `{name, sent: bool, send_error?}` | Owner only (`info.is_owner`, else `invalid_params("only the group's owner can rename it")`). Validate. If the group has more than one member, send the profile message via `send_and_record` (§7.6) and use its id/timestamp as the `NameSource`; else a local `NameSource`. Store the row. |
 | `group.add-member` | `conversation`, `address` or `person_did` | `{added, epoch, name_sent: bool, send_error?}` | Owner only. `AppConversation::add_member`. Map `Unreachable(_)` → `invalid_params(GROUP_ADD_UNREACHABLE_MESSAGE)`, `QuotaExceeded` → `invalid_params("this group is full")`. `sync_membership_rows`. If the row has a name, re-send the profile (Q3); a send failure is reported, not fatal. |
 | `group.remove-member` | same | `{removed, epoch}` | Owner only. `AppConversation::remove_member`. `sync_membership_rows`. |
-| `group.info` | `conversation` | see below | Works for owner and members. If the host answers `NotFound` and a Roym row exists → `{restored_only: true, name, ...row fields}`. |
-| `group.sync` | `conversation` | `{synced: true, events_copied}` | `AppConversation::sync_now`, then `sync_membership_rows`. |
-| `group.hide` / `group.unhide` | `conversation` | `{admission}` | Any member. `hide` sets `Hidden`; `unhide` sets `Shown` (also from `Refused`: this is the person's own choice to accept). |
+| `group.info` | `conversation` | see below | Works for owner and members. If Roym has no row but the host knows the group, call `adopt_new_groups` first. If the host answers `NotFound` and a Roym row exists → `{restored_only: true, name, ...row fields}`. Also runs `sync_membership_rows`, so a removal learned by sync shows at once. |
+| `group.sync` | `conversation` | `{synced: true, events_copied}` | `AppConversation::sync_now`, then `sync_membership_rows`, then `put_conversation`. |
+| `group.hide` | `conversation` | `{admission}` | Any member. Sets `Hidden`. |
+| `group.unhide` | `conversation` | `{admission, filled_in}` | Any member. Sets `Shown` (also from `Refused`: this is the person's own choice to accept). Then fills in (D-C10-7): page `refused_messages` filtered on `{"conversation": id, "reason": {"$in": ["group-hidden", "rate-limited"]}}`; for each, `AppConversation::get_message(id)` (skip `NotFound`), run the same author block check and reserved-type rules as the inbox (so call a shared `store_group_message(host, &mut row, &info, &msg)` that §7.3 steps 2–4 are also refactored into), and delete the `refused_messages` row once stored. Reason `blocked` (an author block) is never filled in. `refused_messages` gains an index on `conversation` (`ensure_refused`, `app.rs`). |
 | `conversation.transcript-digest` | `conversation` | `{digest, rows}` | `messages_of` then `transcript_digest`. |
 
 `group.info` result:
@@ -777,15 +956,36 @@ changed to build the whole map once — do not call it per member).
   first to give a clear message.
 - The owner cannot remove itself (host: "the owner is always a member").
   Roym passes the host message through as `invalid_params`.
-- A removed member keeps its rows. `conversation.send` into that group
-  returns the host's refusal as `invalid_params(GROUP_REMOVED_NOTICE)`.
+- A removed member keeps its rows. Roym refuses its sends itself
+  (D-C10-15), before the host is called: the host would answer
+  `Internal("no key for the current epoch")`, not `PermissionDenied`
+  (`group.rs:347-356`, review finding 1).
+- **A removed member that has not learned its removal yet** (it was offline
+  at the time) still has `is_member: true`, so Roym lets it send. Its own
+  host signs the entry in the last epoch it belonged to, and the other
+  members **accept** it if its timestamp is within `max_clock_skew_secs`
+  (1 day) of the removal (`group/entry.rs`, the `removed_epoch_created_at`
+  check). This is existing host behaviour from B5, not something C10
+  changes. With §4.4 the removed member learns the removal on its next sync
+  (at most `conversation_group_sync_secs`, 60 s by default, after it comes
+  back online and reaches any member). Until then its UI cannot know. The
+  window is stated in the backlog (§13), not hidden. R4 row 3 is about
+  reading, and that still holds: it never gets the new key.
 
 ### 7.6 Changes to existing `conversation.*` verbs (`app/messages.rs`)
 
 1. **Extract `send_and_record`** from `send` (`:133-208`):
    `pub(crate) async fn send_and_record<H: AppHost>(host, conversation: &str, content_type: &str, body: &[u8]) -> Result<MessageRow, Response>`
    — everything from `AppConversation::send` through `upsert_conversation_activity`.
-   `send` (the verb) keeps param parsing and the new guard:
+   **Read the sent message back with `AppConversation::get_message(id)`**
+   and take `author`, `sender_timestamp`, and `state` from it. Delete the
+   outbox read (`host_message`) and both fallbacks (`now * 1000`, author
+   `"self"` / profile address) from this path (review finding 13). A
+   `get_message` error is an `internal_error`: the host just stored the
+   message, so a miss is a real fault, not a race. `host_message` stays for
+   `host_last_error` (`inbox.rs`), which needs `last_error`; switch that to
+   `get_message` too and delete `host_message` if nothing else uses it.
+   `send` (the verb) keeps param parsing and the new guards:
    ```rust
    let row = load_conversation(host, &conversation).await?;
    let is_group = row.as_ref().is_some_and(|r| r.kind == ConversationRowKind::Group);
@@ -795,35 +995,76 @@ changed to build the whole map once — do not call it per member).
        return Response::invalid_params(if content_type == CARD_CONTENT_TYPE
            { CARDS_NOT_IN_GROUPS_MESSAGE } else { "this content type is reserved" });
    }
+   if is_group {
+       let info = group_info(...)?;                     // D-C10-15
+       if !info.is_member { return Response::invalid_params(GROUP_REMOVED_NOTICE) }
+   }
    ```
    Map host errors for groups: `InvalidArgument(m)` → `invalid_params(m)`
-   (this carries "a group with no other member has nowhere to deliver");
-   `PermissionDenied` → `invalid_params(GROUP_REMOVED_NOTICE)`.
+   (this carries "a group with no other member has nowhere to deliver").
+   No `PermissionDenied` mapping: the host does not produce one here.
 2. **`list`** (`:94`): optional params `kind` (`"direct"` | `"group"`) and
-   `include_hidden` (default false). Skip group rows whose admission is not
+   `include_hidden` (default false). Unless `kind == "direct"`, call
+   `adopt_new_groups` first (§7.2). Skip group rows whose admission is not
    `Shown` unless `include_hidden`.
 3. **`history`** (`:261`): load the row; if it is a group, call
    `group_info` and `sync_membership_rows` before reading (ignore a
    `NotFound` from the host: a restored group). Add `"kind"` to the result:
    `{ "messages": [...], "kind": "direct" | "group" }`.
-4. **`delete_message`** (`:361`): refuse a row whose content type is a
-   group system type (`is_group_system_type`) with
-   `invalid_params("this row records a group change and cannot be deleted")`.
-   For a group message, use a new note:
-   `DELETE_NOTE_GROUP = "The local copy is removed and a deletion record kept. A request to delete it was sent to the other members; whether their clients honour it is theirs to decide, and this cannot check. Every member already holds the key this message was sent under."`
-   (the last sentence is the spec's own point about groups).
+4. **`delete_message`** (`:361`). Rules, in order (review finding 5):
+   - A row whose content type is a group system type
+     (`is_group_system_type`) → `invalid_params("this row records a group change and cannot be deleted")`.
+   - An **incoming** message, 1:1 or group → unchanged:
+     tombstone, `asked_peer: false`, `DELETE_NOTE_NO_PEER`.
+   - An **outgoing 1:1** message → unchanged (`DELETE_NOTE`).
+   - An **outgoing group** message:
+     - `group_info`; if `!is_member` or the group has no other member,
+       tombstone, send nothing, `asked_peer: false`, note
+       `DELETE_NOTE_GROUP_ALONE = "The local copy is removed and a deletion record kept. No request was sent: nobody else in this group can receive one from you now."`.
+     - otherwise send the request; on success `asked_peer: true`, note
+       `DELETE_NOTE_GROUP = "The local copy is removed and a deletion record kept. A request to delete it was sent to the other members; whether their clients honour it is theirs to decide, and this cannot check. Every member already holds the key this message was sent under."`
+       (the last sentence is the spec's own point about groups);
+     - on a send failure, keep the tombstone and answer **success** with
+       `asked_peer: false` and `send_error`, not `internal_error`. The local
+       copy is already gone, so an error would be false. (This is backlog
+       nit N-4, fixed here for groups only; the 1:1 path keeps its current
+       behaviour and its row.)
+   - Where tested: the incoming group case in parity (208). Parity cannot
+     make an **outgoing** group message: the host refuses a send in a
+     one-member group (203), and the harness has one node. So both outgoing
+     cases — "nobody to ask" and "asked the other members" — are tested in
+     e2e (§11.3, `a_removed_member_reads_nothing_after_removal`).
 5. **`search`** (`:415`): add `"content_type": {"$nin": [MEMBERSHIP_EVENT_CONTENT_TYPE, GROUP_PROFILE_CONTENT_TYPE]}`
    to the filter. The filter DSL supports `$nin` (`crates/data_db/src/filter.rs:239`).
+   New optional param `kind` (`"direct"` | `"group"`), review finding 9:
+   load the conversation rows of that kind (the `list` query, no
+   adoption) and add `"conversation": {"$in": [ids...]}` to the filter; an
+   empty id list returns `{matches: []}` without querying. The Hub's
+   Messages search passes `kind: "direct"` (§12.1). R4 excludes message
+   search, so the Groups tab has no search box.
 6. **`transcript_digest`** — the new verb from §7.4.
 
 ---
 
 ## §8 `roym_web`
 
-No code change: `web` forwards by the `router.rs` table (§6.3). Check that
-`crates/roym_web/tests/dual_build_parity/wire_origin.rs` still refuses every
-`group.*` method from the wire (`-32013`) — add `("group.info", json!({"conversation": "x"}))`
-to its method list (`:113`).
+No code change: `web` forwards by the `router.rs` table (§6.3).
+
+Tests (review finding 4):
+- **Local path.** `scenario_73` in
+  `crates/roym_web/tests/dual_build_parity/wire_origin.rs` (list ends at
+  `:115`) asserts each listed method is neither `-32601` (no match arm) nor
+  `-32013` (wire-refused) on the local path. Add all nine new methods with
+  valid-looking params: `group.create`, `group.rename`, `group.add-member`,
+  `group.remove-member`, `group.info`, `group.sync`, `group.hide`,
+  `group.unhide`, `conversation.transcript-digest`. This catches a missing
+  match arm in `app.rs`.
+- **Wire path.** No new test is needed. `require_internal` runs first in
+  every `invoke` (`app.rs`), so every `group.*` method is refused from the
+  wire already; `scenario_67` over `WIRE_REFUSED_VERBS`
+  (`dual_build_parity/fixtures.rs:465`) proves that rule per service. Add
+  `group.info` to `WIRE_REFUSED_VERBS` only if that list is meant to name
+  one verb per prefix (check its doc comment); otherwise leave it.
 
 ---
 
@@ -873,6 +1114,11 @@ subcommand, and that `--address` and `--person-did` are mutually exclusive
 ### 11.1 Unit tests
 
 - `crates/conversation/src/group/tests.rs`: §4.2 (three) and §4.3 (one).
+- `crates/conversation/src/transport/tests.rs`: §4.4 (three).
+- `crates/conversation/src/store/tests.rs`: `get_message_returns_a_sent_message_with_its_signed_timestamp`,
+  `get_message_hides_system_messages` (a group-key message is `NotFound`).
+- `crates/core/src/dht_registry/`: the three cache rules in §3.2 step 5
+  (branch A only).
 - `crates/roym_core/src/conversation/group/tests.rs`: §6.2.
 - `crates/roym_core/src/router.rs` tests: unchanged, must pass.
 
@@ -890,14 +1136,16 @@ by §11.3. Group ids differ per build (random nonce), so compare shapes after
 | 201 | `group.create` with a name | `conversation.list {kind: group}` has one row, `kind: group`, `name` set; `group.info` → `is_owner`, members `[self]`, `epoch 1`, `key_epoch 1`, all notices present; `conversation.history` has exactly one row, content type membership-event, body `{"action":"add","epoch":1,"subject":<self>}` |
 | 202 | `group.rename` validation | empty, whitespace, 81 chars, a control char → the same `invalid_params` text on both builds; 80 chars accepted |
 | 203 | send into a group with no other member | `invalid_params` naming "nowhere to deliver"; nothing stored in Roym's copy |
-| 204 | an inbound message injected into this node's own group (`h.deliver`, author `did:key:zPeer204`) | stored, `message_count 1`, `history` shows membership row then the message in sort order |
+| 204 | two inbound messages injected into this node's own group (`h.deliver`, author `did:key:zPeer204`), no membership change between them | both stored; `message_count 2` and `last_activity_ms` = the second message's timestamp (guards the lost-write bug of review finding 3); `history` shows the membership row, then the two messages, in sort order |
 | 205 | a blocked author in a shown group | `refused_messages` reason `blocked`; the group row stays shown; history unchanged |
 | 206 | group profile from a non-owner author | refused `not-owner`, name unchanged; an injected profile authored by the owner (own service id) at a newer timestamp changes the name; an older one injected afterwards does not |
 | 207 | a card into a group | `conversation.send` with the card content type → `CARDS_NOT_IN_GROUPS_MESSAGE`; `transaction.sync {conversation: group}` → the same message |
-| 208 | delete | `delete-message` on the membership row → refused; on an injected group message → ok, note is `DELETE_NOTE_GROUP` |
+| 208 | delete, incoming | `delete-message` on the membership row → refused; on an injected (incoming) group message → ok, `asked_peer: false`, note `DELETE_NOTE_NO_PEER` |
 | 209 | transcript digest | stable across two calls; changes after one more injected message; unchanged after deleting that message |
-| 210 | hide / unhide | after `group.hide`, an injected message → refused `group-hidden`; `list` hides the group, `include_hidden` shows it; after `unhide` the next message is stored and the hidden-time message is still absent |
-| 211 | search | a query matching text in a membership body and a group profile body returns neither |
+| 210 | hide / unhide | after `group.hide`, an injected message A → refused `group-hidden`; `list` hides the group, `include_hidden` shows it. `group.unhide` → admission `shown`, `filled_in: 0`: `h.deliver` injects through the notifier only, so the host store never held A and `get-message` answers `NotFound`, which the fill-in skips; A's `refused_messages` row stays. The next injected message is stored. (The fill-in itself, with a message the host really stored, is proven in e2e: `a_stranger_adding_you_is_a_first_contact`.) |
+| 211 | search | a query matching text in a membership body and a group profile body returns neither; `kind: "direct"` returns no group message; `kind: "group"` returns no 1:1 message |
+| 213 | adoption without a message | create a host group directly (`h.wasm_conversation.create_group` / `h.native_conversation.create_group`, as scenario 60 does). With no message at all, `conversation.list {kind: group}` shows it (admission `shown`, genesis membership row present). `conversation.list {kind: "direct"}` does not |
+| 214 | a sent row carries the host's own values | open a 1:1 conversation to a never-answering address; `conversation.send`; read the host's row with the host service directly (`h.*_conversation.get_message`); Roym's row has the same `author` and `sender_timestamp_ms` (to the millisecond), never the `now * 1000` fallback |
 | 212 | export / import round trip into a second, empty installation (the `scenario_188` pattern) | bundle `schema_version 3`; the group row (kind, meta) and membership rows are restored; `group.info` on the import side → `restored_only: true` with `GROUP_RESTORED_NOTICE` |
 | 60 (rewrite) | rename to `scenario_60_group_message_is_stored_in_roym_copy_parity` | an injected message into a host group that has no Roym row yet (owned by self) → row created with admission shown, message stored, `refused_messages` empty |
 
@@ -906,8 +1154,23 @@ service's `schema_version: 3`.
 
 ### 11.3 Cross-installation e2e (WO6)
 
-**Shared setup — new `crates/substrate/tests/common/roym_group.rs`**
-(declared in `common/mod.rs`):
+**Where the shared setup goes (review finding 15).** There are three test
+helper files with three different jobs. Keep them separate, and say so in
+each file's module comment:
+
+| File | Job | Owner |
+|---|---|---|
+| `crates/substrate/tests/common/roym.rs` (exists) | Booting and driving one Roym installation (`RoymNode`). **All node-boot changes go here**, including the new shared relay and `CoordinatorNode`, so C9's three-installation e2e can use them too. | shared |
+| `crates/substrate/tests/common/roym_flow.rs` (planned by C9 WO6, C9 plan §10.1; not built) | The request → quote → booking flow steps moved out of `roym_booking_e2e.rs` / `roym_directory_e2e.rs`. Nothing about groups. | C9 |
+| `crates/substrate/tests/common/roym_group.rs` (new) | Group flow steps only. | C10 |
+
+C9's plan boots three nodes with Z hosting the registry, not a separate
+coordinator, and C10 does not need `roym_flow.rs`'s steps. So the two
+slices share `roym.rs` and nothing else; whichever lands second rebases
+onto the other's `roym.rs` changes. Run the `cargo dupes` recipe (AGENTS.md)
+over all three files before WO6 is done.
+
+**Additions to `common/roym.rs`:**
 
 - `pub struct CoordinatorNode(SubstrateNode)` booted with the default
   roles (it hosts the registry and relay). `registry_url()`, `relay_url()`,
@@ -916,15 +1179,20 @@ service's `schema_version: 3`.
   `shared_relay_url` field on `RoymNode` (threaded the same way as
   `shared_registry_url`, including `resume`, `:475`). Add
   `RoymNode::boot_on(label, base_path, coord: &CoordinatorNode, owner, role)`.
-- `pub fn group_role(rekey_secs: u64) -> AppSandboxRole` built on
-  `common::roym::fast_conversation_role` with `conversation_group_sync_secs: 1`
-  and `conversation_group_rekey_secs: rekey_secs`. Do not copy
-  `fast_conversation_role` or `wait_until`.
+
+**`common/roym_group.rs`** (declared in `common/mod.rs`):
+
+- `pub fn group_role(rekey_secs: u64, max_pending_age_secs: u64) -> AppSandboxRole` built on
+  `common::roym::fast_conversation_role(max_pending_age_secs)` with
+  `conversation_group_sync_secs: 1` and `conversation_group_rekey_secs: rekey_secs`.
+  Do not copy `fast_conversation_role` or `wait_until`.
 - `pub async fn form_group(owner: &RoymNode, name: &str, members: &[&RoymNode]) -> String`:
   profiles and contacts set up both ways (each member adds the owner as a
   contact and the owner adds each member), `group.create`, one
   `group.add-member` per member, then `wait_until` every member's
-  `group.info` has `is_member` and the name.
+  **`conversation.list {kind: "group"}`** contains the group with the name
+  (review finding 12: `group.info` reads host state, so waiting on it
+  would hide a missing Roym row).
 - `pub async fn projection(node: &RoymNode, gid: &str) -> Vec<Value>`:
   `conversation.history` rows mapped to
   `{id, author, sender_timestamp_ms, content_type, body}`.
@@ -942,9 +1210,9 @@ so each stays ≤ 800 lines.
 
 | Test | Steps | R4 row |
 |---|---|---|
-| `three_members_see_one_order_from_skewed_clocks` | C + Z (owner), X, Y. `form_group`. `test_support::set_clock_offset_ms`: X +90 000, Y −90 000, Z 0. All three send two messages with `join_all` (six sends at once). `converge`. Assert: the three projections serialise to identical bytes; the order equals sort by `(sender_timestamp_ms, author, id)`; the three digests are equal; three membership rows (genesis, add X, add Y) are identical everywhere. `clear_clock_offsets` at the end. | 2, 4 |
+| `three_members_see_one_order_from_skewed_clocks` | C + Z (owner), X, Y. `form_group`. `test_support::set_clock_offset_ms`: X +90 000, Y −90 000, Z 0. All three send two messages with `join_all` (six sends at once). `converge`. Assert: the three projections serialise to identical bytes — this includes each author's **own** row, which must carry the skewed timestamp read back through `get-message` (review finding 13); the order equals sort by `(sender_timestamp_ms, author, id)`; the three digests are equal; three membership rows (genesis, add X, add Y) are identical everywhere. Run the send-and-compare step 5 times in a loop inside the test, because the old failure was timing-dependent. `clear_clock_offsets` at the end. | 2, 4 |
 | `a_joiner_reads_nothing_before_joining` | Form Z, X. Two messages. Z adds W. `converge` on Z, X, W. W's history has no message row with a sender timestamp before the `add W` event and no id of the two early messages; W reads a message sent after the join. Membership rows identical on Z, X, W. | 3, 4 |
-| `a_removed_member_reads_nothing_after_removal` | Form Z, X, Y. Z removes Y. Z sends "after removal". `converge` on Z, X. Y's `group.sync`, then: Y's history has the removal row, not the new message; Y's `group.info` → `is_member: false`, `key_epoch < epoch`, `removed` notice set; Y's `conversation.send` → error with `GROUP_REMOVED_NOTICE`. Scheduled rekey later (§ below) does not raise Y's `key_epoch`. | 3, 4 |
+| `a_removed_member_reads_nothing_after_removal` | Form Z, X, Y. Y sends one message M. **`Y.stop(None)`** (Y is offline at removal: the one relay push to Y fails, review finding 2). Z removes Y. Z sends "after removal". `converge` on Z, X. `Y.resume(None)`, login. Y's `group.info` loop (`group.sync` each time) until `is_member: false` — proves §4.4 (sync-based catch-up). Then: Y's history has the removal row, not the new message; `key_epoch < epoch`; `removed` notice set; Y's `conversation.send` → `GROUP_REMOVED_NOTICE` and nothing is queued in Y's `conversation.outbox`; Y's `delete-message` on M → `asked_peer: false`, `DELETE_NOTE_GROUP_ALONE`. X's `delete-message` on one of X's own messages → `asked_peer: true`, `DELETE_NOTE_GROUP`, and after `converge` Z's copy of that message is tombstoned. | 3, 4 |
 | `a_scheduled_rekey_changes_the_key_with_stable_membership` | Nodes with `group_role(5)`. Form Z, X, Y. Record Z's `epoch`. Wait until Z's `epoch` grows and X's and Y's `key_epoch` equal it. Membership rows unchanged in count. A message sent after the rekey is read by all three. | 3 |
 
 **`crates/substrate/tests/roym_group_offline_e2e.rs`**
@@ -953,7 +1221,8 @@ so each stays ≤ 800 lines.
 |---|---|---|
 | `an_offline_member_pulls_the_gap_from_another_member` | Form Z, X, Y. `Y.stop(None)`. X sends two, Z sends two. `Z.stop(None)` (the owner and one author is now offline). `Y.resume(None)`, `Y.republish_registry()`, login. Y `group.sync` until its digest equals X's. Y holds all four messages, so it pulled Z's messages from X, not from Z. | 5 |
 | `members_talk_with_no_coordinator_reachable` | **Branch A only** (Q1). Form Z, X, Y on C. One round of messages. `C.teardown()`. X sends; wait until Y and Z hold it; Y sends; wait until X and Z hold it. Digests equal. **Branch B**: the §3.3 assertion instead. | 1 |
-| `a_stranger_adding_you_is_a_first_contact` | X sets `contacts.set-limits {max_per_window: 0}`. W (not a contact of X) creates a group and adds X. W sends. X's `conversation.list {kind: group}` is empty; with `include_hidden` the group shows `refused: rate-limited`; `refused_messages` has W's message. X `group.unhide`s; W sends again; X now holds that message only. | safety (Q4) |
+| `a_stranger_adding_you_is_a_first_contact` | X sets `contacts.set-limits {max_per_window: 0}`. W (not a contact of X) creates a group and adds X. W sends A. X's `conversation.list {kind: group}` is empty; with `include_hidden` the group shows `refused: rate-limited`; `refused_messages` has A. X `group.unhide`s → `filled_in: 1`, A is in X's history (read back from the host with `get-message`). W sends B; X holds A and B. | safety (Q4) |
+| `a_message_to_a_member_removed_while_pending_settles_failed_after_the_age_window` | Failure-matrix row 16 (review finding 6). Nodes with `group_role(3600, 20)` (a 20 s `max_pending_age_secs`). Form Z, X, Y. `Y.stop(None)`. Z sends M (X gets it; Y's item stays pending). Z removes Y. Assert M's state in Z's `conversation.history` stays `pending` while Y is removed and the window runs (sample it twice, 5 s apart, both `pending`). Wait past 20 s: M becomes `failed`. `group.info` on Z never lists Y during the window. The words the Hub would show for each state are checked by the vitest in §12.1 (`deliveryWords` never names a member and never says "trying"). | matrix row 16 |
 
 Put both binaries in nextest's `substrate-e2e` group (check the filter in
 `.config/nextest.toml`; if it matches `roym_*_e2e` by name, no edit).
@@ -969,10 +1238,10 @@ Put both binaries in nextest's `substrate-e2e` group (check the filter in
 | File | What |
 |---|---|
 | `crates/roym_web/ui/src/groups/words.ts` (**new**) | The nine notice constants from §6.2, verbatim, plus `deliveryWords(state: "pending" \| "delivered" \| "failed"): string` (D-C10-8) and `membershipEventWords(event, nameOf): string` ("Z added X", "Z removed Y", "Z created the group"). |
-| `crates/roym_web/ui/src/groups/words.test.ts` (**new**) | Every state maps to its words; no output ever contains "verified", "read", or "trying"; membership words use display names when known and the short address otherwise. |
-| `crates/roym_web/ui/src/screens/groups.ts` (**new**, ≤ 600 lines) | `renderGroups(container)`: left = "New group" (name input + button) and the group list (`conversation.list {kind: "group"}`), plus a collapsed "Hidden groups (N)" section (`include_hidden`) with Unhide buttons. Right = thread (`conversation.history`) and an info panel (`group.info`). |
-| `crates/roym_web/ui/src/screens/groups.test.ts` (**new**) | Rendering helpers: a name with markup becomes a text node; membership rows render as events, profile rows as "Z named the group …", card rows as the neutral block. |
-| `crates/roym_web/ui/src/screens/messages.ts` | `reloadList` (`:188-221`) calls `conversation.list` with `{kind: "direct"}`. `ConversationRow` interface (`:33`) gains `kind`. No other change. |
+| `crates/roym_web/ui/src/groups/words.test.ts` (**new**) | Every state maps to its words; no output ever contains "verified", "read", "trying", or a member's name or address (failure-matrix row 16: a pending or failed state is never shown as progress toward a member); membership words use display names when known and the short address otherwise. |
+| `crates/roym_web/ui/src/screens/groups.ts` (**new**, ≤ 600 lines) | `renderGroups(container)`: left = "New group" (name input + button) and the group list (`conversation.list {kind: "group"}`, label = name or "Unnamed group"), plus a collapsed "Hidden groups (N)" section (`include_hidden`) with Unhide buttons. Right = thread (`conversation.history`) and an info panel (`group.info`). No search box. |
+| `crates/roym_web/ui/src/screens/groups.test.ts` (**new**) | Rendering helpers: a name with markup becomes a text node; membership rows render as events; a profile row renders as "Z named the group …" **only when its name differs from the one before it** (D-C10-16), so two profile rows with the same name render one line; card rows render as the neutral block; an `RpcError` of type `NotSignedIn` renders the "log in again" state (§12.2), not an error line. |
+| `crates/roym_web/ui/src/screens/messages.ts` (842 lines now) | `reloadList` (`:183-213`) calls `conversation.list` with `{kind: "direct"}`. The search call (`:158`) passes `{query: q, kind: "direct"}` (review finding 9). `ConversationRow` interface (`:34`) gains `kind`. No other change. `message_search.ts` (the Hub search fix already on this branch) is unchanged. |
 | `crates/roym_web/ui/src/main.ts` | Tab list (`:137-147`): add `{ name: "Groups", render: () => renderGroups(tabContainer) }` after Messages. |
 
 ### 12.2 What the Groups screen shows
@@ -998,6 +1267,18 @@ Put both binaries in nextest's `substrate-e2e` group (check the filter in
   confirm dialog. "Sync now" button (`group.sync`).
 - **Errors** show the server's message text as is (it already carries the
   exact notice, e.g. `GROUP_ADD_UNREACHABLE_MESSAGE`).
+- **Session ended** (carried-forward limit 5, review finding 7). The Hub
+  checks the session only at page load (`main.ts:92-122`). If the substrate
+  restarts while the Groups tab is open, the next call fails with
+  `RpcError` type `NotSignedIn` (`rpc.ts`). The Groups screen then replaces
+  its content with "Your session ended, for example because this
+  installation restarted. Log in again." and a button that reloads the
+  page. It is not shown as an error, and nothing typed in the composer is
+  sent twice (the send was refused, not queued). Put the helper in
+  `groups/words.ts` (`SESSION_ENDED_NOTICE`) so other tabs can adopt it
+  later; C10 does not change the other tabs.
+- **Repeated names** (D-C10-16): render a profile row only when its name
+  differs from the previous profile row's name in the same thread.
 
 ### 12.3 Playwright — new `crates/substrate/tests/e2e/tests/roym-groups.spec.ts`
 
@@ -1036,6 +1317,21 @@ reserved for the transaction action panel row in the backlog.
 - §5 "Conversations cannot continue after a substrate moves to a new
   machine" — add: a restored group is history only, shown with
   `GROUP_RESTORED_NOTICE` (D-C10-12).
+- §5 "No `roymctl` operator surface for conversation dead letters"
+  (carried-forward limit 4, review finding 7) — restate with C10 evidence:
+  a group message that gives up shows as "Not delivered to every member"
+  with Retry in the Hub and in `roymctl roym group history`; the operator
+  still has no node-level view. Still TBD.
+- The "Person sessions are in-memory" limit (carried-forward limit 5) has
+  no backlog row of its own (it is a decision, ADR-0024 §2). Record in
+  `status.md`, not the backlog, that the Groups screen shows the ordinary
+  "log in again" state (§12.2) and that no group work is lost on a
+  restart: the host's outbox holds pending sends, and the Roym rows are
+  durable.
+- `task.md` "C10 completes" row: all five carried-forward limits
+  re-examined — four restated above with evidence, the `MAX_PARENTS` row
+  unchanged, the sessions limit recorded in `status.md`. None is closed by
+  C10.
 
 **New rows:**
 
@@ -1043,7 +1339,7 @@ reserved for the transaction action panel row in the backlog.
 |---|---|---|
 | §5 | **A group message's delivery state is one aggregate** — `failed` can mean one member was offline past `max_pending_age_secs` even if it later got the message by sync. No per-recipient view. Trigger: "a person needs to know which member has a message". | TBD |
 | §5 | **A member cannot leave a group; they can only hide it here** (D-C10-7). Trigger: "a member-initiated leave is designed (it needs an owner-side rekey)". | TBD |
-| §5 | **Messages that arrived while a group was hidden are not shown after unhide** (D-C10-7). | TBD |
+| §5 | **A removed member that was offline at removal can still post until it learns of the removal, and the other members accept those posts** while their timestamp is within `max_clock_skew_secs` (1 day) of the removal. They are signed in the last epoch the author belonged to, so `member_sig_key_at` accepts them, and only the `removed_epoch_created_at + max_skew` cutoff (`group/entry.rs`) stops them later. It cannot **read** anything after the removal (R4 row 3 holds). With §4.4 it learns the removal on its first sync after it comes back (≤ `conversation_group_sync_secs`); until then its own UI still shows it as a member. Trigger: "a removed member must stop posting at once" (it needs a durable, retried removal notice over the 1:1 channel, and a tighter cutoff than the clock-skew allowance). | TBD |
 | §5 | **Adding a person you have never talked to needs them online** (Q11 narrows but does not remove it). | TBD |
 | §5 | **Anybody who can reach your address can add you to a group underneath**; Roym hides it by the first-contact rule (D-C10-6) but the host has joined. Same shape and same fix as the admit-hook row (`D-06C-8`). | TBD (with the admit-hook row) |
 | §13 | **Eight hand-kept copies of `conversation.wit`**; no gate checks they match (§15 item 17). | TBD |
@@ -1074,11 +1370,11 @@ reserved for the transaction action panel row in the backlog.
 | WO | Scope | Needs | Done when |
 |---|---|---|---|
 | **WO0** | Gap 10 spike (§3) | — | Branch A or B chosen and written in `status.md` |
-| **WO1** | Host: `group-info` (§4.1–4.2), pinned-key add (§4.3), clock hook (§5) | — | `cargo nextest run -p syneroym-conversation -p syneroym-app-host-native` green; both fixture builds rebuilt |
+| **WO1** | Host: `group-info` and `get-message` (§4.1–4.2), pinned-key add (§4.3), removal catch-up (§4.4), clock hook (§5) | — | `cargo nextest run -p syneroym-conversation -p syneroym-app-host-native` green; both fixture builds rebuilt; `cargo nextest run -p syneroym-substrate --test group_conversation_e2e` still green |
 | **WO2** | `roym_core` (§6) | WO1 | `cargo nextest run -p syneroym-roym-core` green |
 | **WO3** | `roym_conversation` (§7), router (§6.3), `wire_origin` (§8), transaction guard (§9) | WO2 | `mise run build:roym` then parity suite green |
 | **WO4** | `roymctl roym group` (§10) | WO3 | parse tests green |
-| **WO5** | Parity 201–212 + 60 rewrite (§11.2) | WO3 | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` green, both builds identical |
+| **WO5** | Parity 201–214 + 60 rewrite + `scenario_73` additions (§11.2, §8) | WO3 | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` green, both builds identical |
 | **WO6** | e2e (§11.3) | WO3, WO0 | both binaries green |
 | **WO7** | Hub + vitest + Playwright (§12) | WO3 | `mise run test:roym-ui` and `mise run test:e2e` green |
 | **WO8** | Backlog and docs (§13); import cleanup pass; `cargo dupes` recipe on changed files | all | `mise run verify` (no `--skip`) green |
@@ -1132,14 +1428,22 @@ WASM components before trusting a parity result.
     member's prekey bundle every time (`group.rs:207`). The spec says only
     that the **owner** must be online for joins and leaves (O1 table). →
     Q11 narrows it; backlog row for the rest.
-11. **`messages.ts` is 846 lines.** The 800-line rule is enforced only for
-    `.rs` files (`xtask/src/file_lengths.rs:388`). C10 does not grow it
-    (D-C10-13).
-12. **Found in passing — a Hub bug, not C10 scope.** The Messages search
-    reads `res.hits[].snippet` (`crates/roym_web/ui/src/screens/messages.ts:156-172`),
-    but `conversation.search` returns `{ "matches": [MessageRow] }`
-    (`crates/roym_conversation/src/app/messages.rs:463-469`). No test
-    covers it. The search box would throw on any query.
+11. **`messages.ts` is 842 lines.** The 800-line rule is enforced only for
+    `.rs` files (`xtask/src/file_lengths.rs:388`). C10 changes three lines
+    in it (§12.1) and does not grow it (D-C10-13).
+12. **Fixed on this branch, separately from C10.** The Messages search read
+    `res.hits[].snippet` while `conversation.search` returns
+    `{ "matches": [MessageRow] }`. The separate Hub fix (new
+    `crates/roym_web/ui/src/screens/message_search.ts`, and `messages.ts:158-159`)
+    reads `matches`. C10 only adds `kind: "direct"` to that call (§12.1).
+19. **Three statements the review corrected in this plan's first draft**,
+    kept here so a later reader knows they were checked, not assumed:
+    a removed member's send fails with `Internal("no key for the current
+    epoch")`, not `PermissionDenied` (`group.rs:347-356`); a removed member
+    that is offline at removal is never told unless something changes
+    (`outbox.rs:99-123`, `group_sync.rs:363`); and a sent message's row
+    could take a local-clock timestamp (`messages.rs:162-179`). §4.4,
+    §7.6, and D-C10-15 handle them.
 13. **`roym_core::conversation::CONVERSATION_SCHEMA_VERSION` (= 1) has no
     reader.** The live version is `roym_conversation::app::SCHEMA_VERSION`
     (= 2). Two constants that disagree. Deleted in §6.1.
@@ -1197,8 +1501,11 @@ same from the Hub's Groups tab or from `roymctl roym group …`.
 - Zara presses **Add member**, picks Xavi from her contacts, then Yuki.
 - Her thread shows "Zara added Xavi" and "Zara added Yuki". The key number
   in the info panel goes up with each change.
-- A few seconds later, Xavi's and Yuki's Groups tabs show "Street Garden"
-  with Zara as the owner, the same owner notice, and the same member list.
+- A few seconds later, Xavi's and Yuki's Groups tabs show the group, with
+  Zara as the owner, the same owner notice, and the same member list. It
+  appears as soon as they are added, before anyone has written anything.
+  The name "Street Garden" arrives a moment later. Until then the list says
+  "Unnamed group".
 - Xavi's thread starts at "Zara added Xavi". It says: "You can read
   messages sent after you joined."
 
@@ -1239,7 +1546,8 @@ case is left out of the demo.)
 - Wen's thread starts at that event. The earlier messages are not there,
   and the panel says why.
 - Zara's current group name, "Street Garden", appears for Wen, because
-  Zara's installation sends it again when someone joins.
+  Zara's installation sends it again when someone joins. The others do not
+  see a second "named the group" line, because the name did not change.
 - Wen's next message reaches everyone.
 
 ### 16.8 Zara removes Yuki
@@ -1251,6 +1559,9 @@ case is left out of the demo.)
 - Yuki's group shows: "You were removed from this group. You can still read
   what you received before. You cannot read or send new messages." Her
   message box is turned off.
+- If Yuki's computer was off when Zara removed her, she sees all of this
+  within about a minute after she starts it again. Her installation learns
+  the removal from any member it can reach.
 
 ### 16.9 The key changes on a schedule
 
@@ -1282,8 +1593,9 @@ case is left out of the demo.)
 - Nothing appears in Xavi's Groups list. Under **Hidden groups (1)** he
   sees "Cheap Deals", marked as not shown because of his first-contact
   limit.
-- If Xavi presses **Unhide**, new messages from then on appear. The ones
-  sent while it was hidden do not.
+- If Xavi presses **Unhide**, the group appears with the messages that
+  arrived while it was hidden, and new ones from then on. Messages from a
+  person Xavi has blocked stay out.
 - Xavi can also **Hide** any group he no longer wants to see. The Hub tells
   him that he stays a member underneath until the owner removes him.
 
