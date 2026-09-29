@@ -9,6 +9,8 @@ use syneroym_rpc::{
     CallOrigin, CallerContext, ConversationError, ProxyError, ProxyProtocol, ProxyRequest,
 };
 
+#[cfg(feature = "test-support")]
+use crate::test_support;
 use crate::{
     ConversationService,
     crypto::{self, Envelope, PrekeyBundle, Session},
@@ -175,7 +177,7 @@ impl ConversationService {
         // What a lost ack looks like to the sender: the peer stored the
         // message, and the answer never arrived (a timeout, not a refusal).
         #[cfg(feature = "test-support")]
-        if crate::test_support::take_drop_ack(svc) {
+        if test_support::take_drop_ack(svc) {
             return Err(Disposition::Unreachable);
         }
         let _ack: DeliveryAck = serde_json::from_value(ack_json).map_err(|_| {

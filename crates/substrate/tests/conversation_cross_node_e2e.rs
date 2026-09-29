@@ -13,7 +13,7 @@
 //!
 //! Node A hosts the registry; every other node resolves through it.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::{
     SubstrateNode,
@@ -410,7 +410,7 @@ async fn a_future_sender_timestamp_is_refused_and_a_past_one_is_kept() {
 }
 
 fn now_ms() -> i64 {
-    let since_epoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     i64::try_from(since_epoch.as_millis()).unwrap()
 }
 

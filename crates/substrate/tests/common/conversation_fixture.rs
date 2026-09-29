@@ -15,7 +15,7 @@ use syneroym_core::{
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
-use syneroym_sdk::SyneroymClient;
+use syneroym_sdk::{Publication, SyneroymClient};
 
 use super::{SubstrateNode, roym::wait_until};
 
@@ -104,7 +104,7 @@ pub async fn deploy_fixture(
             service_id.clone(),
             vec![FIXTURE_INTERFACE.to_string()],
             wasm,
-            syneroym_sdk::Publication::Private,
+            Publication::Private,
             cert,
         )
         .await

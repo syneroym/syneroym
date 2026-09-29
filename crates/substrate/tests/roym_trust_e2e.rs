@@ -33,7 +33,7 @@ use std::{
 };
 
 use rustls::crypto::ring;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{Identity, substrate};
 use syneroym_sdk::SyneroymClient;
@@ -332,7 +332,7 @@ const DATA_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transact
 /// re-evaluated from the stored evidence, not a stored verdict -- and the
 /// finished agreement is intact.
 async fn consumer_leaves_with_their_data(t: &Trio, dir: &Path, quote_record_id: &str) {
-    let mut bundles = serde_json::Map::new();
+    let mut bundles = Map::new();
     for svc in DATA_SERVICES {
         bundles.insert((*svc).to_string(), t.x.rpc_ok(&format!("{svc}.export"), json!({})).await);
     }
