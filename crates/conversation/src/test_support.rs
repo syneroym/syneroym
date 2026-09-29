@@ -15,6 +15,7 @@ use std::{
 pub struct SendOverride {
     pub author: Option<String>,
     pub sender_timestamp_ms: Option<i64>,
+    pub conversation_id: Option<String>,
 }
 
 static DROP_ACKS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
@@ -31,6 +32,12 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// and the sender then behaves as if the answer never arrived.
 pub fn drop_next_ack(service_id: &str) {
     locked(&DROP_ACKS).insert(service_id.to_string());
+}
+
+/// Whether a `drop_next_ack` for `service_id` has not fired yet. A test
+/// reads it after the delivery to prove the hook really ran.
+pub fn drop_ack_pending(service_id: &str) -> bool {
+    locked(&DROP_ACKS).contains(service_id)
 }
 
 /// The next `send` on `service_id` uses these values in the message it

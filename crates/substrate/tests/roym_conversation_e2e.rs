@@ -446,7 +446,8 @@ async fn a_pending_message_and_its_body_survive_a_substrate_restart() {
 /// `conversation_max_pending_age_secs` passes, and `conversation.history`
 /// reports it `failed` with the host's own reason -- the `failed` third of
 /// the pending / delivered / failed scope, watched with no real clock wait.
-/// `conversation.retry` then re-arms it, and the outbox attempts it again.
+/// `conversation.retry` then re-arms it with a fresh window: it stays
+/// `pending` for a while, and only then settles `failed` again.
 ///
 /// Split out of the main flow because the main flow already restarts each
 /// substrate twice and a guest-HTTP component's warm-up after a restart is
@@ -513,11 +514,16 @@ async fn a_message_that_never_reaches_its_peer_settles_failed_with_the_hosts_rea
         "conversation.history reports failed with the host's own reason: {row}"
     );
 
-    // `retry` re-arms a failed message: the host accepts it, and the peer is
-    // still gone and the message is still past its window, so the outbox
-    // picks it up again and settles it `failed` a second time.
+    // `retry` re-arms a failed message with a fresh window. The peer is still
+    // gone, so it ends `failed` again -- but only after the new window. A
+    // retry that kept the original send time would fail again within one
+    // tick, with no attempt made.
     let retried = node.rpc_ok("conversation.retry", json!({ "message_id": message_id })).await;
     assert_eq!(retried["retried"], true, "the host re-armed the failed message: {retried}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let mid_window = node.rpc_ok("conversation.history", json!({ "conversation": conv })).await;
+    let row = history_messages(&mid_window).into_iter().find(|m| m["id"] == message_id).unwrap();
+    assert_eq!(row["state"], "pending", "a retried message gets a fresh window: {row}");
     let failed_again = wait_until(Duration::from_secs(40), || {
         let node = &node;
         let conv = conv.clone();
@@ -531,7 +537,7 @@ async fn a_message_that_never_reaches_its_peer_settles_failed_with_the_hosts_rea
         }
     })
     .await;
-    assert!(failed_again, "the re-armed message is attempted again and settles failed again");
+    assert!(failed_again, "the re-armed message settles failed again once its new window passes");
 
     node.teardown().await;
 }

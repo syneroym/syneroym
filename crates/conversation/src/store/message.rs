@@ -188,6 +188,20 @@ impl ConversationStore {
         Ok(())
     }
 
+    /// Puts a failed message back to `pending` with a fresh delivery window.
+    /// The outbox measures both the give-up age and the retry backoff from
+    /// `received_at`, so leaving the original time would let an
+    /// age-expired message fail again before a single attempt is made.
+    pub fn restart_pending(&self, id: &str, now_ms: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute(
+            "UPDATE messages SET state = 'pending', last_error = NULL, received_at = ?1 WHERE id \
+             = ?2",
+            params![now_ms, id],
+        )?;
+        Ok(())
+    }
+
     pub fn history(
         &self,
         conversation_id: &str,

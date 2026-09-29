@@ -28,7 +28,7 @@ use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_conversation::{
     ids::derive_conversation_id,
-    test_support::{SendOverride, drop_next_ack, override_next_send},
+    test_support::{SendOverride, drop_ack_pending, drop_next_ack, override_next_send},
 };
 use syneroym_core::config::AppSandboxRole;
 use syneroym_identity::{Identity, substrate};
@@ -129,7 +129,10 @@ async fn deliver(from: &Peer, to: &Peer, conv: &str, body: &str) -> String {
 /// A lost acknowledgement makes the sender retry a message the peer already
 /// stored. The retry must end `delivered`, the peer must hold exactly one
 /// copy, and the *next* message must get through -- for the first message
-/// on a new session as well as for a later one on an existing session.
+/// on a new session as well as for a later one on an existing session. After
+/// the first lost ack the peer also answers *before* the sender writes
+/// again: the peer replies on the session it opened, so the sender must
+/// still hold that same session.
 #[tokio::test]
 async fn a_lost_ack_is_retried_and_stored_once_for_a_new_and_an_existing_session() {
     let _serial_guard = common::serial_guard().await;
@@ -142,26 +145,38 @@ async fn a_lost_ack_is_retried_and_stored_once_for_a_new_and_an_existing_session
     // (a) The ack for the very first message, which creates the session.
     drop_next_ack(&a.did);
     deliver(&a, &b, &conv, "first").await;
+    assert!(!drop_ack_pending(&a.did), "the first ack was really dropped");
     assert_eq!(bodies(&b.history_with(&a).await), ["first"], "one copy, not two");
+    deliver(&b, &a, &b.conversation_with(&a), "reply, before A writes again").await;
     deliver(&a, &b, &conv, "second, after a lost first ack").await;
 
     // (b) The ack for a later message on the session that now exists.
     drop_next_ack(&a.did);
     deliver(&a, &b, &conv, "third").await;
+    assert!(!drop_ack_pending(&a.did), "the later ack was really dropped");
     deliver(&a, &b, &conv, "fourth, after a lost later ack").await;
 
     assert_eq!(
         bodies(&b.history_with(&a).await),
-        ["first", "fourth, after a lost later ack", "second, after a lost first ack", "third"],
+        [
+            "first",
+            "fourth, after a lost later ack",
+            "reply, before A writes again",
+            "second, after a lost first ack",
+            "third"
+        ],
         "every message is held exactly once"
     );
     b.teardown().await;
     a.teardown().await;
 }
 
-/// Node C delivers to B an envelope whose author claims A. B must refuse
-/// it at the author check, store nothing for it, and C's own item must end
-/// `failed`. C's honest messages before and after are unaffected.
+/// Node C delivers to B an envelope whose author claims A, under the
+/// conversation id B derives for A. The signature (C's own key) and the
+/// conversation id both check out, so only the author check stands between
+/// the message and B's history with A. B must refuse it there, store
+/// nothing for it, and C's own item must end `failed`. C's honest messages
+/// before and after are unaffected.
 #[tokio::test]
 async fn a_delivery_claiming_another_nodes_authorship_is_refused_and_stores_nothing() {
     let _serial_guard = common::serial_guard().await;
@@ -175,7 +190,11 @@ async fn a_delivery_claiming_another_nodes_authorship_is_refused_and_stores_noth
     deliver(&c, &b, &conv, "honest before").await;
     override_next_send(
         &c.did,
-        SendOverride { author: Some(a.did.clone()), ..SendOverride::default() },
+        SendOverride {
+            author: Some(a.did.clone()),
+            conversation_id: Some(derive_conversation_id(&b.did, &a.did)),
+            ..SendOverride::default()
+        },
     );
     let forged = send_message(&c.node, &c.did, &conv, "claims to be from A").await;
     assert!(
@@ -270,8 +289,11 @@ async fn a_guest_calling_conversation_on_another_service_is_denied_by_the_proxy(
 }
 
 /// The same-service exemption lets a guest reach its *own* `conversation`
-/// `deliver` arm, which must still refuse it: a service cannot deliver a
-/// message to itself. The refusal comes from the arm, not the proxy gate.
+/// `deliver` arm. This proves the proxy gate lets the call through and the
+/// arm itself refuses an envelope it cannot open. The narrower rule, that a
+/// service cannot deliver a message to itself, needs a session that opens,
+/// which no guest can build; the unit test
+/// `self_injection_via_same_service_is_refused` covers that guard.
 #[tokio::test]
 async fn a_guest_reaching_its_own_deliver_arm_is_still_refused_by_the_arm() {
     let _serial_guard = common::serial_guard().await;
@@ -334,7 +356,11 @@ async fn prekey_requests_past_the_hourly_limit_are_refused_and_do_not_starve_an_
         assert!(bundle.is_ok(), "request {n} is inside the limit: {bundle:?}");
     }
     let third = stranger.request("conversation", "prekey-bundle", json!({})).await;
-    assert!(third.is_err(), "the third request in an hour is refused: {third:?}");
+    let refusal = format!("{third:?}");
+    assert!(
+        refusal.to_lowercase().contains("permission denied"),
+        "the third request in an hour is refused by the limit, not by a dropped link: {refusal}"
+    );
     stranger.shutdown().await.ok();
 
     let conv = open_conversation(&a.node, &a.did, &b.did).await;

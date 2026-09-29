@@ -255,9 +255,15 @@ impl ConversationService {
         body: &[u8],
         system: bool,
     ) -> Result<String, ConversationError> {
-        let conv_id = derive_conversation_id(service_id, peer_address);
         let now = store::now_ms();
-        store.get_or_create_direct(peer_address, &conv_id, now).map_err(internal)?;
+        let honest_conv_id = derive_conversation_id(service_id, peer_address);
+        let (author, sender_ts, conv_id) =
+            claimed_send_fields(service_id, now, honest_conv_id.clone());
+        #[cfg(feature = "test-support")]
+        if conv_id != honest_conv_id {
+            ensure_forged_conversation(store, &conv_id, now)?;
+        }
+        store.get_or_create_direct(peer_address, &honest_conv_id, now).map_err(internal)?;
         if system {
             let conn = store.conn().lock().expect("store lock poisoned");
             let _ = conn.execute(
@@ -267,7 +273,6 @@ impl ConversationService {
             );
         }
 
-        let (author, sender_ts) = claimed_author_and_timestamp(service_id, now);
         let mut nonce = [0u8; 16];
         rand::rng().fill_bytes(&mut nonce);
         let message_id =
@@ -314,17 +319,45 @@ impl ConversationService {
     }
 }
 
-/// The author and sender timestamp a new message claims: the sending
-/// service and `now`, always, except for one test's one-shot override.
+/// The author, sender timestamp and conversation id a new message claims:
+/// the sending service, `now` and the honest id, always, except for one
+/// test's one-shot override.
 #[cfg(feature = "test-support")]
-fn claimed_author_and_timestamp(service_id: &str, now: i64) -> (String, i64) {
+fn claimed_send_fields(service_id: &str, now: i64, conv_id: String) -> (String, i64, String) {
     let o = test_support::take_send_override(service_id).unwrap_or_default();
-    (o.author.unwrap_or_else(|| service_id.to_string()), o.sender_timestamp_ms.unwrap_or(now))
+    (
+        o.author.unwrap_or_else(|| service_id.to_string()),
+        o.sender_timestamp_ms.unwrap_or(now),
+        o.conversation_id.unwrap_or(conv_id),
+    )
+}
+
+/// A message row must reference an existing conversation. A forged
+/// conversation id names none, so a peerless stub stands in for it; the
+/// honest direct conversation with the peer is untouched.
+#[cfg(feature = "test-support")]
+fn ensure_forged_conversation(
+    store: &ConversationStore,
+    conv_id: &str,
+    now: i64,
+) -> Result<(), ConversationError> {
+    let conn = store
+        .conn()
+        .lock()
+        .map_err(|_| ConversationError::Internal("store lock poisoned".to_string()))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO conversations (id, kind, peer_address, owner_address, \
+         current_epoch, system, created_at, last_activity) VALUES (?1, 'direct', NULL, NULL, 0, \
+         0, ?2, ?2)",
+        rusqlite::params![conv_id, now],
+    )
+    .map(|_| ())
+    .map_err(internal)
 }
 
 #[cfg(not(feature = "test-support"))]
-fn claimed_author_and_timestamp(service_id: &str, now: i64) -> (String, i64) {
-    (service_id.to_string(), now)
+fn claimed_send_fields(service_id: &str, now: i64, conv_id: String) -> (String, i64, String) {
+    (service_id.to_string(), now, conv_id)
 }
 
 /// An always-empty `Weak<dyn ServiceProxy>` -- mirrors
@@ -499,7 +532,7 @@ impl ConversationHost for ConversationService {
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
         let now = store::now_ms();
-        store.set_state(message, ConversationDeliveryState::Pending, None).map_err(internal)?;
+        store.restart_pending(message, now).map_err(internal)?;
 
         if conv.kind == ConversationKind::Group {
             let failed_members = {

@@ -83,6 +83,16 @@ pub struct Session {
     pending_first_plaintext: Option<Vec<u8>>,
 }
 
+impl Session {
+    /// Whether the peer has ever answered on this session. Until it has,
+    /// every message sent is a pre-key message that names one of the peer's
+    /// prekeys, so a peer that refuses it may never accept this session.
+    #[must_use]
+    pub fn peer_has_replied(&self) -> bool {
+        self.inner.has_received_message()
+    }
+}
+
 // Deliberately does not derive `Debug` on `inner`: a ratchet's live chain
 // keys have no business in a log line.
 impl fmt::Debug for Session {

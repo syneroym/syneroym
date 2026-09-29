@@ -42,6 +42,14 @@ impl ConversationStore {
         Self::upsert_session_conn(&conn, row, now_ms)
     }
 
+    /// Forgets the session with `peer_address`, so the next delivery builds a
+    /// new one from a fresh prekey bundle.
+    pub fn delete_session(&self, peer_address: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute("DELETE FROM sessions WHERE peer_address = ?1", params![peer_address])?;
+        Ok(())
+    }
+
     pub fn upsert_session_in(
         &self,
         tx: &Transaction<'_>,

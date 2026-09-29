@@ -171,9 +171,30 @@ impl ConversationService {
         let env_json = serde_json::to_value(&env)
             .map_err(|_| Disposition::Terminal("could not serialize envelope".to_string()))?;
 
-        let ack_json = self
+        // Persist the session before the call, not after the ack. The peer
+        // may store the message and its answer be lost; the retry must then
+        // continue this same session. A session the sender only builds
+        // after the ack would leave the peer on a session the sender never
+        // held, and the peer's replies on it would be refused. A receiver
+        // accepts a ratchet that is ahead of what it has seen, so a call
+        // that never arrived costs nothing.
+        self.crypto.commit(&store, &session).await.map_err(|_| Disposition::Retry)?;
+
+        let call = self
             .call_peer(svc, peer_address, "deliver", env_json, Some(msg.id.clone()), None)
-            .await?;
+            .await;
+        let ack_json = match call {
+            Ok(json) => json,
+            Err(Disposition::Terminal(reason)) if !session.peer_has_replied() => {
+                // A refusal of a session the peer never confirmed: the peer
+                // may have dropped the prekey it names, and every retry on
+                // this session would name it again. Start over from a fresh
+                // bundle next time.
+                let _ = store.delete_session(peer_address);
+                return Err(Disposition::Terminal(reason));
+            }
+            Err(other) => return Err(other),
+        };
         // What a lost ack looks like to the sender: the peer stored the
         // message, and the answer never arrived (a timeout, not a refusal).
         #[cfg(feature = "test-support")]
@@ -183,11 +204,6 @@ impl ConversationService {
         let _ack: DeliveryAck = serde_json::from_value(ack_json).map_err(|_| {
             Disposition::Terminal("peer returned an undecodable delivery ack".to_string())
         })?;
-
-        // Ratchet-commit ordering: only after a real `Ok` from the peer,
-        // so a failed call leaves the sender able to retry under the same
-        // key rather than a step ahead of a receiver that never saw it.
-        self.crypto.commit(&store, &session).await.map_err(|_| Disposition::Retry)?;
         Ok(())
     }
 
