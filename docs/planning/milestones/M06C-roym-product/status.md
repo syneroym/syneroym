@@ -2068,6 +2068,10 @@ branch, with new coverage:
   196).
 - `directory.standing`, wire-open to anonymous callers, accepted any
   string as `member_did`; now requires a did:key (parity scenario 197).
+- A stored decision/credential/revocation row's `issued_at_secs` came
+  from a separate `clock::now_secs()` read rather than the signed
+  envelope itself; both are now derived from the same parsed envelope
+  (`sign_as_synorg`).
 - Three existing parity tests were weaker than their names claimed: the
   "unknown member" step of scenario 175 queried a member `ensure_synorg`
   already grants a credential; scenario 188's export/import round trip
@@ -2076,7 +2080,9 @@ branch, with new coverage:
   vacuous) — it now imports into a second, empty installation and
   suspends the listing's own owner; scenario 191 checked reply size
   against the outbox's queued-payload limit instead of the actual proxy
-  frame limit, and used one credential per hit rather than a cap's worth.
+  frame limit, used one credential per hit rather than a cap's worth,
+  and asserted only the (far too loose) frame limit rather than a budget
+  close to what a full page actually needs.
 
 Not fixed, left for WO6–WO8 or the backlog (see `deferred-backlog.md`):
 the issuer pin's trust-on-first-use has no cryptographic binding to the
@@ -2084,31 +2090,65 @@ directory serving it; the Hub's WO8 gap (no credential-issue/revoke
 screens) means a Hub-only user cannot publish once the credential gate
 is live; two directories rebuilding one member's standing at once is an
 unguarded read-then-write; a search reply repeats one issuer's evidence
-once per hit rather than once per issuer.
+once per hit rather than once per issuer; more than `MAX_EVIDENCE_DECISIONS`
+*concurrently active, distinct-listing* suspensions on one member cannot
+all ride in the evidence cap (the oldest are dropped, same shape as the
+bug this slice fixes, just at a far higher and less likely count).
 
-**Pushback on one review finding.** The review also asked for a stored
-credential/decision/revocation row's `issued_at_secs` to come from the
-parsed signed envelope rather than a separate `clock::now_secs()` read,
-matching plan §5.3's original wording. Tried and reverted: the envelope's
-own `issued_at_secs` is the *host's signing clock*, which the wasm and
-native stacks pin independently for certificate-freshness testing and do
-not guarantee to agree with each other -- using it for the row broke
-`scenario_117`'s byte-for-byte wasm/native export parity (confirmed by
-bisection: passes on `clock::now_secs()`, fails on the envelope's own
-timestamp, deterministically, every run). `clock::now_secs()` is the one
-clock both stacks read from the same real wall clock, so it is the
-correct choice for anything a parity assertion later compares, and the
-row keeps using it.
+**A second review round found the first fix for the lead finding was
+incomplete, and that a pushback in the first round was wrong.** Both are
+corrected here.
 
-**Verification note.** These fixes surfaced a second, unrelated trap:
-`crates/roym_web/tests/dual_build_parity` loads pre-built `wasm32-wasip2`
-component artifacts for the wasm half of each scenario, so a source
-change to `roym_directory`/`roym_core` silently runs stale wasm-side
-code until `mise run build:roym` rebuilds them -- two of the new
-scenarios above (195, 196) initially "failed" with wasm accepting what
-native correctly refused, purely from this. Re-run after a rebuild:
+- The `select_evidence_decisions` fix above (194) only changed which
+  decisions get *written* into a member's standing row -- it did not
+  change `membership::suspend_decisions`, the *reader* both `evaluate`
+  and `listed_window` use, which still takes only the first
+  `MAX_EVIDENCE_DECISIONS` entries off the array before checking which
+  are active. Once a member could have *more than* `MAX_EVIDENCE_DECISIONS`
+  active suspensions at once (which the write-side fix now allows,
+  unbounded), the reader silently dropped the oldest of them again, at
+  read time instead of write time -- the same bug, one layer over. Fixed
+  by making the writer choose, not just include: an active
+  *membership*-scope suspension is kept alone, since it already covers
+  every listing and makes every other suspension redundant; only when
+  none exists does the writer fall back to including as many active
+  *listing*-scope suspensions as the cap allows. The writer now never
+  produces more than `MAX_EVIDENCE_DECISIONS` decisions, so the reader's
+  existing cap (kept, as the defensive bound it is for a *hostile*
+  source's oversized reply) can no longer disagree with it. New parity
+  scenario 198 drives a membership-wide suspension alongside
+  `MAX_EVIDENCE_DECISIONS` separate, never-lifted, listing-scope ones --
+  one more active decision than the old fix could represent.
+- The first round's reasoning for reverting the `issued_at_secs` fix
+  ("the wasm and native stacks pin the signing clock independently") was
+  wrong -- the harness pins one shared value for both
+  (`RecordClock::Fixed(wall_now + 240)`), and scenario 173 already
+  compares signed envelopes byte-for-byte across builds successfully.
+  The real cause of that round's `scenario_117` failure was the same
+  stale-wasm-artifact trap this round's own scenarios 195/196 hit (see
+  below): the fix was re-applied and, on a freshly built wasm component,
+  passes cleanly on the full 189-scenario suite. It stays in.
+- `standing::rebuild_for`'s revocations could exceed `MAX_EVIDENCE_CREDENTIALS`
+  if two `revocation.issue` calls for the same credential ever raced past
+  its idempotency check (a read then a write, same shape as the
+  concurrent-rebuild gap above) and each stored its own row -- the
+  now-duplicated array could then push the credential that actually
+  matters past `evaluate`'s revocation cap. `rebuild_for` now keeps at
+  most one revocation per credential (the newest, if it ever finds more
+  than one), so the array can never exceed the number of credentials it
+  was built from.
+
+**Verification note.** These fixes surfaced a trap worth calling out on
+its own: `crates/roym_web/tests/dual_build_parity` loads pre-built
+`wasm32-wasip2` component artifacts for the wasm half of each scenario,
+so a source change to `roym_directory`/`roym_core` silently runs stale
+wasm-side code until `mise run build:roym` rebuilds them. Both review
+rounds hit this the same way -- a genuine fix "failing" only on the wasm
+side because the wasm binary predates the fix -- and both times the
+wrong diagnosis (clock drift, a real regression) was tried first before
+the stale artifact was found. Re-run after a rebuild:
 `cargo nextest run -p syneroym-roym-web --test dual_build_parity` --
-**188/188 passed**, both builds byte-identical.
+**189/189 passed**, both builds byte-identical.
 
 ### Not built (WO6, WO7, WO8) — the actual gap to R3
 

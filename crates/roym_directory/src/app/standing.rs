@@ -20,6 +20,12 @@ pub(in crate::app) struct IssuedRecordRow {
     /// for every other record type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::app) until_secs: Option<u64>,
+    /// A suspend decision whose scope is `Membership`, not one `Listing`.
+    /// False for every other record type. `applies(Membership, _)` is
+    /// always true, so an active one of these makes every other
+    /// suspension -- active or not -- redundant to `evaluate`.
+    #[serde(default)]
+    pub(in crate::app) is_membership_scope: bool,
     pub(in crate::app) envelope: String,
 }
 
@@ -34,15 +40,13 @@ pub(in crate::app) fn issued_record_indexes() -> [IndexDefinition; 2] {
     [idx("member_did", IndexType::String), idx("issued_at_secs", IndexType::Numeric)]
 }
 
-/// Picks which decisions ride in a member's standing bytes, bounded by
-/// `MAX_EVIDENCE_DECISIONS`. Every unlifted suspension that is still
-/// active (no `until_secs`, or `until_secs` still ahead of `now`) is
-/// always kept, however old -- age-based truncation alone could drop it
-/// from the cap while it still governs the member, so a withdrawn member
-/// would look valid again with nobody having signed a lift. The
-/// remaining slots go to the newest history; a suspend and its lift are
-/// always kept or dropped together, so a lift never rides without the
-/// decision it lifts.
+/// Picks which decisions ride in a member's standing bytes, always at
+/// most `MAX_EVIDENCE_DECISIONS` -- the reader (`membership::
+/// suspend_decisions`) takes only that many off the front of the array,
+/// so the selection here must never exceed it, or an entry past the cap
+/// is silently invisible to `evaluate`/`listed_window` regardless of how
+/// it got there. A suspend and its lift are always kept or dropped
+/// together, so a lift never rides without the decision it lifts.
 fn select_evidence_decisions(all: &[IssuedRecordRow], now: u64) -> Vec<IssuedRecordRow> {
     let lifts_by_target: std::collections::BTreeMap<&str, &IssuedRecordRow> =
         all.iter().filter(|d| !d.about.is_empty()).map(|d| (d.about.as_str(), d)).collect();
@@ -68,11 +72,26 @@ fn select_evidence_decisions(all: &[IssuedRecordRow], now: u64) -> Vec<IssuedRec
     });
 
     let mut selected: Vec<IssuedRecordRow> = Vec::new();
-    for g in groups.iter().filter(|g| g.active) {
+    // An active membership-scope suspension makes every listing-scope
+    // suspension redundant -- `applies(Membership, _)` is always true, so
+    // no per-listing decision can change what `evaluate` sees while it
+    // holds. Keeping just this one guarantees it a slot no matter how
+    // many listing-scope suspensions also exist (the exact way a bare
+    // age-based cap used to lose it).
+    if let Some(g) = groups.iter().find(|g| g.active && g.suspend.is_membership_scope) {
         selected.push(g.suspend.clone());
+    } else {
+        for g in groups.iter().filter(|g| g.active) {
+            if selected.len() >= membership::MAX_EVIDENCE_DECISIONS {
+                break;
+            }
+            selected.push(g.suspend.clone());
+        }
     }
+    let already: std::collections::BTreeSet<String> =
+        selected.iter().map(|r| r.record_id.clone()).collect();
     let mut remaining = membership::MAX_EVIDENCE_DECISIONS.saturating_sub(selected.len());
-    for g in groups.iter().filter(|g| !g.active) {
+    for g in groups.iter().filter(|g| !already.contains(g.suspend.record_id.as_str())) {
         if remaining == 0 {
             break;
         }
@@ -119,13 +138,30 @@ pub(in crate::app) async fn rebuild_for<H: AppHost>(
     let cred_ids: std::collections::BTreeSet<String> =
         creds.iter().map(|c| c.record_id.clone()).collect();
 
-    let revs: Vec<IssuedRecordRow> =
-        collect_raw_where(host, REVOCATIONS, &json!({ "member_did": member_did }))
-            .await?
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_value(v).ok())
-            .filter(|r: &IssuedRecordRow| cred_ids.contains(&r.about))
-            .collect();
+    // At most one revocation per credential: two `revocation.issue` calls
+    // racing on the same credential (a read-then-write, like the
+    // `standing` rebuild itself) can each pass the "already revoked?"
+    // check and store a separate row. Keeping every row here would let
+    // the surviving credentials' true revocations be outnumbered and
+    // pushed past `evaluate`'s own per-reply cap by such a duplicate.
+    let mut revs_by_credential: std::collections::BTreeMap<String, IssuedRecordRow> =
+        std::collections::BTreeMap::new();
+    for (_, v) in collect_raw_where(host, REVOCATIONS, &json!({ "member_did": member_did })).await?
+    {
+        let Some(r) = serde_json::from_value::<IssuedRecordRow>(v).ok() else { continue };
+        if !cred_ids.contains(&r.about) {
+            continue;
+        }
+        revs_by_credential
+            .entry(r.about.clone())
+            .and_modify(|existing| {
+                if r.issued_at_secs > existing.issued_at_secs {
+                    *existing = r.clone();
+                }
+            })
+            .or_insert(r);
+    }
+    let revs: Vec<IssuedRecordRow> = revs_by_credential.into_values().collect();
 
     let all_decs: Vec<IssuedRecordRow> =
         collect_raw_where(host, DECISIONS, &json!({ "member_did": member_did }))

@@ -6,13 +6,10 @@ use super::*;
 use crate::app::standing::IssuedRecordRow;
 
 /// Signs `payload` as this SynOrg (the installation's owner).
-/// Returns the envelope JSON and its derived record id. The envelope's
-/// own `issued_at_secs` is the host's signing clock, not `clock::
-/// now_secs()` -- the wasm and native stacks pin that signing clock
-/// independently, so it is not safe to reuse for a stored row a
-/// byte-for-byte parity assertion later compares; callers stamp the row
-/// with `clock::now_secs()` instead, which both stacks read from the
-/// same real wall clock.
+/// Returns the envelope JSON, its derived record id, and the
+/// `issued_at_secs` the envelope itself carries -- a stored row uses
+/// this, never a separate `clock::now_secs()` call, so the row and the
+/// signed bytes can never disagree.
 pub(in crate::app) async fn sign_as_synorg<H: AppHost>(
     host: &H,
     record_type: &str,
@@ -21,7 +18,7 @@ pub(in crate::app) async fn sign_as_synorg<H: AppHost>(
     payload: &impl Serialize,
     expires_at_secs: Option<u64>,
     supersedes: Option<String>,
-) -> Result<(String, String), Response> {
+) -> Result<(String, String, u64), Response> {
     let now = clock::now_secs();
     let (principal, _owner) = match signing::person_principal(host, now).await {
         Ok(v) => v,
@@ -46,11 +43,15 @@ pub(in crate::app) async fn sign_as_synorg<H: AppHost>(
         Ok(e) => e,
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
-    let record_id = match Envelope::from_json(&envelope).and_then(|e| e.record_id()) {
+    let parsed = match Envelope::from_json(&envelope) {
+        Ok(e) => e,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    let record_id = match parsed.record_id() {
         Ok(id) => id,
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
-    Ok((envelope, record_id))
+    Ok((envelope, record_id, parsed.issued_at_secs))
 }
 
 fn validate_categories_within_synorg(
@@ -165,7 +166,7 @@ pub(in crate::app) async fn issue<H: AppHost>(host: &H, req: &Request) -> Respon
         Ok(id) => id,
         Err(e) => return Response::internal_error(e),
     };
-    let (envelope, record_id) = match sign_as_synorg(
+    let (envelope, record_id, issued_at_secs) = match sign_as_synorg(
         host,
         record::RECORD_MEMBERSHIP_CREDENTIAL,
         membership::MEMBERSHIP_CREDENTIAL_VERSION,
@@ -184,8 +185,9 @@ pub(in crate::app) async fn issue<H: AppHost>(host: &H, req: &Request) -> Respon
         record_id: record_id.clone(),
         member_did: member_did.clone(),
         about: String::new(),
-        issued_at_secs: now,
+        issued_at_secs,
         until_secs: None,
+        is_membership_scope: false,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, CREDENTIALS, &record_id, &row).await {
@@ -292,7 +294,7 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
     if let Err(e) = payload.validate() {
         return Response::invalid_params(e.to_string());
     }
-    let (envelope, record_id) = match sign_as_synorg(
+    let (envelope, record_id, issued_at_secs) = match sign_as_synorg(
         host,
         record::RECORD_REVOCATION,
         membership::REVOCATION_VERSION,
@@ -306,13 +308,13 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let now = clock::now_secs();
     let out_row = IssuedRecordRow {
         record_id: record_id.clone(),
         member_did: row.member_did.clone(),
         about: credential_record_id,
-        issued_at_secs: now,
+        issued_at_secs,
         until_secs: None,
+        is_membership_scope: false,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, REVOCATIONS, &record_id, &out_row).await {

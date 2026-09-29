@@ -45,6 +45,7 @@ pub(in crate::app) async fn suspend<H: AppHost>(host: &H, req: &Request) -> Resp
         return Response::invalid_params("not a member of this SynOrg");
     }
 
+    let is_membership_scope = matches!(scope, membership::ModerationScope::Membership);
     let now = clock::now_secs();
     let payload = membership::ModerationDecisionPayload {
         action: membership::ModerationAction::Suspend,
@@ -63,7 +64,7 @@ pub(in crate::app) async fn suspend<H: AppHost>(host: &H, req: &Request) -> Resp
             return Response::internal_error(e);
         }
     }
-    let (envelope, record_id) = match sign_as_synorg(
+    let (envelope, record_id, issued_at_secs) = match sign_as_synorg(
         host,
         record::RECORD_MODERATION_DECISION,
         membership::MODERATION_DECISION_VERSION,
@@ -81,8 +82,9 @@ pub(in crate::app) async fn suspend<H: AppHost>(host: &H, req: &Request) -> Resp
         record_id: record_id.clone(),
         member_did: member_did.clone(),
         about: String::new(),
-        issued_at_secs: now,
+        issued_at_secs,
         until_secs,
+        is_membership_scope,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, DECISIONS, &record_id, &row).await {
@@ -160,7 +162,7 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
         reason,
         until_secs: None,
     };
-    let (envelope, record_id) = match sign_as_synorg(
+    let (envelope, record_id, issued_at_secs) = match sign_as_synorg(
         host,
         record::RECORD_MODERATION_DECISION,
         membership::MODERATION_DECISION_VERSION,
@@ -178,8 +180,9 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
         record_id: record_id.clone(),
         member_did: row.member_did.clone(),
         about: decision_record_id,
-        issued_at_secs: now,
+        issued_at_secs,
         until_secs: None,
+        is_membership_scope: false,
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, DECISIONS, &record_id, &out_row).await {
