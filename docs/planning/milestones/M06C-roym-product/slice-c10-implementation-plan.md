@@ -3,8 +3,8 @@
 **Milestone:** [task.md](task.md) (row C10, `D-06C-5`, `D-06C-8`, the "Carried forward from M06B" table)
 **Spec:** [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md) — R4 (all five rows), D5, D10, "What is encrypted, and who can see what", Messaging, O1.
 **ADR:** [ADR-0013](../../../decisions/0013-p2p-messaging-architecture.md) §5 (ordering) and Amendment 1 (owner-distributed key).
-**Status:** Plan only. Written 2026-09-29 against `feat/m06c-slice-c9-trust` at `adecc34f`.
-**Depends on:** C5 (complete). C9 (**partial** — see Q9).
+**Status:** Plan only. Written 2026-09-29 against `feat/m06c-slice-c9-trust` at `adecc34f`; re-checked against `7fa7efee` after C9 finished (WO5–WO8), and anchors updated.
+**Depends on:** C5 (complete). C9 (complete; R3 passed 2026-09-29).
 
 This plan is written so that a different session can execute it without this
 session's reasoning. Every file path is repo-relative. Line numbers are from
@@ -25,9 +25,9 @@ choose differently, the section in the right column changes.
 | Q4 | The host joins you to a group as soon as its owner sends you a key. **Anybody who can reach your address can add you to a group.** Nothing asks you. | **Treat being added as a first contact from the owner.** The first time Roym sees a group, it calls `contacts.admit-first-contact` for the owner (same rule and same budget as 1:1). A refused group is stored as `refused` and not shown. Add `group.hide` / `group.unhide` so a person can hide a group they do not want. You stay a member underneath until the owner removes you; the UI says so. | §2 D-C10-6, §7.3, §7.5 |
 | Q5 | Membership changes must be visible (R4 row 4), and the transcript must be identical everywhere (row 2). The host never sends membership changes to `on-message`. | **Copy every membership event into Roym's own message store as a row** of a reserved content type (`application/vnd.roym.membership-event+json`), with the entry id as row id and the owner as author. Then history, export, import, and the one sort rule all work with no second list. | §2 D-C10-5, §7.2 |
 | Q6 | The host reports **one** delivery state for a group message: `pending` until every recipient settles, `failed` if any recipient failed. A member who was offline longer than `max_pending_age_secs` (30 days) makes the message `failed`, **even though that member may have received it from another member by sync**. | **Do not add a per-recipient host verb in C10.** Use honest group words: *"Not yet delivered to every member"*, *"Delivered to every member"*, *"Not delivered to every member"*, plus one notice that members also pass messages to each other. Backlog row for a per-recipient view. | §2 D-C10-8, §12 |
-| Q7 | R4 row 2 needs posts from **deliberately skewed clocks**. All test nodes run in one process with one system clock. | **A `test-support` cargo feature on `syneroym-conversation`** with one hook: a per-service clock offset used only where the sender signs a group entry. Same feature and same guard as C9's planned WO7 hooks (C9 plan §9.3, `D-C9-10`). If C9 WO7 has not landed, C10 creates the feature with only this hook. | §5 |
+| Q7 | R4 row 2 needs posts from **deliberately skewed clocks**. All test nodes run in one process with one system clock. | **Add one hook to the existing `test-support` feature on `syneroym-conversation`** (C9 created it, with `drop_next_ack` and `override_next_send`): a per-service clock offset used only where the sender signs a group entry. | §5 |
 | Q8 | Transaction cards are 1:1 by design. What happens to a card in a group? | **`conversation.send` refuses a card into a group. `transaction.sync` refuses a group conversation.** An incoming card in a group is stored as a message and the Hub shows a neutral block ("cards are not used in groups"). | §7.6, §9 |
-| Q9 | The spec says *"Each release must pass its acceptance tests before the next begins."* R3 is **not** passed: C9 is partial (WO6–WO8 not built). | **Start C10's code now, but do not mark R4 passed before R3 is passed.** C10 needs C9's merged code only, not C9's e2e or Hub. The C10 `status.md` section and the spec's R4 row must say this. | §13 |
+| Q9 | The spec says *"Each release must pass its acceptance tests before the next begins."* | **Resolved.** R3 was marked passed on 2026-09-29, after C9's WO5–WO8 landed. Nothing gates C10 now. | — |
 | Q10 | How does a person (or a test) check "every member has the same transcript"? | **Add `conversation.transcript-digest`**: a hash over the ordered list of `(id, author, sender_timestamp_ms, content_type)` of the rows this installation holds. The Hub shows it in the group's info panel as a short "transcript check" code. Members compare it by eye. It is also exactly what the acceptance test compares. | §2 D-C10-9, §6.2 |
 | Q11 | `add-member` always fetches the new member's prekey bundle over the network (`crates/conversation/src/group.rs:207`), so **the owner can add only a person who is online at that moment**. | **When this node already holds a 1:1 session with the new member, use the key pinned in that session and skip the fetch.** Small host change with a host unit test. A person you have never talked to must still be online when you add them; the UI says so. | §4.3 |
 | Q12 | **A removed member can miss its own removal forever.** The owner pushes the removal entry to the removed member once and ignores the result (`crates/conversation/src/outbox.rs:99-123`). `group-sync` refuses a removed member, because `member_sig_key` reads only rows with `removed_epoch IS NULL` (`crates/conversation/src/store/dag_store.rs:32-45`, then `PermissionDenied` at `transport/group_sync.rs:363`). A member offline at removal time keeps `is_member = true` and a working-looking composer. | **Small host change: `group-sync` answers a removed member with the membership entries up to and including its removal, and the message entries that were both sealed under an earlier epoch *and* signed no later than the removal entry's own timestamp.** So a member that was offline before its removal can still fill in the messages it was entitled to read. The timestamp condition matters: a member that has not applied the removal yet still seals new messages under the old epoch, and without it every member would serve those post-removal messages to the removed member on every sync. | §4.4 |
@@ -91,11 +91,12 @@ Keep it that way; a reviewer should reject any change that reads
 | D-C10-9 | **Transcript check** (Q10): `transcript_digest(rows)` = `content_digest("roym-transcript:", [ {id, author, sender_timestamp_ms, content_type} ... ])` over the rows sorted by `sort_key`. Bodies are left out: a group row id is the DAG entry id, which is already a hash over the ciphertext, and leaving the body out means a local delete does not change the check. Rows refused locally (a blocked author) are not in the list, so the check differs for a member who blocked someone; the UI says so. | One number both a person and a test can compare. Reuses `syneroym_signed_record::content_digest`, already a `roym_core` dependency. |
 | D-C10-10 | **Member signing keys are trust-on-first-use, and the UI says so in different words than a signed record.** Group messages are shown with no "verified" word. The info panel carries `GROUP_KEY_TRUST_NOTICE`. | Carried-forward limit 3 in `task.md`: two strengths, two words. |
 | D-C10-11 | **Cards are 1:1 only** (Q8). `conversation.send` refuses `application/vnd.roym.card+json`, the group-profile type, and the membership-event type when the target is a group, and refuses the membership-event type everywhere. `transaction.sync` refuses a group conversation. | The transaction single-writer model is between two parties. Refusing at the one send choke point covers every producer. |
-| D-C10-12 | **A restored group is history only.** After an import onto a clean node, the host does not know the group. `group.info` then returns `restored_only: true` and the Hub shows `GROUP_RESTORED_NOTICE`. | Group keys and the DAG live in the host store, which no backup carries (backlog §5, "Conversations cannot continue after a substrate moves to a new machine"). |
+| D-C10-12 | **A restored group is history only.** After an import onto a clean node, the host does not know the group. `group.info` then returns `restored_only: true` and the Hub shows `GROUP_RESTORED_NOTICE`. | Group keys and the DAG live in the host store, which no backup carries (backlog §5, "Conversations cannot continue after a substrate moves to a new machine"). A **full-state move** of a running node (developer guide, "Moving a Substrate to a New Machine") copies `conversation.db` with everything else, so groups keep working there and `restored_only` stays false. Only a `roymctl roym backup` restore gives history only. |
 | D-C10-13 | **The Hub gets a separate Groups tab** (`crates/roym_web/ui/src/screens/groups.ts`). The Messages tab lists and searches only direct conversations. The Groups tab has no search box (R4 excludes message search). | `messages.ts` is already 842 lines. A group thread also needs a roster panel the 1:1 thread does not. |
 | D-C10-14 | **(Q1) Gap 10 fix, only if the spike keeps it inside `crates/core` / `crates/router` and passes the regression gate in §3.2.** Otherwise the acceptance row and every other "no coordinator" claim are narrowed by a spec edit (§3.3). | See §3. |
 | D-C10-15 | **Roym checks membership before it sends into a group.** `conversation.send` and the deletion request in `delete-message` call `group_info` first. When `is_member` is false, they refuse with `GROUP_REMOVED_NOTICE` and send nothing. | The host does not return `PermissionDenied` for a removed member. It returns `Internal("no key for the current epoch")` (`group.rs:347-356`), which says nothing a person can use (review finding 1). |
 | D-C10-16 | **A repeated group name is shown once.** The rows stay (the transcript must stay identical), but the Hub renders a profile row only when its name differs from the name before it in the thread. | The owner re-sends the name after each add (Q3), so without this every join adds a "named the group" line with no change (review finding 14). |
+| D-C10-17 | **Group chat across installations is proven on the WASM build; both builds are proven by the parity suite.** Same rule and same reason as `D-C9-13`. A natively linked Roym service still has no instance certificate (backlog §3, "The natively linked Roym services carry no instance certificate…"), and the conversation delivery worker refuses to send without one (`check_outbound_identity`, `crates/conversation/src/transport.rs`). So a native `conversation` cannot push or sync a group entry to another installation. `status.md` and the R4 "Passed" note must both say "WASM build across installations; both builds in parity". | Exit criterion 1 asks for both builds. Saying it out loud stops that criterion being read as met across installations for native. Fixing it is substrate work outside R4. |
 
 ---
 
@@ -120,7 +121,7 @@ Keep it that way; a reviewer should reject any change that reads
   `crates/router/src/connection_router.rs:91`), but every call opens a new
   connection (`crates/router/src/proxy/hop.rs:70-88`).
 - `classify` maps `ServiceNotFound` to `Disposition::Unreachable`
-  (`crates/conversation/src/transport.rs:480-493`), so pushes back off and
+  (`crates/conversation/src/transport.rs:521-543`), so pushes back off and
   retry forever; nothing is lost, but nothing moves either.
 
 So with the registry and relay down, group push and group sync both fail at
@@ -167,9 +168,10 @@ lookup. R4 row 1, read literally, fails.
    `cargo nextest run -p syneroym-substrate --test roym_app_e2e`
    (it holds `an_unaffiliated_caller_resolves_directorys_public_record_but_not_profiles`),
    `--test roym_directory_e2e`, `--test conversation_e2e`,
-   `--test group_conversation_e2e`, `--test proxy_outbox_e2e`. C9's
-   `roym_trust_e2e.rs` does not exist yet; if it lands before WO0 ends, add
-   it to this list.
+   `--test group_conversation_e2e`, `--test proxy_outbox_e2e`,
+   `--test roym_trust_e2e` (C9's three-installation test, which resolves
+   the directory, the provider, and the consumer through the registry), and
+   `--test conversation_cross_node_e2e`.
 6. **Stop gate.** If A1 + A2 pass step 2 and step 5 within the time box and
    touch only `crates/core/src/dht_registry/client.rs`,
    `crates/router/src/net_iroh.rs`, and `crates/router/src/proxy/*`, keep
@@ -288,7 +290,7 @@ message read back on both builds.
 | File | Change |
 |---|---|
 | `crates/rpc/src/conversation.rs` | New `pub struct ConversationGroupInfo { pub owner: String, pub is_owner: bool, pub is_member: bool, pub members: Vec<String>, pub epoch: u64, pub key_epoch: u64, pub key_stored_at: i64 }` (derive `Debug, Clone, PartialEq, Eq`). New trait method on `ConversationHost` after `sync_now` (`:167`): `async fn group_info(&self, service_id: &str, conversation: &str) -> Result<ConversationGroupInfo, ConversationError>;`. Re-export from `crates/rpc/src/lib.rs` beside the other `Conversation*` types. |
-| `crates/conversation/src/lib.rs` | `impl ConversationHost for ConversationService` (`:360`): `async fn group_info(..) { self.group_info_impl(service_id, conversation).await }`. |
+| `crates/conversation/src/lib.rs` | `impl ConversationHost for ConversationService` (`:409`): `async fn group_info(..) { self.group_info_impl(service_id, conversation).await }`. |
 | `crates/conversation/src/group.rs` | New `pub(crate) async fn group_info_impl` (pseudo-code below). |
 | `crates/control_plane/src/synsvc_native/conversation.rs` | `NeverConstructed` (`:19`): add `group_info` → `unreachable!(..)` like its siblings. |
 | `crates/sandbox_wasm/src/host_capabilities.rs` | `NeverConstructedConversationHost` (`:124`): same. |
@@ -362,7 +364,7 @@ let sig_key = match store.session(member_address).map_err(internal)? {
 
 Check first that `store.session(addr)` returns the same key the bundle would
 (`apply_incoming_group_key` already trusts `session.peer_sig_key` for the
-owner, `transport.rs:305`). If the field names differ, use the session's
+owner, `transport.rs:359`). If the field names differ, use the session's
 pinned peer signing key. Host unit test:
 `add_member_uses_the_pinned_session_key_when_one_exists` (seed a session,
 give the service a proxy that fails every call, assert `add-member`
@@ -523,58 +525,69 @@ removes B then adds C; B's sync answer stops at B's removal);
 
 ## §5 Host: the clock-offset test hook (WO1, Q7)
 
-`crates/conversation/Cargo.toml`:
+C9 already built the feature and the file. Nothing changes in either
+`Cargo.toml`:
 
-```toml
-[features]
-test-support = []
-```
+- `crates/conversation/Cargo.toml` has `[features] test-support = []`.
+- `crates/substrate/Cargo.toml` `[dev-dependencies]` already enables it.
+- `crates/conversation/src/test_support.rs` exists, is declared in `lib.rs`
+  (`#[cfg(feature = "test-support")] pub mod test_support;`), keys every
+  hook by the *sending* service id, and has a poison-tolerant `locked()`
+  helper. Its hooks today are `drop_next_ack` and `override_next_send`.
 
-(If C9 WO7 already added it, only add the new functions below.)
-
-New `crates/conversation/src/test_support.rs`, declared in `lib.rs` as
-`#[cfg(feature = "test-support")] pub mod test_support;`:
+**Add to `test_support.rs`** (reuse `locked()`; same style as the existing
+hooks):
 
 ```rust
-//! One-process test hooks for cross-node tests. Compiled only with the
-//! `test-support` feature, which only `syneroym-substrate`'s dev build
-//! enables. Keyed by service id: every test node runs as a task inside one
-//! process, so an unkeyed hook would reach the wrong node.
-
-static CLOCK_OFFSETS: LazyLock<Mutex<HashMap<String, i64>>> = ...;
+static CLOCK_OFFSETS: LazyLock<Mutex<HashMap<String, i64>>> = LazyLock::new(Mutex::default);
 
 /// From now on, `service_id` signs group entries as if its clock were
 /// `offset_ms` ahead (negative: behind). The receiver's own checks use
 /// the real clock, as they would against a real skewed peer.
-pub fn set_clock_offset_ms(service_id: &str, offset_ms: i64);
-pub fn clear_clock_offsets();
-pub(crate) fn clock_offset_ms(service_id: &str) -> i64; // 0 when unset
+pub fn set_clock_offset_ms(service_id: &str, offset_ms: i64) {
+    locked(&CLOCK_OFFSETS).insert(service_id.to_string(), offset_ms);
+}
+
+pub fn clear_clock_offsets() {
+    locked(&CLOCK_OFFSETS).clear();
+}
+
+pub(crate) fn clock_offset_ms(service_id: &str) -> i64 {
+    locked(&CLOCK_OFFSETS).get(service_id).copied().unwrap_or(0)
+}
 ```
 
-New helper in `crates/conversation/src/store.rs`, beside `now_ms` (`:252`):
+Unlike the two existing hooks, this one is **not one-shot**: a skewed clock
+stays skewed for the whole test, so the test must call
+`clear_clock_offsets()` at its end.
+
+**Add the sender clock** in `crates/conversation/src/group.rs`, in the same
+shape C9 used for `claimed_send_fields` in `lib.rs` (two whole functions,
+one per `cfg`, not a `cfg` block inside one function):
 
 ```rust
-/// The clock a *sender* signs with. The real clock, except in a
-/// `test-support` build where a test has skewed this service on purpose.
-pub(crate) fn sender_now_ms(service_id: &str) -> i64 {
-    #[cfg(feature = "test-support")]
-    { now_ms() + crate::test_support::clock_offset_ms(service_id) }
-    #[cfg(not(feature = "test-support"))]
-    { let _ = service_id; now_ms() }
+/// The clock a sender signs a group entry with: the real clock, except
+/// where a test has skewed this service on purpose.
+#[cfg(feature = "test-support")]
+fn sender_now_ms(service_id: &str) -> i64 {
+    now_ms() + crate::test_support::clock_offset_ms(service_id)
+}
+
+#[cfg(not(feature = "test-support"))]
+fn sender_now_ms(_service_id: &str) -> i64 {
+    now_ms()
 }
 ```
 
 Use it in exactly three places in `crates/conversation/src/group.rs`:
 `create_group_impl` (`:134`), `change_membership_impl` (`:264`),
 `send_group` (`:359`). Do **not** use it in `scheduled_rekey_once`, in any
-receive path, or in any validation.
+receive path, in any validation, or in `enqueue_direct` (the 1:1 path; its
+test override is C9's `override_next_send`, which stays as it is).
 
-`crates/substrate/Cargo.toml` `[dev-dependencies]`:
-`syneroym-conversation = { workspace = true, features = ["test-support"] }`.
-Note: with `cargo nextest run --workspace`, feature unification turns the
-feature on for every test build in that run. That is harmless (the offset
-map is empty unless a test writes it) and is the same trade-off `D-C9-10`
-accepted.
+Feature unification: with `cargo nextest run --workspace` the feature is on
+for every test build in that run. That is harmless (the offset map is empty
+unless a test writes it) and is the trade-off `D-C9-10` already accepted.
 
 ---
 
@@ -1122,7 +1135,7 @@ changed to build the whole map once — do not call it per member).
    `group_info` and `sync_membership_rows` before reading (ignore a
    `NotFound` from the host: a restored group). Add `"kind"` to the result:
    `{ "messages": [...], "kind": "direct" | "group" }`.
-4. **`delete_message`** (`:361`). Rules, in order (review finding 5):
+4. **`delete_message`** (`:378`). Rules, in order (review finding 5):
    - A row whose content type is a group system type
      (`is_group_system_type`) → `invalid_params("this row records a group change and cannot be deleted")`.
    - An **incoming** message, 1:1 or group → unchanged:
@@ -1145,7 +1158,7 @@ changed to build the whole map once — do not call it per member).
      one-member group (203), and the harness has one node. So both outgoing
      cases — "nobody to ask" and "asked the other members" — are tested in
      e2e (§11.3, `a_removed_member_reads_nothing_after_removal`).
-5. **`search`** (`:415`): add `"content_type": {"$nin": [MEMBERSHIP_EVENT_CONTENT_TYPE, GROUP_PROFILE_CONTENT_TYPE]}`
+5. **`search`** (`:432`): add `"content_type": {"$nin": [MEMBERSHIP_EVENT_CONTENT_TYPE, GROUP_PROFILE_CONTENT_TYPE]}`
    to the filter. The filter DSL supports `$nin` (`crates/data_db/src/filter.rs:239`).
    New optional param `kind` (`"direct"` | `"group"`), review finding 9:
    load the conversation rows of that kind (the `list` query, no
@@ -1272,18 +1285,38 @@ each file's module comment:
 
 | File | Job | Owner |
 |---|---|---|
-| `crates/substrate/tests/common/roym.rs` (exists) | Booting and driving one Roym installation (`RoymNode`). **All node-boot changes go here**, including the new shared relay and `CoordinatorNode`, so C9's three-installation e2e can use them too. | shared |
-| `crates/substrate/tests/common/roym_flow.rs` (planned by C9 WO6, C9 plan §10.1; not built) | The request → quote → booking flow steps moved out of `roym_booking_e2e.rs` / `roym_directory_e2e.rs`. Nothing about groups. | C9 |
+| `crates/substrate/tests/common/roym.rs` (exists) | Booting and driving one Roym installation (`RoymNode`). **All node-boot changes go here**, including the new shared relay and `CoordinatorNode`. | shared |
+| `crates/substrate/tests/common/roym_flow.rs` (exists, from C9) | Multi-node transaction and directory flow steps (`run_client_loop`, `open_request_conv`, `send_quote`, …). Nothing about groups; C10 does not call it. | C9 |
+| `crates/substrate/tests/common/conversation_fixture.rs` (exists, from C9) | The dual-build fixture as a conversation peer (`deploy_fixture`, `fixture_run`, `publish_endpoint`, …). | C9 |
 | `crates/substrate/tests/common/roym_group.rs` (new) | Group flow steps only. | C10 |
 
-C9's plan boots three nodes with Z hosting the registry, not a separate
-coordinator, and C10 does not need `roym_flow.rs`'s steps. So the two
-slices share `roym.rs` and nothing else; whichever lands second rebases
-onto the other's `roym.rs` changes. Run the `cargo dupes` recipe (AGENTS.md)
-over all three files before WO6 is done.
+Run the `cargo dupes` recipe (AGENTS.md) over these files before WO6 is
+done.
+
+**Move one private helper out of `roym_trust_e2e.rs` first.** C9's
+`roym_trust_e2e.rs` has its own `boot_node(label, dir, registry, owner)`
+(boot a `RoymNode` with `fast_conversation_role(3600)`, then
+`full_bring_up`) and `boot_trio`, where the first node hosts the registry
+and the others share it. Its comment says why: several registry servers
+in one process starve each other's registration window. C10's tests need
+exactly this boot, so move `boot_node` into `common/roym.rs` as
+`RoymNode::boot_ready(label, dir, registry, owner, role)` (the role becomes
+a parameter), and make `roym_trust_e2e.rs` call it. Do not copy it. C10's
+tests boot the same way (first node hosts the registry), except the
+no-coordinator test (§3, test 5), which boots on a `CoordinatorNode`.
+
+**Optional, small, same WO:** `crates/substrate/tests/group_conversation_e2e.rs`
+still has private copies of `publish_endpoint`, `deploy_fixture`,
+`fixture_run`, `fast_conversation_role`, and `wait_until` that C9 moved into
+`common/conversation_fixture.rs` and `common/roym.rs` for the other
+conversation tests. C10 runs this binary as a regression gate (§3.2, WO1),
+so switching it to the shared helpers is cheap and lowers the duplication
+count. Skip it if the shared `deploy_fixture` signature does not fit
+(C9 added a `certify` parameter).
 
 **Additions to `common/roym.rs`:**
 
+- `RoymNode::boot_ready` (moved, above).
 - `pub struct CoordinatorNode(SubstrateNode)` booted with the default
   roles (it hosts the registry and relay). `registry_url()`, `relay_url()`,
   `async fn teardown(self)`.
@@ -1357,7 +1390,11 @@ Put both binaries in nextest's `substrate-e2e` group (check the filter in
 | `crates/roym_web/ui/src/screens/groups.ts` (**new**, ≤ 600 lines) | `renderGroups(container)`: left = "New group" (name input + button) and the group list (`conversation.list {kind: "group"}`, label = name or "Unnamed group"), plus a collapsed "Hidden groups (N)" section (`include_hidden`) with Unhide buttons. Right = thread (`conversation.history`) and an info panel (`group.info`). No search box. |
 | `crates/roym_web/ui/src/screens/groups.test.ts` (**new**) | Rendering helpers: a name with markup becomes a text node; membership rows render as events; a profile row renders as "Z named the group …" **only when its name differs from the one before it** (D-C10-16), so two profile rows with the same name render one line; card rows render as the neutral block; an `RpcError` of type `NotSignedIn` renders the "log in again" state (§12.2), not an error line. |
 | `crates/roym_web/ui/src/screens/messages.ts` (842 lines now) | `reloadList` (`:183-213`) calls `conversation.list` with `{kind: "direct"}`. The search call (`:158`) passes `{query: q, kind: "direct"}` (review finding 9). `ConversationRow` interface (`:34`) gains `kind`. No other change. `message_search.ts` (the Hub search fix already on this branch) is unchanged. |
-| `crates/roym_web/ui/src/main.ts` | Tab list (`:137-147`): add `{ name: "Groups", render: () => renderGroups(tabContainer) }` after Messages. |
+| `crates/roym_web/ui/src/main.ts` | Tab list (`:138-150`, now with C9's Memberships tab): add `{ name: "Groups", render: () => renderGroups(tabContainer) }` right after Messages. |
+
+`groups.ts` imports `text`, `errText`, and `field` from
+`crates/roym_web/ui/src/dom.ts` (added by C9). It must not define its own
+`text()` the way `messages.ts` still does.
 
 ### 12.2 What the Groups screen shows
 
@@ -1397,17 +1434,22 @@ Put both binaries in nextest's `substrate-e2e` group (check the filter in
 
 ### 12.3 Playwright — new `crates/substrate/tests/e2e/tests/roym-groups.spec.ts`
 
-One installation (the existing global setup). Cases 40–45; 33–39 stay
-reserved for the transaction action panel row in the backlog.
+One installation (the existing global setup). Follow C9's
+`roym-trust.spec.ts`: descriptive test names with **no case numbers**
+(`roym-hub.spec.ts` case `40` is now taken by the search fix), and log in
+and make setup calls with `loginWithDelegatedKey` / `rpcCall` from
+`crates/substrate/tests/e2e/hub-helpers.ts`. **Add the new file to
+`testMatch` in `crates/substrate/tests/e2e/playwright.config.ts`**, beside
+`'**/roym-trust.spec.ts'`; a spec file not listed there never runs.
 
-| # | Case |
+| Test name | What it checks |
 |---|---|
-| 40 | Groups tab: create "Street Garden" → it is listed; the info panel says the person is the owner and shows `OWNER_CAN_READ_NOTICE` character for character |
-| 41 | A group named `<img src=x onerror=alert(1)>` renders as literal text: no `img` element, no request to `x` (the pattern of case 4) |
-| 42 | Add member with an address that never answers → the page shows `GROUP_ADD_UNREACHABLE_MESSAGE` verbatim; the member list is unchanged |
-| 43 | Sending with no other member shows the "nowhere to deliver" text; nothing appears in the thread |
-| 44 | The info panel never contains the word "verified"; it shows the key epoch and the transcript check |
-| 45 | The Messages tab does not list the group; the Groups tab does not list a 1:1 conversation opened in case 10's way |
+| `creating a group lists it and states that the owner can read it` | Create "Street Garden" → it is listed; the info panel says the person is the owner and shows `OWNER_CAN_READ_NOTICE` character for character |
+| `a group name with markup renders as literal text` | A group named `<img src=x onerror=alert(1)>`: no `img` element, no request to `x` (the pattern of `roym-hub.spec.ts` case 4) |
+| `adding a member who cannot be reached shows why, and changes nothing` | An address that never answers → `GROUP_ADD_UNREACHABLE_MESSAGE` verbatim; the member list is unchanged |
+| `sending with no other member says there is nobody to deliver to` | The "nowhere to deliver" text; nothing appears in the thread |
+| `the group info panel never says verified` | Shows the key epoch and the transcript check; the word "verified" appears nowhere in the panel |
+| `groups and 1:1 conversations stay in their own tabs` | The Messages tab does not list the group; the Groups tab does not list a 1:1 conversation |
 
 ---
 
@@ -1470,8 +1512,10 @@ reserved for the transaction action panel row in the backlog.
   edits" filled in; reference scenario step 19 corrected (§15 item 6).
 - `status.md`: new "C10 — What shipped" section, with the evidence lines
   and every permitted WASM/native difference added (expected: none).
-- `roym-integrated-experience-spec.md`: R4 marked **Passed** only after R3
-  is marked passed (Q9); the service table's Conversation API column gains
+- `roym-integrated-experience-spec.md`: R4 marked **Passed** when C10's
+  gates pass (R3 is already passed, so Q9 no longer blocks), with the
+  `D-C10-17` note "WASM build across installations; both builds in
+  parity"; the service table's Conversation API column gains
   `group.*` and `transcript-digest`; R4 row 2's order wording corrected
   (§15 item 3); branch B's edit if taken.
 - `CLAUDE.md`/`AGENTS.md` architecture bullet for Roym: add that
@@ -1508,7 +1552,7 @@ WASM components before trusting a parity result.
 2. **`conversation.wit`'s `conversation-kind` comment is stale.** It says
    `group` "is reserved for the group slice and is never returned by this
    version". B5 shipped groups; `conversations()` returns `group` today
-   (`crates/conversation/src/lib.rs:376-406`). Fixed in §4.1.
+   (`crates/conversation/src/lib.rs:425-455`). Fixed in §4.1.
 3. **The spec's order key is not the code's.** R4 row 2 and the Messaging
    section say `(sender_timestamp, sender_did)`. The code, the WIT, and
    ADR-0013's implementation use `(sender-timestamp, author, id)`, where
@@ -1554,8 +1598,9 @@ WASM components before trusting a parity result.
 13. **`roym_core::conversation::CONVERSATION_SCHEMA_VERSION` (= 1) has no
     reader.** The live version is `roym_conversation::app::SCHEMA_VERSION`
     (= 2). Two constants that disagree. Deleted in §6.1.
-14. **C9 is partial, and the spec says each release must pass before the
-    next begins.** → Q9.
+14. **Resolved.** C9 was partial when this plan was first written, and the
+    spec says each release must pass before the next begins. R3 was marked
+    passed on 2026-09-29 (Q9).
 15. **Scheduled rekeys are not DAG events.** The spec says membership
     changes are DAG events and says nothing about rekeys. So members see
     "key changed here" at their own receipt time, and different members
