@@ -1219,4 +1219,39 @@ test.describe('Roym Hub', () => {
 
     await expect(page.locator('.tab-nav')).toHaveCount(0);
   });
+
+  test('40. messages tab: searching for a word from a sent message shows one hit, and clicking it opens that conversation', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Messages' }).click();
+    const peerDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000040';
+    await page.locator('.open-conversation input').fill(peerDid);
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+    const heading = page.locator('.conversation-thread h3').first();
+    await expect(heading).toHaveText(peerDid, { timeout: 15_000 });
+
+    // The node is shared across scenarios (and retries), so the searched
+    // word is unique to this run: exactly one message can hold it.
+    const word = `searchable${Date.now()}`;
+    await page.locator('.compose-input').fill(`please trim the ${word} hedge`);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.locator('.compose-input')).toHaveValue('', { timeout: 15_000 });
+
+    // Switch the thread away, so the click below has something to change.
+    const otherDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers0000000000040b';
+    await page.locator('.open-conversation input').fill(otherDid);
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+    await expect(heading).toHaveText(otherDid, { timeout: 15_000 });
+
+    await page.locator('.message-search-input').fill(word);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const hits = page.locator('.search-results .search-hit');
+    await expect(hits).toHaveCount(1, { timeout: 15_000 });
+    await expect(hits.locator('.snippet')).toHaveText(`please trim the ${word} hedge`);
+
+    await hits.click();
+    await expect(heading).toHaveText(peerDid, { timeout: 15_000 });
+  });
 });
