@@ -204,6 +204,22 @@ fn credential_signed_by_a_different_master_is_refused() {
     assert!(matches!(evaluate(&evidence, &input), MembershipVerdict::Refused { .. }));
 }
 
+/// The attack a dishonest directory would try: a credential whose issuer
+/// field *is* the pinned DID, signed by some other key. Comparing the
+/// issuer string alone would accept it.
+#[test]
+fn credential_claiming_the_pinned_issuer_but_signed_by_another_key_is_refused() {
+    let (_issuer_key, issuer_did) = generate();
+    let (forger_key, _forger_did) = generate();
+    let member = did();
+    let now = 1_000_000;
+    let cred =
+        credential_env(&forger_key, &issuer_did, &member, &["cycling"], now + 1_000, now, None);
+    let evidence = MembershipEvidence { credentials: vec![cred], ..Default::default() };
+    let input = base_input(&issuer_did, &member, now);
+    assert!(matches!(evaluate(&evidence, &input), MembershipVerdict::Refused { .. }));
+}
+
 #[test]
 fn credential_whose_subject_is_another_did_is_refused() {
     let (issuer_key, issuer_did) = generate();

@@ -347,6 +347,12 @@ async fn consumer_leaves_with_their_data(t: &Trio, dir: &Path, quote_record_id: 
 
     let booking = x2.rpc_ok("booking.get", json!({ "agreement": quote_record_id })).await;
     assert_eq!(booking["state"], "completed", "the finished booking came across: {booking}");
+
+    let agreement = x2.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
+    let verified = x2
+        .rpc_ok("agreement.verify", json!({ "envelope": agreement["consumer"]["envelope"] }))
+        .await;
+    assert_eq!(verified["verified"], true, "X's own signed agreement still verifies: {verified}");
     x2.teardown().await;
 }
 

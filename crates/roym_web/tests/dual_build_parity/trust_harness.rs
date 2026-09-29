@@ -137,9 +137,26 @@ fn credential_signer(target: &str) -> Identity {
     }
 }
 
+/// The issuer named inside the credential. The forged source names the
+/// pinned issuer while signing with another key, so only the signature check
+/// can refuse it; every other source names its own signer.
+fn credential_claimed_issuer(target: &str) -> String {
+    if target == "did:key:hTrustForged" {
+        claimed_issuer_did(target)
+    } else {
+        derive_did_key(&credential_signer(target).public_key())
+    }
+}
+
 fn sign_directly(identity: &Identity, draft: RecordDraft) -> String {
-    let issuer = derive_did_key(&identity.public_key());
-    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, CANNED_ISSUED_AT_SECS).unwrap();
+    sign_claiming(identity, &derive_did_key(&identity.public_key()), draft)
+}
+
+/// Signs with `identity` but names `issuer` in the envelope: honest only when
+/// they are the same key.
+fn sign_claiming(identity: &Identity, issuer: &str, draft: RecordDraft) -> String {
+    let (mut env, bytes) =
+        Envelope::unsigned(draft, issuer.to_string(), None, CANNED_ISSUED_AT_SECS).unwrap();
     env.attach_signature(z32::encode(&identity.sign(&bytes).to_bytes())).unwrap();
     env.to_json().unwrap()
 }
@@ -195,8 +212,9 @@ fn canned_credential_envelope(target: &str) -> String {
             area: vec![],
         },
     };
-    sign_directly(
+    sign_claiming(
         &credential_signer(target),
+        &credential_claimed_issuer(target),
         RecordDraft {
             version: membership::MEMBERSHIP_CREDENTIAL_VERSION,
             record_type: record::RECORD_MEMBERSHIP_CREDENTIAL.to_string(),

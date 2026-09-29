@@ -2297,33 +2297,43 @@ refusal under test and not something else:
 
 | B4 §10.2 row | Test | Shown |
 |---|---|---|
-| 4 | `a_lost_ack_is_retried_and_stored_once_for_a_new_and_an_existing_session` | both cases (first message on a new session; a later one), one copy held, **and the follow-up message delivered** |
-| 7 | `a_delivery_claiming_another_nodes_authorship_is_refused_and_stores_nothing` | forged send `failed` on C, nothing under A's name at B, C's honest messages before and after delivered |
+| 4 | `a_lost_ack_is_retried_and_stored_once_for_a_new_and_an_existing_session` | both cases (first message on a new session; a later one), one copy held, **the peer's reply before the sender writes again, and the follow-up message, both delivered**; the hook is asserted to have fired |
+| 7 | `a_delivery_claiming_another_nodes_authorship_is_refused_and_stores_nothing` | forged send (author A **and** the conversation id B derives for A, so only the author check can refuse it) `failed` on C, nothing under A's name at B, C's honest messages before and after delivered. Checked to fail with the author check removed |
 | 8 | `a_different_signing_key_for_a_pinned_address_is_refused_and_the_pin_holds` | a second node under the same master is refused; the real A still delivers afterwards. Reverting the pinned-key check makes it fail |
 | 9 | `a_guest_calling_conversation_on_another_service_is_denied_by_the_proxy` | `PermissionDenied` naming the native-capability policy; nothing reaches B |
-| 10 | `a_guest_reaching_its_own_deliver_arm_is_still_refused_by_the_arm` | passes the proxy gate, refused by the arm (`permission denied`) |
-| 11 | `prekey_requests_past_the_hourly_limit_are_refused_and_do_not_starve_an_honest_peer` | third request refused; A still establishes a session |
+| 10 | `a_guest_reaching_its_own_deliver_arm_is_still_refused_by_the_arm` | passes the proxy gate, refused by the arm (`permission denied`). The self-delivery guard itself is covered by the unit test `self_injection_via_same_service_is_refused` |
+| 11 | `prekey_requests_past_the_hourly_limit_are_refused_and_do_not_starve_an_honest_peer` | third request refused with `permission denied` on a link that carried the first two; A still establishes a session |
 | 12 | `the_pending_quota_of_one_conversation_does_not_block_another` | third send `QuotaExceeded`; a second conversation still sends |
 | 13 | `a_future_sender_timestamp_is_refused_and_a_past_one_is_kept` | +1 year refused, -1 year delivered and kept as claimed (the two differ only in the timestamp) |
-| 14 | `roym_conversation_e2e.rs`, extended | `conversation.retry` re-arms a failed message, which the outbox attempts and settles `failed` again |
+| 14 | `roym_conversation_e2e.rs`, extended | `conversation.retry` puts a failed message back to `pending` with a fresh delivery window (still `pending` two seconds later, when the peer is gone), and it settles `failed` again only when that window ends |
 | 15 | `a_send_with_no_instance_certificate_fails_naming_the_certificate` | `failed` with a reason naming the instance certificate |
 | 16, 17 | not built | alias canonicalization and `open-direct` resolution: `D-B4-29`, one backlog row |
 
 **Row 4 exposed a real defect, and it is fixed.** After a lost first ack, the sender's retry
 built a *second* session from a fresh prekey bundle (the first was never committed, since
-commit waits for the ack), and continued on it. The receiver already held the first session
+commit waited for the ack), and continued on it. The receiver already held the first session
 for that sender, so the sender's next message — a pre-key message for a session the receiver
 had never seen — failed to decrypt and the message was refused for good. The dedup fence
 answered the retry with the stored ack without decrypting, which is why nothing failed until
-the follow-up. The plan expected the fix in `transport.rs`; it is on the **receiver** in
-`crypto.rs::session_for_envelope` instead: a pre-key message that names a session other than
-the stored one now opens a new inbound session, after the pinned-signing-key check and
-subject to the payload signature. Persisting the sender's session at `begin_session` would
-have fixed this case but leaves a stale session pointing at a one-time key the peer may
-later discard, so a peer that was slow once could stay unreachable. Covered by two unit
-tests (`a_second_session_from_the_same_pinned_sender_replaces_the_first`, and that a replay of
-the replaced session's pre-key message is still refused); the first was checked to fail with
-the fix reverted, and the e2e fails the same way.
+the follow-up. The first fix was on the **receiver** (`crypto.rs::session_for_envelope`: a
+pre-key message that names a session other than the stored one opens a new inbound session,
+after the pinned-signing-key check and subject to the payload signature). Two unit tests cover
+it (`a_second_session_from_the_same_pinned_sender_replaces_the_first`, and that a replay of
+the replaced session's pre-key message is still refused).
+
+**Review of part 2 found that fix incomplete, and the sender is now fixed too.** Until the
+sender's next message reached the receiver, the receiver held session 1 and the sender held
+session 2 (or none). A reply the receiver sent in that time went out on session 1 and the
+sender refused it for good, so a request-then-quote flow could stick. `deliver_one` now
+persists the session **before** the call, so a retry continues the same session and both sides
+always agree. A receiver accepts a ratchet that is ahead of what it has seen, so a call that
+never arrived costs nothing. This reverses the earlier reasoning against persisting at
+`begin_session`, whose worry was a stale session that names a prekey the peer has dropped. That
+is met differently: a `Terminal` refusal of a session the peer has never answered on
+(`Session::peer_has_replied`) deletes the stored session, so the next delivery starts from a
+fresh bundle. The receiver-side replacement stays, for a sender that lost its state. The e2e
+now sends the peer's reply between the lost first ack and the sender's next message; it fails
+with the sender fix reverted.
 
 **A second, smaller defect the row-13 test exposed.** `insert_outgoing_and_enqueue` set a
 message's `received_at` from its *claimed* sender timestamp, and the outbox ages a pending
@@ -2334,6 +2344,24 @@ Test-harness finding worth keeping: the fixture guest is reached through the reg
 second node running the same service id must have its **own** registry (or `fixture_run`
 lands on the first node), and then needs the other peer's endpoint record, master anchor
 and node record copied in (`publish_node_record`).
+
+### Review of part 2 (WO5 remainder, WO6, WO7, WO8): decisions
+
+Eleven findings. Each was fixed unless said otherwise.
+
+| # | Finding | Decision |
+|---|---|---|
+| F1 | After a lost first ack the peer's replies on its own session are refused | **Fixed** on the sender (above); e2e step added and checked to fail without the fix |
+| F2 | `conversation.retry` on an age-expired message never made an attempt | **Fixed**: `ConversationStore::restart_pending` resets `received_at`, which the outbox ages from. Roym's `conversation.retry` also moved its own cached row to `pending`: a history read never walks a `failed` row back, so the Hub kept showing `failed` for a message the host was attempting. The e2e asserts `pending` two seconds after the retry, inside the new window |
+| F3 | Two wasmtime advisories ignored with no backlog row | **Fixed**: row added in the backlog's security section |
+| F4 | "Check membership again" on a card replaced the listing's own verdict | **Fixed** in the Hub: the card keeps its listing-judged line, and the fresh answer goes on a separate line labelled as not tied to the listing. `check-standing` still takes no listing; judging one server-side is not built |
+| F5 | The forged-author test passed with the author check removed | **Fixed**: `SendOverride` gained `conversation_id`; the test forges it too and fails when the author check is removed |
+| F6 | The simultaneous-first-contact backlog row understated the risk | **Fixed** (wording and cause). The fix itself (several sessions per peer) stays deferred, with the same trigger |
+| F7 | A changed issuer was shown as "could not reach" | **Fixed** on both screens, with vitest cases |
+| F8 | Rows 10 and 11 accept any refusal | **Fixed**: row 11 asserts `permission denied`. Row 10's comment now says what it proves; the self-delivery guard has its own unit test |
+| F9 | The lost-ack test did not prove the hook fired | **Fixed**: `test_support::drop_ack_pending` is asserted false after each case |
+| F10 | Parity 183 was an issuer mismatch, not a forgery under the pinned name | **Fixed**: `hTrustForged` now names the pinned issuer and is signed by another key; a `membership` unit test covers the same attack |
+| F11 | The restored agreement was not checked to verify | **Fixed**: `agreement.verify` on X′'s own envelope |
 
 ### WO6: three installations, R3 rows 1-3
 
@@ -2373,7 +2401,8 @@ which the plan says to split step 8 out. The shared flow steps moved to
   it produces uses the word "verified", asserted for every verdict and for a missing one.
 - **Directory screen:** the hit card's fixed `membership: not checked` line is now one
   verdict line per source, with a "Check membership again" button that calls
-  `directory.check-standing`.
+  `directory.check-standing` and shows its answer on a separate line (it judges the provider
+  with no listing, so it must not replace the listing's own verdict).
 - **Memberships tab** (`screens/memberships.ts`): the held copies with their age, the issuer
   as "the group this directory said it is when you added it", a "Check again" button per row,
   and both notices always on screen.
@@ -2404,11 +2433,11 @@ which the plan says to split step 8 out. The shared flow steps moved to
 | What | Command | Result |
 |---|---|---|
 | Parity, both builds byte-identical | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` | **197/197** |
-| Conversation crate | `cargo nextest run -p syneroym-conversation` | **53/53** (two new crypto tests) |
+| Conversation crate | `cargo nextest run -p syneroym-conversation --all-features` | **55/55** |
 | Cross-node conversation cases | `cargo nextest run -p syneroym-substrate --test conversation_cross_node_e2e` | **9/9** |
 | Three installations | `cargo nextest run -p syneroym-substrate --test roym_trust_e2e` | **1/1**, 58.7 s |
 | Other conversation and Roym e2e touched | `conversation_e2e`, `group_conversation_e2e`, `roym_conversation_e2e`, `roym_directory_e2e`, `roym_booking_e2e` | all pass |
-| Hub unit tests | `npm test` in `crates/roym_web/ui` | **104/104**; `eslint` and `tsc` clean |
+| Hub unit tests | `npm test` in `crates/roym_web/ui` | **108/108**; `eslint` and `tsc` clean |
 | Hub in a browser | `npx playwright test tests/roym-trust.spec.ts` | **6/6** |
 
 **Completion pass (`mise run verify`, 2026-09-29):** fmt, clippy, file-lengths, lint-suppressions,
