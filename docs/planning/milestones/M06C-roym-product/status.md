@@ -2411,6 +2411,14 @@ which the plan says to split step 8 out. The shared flow steps moved to
 | Hub unit tests | `npm test` in `crates/roym_web/ui` | **104/104**; `eslint` and `tsc` clean |
 | Hub in a browser | `npx playwright test tests/roym-trust.spec.ts` | **6/6** |
 
+**Completion pass (`mise run verify`, 2026-09-29):** fmt, clippy, file-lengths, lint-suppressions,
+module-layout, duplication (8.0%), roym-deps, planning-refs, nextest (1474 s), doctests,
+deny-licenses and the Playwright e2e (57 + 4 tests) all pass. **`audit` fails, and not because of
+this slice:** two advisories published against `wasmtime`/`wasmtime-wasi` 46.0.3
+(RUSTSEC-2026-0316 and RUSTSEC-2026-0314, fixed in 48.0.3 / 49.0.1) hit `main`'s own
+`Cargo.lock`, which this branch does not change. Clearing it is a three-major-version
+`wasmtime` upgrade and belongs in its own change.
+
 ### What R3 rests on
 
 | R3 row | Where it is proven |
