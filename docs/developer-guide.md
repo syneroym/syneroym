@@ -256,6 +256,39 @@ Before registering a service, you need to create a local identity (private key) 
 roymctl identity create --name my-service
 ```
 
+### Moving a Substrate to a New Machine
+
+A move keeps every peer's view unchanged only if the **whole state** moves and the old node is **stopped first**. Two nodes must never run with the same keys at the same time.
+
+Copy these items. Paths in the table are the defaults. If your config sets different paths (`app_data_dir`, `app_local_data_dir`, `[storage]`, `[identity]`, TLS or supervisor settings), copy the files from the paths in your config instead. Relative paths in the config resolve against `app_data_dir` or `app_local_data_dir`, so keep the same relative layout.
+
+| What | Default location | Why it is needed |
+|---|---|---|
+| Node key | `<app_data_dir>/substrate.key` | The node DID. Service record-signing keys are derived from it, so a new key breaks old signatures and agreements. |
+| Controller agreement | `<app_data_dir>/agreement.json` | Ownership of the node. Without it the node is unowned and refuses all control calls. |
+| Identities | `<app_data_dir>/identities/` | Includes the owner identity and the member master keys (`member-<app-instance>#<service>-0.key`). A member master is a service's address. Losing it cannot be undone. |
+| Database directory | `<app_local_data_dir>/db/` (`storage.db_dir`) | `substrate.db` (catalog and wrapped data keys), and `services/<service-id>/state.db` and `conversation.db` for every service. Copy it as a whole. The wrapped data keys live inside `substrate.db`, so a partial copy cannot be opened. |
+| Blobs | `<app_local_data_dir>/blobs/` and `blob_objects/` | Blob data, if the node uses it. |
+| Hosted app certificates | `<app_local_data_dir>/hosted_apps/` | Instance certificates. |
+| Config file | your `--config` path | Ports, roles, TLS and storage settings. |
+| TLS files | `[roles.coordinator.tls]` paths | Only if TLS is enabled. |
+| Supervisor files | `supervisor.db` (default name) and `master-backups/` | Only if the node runs the app supervisor. |
+| **The master KEK** | *not stored on disk by the node* | The key that unlocks all data keys. Encryption is on by default. Keep the same KEK from your own records and inject it again after start (`roymctl kek inject`). |
+
+Steps:
+
+1. Stop the old node. Wait until the process has exited.
+2. Copy the items above with the same relative layout. Keep file permissions.
+3. On the new machine, start the node with the same config, then inject the KEK.
+4. Check that `roymctl` shows the same node DID and that old conversations still send.
+5. Keep the old machine off. Delete its copy of the keys when you are sure.
+
+Limits:
+
+- The node's network addresses may change. Peers find you by DID through the registry, so the record refreshes after start.
+- A **lost machine** (no access to the old files) is not supported. The messaging keys are random and peers pin them, so old conversations cannot continue. See the backlog row "Conversations cannot continue after a substrate moves to a new machine".
+- `roymctl roym backup` covers the person's identity and app data only. It does not replace the steps above.
+
 ### Registering a Service in the Community Registry
 
 Once you have an identity, you can register it against a substrate DID. This links your service DID to the substrate that hosts it.
