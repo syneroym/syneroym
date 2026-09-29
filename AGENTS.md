@@ -136,6 +136,13 @@ how the drift happened, so do not add one here without an enforcement path.**
   permanent. See
   [comment-convention.md](docs/planning/code-quality/comment-convention.md) for
   the shapes and how to rewrite them. *Checked by:* a CI grep over the diff.
+- **Comments never cite these rules.** Do not write a line count, a size limit
+  or a "split to stay under the cap" note in a comment (for example "kept under
+  the 100-line limit", "793 lines before this change", "no room to grow"). The
+  size rules above are checked by tools, and a number in a comment goes stale
+  the next time the code or the limit changes. Say what the code is for, and
+  leave out why it was split. This covers every coding guideline in this file,
+  not only size. *Checked by:* review.
 - **Keep dependencies used.** *Checked by:* `cargo shear`.
 
 ## Functionality, Architecture Documents

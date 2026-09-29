@@ -2,8 +2,8 @@
 //! bounded evidence a consumer or a search hit receives, across several
 //! rounds of tightening (an old unlifted suspension outliving newer
 //! decisions, a membership-wide suspension outranking listing-scoped
-//! ones, and a permanent suspension outranking a newer timed one). Split
-//! out of `trust.rs` (893 lines before this slice, no room to grow).
+//! ones, and a permanent suspension outranking a newer timed one). Kept
+//! apart from the other trust scenarios in `trust.rs`.
 
 use serde_json::json;
 use syneroym_roym_core::{membership::MAX_EVIDENCE_DECISIONS, services};

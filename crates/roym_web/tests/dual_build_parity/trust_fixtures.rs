@@ -1,7 +1,7 @@
 //! Cross-installation trust fixtures: membership credentials, the second
 //! directory's signing enrolment, and the directory verb lists scenario
-//! 118 checks. Split out of `fixtures.rs` (792 lines before this slice, no
-//! room to grow) and kept out of `directory.rs` (already at its own cap).
+//! 118 checks. Kept apart from the general fixtures in `fixtures.rs` and the
+//! directory scenarios in `directory.rs`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

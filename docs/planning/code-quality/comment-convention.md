@@ -33,6 +33,11 @@ comment alone and note the file in the pull request so a human can look.
 | Test or matrix row | `Test 97`, `failure-matrix row 13` |
 | Planning doc | `` `status.md` ``, `` `task.md` ``, `implementation-plan` |
 
+A comment must also not cite the code-quality rules themselves: a line count,
+a size limit, or "split to stay under the cap" (for example "kept under the
+100-line limit", "793 lines before this change"). Tools check those rules, and
+the number goes stale. Delete the note and keep only what the code is for.
+
 A section number anchored to an ADR is allowed and must be left alone. About
 325 comment lines carry one.
 
