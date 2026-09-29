@@ -8,6 +8,11 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# One-shot misbehaviour hooks for cross-node tests (`test_support`). Only
+# `syneroym-substrate`'s dev build turns this on.
+test-support = []
+
 [dependencies]
 syneroym-core.workspace = true
 syneroym-data-db.workspace = true

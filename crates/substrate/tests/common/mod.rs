@@ -27,6 +27,7 @@ mod fixtures;
 /// Shared deploy helpers: `deploy_app`, `try_deploy_app`.
 mod deploy;
 
+pub mod conversation_fixture;
 pub mod roym;
 
 use std::{

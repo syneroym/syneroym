@@ -172,6 +172,12 @@ impl ConversationService {
         let ack_json = self
             .call_peer(svc, peer_address, "deliver", env_json, Some(msg.id.clone()), None)
             .await?;
+        // What a lost ack looks like to the sender: the peer stored the
+        // message, and the answer never arrived (a timeout, not a refusal).
+        #[cfg(feature = "test-support")]
+        if crate::test_support::take_drop_ack(svc) {
+            return Err(Disposition::Unreachable);
+        }
         let _ack: DeliveryAck = serde_json::from_value(ack_json).map_err(|_| {
             Disposition::Terminal("peer returned an undecodable delivery ack".to_string())
         })?;

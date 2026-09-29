@@ -14,6 +14,8 @@ pub mod group;
 pub mod ids;
 mod outbox;
 pub mod store;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod transport;
 mod wire;
 
@@ -265,10 +267,11 @@ impl ConversationService {
             );
         }
 
+        let (author, sender_ts) = claimed_author_and_timestamp(service_id, now);
         let mut nonce = [0u8; 16];
         rand::rng().fill_bytes(&mut nonce);
         let message_id =
-            ids::derive_message_id(service_id, &conv_id, now, content_type, body, &nonce);
+            ids::derive_message_id(&author, &conv_id, sender_ts, content_type, body, &nonce);
 
         let identity =
             store.local_identity_or_generate(crypto::generate_identity_bytes).map_err(internal)?;
@@ -281,8 +284,8 @@ impl ConversationService {
             &signing_key,
             &message_id,
             &conv_id,
-            service_id,
-            now,
+            &author,
+            sender_ts,
             content_type,
             body,
         );
@@ -291,8 +294,8 @@ impl ConversationService {
             .insert_outgoing_and_enqueue(
                 &conv_id,
                 &message_id,
-                service_id,
-                now,
+                &author,
+                sender_ts,
                 content_type,
                 body,
                 &signature,
@@ -309,6 +312,19 @@ impl ConversationService {
             })?;
         Ok(message_id)
     }
+}
+
+/// The author and sender timestamp a new message claims: the sending
+/// service and `now`, always, except for one test's one-shot override.
+#[cfg(feature = "test-support")]
+fn claimed_author_and_timestamp(service_id: &str, now: i64) -> (String, i64) {
+    let o = test_support::take_send_override(service_id).unwrap_or_default();
+    (o.author.unwrap_or_else(|| service_id.to_string()), o.sender_timestamp_ms.unwrap_or(now))
+}
+
+#[cfg(not(feature = "test-support"))]
+fn claimed_author_and_timestamp(service_id: &str, now: i64) -> (String, i64) {
+    (service_id.to_string(), now)
 }
 
 /// An always-empty `Weak<dyn ServiceProxy>` -- mirrors

@@ -30,6 +30,11 @@ impl ConversationStore {
     /// one enqueue, one commit. The per-conversation bounds are enforced
     /// inside this transaction so concurrent `send` calls on the same
     /// conversation cannot both pass the check and both write.
+    ///
+    /// `received_at` is `now_ms`, this node's own clock, and never the
+    /// `sender_timestamp_ms` the message claims: the outbox ages a pending
+    /// message from `received_at`, so a claimed old timestamp must not make
+    /// a fresh message look expired.
     #[allow(clippy::too_many_arguments)]
     pub fn insert_outgoing_and_enqueue(
         &self,
@@ -72,7 +77,7 @@ impl ConversationStore {
                 "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
                  received_at, content_type, body, signature, outgoing, verified, state, \
                  last_error, system, entry_id)
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, 1, 1, 'pending', NULL, ?8, NULL)",
+                 VALUES (?1, ?2, ?3, ?4, ?9, ?5, ?6, ?7, 1, 1, 'pending', NULL, ?8, NULL)",
                 params![
                     message_id,
                     conversation_id,
@@ -81,7 +86,8 @@ impl ConversationStore {
                     content_type,
                     body,
                     signature.as_slice(),
-                    if system { 1i64 } else { 0i64 }
+                    if system { 1i64 } else { 0i64 },
+                    now_ms
                 ],
             )?;
             Self::touch_conversation(tx, conversation_id, now_ms)?;

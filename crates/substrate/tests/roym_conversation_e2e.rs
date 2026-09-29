@@ -446,6 +446,7 @@ async fn a_pending_message_and_its_body_survive_a_substrate_restart() {
 /// `conversation_max_pending_age_secs` passes, and `conversation.history`
 /// reports it `failed` with the host's own reason -- the `failed` third of
 /// the pending / delivered / failed scope, watched with no real clock wait.
+/// `conversation.retry` then re-arms it, and the outbox attempts it again.
 ///
 /// Split out of the main flow because the main flow already restarts each
 /// substrate twice and a guest-HTTP component's warm-up after a restart is
@@ -511,6 +512,26 @@ async fn a_message_that_never_reaches_its_peer_settles_failed_with_the_hosts_rea
         row["last_error"].as_str().is_some_and(|s| !s.is_empty()),
         "conversation.history reports failed with the host's own reason: {row}"
     );
+
+    // `retry` re-arms a failed message: the host accepts it, and the peer is
+    // still gone and the message is still past its window, so the outbox
+    // picks it up again and settles it `failed` a second time.
+    let retried = node.rpc_ok("conversation.retry", json!({ "message_id": message_id })).await;
+    assert_eq!(retried["retried"], true, "the host re-armed the failed message: {retried}");
+    let failed_again = wait_until(Duration::from_secs(40), || {
+        let node = &node;
+        let conv = conv.clone();
+        let message_id = message_id.clone();
+        async move {
+            let h = node.rpc_ok("conversation.history", json!({ "conversation": conv })).await;
+            history_messages(&h)
+                .into_iter()
+                .find(|m| m["id"] == message_id)
+                .is_some_and(|m| m["state"] == "failed")
+        }
+    })
+    .await;
+    assert!(failed_again, "the re-armed message is attempted again and settles failed again");
 
     node.teardown().await;
 }
