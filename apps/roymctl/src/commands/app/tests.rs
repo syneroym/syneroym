@@ -1,5 +1,5 @@
 //! Shared test fixtures for the `app` command tests, split by subcommand
-//! into sibling files (each under the ~500-line test-module guideline).
+//! into sibling files.
 
 use clap::Parser;
 use syneroym_app_orchestration::models::{ServiceId, TopologyMode};

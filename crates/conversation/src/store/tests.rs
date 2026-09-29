@@ -531,3 +531,68 @@ fn get_or_create_direct_clears_the_system_flag_on_an_existing_row() {
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, conv_id);
 }
+
+/// The outbox measures its give-up age and its backoff from `received_at`.
+/// A retried message must start a new window, or an age-expired one fails
+/// again before any attempt.
+#[test]
+fn restart_pending_gives_a_failed_message_a_fresh_window() {
+    let s = store();
+    let conv_id = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
+    s.insert_outgoing_and_enqueue(
+        &conv_id,
+        "msg:1",
+        "did:key:zA",
+        1_000,
+        "text/plain",
+        b"x",
+        &[0u8; 64],
+        "did:key:zPeer",
+        1_000,
+        false,
+    )
+    .unwrap();
+    s.set_state(
+        "msg:1",
+        ConversationDeliveryState::Failed,
+        Some("recipient never became reachable"),
+    )
+    .unwrap();
+
+    s.restart_pending("msg:1", 9_000).unwrap();
+
+    let m = s.get_message("msg:1").unwrap().unwrap();
+    assert_eq!(m.state, ConversationDeliveryState::Pending);
+    assert_eq!(m.received_at_ms, 9_000, "the delivery window restarts at the retry");
+    assert!(m.last_error.is_none(), "the old failure reason is cleared");
+    assert_eq!(m.sender_timestamp_ms, 1_000, "the signed timestamp is untouched");
+}
+
+#[test]
+fn delete_session_forgets_only_that_peer() {
+    let s = store();
+    for peer in ["did:key:zA", "did:key:zB"] {
+        let row = SessionRow {
+            peer_address: peer.to_string(),
+            pinned_sig_key: [7u8; 32],
+            state: b"state".to_vec(),
+        };
+        s.upsert_session(&row, 1_000).unwrap();
+    }
+
+    s.delete_session("did:key:zA").unwrap();
+
+    assert!(s.session("did:key:zA").unwrap().is_none());
+    assert!(s.session("did:key:zB").unwrap().is_some());
+    s.delete_session("did:key:zA").expect("deleting an absent session is not an error");
+}
+
+#[test]
+fn an_outbound_envelope_is_kept_until_deleted() {
+    let s = store();
+    assert!(s.outbound_envelope("msg:1").unwrap().is_none());
+    s.put_outbound_envelope("msg:1", b"sealed").unwrap();
+    assert_eq!(s.outbound_envelope("msg:1").unwrap().as_deref(), Some(&b"sealed"[..]));
+    s.delete_outbound_envelope("msg:1").unwrap();
+    assert!(s.outbound_envelope("msg:1").unwrap().is_none());
+}

@@ -4,7 +4,7 @@ import { call } from "../rpc";
 /// person's record-signing certificate installed. Kept beside the Hub's
 /// own gate so a service added later fails the gate rather than failing
 /// a verb.
-export const SIGNING_SERVICES = ["profile", "catalog", "conversation", "transaction"] as const;
+export const SIGNING_SERVICES = ["profile", "catalog", "conversation", "transaction", "directory"] as const;
 
 /// The services still missing a certificate. Empty means the Hub is ready.
 export async function pendingEnrolment(): Promise<string[]> {

@@ -83,6 +83,16 @@ pub struct Session {
     pending_first_plaintext: Option<Vec<u8>>,
 }
 
+impl Session {
+    /// Whether the peer has ever answered on this session. Until it has,
+    /// every message sent is a pre-key message that names one of the peer's
+    /// prekeys, so a peer that refuses it may never accept this session.
+    #[must_use]
+    pub fn peer_has_replied(&self) -> bool {
+        self.inner.has_received_message()
+    }
+}
+
 // Deliberately does not derive `Debug` on `inner`: a ratchet's live chain
 // keys have no business in a log line.
 impl fmt::Debug for Session {
@@ -346,10 +356,25 @@ impl SessionCrypto for X3dhDoubleRatchetCrypto {
                         .to_string(),
                 ));
             }
-            return session_from_row(row, env.peer_address.clone(), local_sig_key);
+            let existing = session_from_row(row, env.peer_address.clone(), local_sig_key)?;
+            // A pre-key message names the session it opens. One for a
+            // session this address has not used with us is a new session,
+            // not a failure: a sender that lost or deleted its session
+            // state (a restore from a backup, or a session dropped after
+            // the peer refused it) starts over with a fresh one. Only the
+            // pinned signing key (checked above) and the payload signature
+            // vouch for the sender, so replacing the session gives it no
+            // new authority.
+            let opens_new_session = matches!(
+                &env.message,
+                OlmMessage::PreKey(pre_key) if pre_key.session_id() != existing.inner.session_id()
+            );
+            if !opens_new_session {
+                return Ok(existing);
+            }
         }
 
-        // No existing session: only a pre-key message can establish one.
+        // No usable session: only a pre-key message can establish one.
         let OlmMessage::PreKey(pre_key) = &env.message else {
             return Err(CryptoError::PermissionDenied(
                 "no session exists for this address and the envelope is not a pre-key message"
@@ -669,6 +694,82 @@ mod tests {
         let mut session_b_2 = crypto.session_for_envelope(&store_b, &env_attempt_2).await.unwrap();
         assert_eq!(crypto.decrypt(&mut session_b_2, &env_attempt_2).unwrap(), msg2);
         let _ = env_attempt_1; // never delivered — exactly what "uncommitted" means
+    }
+
+    /// A lost acknowledgement for the *first* message: the sender never
+    /// committed the session it built, so its retry builds a second one
+    /// from a fresh bundle, and its next message travels on that one. The
+    /// receiver already holds the first session and must accept the second
+    /// -- the sender's pinned signing key is unchanged.
+    #[tokio::test]
+    async fn a_second_session_from_the_same_pinned_sender_replaces_the_first() {
+        let crypto = X3dhDoubleRatchetCrypto::new();
+        let store_a = store();
+        let store_b = store();
+
+        // First attempt: B receives and commits, A never hears the ack.
+        let bundle_1 = crypto.prekey_bundle(&store_b).await.unwrap();
+        let mut lost =
+            crypto.begin_session(&store_a, "a-address", "b-address", &bundle_1).await.unwrap();
+        let env_1 = crypto.encrypt(&mut lost, &payload()).unwrap();
+        let mut at_b = crypto.session_for_envelope(&store_b, &env_1).await.unwrap();
+        crypto.decrypt(&mut at_b, &env_1).unwrap();
+        crypto.commit(&store_b, &at_b).await.unwrap();
+
+        // The retry: a new session from a new bundle, committed on ack.
+        let bundle_2 = crypto.prekey_bundle(&store_b).await.unwrap();
+        let mut retry =
+            crypto.begin_session(&store_a, "a-address", "b-address", &bundle_2).await.unwrap();
+        crypto.encrypt(&mut retry, &payload()).unwrap();
+        crypto.commit(&store_a, &retry).await.unwrap();
+
+        // The next message uses the committed second session.
+        let mut next =
+            crypto.session_for(&store_a, "a-address", "b-address").await.unwrap().unwrap();
+        let mut second = payload();
+        second.message_id = "msg:2".to_string();
+        let env_2 = crypto.encrypt(&mut next, &second).unwrap();
+        crypto.commit(&store_a, &next).await.unwrap();
+
+        let mut at_b_2 = crypto.session_for_envelope(&store_b, &env_2).await.unwrap();
+        assert_eq!(crypto.decrypt(&mut at_b_2, &env_2).unwrap(), second);
+        crypto.commit(&store_b, &at_b_2).await.unwrap();
+
+        // Later messages on the same session keep working.
+        let mut third = payload();
+        third.message_id = "msg:3".to_string();
+        let mut next =
+            crypto.session_for(&store_a, "a-address", "b-address").await.unwrap().unwrap();
+        let env_3 = crypto.encrypt(&mut next, &third).unwrap();
+        let mut at_b_3 = crypto.session_for_envelope(&store_b, &env_3).await.unwrap();
+        assert_eq!(crypto.decrypt(&mut at_b_3, &env_3).unwrap(), third);
+    }
+
+    /// The new-session path is not a way to replay: a pre-key message
+    /// whose one-time key was already spent is refused.
+    #[tokio::test]
+    async fn a_replayed_pre_key_message_for_a_replaced_session_is_refused() {
+        let crypto = X3dhDoubleRatchetCrypto::new();
+        let store_a = store();
+        let store_b = store();
+        let bundle_1 = crypto.prekey_bundle(&store_b).await.unwrap();
+        let mut first =
+            crypto.begin_session(&store_a, "a-address", "b-address", &bundle_1).await.unwrap();
+        let env_1 = crypto.encrypt(&mut first, &payload()).unwrap();
+        let mut at_b = crypto.session_for_envelope(&store_b, &env_1).await.unwrap();
+        crypto.decrypt(&mut at_b, &env_1).unwrap();
+        crypto.commit(&store_b, &at_b).await.unwrap();
+
+        let bundle_2 = crypto.prekey_bundle(&store_b).await.unwrap();
+        let mut second =
+            crypto.begin_session(&store_a, "a-address", "b-address", &bundle_2).await.unwrap();
+        let env_2 = crypto.encrypt(&mut second, &payload()).unwrap();
+        let mut at_b_2 = crypto.session_for_envelope(&store_b, &env_2).await.unwrap();
+        crypto.decrypt(&mut at_b_2, &env_2).unwrap();
+        crypto.commit(&store_b, &at_b_2).await.unwrap();
+
+        let replay = crypto.session_for_envelope(&store_b, &env_1).await;
+        assert!(replay.is_err(), "the first session's one-time key is spent");
     }
 
     /// `prekey_bundle` must serve a distinct key to each consecutive caller

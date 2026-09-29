@@ -97,6 +97,11 @@ const TABLE_GROUP_DDL: &[&str] = &[
         created_at INTEGER NOT NULL
      );
 
+     CREATE TABLE IF NOT EXISTS outbound_envelopes (
+        message_id TEXT PRIMARY KEY,
+        envelope   BLOB NOT NULL
+     );
+
      CREATE TABLE IF NOT EXISTS prekey_requests (
         caller_did    TEXT NOT NULL,
         window_start  INTEGER NOT NULL,

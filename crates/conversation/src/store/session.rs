@@ -42,6 +42,42 @@ impl ConversationStore {
         Self::upsert_session_conn(&conn, row, now_ms)
     }
 
+    /// Forgets the session with `peer_address`, so the next delivery builds a
+    /// new one from a fresh prekey bundle.
+    pub fn delete_session(&self, peer_address: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute("DELETE FROM sessions WHERE peer_address = ?1", params![peer_address])?;
+        Ok(())
+    }
+
+    /// The encrypted envelope made for `message_id`, kept until the message
+    /// settles so every delivery attempt resends the same bytes.
+    pub fn outbound_envelope(&self, message_id: &str) -> Result<Option<Vec<u8>>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.query_row(
+            "SELECT envelope FROM outbound_envelopes WHERE message_id = ?1",
+            params![message_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn put_outbound_envelope(&self, message_id: &str, envelope: &[u8]) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute(
+            "INSERT OR REPLACE INTO outbound_envelopes (message_id, envelope) VALUES (?1, ?2)",
+            params![message_id, envelope],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_outbound_envelope(&self, message_id: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute("DELETE FROM outbound_envelopes WHERE message_id = ?1", params![message_id])?;
+        Ok(())
+    }
+
     pub fn upsert_session_in(
         &self,
         tx: &Transaction<'_>,

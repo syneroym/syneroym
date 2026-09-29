@@ -54,83 +54,18 @@
 //! Skips when the Roym wasm artifacts or the UI bundle are absent
 //! (`mise run build:roym` / `mise run build:roym-ui`).
 
-use std::time::Duration;
-
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate};
-use syneroym_sdk::SyneroymClient;
 
 mod common;
 
-use common::roym::{RoymNode as Node, roym_artifacts_present, wait_until};
-
-const DIRECTORY_INTERFACE: &str = "syneroym-roym:directory/api@0.1.0";
-
-/// One JSON-RPC `invoke` frame delivered to `target_did`'s directory
-/// interface over a real QUIC stream, from a freshly generated identity
-/// with no delegation. The connection key is still verified by the
-/// handshake, so the router reads `CallerOrigin::Verified(<generated
-/// did>)` -- a stranger, not an anonymous caller. A truly key-less
-/// `Anonymous` wire caller cannot be expressed over iroh; the parity
-/// suite covers that arm with `AuthLevel::System`.
-/// Returns the inner `envelope::Response`-shaped value the guest produced.
-async fn stranger_wire_invoke(
-    registry_url: &str,
-    target_did: &str,
-    method: &str,
-    params: Value,
-) -> Value {
-    let frame = json!({ "method": method, "params": params }).to_string();
-    let mut client = SyneroymClient::new_with_identity(
-        target_did.to_string(),
-        registry_url.to_string(),
-        Identity::generate().unwrap(),
-    )
-    .with_registry_dht(false);
-    client.connect().await.expect("anonymous caller failed to connect to the directory");
-    let resp = client
-        .request(DIRECTORY_INTERFACE, "invoke", json!([frame]))
-        .await
-        .expect("anonymous invoke returned a wire error");
-    let _ = client.shutdown().await;
-    let payload = resp.result.as_str().expect("guest returns a JSON string").to_string();
-    serde_json::from_str(&payload).expect("guest payload is JSON")
-}
-
-fn hits(result: &Value) -> Vec<Value> {
-    result["hits"].as_array().cloned().unwrap_or_default()
-}
-
-/// Drive the consumer client loop the way `roymctl roym directory find` and
-/// the Hub do: `start-run`, one `query-source` per source (respecting
-/// `max_concurrency`), then `merge`. Returns `(run_id, merge_result)`.
-async fn run_client_loop(node: &Node, query: Value) -> (String, Value) {
-    let start = node.rpc_ok("directory.start-run", json!({})).await;
-    let run_id = start["run_id"].as_str().unwrap().to_string();
-    let sources: Vec<String> = start["sources"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    let max_concurrency = start["max_concurrency"].as_u64().unwrap_or(1).max(1) as usize;
-    for chunk in sources.chunks(max_concurrency) {
-        for source in chunk {
-            let _ = node
-                .rpc(
-                    "directory.query-source",
-                    json!({ "run_id": run_id, "source": source, "query": query }),
-                )
-                .await;
-        }
-    }
-    let merged = node.rpc_ok("directory.merge", json!({ "run_id": run_id })).await;
-    (run_id, merged)
-}
-
-async fn listing_envelope(node: &Node, listing_id: &str) -> String {
-    let row = node.rpc_ok("listing.get", json!({ "listing_id": listing_id })).await;
-    row["envelope"].as_str().unwrap().to_string()
-}
+use common::{
+    roym::{RoymNode as Node, roym_artifacts_present},
+    roym_flow::{
+        deliver_one_message, hits, listing_envelope, run_client_loop, stranger_wire_invoke,
+    },
+};
 
 fn listing_params(title: &str, summary: &str) -> Value {
     json!({
@@ -142,29 +77,6 @@ fn listing_params(title: &str, summary: &str) -> Value {
             "tax_included": true, "payee": "provider"
         }
     })
-}
-
-/// `conversation.open` on a raw address with no contact entry, one message
-/// sent and driven to `delivered` with retries.
-async fn deliver_one_message(from: &Node, to_label: &str, address: &str, body: &str) {
-    let opened = from.rpc_ok("conversation.open", json!({ "address": address })).await;
-    let conv = opened["conversation_id"].as_str().unwrap().to_string();
-    let sent =
-        from.rpc_ok("conversation.send", json!({ "conversation": conv, "body": body })).await;
-    let message_id = sent["message_id"].as_str().unwrap().to_string();
-    assert_eq!(sent["state"], "pending", "born pending, from the host");
-    let delivered = wait_until(Duration::from_secs(150), || {
-        let (from, message_id) = (from, message_id.clone());
-        async move {
-            let _ = from.rpc("conversation.retry", json!({ "message_id": message_id })).await;
-            let s = from
-                .rpc_ok("conversation.delivery-status", json!({ "message_id": message_id }))
-                .await;
-            s["state"] == "delivered"
-        }
-    })
-    .await;
-    assert!(delivered, "{} -> {to_label} message must deliver: {body}", from.label);
 }
 
 #[tokio::test]
@@ -261,14 +173,26 @@ async fn roym_directory_search_half_across_three_substrates() {
     assert_eq!(x_verify["conversation_address"], y_conv_did);
     deliver_one_message(&node_x, "node-y", &y_conv_did, "hello via direct link").await;
 
-    // --- Step 5: Z adds Y to the roster. No credential is issued
-    //     (a later cross-installation-trust concern). ------------------
+    // --- Step 5: Z adds Y to the roster and issues a membership
+    //     credential -- a publish now needs one. -----------------------
     let member = node_z
         .rpc_ok("member.add", json!({ "did": owner_y_did, "note": "verified provider" }))
         .await;
     assert_eq!(member["did"], owner_y_did);
     let z_info_after = node_x.rpc_ok("directory.probe-info", json!({ "did": z_dir_did })).await;
     assert_eq!(z_info_after["member_count"], 1, "info reports the roster size, not the roster");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let credential = node_z
+        .rpc_ok(
+            "credential.issue",
+            json!({
+                "member_did": owner_y_did,
+                "categories": ["cycling", "plumbing"],
+                "expires_at_secs": now + 30 * 24 * 3600,
+            }),
+        )
+        .await;
+    assert!(credential["record_id"].is_string(), "Z issues Y a credential: {credential}");
 
     // --- Step 6: Y publishes to Z through directory.publish-to-source,
     //     over the wire, verified. --------------------------------------
@@ -303,7 +227,10 @@ async fn roym_directory_search_half_across_three_substrates() {
     assert_eq!(hit["listing_id"], y_listing_id);
     assert_eq!(hit["issuer"], owner_y_did);
     assert_eq!(hit["revocation_status"], "unknown", "revocation renders unknown, never positive");
-    assert_eq!(hit["credential"], "unknown", "membership renders unknown, never positive");
+    assert_eq!(
+        hit["sources"][0]["membership"]["state"], "valid",
+        "X's own check of the credential Z issued Y in step 5: {hit}"
+    );
     assert!(hit["verified"].as_bool().unwrap_or(false), "X's own verdict, not Z's: {hit}");
     assert!(
         hit["age_secs"].as_u64().unwrap() < 3600,
@@ -438,6 +365,20 @@ async fn roym_directory_search_half_across_three_substrates() {
                 "dispute_path": "n/a",
                 "retention_secs": 30 * 24 * 3600,
                 "publication_limits": { "window_secs": 24 * 3600, "max_per_window": 20 },
+            }),
+        )
+        .await;
+    // Y issues itself a credential from its own new SynOrg -- a publish
+    // needs one even for the owner's own directory.
+    let y_now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    node_y
+        .rpc_ok(
+            "credential.issue",
+            json!({
+                "member_did": owner_y_did,
+                "categories": ["cycling"],
+                "expires_at_secs": y_now + 30 * 24 * 3600,
             }),
         )
         .await;

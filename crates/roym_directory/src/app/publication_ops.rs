@@ -8,16 +8,49 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     admit::Caller,
+    area::Area,
     clock,
     envelope::{Request, Response},
     listing::{self, ListingVerdict},
+    membership::{self, ListingRef, MembershipVerdict},
     safety::{self, Admission, PublicationLimits},
 };
 
 use super::{
     NODE_STATE, PUBLICATION_LOG, PUBLICATIONS, SEARCH_INDEX, SETTINGS, SETTINGS_KEY, collect_raw,
-    ensure_coll, get_json, idx, owner_did_or_node, put_json, search_ops, synorg,
+    ensure_coll, get_json, idx, owner_did_or_node, put_json, search_index_indexes, search_ops,
+    standing, synorg,
 };
+
+/// A listing is admitted only from a member whose credential from this
+/// SynOrg checks out on this node for exactly this listing. A withdrawal
+/// never reaches here: a suspended member must still be able to take a
+/// listing down.
+async fn require_member<H: AppHost>(
+    host: &H,
+    listing_issuer: &str,
+    payload: &listing::ListingPayload,
+    now: u64,
+) -> Result<(), Response> {
+    let areas: Vec<Area> =
+        payload.location.as_ref().map(|l| l.service_area.clone()).unwrap_or_default();
+    let listing = ListingRef {
+        listing_id: &payload.listing_id,
+        categories: Some(&payload.categories),
+        areas: Some(&areas),
+    };
+    let verdict = standing::own_verdict(host, listing_issuer, Some(listing), now)
+        .await
+        .map_err(Response::internal_error)?;
+    match verdict {
+        MembershipVerdict::Valid { .. } => Ok(()),
+        other => Err(Response::invalid_params(format!(
+            "this SynOrg does not admit this listing: {}",
+            membership::verdict_word(&other)
+        ))
+        .with_data(json!({ "admission": "not-admitted", "membership": other }))),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(in crate::app) struct PublicationRow {
@@ -101,7 +134,7 @@ async fn publication_secs_in_window<H: AppHost>(
 /// values it holds -- the fix for the stale-row bug a republish with fewer
 /// areas would otherwise leave behind.
 async fn delete_search_index_for<H: AppHost>(host: &H, listing_id: &str) -> Result<(), String> {
-    ensure_coll(host, SEARCH_INDEX, &[]).await?;
+    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
     AppDataLayer::delete_many(
         host,
         SEARCH_INDEX.to_string(),
@@ -161,13 +194,7 @@ pub(in crate::app) async fn publish<H: AppHost>(
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[idx("listing_id", IndexType::String)]).await {
         return Response::internal_error(e);
     }
-    if let Err(e) = ensure_coll(
-        host,
-        SEARCH_INDEX,
-        &[idx("listing_id", IndexType::String), idx("status", IndexType::String)],
-    )
-    .await
-    {
+    if let Err(e) = ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await {
         return Response::internal_error(e);
     }
 
@@ -183,6 +210,10 @@ pub(in crate::app) async fn publish<H: AppHost>(
 
     if matches!(payload.status, listing::ListingStatus::Withdrawn) {
         return withdraw_publication(host, &payload.listing_id).await;
+    }
+
+    if let Err(resp) = require_member(host, &issuer, &payload, now).await {
+        return resp;
     }
 
     let limits = settings.publication_limits;
@@ -423,7 +454,16 @@ async fn store_publication_and_index<H: AppHost>(
     .map_err(|e| e.to_string())?;
 
     delete_search_index_for(host, &payload.listing_id).await?;
-    for row in search_ops::build_index_rows(payload, &record_id, &issuer, issued_at_secs, now) {
+    let listed_window =
+        standing::listed_window_for(host, &issuer, &payload.listing_id, now).await?;
+    for row in search_ops::build_index_rows(
+        payload,
+        &record_id,
+        &issuer,
+        issued_at_secs,
+        now,
+        listed_window,
+    ) {
         let key = search_ops::search_index_key(&row.listing_id, row.area_index);
         put_json(host, SEARCH_INDEX, &key, &row).await?;
     }
@@ -465,7 +505,7 @@ async fn prune_expired_publications_now<H: AppHost>(
 ) -> Result<(), String> {
     let floor = now.saturating_sub(retention_secs);
     ensure_coll(host, PUBLICATIONS, &[]).await?;
-    ensure_coll(host, SEARCH_INDEX, &[]).await?;
+    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
     AppDataLayer::delete_many(
         host,
         PUBLICATIONS.to_string(),

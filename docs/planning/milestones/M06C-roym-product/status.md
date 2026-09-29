@@ -24,7 +24,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C6 | Directory: the search half (R1 row 5) | **Complete (2026-09-06) — shipped as [PR #161](https://github.com/syneroym/syneroym/pull/161)** — core service, admission rule, roymctl, 34 parity scenarios (2026-09-05); the two-directory parity harness, three-substrate e2e, Hub Directory/SynOrg UI + `roym-hub.spec.ts` cases 13–23b, and WO5 in the Post-C6 follow-up; a 35-finding review (28 + N1–N8) fully incorporated in two passes (`0487c42`..`c5871a9`). Gates: workspace 152/0, parity 115/0 both builds, e2e 42+4. R1 row 5's acceptance test is markable (rendered + cross-installation halves both covered). One backlog row stays open (a `roymctl` CLI-argument test); narrower notes on Hub cases 15 / 22 / 23b. See its own section, "What C6 did not build", "Post-C6 follow-up", and "Second review pass" below | C5 |
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | **Complete (2026-09-08)** — [implementation plan](slice-c7-implementation-plan.md), evidence below. R1's acceptance gate closed across all six rows | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | **Complete (2026-09-24)** — [implementation plan](slice-c8-implementation-plan.md), evidence below. R2's acceptance gate closed across all five rows | C7 |
-| C9 | Cross-installation trust (R3, all three rows) | Not started | C8 |
+| C9 | Cross-installation trust (R3, all three rows) | **Done 2026-09-29** — [implementation plan](slice-c9-implementation-plan.md). The signed credential/revocation/moderation mechanism, the publish/search membership gate and `roymctl` (WO1-WO4); 197 dual-build parity tests including the two-SynOrg and hostile-trust-source scenarios (WO5); the three-installation e2e (WO6); the inherited cross-node conversation cases (WO7); the Hub screens with vitest and Playwright (WO8). See "C9" below | C8 |
 | C10 | Private group chat in the product (R4, all five rows) | Not started | C5, C9 |
 
 ---
@@ -1978,3 +1978,494 @@ All standard quality gates executed and confirmed 100% green on 2026-09-24:
 | UI Build | `npm run build --prefix crates/roym_web/ui` | **Passed** | Clean TypeScript compile and bundle build |
 
 **Release 2 Gate Status:** With Slice C8 complete, all five rows of Release 2 (R2 — "The transaction vertical") in `docs/roym-integrated-experience-spec.md` have their acceptance criteria passed and verified. R2 is officially closed.
+
+---
+
+## C9 — Cross-installation trust (done)
+
+Work against [slice-c9-implementation-plan.md](slice-c9-implementation-plan.md), branch
+`feat/m06c-slice-c9-trust`. R3's three acceptance rows are met: the mechanism is proven on
+both builds by the parity suite, and across three separate installations discovered through
+the registry by `roym_trust_e2e`. WO1-WO5 below were written when only the mechanism
+existed; the sections after the code-review rounds record what was built to finish the slice.
+
+### Done (WO1–WO5)
+
+- **`roym_core::membership`** (WO1): `MembershipCredentialPayload`, `RevocationPayload`,
+  `ModerationDecisionPayload`, the one pure `evaluate` verdict function and
+  `listed_window`, 16 unit tests. Wired into `record.rs`, `router.rs`, `backup.rs`,
+  `directory::SearchHit`. `directory` added to every `SIGNING_SERVICES` list.
+- **`roym_directory` server half** (WO2): `credential.issue/list`, `revocation.issue/list`,
+  `member.suspend/lift/decisions`, `directory.standing` (wire-open, the fourth
+  wire-reachable verb), a derived per-member `standing` row rebuilt on every
+  issue/revoke/suspend/lift. The publish gate (`require_member`) refuses a listing from a
+  non-member or one outside the credential's scope. The search host filter adds a
+  listed-window clause on `search_index` rows (D-C9-9) so a suspended/revoked member's
+  listings cannot spend the candidate ceiling; a guest-side re-check on the returned hits
+  is the second guard. `directory.export` is now a signed bundle
+  (`credentials`/`revocations`/`moderation_decisions`/`held_memberships` sections added,
+  schema version 3 → 4); `import` verifies the signature and rebuilds standing before the
+  search index. `member.remove` is refused while the member's credential still verifies.
+- **`roym_directory` client half** (WO3): `SourceRow.issuer_did` pinned on first use and
+  never re-pinned by a later reply (D-C9-4); each search hit carries a membership verdict
+  computed on this node from the source's signed evidence; `directory.check-standing` and
+  `directory.memberships` serve the held copies, always re-evaluated on read from stored
+  evidence, never a cached verdict.
+- **`roymctl`** (WO4): `roym directory credential issue/list/revoke`, `standing`,
+  `memberships`, `member suspend/lift/decisions`, `directory add --issuer`. New
+  `trust.rs`/`find.rs` split out of `directory.rs` (which had grown past its 800-line
+  cap). CLI parse tests added for every new subcommand plus `find`/`serve`/`member add`,
+  which had none before (closes that part of the C6 backlog row).
+- **Dual-build parity** (WO5): every existing directory-touching fixture
+  (`ensure_synorg`/`ensure_dir2_synorg`/scenario 83's bespoke settings) now grants the
+  membership credential a publish needs; `strip_volatile` strips a membership verdict's
+  own clock reads (`revocations_checked_as_of_secs`, `as_of_secs`); scenarios 93, 117,
+  118 (renamed "four verbs"), 170 (renamed, now asserts the signature) and
+  `scenario_8_status_on_all_six_services` updated for the new shape/schema version. 15
+  new scenarios (173–181, 186, 188–192) prove the credential/revocation/moderation
+  lifecycle, the publish/search gate, held-copy re-evaluation, the signed export round
+  trip, and the search-index listed-window mechanics directly (reading raw rows through
+  the new `trust_fixtures::service_rows`).
+  **Evidence:** `cargo nextest run -p syneroym-roym-web --test dual_build_parity` —
+  **184/184 passed**, both builds byte-identical.
+
+**Enrolment-gate consequence.** `directory` joined `SIGNING_SERVICES`
+(`crates/roym_web/ui/src/session/enrolment.ts`), the list `pendingEnrolment`
+checks before the Hub considers itself ready. Every Hub installation now
+needs `directory`'s record-signing certificate installed before that gate
+opens — including a person who only ever consumes other directories and
+never runs a SynOrg of their own.
+
+### Code-review fixes (2026-09-28)
+
+A review of WO1–WO5 against R3 and the spec (see `deferred-backlog.md`
+row for the branch) found several defects that let a withdrawn member
+look valid, ahead of WO6's end-to-end proof catching them. Fixed on this
+branch, with new coverage:
+
+- `standing::rebuild_for` kept the 8 newest moderation decisions by age;
+  an old, never-lifted suspension with no end date could fall out of that
+  window once 8 newer decisions existed, silently re-admitting the
+  member. Selection now always keeps every active unlifted suspension,
+  pairing a suspend with its lift so the two are never split by the cap
+  (parity scenario 194).
+- `check-standing`'s offline fallback judged stale cached evidence at the
+  stale fetch time instead of now, so an unreachable directory could keep
+  an expired credential or an ended suspension looking valid indefinitely
+  (`held.rs`).
+- `revocation.issue` and `member.lift`'s idempotent-retry paths returned
+  the existing record without re-running the standing rebuild, so a retry
+  after a partial failure could leave the member looking unrevoked until
+  a manual `directory.reindex` (`credential_ops.rs`, `moderation_ops.rs`).
+- `revocation.issue` accepted a credential id that had already been
+  superseded by a newer one; `pick_current` already ignores such a
+  credential, so the revocation changed no verdict anywhere. Now refused,
+  naming the current credential (parity scenario 195).
+- `membership::evaluate`'s revocation check had no bound on how many
+  revocations it verified per reply, unlike credentials and decisions;
+  now capped the same way (unit test).
+- `member.suspend`'s `until_secs` silently became "until lifted" for a
+  non-numeric value (a string or float); now refused (parity scenario
+  196).
+- `directory.standing`, wire-open to anonymous callers, accepted any
+  string as `member_did`; now requires a did:key (parity scenario 197).
+- A stored decision/credential/revocation row's `issued_at_secs` came
+  from a separate `clock::now_secs()` read rather than the signed
+  envelope itself; both are now derived from the same parsed envelope
+  (`sign_as_synorg`).
+- Three existing parity tests were weaker than their names claimed: the
+  "unknown member" step of scenario 175 queried a member `ensure_synorg`
+  already grants a credential; scenario 188's export/import round trip
+  re-imported into the same store (indistinguishable from a no-op) and
+  suspended a member with no listing (making "search still hides"
+  vacuous) — it now imports into a second, empty installation and
+  suspends the listing's own owner; scenario 191 checked reply size
+  against the outbox's queued-payload limit instead of the actual proxy
+  frame limit, used one credential per hit rather than a cap's worth,
+  and asserted only the (far too loose) frame limit rather than a budget
+  close to what a full page actually needs.
+
+Not fixed, left for WO6–WO8 or the backlog (see `deferred-backlog.md`):
+the issuer pin's trust-on-first-use has no cryptographic binding to the
+directory serving it; the Hub's WO8 gap (no credential-issue/revoke
+screens) means a Hub-only user cannot publish once the credential gate
+is live; two directories rebuilding one member's standing at once is an
+unguarded read-then-write; a search reply repeats one issuer's evidence
+once per hit rather than once per issuer; more than `MAX_EVIDENCE_DECISIONS`
+*concurrently active, distinct-listing* suspensions on one member cannot
+all ride in the evidence cap (the oldest are dropped, same shape as the
+bug this slice fixes, just at a far higher and less likely count).
+
+**A second review round found the first fix for the lead finding was
+incomplete, and that a pushback in the first round was wrong.** Both are
+corrected here.
+
+- The `select_evidence_decisions` fix above (194) only changed which
+  decisions get *written* into a member's standing row -- it did not
+  change `membership::suspend_decisions`, the *reader* both `evaluate`
+  and `listed_window` use, which still takes only the first
+  `MAX_EVIDENCE_DECISIONS` entries off the array before checking which
+  are active. Once a member could have *more than* `MAX_EVIDENCE_DECISIONS`
+  active suspensions at once (which the write-side fix now allows,
+  unbounded), the reader silently dropped the oldest of them again, at
+  read time instead of write time -- the same bug, one layer over. Fixed
+  by making the writer choose, not just include: an active
+  *membership*-scope suspension is kept alone, since it already covers
+  every listing and makes every other suspension redundant; only when
+  none exists does the writer fall back to including as many active
+  *listing*-scope suspensions as the cap allows. The writer now never
+  produces more than `MAX_EVIDENCE_DECISIONS` decisions, so the reader's
+  existing cap (kept, as the defensive bound it is for a *hostile*
+  source's oversized reply) can no longer disagree with it. New parity
+  scenario 198 drives a membership-wide suspension alongside
+  `MAX_EVIDENCE_DECISIONS` separate, never-lifted, listing-scope ones --
+  one more active decision than the old fix could represent.
+- The first round's reasoning for reverting the `issued_at_secs` fix
+  ("the wasm and native stacks pin the signing clock independently") was
+  wrong -- the harness pins one shared value for both
+  (`RecordClock::Fixed(wall_now + 240)`), and scenario 173 already
+  compares signed envelopes byte-for-byte across builds successfully.
+  The real cause of that round's `scenario_117` failure was the same
+  stale-wasm-artifact trap this round's own scenarios 195/196 hit (see
+  below): the fix was re-applied and, on a freshly built wasm component,
+  passes cleanly on the full 189-scenario suite. It stays in.
+- `standing::rebuild_for`'s revocations could exceed `MAX_EVIDENCE_CREDENTIALS`
+  if two `revocation.issue` calls for the same credential ever raced past
+  its idempotency check (a read then a write, same shape as the
+  concurrent-rebuild gap above) and each stored its own row -- the
+  now-duplicated array could then push the credential that actually
+  matters past `evaluate`'s revocation cap. `rebuild_for` now keeps at
+  most one revocation per credential (the newest, if it ever finds more
+  than one), so the array can never exceed the number of credentials it
+  was built from.
+
+**A third review round found the fix above for the reader/writer gap was
+itself still one case short, and that a new test added in the second
+round could not fail.**
+
+- The membership-scope shortcut added above treated *any* active
+  membership-scope suspension as sufficient on its own -- but that is
+  only true while it stays active. A *timed* membership suspension (one
+  with a real `until_secs`) stops applying at that time, same as any
+  other decision; if it was newer than an older *permanent* membership
+  suspension on the same member, the shortcut picked the timed one,
+  dropped the permanent one for being "redundant", and once the timed
+  one ended nothing was left to keep the member hidden -- nobody ever
+  lifted the permanent suspension, it was simply never in the evidence
+  anymore. Fixed by requiring the shortcut's suspension have no end date
+  at all: a timed membership suspension no longer qualifies for it, no
+  matter how new. When a permanent one is present the shortcut still
+  fires on that permanent suspension alone, exactly as before; the timed
+  one (and everything else) is then picked up separately by the
+  remaining-slots step that already ran after the shortcut, unchanged.
+  Only when *no* permanent membership suspension exists at all does
+  selection fall through to the general active-suspension path below.
+  New parity scenario 199 issues a permanent membership suspension,
+  seven listing-scope ones, then a newer timed membership suspension,
+  and asserts the permanent one still rides in the evidence.
+- Scenario 191's tighter budget (added in the second round) compared the
+  full reply's byte size against `hits[0]`'s own size times the hit
+  count -- but `hits[0]` already carries its own copy of the per-hit
+  evidence the budget was meant to bound, so the comparison scaled with
+  whatever the reply actually produced and could not fail regardless of
+  how much duplication existed. Replaced with a budget built from a
+  quantity the reply under test cannot inflate: one credential's byte
+  size, measured from `credential.list` before the search runs at all,
+  times the known hit and credential caps.
+
+**A fourth review round found the shortcut's own fallback path had the
+same shape of bug it was written to fix, one level down, and that the
+third round's own tighter budget was still loose enough to hide a
+genuine full duplication.**
+
+- The general path used when no permanent membership suspension exists
+  (the `else` branch of the shortcut above) picked which active
+  suspensions to keep by recency alone, same as the very first version
+  of this function. With more than `MAX_EVIDENCE_DECISIONS` active
+  suspensions and no permanent one among them, a *timed* membership
+  suspension could still be the oldest of the group and get dropped for
+  newer listing-scope ones, even though it alone was hiding every
+  listing while it lasted. Fixed by ranking active suspensions for this
+  path the same way the shortcut already does: membership-scope ones
+  first, then the one that ends latest (no end date ranks above any
+  timed one) -- age only breaks a tie. New parity scenario 200 issues a
+  timed membership suspension first, then `MAX_EVIDENCE_DECISIONS`
+  newer listing-scope ones, and asserts the membership suspension still
+  rides in the evidence and the member is still hidden entirely.
+- Scenario 191's budget from the third round measured one hit's own size
+  against the reply's own first hit, so it scaled with whatever the
+  reply produced and could never fail. The fourth round's fix (above)
+  still measured only a credential's size, understating a hit's real
+  floor by leaving out the listing's own fields entirely -- loose enough
+  that one extra full copy of a hit's evidence would still fit under it.
+  Now also measures one listing's own envelope size (again before the
+  search that is being checked runs at all) and sets the budget at 1.5x
+  the resulting per-hit floor, times the hit cap -- tight enough that a
+  genuine full duplication of a hit's evidence would trip it (measured:
+  the real reply lands at about half this budget), while leaving room
+  for a hit's own field overhead the floor does not account for. The
+  comment now calls this a rough upper bound rather than an exact one.
+- One inaccuracy in this section's own previous write-up, caught by the
+  same round: it described scenario 199's timed membership suspension as
+  "falling through to the general path" alongside the permanent one --
+  the general path above runs only when *no* permanent membership
+  suspension exists, so scenario 199 (which has one) never reaches it at
+  all. The permanent suspension takes the shortcut alone; the timed one
+  is picked up separately by the ordinary remaining-slots step that
+  already ran after the shortcut, unchanged by any of this. Corrected
+  above.
+
+**A fifth review round found that the parity scenarios proving the F1,
+N5 and N7 fixes cannot reliably catch a regression in them, for a reason
+specific to this harness.** Both dual-build parity stacks sign every
+record in one scenario with the same pinned clock
+(`RecordClock::Fixed(wall_now + 240)`, `helpers.rs`), and since the row's
+`issued_at_secs` is read from that signed envelope, every decision in one
+of these scenarios ends up with the *same* `issued_at_secs`.
+`select_evidence_decisions`'s "newest first" ordering then degrades to
+comparing `record_id` -- a content hash -- which has no relationship to
+which decision was actually issued more recently. Checked directly:
+scenario 199 and 200 both still passed when the fix they exist to prove
+was reverted, purely because the hash tie-break happened to still favour
+the right decision that run. `select_evidence_decisions` is a pure
+function, so it does not need the harness at all: new unit tests in
+`crates/roym_directory/src/app/standing/tests.rs` build rows by hand
+with explicit, distinct `issued_at_secs`/`until_secs` values, covering an
+old permanent suspension against many newer lifted pairs (F1); a
+permanent suspension against a newer timed one, with enough filler
+decisions that a wrong shortcut choice provably has no room left for the
+permanent one (N5); a timed membership suspension against newer
+listing-scope ones in the fallback, and the same ranked-fallback case
+with no membership-scope suspension in the mix at all so the shortcut
+never fires (N7); and that a suspend/lift pair is never split by the cap
+in either direction. Each was checked the same way scenario 199/200
+should have been -- reverting the fix it targets and confirming the test
+fails, then restoring the fix and confirming it passes again. The parity
+scenarios stay: they are still the check that both builds agree with
+each other, just not, on their own, a check that either build is right.
+**Evidence:** `cargo nextest run -p syneroym-roym-directory standing::`
+-- **8/8 passed**.
+
+A follow-up finding on the same tests: three of their names and doc
+comments started with the review's own finding labels (`f1_`, `n5_`,
+`n7_`, "F1:", "N5:", "N7:") -- exactly the kind of reference AGENTS.md's
+no-planning-ref rule exists for, just not one the `check-planning-refs.py`
+gate's current keyword list happens to catch. Renamed to describe only
+what each test does; the rest of each name already did that on its own.
+
+**Verification note.** These fixes surfaced a trap worth calling out on
+its own: `crates/roym_web/tests/dual_build_parity` loads pre-built
+`wasm32-wasip2` component artifacts for the wasm half of each scenario,
+so a source change to `roym_directory`/`roym_core` silently runs stale
+wasm-side code until `mise run build:roym` rebuilds them. Every review
+round hit this the same way -- a genuine fix "failing" only on the wasm
+side because the wasm binary predates the fix -- and each time the wrong
+diagnosis (clock drift, a real regression) was tried first before the
+stale artifact was found. Re-run after a rebuild:
+`cargo nextest run -p syneroym-roym-web --test dual_build_parity` --
+**191/191 passed**, both builds byte-identical.
+
+### WO5 fixture gap: `directory2` has its own owner, and the trust-source scenarios (2026-09-29)
+
+- **`directory2` is a distinct SynOrg.** `trust_fixtures.rs` gained a fixed-seed
+  `dir2_owner_identity()`/`dir2_owner_did()`; `helpers.rs` registers `directory2` under it
+  (both builds); `dir2_enrol_signing` mints its record-signing certificate with that
+  owner. One more change the plan did not name was needed: `dir2_local` presents the
+  **second** owner's session (`dir2_owner_caller()`), because the signing host refuses a
+  certificate whose master is not the calling session's subject.
+- **A canned trust source, in `trust_harness.rs`.** The C6 hostile-source block moved out
+  of `helpers.rs` (whose length cap then ratcheted down) into this file, beside the new
+  `trust_source_response`: five fixed targets that each serve a **genuine, validly signed
+  listing** and membership evidence with one chosen defect — `hTrustValid` (the control,
+  so a failing target is never failing for a reason in the fixture), `hTrustForged`
+  (credential signed by the wrong key), `hTrustExpired`, `hTrustOutOfScope`,
+  `hTrustWrongSynOrg` (info names the second owner, credential signed by the first).
+- **Six scenarios**, in a new `trust_sources.rs`: 182 (each real directory's own owner
+  shows as that source's issuer, pinned from its own `info`), 183, 184, 185, 187 (a changed
+  issuer is never re-pinned: refused on search, `issuer-changed` on `check-standing`, the
+  pin untouched even by a second `add-source`), 193.
+- **The C6 two-directory scenarios (98, 102c, 102d, 119, 120) were re-run** after the owner
+  change and needed no edit.
+
+### WO7: the inherited cross-node cases
+
+`crates/conversation` gained a `test-support` feature (enabled only by
+`syneroym-substrate`'s dev-dependency) with two one-shot hooks keyed by the sending
+service id: `drop_next_ack` and `override_next_send`. `conversation_cross_node_e2e.rs` has
+nine tests over real substrates, each with a control that shows the refusal is the
+refusal under test and not something else:
+
+| B4 §10.2 row | Test | Shown |
+|---|---|---|
+| 4 | `a_lost_ack_is_retried_and_stored_once_for_a_new_and_an_existing_session` | both cases (first message on a new session; a later one), one copy held, **the peer's reply before the sender writes again, and the follow-up message, both delivered**; the hook is asserted to have fired |
+| 7 | `a_delivery_claiming_another_nodes_authorship_is_refused_and_stores_nothing` | forged send (author A **and** the conversation id B derives for A, so only the author check can refuse it) `failed` on C, nothing under A's name at B, C's honest messages before and after delivered. Checked to fail with the author check removed |
+| 8 | `a_different_signing_key_for_a_pinned_address_is_refused_and_the_pin_holds` | a second node under the same master is refused; the real A still delivers afterwards. Reverting the pinned-key check makes it fail |
+| 9 | `a_guest_calling_conversation_on_another_service_is_denied_by_the_proxy` | `PermissionDenied` naming the native-capability policy; nothing reaches B |
+| 10 | `a_guest_reaching_its_own_deliver_arm_is_still_refused_by_the_arm` | passes the proxy gate, refused by the arm (`permission denied`). The self-delivery guard itself is covered by the unit test `self_injection_via_same_service_is_refused` |
+| 11 | `prekey_requests_past_the_hourly_limit_are_refused_and_do_not_starve_an_honest_peer` | third request refused with `permission denied` on a link that carried the first two; A still establishes a session |
+| 12 | `the_pending_quota_of_one_conversation_does_not_block_another` | third send `QuotaExceeded`; a second conversation still sends |
+| 13 | `a_future_sender_timestamp_is_refused_and_a_past_one_is_kept` | +1 year refused, -1 year delivered and kept as claimed (the two differ only in the timestamp) |
+| 14 | `roym_conversation_e2e.rs`, extended | `conversation.retry` puts a failed message back to `pending` with a fresh delivery window (still `pending` two seconds later, when the peer is gone), and it settles `failed` again only when that window ends |
+| 15 | `a_send_with_no_instance_certificate_fails_naming_the_certificate` | `failed` with a reason naming the instance certificate |
+| 16, 17 | not built | alias canonicalization and `open-direct` resolution: `D-B4-29`, one backlog row |
+
+**Row 4 exposed a real defect, and it is fixed.** After a lost first ack, the sender's retry
+built a *second* session from a fresh prekey bundle (the first was never committed, since
+commit waited for the ack), and continued on it. The receiver already held the first session
+for that sender, so the sender's next message — a pre-key message for a session the receiver
+had never seen — failed to decrypt and the message was refused for good. The dedup fence
+answered the retry with the stored ack without decrypting, which is why nothing failed until
+the follow-up. The first fix was on the **receiver** (`crypto.rs::session_for_envelope`: a
+pre-key message that names a session other than the stored one opens a new inbound session,
+after the pinned-signing-key check and subject to the payload signature). Two unit tests cover
+it (`a_second_session_from_the_same_pinned_sender_replaces_the_first`, and that a replay of
+the replaced session's pre-key message is still refused).
+
+**Review of part 2 found that fix incomplete, and the sender is now fixed too.** Until the
+sender's next message reached the receiver, the receiver held session 1 and the sender held
+session 2 (or none). A reply the receiver sent in that time went out on session 1 and the
+sender refused it for good, so a request-then-quote flow could stick. The sender now saves its
+session **before** the call, so a retry continues the same session and both sides always agree.
+
+That first sender fix had a flaw of its own, found in the second review round: it encrypted and
+saved on every attempt, so each attempt at an unreachable peer moved the ratchet one step, and
+vodozemac refuses a message more than 2000 steps ahead of what the receiver has seen. A message
+pending for about a week (or ten for a day) would then fail for good when the peer came back.
+The message is now encrypted **once**: `sealed_envelope` stores the envelope in the new
+`outbound_envelopes` table and every retry resends the same bytes. The session is saved before
+the envelope, so a crash between the two wastes one step and never reuses a message key. The
+envelope is deleted when the message settles, either way. This also stops two pending messages
+from sharing one message key. The unit test `attempts_at_an_unreachable_peer_do_not_move_the_ratchet`
+makes 2,500 attempts and then checks the next message still decrypts; it fails if the stored
+envelope is ignored.
+
+The earlier worry about persisting early was a stale session that names a prekey the peer has
+dropped. That is met differently: a `Terminal` refusal of a session the peer has never answered
+on (`Session::peer_has_replied`) deletes the stored session and the next delivery starts from a
+fresh bundle. The receiver-side replacement stays, now for a sender that lost or deleted its
+session state. The e2e sends the peer's reply between the lost first ack and the sender's next
+message; it fails with the sender fix reverted.
+
+**A second, smaller defect the row-13 test exposed.** `insert_outgoing_and_enqueue` set a
+message's `received_at` from its *claimed* sender timestamp, and the outbox ages a pending
+message from `received_at`. A message claiming a timestamp a year in the past therefore read
+as expired the moment it was sent. `received_at` is now this node's own clock.
+
+Test-harness finding worth keeping: the fixture guest is reached through the registry, so a
+second node running the same service id must have its **own** registry (or `fixture_run`
+lands on the first node), and then needs the other peer's endpoint record, master anchor
+and node record copied in (`publish_node_record`).
+
+### Review of part 2 (WO5 remainder, WO6, WO7, WO8): decisions
+
+Eleven findings. Each was fixed unless said otherwise.
+
+| # | Finding | Decision |
+|---|---|---|
+| F1 | After a lost first ack the peer's replies on its own session are refused | **Fixed** on the sender (above); e2e step added and checked to fail without the fix. The follow-up N1 (ratchet moved on every attempt) is fixed by storing the envelope; N2 (a stale comment) and N3 (the Memberships tab showed `unknown` for an `issuer-changed` reply while the status line said the reply was not used; it now keeps the held copy on screen, as a reload does) are fixed too |
+| F2 | `conversation.retry` on an age-expired message never made an attempt | **Fixed**: `ConversationStore::restart_pending` resets `received_at`, which the outbox ages from. Roym's `conversation.retry` also moved its own cached row to `pending`: a history read never walks a `failed` row back, so the Hub kept showing `failed` for a message the host was attempting. The e2e asserts `pending` two seconds after the retry, inside the new window |
+| F3 | Two wasmtime advisories ignored with no backlog row | **Fixed**: row added in the backlog's security section |
+| F4 | "Check membership again" on a card replaced the listing's own verdict | **Fixed** in the Hub: the card keeps its listing-judged line, and the fresh answer goes on a separate line labelled as not tied to the listing. `check-standing` still takes no listing; judging one server-side is not built |
+| F5 | The forged-author test passed with the author check removed | **Fixed**: `SendOverride` gained `conversation_id`; the test forges it too and fails when the author check is removed |
+| F6 | The simultaneous-first-contact backlog row understated the risk | **Fixed** (wording and cause). The fix itself (several sessions per peer) stays deferred, with the same trigger |
+| F7 | A changed issuer was shown as "could not reach" | **Fixed** on both screens, with vitest cases |
+| F8 | Rows 10 and 11 accept any refusal | **Fixed**: row 11 asserts `permission denied`. Row 10's comment now says what it proves; the self-delivery guard has its own unit test |
+| F9 | The lost-ack test did not prove the hook fired | **Fixed**: `test_support::drop_ack_pending` is asserted false after each case |
+| F10 | Parity 183 was an issuer mismatch, not a forgery under the pinned name | **Fixed**: `hTrustForged` now names the pinned issuer and is signed by another key; a `membership` unit test covers the same attack |
+| F11 | The restored agreement was not checked to verify | **Fixed**: `agreement.verify` on X′'s own envelope |
+
+### WO6: three installations, R3 rows 1-3
+
+`roym_trust_e2e.rs`: one test, `a_consumer_hires_a_member_found_through_a_synorg_on_a_third_installation`,
+calling one helper per plan step (Z hosts the registry; X and Y resolve through it):
+
+1. Z declares its SynOrg; Y has a profile, a `cycling` listing and one slot.
+2. Y's publish is refused with `admission: not-admitted` and `membership.state: none`; Z issues a
+   credential; the same publish is accepted.
+3. X adds Z knowing only Z's directory DID; `source.issuer_did` is Z's owner; the registry
+   resolves Y's `catalog` and `conversation` and Z's `directory` (R3 row 1, all three
+   asserted).
+4. A stranger with no token reads Y's evidence from Z through `directory.standing`, gets `-32013`
+   from `credential.list`, and can neither look up nor dial Y's `profile`, which publishes no
+   registry record (failure-matrix row 18, both halves).
+5. X's search returns one hit whose membership is `valid`, issued by Z's owner, scoped to
+   `cycling`, expiring as issued — computed on X's node (R3 row 2).
+6. X hires Y from the hit's own conversation address through payment and both fulfilment
+   signatures to `completed`.
+7. Z suspends Y; X's next search shows nothing, X's held copy still reads `valid` with its old
+   date, and only `check-standing` shows `suspended` (R3 row 3). Z then revokes the
+   credential; X's next check shows `revoked`.
+8. X exports all five services and restores onto a clean node under X's owner identity: the
+   held membership for Y reads `revoked` there (re-evaluated from stored evidence) and the
+   finished booking is `completed`.
+
+**Wall time: about 59 s** on this machine (58.7 s under nextest), well under the 4-minute line at
+which the plan says to split step 8 out. The shared flow steps moved to
+`common/roym_flow.rs`, called by this file, `roym_booking_e2e.rs` and `roym_directory_e2e.rs`
+(which are shorter by the copies they no longer hold).
+
+### WO8: the Hub
+
+- **`membership.ts`** now holds the verdict type (mirroring the Rust enum), `membershipWords`,
+  `refusalWords`, `publishRefusalWords`, `pinnedIssuerWords` and `checkedWords`, with the two
+  notices still verbatim (the Rust test that compares them is unchanged and green). No line
+  it produces uses the word "verified", asserted for every verdict and for a missing one.
+- **Directory screen:** the hit card's fixed `membership: not checked` line is now one
+  verdict line per source, with a "Check membership again" button that calls
+  `directory.check-standing` and shows its answer on a separate line (it judges the provider
+  with no listing, so it must not replace the listing's own verdict).
+- **Memberships tab** (`screens/memberships.ts`): the held copies with their age, the issuer
+  as "the group this directory said it is when you added it", a "Check again" button per row,
+  and both notices always on screen.
+- **SynOrg members panel** (`screens/synorg_members.ts`): issue a credential (categories from
+  the SynOrg's own, days), the credentials issued with `current`/`replaced`/`revoked`, revoke
+  with a reason, suspend (whole membership or one listing, rule, reason, optional end), lift,
+  and the decision history; the no-instant-removal notice sits above them.
+- **Refusals in words:** `RpcError` now carries the refusal's `data`, so a publish refused
+  because the group does not admit the listing reads `this group did not admit this listing.`
+  followed by the person's own membership in words, and **`member.remove`'s refusal** shows on
+  its roster row instead of vanishing (the button called it with no error handling).
+- Small shared helpers (`text`, `errText`, `field`) moved to `src/dom.ts`, and `ageWords` to
+  `directory/words.ts`; the screens that had their own copies import them.
+- **Playwright** (`roym-trust.spec.ts`, six tests, run serially against the suite's one node):
+  the listing refusal in words; issue-then-search shows `Member of ... checked on your node`;
+  suspending removes the result and the held copy changes only after "Check again"; lifting
+  brings the result back; revoking shows `revoked` on the next check; no membership line ever
+  uses the word "verified". **One deliberate difference from the plan's wording:** the first
+  test refuses a member whose credential was *revoked*, not a never-member, because the suite's
+  earlier specs already issued this node's owner a credential and there is only one identity to
+  publish as; the never-member refusal is asserted at the wire in `roym_trust_e2e` (step 2) and
+  as words in vitest. `roym-hub.spec.ts`'s `membership: not checked` assertion became
+  `Member of ... checked on your node`, and the login and RPC helpers both specs use moved to
+  `hub-helpers.ts`.
+
+### Evidence
+
+| What | Command | Result |
+|---|---|---|
+| Parity, both builds byte-identical | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` | **197/197** |
+| Conversation crate | `cargo nextest run -p syneroym-conversation --all-features` | **57/57** |
+| Cross-node conversation cases | `cargo nextest run -p syneroym-substrate --test conversation_cross_node_e2e` | **9/9** |
+| Three installations | `cargo nextest run -p syneroym-substrate --test roym_trust_e2e` | **1/1**, 58.7 s |
+| Other conversation and Roym e2e touched | `conversation_e2e`, `group_conversation_e2e`, `roym_conversation_e2e`, `roym_directory_e2e`, `roym_booking_e2e` | all pass |
+| Hub unit tests | `npm test` in `crates/roym_web/ui` | **108/108**; `eslint` and `tsc` clean |
+| Hub in a browser | `npx playwright test tests/roym-trust.spec.ts` | **6/6** |
+
+**Completion pass (`mise run verify`, 2026-09-29):** fmt, clippy, file-lengths, lint-suppressions,
+module-layout, duplication (8.0%), roym-deps, planning-refs, nextest (1474 s), doctests,
+deny-licenses and the Playwright e2e (57 + 4 tests) all pass. **`audit` fails, and not because of
+this slice:** two advisories published against `wasmtime`/`wasmtime-wasi` 46.0.3
+(RUSTSEC-2026-0316 and RUSTSEC-2026-0314, fixed in 48.0.3 / 49.0.1) hit `main`'s own
+`Cargo.lock`, which this branch does not change. Clearing it is a three-major-version
+`wasmtime` upgrade and belongs in its own change.
+
+### What R3 rests on
+
+| R3 row | Where it is proven |
+|---|---|
+| 1. Three installations resolve each other through the registry; the consumer's node checks the signed credential | `roym_trust_e2e` steps 3, 5 (only Z's directory DID is given to X; every value used for Y comes out of a response) |
+| 2. A directory asserting a credential is valid does not make it valid | Parity 183-185 and 193 (forged, expired, out-of-scope, wrong-SynOrg evidence) and 187 (a changed issuer); `roym_trust_e2e` step 5 |
+| 3. A suspended member vanishes from search; a held copy shows it on next check; the product says instant removal is not promised | `roym_trust_e2e` step 7; parity 180, 181, 186; the Hub notice and `roym-trust.spec.ts` |
+
+**R3 across installations is proven on the WASM build; both builds agree on the mechanism**
+through the parity suite (`D-C9-13`).

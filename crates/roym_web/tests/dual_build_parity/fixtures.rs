@@ -13,7 +13,7 @@ use syneroym_rpc::{
 };
 use syneroym_signed_record::{Envelope, RecordDraft};
 
-use super::helpers::*;
+use super::{helpers::*, trust_fixtures};
 
 pub(crate) struct Mutant<'a, D>(pub(crate) &'a D);
 
@@ -531,19 +531,26 @@ pub(crate) async fn publish_signed_listing(h: &Harness, envelope: &str) -> (Valu
 
 /// `directory.publish` refuses on a node that has never declared itself a
 /// SynOrg (no `settings` row) -- call this before publishing in any
-/// scenario that expects the publish to succeed.
+/// scenario that expects the publish to succeed. A publish also needs a
+/// membership credential: this enrols the directory's own signing
+/// certificate and issues one to `owner_did()` and `peer_did()`, covering
+/// `trust_fixtures::FIXTURE_CATEGORIES`.
 pub(crate) async fn ensure_synorg(h: &Harness) {
     both_rpc(
         h,
         "directory.set-settings",
         json!({
-            "name": "Guild", "rules": "r", "area": [], "categories": [],
+            "name": "Guild", "rules": "r", "area": [], "categories": trust_fixtures::FIXTURE_CATEGORIES,
             "support_contact": "s@example.org", "dispute_path": "d",
             "retention_secs": 2_592_000,
             "publication_limits": { "window_secs": 86400, "max_per_window": 20 }
         }),
     )
     .await;
+    enrol_signing(h, "directory").await;
+    for member in [owner_did(), peer_did()] {
+        trust_fixtures::issue_credential(h, &member).await;
+    }
 }
 
 /// `wire_invoke` is a `Harness` method; this free function exists only so
@@ -557,54 +564,19 @@ pub(crate) async fn wire_invoke(
     h.wire_invoke(svc, envelope).await
 }
 
-/// Every arm of `directory`'s `invoke` dispatch, maintained by hand:
-/// nothing links this list to the `match` in `app.rs` at compile time.
-/// Scenario 118 asserts each of these dispatches locally (a typo or a
-/// removed verb fails there) and has exactly the wire posture below -- a
-/// verb *added* to `app.rs` and not added here is simply untested, the
-/// risk this shape accepts. A real guarantee would need `invoke` to
-/// dispatch through a `const` table the test could import.
-pub(crate) const ALL_DIRECTORY_VERBS: &[&str] = &[
-    "directory.ping",
-    "directory.settings",
-    "directory.set-settings",
-    "directory.info",
-    "member.add",
-    "member.remove",
-    "member.list",
-    "directory.publish",
-    "directory.unpublish",
-    "directory.publications",
-    "directory.search",
-    "directory.limits",
-    "directory.set-limits",
-    "directory.reindex",
-    "directory.export",
-    "directory.import",
-    "directory.add-source",
-    "directory.probe-info",
-    "directory.remove-source",
-    "directory.sources",
-    "directory.start-run",
-    "directory.query-source",
-    "directory.merge",
-    "directory.run-envelope",
-    "directory.publish-to-source",
-];
-
-/// The whole security claim of this slice: exactly these three verbs
-/// answer anything other than `-32013` over the wire.
-pub(crate) const WIRE_REACHABLE_DIRECTORY_VERBS: &[&str] =
-    &["directory.search", "directory.info", "directory.publish"];
-
 /// `directory.set-settings` on the second directory, so its `directory.info`
 /// probe answers and `directory.publish` is not refused as "no SynOrg".
+/// Also enrols its signing certificate and issues membership credentials
+/// the same way `ensure_synorg` does for the primary directory. The
+/// second directory has its own owner (`trust_fixtures::dir2_owner_did`),
+/// so it issues as a different SynOrg, and this is a local dispatch
+/// through `dir2_local` rather than `both_rpc`.
 pub(crate) async fn ensure_dir2_synorg(h: &Harness) {
     let (w, n) = h
         .dir2_local(
             "directory.set-settings",
             json!({
-                "name": "Second Guild", "rules": "r", "area": [], "categories": [],
+                "name": "Second Guild", "rules": "r", "area": [], "categories": trust_fixtures::FIXTURE_CATEGORIES,
                 "support_contact": "s@example.org", "dispute_path": "d",
                 "retention_secs": 2_592_000,
                 "publication_limits": { "window_secs": 86400, "max_per_window": 50 }
@@ -613,6 +585,10 @@ pub(crate) async fn ensure_dir2_synorg(h: &Harness) {
         .await;
     assert!(w["result"].is_object(), "dir2 set-settings wasm: {w}");
     assert!(n["result"].is_object(), "dir2 set-settings native: {n}");
+    trust_fixtures::dir2_enrol_signing(h).await;
+    for member in [owner_did(), peer_did()] {
+        trust_fixtures::issue_dir2_credential(h, &member).await;
+    }
 }
 
 /// Signs one listing on this node and publishes it into the **second**

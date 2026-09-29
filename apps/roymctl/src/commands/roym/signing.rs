@@ -9,7 +9,8 @@ use syneroym_signed_record::SCOPE_RECORD_SIGNING;
 
 /// Every Roym service that signs a record and so needs a record-signing
 /// certificate of its own.
-const SIGNING_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transaction"];
+const SIGNING_SERVICES: &[&str] =
+    &["profile", "catalog", "conversation", "transaction", "directory"];
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_enrol_signing(

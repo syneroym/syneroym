@@ -14,6 +14,7 @@ pub mod dual_build;
 pub mod envelope;
 pub mod fulfilment;
 pub mod listing;
+pub mod membership;
 pub mod money;
 pub mod payment;
 pub mod person;

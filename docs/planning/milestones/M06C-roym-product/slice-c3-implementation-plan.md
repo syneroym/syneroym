@@ -2432,6 +2432,10 @@ verifier that asks a directory whether a record is good has handed the
 directory the verdict, which failure-matrix row 2 forbids. C9 supplies the
 real source for both. Named here because "verification of … revocation" in
 the C3 row reads as one thing.
+*Update 2026-09-29: C9 supplied credential revocation only, computed by
+`membership::evaluate` on the consumer's node. Key revocation was not
+supplied: it lives in the registry's master anchor, which no guest can reach
+(`D-C9-8`, backlog).*
 
 **F. `D-06C-1` says "every signed record carries an explicit version
 field", singular.** C3 ships two (`D-C3-10`): `envelope_version` for the

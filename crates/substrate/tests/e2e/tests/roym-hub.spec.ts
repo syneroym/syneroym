@@ -1,20 +1,9 @@
 import { test, expect, type Page } from '../fixtures';
+import { loginWithDelegatedKey, rpcCall } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
 let HUB_URL: string;
 let AUTH_ORIGIN: string;
-const SESSION_KEY_FILE = process.env.ROYM_SESSION_KEY_FILE;
-
-// Drive the real delegated-key login: hand the Hub the session-key.json that
-// `global-setup`'s `roymctl session delegate` produced, exactly as a person
-// would after running the command themselves.
-async function loginWithDelegatedKey(page: Page) {
-  await expect(page.locator('.login-picker h2')).toHaveText('Sign in');
-  expect(SESSION_KEY_FILE, 'ROYM_SESSION_KEY_FILE must be set by global-setup').toBeTruthy();
-  await page.locator('input[type="file"]').setInputFiles(SESSION_KEY_FILE!);
-  await expect(page.locator('.session-bar')).toContainText('did:key:', { timeout: 15_000 });
-  await expect(page.locator('.session-bar')).toContainText('delegated');
-}
 
 test.describe('Roym Hub', () => {
   test.beforeAll(() => {
@@ -391,6 +380,17 @@ test.describe('Roym Hub', () => {
       await page.getByRole('button', { name: 'Save settings' }).click();
       await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
       await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
+      // A publish now also needs a membership credential from this SynOrg.
+      // The Hub has no screen for issuing one yet, so this grants the
+      // node's own owner one directly, over the wire this test already
+      // authenticates with.
+      const whoami = await rpcCall(page, 'session.whoami', {});
+      const issued = await rpcCall(page, 'credential.issue', {
+        member_did: whoami.result?.did,
+        categories: ['cycling'],
+        expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
+      });
+      expect(issued.result?.record_id).toBeTruthy();
     }
     // Every test shares this one node, so publications from earlier tests
     // sit in the 24 h ledger. Keep the limit generous so a fresh publish
@@ -470,7 +470,8 @@ test.describe('Roym Hub', () => {
     await expect(hit.locator('.hit-sources')).toContainText(DIRECTORY_DID!);
     await expect(hit.locator('.hit-age')).toContainText('ago');
     await expect(hit.locator('.evidence-revocation')).toHaveText('revocation: unknown');
-    await expect(hit.locator('.evidence-membership')).toHaveText('membership: not checked');
+    await expect(hit.locator('.evidence-membership')).toContainText('Member of');
+    await expect(hit.locator('.evidence-membership')).toContainText('checked on your node');
 
     // The evidence block never uses the bare word "verified" -- it says what
     // was and was not checked.
@@ -634,6 +635,13 @@ test.describe('Roym Hub', () => {
       await page.locator('.synorg-rules').fill('rules');
       await page.getByRole('button', { name: 'Save settings' }).click();
       await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
+      const whoami = await rpcCall(page, 'session.whoami', {});
+      const issued = await rpcCall(page, 'credential.issue', {
+        member_did: whoami.result?.did,
+        categories: ['cycling'],
+        expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
+      });
+      expect(issued.result?.record_id).toBeTruthy();
     }
 
     await page.getByRole('button', { name: 'Listings' }).click();
@@ -1178,5 +1186,40 @@ test.describe('Roym Hub', () => {
     expect(pendingText).toContain('transaction');
 
     await expect(page.locator('.tab-nav')).toHaveCount(0);
+  });
+
+  test('40. messages tab: searching for a word from a sent message shows one hit, and clicking it opens that conversation', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await page.getByRole('button', { name: 'Messages' }).click();
+    const peerDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000040';
+    await page.locator('.open-conversation input').fill(peerDid);
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+    const heading = page.locator('.conversation-thread h3').first();
+    await expect(heading).toHaveText(peerDid, { timeout: 15_000 });
+
+    // The node is shared across scenarios (and retries), so the searched
+    // word is unique to this run: exactly one message can hold it.
+    const word = `searchable${Date.now()}`;
+    await page.locator('.compose-input').fill(`please trim the ${word} hedge`);
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.locator('.compose-input')).toHaveValue('', { timeout: 15_000 });
+
+    // Switch the thread away, so the click below has something to change.
+    const otherDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers0000000000040b';
+    await page.locator('.open-conversation input').fill(otherDid);
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+    await expect(heading).toHaveText(otherDid, { timeout: 15_000 });
+
+    await page.locator('.message-search-input').fill(word);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const hits = page.locator('.search-results .search-hit');
+    await expect(hits).toHaveCount(1, { timeout: 15_000 });
+    await expect(hits.locator('.snippet')).toHaveText(`please trim the ${word} hedge`);
+
+    await hits.click();
+    await expect(heading).toHaveText(peerDid, { timeout: 15_000 });
   });
 });

@@ -32,6 +32,9 @@ pub const RECORD_TYPES: &[(&str, u32)] = &[
 
 pub const RECORD_PROFILE: &str = "profile";
 pub const RECORD_LISTING: &str = "listing";
+pub const RECORD_MEMBERSHIP_CREDENTIAL: &str = "membership-credential";
+pub const RECORD_REVOCATION: &str = "revocation";
+pub const RECORD_MODERATION_DECISION: &str = "moderation-decision";
 pub const RECORD_REQUEST: &str = "request";
 pub const RECORD_QUOTE: &str = "quote";
 pub const RECORD_AGREEMENT_RECEIPT: &str = "agreement-receipt";

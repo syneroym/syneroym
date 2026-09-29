@@ -11,7 +11,7 @@ use syneroym_roym_core::{
 };
 use syneroym_rpc::AuthLevel;
 
-use super::{fixtures::*, helpers::*};
+use super::{fixtures::*, helpers::*, trust_fixtures::*};
 
 // ---------------- directory ----------------
 //
@@ -141,13 +141,14 @@ async fn scenario_83_publication_limiter_refuses_past_the_budget_with_a_usable_r
         &h,
         "directory.set-settings",
         json!({
-            "name": "Guild", "rules": "r", "area": [], "categories": [],
+            "name": "Guild", "rules": "r", "area": [], "categories": FIXTURE_CATEGORIES,
             "support_contact": "s", "dispute_path": "d",
             "retention_secs": 2_592_000,
             "publication_limits": { "window_secs": 86400, "max_per_window": 1 }
         }),
     )
     .await;
+    grant_owner_credential(&h).await;
 
     let (_id, gw, _gn) = set_and_get(&h, full_listing_params("hedge-trimming-83a", "First")).await;
     let e1 = gw["result"]["envelope"].as_str().unwrap().to_string();
@@ -400,10 +401,7 @@ async fn scenario_93_a_search_response_carries_no_verification_verdict_parity() 
 
     let (w, n) = wire_invoke(&h, services::DIRECTORY, &env("directory.search", json!({}))).await;
     assert_eq!(stripped(&w), stripped(&n));
-    let hit = &w["result"]["hits"][0];
-    for key in ["verified", "revocation_status", "credential"] {
-        assert!(hit.get(key).is_none(), "a directory's own answer must carry no '{key}': {w}");
-    }
+    assert_hit_carries_no_verdict(&w["result"]["hits"][0], &w);
 }
 
 #[tokio::test]
@@ -637,7 +635,7 @@ async fn scenario_109_no_wire_reachable_method_calls_a_sibling_parity() {
 }
 
 #[tokio::test]
-async fn scenario_118_exactly_three_directory_verbs_are_wire_reachable_parity() {
+async fn scenario_118_exactly_four_directory_verbs_are_wire_reachable_parity() {
     let h = harness().await;
     for &method in ALL_DIRECTORY_VERBS {
         // Every listed verb must be a real dispatch arm, not a stale or
@@ -858,9 +856,9 @@ async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_t
 
     let (xw, xn) = both_rpc(&h, "directory.export", json!({})).await;
     assert_eq!(stripped(&xw), stripped(&xn));
-    for section in ["synorg", "publications", "members", "publication_log", "sources"] {
+    for section in DIRECTORY_BUNDLE_SECTIONS {
         assert_eq!(
-            xw["result"]["manifest"]["sections"][section]["schema_version"], 3,
+            xw["result"]["manifest"]["sections"][section]["schema_version"], 4,
             "section '{section}' must carry the bumped schema version: {xw}"
         );
     }

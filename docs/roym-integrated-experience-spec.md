@@ -215,7 +215,7 @@ tests before the next begins.
 > |---|---|
 > | R1 — a usable local guild | **Passed (2026-09-08)**. **C4** (identity, profile, contacts, safety), **C5** (catalog, conversation), **C6** (directory search), **C7** (request → quote → agreement, cards). R1's gate closed at the end of C7 |
 > | R2 — the transaction vertical | **Passed (2026-09-24). C8** |
-> | R3 — cross-installation trust | **C9** |
+> | R3 — cross-installation trust | **Passed (2026-09-29). C9** |
 > | R4 — private group chat | **C10** |
 >
 > Three earlier slices carry no release because they are groundwork the whole
@@ -249,13 +249,13 @@ tests before the next begins.
 | A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Consumer exports everything, imports on a new install | Selective export; redaction | **Passed (C8).** A same-version export/import round-trip passes; import reproduces verification status. **Reworded 2026-08-24** (M06C `D-06C-2`): this read *"Cross-version fixture test passes"*, which G5 going out of scope makes unmeetable — see [G5](#g5--public-contract-versioning). R1's listing row is unaffected and stands as written, since a same-version round-trip that preserves the version field is not cross-version work |
 | A person can recover from device loss | Encrypted backup with a tested restore path | Provider loses their machine and restores | Automatic cloud backup | **Passed (C8).** Restore on a clean node passes the durability suite with no acknowledged transaction lost |
 
-### R3 — Cross-installation trust
+### R3 — Cross-installation trust (**Passed 2026-09-29**)
 
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
-| A consumer can transact with a provider on a different install | Endpoint resolution through the discovery overlay ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)) | Consumer on install X hires a provider on install Z | Automatic discovery between SynOrgs | Full R1+R2 flow passes end to end with the three parties on three separate installs |
-| Group membership means something checkable | Signed membership credential with issuer, scope, and expiry; signed revocation list | Consumer checks a provider's guild membership | Trade licences; third-party credentials | The consumer's own node verifies signature, issuer, scope, and expiry — never the directory that served the result |
-| A group can enforce its rules | Signed, scoped moderation decision with source and timestamp | SynOrg suspends a member | Cross-group propagation; global blocklists | A suspended member vanishes from that directory's results; already-cached copies show the revocation on next check, and the document does not claim instant removal |
+| A consumer can transact with a provider on a different install | Endpoint resolution through the discovery overlay ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)) | Consumer on install X hires a provider on install Z | Automatic discovery between SynOrgs | Full R1+R2 flow passes end to end with the three parties on three separate installs. **Passed (C9).** One test walks X from Z's directory address alone, through the registry, to a finished signed booking with Y on a third installation |
+| Group membership means something checkable | Signed membership credential with issuer, scope, and expiry; signed revocation list | Consumer checks a provider's guild membership | Trade licences; third-party credentials | The consumer's own node verifies signature, issuer, scope, and expiry — never the directory that served the result. **Passed (C9).** The verdict is computed on the consumer's node from the group's signed evidence. A directory serving a forged, expired, out-of-scope or wrong-group credential does not win, and a directory's claimed issuer is pinned when it is added and never re-pinned by a later reply |
+| A group can enforce its rules | Signed, scoped moderation decision with source and timestamp | SynOrg suspends a member | Cross-group propagation; global blocklists | A suspended member vanishes from that directory's results; already-cached copies show the revocation on next check, and the document does not claim instant removal. **Passed (C9).** A suspended member's listings leave that directory's search at once; a held copy reads as it did until the consumer checks again, and the Hub says so in the same words on the Memberships screen and beside the group owner's suspend and revoke controls |
 
 ### R4 — Private group chat
 
@@ -464,7 +464,7 @@ one.
 | `profile` | The person | Who published this person's card, and the Conversation address they claim | That the person is who they say they are outside this network |
 | `listing` | Provider | Who published this offer, and when | That the offer is honest or the provider is competent; a listing's stated payee is not agreed terms until an `agreement-receipt` binds it |
 | `membership-credential` | SynOrg | This SynOrg approved this provider, within a scope, until an expiry date | That the SynOrg vetted them well, or that any other group agrees |
-| `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time | That every cached copy is gone |
+| `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time. A revocation is permanent; a suspension is a `moderation-decision`, and the consumer's check shows either | That every cached copy is gone |
 | `request` | Consumer | What the consumer asked for | — |
 | `quote` | Provider | The exact terms offered, at a version | — |
 | `agreement-receipt` | Both | Both parties accepted these exact terms, including payee, expiry, cancellation and refund terms, and dispute path | That either side will perform |
@@ -771,6 +771,12 @@ For the first release (D1):
 - **Finding is separate from trusting.** The directory helps find candidates.
   It never declares them trustworthy, and the consumer's node never takes the
   directory's word for a verification result.
+- **Which group a directory speaks for is pinned, not proven.** When a
+  consumer adds a directory, its own statement of which group it serves is
+  recorded (or the consumer names one explicitly), and a later reply never
+  changes it. Membership evidence is judged against that pin. Nothing yet
+  ties the pin to the directory's own key, so a first statement is trusted
+  as a first statement (a backlog row).
 
 The M8 Matching Fabric replaces the "which directories do I ask" step with
 deterministic placement and shard lookup. It does not change the verification

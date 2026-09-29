@@ -1,4 +1,5 @@
 import { call, RpcError } from "../rpc";
+import type { MembershipVerdict } from "./membership";
 
 /// One merged search hit, as `directory.merge` returns it. Every field the
 /// directory could not vouch for is still present -- an absent field is
@@ -14,9 +15,16 @@ export interface MergedHit {
   status: string;
   verified: boolean;
   revocation_status: string;
-  credential: string;
   age_secs: number;
-  sources: Array<{ directory: string; record_id: string; received_at_secs: number }>;
+  /// One entry per directory that served this listing. `membership` is the
+  /// verdict this node reached from that directory's own signed evidence;
+  /// `null` only for a source whose reply carried none.
+  sources: Array<{
+    directory: string;
+    record_id: string;
+    received_at_secs: number;
+    membership?: MembershipVerdict | null;
+  }>;
   versions_differ: boolean;
 }
 

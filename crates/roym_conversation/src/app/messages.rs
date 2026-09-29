@@ -345,9 +345,26 @@ pub(crate) async fn retry<H: AppHost>(host: &H, req: &Request) -> Response {
         Some(m) => m.to_string(),
         None => return Response::invalid_params("message_id is required"),
     };
-    match AppConversation::retry(host, message_id).await {
-        Ok(()) => Response::ok(json!({ "retried": true })),
+    match AppConversation::retry(host, message_id.clone()).await {
+        Ok(()) => {
+            mark_retried(host, &message_id).await;
+            Response::ok(json!({ "retried": true }))
+        }
         Err(e) => Response::internal_error(format!("{e:?}")),
+    }
+}
+
+/// A failed row is never walked back to `pending` by a history read (a
+/// stale host read must not undo a real failure), so the retry has to move
+/// it itself. Otherwise the Hub shows `failed` for a message the host is
+/// attempting again.
+async fn mark_retried<H: AppHost>(host: &H, message_id: &str) {
+    if let Ok(Some(mut row)) = load_message(host, message_id).await
+        && row.state == StoredState::Failed
+    {
+        row.state = StoredState::Pending;
+        row.last_error = None;
+        let _ = put_message(host, &row).await;
     }
 }
 

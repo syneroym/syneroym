@@ -1,4 +1,6 @@
-import { call, RpcError } from "../rpc";
+import { errText, field, text } from "../dom";
+import { call } from "../rpc";
+import { buildMembersPanel } from "./synorg_members";
 
 interface SynOrgSettings {
   name: string;
@@ -9,26 +11,6 @@ interface SynOrgSettings {
   dispute_path: string;
   retention_secs: number;
   publication_limits: { window_secs: number; max_per_window: number };
-}
-
-function errText(err: unknown): string {
-  if (err instanceof RpcError) return err.message;
-  return err instanceof Error ? err.message : String(err);
-}
-
-function text(tag: string, value: string, className?: string): HTMLElement {
-  const el = document.createElement(tag);
-  el.textContent = value;
-  if (className) el.className = className;
-  return el;
-}
-
-function field(labelText: string, control: HTMLElement): HTMLElement {
-  const label = document.createElement("label");
-  label.className = "field";
-  label.appendChild(text("span", labelText));
-  label.appendChild(control);
-  return label;
 }
 
 export async function renderSynOrg(container: HTMLElement) {
@@ -66,6 +48,7 @@ export async function renderSynOrg(container: HTMLElement) {
   if (current) {
     box.appendChild(buildLimitEditor(current.publication_limits));
     box.appendChild(await buildRoster());
+    box.appendChild(await buildMembersPanel(current.categories));
     box.appendChild(await buildPublications());
   }
 
@@ -227,11 +210,20 @@ async function buildRoster(): Promise<HTMLElement> {
         line.appendChild(text("span", m.did, "member-did"));
         if (m.note) line.appendChild(text("span", m.note, "member-note"));
         const rm = text("button", "Remove", "button remove-member") as HTMLButtonElement;
+        const refusal = text("span", "", "member-remove-error");
         rm.onclick = async () => {
-          await call("member.remove", { did: m.did });
+          refusal.textContent = "";
+          try {
+            await call("member.remove", { did: m.did });
+          } catch (err) {
+            // Refused while the member's credential still stands: say why on
+            // this row, and leave the roster as it is.
+            refusal.textContent = `Not removed: ${errText(err)}`;
+            return;
+          }
           await reload();
         };
-        line.appendChild(rm);
+        line.append(rm, refusal);
         list.appendChild(line);
       }
     } catch (err) {

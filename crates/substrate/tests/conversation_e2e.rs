@@ -14,185 +14,20 @@
 //! (`mise run build:test-components`, or `cargo component build --release
 //! --target wasm32-wasip2 -p syneroym-test-dual-build-fixture`).
 
-use std::{
-    fs,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 
-use common::SubstrateNode;
-use ed25519_dalek::VerifyingKey;
-use reqwest::Client;
+use common::{
+    SubstrateNode,
+    conversation_fixture::{Deploy, deploy_fixture, fixture_run, fixture_wasm, publish_endpoint},
+    roym::{fast_conversation_role, wait_until},
+};
 use rustls::crypto::ring;
-use serde_json::{Value, json};
-use syneroym_core::{
-    config::AppSandboxRole,
-    dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
-    test_constants,
-};
-use syneroym_identity::{
-    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
-};
-use syneroym_sdk::SyneroymClient;
+use serde_json::json;
+use syneroym_core::config::AppSandboxRole;
+use syneroym_identity::{Identity, substrate};
 use tokio::time;
 
 mod common;
-
-#[path = "common/retry.rs"]
-mod retry;
-
-/// Mirrors `syneroym_test_dual_build_fixture::native::FIXTURE_INTERFACE`
-/// (`wit/world.wit`'s `test-driver` export) without pulling in that crate
-/// as a dependency -- this file drives the deployed WASM component purely
-/// over the wire, the same way `execute_wasm_json` reaches any other
-/// guest export, and never links the native shim.
-const FIXTURE_INTERFACE: &str = "syneroym-test:dual-build-fixture/test-driver@0.1.0";
-
-/// A conversation delivery attempt must not wait out the production
-/// ~10-hour attempt budget for this test to see it stay `pending`; the
-/// default `conversation_max_pending_age_secs` (30 days) is left alone --
-/// this test never lets a delivery attempt actually fail, only stay
-/// `pending` while the peer does not yet exist.
-fn fast_conversation_role() -> AppSandboxRole {
-    AppSandboxRole { conversation_tick_secs: 1, ..AppSandboxRole::default() }
-}
-
-/// Publishes `service_id`'s endpoint record so the other node's proxy can
-/// resolve it -- copied verbatim from `proxy_outbox_e2e.rs`.
-async fn publish_endpoint(
-    service_id: &str,
-    substrate_id: &str,
-    mechanisms: Vec<EndpointMechanism>,
-    signer: &Identity,
-    registry_url: &str,
-) {
-    let mechanisms_snapshot = mechanisms.clone();
-    let info = EndpointInfo {
-        service_id: service_id.to_string(),
-        substrate_id: substrate_id.to_string(),
-        endpoint_type: EndpointType::Service,
-        nickname: None,
-        mechanisms,
-        is_private: false,
-        ttl: None,
-        not_after: u64::MAX / 2,
-        generation: 0,
-    };
-    let signed = info.sign(signer).unwrap();
-    let res = Client::new()
-        .post(format!("{registry_url}/register"))
-        .json(&signed)
-        .send()
-        .await
-        .expect("registry register request failed");
-    assert!(res.status().is_success(), "registry rejected the record: {:?}", res.text().await);
-
-    let readback = wait_until(Duration::from_secs(20), || {
-        let url = format!("{registry_url}/lookup/{service_id}");
-        async move { Client::new().get(&url).send().await.is_ok_and(|r| r.status().is_success()) }
-    })
-    .await;
-    assert!(readback, "the registry never served back the record for {service_id}");
-
-    assert!(
-        mechanisms_snapshot.iter().any(|m| matches!(m, EndpointMechanism::Iroh { .. })),
-        "the published record for {service_id} carries no Iroh mechanism: {mechanisms_snapshot:?}"
-    );
-}
-
-/// Deploys the dual-build-fixture guest as `master`'s own DID, with an
-/// installed instance certificate — uncertified services are refused
-/// on every send/deliver attempt. Mirrors `proxy_outbox_e2e.rs`'s
-/// `deploy_guest`.
-async fn deploy_fixture(node: &mut SubstrateNode, master: &Identity, wasm: Vec<u8>) -> String {
-    let service_id = substrate::derive_did_key(&master.public_key());
-    let identity = crate::call_with_reconnect!(
-        node.substrate_client,
-        node.substrate_client.instance_identity(&service_id).await
-    );
-    let pubkey_bytes: [u8; 32] = hex::decode(&identity.pubkey_hex)
-        .expect("instance pubkey is not hex")
-        .try_into()
-        .expect("instance pubkey is not 32 bytes");
-    let instance_pubkey = VerifyingKey::from_bytes(&pubkey_bytes).unwrap();
-    let cert = DelegationCertificate::issue(
-        master,
-        instance_pubkey,
-        3600,
-        SCOPE_SERVICE_INSTANCE.to_string(),
-    )
-    .unwrap();
-
-    node.substrate_client
-        .deploy_svc_wasm(
-            service_id.clone(),
-            vec![FIXTURE_INTERFACE.to_string()],
-            wasm,
-            syneroym_sdk::Publication::Private,
-            Some(cert),
-        )
-        .await
-        .expect("fixture deploy failed");
-
-    publish_master_anchor(&service_id, master, node.registry_url()).await;
-
-    // Published as well as deployed: every test call in this file reaches
-    // the fixture through an ordinary client, which resolves it through
-    // the registry like any other caller would.
-    let mechanisms =
-        node.substrate_client.lookup().await.expect("node lookup failed").info.mechanisms;
-    publish_endpoint(&service_id, node.did(), mechanisms, master, node.registry_url()).await;
-    service_id
-}
-
-/// The sender's master anchor must be resolvable wherever the *receiving*
-/// node's registry lives, or every delivery attempt fails the handshake
-/// (a transport failure, not a delivery outcome) rather than landing or
-/// dead-lettering.
-async fn publish_master_anchor(service_id: &str, master: &Identity, registry_url: &str) {
-    RegistryClient::new(false, Some(registry_url.to_string()))
-        .publish_master_anchor(service_id, vec![], None, master, true)
-        .await
-        .expect("failed to publish the master anchor");
-}
-
-/// Drives the fixture's own `test-driver::run` export -- real guest code
-/// calling `syneroym:conversation`, not a Rust-level fake.
-async fn fixture_run(node: &SubstrateNode, service_id: &str, request: &Value) -> Value {
-    let mut client = SyneroymClient::new_with_identity(
-        service_id.to_string(),
-        node.registry_url().to_string(),
-        Identity::generate().unwrap(),
-    )
-    .with_registry_dht(false);
-    client.connect().await.expect("connect failed");
-    let response = client
-        .request(FIXTURE_INTERFACE, "run", json!([request.to_string()]))
-        .await
-        .expect("run request failed");
-    client.shutdown().await.ok();
-    let payload: Value = response.result;
-    let raw = payload.as_str().expect("test-driver::run must return a JSON string");
-    serde_json::from_str(raw).expect("fixture response is not valid JSON")
-}
-
-async fn wait_until<F, Fut>(budget: Duration, mut check: F) -> bool
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let deadline = Instant::now() + budget;
-    while Instant::now() < deadline {
-        if check().await {
-            return true;
-        }
-        time::sleep(Duration::from_millis(300)).await;
-    }
-    false
-}
-
-fn fixture_wasm() -> Option<Vec<u8>> {
-    fs::read(test_constants::dual_build_fixture_wasm_path()).ok()
-}
 
 /// The reference scenario's steps 6-8, plus the never-reachable recipient
 /// case: A sends to B while B does not exist yet (stronger than merely
@@ -217,12 +52,17 @@ async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
         .owner(&owner)
         .base_path(a_dir.path())
         .inject_kek_bytes([0xcd; 32])
-        .configure(|c| c.roles.app_sandbox = Some(fast_conversation_role()));
+        .configure(|c| {
+            c.roles.app_sandbox = Some(fast_conversation_role(
+                AppSandboxRole::default().conversation_max_pending_age_secs,
+            ))
+        });
     let mut node_a = node_a_builder.clone().boot().await;
     let shared_registry = node_a.registry_url().to_string();
 
     let sender_master = Identity::generate().unwrap();
-    let sender_did = deploy_fixture(&mut node_a, &sender_master, wasm.clone()).await;
+    let sender_did =
+        deploy_fixture(&mut node_a, &sender_master, wasm.clone(), Deploy::Certified).await;
 
     // The peer's identity is deterministic from its master key, so it can
     // be named before node B ever boots -- this is the "recipient never
@@ -282,7 +122,8 @@ async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
     // The conversation store itself lives in `app_local_data_dir`, which
     // *does* survive the restart (same `a_dir`), so this proves the
     // outbox's own persistence, not the deploy catalog's.
-    let redeployed_sender_did = deploy_fixture(&mut node_a, &sender_master, wasm.clone()).await;
+    let redeployed_sender_did =
+        deploy_fixture(&mut node_a, &sender_master, wasm.clone(), Deploy::Certified).await;
     assert_eq!(redeployed_sender_did, sender_did, "redeploying must not change the service id");
 
     let outbox_after = fixture_run(&node_a, &sender_did, &json!({"op": "read-outbox"})).await;
@@ -305,7 +146,7 @@ async fn a_message_survives_a_restart_and_delivers_once_the_peer_exists() {
         .inject_kek_bytes([0xcd; 32])
         .boot()
         .await;
-    let receiver_did = deploy_fixture(&mut node_b, &peer_master, wasm).await;
+    let receiver_did = deploy_fixture(&mut node_b, &peer_master, wasm, Deploy::Certified).await;
     assert_eq!(
         receiver_did, peer_did,
         "the deployed service id must be the one A already addressed"

@@ -8,6 +8,10 @@
 pub(crate) mod fixtures;
 #[path = "dual_build_parity/helpers.rs"]
 pub(crate) mod helpers;
+#[path = "dual_build_parity/trust_fixtures.rs"]
+pub(crate) mod trust_fixtures;
+#[path = "dual_build_parity/trust_harness.rs"]
+pub(crate) mod trust_harness;
 
 #[path = "dual_build_parity/booking.rs"]
 mod booking;
@@ -31,5 +35,11 @@ mod transaction;
 mod transaction_cards;
 #[path = "dual_build_parity/transaction_validation.rs"]
 mod transaction_validation;
+#[path = "dual_build_parity/trust.rs"]
+mod trust;
+#[path = "dual_build_parity/trust_evidence_cap.rs"]
+mod trust_evidence_cap;
+#[path = "dual_build_parity/trust_sources.rs"]
+mod trust_sources;
 #[path = "dual_build_parity/wire_origin.rs"]
 mod wire_origin;

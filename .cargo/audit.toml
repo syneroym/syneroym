@@ -22,4 +22,13 @@ ignore = [
     # pkarr 6.0.1 / mainline 6.2.0 / iroh-relay 0.97.0, all of which need a
     # major-version bump to pick up the fix. Revisit with the iroh upgrade.
     "RUSTSEC-2026-0253",
+
+    # wasmtime / wasmtime-wasi 46.0.3 (advisories published 2026-09-29): a guest
+    # component can allocate past the hostcall fuel limit (0316) or panic the
+    # host through a filesystem datetime overflow (0314). Fixed only in
+    # wasmtime 48.0.3 / 49.0.1, so clearing them is a three-major-version
+    # upgrade of the sandbox engine, too large to fold into unrelated work.
+    # Revisit with a dedicated wasmtime upgrade; remove both entries then.
+    "RUSTSEC-2026-0316",
+    "RUSTSEC-2026-0314",
 ]

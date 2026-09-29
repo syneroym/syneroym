@@ -5,6 +5,7 @@ import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
 import { renderDirectory } from "./screens/directory";
 import { renderListings } from "./screens/listings";
+import { renderMemberships } from "./screens/memberships";
 import {
   ADDRESS_DISCLOSURE_NOTICE,
   DECLINE_NOTE,
@@ -140,6 +141,7 @@ async function renderTabs(container: HTMLElement, did: string) {
     { name: "Messages", render: () => renderMessages(tabContainer) },
     { name: "Listings", render: () => renderListings(tabContainer) },
     { name: "Directory", render: () => renderDirectory(tabContainer) },
+    { name: "Memberships", render: () => renderMemberships(tabContainer) },
     { name: "SynOrg", render: () => renderSynOrg(tabContainer) },
     { name: "Safety", render: () => renderSafety(tabContainer) },
     { name: "Backup", render: () => renderBackup(tabContainer) },

@@ -104,6 +104,7 @@ roym = [
 ]
 
 [dev-dependencies]
+syneroym-conversation = { workspace = true, features = ["test-support"] }
 assert_cmd.workspace = true
 flate2.workspace = true
 httparse.workspace = true

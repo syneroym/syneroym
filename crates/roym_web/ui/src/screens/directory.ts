@@ -6,7 +6,16 @@ import {
   type RefusedHit,
   type SourceOutcome,
 } from "../directory/search";
-import { call, RpcError } from "../rpc";
+import { errText, text } from "../dom";
+import {
+  checkedWords,
+  ISSUER_CHANGED_CHECK_WORDS,
+  issuerChanged,
+  membershipWords,
+  type CheckStandingReply,
+} from "../directory/membership";
+import { ageWords } from "../directory/words";
+import { call } from "../rpc";
 
 interface SourceRow {
   did: string;
@@ -15,30 +24,49 @@ interface SourceRow {
   last_error?: { kind: string; message?: string } | null;
 }
 
-function errText(err: unknown): string {
-  if (err instanceof RpcError) return err.message;
-  return err instanceof Error ? err.message : String(err);
+/// Each directory's label as the person chose it, so a membership line
+/// names the directory the way the person knows it.
+const sourceLabels = new Map<string, string>();
+
+/// One line per source: what that directory's own signed evidence shows
+/// about the provider, judged on this node, and a button that asks again.
+/// The line is judged against this listing (scope, listing-scoped
+/// suspensions). The re-check is not: `directory.check-standing` judges the
+/// provider's membership alone, so its answer goes on a separate line and
+/// never replaces the listing's own verdict.
+export function membershipLine(source: MergedHit["sources"][number], hit: MergedHit): HTMLElement {
+  const label = sourceLabels.get(source.directory) || source.directory;
+  const line = document.createElement("div");
+  line.className = "evidence-membership-row";
+  const words = text("div", membershipWords(source.membership, label), "evidence-membership");
+  const fresh = text("div", "", "evidence-membership-fresh");
+  const status = text("div", "", "membership-check-status");
+  const again = text("button", "Check membership again", "button check-membership") as HTMLButtonElement;
+  again.onclick = async () => {
+    again.disabled = true;
+    status.textContent = "";
+    try {
+      const res = await call<CheckStandingReply>("directory.check-standing", {
+        source: source.directory,
+        member_did: hit.issuer,
+      });
+      fresh.textContent = issuerChanged(res)
+        ? ""
+        : `Membership on its own, not tied to this listing: ${membershipWords(res.verdict, label)}`;
+      status.textContent = checkOutcomeWords(res);
+    } catch (err) {
+      status.textContent = `Could not check: ${errText(err)}`;
+    }
+    again.disabled = false;
+  };
+  line.append(words, again, fresh, status);
+  return line;
 }
 
-/// A stranger's directory label, listing text or error string is only ever
-/// a text node -- never markup, never a URL turned into a link.
-function text(tag: string, value: string, className?: string): HTMLElement {
-  const el = document.createElement(tag);
-  el.textContent = value;
-  if (className) el.className = className;
-  return el;
-}
-
-/// Freshness shown to the person, always spelled in words and always
-/// computed from `age_secs`, which the node already computed on this
-/// person's own clock.
-function ageWords(secs: number): string {
-  if (secs < 90) return "moments ago";
-  const mins = Math.round(secs / 60);
-  if (mins < 90) return `${mins} minutes ago`;
-  const hours = Math.round(secs / 3600);
-  if (hours < 48) return `${hours} hours ago`;
-  return `${Math.round(secs / 86400)} days ago`;
+function checkOutcomeWords(res: CheckStandingReply): string {
+  if (res.refreshed) return "Checked just now.";
+  if (issuerChanged(res)) return ISSUER_CHANGED_CHECK_WORDS;
+  return `Could not reach this directory. Showing what was ${checkedWords(res.as_of_secs ?? 0)}.`;
 }
 
 function sourceErrorWords(kind: string): string {
@@ -94,6 +122,7 @@ export async function renderDirectory(container: HTMLElement) {
       return;
     }
     for (const row of rows) {
+      sourceLabels.set(row.did, row.label);
       const line = document.createElement("div");
       line.className = "directory-source-row";
       line.appendChild(text("span", row.label || row.did, "source-label"));
@@ -351,9 +380,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       ),
     );
     evidence.appendChild(text("div", `revocation: ${hit.revocation_status}`, "evidence-revocation"));
-    evidence.appendChild(
-      text("div", "membership: not checked", "evidence-membership"),
-    );
+    for (const source of hit.sources) evidence.appendChild(membershipLine(source, hit));
     card.appendChild(evidence);
 
     const from = hit.sources.map((s) => s.directory).join(", ");

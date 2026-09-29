@@ -3,6 +3,7 @@ import { whoami } from "../session/login";
 import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
 import { toMinorUnits, currencyMinorExponent } from "../money";
+import { type SearchMatch, searchHits } from "./message_search";
 
 // These two strings are shown to the person *before* a delete runs, and are
 // pinned character-for-character against the `note` the conversation
@@ -154,18 +155,13 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
     searchResults.replaceChildren();
     if (!q) return;
     try {
-      const res = await call<{
-        hits: Array<{
-          conversation: string;
-          message_id: string;
-          snippet: string;
-        }>;
-      }>("conversation.search", { query: q });
-      if (res.hits.length === 0) {
+      const res = await call<{ matches: SearchMatch[] }>("conversation.search", { query: q });
+      const hits = searchHits(res.matches, q);
+      if (hits.length === 0) {
         searchResults.appendChild(text("p", "No messages found.", "search-empty"));
         return;
       }
-      for (const h of res.hits) {
+      for (const h of hits) {
         const item = document.createElement("div");
         item.className = "search-hit";
         item.appendChild(text("div", h.snippet, "snippet"));

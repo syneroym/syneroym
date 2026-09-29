@@ -1113,12 +1113,19 @@ directory B is refused". Change both lines to
 `set_owner(did_for_service("directory2"), dir2_owner_did())`, with a new
 `dir2_owner_identity()` / `dir2_owner_did()` (fixed seed, like
 `owner_identity()`) in the new `trust_fixtures.rs`. Enrol `directory2`
-with a certificate minted by `dir2_owner_identity()`. **Then re-run the
+with a certificate minted by `dir2_owner_identity()`. The existing
+`enrol_signing(h, service)` (`fixtures.rs:58`) **cannot** be reused: it
+goes through `both_rpc` on the main instance and mints with `h.owner`.
+Write `enrol_dir2_signing(h)` in `trust_fixtures.rs`: read
+`directory.signing-status` through `h.dir2_local`, mint a
+`record-signing` certificate over that `signing_did` with
+`dir2_owner_identity()`, and install it through `h.dir2_local`. **Then re-run the
 C6 two-directory scenarios (98, 102c, 102d, 119, 120)** before writing
 any new one: `directory2`'s local publish now records a different
 `published_by`, and its signing key changes. Fix any expectation that
-silently assumed one shared owner. `helpers.rs` is at 1487 of its 1494
-cap: the two changed lines must stay one line each.
+silently assumed one shared owner. Call it as
+`trust_fixtures::dir2_owner_did()`; the line budget for `helpers.rs` is
+handled in §8.3 ("`helpers.rs` line budget").
 
 Then run the whole directory module. Any scenario that still fails is one
 whose publisher is neither the owner nor the peer — fix it by issuing a
@@ -1159,7 +1166,7 @@ Each scenario runs on both builds and compares with `stripped(...)`.
 | 189 | `member_remove_is_refused_while_a_credential_is_valid` | then ok after revoke |
 | 190 | `lift_of_a_non_suspension_is_refused_and_lift_is_idempotent` | |
 | 191 | `search_reply_with_full_page_of_evidence_fits_the_proxy_limit` | the §5.7 size check |
-| 192 | `a_suspended_member_uses_no_candidate_slot` | D-C9-9. After `member.suspend`, every `search_index` row of that member has `listed_until_secs == 0`; after `member.lift`, the window is back. Read the rows through a raw collection read (generalize `Harness::conv_rows` to take a service name if it is conversation-only). Also: a search with `limit: 1` over one suspended and one valid member returns the valid one and `truncated: false` |
+| 192 | `a_suspended_members_index_rows_are_not_listed` | D-C9-9. After `member.suspend`, every `search_index` row of that member has `listed_until_secs == 0`; after `member.lift`, the window is back to `(0, credential expiry)`; after `revocation.issue`, `(0, 0)` again. This row-level check is the proof: the candidate ceiling is 200 distinct listings (`MAX_HITS_PER_QUERY * 4`, `search_ops.rs:180`) and does not depend on the query's `limit`, so no small search can show the ceiling effect. Read the rows with the new `service_rows(wasm, "directory", "search_index")` in `trust_harness.rs` (below). A plain search afterwards is a smoke check only |
 | 193 | `a_credential_from_one_synorg_served_by_another_directory_is_refused` | trust source pinned to `dir2_owner_did()` serves a valid-looking credential signed by `owner_did()` → `refused` |
 
 **The canned "trust source" (183–185, 193).** `hostile_source_response`
@@ -1191,13 +1198,41 @@ Targets: `hTrustForged` (credential signed by `peer_identity()`),
 and signed directly, because `RecordDraft::validate` refuses a past
 expiry.
 
-Wire it in by changing the two existing call sites
-(`helpers.rs:837` and `:922`) from
-`hostile_source_response(target)` to
-`canned_source_response(target, &request.params)`, where
-`canned_source_response` lives in `trust_harness.rs` and tries
-`hostile_source_response` first, then `trust_source_response`. That keeps
-`helpers.rs` at its current length (1487 of 1494).
+**`helpers.rs` line budget.** It is at 1487 of its 1494 cap, and this
+slice needs an import, two changed call sites, and the `directory2`
+owner change. Do not spend the last 7 lines. Instead, **move** the
+C6 hostile-source block — `HOSTILE_SOURCE_FORGERIES`,
+`FORGED_ENVELOPE_SHAPES`, and `hostile_source_response`, with their doc
+comments (`helpers.rs:289-341`, about 53 lines) — into `trust_harness.rs`.
+Nothing outside `helpers.rs` uses them (checked by grep). Then:
+
+- add one import line to `helpers.rs`:
+  `use crate::{trust_fixtures, trust_harness};` (the crate root is
+  `tests/dual_build_parity.rs`; declare both modules there with
+  `#[path = "dual_build_parity/<name>.rs"] pub(crate) mod <name>;`, next
+  to `helpers`);
+- change both call sites (`helpers.rs:837`, `:922`) to
+  `if let Some(canned) = trust_harness::canned_source_response(target, &request.params) {`
+  (94 columns, under `max_width = 100`). `canned_source_response` tries
+  `hostile_source_response` first, then `trust_source_response`;
+- after the move, **lower** the `helpers.rs` entry in
+  `xtask/oversized-test-files.txt` to the new line count (the list only
+  ratchets down), and run `cargo xtask check-file-lengths`.
+
+**Reading raw rows (scenario 192).** Do not change `Harness::conv_rows`
+(`helpers.rs:779`): it hard-codes the `conversation` service, and
+changing its signature changes its two callers in `conversation.rs`.
+Add a new reader in `trust_harness.rs` instead. The `Harness` storage
+fields are `pub(crate)`, so it can reach them:
+
+```rust
+/// Every row of `collection` in `service`'s own store, on the chosen
+/// stack. For collections no verb exposes (`search_index`).
+pub(crate) async fn service_rows(h: &Harness, wasm: bool, service: &str, collection: &str)
+    -> Vec<Value>;
+// same body as `conv_rows`, with `did_for_service(service)` in place of
+// `did_for_service("conversation")`
+```
 
 ---
 
@@ -1210,7 +1245,7 @@ Source table: `docs/planning/milestones/M06B-roym-substrate-foundations/slice-b4
 | B4 §10.2 row | Case | Covered today? | C9 action |
 |---|---|---|---|
 | 1, 2, 3, 5, 6 | pending/restart/delivered/never-delivered-while-down/no-broker-leak | Yes — `conversation_e2e.rs` | none |
-| 4 | dropped ack → retry, one copy at B | No | new test, needs Q5 hook `drop_next_ack(A's service)`: B stores and acks, A treats the ack as lost and retries. Expected: A ends `delivered`, B's history holds exactly one copy |
+| 4 | dropped ack → retry, one copy at B | No | new test, needs Q5 hook `drop_next_ack(A's service)`: B stores and acks, A treats the ack as lost and retries. Drives **both** cases in order: (a) the ack for the **first** message to B is dropped (a new session); (b) the ack for a later message on the now-existing session is dropped. After each, A sends one more message. Expected after each: the dropped message ends `delivered`, B's history holds exactly one copy of it, **and the follow-up message is delivered too** (see §9.3 for why case (a) is the risky one) |
 | 7 | node C delivers an envelope whose `author` claims A | No (unit only: `transport.rs:229`) | new test, needs Q5 hook `override_next_send(C's service, author = A's address)`. Expected: refused at the author check (`transport.rs:234`); nothing stored at B; C's outbox item `failed` |
 | 8 | a peer re-presents a different signing key for a pinned address | No | new test, **no hook**: deploy the same fixture service (same member master) on a second node, so its instance key differs, and send to B → refused, B's pin unchanged |
 | 9 | guest calls `conversation` on another service via proxy | No | new test: fixture op `ProxyCallCrossServiceNative` targeting B's service, interface `conversation`, method `deliver` → refused by the capability gate |
@@ -1306,14 +1341,28 @@ Call sites (each wrapped in `#[cfg(feature = "test-support")]`):
   as `ProxyError::Callee`, which `classify` (`transport.rs:490`) makes
   terminal. That is why the hook is not on the receiver.
 
-**A real finding this test can produce.** On the retry, A has not
-committed its ratchet, so it encrypts the same message again with the
-same message key. B has already used that key. If B decrypts before it
-checks for a duplicate `(author, id)`, the retry fails to decrypt, B
-answers with an error, and A settles `failed` for a message B holds. That
-is exactly the `D-B4-11` property row 4 exists to prove. If it fails,
-record it as a bug in `status.md` and fix it in `transport.rs`. Do not
-weaken the test.
+**What row 4 really proves, and the real risk in it.** The retry never
+reaches B's decrypt. `deliver_one` passes the message id as the
+idempotency key (`transport.rs:173`), and the receiving router's dedup
+fence (`crates/router/src/route_handler/dispatch.rs:144`, backed by
+`crates/async_queue/src/dedup.rs`) answers the retry with the stored ack.
+So row 4 mainly proves the dedup fence. **If row 4 fails, look at the
+fence first.**
+
+The real risk is case (a), the first message on a new session.
+`begin_session` (`crates/conversation/src/crypto.rs:287-321`) builds the
+outbound session but does not persist it; only `commit` does. When the
+first ack is dropped, nothing is committed. The retry finds no session,
+fetches a **new** prekey bundle (spending a second one-time key on B),
+builds a new outbound session, and encrypts again. The fence replays
+the old ack, and A then commits a session B has never seen. A's *next*
+message is encrypted in that session. Whether B can open it depends on
+whether it arrives as a pre-key message B can still build an inbound
+session from. That is why row 4 sends a follow-up message after each
+dropped ack and asserts it is delivered. If the follow-up fails in case
+(a), record it in `status.md` as a real defect. The likely fix is in
+`deliver_one`: a retry must not build a new session for a message
+whose idempotency key may already have landed. Do not weaken the test.
 
 ---
 
@@ -1364,12 +1413,21 @@ Steps and assertions:
 6b. **Failure-matrix row 18.** A stranger with a freshly generated
    identity and no token (`stranger_wire_invoke`, moved to
    `common::roym_flow` from `roym_directory_e2e.rs`) calls
-   `directory.standing { member_did: Y }` on Z → gets Y's evidence. The
-   same stranger calling `credential.list` → `-32013`. This covers row 18
-   for the new wire verb at the registry-record level. The
+   `directory.standing { member_did: Y }` on Z → gets Y's evidence
+   (**positive half**: resolves and answers with no pre-installed token).
+   **Negative half — a service that publishes no record cannot be
+   resolved:** the same stranger's `RegistryClient::lookup` of Y's
+   `profile` service DID (`visibility = "private"` in `roym.toml`, so no
+   registry record is published) fails, and a `SyneroymClient` connect to
+   that DID fails too. This is a *resolution* failure, which is what row
+   18's second sentence is about. (The stranger calling
+   `credential.list` → `-32013` is also asserted, but that is a method
+   refusal inside a service the caller already reached, not a failed
+   resolution, so it does not count for row 18.) The
    `topology_visibility = "open"` / `supervisor/resolve` path is not on
    Roym's cross-installation path at all (step 6(b)), so its backlog row
-   (`deferred-backlog.md:354`) stays open and is restated, not closed (§12).
+   (`deferred-backlog.md:354`) stays open and is restated, not closed
+   (§12). Row 18's own text in `task.md` is corrected to match (§12).
 7. **X** client loop (search `cycling`) → exactly one hit; its
    `sources[0].membership.state == "valid"`, `issuer == Z.owner_did`,
    `scope.categories == ["cycling"]`, `expires_at_secs` as issued. This is
@@ -1481,10 +1539,12 @@ Restate, do not close:
   across installations on the WASM build only, and that exit criterion 1
   is met across installations for WASM only (D-C9-13).
 - The `topology_visibility = "open"` row (`:354`): add that Roym's
-  cross-installation calls resolve service DIDs through
-  `RegistryClient` and never use `supervisor/resolve`, so R3 does not
-  depend on it, and that C9's `roym_trust_e2e` step 6b covers
-  failure-matrix row 18 at the registry-record level only.
+  cross-installation calls resolve service DIDs through `RegistryClient`
+  (`crates/router/src/proxy/router.rs:301` → `net_iroh.rs:133`) and never
+  use `supervisor/resolve`; only the compiler and the supervisor read
+  `topology_visibility`. So R3 does not depend on it, and failure-matrix
+  row 18 (reworded in `task.md`) is covered at the registry-record level
+  by `roym_trust_e2e` step 6b.
 
 ### Other documents
 
@@ -1492,7 +1552,7 @@ Restate, do not close:
 |---|---|
 | `CLAUDE.md` / `AGENTS.md` architecture paragraph | "a named three-method table" → four, adding `directory.standing`; name the `credential.*`/`revocation.*`/`member.suspend`/`member.lift` verbs as local-only |
 | `docs/roym-integrated-experience-spec.md` | R3 marked **Passed** with slice owner (only after the acceptance tests pass); in the Records table note under `revocation`/`moderation-decision`: "a suspension is a `moderation-decision`; a revocation is permanent; the consumer's check shows either" (Q4); Search section: the issuer pin |
-| `task.md` | C9 row → Complete with evidence pointer; D-06C-7's "13" corrected to the real row list (§14 item 1); reference-scenario step 5 reworded: "Y gives Z their DID outside the app; Z reviews and issues a signed membership credential" (D-C9-14); "Documents this milestone edits" row for C9 |
+| `task.md` | C9 row → Complete with evidence pointer; D-06C-7's "13" corrected to the real row list (§14 item 1); reference-scenario step 5 reworded: "Y gives Z their DID outside the app; Z reviews and issues a signed membership credential" (D-C9-14); failure-matrix row 18 (line 625) reworded, because its stated reason is wrong — the router resolves `CallTarget::Service` through `RegistryClient` (`crates/router/src/proxy/router.rs:301` → `net_iroh.rs:133`) and never reads `topology_visibility`. New text: *"It resolves with no pre-installed token, because the service publishes a registry record (`visibility = "public"`). A service that publishes none (`visibility = "private"`) cannot be resolved by that caller at all."* Evidence: `roym_trust_e2e` step 6b (both halves) and `roym_app_e2e.rs::an_unaffiliated_caller_resolves_directorys_public_record_but_not_profiles`; "Documents this milestone edits" row for C9 |
 | `status.md` | C9 section: what shipped, evidence table (same shape as C8's), the enrolment-gate consequence (§7), the e2e wall time, "R3 across installations: WASM build; both builds in parity" (D-C9-13) |
 | `slice-c3-implementation-plan.md` §18 note E | one dated line: key revocation was not supplied by C9 (D-C9-8) |
 
@@ -1575,6 +1635,10 @@ small `#[cfg(feature = "test-support")]` helper that returns
     *signing* DID (`search_ops.rs:201`), not the service DID the consumer
     addressed, and not the issuer. The Hub must not present it as the
     SynOrg's identity; the issuer is the pinned `issuer_did`.
+14. **`task.md` failure-matrix row 18 gives the wrong reason** ("because
+    the service declares `topology_visibility = open`"). The router never
+    reads that field; resolution works because the service publishes a
+    registry record. Reworded in §12.
 
 ---
 
