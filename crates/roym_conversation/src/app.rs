@@ -99,6 +99,19 @@ pub(crate) async fn put_conversation<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
+pub(crate) async fn create_conversation<H: AppHost>(
+    host: &H,
+    row: &ConversationRow,
+) -> Result<bool, String> {
+    ensure_conversations(host).await?;
+    let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
+    let val = RecordWriteValue { id: row.id.clone(), payload: bytes };
+    let res = AppDataLayer::create(host, CONVERSATIONS.to_string(), vec![val])
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(res.is_none())
+}
+
 pub(crate) async fn put_message<H: AppHost>(host: &H, row: &MessageRow) -> Result<(), String> {
     ensure_messages(host).await?;
     let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;

@@ -179,7 +179,7 @@ export function renderThreadMessages(
       continue;
     }
 
-    if (m.content_type.startsWith("application/vnd.roym.card") || m.content_type.includes("card")) {
+    if (m.content_type === "application/vnd.roym.card+json") {
       threadList.appendChild(renderRefusedCard("card", 1, CARDS_NOT_IN_GROUPS_MESSAGE));
       continue;
     }
@@ -289,7 +289,9 @@ export async function renderGroups(container: HTMLElement) {
         } catch (err) {
           if (err instanceof RpcError && err.type === "NotSignedIn") {
             renderSessionEnded(container);
+            return;
           }
+          alert(errText(err));
         }
       };
       hRow.appendChild(unhideBtn);
@@ -319,7 +321,7 @@ export async function renderGroups(container: HTMLElement) {
 
     const targetId = selectedId && rows.some((r) => r.id === selectedId) ? selectedId : rows[0]?.id;
     if (targetId) {
-      selectGroup(targetId);
+      await selectGroup(targetId);
     }
   }
 
@@ -345,13 +347,32 @@ export async function renderGroups(container: HTMLElement) {
       /* non-fatal */
     }
 
+    const contactMap = new Map<string, string>();
+    try {
+      const contacts =
+        await call<Array<{ person_did: string; display_name?: string }>>("contacts.list");
+      for (const c of contacts) {
+        if (c.person_did) {
+          contactMap.set(c.person_did, c.display_name || "");
+        }
+      }
+    } catch {
+      /* non-fatal */
+    }
+
     const memberMap = new Map<string, string>();
     for (const m of info.members) {
       if (m.person_did) {
         memberMap.set(m.address, m.person_did);
       }
     }
-    const nameOf = (addr: string) => memberMap.get(addr) || shortAddress(addr);
+    const nameOf = (addr: string) => {
+      const did = memberMap.get(addr);
+      if (did) {
+        return contactMap.get(did) || did;
+      }
+      return shortAddress(addr);
+    };
 
     // Thread Pane
     const threadCol = document.createElement("div");
@@ -365,10 +386,10 @@ export async function renderGroups(container: HTMLElement) {
     const composerBox = document.createElement("div");
     composerBox.className = "composer-box";
 
-    if (!info.is_member) {
-      composerBox.appendChild(text("p", GROUP_REMOVED_NOTICE, "notice-box"));
-    } else if (info.restored_only) {
+    if (info.restored_only) {
       composerBox.appendChild(text("p", GROUP_RESTORED_NOTICE, "notice-box"));
+    } else if (!info.is_member) {
+      composerBox.appendChild(text("p", GROUP_REMOVED_NOTICE, "notice-box"));
     } else {
       const sendInput = document.createElement("input");
       sendInput.type = "text";
@@ -453,7 +474,8 @@ export async function renderGroups(container: HTMLElement) {
 
     for (const m of info.members) {
       const li = document.createElement("li");
-      const mLabel = m.person_did || shortAddress(m.address);
+      const mLabel =
+        (m.person_did && contactMap.get(m.person_did)) || m.person_did || shortAddress(m.address);
       li.appendChild(text("span", mLabel, "member-name"));
       if (m.is_owner) {
         li.appendChild(text("span", " (owner)", "member-badge"));
@@ -467,7 +489,9 @@ export async function renderGroups(container: HTMLElement) {
           } catch (err) {
             if (err instanceof RpcError && err.type === "NotSignedIn") {
               renderSessionEnded(container);
+              return;
             }
+            alert(errText(err));
           }
         };
         li.appendChild(remBtn);
@@ -491,7 +515,11 @@ export async function renderGroups(container: HTMLElement) {
         const target = addInput.value.trim();
         if (!target) return;
         try {
-          await call("group.add-member", { conversation: gid, address: target });
+          if (target.startsWith("did:") && contactMap.has(target)) {
+            await call("group.add-member", { conversation: gid, person_did: target });
+          } else {
+            await call("group.add-member", { conversation: gid, address: target });
+          }
           addInput.value = "";
           await selectGroup(gid);
         } catch (err) {
@@ -508,10 +536,12 @@ export async function renderGroups(container: HTMLElement) {
     infoPanel.appendChild(membersBox);
 
     // Key trust & boundaries
-    const dateStr = new Date(info.key_stored_at_ms).toLocaleString();
-    infoPanel.appendChild(
-      text("div", `Group key changed here: ${dateStr} (epoch ${info.key_epoch})`, "key-changed-date"),
-    );
+    if (!info.restored_only && info.key_stored_at_ms > 0) {
+      const dateStr = new Date(info.key_stored_at_ms).toLocaleString();
+      infoPanel.appendChild(
+        text("div", `Group key changed here: ${dateStr} (epoch ${info.key_epoch})`, "key-changed-date"),
+      );
+    }
     infoPanel.appendChild(text("p", GROUP_KEY_TRUST_NOTICE, "group-key-trust-notice"));
     infoPanel.appendChild(text("p", GROUP_JOIN_BOUNDARY_NOTICE, "group-join-boundary-notice"));
 
@@ -531,7 +561,9 @@ export async function renderGroups(container: HTMLElement) {
       } catch (err) {
         if (err instanceof RpcError && err.type === "NotSignedIn") {
           renderSessionEnded(container);
+          return;
         }
+        alert(errText(err));
       }
     };
 
@@ -544,7 +576,9 @@ export async function renderGroups(container: HTMLElement) {
         } catch (err) {
           if (err instanceof RpcError && err.type === "NotSignedIn") {
             renderSessionEnded(container);
+            return;
           }
+          alert(errText(err));
         }
       }
     };
@@ -575,7 +609,7 @@ export async function renderGroups(container: HTMLElement) {
           },
           async (m) => {
             try {
-              await call("conversation.send", { conversation: gid, body: m.body });
+              await call("conversation.retry", { message_id: m.id });
               await reloadThread();
             } catch (err) {
               if (err instanceof RpcError && err.type === "NotSignedIn") {

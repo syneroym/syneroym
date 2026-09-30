@@ -623,3 +623,27 @@ fn get_message_returns_stored_message_and_preserves_signed_timestamp() {
     assert_eq!(m.body, b"body");
     assert!(!m.system);
 }
+
+#[test]
+fn get_message_hides_system_messages() {
+    let s = store();
+    let conv = s.get_or_create_direct("did:key:zAlice", "did:key:zBob", 1_000).unwrap();
+    s.insert_outgoing_and_enqueue(
+        &conv,
+        "msg:sys_key",
+        "did:key:zAlice",
+        1_500,
+        "application/vnd.syneroym.group-key+json",
+        b"secret-key-material",
+        &[0u8; 64],
+        "did:key:zBob",
+        2_000,
+        true,
+    )
+    .unwrap();
+
+    let raw = s.get_message("msg:sys_key").unwrap().unwrap();
+    assert!(raw.system);
+    let filtered = s.get_message("msg:sys_key").unwrap().filter(|m| !m.system);
+    assert!(filtered.is_none());
+}

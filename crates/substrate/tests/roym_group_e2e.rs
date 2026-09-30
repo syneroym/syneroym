@@ -9,13 +9,14 @@ use serde_json::{Value, json};
 use syneroym_conversation::test_support::{clear_clock_offsets, set_clock_offset_ms};
 use syneroym_core::config::AppSandboxRole;
 use syneroym_roym_core::conversation::group::{
-    GROUP_REMOVED_NOTICE, MEMBERSHIP_EVENT_CONTENT_TYPE,
+    GROUP_PROFILE_CONTENT_TYPE, GROUP_REMOVED_NOTICE, MEMBERSHIP_EVENT_CONTENT_TYPE,
+    parse_group_profile,
 };
 
 mod common;
 
 use common::{
-    roym::{roym_artifacts_present, wait_until},
+    roym::{RoymNode, roym_artifacts_present, wait_until},
     roym_group::{boot_trio, converge, digest, form_group, group_role, projection},
 };
 
@@ -30,7 +31,7 @@ async fn three_members_see_one_order_from_skewed_clocks() {
 
     let role = group_role(3600, AppSandboxRole::default().conversation_max_pending_age_secs);
     let trio = boot_trio(role).await;
-    let gid = form_group(&trio.z, "", &[&trio.x, &trio.y]).await;
+    let gid = form_group(&trio.z, "Skew Group", &[&trio.x, &trio.y]).await;
 
     set_clock_offset_ms(&trio.x.dids["conversation"], 90_000);
     set_clock_offset_ms(&trio.y.dids["conversation"], -90_000);
@@ -67,7 +68,7 @@ async fn three_members_see_one_order_from_skewed_clocks() {
         for (idx, r) in send_res.iter().enumerate() {
             assert!(r.get("error").is_none(), "send {idx} in iteration {i} failed: {r:?}");
         }
-        converge(&[&trio.z, &trio.x, &trio.y], &gid, 3 + (i + 1) * 6).await;
+        converge(&[&trio.z, &trio.x, &trio.y], &gid, 4 + (i + 1) * 6).await;
 
         let pz = projection(&trio.z, &gid).await;
         let px = projection(&trio.x, &gid).await;
@@ -92,10 +93,51 @@ async fn three_members_see_one_order_from_skewed_clocks() {
         assert_eq!(dz, digest(&trio.y, &gid).await);
     }
 
+    for node in [&trio.z, &trio.x, &trio.y] {
+        let info = node.rpc_ok("group.info", json!({ "conversation": &gid })).await;
+        assert_eq!(info["name"], "Skew Group", "group name on {}", node.label);
+        let hist = node.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
+        let profile_rows: Vec<_> = hist["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["content_type"] == GROUP_PROFILE_CONTENT_TYPE)
+            .collect();
+        assert_eq!(profile_rows.len(), 1, "profile row count on {}", node.label);
+        let profile_body = profile_rows[0]["body"].as_str().unwrap();
+        assert_eq!(parse_group_profile(profile_body.as_bytes()).unwrap(), "Skew Group");
+    }
+
     clear_clock_offsets();
-    trio.z.teardown().await;
-    trio.x.teardown().await;
-    trio.y.teardown().await;
+    trio.teardown().await;
+}
+
+async fn exchange_contacts(a: &RoymNode, b: &RoymNode) {
+    let a_conv = a.dids["conversation"].clone();
+    let a_prof = a
+        .rpc_ok("profile.set", json!({ "display_name": a.label, "conversation_address": a_conv }))
+        .await;
+    let a_env = a_prof["envelope"].as_str().unwrap().to_string();
+    let b_conv = b.dids["conversation"].clone();
+    let b_prof = b
+        .rpc_ok("profile.set", json!({ "display_name": b.label, "conversation_address": b_conv }))
+        .await;
+    let b_env = b_prof["envelope"].as_str().unwrap().to_string();
+    a.rpc_ok("contacts.upsert", json!({ "person_did": b.owner_did(), "profile_envelope": b_env }))
+        .await;
+    b.rpc_ok("contacts.upsert", json!({ "person_did": a.owner_did(), "profile_envelope": a_env }))
+        .await;
+}
+
+async fn membership_event_rows(node: &RoymNode, gid: &str) -> Vec<(String, String)> {
+    let hist = node.rpc_ok("conversation.history", json!({ "conversation": gid })).await;
+    hist["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["content_type"] == MEMBERSHIP_EVENT_CONTENT_TYPE)
+        .map(|m| (m["id"].as_str().unwrap().to_string(), m["body"].as_str().unwrap().to_string()))
+        .collect()
 }
 
 #[tokio::test]
@@ -109,11 +151,11 @@ async fn a_joiner_reads_nothing_before_joining() {
 
     let role = group_role(3600, AppSandboxRole::default().conversation_max_pending_age_secs);
     let trio = boot_trio(role).await;
-    let gid = form_group(&trio.z, "", &[&trio.x]).await;
+    let gid = form_group(&trio.z, "Joiner Group", &[&trio.x]).await;
 
     trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "early 1" })).await;
     trio.x.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "early 2" })).await;
-    converge(&[&trio.z, &trio.x], &gid, 4).await;
+    converge(&[&trio.z, &trio.x], &gid, 5).await;
 
     let hist_x = trio.x.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
     let early_ids: Vec<String> = hist_x["messages"]
@@ -124,36 +166,7 @@ async fn a_joiner_reads_nothing_before_joining() {
         .map(|m| m["id"].as_str().unwrap().to_string())
         .collect();
 
-    let y_conv_did = trio.y.dids["conversation"].clone();
-    let y_prof = trio
-        .y
-        .rpc_ok(
-            "profile.set",
-            json!({ "display_name": trio.y.label, "conversation_address": y_conv_did }),
-        )
-        .await;
-    let y_env = y_prof["envelope"].as_str().unwrap().to_string();
-    let z_conv_did = trio.z.dids["conversation"].clone();
-    let z_prof = trio
-        .z
-        .rpc_ok(
-            "profile.set",
-            json!({ "display_name": trio.z.label, "conversation_address": z_conv_did }),
-        )
-        .await;
-    let z_env = z_prof["envelope"].as_str().unwrap().to_string();
-    trio.z
-        .rpc_ok(
-            "contacts.upsert",
-            json!({ "person_did": trio.y.owner_did(), "profile_envelope": y_env }),
-        )
-        .await;
-    trio.y
-        .rpc_ok(
-            "contacts.upsert",
-            json!({ "person_did": trio.z.owner_did(), "profile_envelope": z_env }),
-        )
-        .await;
+    exchange_contacts(&trio.y, &trio.z).await;
 
     trio.z
         .rpc_ok("group.add-member", json!({ "group": &gid, "person_did": trio.y.owner_did() }))
@@ -166,7 +179,7 @@ async fn a_joiner_reads_nothing_before_joining() {
     assert!(ok);
 
     trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "post-join" })).await;
-    converge(&[&trio.z, &trio.x], &gid, 6).await;
+    converge(&[&trio.z, &trio.x], &gid, 8).await;
 
     let ok_w = wait_until(Duration::from_secs(60), || async {
         let _ = trio.y.rpc("group.sync", json!({ "group": &gid })).await;
@@ -196,9 +209,18 @@ async fn a_joiner_reads_nothing_before_joining() {
     }
     assert!(msgs_w.iter().any(|m| m["body"] == "post-join"));
 
-    trio.z.teardown().await;
-    trio.x.teardown().await;
-    trio.y.teardown().await;
+    for node in [&trio.z, &trio.x, &trio.y] {
+        let info = node.rpc_ok("group.info", json!({ "conversation": &gid })).await;
+        assert_eq!(info["name"], "Joiner Group", "group name on {}", node.label);
+    }
+
+    let z_members = membership_event_rows(&trio.z, &gid).await;
+    let x_members = membership_event_rows(&trio.x, &gid).await;
+    let y_members = membership_event_rows(&trio.y, &gid).await;
+    assert_eq!(z_members, x_members, "membership rows between Z and X");
+    assert_eq!(z_members, y_members, "membership rows between Z and Y");
+
+    trio.teardown().await;
 }
 
 #[tokio::test]
@@ -296,9 +318,7 @@ async fn a_removed_member_reads_nothing_after_removal() {
     .await;
     assert!(ok_tomb);
 
-    trio.z.teardown().await;
-    trio.x.teardown().await;
-    trio.y.teardown().await;
+    trio.teardown().await;
 }
 
 #[tokio::test]
@@ -336,7 +356,18 @@ async fn a_scheduled_rekey_changes_the_key_with_stable_membership() {
     trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "post-rekey" })).await;
     converge(&[&trio.z, &trio.x, &trio.y], &gid, 4).await;
 
-    trio.z.teardown().await;
-    trio.x.teardown().await;
-    trio.y.teardown().await;
+    let hz_post = trio.z.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
+    let hx_post = trio.x.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
+    let hy_post = trio.y.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
+    for (label, hist) in [("z", &hz_post), ("x", &hx_post), ("y", &hy_post)] {
+        let mem_count = hist["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["content_type"] == MEMBERSHIP_EVENT_CONTENT_TYPE)
+            .count();
+        assert_eq!(mem_count, 3, "membership event count on {label} after rekey");
+    }
+
+    trio.teardown().await;
 }

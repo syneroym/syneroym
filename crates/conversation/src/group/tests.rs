@@ -5,7 +5,7 @@ use syneroym_core::config::RetryPolicy;
 use syneroym_rpc::ConversationHost;
 
 use super::*;
-use crate::store::{ConversationConfig, StoredDagEntry};
+use crate::store::{self, ConversationConfig, StoredDagEntry};
 
 fn store() -> ConversationStore {
     let dir = tempfile::tempdir().unwrap();
@@ -647,4 +647,30 @@ async fn a_clock_offset_changes_only_signed_times() {
         epoch_created_at,
         t_start
     );
+}
+
+#[tokio::test]
+async fn get_message_hides_system_messages_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let owner = "svc:owner";
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store = service.store_for(owner).await.unwrap();
+    store
+        .insert_outgoing_and_enqueue(
+            &group_id,
+            "msg:sys_key",
+            owner,
+            store::now_ms(),
+            "application/vnd.syneroym.group-key+json",
+            b"secret-key-material",
+            &[0u8; 64],
+            "svc:bob",
+            store::now_ms(),
+            true,
+        )
+        .unwrap();
+
+    let err = service.get_message(owner, "msg:sys_key").await.unwrap_err();
+    assert_eq!(err, ConversationError::NotFound);
 }

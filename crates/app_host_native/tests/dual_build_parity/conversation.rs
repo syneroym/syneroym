@@ -270,10 +270,15 @@ async fn assert_group_add_member_send_and_history_on_a_populated_group<D: Driver
         .await
         .unwrap();
     let send_v: Value = serde_json::from_str(&send_res).unwrap();
-    assert!(
-        send_v["ok"]["message"].is_string(),
-        "{name}: send-message on a populated group must succeed: {send_res}"
-    );
+    let msg_id = send_v["ok"]["message"].as_str().unwrap();
+
+    let get_res =
+        driver.run(&format!(r#"{{"op":"get-message","message":"{msg_id}"}}"#)).await.unwrap();
+    let get_v: Value = serde_json::from_str(&get_res).unwrap();
+    assert_eq!(get_v["ok"]["id"], msg_id, "{name}: get-message id match");
+    assert_eq!(get_v["ok"]["conversation"], conv_id, "{name}: get-message conversation match");
+    assert_eq!(get_v["ok"]["author"], SERVICE_ID, "{name}: get-message author match");
+    assert_eq!(get_v["ok"]["content_type"], "text/plain", "{name}: get-message content_type match");
 
     let history_res = driver
         .run(&format!(r#"{{"op":"membership-history","conversation":"{conv_id}"}}"#))

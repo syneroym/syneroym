@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use syneroym_app_host::{
     AppConversation, AppDataLayer, AppHost,
     types::{
-        conversation::{ConversationKind, DeliveryState, Message},
+        conversation::{ConversationError, DeliveryState, Message},
         data_layer::RecordWriteValue,
     },
 };
@@ -12,7 +12,7 @@ use syneroym_roym_core::{
     clock,
     conversation::{
         ConversationRow, ConversationRowKind, DELETION_REQUEST_CONTENT_TYPE, Direction, MessageRow,
-        StoredState, encode_body, parse_deletion_request,
+        StoredState, encode_body, group::is_group_system_type, parse_deletion_request,
     },
 };
 
@@ -94,6 +94,9 @@ pub(crate) async fn honour_deletion_request<H: AppHost>(
         && target.conversation == msg.conversation
         && target.author == msg.author
     {
+        if is_group_system_type(&target.content_type) {
+            return Ok(());
+        }
         target.tombstone(now);
         put_message(host, &target).await?;
     }
@@ -121,19 +124,13 @@ pub(crate) fn incoming_row(msg: &Message, now: u64) -> MessageRow {
 async fn on_message_inner<H: AppHost>(host: &H, msg: &Message) -> Result<(), String> {
     let now = clock::now_secs();
 
-    // The kind comes from the host's own summary, never guessed. A group
-    // entry calls the same notifier; without this branch the first group
-    // message would create a direct conversation whose peer is the author.
-    let kind = AppConversation::conversations(host)
-        .await
-        .ok()
-        .and_then(|cs| cs.into_iter().find(|c| c.id == msg.conversation).map(|c| c.kind))
-        .unwrap_or(ConversationKind::Direct);
-    if kind == ConversationKind::Group {
+    let is_group = match AppConversation::group_info(host, msg.conversation.clone()).await {
+        Ok(_) => true,
+        Err(ConversationError::InvalidArgument(_) | ConversationError::NotFound) => false,
+        Err(e) => return Err(format!("group-info lookup failed: {e:?}")),
+    };
+    if is_group {
         return group::on_group_message(host, msg, now).await;
-    }
-    if kind != ConversationKind::Direct {
-        return record_refused(host, msg, "unsupported-kind", now).await;
     }
 
     let person_did = person_did_for_address(host, &msg.author).await;

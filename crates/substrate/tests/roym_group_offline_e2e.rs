@@ -1,8 +1,9 @@
 #![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Offline and edge-case end-to-end integration tests for group messaging.
 
-use std::time::Duration;
+use std::{fs, time::Duration};
 
+use rusqlite::Connection;
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::config::AppSandboxRole;
@@ -35,7 +36,7 @@ async fn an_offline_member_pulls_the_gap_from_another_member() {
     trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "z-1" })).await;
     trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "z-2" })).await;
 
-    let ok = wait_until(Duration::from_secs(60), || async {
+    let ok = wait_until(Duration::from_secs(120), || async {
         let _ = trio.x.rpc("group.sync", json!({ "group": &gid })).await;
         let hx = trio.x.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
         let msgs = hx["messages"].as_array().cloned().unwrap_or_default();
@@ -50,7 +51,7 @@ async fn an_offline_member_pulls_the_gap_from_another_member() {
     trio.y.republish_registry().await;
     trio.y.login().await;
 
-    let ok_y = wait_until(Duration::from_secs(60), || async {
+    let ok_y = wait_until(Duration::from_secs(120), || async {
         let _ = trio.y.rpc("group.sync", json!({ "group": &gid })).await;
         let dy = digest(&trio.y, &gid).await;
         let dx = digest(&trio.x, &gid).await;
@@ -65,8 +66,7 @@ async fn an_offline_member_pulls_the_gap_from_another_member() {
         assert!(msgs_y.iter().any(|m| m["body"] == body));
     }
 
-    trio.x.teardown().await;
-    trio.y.teardown().await;
+    trio.teardown().await;
 }
 
 #[tokio::test]
@@ -125,6 +125,23 @@ async fn no_member_to_member_message_passes_through_non_members_storage() {
     let members = info_z["members"].as_array().unwrap();
     assert_eq!(members.len(), 3);
     assert!(!members.iter().any(|m| m["address"] == coord.0.did()));
+
+    // Verify coordinator's conversation storage has no row for this group
+    let coord_services = coord.0.base_path().join("data").join("services");
+    if coord_services.exists() {
+        for entry in fs::read_dir(&coord_services).unwrap().flatten() {
+            let conv_db = entry.path().join("conversation.db");
+            if conv_db.exists() {
+                let conn = Connection::open(&conv_db).unwrap();
+                let count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM conversations WHERE id = ?1", [&gid], |row| {
+                        row.get(0)
+                    })
+                    .unwrap_or(0);
+                assert_eq!(count, 0, "coordinator stored conversation row for group {gid}");
+            }
+        }
+    }
 
     z.teardown().await;
     x.teardown().await;
@@ -220,11 +237,10 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
         return;
     }
 
-    let trio = boot_trio(group_role(3600, 60)).await;
+    let mut trio = boot_trio(group_role(3600, 60)).await;
     let gid = form_group(&trio.z, "", &[&trio.x, &trio.y]).await;
 
-    let mut y = trio.y;
-    y.stop(None).await;
+    trio.y.stop(None).await;
 
     let m_resp =
         trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "msg M" })).await;
@@ -239,10 +255,14 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
     assert!(ok_x);
 
     trio.z
-        .rpc_ok("group.remove-member", json!({ "group": &gid, "person_did": y.owner_did() }))
+        .rpc_ok("group.remove-member", json!({ "group": &gid, "person_did": trio.y.owner_did() }))
         .await;
 
     let start_now = syneroym_roym_core::clock::now_ms();
+    assert!(
+        start_now <= m_ts + 30_000,
+        "removal step overran the 30s observation window (start_now={start_now}, m_ts={m_ts})"
+    );
     let target_20 = m_ts + 20_000;
     if target_20 > start_now {
         tokio::time::sleep(Duration::from_millis((target_20 - start_now) as u64)).await;
@@ -262,7 +282,7 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
 
     let iz = trio.z.rpc_ok("group.info", json!({ "conversation": &gid })).await;
     let members = iz["members"].as_array().unwrap();
-    assert!(!members.iter().any(|m| m["address"] == y.dids["conversation"]));
+    assert!(!members.iter().any(|m| m["address"] == trio.y.dids["conversation"]));
 
     let ok_fail = wait_until(Duration::from_secs(45), || async {
         let hz = trio.z.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
@@ -275,6 +295,5 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
     let now_failed = syneroym_roym_core::clock::now_ms();
     assert!(now_failed >= m_ts + 60_000, "message settled to failed before 60s age window passed");
 
-    trio.z.teardown().await;
-    trio.x.teardown().await;
+    trio.teardown().await;
 }

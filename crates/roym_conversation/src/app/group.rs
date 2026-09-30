@@ -26,7 +26,7 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    REFUSED_MESSAGES, contacts_map,
+    REFUSED_MESSAGES, contacts_map, create_conversation,
     inbox::{honour_deletion_request, incoming_row, is_blocked, record_refused},
     load_conversation, load_message,
     messages::{resolve_open_address, send_and_record},
@@ -140,7 +140,10 @@ async fn adopt_one<H: AppHost>(host: &H, id: &str) -> Result<(), String> {
         AppConversation::group_info(host, id.to_string()).await.map_err(|e| format!("{e:?}"))?;
     let mut row = new_group_row(host, id, &info, clock::now_secs()).await?;
     sync_membership_rows(host, &mut row, &info).await?;
-    put_conversation(host, &row).await
+    if !create_conversation(host, &row).await? {
+        return Ok(());
+    }
+    Ok(())
 }
 
 pub(crate) async fn store_group_message<H: AppHost>(
@@ -312,6 +315,10 @@ pub(crate) async fn rename<H: AppHost>(host: &H, req: &Request) -> Response {
         }
     };
 
+    if sent {
+        row = load_conversation(host, &conversation).await.ok().flatten().unwrap_or(row);
+    }
+
     if let Some(meta) = row.group.as_mut() {
         apply_group_profile(meta, name.clone(), src);
     }
@@ -386,6 +393,10 @@ pub(crate) async fn add_member<H: AppHost>(host: &H, req: &Request) -> Response 
                 );
             }
         }
+    }
+
+    if name_sent {
+        row = load_conversation(host, &conversation).await.ok().flatten().unwrap_or(row);
     }
 
     if let Err(e) = sync_membership_rows(host, &mut row, &updated_info).await {
@@ -553,14 +564,17 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
-    if let Err(e) = AppConversation::sync_now(host, conversation.clone()).await {
-        return Response::internal_error(format!("{e:?}"));
-    }
     let mut row = match load_conversation(host, &conversation).await {
         Ok(Some(r)) => r,
         Ok(None) => return Response::invalid_params("conversation not found"),
         Err(e) => return Response::internal_error(e),
     };
+    if row.kind != ConversationRowKind::Group {
+        return Response::invalid_params("not a group conversation");
+    }
+    if let Err(e) = AppConversation::sync_now(host, conversation.clone()).await {
+        return Response::internal_error(format!("{e:?}"));
+    }
     let info = match AppConversation::group_info(host, conversation.clone()).await {
         Ok(i) => i,
         Err(e) => return Response::internal_error(format!("{e:?}")),
@@ -585,6 +599,9 @@ pub(crate) async fn hide<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(None) => return Response::invalid_params("conversation not found"),
         Err(e) => return Response::internal_error(e),
     };
+    if row.kind != ConversationRowKind::Group {
+        return Response::invalid_params("not a group conversation");
+    }
     if let Some(meta) = row.group.as_mut() {
         meta.admission = GroupAdmission::Hidden;
     }
@@ -604,6 +621,9 @@ pub(crate) async fn unhide<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(None) => return Response::invalid_params("conversation not found"),
         Err(e) => return Response::internal_error(e),
     };
+    if row.kind != ConversationRowKind::Group {
+        return Response::invalid_params("not a group conversation");
+    }
     let info = match AppConversation::group_info(host, conversation.clone()).await {
         Ok(i) => i,
         Err(e) => return Response::internal_error(format!("{e:?}")),
@@ -612,6 +632,9 @@ pub(crate) async fn unhide<H: AppHost>(host: &H, req: &Request) -> Response {
     if let Some(meta) = row.group.as_mut() {
         meta.admission = GroupAdmission::Shown;
     }
+    if let Err(e) = put_conversation(host, &row).await {
+        return Response::internal_error(e);
+    }
 
     let filter = json!({
         "conversation": conversation,
@@ -619,38 +642,55 @@ pub(crate) async fn unhide<H: AppHost>(host: &H, req: &Request) -> Response {
     })
     .to_string();
 
-    let mut cursor = None;
     let mut filled_in = 0u32;
     let now = clock::now_secs();
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            REFUSED_MESSAGES.to_string(),
-            QueryOptions { filter: Some(filter.clone()), limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        for rec in page.records {
-            let msg_id = rec.id;
-            if let Ok(msg) = AppConversation::get_message(host, msg_id.clone()).await
-                && let Ok(Stored::Kept) =
-                    store_group_message(host, &mut row, &info, &msg, now).await
+    for _pass in 0..2 {
+        let mut cursor = None;
+        let mut pass_filled = 0;
+        loop {
+            let page = match AppDataLayer::query(
+                host,
+                REFUSED_MESSAGES.to_string(),
+                QueryOptions {
+                    filter: Some(filter.clone()),
+                    limit: Some(500),
+                    cursor: cursor.clone(),
+                },
+            )
+            .await
             {
-                let _ = AppDataLayer::delete(host, REFUSED_MESSAGES.to_string(), msg_id).await;
-                filled_in += 1;
+                Ok(p) => p,
+                Err(e) => return Response::internal_error(e.to_string()),
+            };
+            for rec in page.records {
+                let msg_id = rec.id;
+                if let Ok(msg) = AppConversation::get_message(host, msg_id.clone()).await
+                    && let Ok(Stored::Kept) =
+                        store_group_message(host, &mut row, &info, &msg, now).await
+                {
+                    let _ = AppDataLayer::delete(host, REFUSED_MESSAGES.to_string(), msg_id).await;
+                    filled_in += 1;
+                    pass_filled += 1;
+                }
             }
+            if page.next_cursor.is_none() || page.next_cursor == cursor {
+                break;
+            }
+            cursor = page.next_cursor;
         }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
+        if pass_filled == 0 {
             break;
         }
-        cursor = page.next_cursor;
     }
 
-    if let Err(e) = put_conversation(host, &row).await {
-        return Response::internal_error(e);
+    if let Ok(Some(mut reloaded)) = load_conversation(host, &conversation).await {
+        if let Some(meta) = reloaded.group.as_mut() {
+            meta.admission = GroupAdmission::Shown;
+        }
+        if let (Some(meta), Some(cur_meta)) = (row.group.as_ref(), reloaded.group.as_mut()) {
+            cur_meta.membership_events_copied = meta.membership_events_copied;
+        }
+        let _ = put_conversation(host, &reloaded).await;
     }
 
     Response::ok(json!({

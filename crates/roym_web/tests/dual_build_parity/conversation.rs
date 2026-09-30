@@ -203,6 +203,8 @@ async fn scenario_60_group_message_is_stored_in_roym_copy_parity() {
     let ln = one_rpc(&h, false, "conversation.list", json!({ "kind": "group" })).await;
     assert_eq!(lw["result"]["conversations"].as_array().unwrap().len(), 1);
     assert_eq!(ln["result"]["conversations"].as_array().unwrap().len(), 1);
+    assert_eq!(lw["result"]["conversations"][0]["group"]["admission"]["state"], "shown");
+    assert_eq!(ln["result"]["conversations"][0]["group"]["admission"]["state"], "shown");
 
     for wasm in [true, false] {
         let refused = h.conv_rows(wasm, "refused_messages").await;

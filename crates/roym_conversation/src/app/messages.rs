@@ -15,8 +15,8 @@ use syneroym_roym_core::{
         StoredState, deletion_request_body, encode_body,
         group::{
             CARDS_NOT_IN_GROUPS_MESSAGE, GROUP_PROFILE_CONTENT_TYPE, GROUP_REMOVED_NOTICE,
-            GroupAdmission, MEMBERSHIP_EVENT_CONTENT_TYPE, is_group_system_type,
-            transcript_digest as calculate_transcript_digest,
+            GROUP_RESTORED_NOTICE, GroupAdmission, MEMBERSHIP_EVENT_CONTENT_TYPE,
+            is_group_system_type, transcript_digest as calculate_transcript_digest,
         },
         sort_key,
     },
@@ -222,8 +222,17 @@ pub(crate) async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(r) => r,
         Err(e) => return Response::internal_error(e),
     };
-    let is_group = row.as_ref().is_some_and(|r| r.kind == ConversationRowKind::Group);
+    let is_group = match &row {
+        Some(r) => r.kind == ConversationRowKind::Group,
+        None => match AppConversation::group_info(host, conversation.clone()).await {
+            Ok(_) => true,
+            Err(ConversationError::InvalidArgument(_)) => false,
+            Err(ConversationError::NotFound) => false,
+            Err(e) => return Response::internal_error(format!("{e:?}")),
+        },
+    };
     if content_type == MEMBERSHIP_EVENT_CONTENT_TYPE
+        || content_type == DELETION_REQUEST_CONTENT_TYPE
         || (is_group
             && (content_type == "application/vnd.roym.card+json"
                 || content_type == GROUP_PROFILE_CONTENT_TYPE))
@@ -237,6 +246,9 @@ pub(crate) async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
     if is_group {
         let info = match AppConversation::group_info(host, conversation.clone()).await {
             Ok(i) => i,
+            Err(ConversationError::NotFound) => {
+                return Response::invalid_params(GROUP_RESTORED_NOTICE);
+            }
             Err(e) => return Response::internal_error(format!("{e:?}")),
         };
         if !info.is_member {
@@ -499,6 +511,13 @@ pub(crate) async fn delete_message<H: AppHost>(host: &H, req: &Request) -> Respo
 
     let info = match AppConversation::group_info(host, row.conversation.clone()).await {
         Ok(i) => i,
+        Err(ConversationError::NotFound) => {
+            return Response::ok(json!({
+                "deleted": message_id,
+                "asked_peer": false,
+                "note": DELETE_NOTE_GROUP_ALONE,
+            }));
+        }
         Err(e) => return Response::internal_error(format!("{e:?}")),
     };
     if !info.is_member || info.members.len() <= 1 {

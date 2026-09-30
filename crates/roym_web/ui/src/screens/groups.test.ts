@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CARDS_NOT_IN_GROUPS_MESSAGE,
+  GROUP_REMOVED_NOTICE,
+  GROUP_RESTORED_NOTICE,
   MEMBERSHIP_EVENT_CONTENT_TYPE,
   SESSION_ENDED_NOTICE,
 } from "../groups/words";
@@ -148,7 +150,7 @@ describe("Groups screen rendering", () => {
     expect(events[1].textContent).toBe("Alice named the group “Beta Team”");
   });
 
-  it("renders card rows as a refused/neutral card block", () => {
+  it("renders card rows as a refused/neutral card block only on exact content-type match", () => {
     const threadList = document.createElement("div");
     const msgs: GroupMessageRow[] = [
       {
@@ -160,6 +162,17 @@ describe("Groups screen rendering", () => {
         content_type: "application/vnd.roym.card+json",
         body_encoding: "utf8",
         body: JSON.stringify({ card_type: "offer" }),
+        state: "delivered",
+      },
+      {
+        id: "vcard-1",
+        conversation: "grp-1",
+        author: "did:key:zAlice",
+        direction: "incoming",
+        sender_timestamp_ms: 2000,
+        content_type: "text/vcard",
+        body_encoding: "utf8",
+        body: "BEGIN:VCARD\nFN:Alice\nEND:VCARD",
         state: "delivered",
       },
     ];
@@ -174,6 +187,10 @@ describe("Groups screen rendering", () => {
     const cards = threadList.querySelectorAll(".card.card-refused");
     expect(cards.length).toBe(1);
     expect(cards[0].textContent).toContain(CARDS_NOT_IN_GROUPS_MESSAGE);
+
+    const normalBodies = threadList.querySelectorAll(".message-body");
+    expect(normalBodies.length).toBe(1);
+    expect(normalBodies[0].textContent).toContain("BEGIN:VCARD");
   });
 
   it("renders the log-in-again state when receiving an RpcError of type NotSignedIn", async () => {
@@ -189,5 +206,41 @@ describe("Groups screen rendering", () => {
     expect(host.textContent).toContain(SESSION_ENDED_NOTICE);
     const reloadBtn = host.querySelector("button");
     expect(reloadBtn?.textContent).toBe("Log in again");
+  });
+
+  it("renders restored group with restored notice and omits key date", async () => {
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: 0,
+            group: { name: "Restored Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        name: "Restored Group",
+        owner_address: "did:key:zAlice",
+        is_owner: false,
+        is_member: false,
+        restored_only: true,
+        key_epoch: 1,
+        key_stored_at_ms: 0,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.history": () => ({ messages: [] }),
+    });
+
+    const host = document.createElement("div");
+    await renderGroups(host);
+
+    expect(host.textContent).toContain(GROUP_RESTORED_NOTICE);
+    expect(host.textContent).not.toContain(GROUP_REMOVED_NOTICE);
+    expect(host.querySelector(".key-changed-date")).toBeNull();
   });
 });

@@ -175,6 +175,8 @@ async fn scenario_204_two_inbound_messages_update_count_and_activity_parity() {
     assert_eq!(msgs_n.len(), 3);
     assert_eq!(msgs_w[1]["id"], "m-204a");
     assert_eq!(msgs_w[2]["id"], "m-204b");
+    assert_eq!(msgs_n[1]["id"], "m-204a");
+    assert_eq!(msgs_n[2]["id"], "m-204b");
 }
 
 #[tokio::test]
@@ -418,21 +420,41 @@ async fn scenario_209_transcript_digest_parity() {
     assert_eq!(dw1, dw2);
     assert_eq!(dw1["result"]["rows"], 1);
 
+    let dn1 =
+        one_rpc(&h, false, "conversation.transcript-digest", json!({ "conversation": group_n }))
+            .await;
+    let dn2 =
+        one_rpc(&h, false, "conversation.transcript-digest", json!({ "conversation": group_n }))
+            .await;
+    assert_eq!(dn1, dn2);
+    assert_eq!(dn1["result"]["rows"], 1);
+
     h.deliver(true, inbound("m-209", &group_w, "did:key:zPeer209", 1_000, "digest msg")).await;
     h.deliver(false, inbound("m-209", &group_n, "did:key:zPeer209", 1_000, "digest msg")).await;
 
     let dw3 =
         one_rpc(&h, true, "conversation.transcript-digest", json!({ "conversation": group_w }))
             .await;
+    let dn3 =
+        one_rpc(&h, false, "conversation.transcript-digest", json!({ "conversation": group_n }))
+            .await;
     assert_ne!(dw1["result"]["digest"], dw3["result"]["digest"]);
+    assert_ne!(dn1["result"]["digest"], dn3["result"]["digest"]);
     assert_eq!(dw3["result"]["rows"], 2);
+    assert_eq!(dn3["result"]["rows"], 2);
 
     one_rpc(&h, true, "conversation.delete-message", json!({ "message_id": "m-209" })).await;
+    one_rpc(&h, false, "conversation.delete-message", json!({ "message_id": "m-209" })).await;
     let dw4 =
         one_rpc(&h, true, "conversation.transcript-digest", json!({ "conversation": group_w }))
             .await;
+    let dn4 =
+        one_rpc(&h, false, "conversation.transcript-digest", json!({ "conversation": group_n }))
+            .await;
     assert_eq!(dw3["result"]["digest"], dw4["result"]["digest"]);
+    assert_eq!(dn3["result"]["digest"], dn4["result"]["digest"]);
     assert_eq!(dw4["result"]["rows"], 2);
+    assert_eq!(dn4["result"]["rows"], 2);
 }
 
 #[tokio::test]
@@ -457,11 +479,17 @@ async fn scenario_210_hide_and_unhide_parity() {
     }
 
     let lw = one_rpc(&h, true, "conversation.list", json!({ "kind": "group" })).await;
+    let ln = one_rpc(&h, false, "conversation.list", json!({ "kind": "group" })).await;
     assert_eq!(lw["result"]["conversations"].as_array().unwrap().len(), 0);
+    assert_eq!(ln["result"]["conversations"].as_array().unwrap().len(), 0);
     let lw_inc =
         one_rpc(&h, true, "conversation.list", json!({ "kind": "group", "include_hidden": true }))
             .await;
+    let ln_inc =
+        one_rpc(&h, false, "conversation.list", json!({ "kind": "group", "include_hidden": true }))
+            .await;
     assert_eq!(lw_inc["result"]["conversations"].as_array().unwrap().len(), 1);
+    assert_eq!(ln_inc["result"]["conversations"].as_array().unwrap().len(), 1);
 
     let unw = one_rpc(&h, true, "group.unhide", json!({ "conversation": group_w })).await;
     let unn = one_rpc(&h, false, "group.unhide", json!({ "conversation": group_n })).await;
@@ -521,8 +549,42 @@ async fn scenario_211_search_kind_and_system_type_filtering_parity() {
     assert_eq!(sn_grp["result"]["matches"].as_array().unwrap().len(), 1);
     assert!(sw_grp["result"]["matches"][0]["body"].as_str().unwrap().contains("apples and group"));
 
+    one_rpc(&h, true, "group.rename", json!({ "conversation": group_w, "name": "Apples Club" }))
+        .await;
+    one_rpc(&h, false, "group.rename", json!({ "conversation": group_n, "name": "Apples Club" }))
+        .await;
+
+    let sw_prof = one_rpc(&h, true, "conversation.search", json!({ "query": "Club" })).await;
+    let sn_prof = one_rpc(&h, false, "conversation.search", json!({ "query": "Club" })).await;
+    assert_eq!(sw_prof["result"]["matches"].as_array().unwrap().len(), 0);
+    assert_eq!(sn_prof["result"]["matches"].as_array().unwrap().len(), 0);
+
     let sw_sys = one_rpc(&h, true, "conversation.search", json!({ "query": "action" })).await;
+    let sn_sys = one_rpc(&h, false, "conversation.search", json!({ "query": "action" })).await;
     assert_eq!(sw_sys["result"]["matches"].as_array().unwrap().len(), 0);
+    assert_eq!(sn_sys["result"]["matches"].as_array().unwrap().len(), 0);
+
+    assert_eq!(sw_grp["result"]["matches"][0]["author"], sn_grp["result"]["matches"][0]["author"]);
+    assert_eq!(sw_grp["result"]["matches"][0]["body"], sn_grp["result"]["matches"][0]["body"]);
+    assert_eq!(
+        sw_grp["result"]["matches"][0]["content_type"],
+        sn_grp["result"]["matches"][0]["content_type"]
+    );
+
+    let mut sw_copy = sw_dir;
+    let mut sn_copy = sn_dir;
+    strip_volatile(&mut sw_copy);
+    strip_volatile(&mut sn_copy);
+    if let (Some(w_matches), Some(n_matches)) =
+        (sw_copy["result"]["matches"].as_array_mut(), sn_copy["result"]["matches"].as_array_mut())
+    {
+        for m in w_matches.iter_mut().chain(n_matches.iter_mut()) {
+            if let Some(obj) = m.as_object_mut() {
+                obj.remove("id");
+            }
+        }
+    }
+    assert_eq!(sw_copy, sn_copy);
 }
 
 #[tokio::test]

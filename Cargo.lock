@@ -8228,6 +8228,7 @@ dependencies = [
  "miniapp-demo1-web",
  "reqwest 0.13.5",
  "roymctl",
+ "rusqlite",
  "rustls",
  "semver",
  "serde_json",

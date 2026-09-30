@@ -6,6 +6,7 @@ use syneroym_roym_core::conversation::group::GroupAdmission;
 
 use super::record_refused;
 use crate::app::{
+    create_conversation,
     group::{Stored, new_group_row, store_group_message, sync_membership_rows},
     load_conversation, put_conversation,
 };
@@ -24,8 +25,13 @@ pub(super) async fn on_group_message<H: AppHost>(
         None => {
             let mut r = new_group_row(host, &msg.conversation, &info, now).await?;
             sync_membership_rows(host, &mut r, &info).await?;
-            put_conversation(host, &r).await?;
-            r
+            if !create_conversation(host, &r).await? {
+                load_conversation(host, &msg.conversation)
+                    .await?
+                    .ok_or_else(|| "group row missing after concurrent create".to_string())?
+            } else {
+                r
+            }
         }
     };
 

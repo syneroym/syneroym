@@ -94,16 +94,17 @@ impl ConversationStore {
         conversation_id: &str,
         member_address: &str,
     ) -> Result<Option<([u8; 32], u64)>> {
-        let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let row: Option<(Vec<u8>, i64)> = conn
-            .query_row(
+        let row: Option<(Vec<u8>, i64)> = {
+            let conn = self.conn.lock().expect("conversation connection lock poisoned");
+            conn.query_row(
                 "SELECT sig_key, removed_epoch FROM group_members
                  WHERE conversation_id = ?1 AND member_address = ?2
                    AND removed_epoch IS NOT NULL",
                 params![conversation_id, member_address],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?;
+            .optional()?
+        };
         match row {
             Some((blob, epoch)) => {
                 let key: [u8; 32] = blob.as_slice().try_into().map_err(|_| {
@@ -113,10 +114,13 @@ impl ConversationStore {
                         Box::new(std::io::Error::other("sig_key must be exactly 32 bytes")),
                     )
                 })?;
-                if key == [0u8; 32] {
-                    return Ok(None);
+                if key != [0u8; 32] {
+                    return Ok(Some((key, epoch as u64)));
                 }
-                Ok(Some((key, epoch as u64)))
+                if let Some(sess) = self.session(member_address)? {
+                    return Ok(Some((sess.pinned_sig_key, epoch as u64)));
+                }
+                Ok(None)
             }
             None => Ok(None),
         }

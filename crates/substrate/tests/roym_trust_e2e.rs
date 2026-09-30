@@ -64,24 +64,6 @@ struct Trio {
     x_owner: Identity,
 }
 
-async fn boot_node(
-    label: &'static str,
-    dir: &Path,
-    registry: Option<String>,
-    owner: &Identity,
-) -> Node {
-    let mut node = Node::boot(
-        label,
-        dir.to_path_buf(),
-        registry,
-        Identity::from_bytes(&owner.to_bytes()),
-        fast_conversation_role(3600),
-    )
-    .await;
-    node.full_bring_up().await;
-    node
-}
-
 /// Z hosts the registry (three registry servers in one process starve each
 /// other's registration window); Y and X resolve through it.
 async fn boot_trio(dirs: &[&Path; 3]) -> Trio {
@@ -90,10 +72,31 @@ async fn boot_trio(dirs: &[&Path; 3]) -> Trio {
         Identity::generate().unwrap(),
         Identity::generate().unwrap(),
     );
-    let z = boot_node("node-z", dirs[0], None, &owner_z).await;
+    let z = Node::boot_ready(
+        "node-z",
+        dirs[0].to_path_buf(),
+        None,
+        Identity::from_bytes(&owner_z.to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
     let registry = Some(z.registry_url.clone());
-    let y = boot_node("node-y", dirs[1], registry.clone(), &owner_y).await;
-    let x = boot_node("node-x", dirs[2], registry, &owner_x).await;
+    let y = Node::boot_ready(
+        "node-y",
+        dirs[1].to_path_buf(),
+        registry.clone(),
+        Identity::from_bytes(&owner_y.to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
+    let x = Node::boot_ready(
+        "node-x",
+        dirs[2].to_path_buf(),
+        registry,
+        Identity::from_bytes(&owner_x.to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
     Trio {
         z,
         y,
@@ -336,7 +339,14 @@ async fn consumer_leaves_with_their_data(t: &Trio, dir: &Path, quote_record_id: 
     for svc in DATA_SERVICES {
         bundles.insert((*svc).to_string(), t.x.rpc_ok(&format!("{svc}.export"), json!({})).await);
     }
-    let x2 = boot_node("node-x2", dir, Some(t.z.registry_url.clone()), &t.x_owner).await;
+    let x2 = Node::boot_ready(
+        "node-x2",
+        dir.to_path_buf(),
+        Some(t.z.registry_url.clone()),
+        Identity::from_bytes(&t.x_owner.to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
     for svc in DATA_SERVICES {
         let imported = x2.rpc(&format!("{svc}.import"), json!({ "bundle": bundles[*svc] })).await;
         assert!(imported.get("error").is_none(), "{svc} import onto the clean node: {imported}");
