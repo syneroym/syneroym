@@ -304,24 +304,24 @@ pub(crate) async fn history<H: AppHost>(host: &H, req: &Request) -> Response {
     let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
     let offset = req.params.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
 
-    let conv_row = match load_conversation(host, &conversation).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return Response::invalid_params("conversation not found"),
+    let (kind_str, conv_row) = match load_conversation(host, &conversation).await {
+        Ok(Some(r)) => {
+            let k = match r.kind {
+                ConversationRowKind::Direct => "direct",
+                ConversationRowKind::Group => "group",
+            };
+            (k, Some(r))
+        }
+        Ok(None) => ("direct", None),
         Err(e) => return Response::internal_error(e),
     };
-    let kind_str = match conv_row.kind {
-        ConversationRowKind::Direct => "direct",
-        ConversationRowKind::Group => "group",
-    };
-    if conv_row.kind == ConversationRowKind::Group
+    if let Some(mut row) = conv_row
+        && row.kind == ConversationRowKind::Group
         && let Ok(info) = AppConversation::group_info(host, conversation.clone()).await
+        && let Ok(copied) = group::sync_membership_rows(host, &mut row, &info).await
+        && copied > 0
     {
-        let mut updated = conv_row;
-        if let Ok(copied) = group::sync_membership_rows(host, &mut updated, &info).await
-            && copied > 0
-        {
-            let _ = put_conversation(host, &updated).await;
-        }
+        let _ = put_conversation(host, &row).await;
     }
 
     let mut rows = match messages_of(host, &conversation).await {

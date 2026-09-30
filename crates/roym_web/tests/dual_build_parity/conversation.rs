@@ -185,7 +185,7 @@ async fn scenario_59_first_contact_rate_limit_at_inbox_parity() {
 }
 
 #[tokio::test]
-async fn scenario_60_group_kind_is_refused_as_unsupported_parity() {
+async fn scenario_60_group_message_is_stored_in_roym_copy_parity() {
     let h = harness().await;
     let conv_svc = did_for_service("conversation");
     let gw = h.wasm_conversation.create_group(&conv_svc).await.unwrap();
@@ -194,16 +194,19 @@ async fn scenario_60_group_kind_is_refused_as_unsupported_parity() {
     h.deliver(true, inbound("m-60", &gw, "did:key:zPeer60", 1_000, "group hi")).await;
     h.deliver(false, inbound("m-60", &gn, "did:key:zPeer60", 1_000, "group hi")).await;
 
-    let (hw, hn) = both_rpc(&h, "conversation.history", json!({ "conversation": gw })).await;
-    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 0);
-    let _ = hn;
-    let (lw, _) = both_rpc(&h, "conversation.list", json!({})).await;
-    assert_eq!(lw["result"]["conversations"].as_array().unwrap().len(), 0);
+    let hw = one_rpc(&h, true, "conversation.history", json!({ "conversation": gw })).await;
+    let hn = one_rpc(&h, false, "conversation.history", json!({ "conversation": gn })).await;
+    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(hn["result"]["messages"].as_array().unwrap().len(), 2);
+
+    let lw = one_rpc(&h, true, "conversation.list", json!({ "kind": "group" })).await;
+    let ln = one_rpc(&h, false, "conversation.list", json!({ "kind": "group" })).await;
+    assert_eq!(lw["result"]["conversations"].as_array().unwrap().len(), 1);
+    assert_eq!(ln["result"]["conversations"].as_array().unwrap().len(), 1);
 
     for wasm in [true, false] {
         let refused = h.conv_rows(wasm, "refused_messages").await;
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0]["reason"], "unsupported-kind");
+        assert_eq!(refused.len(), 0);
     }
 }
 
