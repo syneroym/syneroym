@@ -11,8 +11,8 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     conversation::{
-        ConversationRow, DELETION_REQUEST_CONTENT_TYPE, Direction, MessageRow, StoredState,
-        encode_body, parse_deletion_request,
+        ConversationRow, ConversationRowKind, DELETION_REQUEST_CONTENT_TYPE, Direction, MessageRow,
+        StoredState, encode_body, parse_deletion_request,
     },
 };
 
@@ -189,11 +189,13 @@ async fn upsert_conversation<H: AppHost>(
         }
         None => ConversationRow {
             id: conversation_id.to_string(),
+            kind: ConversationRowKind::Direct,
             peer_address: peer_address.to_string(),
             peer_person_did,
             opened_at_secs: now,
             last_activity_ms: activity_ms,
             message_count: 1,
+            group: None,
         },
     };
     AppDataLayer::put(

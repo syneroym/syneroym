@@ -21,6 +21,7 @@ pub enum MethodAuth {
 /// sibling.
 const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("conversation.", CONVERSATION, MethodAuth::Owner),
+    ("group.", CONVERSATION, MethodAuth::Owner),
     ("profile.", PROFILE, MethodAuth::Owner),
     ("contacts.", PROFILE, MethodAuth::Owner),
     ("block.", PROFILE, MethodAuth::Owner),
