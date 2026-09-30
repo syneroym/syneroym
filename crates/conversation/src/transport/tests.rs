@@ -3,6 +3,7 @@
 use ed25519_dalek::SigningKey;
 use syneroym_async_queue::QueueConfig;
 use syneroym_core::config::RetryPolicy;
+use syneroym_rpc::ConversationHost;
 
 use super::*;
 use crate::{
@@ -340,4 +341,54 @@ async fn attempts_at_an_unreachable_peer_do_not_move_the_ratchet() {
 
     store_a.delete_outbound_envelope("msg:1").unwrap();
     assert!(store_a.outbound_envelope("msg:1").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn removed_member_can_sync_its_own_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+
+    store_owner
+        .upsert_session(
+            &crate::store::SessionRow {
+                peer_address: bob.to_string(),
+                pinned_sig_key: bob_vk,
+                state: vec![1],
+            },
+            crate::store::now_ms(),
+        )
+        .unwrap();
+
+    // Owner adds Bob, then removes Bob
+    service.add_member(owner, &group_id, bob).await.unwrap();
+    service.remove_member(owner, &group_id, bob).await.unwrap();
+
+    // Bob sends a group-sync request to owner
+    let now = crate::store::now_ms();
+    let mut nonce = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut nonce);
+    let assertion = crate::dag::sign_peer_assertion(&bob_sk, bob, &group_id, now, &nonce);
+
+    let req = crate::dag::GroupSyncRequest {
+        from: assertion,
+        group: group_id.clone(),
+        after_seq: 0,
+        limit: 10,
+    };
+
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+    assert!(!resp.entries.is_empty(), "removed member must receive removal history");
+    let has_removal = resp.entries.iter().any(|e| {
+        e.kind == crate::dag::EntryKind::Membership
+            && e.payload.as_ref().map(|p| p.action == "remove").unwrap_or(false)
+    });
+    assert!(has_removal, "sync response must contain removal entry");
 }

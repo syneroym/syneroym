@@ -85,6 +85,27 @@ pub struct ConversationHistoryPage {
     pub next_cursor: Option<String>,
 }
 
+/// What the host knows about one group, in one call.
+///
+/// Mirrors `syneroym:conversation/conversation.group-info`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationGroupInfo {
+    /// The group's owner, as a routing service id.
+    pub owner: String,
+    /// True when this service is the owner.
+    pub is_owner: bool,
+    /// True when this service is in the current member list.
+    pub is_member: bool,
+    /// Current members, sorted.
+    pub members: Vec<String>,
+    /// The newest epoch this substrate has seen named.
+    pub epoch: u64,
+    /// The newest epoch this substrate holds a key for.
+    pub key_epoch: u64,
+    /// When this substrate stored the key for `key_epoch`, Unix milliseconds.
+    pub key_stored_at: i64,
+}
+
 /// The guest-facing surface (`syneroym:conversation/conversation`, seven
 /// functions) plus the two peer-facing transport verbs
 /// (`prekey_bundle`/`peer_deliver`) reached only through the native-capability
@@ -166,6 +187,25 @@ pub trait ConversationHost: Send + Sync + Debug {
 
     async fn sync_now(&self, service_id: &str, conversation: &str)
     -> Result<(), ConversationError>;
+
+    /// Returns owner, membership, epoch, and key state for a group.
+    ///
+    /// `InvalidArgument` for a direct conversation; `NotFound` for an
+    /// unknown id.
+    async fn group_info(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<ConversationGroupInfo, ConversationError>;
+
+    /// Returns one stored message by id.
+    ///
+    /// `NotFound` for an unknown id and for system messages (group keys).
+    async fn get_message(
+        &self,
+        service_id: &str,
+        message: &str,
+    ) -> Result<ConversationMessage, ConversationError>;
 
     /// Peer-facing: accepts DAG entries pushed by another member. The
     /// bytes are a serde-encoded `GroupPushRequest`; both ends agree on

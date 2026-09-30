@@ -4,7 +4,7 @@
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
-use syneroym_rpc::{ConversationError, ConversationKind};
+use syneroym_rpc::{ConversationError, ConversationGroupInfo, ConversationKind};
 
 use crate::{
     ConversationService, crypto,
@@ -25,6 +25,18 @@ pub use entry::{apply_entry, validate_and_insert};
 
 fn internal(e: impl std::fmt::Display) -> ConversationError {
     ConversationError::Internal(e.to_string())
+}
+
+/// The clock a sender signs a group entry with: the real clock, except
+/// where a test has skewed this service on purpose.
+#[cfg(feature = "test-support")]
+fn sender_now_ms(service_id: &str) -> i64 {
+    now_ms() + crate::test_support::clock_offset_ms(service_id)
+}
+
+#[cfg(not(feature = "test-support"))]
+fn sender_now_ms(_service_id: &str) -> i64 {
+    now_ms()
 }
 
 #[must_use]
@@ -132,6 +144,7 @@ impl ConversationService {
         let my_vk = sk.verifying_key().to_bytes();
 
         let now = now_ms();
+        let signed_at = sender_now_ms(service_id);
         let mut nonce = [0u8; 16];
         rand::rng().fill_bytes(&mut nonce);
         let group_id = derive_group_id(service_id, now, &nonce);
@@ -153,7 +166,7 @@ impl ConversationService {
             &sk,
             &group_id,
             service_id,
-            now,
+            signed_at,
             initial_epoch,
             vec![],
             payload.clone(),
@@ -204,11 +217,14 @@ impl ConversationService {
             if members.len() as u32 >= store.config().conversation_max_group_members {
                 return Err(ConversationError::QuotaExceeded);
             }
-            let bundle = self.fetch_prekey_bundle(service_id, member_address).await?;
+            let sig_key = match store.session(member_address).map_err(internal)? {
+                Some(sess) => sess.pinned_sig_key,
+                None => self.fetch_prekey_bundle(service_id, member_address).await?.sig_key,
+            };
             let mut nm = members.clone();
             nm.push(member_address.to_string());
             nm.sort();
-            Ok(Some((bundle.sig_key, nm)))
+            Ok(Some((sig_key, nm)))
         } else {
             if !members.contains(&member_address.to_string()) {
                 return Ok(None);
@@ -262,6 +278,7 @@ impl ConversationService {
         };
 
         let now = now_ms();
+        let signed_at = sender_now_ms(service_id);
         let heads = store.heads(conversation).map_err(internal)?;
         let sk = load_signing_key(&store)?;
 
@@ -288,7 +305,7 @@ impl ConversationService {
                     &sk,
                     conversation,
                     service_id,
-                    now,
+                    signed_at,
                     next_epoch,
                     heads.clone(),
                     payload.clone(),
@@ -357,13 +374,15 @@ impl ConversationService {
         })?;
 
         let now = now_ms();
+        let signed_at = sender_now_ms(service_id);
         let heads = store.heads(&conv.id).map_err(internal)?;
         let sk = load_signing_key(store)?;
 
         let plaintext = encode_body(content_type, body);
-        let entry =
-            build_message_entry(&sk, &conv.id, service_id, now, epoch, heads, &key, &plaintext)
-                .map_err(internal)?;
+        let entry = build_message_entry(
+            &sk, &conv.id, service_id, signed_at, epoch, heads, &key, &plaintext,
+        )
+        .map_err(internal)?;
         let entry_id = entry.entry_id.clone();
 
         let max_pending = store.config().max_pending_per_conversation;
@@ -394,12 +413,13 @@ impl ConversationService {
                 tx.execute(
                     "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
                      received_at, content_type, body, signature, outgoing, verified, state, \
-                     last_error, system, entry_id) VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, 1, 1, \
+                     last_error, system, entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, \
                      'pending', NULL, 0, ?1)",
                     rusqlite::params![
                         entry_id,
                         conv.id,
                         service_id,
+                        signed_at,
                         now,
                         content_type,
                         body,
@@ -545,5 +565,35 @@ impl ConversationService {
                 }
             }
         }
+    }
+
+    pub(crate) async fn group_info_impl(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<ConversationGroupInfo, ConversationError> {
+        let store = self.store_for(service_id).await.map_err(internal)?;
+        let conv = store
+            .get_conversation(conversation)
+            .map_err(internal)?
+            .ok_or(ConversationError::NotFound)?;
+        if conv.kind != ConversationKind::Group {
+            return Err(ConversationError::InvalidArgument("not a group conversation".into()));
+        }
+        let owner = conv
+            .owner_address
+            .ok_or_else(|| ConversationError::Internal("group has no owner".into()))?;
+        let members = store.current_members(conversation).map_err(internal)?;
+        let (key_epoch, key_stored_at) =
+            store.current_epoch_row(conversation).map_err(internal)?.unwrap_or((0, 0));
+        Ok(ConversationGroupInfo {
+            is_owner: owner == service_id,
+            is_member: members.iter().any(|m| m == service_id),
+            owner,
+            members,
+            epoch: conv.current_epoch,
+            key_epoch,
+            key_stored_at,
+        })
     }
 }

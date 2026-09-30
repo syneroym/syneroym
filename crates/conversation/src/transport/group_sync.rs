@@ -158,16 +158,49 @@ impl ConversationService {
             return Err(ConversationError::PermissionDenied);
         }
 
-        let sender_sig_key =
-            pinned_member_sig_key(&store, &conv.id, &req.from.address, req.from.sig_key)?;
+        let (sender_sig_key, removed_at_epoch) =
+            match pinned_member_sig_key(&store, &conv.id, &req.from.address, req.from.sig_key) {
+                Ok(k) => (k, None),
+                Err(ConversationError::PermissionDenied) => {
+                    // A removed member may still fetch what it was entitled to
+                    // read: messages sealed under an earlier epoch *and* signed no
+                    // later than its removal, plus the membership entries up to and
+                    // including the one that removed it. The epoch alone is not
+                    // enough: a member that has not applied the removal yet still
+                    // seals new messages under the old epoch.
+                    let (k, removed_epoch) = store
+                        .removed_member_sig_key(&conv.id, &req.from.address)
+                        .map_err(internal)?
+                        .ok_or(ConversationError::PermissionDenied)?;
+                    (k, Some(removed_epoch))
+                }
+                Err(e) => return Err(e),
+            };
         let vk = ed25519_dalek::VerifyingKey::from_bytes(&sender_sig_key).map_err(internal)?;
         if !crate::dag::verify_peer_assertion(&vk, &req.group, &req.from) {
             return Err(ConversationError::PermissionDenied);
         }
 
         let limit = req.limit.clamp(1, 100);
-        let entries =
-            store.entries_after_seq(&req.group, req.after_seq, limit + 1).map_err(internal)?;
+        let entries = match removed_at_epoch {
+            None => store.entries_after_seq(&req.group, req.after_seq, limit + 1),
+            Some(removed_epoch) => {
+                let Some(removed_at_ms) = store
+                    .removal_entry_timestamp(&conv.id, &req.from.address, removed_epoch)
+                    .map_err(internal)?
+                else {
+                    return Ok(empty_sync_response(req.after_seq));
+                };
+                store.entries_after_seq_for_removed(
+                    &req.group,
+                    req.after_seq,
+                    removed_epoch,
+                    removed_at_ms,
+                    limit + 1,
+                )
+            }
+        }
+        .map_err(internal)?;
         let has_more = entries.len() as u32 > limit;
         let mut out_entries = entries;
         if has_more {
@@ -361,4 +394,13 @@ fn pinned_member_sig_key(
         return Ok(asserted_key);
     }
     Err(ConversationError::PermissionDenied)
+}
+
+fn empty_sync_response(after_seq: i64) -> crate::dag::GroupSyncResponse {
+    crate::dag::GroupSyncResponse {
+        entries: Vec::new(),
+        seqs: Vec::new(),
+        next_seq: after_seq,
+        has_more: false,
+    }
 }

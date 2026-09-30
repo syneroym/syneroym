@@ -200,6 +200,17 @@ async fn assert_create_group<D: Driver>(name: &str, driver: &D) {
         driver.run(&format!(r#"{{"op":"sync-now","conversation":"{conv_id}"}}"#)).await.unwrap();
     let sync_v: Value = serde_json::from_str(&sync_res).unwrap();
     assert_eq!(sync_v["ok"]["synced"], true, "{name}: sync_now succeeds");
+
+    // Test group-info on created group
+    let info_res =
+        driver.run(&format!(r#"{{"op":"group-info","conversation":"{conv_id}"}}"#)).await.unwrap();
+    let info_v: Value = serde_json::from_str(&info_res).unwrap();
+    assert_eq!(info_v["ok"]["owner"], SERVICE_ID, "{name}: owner mismatch");
+    assert_eq!(info_v["ok"]["is_owner"], true, "{name}: must be owner");
+    assert_eq!(info_v["ok"]["is_member"], true, "{name}: must be member");
+    assert_eq!(info_v["ok"]["members"], json!([SERVICE_ID]), "{name}: members mismatch");
+    assert_eq!(info_v["ok"]["epoch"], 1, "{name}: epoch must be 1");
+    assert_eq!(info_v["ok"]["key_epoch"], 1, "{name}: key_epoch must be 1");
 }
 
 #[tokio::test]

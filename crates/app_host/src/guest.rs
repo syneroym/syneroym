@@ -303,6 +303,20 @@ impl AppConversation for GuestHost {
     async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
         conv::sync_now(&conversation)
     }
+
+    async fn group_info(
+        &self,
+        conversation: String,
+    ) -> Result<crate::types::conversation::GroupInfo, ConversationError> {
+        conv::get_group_info(&conversation)
+    }
+
+    async fn get_message(
+        &self,
+        message: String,
+    ) -> Result<crate::types::conversation::Message, ConversationError> {
+        conv::get_message(&message)
+    }
 }
 
 impl AppProxy for GuestHost {

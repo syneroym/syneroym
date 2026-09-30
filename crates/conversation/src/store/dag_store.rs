@@ -89,6 +89,39 @@ impl ConversationStore {
         }
     }
 
+    pub fn removed_member_sig_key(
+        &self,
+        conversation_id: &str,
+        member_address: &str,
+    ) -> Result<Option<([u8; 32], u64)>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let row: Option<(Vec<u8>, i64)> = conn
+            .query_row(
+                "SELECT sig_key, removed_epoch FROM group_members
+                 WHERE conversation_id = ?1 AND member_address = ?2
+                   AND removed_epoch IS NOT NULL",
+                params![conversation_id, member_address],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match row {
+            Some((blob, epoch)) => {
+                let key: [u8; 32] = blob.as_slice().try_into().map_err(|_| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(std::io::Error::other("sig_key must be exactly 32 bytes")),
+                    )
+                })?;
+                if key == [0u8; 32] {
+                    return Ok(None);
+                }
+                Ok(Some((key, epoch as u64)))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Pins `key` as `member_address`'s signing key for `conversation_id`,
     /// but only while the row still holds the `zeroblob(32)` placeholder —
     /// group-verb trust-on-first-use for a member this service has no 1:1
@@ -462,6 +495,62 @@ impl ConversationStore {
              FROM dag_entries WHERE conversation_id = ?1 AND seq > ?2 ORDER BY seq ASC LIMIT ?3",
         )?;
         let mut rows = stmt.query(params![conversation_id, after_seq, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(Self::row_to_dag_entry(&conn, row)?);
+        }
+        Ok(out)
+    }
+
+    pub fn removal_entry_timestamp(
+        &self,
+        conversation_id: &str,
+        member_address: &str,
+        removed_epoch: u64,
+    ) -> Result<Option<i64>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT payload, sender_timestamp FROM dag_entries
+             WHERE conversation_id = ?1 AND kind = 'membership' AND epoch = ?2",
+        )?;
+        let mut rows = stmt.query(params![conversation_id, removed_epoch as i64])?;
+        while let Some(row) = rows.next()? {
+            let payload_str: Option<String> = row.get(0)?;
+            let sender_timestamp: i64 = row.get(1)?;
+            if let Some(str) = payload_str
+                && let Ok(payload) = serde_json::from_str::<MembershipPayload>(&str)
+                && payload.action == "remove"
+                && payload.subject_address == member_address
+            {
+                return Ok(Some(sender_timestamp));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn entries_after_seq_for_removed(
+        &self,
+        conversation_id: &str,
+        after_seq: i64,
+        removed_epoch: u64,
+        removed_at_ms: i64,
+        limit: u32,
+    ) -> Result<Vec<StoredDagEntry>> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT seq, entry_id, conversation_id, author, sender_timestamp, epoch, kind, \
+             header, ciphertext, nonce, payload, signature, applied, relay_pending FROM \
+             dag_entries WHERE conversation_id = ?1 AND seq > ?2 AND ( (kind = 'membership' AND \
+             epoch <= ?3) OR (kind = 'message' AND epoch < ?3 AND sender_timestamp <= ?4) ) ORDER \
+             BY seq ASC LIMIT ?5",
+        )?;
+        let mut rows = stmt.query(params![
+            conversation_id,
+            after_seq,
+            removed_epoch as i64,
+            removed_at_ms,
+            limit as i64,
+        ])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(Self::row_to_dag_entry(&conn, row)?);

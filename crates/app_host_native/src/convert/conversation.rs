@@ -70,6 +70,18 @@ pub(crate) fn membership_event_out(v: HostMembershipEvent) -> GuestMembershipEve
     }
 }
 
+pub(crate) fn group_info_out(v: HostGroupInfo) -> GuestGroupInfo {
+    GuestGroupInfo {
+        owner: v.owner,
+        is_owner: v.is_owner,
+        is_member: v.is_member,
+        members: v.members,
+        epoch: v.epoch,
+        key_epoch: v.key_epoch,
+        key_stored_at: v.key_stored_at,
+    }
+}
+
 // ---- conversation: `syneroym-rpc`'s plain `ConversationMessage`/
 // `ConversationDeliveryState` -> the guest WIT shape, for
 // `NativeHostFactory`'s `ConversationNotifier` impl (factory.rs), which

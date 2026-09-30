@@ -206,6 +206,20 @@ impl syneroym_rpc::ConversationHost for NeverConstructedConversationHost {
     async fn sync_now(&self, _: &str, _: &str) -> Result<(), syneroym_rpc::ConversationError> {
         unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
     }
+    async fn group_info(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<syneroym_rpc::ConversationGroupInfo, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
+    async fn get_message(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<syneroym_rpc::ConversationMessage, syneroym_rpc::ConversationError> {
+        unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
+    }
     async fn group_push(
         &self,
         _: &str,

@@ -834,6 +834,7 @@ pub(crate) const SCENARIOS: &[(&str, &str)] = &[
         r#"{"op":"membership-history","conversation":"conv:does-not-exist"}"#,
     ),
     ("sync-now-unknown", r#"{"op":"sync-now","conversation":"conv:does-not-exist"}"#),
+    ("group-info-unknown", r#"{"op":"group-info","conversation":"conv:does-not-exist"}"#),
     ("read-outbox-empty", r#"{"op":"read-outbox"}"#),
     (
         "proxy-call-self",

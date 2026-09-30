@@ -163,6 +163,12 @@ pub enum Request {
     SyncNow {
         conversation: String,
     },
+    GroupInfo {
+        conversation: String,
+    },
+    GetMessage {
+        message: String,
+    },
     ListConversations,
     /// What `on_conversation_message` stored -- through `data-layer`, never
     /// in-process state.

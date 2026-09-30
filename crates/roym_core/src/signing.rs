@@ -301,7 +301,7 @@ pub(crate) mod tests {
             app_config::ConfigError,
             blob_store::BlobError,
             conversation::{
-                ConversationError, ConversationSummary, DeliveryState, HistoryPage,
+                ConversationError, ConversationSummary, DeliveryState, GroupInfo, HistoryPage,
                 MembershipEvent, Message,
             },
             data_layer::{
@@ -559,6 +559,12 @@ pub(crate) mod tests {
         }
         async fn sync_now(&self, _cid: String) -> Result<(), ConversationError> {
             unimplemented!()
+        }
+        async fn group_info(&self, _cid: String) -> Result<GroupInfo, ConversationError> {
+            Err(ConversationError::NotFound)
+        }
+        async fn get_message(&self, _mid: String) -> Result<Message, ConversationError> {
+            Err(ConversationError::NotFound)
         }
     }
 

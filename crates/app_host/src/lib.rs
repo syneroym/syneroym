@@ -23,8 +23,8 @@ use types::{
     app_config::ConfigError,
     blob_store::BlobError,
     conversation::{
-        ConversationError, ConversationSummary, DeliveryState, HistoryPage, MembershipEvent,
-        Message,
+        ConversationError, ConversationSummary, DeliveryState, GroupInfo, HistoryPage,
+        MembershipEvent, Message,
     },
     data_layer::*,
     http::FrameKind,
@@ -339,6 +339,14 @@ pub trait AppConversation {
         &self,
         conversation: String,
     ) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    fn group_info(
+        &self,
+        conversation: String,
+    ) -> impl Future<Output = Result<GroupInfo, ConversationError>> + Send;
+    fn get_message(
+        &self,
+        message: String,
+    ) -> impl Future<Output = Result<Message, ConversationError>> + Send;
 }
 
 /// The host -> app direction for conversations.

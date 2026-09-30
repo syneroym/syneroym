@@ -32,9 +32,9 @@ use syneroym_core::local_registry::EndpointRegistry;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
-    ConversationDeliveryState, ConversationError, ConversationHistoryPage, ConversationHost,
-    ConversationKind, ConversationMembershipEvent, ConversationMessage, ConversationNotifier,
-    ConversationSummary, ServiceProxy,
+    ConversationDeliveryState, ConversationError, ConversationGroupInfo, ConversationHistoryPage,
+    ConversationHost, ConversationKind, ConversationMembershipEvent, ConversationMessage,
+    ConversationNotifier, ConversationSummary, ServiceProxy,
 };
 
 /// Node-level configuration, converted from `AppSandboxRole`'s
@@ -649,6 +649,28 @@ impl ConversationHost for ConversationService {
         conversation: &str,
     ) -> Result<(), ConversationError> {
         self.sync_now_impl(service_id, conversation).await
+    }
+
+    async fn group_info(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<ConversationGroupInfo, ConversationError> {
+        self.group_info_impl(service_id, conversation).await
+    }
+
+    async fn get_message(
+        &self,
+        service_id: &str,
+        message: &str,
+    ) -> Result<ConversationMessage, ConversationError> {
+        let store = self.store_for(service_id).await.map_err(internal)?;
+        store
+            .get_message(message)
+            .map_err(internal)?
+            .filter(|m| !m.system)
+            .map(store::StoredMessage::into_wire)
+            .ok_or(ConversationError::NotFound)
     }
 
     async fn group_push(
