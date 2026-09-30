@@ -35,7 +35,8 @@ outside Roym and both sides record what they saw, honestly labelled. The
 work is signed off. Every one of those records is signed, versioned, and
 append-only, and either party can export the whole thing and restore it on a
 clean machine. Separately, a private group of at least three members holds a
-conversation with no server in the path.
+conversation with no server in the path other than the registry and relay it
+uses to find and reach members, which never hold a message.
 
 All of it through one JSON-RPC API served from one origin, from a SynApp
 that builds both ways — `wasm32-wasip2` component and linked into
@@ -232,6 +233,12 @@ locking. Threaded through every `AppHost` layer (`app_host`, `guest.rs`,
 `app_host_native`, `sandbox_wasm`, the native-dispatch verb table) and
 proven identical on both builds by the dual-build shim fixture.
 
+**Gap 10 — narrowed by D-06C-14 (2026-09-30).** Cross-node calls re-resolve
+through the registry and dial through the relay on every call. Node caching /
+direct dialing without registry/relay is deferred (Branch B). Group chat
+operates with no central message server: registry and relay never store or
+inspect messages.
+
 ### Carried forward from M06B, with eyes open
 
 These shipped as accepted limits and the product will feel them. They are
@@ -353,7 +360,7 @@ sections list, plus what M06B ruled out and what this document adds:
 | **C7** | **A need becomes an offer, and the card contract (R1 row 4).** Signed `request` → `quote` → `agreement-receipt`, each versioned, with a material change producing a new version rather than an edit. The seven card types and the unknown-type rule land here on the producing side and in C2's renderer on the consuming side (D-06C-3). The signing shape every one of these records uses — a single-issuer attestation, with `agreement-receipt` as a pair of them — is fixed by **D-06C-12**. **Complete (2026-09-08)** — [implementation plan](slice-c7-implementation-plan.md), `status.md` evidence. Signed `request`/`quote`/`agreement-receipt` record pipeline, 25-verb `syneroym-roym-transaction` service, watermark sync with `conversation`, `roymctl roym transaction` (25 subcommands), 28 dual-build parity scenarios (116–143, 143 total), two-substrate integration suite (`roym_transaction_e2e.rs`), Hub UI card templates and Playwright tests (`roym-hub.spec.ts` cases 24–27, 29–32). R1's acceptance gate closed across all six rows. | **Complete (2026-09-08)** | C5, C6 |
 | **C8** | **The transaction vertical (R2, all five rows). Complete (2026-09-24)** — [slice-c8-implementation-plan.md](slice-c8-implementation-plan.md), `status.md` evidence. The state machine with one named writer on the provider's substrate, permitted transitions, expiry, idempotency keys, and a named conflict for a losing concurrent booking. **D-06C-12** fixes the record shape and **D-06C-13** the two independent payment/fulfilment tracks, the against-interest rule, and the named terminals; the deposit question in the open design points is closed (one payment per agreement). `payment-acknowledgement`, separate from settlement, with the payee bound into the signed agreement and a UI that never says "verified". Mutually signed `fulfilment-receipt`. Versioned, integrity-checked export and import of conversations, agreements, and receipts. Encrypted backup with a restore path tested on a clean node | **R2** | C7 |
 | **C9** | **Cross-installation trust (R3, all three rows) and the inherited cross-node cases.** The full R1+R2 flow with consumer, provider, and SynOrg owner on three separate installations, resolving each other through the discovery overlay. Signed `membership-credential` (issuer, scope, expiry) and signed `revocation`; the consumer's **own** node verifies, never the directory. Signed, scoped `moderation-decision`; a suspended member vanishes from that directory's results and cached copies show the revocation on next check — with the product saying plainly that instant removal is not promised. Adopts M06B's uncovered cross-node cases except alias canonicalization and its twin `open-direct` resolution (D-06C-7). **Done 2026-09-29** — the mechanism and its 197 dual-build parity tests, the three-installation e2e (`roym_trust_e2e.rs`: X finds Z's SynOrg's member Y through the registry, hires them across three installations, sees them suspended and revoked only on the next check, and carries the trust records to a clean installation), the nine cross-node conversation tests (`conversation_cross_node_e2e.rs`), and the Hub screens with their vitest and Playwright suites (`roym-trust.spec.ts`) are all built and green — see [status.md](status.md)'s "C9" section for the evidence. | **R3** | C8 |
-| **C10** | **Private group chat in the product (R4, all five rows).** Group conversations over B5: no server in the path, byte-identical transcripts, joiner and removed-member key boundaries, membership as visible events, offline catch-up. Product-side: group naming and roster UI, the owner's read access stated in the UI, and the carried-forward limits above surfaced honestly rather than hidden | **R4** | C5, C9 |
+| **C10** | **Private group chat in the product (R4, all five rows).** Group conversations over B5: no server in the path other than the registry and relay it uses to find and reach members, which never hold a message, byte-identical transcripts, joiner and removed-member key boundaries, membership as visible events, offline catch-up. Product-side: group naming and roster UI, the owner's read access stated in the UI, and the carried-forward limits above surfaced honestly rather than hidden. **Done 2026-09-30** — [implementation plan](slice-c10-implementation-plan.md), `status.md` evidence. Host `group-info` and `get-message`, pinned-key add, removal sync rule; `roym_conversation` group service with admission checks and causal ordering; `roymctl roym group`; 211 dual-build parity scenarios; multi-node e2e (`roym_group_e2e.rs`, `roym_group_offline_e2e.rs`); Hub Groups screen, vitest, and Playwright e2e (`roym-groups.spec.ts`). | **R4** | C5, C9 |
 
 **Dependency shape.** **C1.1 sits between C1 and both of them**
 ([ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)'s
@@ -587,11 +594,11 @@ Three substrates, three people, one Roym SynApp deployed on each.
     product does not claim instant removal.
 18. X exports everything and imports it on a clean node -> identity and
     history reproduce, and verification status reproduces with them.
-19. X, Y, and Z form a private group. All three post from deliberately
-    skewed clocks with no coordinator reachable -> byte-identical
-    transcripts. Z goes offline, misses messages, returns, pulls the gap
-    from any online peer. The owner removes Z and rekeys -> Z reads
-    nothing after the removal, and the group sees the removal as an event.
+19. X creates the group and adds Y and Z. All three post from deliberately
+    skewed clocks with the registry and relay reachable and holding no message ->
+    byte-identical transcripts. Z goes offline, misses messages, returns, pulls
+    the gap from any online peer. X removes Z and rekeys -> Z reads nothing
+    after the removal, and the group sees the removal as an event.
 20. A card of an unknown type arrives -> renders as a neutral block naming
     the type, executes nothing, fetches nothing.
 ```
@@ -670,11 +677,12 @@ hub and D-06C-6a is broken, whatever the rest of the scenario does.
    consumer's own node verifying signature, issuer, scope, and expiry; and a
    suspended member vanishing from that directory's results with cached
    copies showing the revocation on next check.
-9. **R4's acceptance tests pass**, all five rows: no server in the path,
-   byte-identical transcripts from skewed clocks, joiner and removed-member
-   key boundaries plus a scheduled rekey that changes the key with stable
-   membership, identical membership history on every member, and an offline
-   member converging after pulling the gap from a peer.
+9. **R4's acceptance tests pass**, all five rows: no server in the path other
+   than the registry and relay it uses to find and reach members, which never
+   hold a message, byte-identical transcripts from skewed clocks, joiner and
+   removed-member key boundaries plus a scheduled rekey that changes the key
+   with stable membership, identical membership history on every member, and
+   an offline member converging after pulling the gap from a peer.
 10. The Hub renders all seven card types plus the unknown-type fallback, and
     a test proves that a card carrying markup, script, or a URL results in
     no execution, no insertion, and no fetch (D-06C-3).
@@ -728,5 +736,5 @@ document; the per-slice ones are owed as each slice completes.
 | C7 completes | **Done 2026-09-08.** R1 marked passed in the spec's scope table (all six rows closed). Currency exponent validation in `roym_core::money` resolved in backlog; 12 new transaction backlog items added (§12); forged cards covered in §11 |
 | C8 completes | **Done 2026-09-24.** R2 marked passed in the spec's scope table (all five rows closed). Gap 9 added above and marked closed by the new `create` data-layer fence. The two open design points ("one payment or several", "one export format or several") answered (`D-C8-1`, `D-C8-17`). Export/backup rows in the backlog resolved: the unsigned-bundle row (four of five services — `directory`'s stays open, retargeted to C9), the missing restored-identity-signing e2e row, the correction-path row, the `payment-request` `RECORD_TYPES` row, and the unproduced-card-type row all move to "Recently resolved" |
 | C9 completes | **Done 2026-09-29.** R3 marked passed in the spec's scope table. The cross-node-coverage row moved to "Recently resolved", minus alias canonicalization and `open-direct` resolution (one row, `D-B4-29`). `CLAUDE.md`/`AGENTS.md`'s wire-reachable table now names four methods. Failure-matrix row 18 reworded: it was wrong about its own reason. Reference-scenario step 5 reworded: a provider gives the owner their DID outside the app, and an in-app application stays a backlog row (`D-C9-14`) |
-| C10 completes | R4 marked passed. The B5 carried-forward limits re-examined against what the product actually hit, and either closed or restated with real evidence |
+| C10 completes | **Done 2026-09-30.** R4 marked passed in the spec's scope table. Gap 10 recorded. The B5 carried-forward limits re-examined: 4 restated with evidence in deferred-backlog, heads() cap kept open, session in-memory limit recorded in status.md. An inbound group message is recorded as unsupported-kind moved to Recently resolved. 6 new backlog items added. Reference scenario step 19 and exit criterion 9 updated for registry/relay pass-through (Branch B) |
 | Each slice | `status.md`, plus a `slice-cN-implementation-plan.md` in this directory |

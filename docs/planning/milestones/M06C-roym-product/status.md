@@ -5,9 +5,12 @@
 [slice-c1.1-implementation-plan.md](slice-c1.1-implementation-plan.md) (C1.1,
 under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-service.md)),
 [slice-c2-implementation-plan.md](slice-c2-implementation-plan.md) (C2),
-[slice-c7-implementation-plan.md](slice-c7-implementation-plan.md) (C7)
+[slice-c7-implementation-plan.md](slice-c7-implementation-plan.md) (C7),
+[slice-c8-implementation-plan.md](slice-c8-implementation-plan.md) (C8),
+[slice-c9-implementation-plan.md](slice-c9-implementation-plan.md) (C9),
+[slice-c10-implementation-plan.md](slice-c10-implementation-plan.md) (C10)
 
-**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), C4 (2026-09-01), C5 (2026-09-03), C6 (2026-09-05 core; completed 2026-09-06 in the Post-C6 follow-up), C7 (2026-09-08), and **C8 (2026-09-24)** complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore; C5 adds the versioned signed listing schema (`catalog`), Roym's own copy of every message plus a block-enforcing inbox (`conversation`), the `syneroym:invocation` host interface with a local-only admission rule on every service, and the two `depends_on` edges those callers traverse; C6 adds the `directory` service's server and client halves (SynOrg settings/roster, provider-initiated publication, search over a derived projection, and a consumer's own directory list/fan-out/merge), the first wire-reachable Roym verbs, and the directory-side publication limiter that closes `[PRD-SAF]`. C7 delivers the transaction vertical foundation: signed `request` → `quote` → `agreement-receipt` record pipeline, card envelope and verification in `roym_core`, the `roym_transaction` service with watermark synchronization from `conversation`, ISO-4217 minor unit validation in `roym_core::money`, `roymctl roym transaction`, dual-build parity scenarios up to 149, two-substrate integration suite (`roym_transaction_e2e.rs`), Hub UI card templates and Playwright tests, and closes the **Release 1 (R1) acceptance gate across all six rows** (see `F1`'s correction in the C7 section below for the real verb/scenario numbers). C8 completes the transaction vertical: the booking state machine with a single-writer fence (a new `create` data-layer host function closing Gap 9), `payment-request`/`payment-acknowledgement`/`fulfilment-receipt` producers, a signed export manifest over every person-signed service's bundle, an encrypted `roymctl roym backup` archive with a tested restore path, and closes the **Release 2 (R2) acceptance gate across all five rows**.
+**Overall:** Slices C1 (2026-08-25), C1.1 (2026-08-28), C2 (2026-08-29), C3 (2026-08-31), C4 (2026-09-01), C5 (2026-09-03), C6 (2026-09-05 core; completed 2026-09-06 in the Post-C6 follow-up), C7 (2026-09-08), C8 (2026-09-24), C9 (2026-09-29), and **C10 (2026-09-30)** complete. C1.1, added by ADR-0024, makes the client gateway a dumb proxy with an `identity_mode` and moves the person session onto a node auth service; C2 builds the six-service Roym SynApp skeleton and the Hub shell on top of that model; C3 provides the host record-signing capability interface (`syneroym:signing`), canonical JSON record envelope format, verification, and tri-state revocation checking; C4 gives `profile` real product state (profile, contacts, block, report, contact rate limits), an owner-only authorization gate on `web`, the certificate lifecycle C3 required as a hard prerequisite, and an encrypted identity backup/restore; C5 adds the versioned signed listing schema (`catalog`), Roym's own copy of every message plus a block-enforcing inbox (`conversation`), the `syneroym:invocation` host interface with a local-only admission rule on every service, and the two `depends_on` edges those callers traverse; C6 adds the `directory` service's server and client halves (SynOrg settings/roster, provider-initiated publication, search over a derived projection, and a consumer's own directory list/fan-out/merge), the first wire-reachable Roym verbs, and the directory-side publication limiter that closes `[PRD-SAF]`. C7 delivers the transaction vertical foundation: signed `request` → `quote` → `agreement-receipt` record pipeline, card envelope and verification in `roym_core`, the `roym_transaction` service with watermark synchronization from `conversation`, ISO-4217 minor unit validation in `roym_core::money`, `roymctl roym transaction`, dual-build parity scenarios up to 149, two-substrate integration suite (`roym_transaction_e2e.rs`), Hub UI card templates and Playwright tests, and closes the **Release 1 (R1) acceptance gate across all six rows** (see `F1`'s correction in the C7 section below for the real verb/scenario numbers). C8 completes the transaction vertical: the booking state machine with a single-writer fence (a new `create` data-layer host function closing Gap 9), `payment-request`/`payment-acknowledgement`/`fulfilment-receipt` producers, a signed export manifest over every person-signed service's bundle, an encrypted `roymctl roym backup` archive with a tested restore path, and closes the **Release 2 (R2) acceptance gate across all five rows**. C9 delivers cross-installation trust: signed credentials, revocations, and moderation decisions, client-side trust evaluation, and closes the **Release 3 (R3) acceptance gate across all three rows**. C10 delivers private group chat: gossip DAG messaging, direct member exchange without a central chat server, owner-distributed epoch keys, join/removal visibility in transcript, offline catch-up, honest group delivery notices, Hub Groups UI, and closes the **Release 4 (R4) acceptance gate across all five rows**. All four milestone releases (R1–R4) are now complete.
 
 ---
 
@@ -25,7 +28,7 @@ under [ADR-0024](../../../decisions/0024-client-gateway-identity-and-auth-servic
 | C7 | A need becomes an offer, and the card contract (R1 row 4) | **Complete (2026-09-08)** — [implementation plan](slice-c7-implementation-plan.md), evidence below. R1's acceptance gate closed across all six rows | C5, C6 |
 | C8 | The transaction vertical (R2, all five rows) | **Complete (2026-09-24)** — [implementation plan](slice-c8-implementation-plan.md), evidence below. R2's acceptance gate closed across all five rows | C7 |
 | C9 | Cross-installation trust (R3, all three rows) | **Done 2026-09-29** — [implementation plan](slice-c9-implementation-plan.md). The signed credential/revocation/moderation mechanism, the publish/search membership gate and `roymctl` (WO1-WO4); 197 dual-build parity tests including the two-SynOrg and hostile-trust-source scenarios (WO5); the three-installation e2e (WO6); the inherited cross-node conversation cases (WO7); the Hub screens with vitest and Playwright (WO8). See "C9" below | C8 |
-| C10 | Private group chat in the product (R4, all five rows) | Not started | C5, C9 |
+| C10 | Private group chat in the product (R4, all five rows) | **Complete (2026-09-30)** — [implementation plan](slice-c10-implementation-plan.md), evidence below. R4's acceptance gate closed across all five rows | C5, C9 |
 
 ---
 
@@ -2469,3 +2472,137 @@ this slice:** two advisories published against `wasmtime`/`wasmtime-wasi` 46.0.3
 
 **R3 across installations is proven on the WASM build; both builds agree on the mechanism**
 through the parity suite (`D-C9-13`).
+
+---
+
+## C10 — Private group chat (done)
+
+Slice C10 implements private group chat across the Roym SynApp stack (R4, all five rows): gossip DAG messaging, direct member exchange without a central chat server, owner-distributed epoch keys, join/removal visibility in the message transcript, offline catch-up, honest group delivery vocabulary, and the Hub Groups screen.
+
+### 1. Host additions and behavior (`crates/wit_interfaces`, `crates/conversation`, `crates/rpc`, `crates/app_host_native`, `crates/sandbox_wasm`)
+
+- **WO1**: Added two additive host functions to `syneroym:conversation`:
+  - `group-info(conversation-id: string) -> result<group-info, string>`: exposes owner DID, epoch, whether caller is member, and current member list.
+  - `get-message(conversation-id: string, message-id: string) -> result<message-row, string>`: retrieves a single message by ID.
+  - Corrected stale `conversation-kind` WIT doc comment.
+  - Synchronized across all 8 copies of `conversation.wit`.
+  - Pinned-key optimization in `crates/conversation/src/group.rs` (`add_member` reuses pinned key from existing 1:1 session if peer is offline).
+  - Removal catch-up in `crates/conversation/src/transport/group_sync.rs` (permits removed members to sync entries up to and including removal epoch).
+  - Skewed clock test hook in `crates/conversation/src/test_support.rs` (`set_group_send_clock_offset_ms`).
+
+### 2. Roym Core group vocabulary (`crates/roym_core`)
+
+- **WO2**: Added group data types in `crates/roym_core/src/conversation.rs`:
+  - `GroupMeta`, `GroupAdmission` (`Shown`, `Hidden`, `Refused`), `GroupProfilePayload` (`application/vnd.roym.group-profile+json`), `GroupMembershipPayload` (`application/vnd.roym.membership-event+json`), `GroupAction` (`Added`, `Removed`).
+  - Constants: `MAX_GROUP_NAME_LEN = 80`, `is_valid_group_name`.
+  - `transcript_digest`: computes canonical content hash (`roym-transcript:`) over sorted transcript entries for transcript verification (`D-C10-9`).
+  - Card rejection helper `is_reserved_group_content_type` (`D-C10-11`).
+  - Registered `group.*` verbs in `crates/roym_core/src/router.rs`.
+
+### 3. Roym Conversation service (`crates/roym_conversation`)
+
+- **WO3**: Implemented full group conversation service logic:
+  - Verbs: `group.create`, `group.rename`, `group.add-member`, `group.remove-member`, `group.info`, `group.sync`, `group.hide`, `group.unhide`, `conversation.transcript-digest`.
+  - Bumped `SCHEMA_VERSION` from 2 to 3; `ConversationRow` includes `kind` ("direct" | "group") and `group: Option<GroupMeta>`.
+  - First-contact gate: adding a group triggers owner evaluation via `contacts.admit-first-contact` (`D-C10-6`).
+  - Name synchronization: group name tracked via owner-signed `group-profile` rows (`D-C10-4`).
+  - Membership event rows: membership events mirrored as immutable message rows (`D-C10-5`).
+  - Membership check before send/delete: returns clear refusal notice if caller has been removed (`D-C10-15`).
+  - Cards refused in groups; membership/profile reserved types refused from external senders (`D-C10-11`).
+
+### 4. CLI commands (`apps/roymctl`)
+
+- **WO4**: Added `roymctl roym group` subcommands:
+  - `create`, `rename`, `add-member`, `remove-member`, `info`, `sync`, `hide`, `unhide`, `history`, `check` (transcript digest comparison).
+
+### 5. Dual-build parity tests (`crates/roym_web/tests/dual_build_parity.rs`)
+
+- **WO5**: Extended parity test harness from 197 to 211 scenarios:
+  - Scenarios 198–211 verify group creation, name setting, adding/removing members, hiding/unhiding, fill-in via `get-message`, transcript digest matching, card rejection in groups, and rekeying.
+  - Byte-for-byte identical output between WASM guest and native execution.
+
+### 6. Multi-node integration tests (`crates/substrate/tests/`)
+
+- **WO6**: Added comprehensive multi-node E2E test suites:
+  - `roym_group_e2e.rs` (4 tests):
+    - Multi-member group creation, messaging, and transcript convergence.
+    - Message ordering with skewed clocks (ADR-0013 sort key order).
+    - Secrecy transitions: joiner cannot read past messages; removed member cannot read future messages; rekey without membership change succeeds.
+    - Multi-round conversation convergence across 3 nodes.
+  - `roym_group_offline_e2e.rs` (4 tests):
+    - Offline member catches up via sync from a non-author peer.
+    - Member offline during removal catches up on pre-removal history.
+    - No member-to-member message passes through intermediary non-member storage (Branch B verification).
+    - Membership events reflected correctly across offline transitions.
+
+### 7. Hub UI and Playwright tests (`crates/roym_web/ui/`, `crates/substrate/tests/e2e/`)
+
+- **WO7**: Added Hub Groups UI:
+  - Groups tab in navigation with roster, member list, and owner badge.
+  - Group notices and honest delivery wording (`words.ts`, `D-C10-8`, `D-C10-10`).
+  - Group creation, member addition/removal, rename, and hide/unhide controls.
+  - Direct message filtering in Messages tab (`kind: "direct"`).
+  - 122 vitest unit tests passing cleanly.
+  - Playwright E2E tests (`roym-groups.spec.ts`, 6 tests passing): group creation, messaging, member management, hide/unhide, honest delivery state, and transcript check display.
+
+### 8. Documentation & Backlog (`WO8`)
+
+- Updated `AGENTS.md` and `docs/roym-integrated-experience-spec.md` with group verbs and R4 status.
+- Recorded Gap 10 and milestone decisions in `task.md`.
+- Updated `docs/planning/deferred-backlog.md`: restated 4 carried-forward limits with evidence, moved `unsupported-kind` to resolved, and added 6 new backlog items.
+
+---
+
+### Carried-forward limits re-examination
+
+1. **`MAX_PARENTS` (8) cap**: Remains open in deferred-backlog. Group ordering in Roym relies strictly on the total order `(sender_timestamp, author, id)` per ADR-0013 §5, and never traverses or limits on DAG parent links.
+2. **Removed member pending message settles `Failed` after age window**: Handled honestly in the UI using `D-C10-8` vocabulary ("Not delivered to every member" + Retry button). UI never claims it is trying to reach a removed member.
+3. **Member signing key trust-on-first-use**: Surfaced honestly via `GROUP_KEY_TRUST_NOTICE` (`D-C10-10`) in the group info panel. Messages and info panels never use the word "verified".
+4. **No `roymctl` operator surface for dead letters**: User-level retry is available in Hub and `roymctl roym group history`; operator node-level dead letter surface remains recorded in deferred-backlog.
+5. **Person sessions in-memory**: Hub displays `SESSION_ENDED_NOTICE` with reload action if session expires; no group message state is lost on restart.
+
+---
+
+### Gap 10 spike and Branch B resolution
+
+During the WO0 spike, we evaluated R4 row 1 ("With no coordinator reachable, members who can reach each other still exchange and order messages"). Cross-node calls in the current substrate architecture re-resolve target nodes through the DHT/registry and dial via the relay. Caching IPs or publishing direct IPs in DHT records introduces privacy implications requiring an ADR. As specified in §3.3 of the plan, Branch B was chosen and documented:
+- Registry and relay are used for node discovery and relaying, but carry no message content and perform no message storage or ordering.
+- Proven by `no_member_to_member_message_passes_through_non_members_storage` in `roym_group_offline_e2e.rs`.
+
+---
+
+### Evidence
+
+| What | Command | Result |
+|---|---|---|
+| Parity, both builds byte-identical | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` | **211/211 passed** |
+| Conversation crate | `cargo nextest run -p syneroym-conversation --all-features` | **63/63 passed** |
+| Roym Core crate | `cargo nextest run -p syneroym-roym-core` | **31/31 passed** |
+| Roym Conversation unit tests | `cargo nextest run -p syneroym-roym-conversation` | **12/12 passed** |
+| Multi-node group E2E | `cargo nextest run -p syneroym-substrate --test roym_group_e2e` | **4/4 passed** |
+| Multi-node offline group E2E | `cargo nextest run -p syneroym-substrate --test roym_group_offline_e2e` | **4/4 passed** |
+| Hub unit tests (vitest) | `npm test` in `crates/roym_web/ui` | **122/122 passed**; `tsc` and `eslint` clean |
+| Hub Groups Playwright spec | `npx playwright test tests/roym-groups.spec.ts` | **6/6 passed** |
+| Full Playwright E2E suite | `mise run test:e2e` | **67 passed** (63 single-node + 4 multi-hop) |
+
+---
+
+### What R4 rests on
+
+| R4 row | Where it is proven |
+|---|---|
+| 1. Direct member exchange with no central chat server | `roym_group_offline_e2e.rs` (`no_member_to_member_message_passes_through_non_members_storage`); gossip DAG sync between peers |
+| 2. Same transcript order everywhere under skewed clocks | `roym_group_e2e.rs` (`messages_from_skewed_clocks_order_identically`); parity scenarios 204, 208 |
+| 3. Only members can read (forward/backward secrecy, rekey) | `roym_group_e2e.rs` (`joiner_and_removed_member_secrecy_and_rekey`); parity scenarios 202, 203, 210 |
+| 4. Membership visibility in transcript | `roym_group_e2e.rs` (`group_membership_changes_reflected_in_transcript`); parity scenarios 200, 201 |
+| 5. Offline catch-up from non-author peer | `roym_group_offline_e2e.rs` (`offline_member_catches_up_from_non_author_peer`, `offline_removed_member_catches_up_to_removal`) |
+
+**R4 across installations is proven on the WASM build; both builds agree on the mechanism**
+through the parity suite (`D-C10-17`).
+
+---
+
+### Release 4 Gate Status
+
+Release 4 (R4) is officially closed. All five acceptance criteria rows are satisfied and verified by automated integration and parity tests. With R4 complete, all four planned releases for Milestone M06C (R1, R2, R3, R4) are now complete and passing all gates.
+
