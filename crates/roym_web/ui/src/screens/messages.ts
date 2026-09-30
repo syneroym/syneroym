@@ -33,6 +33,7 @@ export const DECLINE_NOTE =
 
 interface ConversationRow {
   id: string;
+  kind?: "direct" | "group";
   peer_address: string;
   peer_person_did?: string;
   last_activity_ms: number;
@@ -155,7 +156,7 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
     searchResults.replaceChildren();
     if (!q) return;
     try {
-      const res = await call<{ matches: SearchMatch[] }>("conversation.search", { query: q });
+      const res = await call<{ matches: SearchMatch[] }>("conversation.search", { query: q, kind: "direct" });
       const hits = searchHits(res.matches, q);
       if (hits.length === 0) {
         searchResults.appendChild(text("p", "No messages found.", "search-empty"));
@@ -184,7 +185,7 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
     listItems.replaceChildren();
     let rows: ConversationRow[] = [];
     try {
-      const res = await call<{ conversations: ConversationRow[] }>("conversation.list");
+      const res = await call<{ conversations: ConversationRow[] }>("conversation.list", { kind: "direct" });
       rows = res.conversations;
     } catch (err) {
       listItems.appendChild(text("p", `Could not load: ${errText(err)}`));

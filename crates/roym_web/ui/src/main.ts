@@ -4,6 +4,7 @@ import { runSearch } from "./directory/search";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
 import { renderDirectory } from "./screens/directory";
+import { renderGroups } from "./screens/groups";
 import { renderListings } from "./screens/listings";
 import { renderMemberships } from "./screens/memberships";
 import {
@@ -139,6 +140,7 @@ async function renderTabs(container: HTMLElement, did: string) {
     { name: "Profile", render: () => renderProfile(tabContainer) },
     { name: "Contacts", render: () => renderContacts(tabContainer) },
     { name: "Messages", render: () => renderMessages(tabContainer) },
+    { name: "Groups", render: () => renderGroups(tabContainer) },
     { name: "Listings", render: () => renderListings(tabContainer) },
     { name: "Directory", render: () => renderDirectory(tabContainer) },
     { name: "Memberships", render: () => renderMemberships(tabContainer) },

@@ -2,6 +2,9 @@
 // (Rust is the source of truth; a Rust-side test reads this file and compares
 // the notice strings verbatim).
 
+export const GROUP_PROFILE_CONTENT_TYPE = "application/vnd.roym.group-profile+json";
+export const MEMBERSHIP_EVENT_CONTENT_TYPE = "application/vnd.roym.membership-event+json";
+
 export const OWNER_CAN_READ_NOTICE =
   "The owner of this group makes and shares the group's key, so the owner can read every message sent while they own it. Adding or removing a member is shown to everyone in the group.";
 
@@ -46,25 +49,37 @@ export function deliveryWords(state: "pending" | "delivered" | "failed"): string
   }
 }
 
+export function shortAddress(addr: string): string {
+  if (!addr) return "";
+  if (addr.length <= 16) return addr;
+  return addr.slice(0, 12) + "…";
+}
+
 export interface MembershipEventPayload {
-  action: "create" | "add" | "remove";
+  action: "create" | "add" | "remove" | string;
   subject: string;
-  epoch: number;
+  epoch?: number;
+  author?: string;
 }
 
 export function membershipEventWords(
   event: MembershipEventPayload,
   nameOf: (addr: string) => string,
-  author: string,
+  author?: string,
 ): string {
-  const authorName = nameOf(author);
+  const authorAddr = author || event.author || "";
+  const authorName = nameOf(authorAddr);
   const subjectName = nameOf(event.subject);
+  if (event.action === "create" || (event.action === "add" && authorAddr && event.subject === authorAddr)) {
+    return `${authorName} created the group`;
+  }
   switch (event.action) {
-    case "create":
-      return `${authorName} created the group`;
     case "add":
       return `${authorName} added ${subjectName}`;
     case "remove":
       return `${authorName} removed ${subjectName}`;
+    default:
+      return `${authorName} updated the group`;
   }
 }
+
