@@ -25,6 +25,9 @@ pub(super) async fn on_group_message<H: AppHost>(
         None => {
             let mut r = new_group_row(host, &msg.conversation, &info, now).await?;
             sync_membership_rows(host, &mut r, &info).await?;
+            // Create fence: if another task created the row concurrently,
+            // create fails safely and we reload the committed row to preserve
+            // its admission status and metadata.
             if !create_conversation(host, &r).await? {
                 load_conversation(host, &msg.conversation)
                     .await?

@@ -124,6 +124,9 @@ pub(crate) fn incoming_row(msg: &Message, now: u64) -> MessageRow {
 async fn on_message_inner<H: AppHost>(host: &H, msg: &Message) -> Result<(), String> {
     let now = clock::now_secs();
 
+    // Identify group conversations before 1:1 state checks. Transient host
+    // errors bubble up as Err so the host retries delivery rather than
+    // misclassifying the message as a 1:1 conversation.
     let is_group = match AppConversation::group_info(host, msg.conversation.clone()).await {
         Ok(_) => true,
         Err(ConversationError::InvalidArgument(_) | ConversationError::NotFound) => false,

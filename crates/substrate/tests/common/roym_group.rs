@@ -137,6 +137,32 @@ pub async fn form_group(owner: &RoymNode, name: &str, members: &[&RoymNode]) -> 
         assert!(ok, "{} did not adopt group {} in time", member.label, gid);
     }
 
+    if !name.is_empty() {
+        let list_owner = owner.rpc_ok("conversation.list", json!({ "kind": "group" })).await;
+        let owner_count = list_owner["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == gid)
+            .and_then(|r| r["message_count"].as_i64())
+            .expect("owner group row message count");
+        for member in members {
+            let list_m = member.rpc_ok("conversation.list", json!({ "kind": "group" })).await;
+            let m_count = list_m["conversations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == gid)
+                .and_then(|r| r["message_count"].as_i64())
+                .expect("member group row message count");
+            assert_eq!(
+                owner_count, m_count,
+                "owner message count differs from member {}",
+                member.label
+            );
+        }
+    }
+
     gid
 }
 

@@ -2482,7 +2482,7 @@ Slice C10 implements private group chat across the Roym SynApp stack (R4, all fi
 ### 1. Host additions and behavior (`crates/wit_interfaces`, `crates/conversation`, `crates/rpc`, `crates/app_host_native`, `crates/sandbox_wasm`)
 
 - **WO1**: Added two additive host functions to `syneroym:conversation`:
-  - `group-info: func(conversation: conversation-id) -> result<group-info, conversation-error>`: exposes owner DID, epoch, whether caller is member, and current member list.
+  - `get-group-info: func(conversation: conversation-id) -> result<group-info, conversation-error>`: exposes owner service ID, epoch, whether caller is member, and current member list.
   - `get-message: func(message-id: string) -> result<conversation-message, conversation-error>`: retrieves a single message by ID.
   - Corrected stale `conversation-kind` WIT doc comment.
   - Synchronized across 7 vendored copies plus the source (8 files total) of `conversation.wit`.
@@ -2493,11 +2493,11 @@ Slice C10 implements private group chat across the Roym SynApp stack (R4, all fi
 ### 2. Roym Core group vocabulary (`crates/roym_core`)
 
 - **WO2**: Added group data types in `crates/roym_core/src/conversation/group.rs`:
-  - `GroupMeta`, `GroupAdmission` (`Shown`, `Hidden`, `Refused`), `GroupDetails`, `GroupNotice`.
-  - Constants: `GROUP_NAME_MAX_LEN = 80`, `GROUP_PROFILE_CONTENT_TYPE`, `MEMBERSHIP_EVENT_CONTENT_TYPE`.
-  - Helpers: `group_profile_body`, `membership_event_body`, `parse_group_profile`, `is_group_system_type`, `is_reserved_group_content_type`.
+  - `GroupMeta`, `GroupAdmission` (`Shown`, `Hidden`, `Refused`).
+  - Constants: `MAX_GROUP_NAME_CHARS = 80`, `GROUP_PROFILE_CONTENT_TYPE`, `MEMBERSHIP_EVENT_CONTENT_TYPE`, `GROUP_RESTORED_NOTICE`, `CARDS_NOT_IN_GROUPS_MESSAGE`.
+  - Helpers: `group_profile_body`, `membership_event_body`, `parse_group_profile`, `is_group_system_type`.
   - `transcript_digest`: computes canonical content hash (`roym-transcript:`) over sorted transcript entries for transcript verification (`D-C10-9`).
-  - Card rejection helper `is_reserved_group_content_type` (`D-C10-11`).
+  - Card rejection in groups (`D-C10-11`).
   - Registered `group.*` verbs in `crates/roym_core/src/router.rs`.
 
 ### 3. Roym Conversation service (`crates/roym_conversation`)
@@ -2519,7 +2519,7 @@ Slice C10 implements private group chat across the Roym SynApp stack (R4, all fi
 ### 5. Dual-build parity tests (`crates/roym_web/tests/dual_build_parity.rs`)
 
 - **WO5**: Extended parity test harness to include group scenarios:
-  - Scenarios 201–214 verify group creation, name setting, adding/removing members, hiding/unhiding, fill-in via `get-message`, transcript digest matching, card rejection in groups, and rekeying.
+  - Scenarios 201–215 verify group creation, name setting, hiding/unhiding, transcript digest matching, card and deletion-request rejection in groups, system message filtering, restored group notices, and direct-conversation rejection on group verbs (fill-in via get-message is verified in roym_group_offline_e2e's stranger test).
   - Byte-for-byte identical output between WASM guest and native execution.
 
 ### 6. Multi-node integration tests (`crates/substrate/tests/`)
@@ -2531,8 +2531,8 @@ Slice C10 implements private group chat across the Roym SynApp stack (R4, all fi
     - `a_removed_member_reads_nothing_after_removal`: secrecy boundary preventing removed member from reading post-removal messages.
     - `a_scheduled_rekey_changes_the_key_with_stable_membership`: rekey without membership change succeeding with unchanged membership rows.
   - `roym_group_offline_e2e.rs` (4 tests):
-    - `offline_member_catches_up_from_non_author_peer`: offline member syncs from non-author peer.
-    - `no_member_to_member_message_passes_through_non_members_storage`: coordinator storage has no conversation store rows for the group (Branch B).
+    - `an_offline_member_pulls_the_gap_from_another_member`: offline member syncs from non-author peer.
+    - `no_member_to_member_message_passes_through_non_members_storage`: coordinator deploys no conversation service, registry records point to member substrates, and coordinator holds no `conversation.db` on disk (Branch B).
     - `a_stranger_adding_you_is_a_first_contact`: stranger adding peer triggers first contact.
     - `a_message_to_a_member_removed_while_pending_settles_failed_after_the_age_window`: message pending to removed member settles to Failed after age window.
 
@@ -2568,7 +2568,7 @@ Slice C10 implements private group chat across the Roym SynApp stack (R4, all fi
 
 During the WO0 spike, we evaluated R4 row 1 ("With no coordinator reachable, members who can reach each other still exchange and order messages"). Cross-node calls in the current substrate architecture re-resolve target nodes through the DHT/registry and dial via the relay. Caching IPs or publishing direct IPs in DHT records introduces privacy implications requiring an ADR. Fix A1 (last-good lookup cache) was not pursued because in-memory direct connection without an active coordinator does not persist across restarts and publishing peer direct endpoints needs an ADR. As specified in §3.3 of the plan, Branch B was chosen and documented:
 - Registry and relay are used for node discovery and relaying, but carry no message content and perform no message storage or ordering.
-- Proven by `no_member_to_member_message_passes_through_non_members_storage` in `roym_group_offline_e2e.rs` (which confirms the coordinator's node address is not in group members, and the coordinator's storage contains no conversation store row for the group).
+- Proven by `no_member_to_member_message_passes_through_non_members_storage` in `roym_group_offline_e2e.rs` (which confirms all group members are the participants' own conversation service IDs, their registry records point to member substrates rather than the coordinator, the coordinator deploys no conversation service, and holds no `conversation.db` on disk).
 
 ---
 
@@ -2576,7 +2576,7 @@ During the WO0 spike, we evaluated R4 row 1 ("With no coordinator reachable, mem
 
 | What | Command | Result |
 |---|---|---|
-| Parity, both builds byte-identical | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` | **211/211 passed** (covering scenarios 201–214) |
+| Parity, both builds byte-identical | `cargo nextest run -p syneroym-roym-web --test dual_build_parity` | **212/212 passed** (covering scenarios 201–215) |
 | Conversation crate | `cargo nextest run -p syneroym-conversation --all-features` | **70/70 passed** |
 | Roym Core crate | `cargo nextest run -p syneroym-roym-core` | **31/31 passed** |
 | Roym Conversation unit tests | `cargo nextest run -p syneroym-roym-conversation` | **12/12 passed** |
@@ -2593,10 +2593,10 @@ During the WO0 spike, we evaluated R4 row 1 ("With no coordinator reachable, mem
 | R4 row | Where it is proven |
 |---|---|
 | 1. Direct member exchange with no central chat server | `roym_group_offline_e2e.rs` (`no_member_to_member_message_passes_through_non_members_storage`); gossip DAG sync between peers |
-| 2. Same transcript order everywhere under skewed clocks | `roym_group_e2e.rs` (`three_members_see_one_order_from_skewed_clocks`); parity scenarios 204, 206 |
-| 3. Only members can read (forward/backward secrecy, rekey) | `roym_group_e2e.rs` (`a_joiner_reads_nothing_before_joining`, `a_removed_member_reads_nothing_after_removal`, `a_scheduled_rekey_changes_the_key_with_stable_membership`); parity scenarios 203, 205, 207, 212 |
-| 4. Membership visibility in transcript | `roym_group_e2e.rs` (`a_joiner_reads_nothing_before_joining`, `a_removed_member_reads_nothing_after_removal`); parity scenarios 201, 208, 209, 214 |
-| 5. Offline catch-up from non-author peer | `roym_group_offline_e2e.rs` (`offline_member_catches_up_from_non_author_peer`, `a_message_to_a_member_removed_while_pending_settles_failed_after_the_age_window`); conversation unit tests (`a_removed_member_catches_up_on_messages_from_before_its_removal`, `removed_member_can_sync_its_own_removal`, etc.) |
+| 2. Same transcript order everywhere under skewed clocks | `roym_group_e2e.rs` (`three_members_see_one_order_from_skewed_clocks`) |
+| 3. Only members can read (forward/backward secrecy, rekey) | `roym_group_e2e.rs` (`a_joiner_reads_nothing_before_joining`, `a_removed_member_reads_nothing_after_removal`, `a_scheduled_rekey_changes_the_key_with_stable_membership`) |
+| 4. Membership visibility in transcript | `roym_group_e2e.rs` (`a_joiner_reads_nothing_before_joining`, `a_removed_member_reads_nothing_after_removal`); parity scenarios 201, 204 |
+| 5. Offline catch-up from non-author peer | `roym_group_offline_e2e.rs` (`an_offline_member_pulls_the_gap_from_another_member`, `a_message_to_a_member_removed_while_pending_settles_failed_after_the_age_window`); conversation unit tests (`a_removed_member_catches_up_on_messages_from_before_its_removal`, `removed_member_can_sync_its_own_removal`, etc.) |
 
 **R4 across installations is proven on the WASM build; both builds agree on the mechanism**
 through the parity suite (`D-C10-17`).

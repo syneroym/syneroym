@@ -3,11 +3,12 @@
 
 use std::{fs, time::Duration};
 
-use rusqlite::Connection;
 use rustls::crypto::ring;
 use serde_json::{Value, json};
-use syneroym_core::config::AppSandboxRole;
+use syneroym_core::{config::AppSandboxRole, dht_registry::RegistryClient};
 use syneroym_identity::Identity;
+use syneroym_roym_core::clock;
+use tokio::time;
 
 mod common;
 
@@ -124,29 +125,66 @@ async fn no_member_to_member_message_passes_through_non_members_storage() {
     let info_z = z.rpc_ok("group.info", json!({ "conversation": &gid })).await;
     let members = info_z["members"].as_array().unwrap();
     assert_eq!(members.len(), 3);
-    assert!(!members.iter().any(|m| m["address"] == coord.0.did()));
+    let mut member_addrs: Vec<&str> =
+        members.iter().map(|m| m["address"].as_str().expect("address")).collect();
+    member_addrs.sort_unstable();
+    let mut expected = vec![
+        z.dids["conversation"].as_str(),
+        x.dids["conversation"].as_str(),
+        y.dids["conversation"].as_str(),
+    ];
+    expected.sort_unstable();
+    assert_eq!(member_addrs, expected);
 
-    // Verify coordinator's conversation storage has no row for this group
-    let coord_services = coord.0.base_path().join("data").join("services");
-    if coord_services.exists() {
-        for entry in fs::read_dir(&coord_services).unwrap().flatten() {
-            let conv_db = entry.path().join("conversation.db");
-            if conv_db.exists() {
-                let conn = Connection::open(&conv_db).unwrap();
-                let count: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM conversations WHERE id = ?1", [&gid], |row| {
-                        row.get(0)
-                    })
-                    .unwrap_or(0);
-                assert_eq!(count, 0, "coordinator stored conversation row for group {gid}");
-            }
-        }
-    }
+    assert_coordinator_has_no_conversation_state(&coord, &[&z, &x, &y], &dir_z).await;
 
     z.teardown().await;
     x.teardown().await;
     y.teardown().await;
     coord.teardown().await;
+}
+
+async fn assert_coordinator_has_no_conversation_state(
+    coord: &CoordinatorNode,
+    members: &[&RoymNode],
+    dir_z: &tempfile::TempDir,
+) {
+    let reg = RegistryClient::new(false, Some(coord.registry_url().to_string()));
+    let coord_node = reg.lookup(coord.0.did(), false).await;
+    assert!(coord_node.is_ok(), "coordinator node itself is registered");
+
+    for m in members {
+        let conv_did = &m.dids["conversation"];
+        let rec = reg.lookup(conv_did, false).await.expect("member conversation registered");
+        assert_eq!(rec.info.substrate_id, m.substrate_did());
+        assert_ne!(rec.info.substrate_id, coord.0.did());
+    }
+
+    let coord_svcs = coord.0.substrate_client.list_svcs().await.expect("list coord svcs");
+    assert!(
+        !coord_svcs.iter().any(|s| s.interfaces.iter().any(|i| i == "conversation")),
+        "coordinator has no conversation service deployed"
+    );
+
+    let z_conv_db = dir_z
+        .path()
+        .join("data")
+        .join("db")
+        .join("services")
+        .join(&members[0].dids["conversation"])
+        .join("conversation.db");
+    assert!(z_conv_db.exists(), "member node z must host its conversation.db");
+
+    let coord_services_dir = coord.0.base_path().join("data").join("db").join("services");
+    if coord_services_dir.exists() {
+        for entry in fs::read_dir(&coord_services_dir).unwrap().flatten() {
+            assert!(
+                !entry.path().join("conversation.db").exists(),
+                "coordinator must hold no conversation database at {:?}",
+                entry.path()
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -182,7 +220,7 @@ async fn a_stranger_adding_you_is_a_first_contact() {
 
     x.rpc_ok("contacts.set-limits", json!({ "window_secs": 3600, "max_per_window": 0 })).await;
 
-    let created = w.rpc_ok("group.create", json!({})).await;
+    let created = w.rpc_ok("group.create", json!({ "name": "Stranger Group" })).await;
     let gid = created["conversation_id"].as_str().unwrap().to_string();
     w.rpc_ok("group.add-member", json!({ "group": &gid, "address": x.dids["conversation"] })).await;
 
@@ -210,7 +248,20 @@ async fn a_stranger_adding_you_is_a_first_contact() {
     assert!(ok);
 
     let unh = x.rpc_ok("group.unhide", json!({ "group": &gid })).await;
-    assert_eq!(unh["filled_in"], 1);
+    assert_eq!(unh["filled_in"], 2);
+
+    let info_x = x.rpc_ok("group.info", json!({ "conversation": &gid })).await;
+    assert_eq!(info_x["name"], "Stranger Group");
+
+    let list_x = x.rpc_ok("conversation.list", json!({ "kind": "group" })).await;
+    let row_x = list_x["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == gid)
+        .expect("unhidden group row");
+    assert_eq!(row_x["message_count"], 2);
+    assert_eq!(row_x["group"]["name"], "Stranger Group");
 
     let hx = x.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
     assert!(hx["messages"].as_array().unwrap().iter().any(|m| m["body"] == "msg A"));
@@ -258,23 +309,23 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
         .rpc_ok("group.remove-member", json!({ "group": &gid, "person_did": trio.y.owner_did() }))
         .await;
 
-    let start_now = syneroym_roym_core::clock::now_ms();
+    let start_now = clock::now_ms();
     assert!(
         start_now <= m_ts + 30_000,
         "removal step overran the 30s observation window (start_now={start_now}, m_ts={m_ts})"
     );
     let target_20 = m_ts + 20_000;
     if target_20 > start_now {
-        tokio::time::sleep(Duration::from_millis((target_20 - start_now) as u64)).await;
+        time::sleep(Duration::from_millis((target_20 - start_now) as u64)).await;
     }
     let hz_20 = trio.z.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
     let row_20 = hz_20["messages"].as_array().unwrap().iter().find(|m| m["id"] == m_id).unwrap();
     assert_eq!(row_20["state"], "pending");
 
-    let now_30 = syneroym_roym_core::clock::now_ms();
+    let now_30 = clock::now_ms();
     let target_30 = m_ts + 30_000;
     if target_30 > now_30 {
-        tokio::time::sleep(Duration::from_millis((target_30 - now_30) as u64)).await;
+        time::sleep(Duration::from_millis((target_30 - now_30) as u64)).await;
     }
     let hz_30 = trio.z.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
     let row_30 = hz_30["messages"].as_array().unwrap().iter().find(|m| m["id"] == m_id).unwrap();
@@ -292,7 +343,7 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
     })
     .await;
     assert!(ok_fail);
-    let now_failed = syneroym_roym_core::clock::now_ms();
+    let now_failed = clock::now_ms();
     assert!(now_failed >= m_ts + 60_000, "message settled to failed before 60s age window passed");
 
     trio.teardown().await;

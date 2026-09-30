@@ -140,10 +140,9 @@ async fn adopt_one<H: AppHost>(host: &H, id: &str) -> Result<(), String> {
         AppConversation::group_info(host, id.to_string()).await.map_err(|e| format!("{e:?}"))?;
     let mut row = new_group_row(host, id, &info, clock::now_secs()).await?;
     sync_membership_rows(host, &mut row, &info).await?;
-    if !create_conversation(host, &row).await? {
-        return Ok(());
-    }
-    Ok(())
+    // Losing the create race to a concurrent inbox or list call is fine;
+    // the stored decision wins.
+    create_conversation(host, &row).await.map(|_| ())
 }
 
 pub(crate) async fn store_group_message<H: AppHost>(
@@ -684,11 +683,16 @@ pub(crate) async fn unhide<H: AppHost>(host: &H, req: &Request) -> Response {
     }
 
     if let Ok(Some(mut reloaded)) = load_conversation(host, &conversation).await {
+        reloaded.message_count += u64::from(filled_in);
+        reloaded.last_activity_ms = reloaded.last_activity_ms.max(row.last_activity_ms);
         if let Some(meta) = reloaded.group.as_mut() {
             meta.admission = GroupAdmission::Shown;
         }
         if let (Some(meta), Some(cur_meta)) = (row.group.as_ref(), reloaded.group.as_mut()) {
             cur_meta.membership_events_copied = meta.membership_events_copied;
+            if let (Some(name), Some(src)) = (&meta.name, &meta.name_source) {
+                apply_group_profile(cur_meta, name.clone(), src.clone());
+            }
         }
         let _ = put_conversation(host, &reloaded).await;
     }

@@ -395,6 +395,54 @@ async fn removed_member_can_sync_its_own_removal() {
     assert!(has_removal, "sync response must contain removal entry");
 }
 
+#[tokio::test]
+async fn removed_member_with_zero_placeholder_and_1to1_session_can_sync_its_own_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+
+    store_owner
+        .upsert_session(
+            &SessionRow { peer_address: bob.to_string(), pinned_sig_key: bob_vk, state: vec![1] },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    service.add_member(owner, &group_id, bob).await.unwrap();
+    service.remove_member(owner, &group_id, bob).await.unwrap();
+
+    // Overwrite group_members.sig_key to the zero placeholder to exercise direct
+    // session fallback
+    {
+        let conn = store_owner.conn().lock().unwrap();
+        conn.execute(
+            "UPDATE group_members SET sig_key = zeroblob(32) WHERE conversation_id = ?1 AND \
+             member_address = ?2",
+            rusqlite::params![&group_id, bob],
+        )
+        .unwrap();
+    }
+
+    let assertion = sign_assertion(&bob_sk, bob, &group_id);
+    let req =
+        GroupSyncRequest { from: assertion, group: group_id.clone(), after_seq: 0, limit: 10 };
+
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+    assert!(!resp.entries.is_empty(), "removed member must receive removal history");
+    let has_removal = resp.entries.iter().any(|e| {
+        e.kind == EntryKind::Membership
+            && e.payload.as_ref().map(|p| p.action == "remove").unwrap_or(false)
+    });
+    assert!(has_removal, "sync response must contain removal entry via 1:1 session fallback");
+}
+
 fn sign_assertion(sk: &SigningKey, addr: &str, group: &str) -> PeerAssertion {
     let now = store::now_ms();
     let mut nonce = [0u8; 16];

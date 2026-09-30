@@ -243,4 +243,70 @@ describe("Groups screen rendering", () => {
     expect(host.textContent).not.toContain(GROUP_REMOVED_NOTICE);
     expect(host.querySelector(".key-changed-date")).toBeNull();
   });
+
+  it("retry handler calls conversation.retry with message id and never calls conversation.send", async () => {
+    const called: { method: string; params: Record<string, unknown> }[] = [];
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: 1,
+            group: { name: "Retry Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        name: "Retry Group",
+        owner_address: "did:key:zAlice",
+        is_owner: true,
+        is_member: true,
+        restored_only: false,
+        key_epoch: 1,
+        key_stored_at_ms: 0,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "msg-failed",
+            conversation: "grp-1",
+            author: "did:key:zAlice",
+            direction: "outgoing",
+            sender_timestamp_ms: 1000,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            body: "failed send",
+            state: "failed",
+          },
+        ],
+      }),
+      "conversation.retry": (params) => {
+        called.push({ method: "conversation.retry", params });
+        return { ok: true };
+      },
+      "conversation.send": (params) => {
+        called.push({ method: "conversation.send", params });
+        return { ok: true };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderGroups(host);
+
+    const retryBtn = host.querySelector<HTMLButtonElement>("button.retry-button");
+    expect(retryBtn).not.toBeNull();
+    retryBtn?.click();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(called.some((c) => c.method === "conversation.retry")).toBe(true);
+    expect(called.find((c) => c.method === "conversation.retry")?.params).toEqual({
+      message_id: "msg-failed",
+    });
+    expect(called.some((c) => c.method === "conversation.send")).toBe(false);
+  });
 });

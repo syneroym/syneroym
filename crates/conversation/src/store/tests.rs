@@ -625,7 +625,7 @@ fn get_message_returns_stored_message_and_preserves_signed_timestamp() {
 }
 
 #[test]
-fn get_message_hides_system_messages() {
+fn get_message_marks_system_messages() {
     let s = store();
     let conv = s.get_or_create_direct("did:key:zAlice", "did:key:zBob", 1_000).unwrap();
     s.insert_outgoing_and_enqueue(
@@ -644,6 +644,4 @@ fn get_message_hides_system_messages() {
 
     let raw = s.get_message("msg:sys_key").unwrap().unwrap();
     assert!(raw.system);
-    let filtered = s.get_message("msg:sys_key").unwrap().filter(|m| !m.system);
-    assert!(filtered.is_none());
 }
