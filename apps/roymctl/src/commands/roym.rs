@@ -13,6 +13,7 @@ pub mod backup;
 pub mod booking;
 pub mod directory;
 pub mod find;
+pub mod group;
 pub mod signing;
 pub mod transaction;
 pub mod trust;
@@ -27,6 +28,7 @@ pub use backup::{
 };
 pub use booking::{BookingCommands, FulfilmentCommands, PaymentCommands};
 pub use directory::{DirectoryCommands, MemberCommands};
+pub use group::GroupCommands;
 #[cfg(test)]
 pub(crate) use syneroym_sdk::DeployedService;
 pub use transaction::TransactionCommands;
@@ -82,6 +84,11 @@ pub enum RoymCommands {
     Backup {
         #[command(subcommand)]
         command: BackupCommands,
+    },
+    /// Group conversations: create, rename, membership, messages, and sync.
+    Group {
+        #[command(subcommand)]
+        command: GroupCommands,
     },
 }
 
@@ -144,6 +151,9 @@ pub async fn handle(
         }
         RoymCommands::Backup { command } => {
             backup::handle_backup(command, dir, run_as, ucan_path).await
+        }
+        RoymCommands::Group { command } => {
+            group::handle_group(command, dir, run_as, ucan_path).await
         }
     }
 }
