@@ -8,7 +8,7 @@ use syneroym_app_host::{AppDataLayer, AppHost};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
-    conversation::Direction,
+    conversation::{Direction, group::CARDS_NOT_IN_GROUPS_MESSAGE},
     envelope::{Request, Response},
     signing,
     transaction::{self, MAX_CARDS_PER_CONVERSATION, ReceiptHalf, SYNC_OVERLAP, SYNC_WINDOW},
@@ -55,10 +55,13 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
     };
 
     let start = if params.full { 0 } else { sync_state.scanned_count.saturating_sub(SYNC_OVERLAP) };
-    let messages = match fetch_sync_messages(host, &params.conversation, start).await {
+    let (messages, kind) = match fetch_sync_messages(host, &params.conversation, start).await {
         Ok(m) => m,
         Err(resp) => return resp,
     };
+    if kind.as_deref() == Some("group") {
+        return Response::invalid_params(CARDS_NOT_IN_GROUPS_MESSAGE);
+    }
 
     let mut card_count = match count_cards_for_conversation(host, &params.conversation).await {
         Ok(c) => c,
@@ -120,7 +123,7 @@ async fn fetch_sync_messages<H: AppHost>(
     host: &H,
     conversation: &str,
     start: u64,
-) -> Result<Vec<Value>, Response> {
+) -> Result<(Vec<Value>, Option<String>), Response> {
     let page_resp = match conversation_call(
         host,
         "conversation.history",
@@ -141,7 +144,9 @@ async fn fetch_sync_messages<H: AppHost>(
     }
 
     let res = page_resp.result.unwrap_or(Value::Null);
-    Ok(res.get("messages").and_then(Value::as_array).cloned().unwrap_or_default())
+    let kind = res.get("kind").and_then(Value::as_str).map(str::to_string);
+    let messages = res.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
+    Ok((messages, kind))
 }
 
 #[derive(Default)]

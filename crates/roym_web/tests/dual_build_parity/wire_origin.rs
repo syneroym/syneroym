@@ -113,6 +113,15 @@ async fn scenario_73_guard_no_c5_verb_answers_method_not_found_or_wire_refused()
         ("conversation.search", json!({ "query": "guard" })),
         ("conversation.export", json!({})),
         ("conversation.signing-status", json!({})),
+        ("conversation.transcript-digest", json!({ "conversation": conv_id })),
+        ("group.create", json!({ "name": "Guard group" })),
+        ("group.rename", json!({ "conversation": conv_id, "name": "New name" })),
+        ("group.add-member", json!({ "conversation": conv_id, "address": "did:key:zPeer73b" })),
+        ("group.remove-member", json!({ "conversation": conv_id, "address": "did:key:zPeer73b" })),
+        ("group.info", json!({ "conversation": conv_id })),
+        ("group.sync", json!({ "conversation": conv_id })),
+        ("group.hide", json!({ "conversation": conv_id })),
+        ("group.unhide", json!({ "conversation": conv_id })),
     ];
 
     for (method, params) in calls {

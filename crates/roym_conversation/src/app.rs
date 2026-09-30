@@ -6,6 +6,7 @@
 //! rate limit.
 
 pub mod backup;
+pub mod group;
 pub mod inbox;
 pub mod messages;
 
@@ -22,13 +23,11 @@ use syneroym_roym_core::{
     admit,
     conversation::{ConversationRow, MessageRow},
     envelope::{Request, Response},
-    person::ProfilePayload,
-    record::Envelope,
     services, signing,
 };
 
-/// Bumped in this slice: the service gains its first state.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Bumped in this slice: group conversations added.
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub const CONVERSATIONS: &str = "conversations";
 pub const MESSAGES: &str = "messages";
@@ -77,7 +76,27 @@ pub(crate) async fn ensure_messages<H: AppHost>(host: &H) -> Result<(), String> 
 }
 
 pub(crate) async fn ensure_refused<H: AppHost>(host: &H) -> Result<(), String> {
-    ensure_coll(host, REFUSED_MESSAGES, &[idx("at_secs", IndexType::Numeric)]).await
+    ensure_coll(
+        host,
+        REFUSED_MESSAGES,
+        &[idx("at_secs", IndexType::Numeric), idx("conversation", IndexType::String)],
+    )
+    .await
+}
+
+pub(crate) async fn put_conversation<H: AppHost>(
+    host: &H,
+    row: &ConversationRow,
+) -> Result<(), String> {
+    ensure_conversations(host).await?;
+    let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
+    AppDataLayer::put(
+        host,
+        CONVERSATIONS.to_string(),
+        RecordWriteValue { id: row.id.clone(), payload: bytes },
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 pub(crate) async fn put_message<H: AppHost>(host: &H, row: &MessageRow) -> Result<(), String> {
@@ -140,32 +159,30 @@ pub(crate) async fn profile_call<H: AppHost>(
     serde_json::from_str(&raw).map_err(|e| e.to_string())
 }
 
-/// This installation's own conversation address, read from its `profile`
-/// record through the declared `conversation -> profile` dependency. Used
-/// as the `author` of an outgoing row when the host's own copy of the
-/// just-sent message cannot be read back -- `catalog` reads it the same
-/// way for `listing.set`.
-pub(crate) async fn own_conversation_address<H: AppHost>(host: &H) -> Option<String> {
-    let resp = profile_call(host, "profile.get", json!({})).await.ok()?;
-    let result = resp.result?;
-    let env_str = result.get("envelope").and_then(Value::as_str)?;
-    let env = Envelope::from_json(env_str).ok()?;
-    let payload: ProfilePayload = serde_json::from_value(env.payload).ok()?;
-    Some(payload.conversation_address)
+/// Map of conversation_address -> person_did from contacts.list.
+pub(crate) async fn contacts_map<H: AppHost>(
+    host: &H,
+) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(resp) = profile_call(host, "contacts.list", json!({})).await
+        && let Some(rows) = resp.result.and_then(|v| v.as_array().cloned())
+    {
+        for row in rows {
+            if let (Some(addr), Some(did)) = (
+                row.get("conversation_address").and_then(Value::as_str),
+                row.get("person_did").and_then(Value::as_str),
+            ) {
+                map.insert(addr.to_string(), did.to_string());
+            }
+        }
+    }
+    map
 }
 
 /// This peer's person DID as far as this product can say, from its own
 /// contacts. `None` when no contact carries the address.
 pub(crate) async fn person_did_for_address<H: AppHost>(host: &H, address: &str) -> Option<String> {
-    let resp = profile_call(host, "contacts.list", json!({})).await.ok()?;
-    let list = resp.result?;
-    let rows = list.as_array()?;
-    for row in rows {
-        if row.get("conversation_address").and_then(Value::as_str) == Some(address) {
-            return row.get("person_did").and_then(Value::as_str).map(str::to_string);
-        }
-    }
-    None
+    contacts_map(host).await.remove(address)
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
@@ -187,8 +204,17 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         "conversation.retry" => messages::retry(host, &req).await,
         "conversation.delete-message" => messages::delete_message(host, &req).await,
         "conversation.search" => messages::search(host, &req).await,
+        "conversation.transcript-digest" => messages::transcript_digest(host, &req).await,
         "conversation.export" => backup::export(host).await,
         "conversation.import" => backup::import(host, &req).await,
+        "group.create" => group::create(host, &req).await,
+        "group.rename" => group::rename(host, &req).await,
+        "group.add-member" => group::add_member(host, &req).await,
+        "group.remove-member" => group::remove_member(host, &req).await,
+        "group.info" => group::info(host, &req).await,
+        "group.sync" => group::sync(host, &req).await,
+        "group.hide" => group::hide(host, &req).await,
+        "group.unhide" => group::unhide(host, &req).await,
         other => Response::method_not_found(other),
     }
 }
