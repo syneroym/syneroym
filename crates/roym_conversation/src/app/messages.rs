@@ -656,7 +656,12 @@ pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 pub(crate) async fn transcript_digest<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
+    let conversation = match req
+        .params
+        .get("conversation")
+        .or_else(|| req.params.get("group"))
+        .and_then(Value::as_str)
+    {
         Some(c) => c.to_string(),
         None => return Response::invalid_params("conversation is required"),
     };

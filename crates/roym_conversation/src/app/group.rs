@@ -237,9 +237,17 @@ pub(crate) async fn create<H: AppHost>(host: &H, req: &Request) -> Response {
     }))
 }
 
+fn extract_conversation_param(req: &Request) -> Option<String> {
+    req.params
+        .get("conversation")
+        .or_else(|| req.params.get("group"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 pub(crate) async fn rename<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
-        Some(c) => c.to_string(),
+    let conversation = match extract_conversation_param(req) {
+        Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
     let raw_name = match req.params.get("name").and_then(Value::as_str) {
@@ -319,8 +327,8 @@ pub(crate) async fn rename<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 pub(crate) async fn add_member<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
-        Some(c) => c.to_string(),
+    let conversation = match extract_conversation_param(req) {
+        Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
     let mut row = match load_conversation(host, &conversation).await {
@@ -399,8 +407,8 @@ pub(crate) async fn add_member<H: AppHost>(host: &H, req: &Request) -> Response 
 }
 
 pub(crate) async fn remove_member<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
-        Some(c) => c.to_string(),
+    let conversation = match extract_conversation_param(req) {
+        Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
     let mut row = match load_conversation(host, &conversation).await {
@@ -447,8 +455,8 @@ pub(crate) async fn remove_member<H: AppHost>(host: &H, req: &Request) -> Respon
 }
 
 pub(crate) async fn info<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
-        Some(c) => c.to_string(),
+    let conversation = match extract_conversation_param(req) {
+        Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
     if load_conversation(host, &conversation).await.ok().flatten().is_none() {
@@ -541,8 +549,8 @@ pub(crate) async fn info<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
-        Some(c) => c.to_string(),
+    let conversation = match extract_conversation_param(req) {
+        Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
     if let Err(e) = AppConversation::sync_now(host, conversation.clone()).await {
@@ -568,8 +576,8 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 pub(crate) async fn hide<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
-        Some(c) => c.to_string(),
+    let conversation = match extract_conversation_param(req) {
+        Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
     let mut row = match load_conversation(host, &conversation).await {
@@ -587,8 +595,8 @@ pub(crate) async fn hide<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 pub(crate) async fn unhide<H: AppHost>(host: &H, req: &Request) -> Response {
-    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
-        Some(c) => c.to_string(),
+    let conversation = match extract_conversation_param(req) {
+        Some(c) => c,
         None => return Response::invalid_params("conversation is required"),
     };
     let mut row = match load_conversation(host, &conversation).await {
