@@ -10,10 +10,10 @@ use syneroym_roym_core::{
     clock,
     directory::{DEFAULT_SOURCE_TIMEOUT_MS, MAX_SOURCES, SourceError},
     envelope::{Request, Response},
-    person, services,
+    paging, person, services,
 };
 
-use super::{SOURCES, collect_raw, ensure_coll, put_json};
+use super::{SOURCES, ensure_coll, put_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(in crate::app) struct SourceRow {
@@ -80,7 +80,8 @@ pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> R
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
         return Response::internal_error(e);
     }
-    let existing = match collect_raw(host, SOURCES).await {
+    let existing: Vec<(String, Value)> = match paging::query_all_with_ids(host, SOURCES, None).await
+    {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
@@ -187,10 +188,8 @@ pub(in crate::app) async fn sources<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
         return Response::internal_error(e);
     }
-    match collect_raw(host, SOURCES).await {
-        Ok(rows) => {
-            Response::ok(json!({ "sources": rows.into_iter().map(|(_, v)| v).collect::<Vec<_>>() }))
-        }
+    match paging::query_all::<_, Value>(host, SOURCES, None).await {
+        Ok(rows) => Response::ok(json!({ "sources": rows })),
         Err(e) => Response::internal_error(e),
     }
 }

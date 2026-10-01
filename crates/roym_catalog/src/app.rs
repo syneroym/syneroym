@@ -5,26 +5,25 @@
 //! `supersedes` the last, plus unsigned availability state and the
 //! catalog-side publication limiter.
 
-use std::{cmp::Reverse, collections::BTreeMap};
+use std::cmp::Reverse;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
-        data_layer::{
-            CollectionSchema, IndexDefinition, IndexType, Mutation, QueryOptions, RecordWriteValue,
-        },
+        data_layer::{CollectionSchema, IndexDefinition, IndexType, Mutation, RecordWriteValue},
         proxy::CallTarget,
         signing::{Principal, RecordDraft},
     },
 };
 use syneroym_roym_core::{
     admit,
-    backup::{BUNDLE_VERSION, Bundle, BundleManifest, SECTION_AVAILABILITY, SECTION_LISTINGS},
+    backup::{Bundle, SECTION_AVAILABILITY, SECTION_LISTINGS},
     clock,
     envelope::{Request, Response},
     listing::{self, ListingPayload, ListingStatus},
+    paging,
     person::ProfilePayload,
     record::{Envelope, RECORD_LISTING, VerifyOptions, verify_json},
     safety::{self, Admission, PublicationLimits},

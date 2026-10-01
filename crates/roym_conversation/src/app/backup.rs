@@ -1,46 +1,17 @@
 //! Conversation backup export and import.
 
-use std::collections::BTreeMap;
-
 use serde_json::{Map, Value, json};
-use syneroym_app_host::{
-    AppDataLayer, AppHost,
-    types::data_layer::{QueryOptions, RecordWriteValue},
-};
+use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
-    backup::{BUNDLE_VERSION, Bundle, BundleManifest, SECTION_CONVERSATIONS, SECTION_MESSAGES},
+    backup::{self, Bundle, SECTION_CONVERSATIONS, SECTION_MESSAGES},
     clock,
     envelope::{Request, Response},
-    signing::{self, CertificateError},
+    signing,
 };
 
 use super::{
     CONVERSATIONS, MESSAGES, SCHEMA_VERSION, ensure_coll, ensure_conversations, ensure_messages,
 };
-
-async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
-                out.push(json!({ "id": r.id, "payload": parsed }));
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
-}
 
 pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     let owner = match signing::owner_did(host).await {
@@ -54,46 +25,16 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_messages(host).await {
         return Response::internal_error(e);
     }
-    let conversations = match collect(host, CONVERSATIONS).await {
-        Ok(v) => v,
+    let sections = match backup::collect_sections(
+        host,
+        &[(SECTION_CONVERSATIONS, CONVERSATIONS), (SECTION_MESSAGES, MESSAGES)],
+    )
+    .await
+    {
+        Ok(s) => s,
         Err(e) => return Response::internal_error(e),
     };
-    let messages = match collect(host, MESSAGES).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let sections = BTreeMap::from([
-        (SECTION_CONVERSATIONS.to_string(), conversations),
-        (SECTION_MESSAGES.to_string(), messages),
-    ]);
-    let mut manifest_sections = BTreeMap::new();
-    for (k, v) in &sections {
-        match Bundle::digest(SCHEMA_VERSION, v) {
-            Ok(d) => {
-                manifest_sections.insert(k.clone(), d);
-            }
-            Err(e) => return Response::internal_error(e.to_string()),
-        }
-    }
-    let mut bundle = Bundle {
-        manifest: BundleManifest {
-            bundle_version: BUNDLE_VERSION,
-            subject_did: owner,
-            sections: manifest_sections,
-        },
-        sections,
-        manifest_signature: None,
-    };
-    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
-        if matches!(e, CertificateError::NotEnrolled) {
-            return Response::invalid_params("signing-not-enrolled");
-        }
-        return Response::internal_error(e.to_string());
-    }
-    match serde_json::to_value(&bundle) {
-        Ok(v) => Response::ok(v),
-        Err(e) => Response::internal_error(e.to_string()),
-    }
+    backup::export_signed(host, owner, SCHEMA_VERSION, sections, now).await
 }
 
 pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -110,7 +51,7 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
     };
-    if let Err(e) = syneroym_roym_core::backup::check_signed_bundle(&bundle, &owner, now) {
+    if let Err(e) = backup::check_signed_bundle(&bundle, &owner, now) {
         return Response::invalid_params(e.to_string());
     }
     for (name, declared) in &bundle.manifest.sections {

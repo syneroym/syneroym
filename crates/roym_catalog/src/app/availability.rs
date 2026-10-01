@@ -65,13 +65,12 @@ pub(crate) async fn availability_list<H: AppHost>(host: &H, req: &Request) -> Re
     if let Err(e) = ensure_availability(host).await {
         return Response::internal_error(e);
     }
-    let rows = match backup::collect(host, AVAILABILITY).await {
+    let rows: Vec<Value> = match paging::query_all(host, AVAILABILITY, None).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
     let mut slots: Vec<Value> = rows
         .into_iter()
-        .filter_map(|r| r.get("payload").cloned())
         .filter(|p| p.get("listing_id").and_then(Value::as_str) == Some(listing_id.as_str()))
         .filter(|p| {
             let start = p.get("start_secs").and_then(Value::as_u64).unwrap_or(0);

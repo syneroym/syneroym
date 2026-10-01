@@ -4,17 +4,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
-    types::data_layer::{IndexDefinition, IndexType, QueryOptions, RecordWriteValue},
+    types::data_layer::{IndexDefinition, IndexType, RecordWriteValue},
 };
 use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
+    paging,
     person::{ProfilePayload, is_did_key},
     record::{RECORD_PROFILE, VerifyOptions, verify_json},
     safety::{self, Admission, ContactLimits},
 };
 
-use super::{BLOCKS, CONTACT_ATTEMPTS, CONTACTS, PROFILES, SETTINGS, backup::collect, ensure_coll};
+use super::{BLOCKS, CONTACT_ATTEMPTS, CONTACTS, PROFILES, SETTINGS, ensure_coll};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ContactRow {
@@ -50,20 +51,11 @@ pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
     {
         return Response::internal_error(e);
     }
-    let records = match collect(host, CONTACTS).await {
+    let mut list: Vec<ContactRow> = match paging::query_all(host, CONTACTS, None).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-
-    let mut list = Vec::new();
-    for item in records {
-        if let Some(p) = item.get("payload")
-            && let Ok(row) = serde_json::from_value::<ContactRow>(p.clone())
-            && (!favourites_only || row.favourite)
-        {
-            list.push(row);
-        }
-    }
+    list.retain(|row| !favourites_only || row.favourite);
     let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
     let paged: Vec<_> = match limit {
@@ -306,25 +298,16 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
 
     let floor = now.saturating_sub(limits.window_secs);
     let filter_json = json!({ "sender_key": key, "at_secs": { "$gte": floor } }).to_string();
-    // No limit: we need all attempts in the window to reliably identify the
-    // oldest one for an accurate retry_after_secs hint.
-    let attempts: Vec<u64> = match AppDataLayer::query(
-        host,
-        CONTACT_ATTEMPTS.to_string(),
-        QueryOptions { filter: Some(filter_json), limit: None, cursor: None },
-    )
-    .await
-    {
-        Ok(res) => res
-            .records
-            .iter()
-            .filter_map(|r| {
-                serde_json::from_slice::<Value>(&r.payload)
-                    .ok()
-                    .and_then(|v| v.get("at_secs").and_then(|t| t.as_u64()))
-            })
-            .collect(),
-        Err(e) => return Response::internal_error(e.to_string()),
+    // Every attempt in the window, across all pages: the oldest one sets an
+    // accurate retry_after_secs hint.
+    let attempts = paging::filter_map(host, CONTACT_ATTEMPTS, Some(filter_json), |row| {
+        let v: Value = serde_json::from_slice(&row.payload).ok()?;
+        v.get("at_secs").and_then(Value::as_u64)
+    })
+    .await;
+    let attempts = match attempts {
+        Ok(a) => a,
+        Err(e) => return Response::internal_error(e),
     };
 
     match safety::admit_first_contact(blocked, &attempts, &limits, now) {

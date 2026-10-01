@@ -8,10 +8,11 @@ use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
+    paging,
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTES, REQUESTS, RecordPointerRow, collect_typed,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTES, REQUESTS, RecordPointerRow,
     ensure_collections,
 };
 
@@ -42,32 +43,32 @@ pub(crate) async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
     let filter = json!({ "conversation": params.conversation }).to_string();
 
     let quote_pointers: Vec<RecordPointerRow> =
-        match collect_typed(host, QUOTES, Some(filter.clone())).await {
+        match paging::query_all(host, QUOTES, Some(filter.clone())).await {
             Ok(v) => v,
-            Err(e) => return e,
+            Err(e) => return Response::internal_error(e),
         };
     let quote_map: HashMap<String, RecordPointerRow> =
         quote_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
 
     let request_pointers: Vec<RecordPointerRow> =
-        match collect_typed(host, REQUESTS, Some(filter.clone())).await {
+        match paging::query_all(host, REQUESTS, Some(filter.clone())).await {
             Ok(v) => v,
-            Err(e) => return e,
+            Err(e) => return Response::internal_error(e),
         };
     let request_map: HashMap<String, RecordPointerRow> =
         request_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
 
     let agreement_rows: Vec<AgreementRow> =
-        match collect_typed(host, AGREEMENTS, Some(filter.clone())).await {
+        match paging::query_all(host, AGREEMENTS, Some(filter.clone())).await {
             Ok(v) => v,
-            Err(e) => return e,
+            Err(e) => return Response::internal_error(e),
         };
     let agreement_map: HashMap<String, AgreementRow> =
         agreement_rows.into_iter().map(|a| (a.quote_record_id.clone(), a)).collect();
 
-    let mut rows: Vec<CardRow> = match collect_typed(host, CARDS, Some(filter.clone())).await {
+    let mut rows: Vec<CardRow> = match paging::query_all(host, CARDS, Some(filter.clone())).await {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return Response::internal_error(e),
     };
     for row in &mut rows {
         if row.card_type == "quote" && row.verified {

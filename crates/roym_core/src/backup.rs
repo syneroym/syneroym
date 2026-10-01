@@ -2,9 +2,15 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use syneroym_app_host::AppHost;
 use syneroym_signed_record::{EnvelopeError, content_digest};
 
-use crate::record::{self, RECORD_BUNDLE_MANIFEST, VerifyOptions};
+use crate::{
+    envelope::Response,
+    paging,
+    record::{self, RECORD_BUNDLE_MANIFEST, VerifyOptions},
+    signing::{self, CertificateError},
+};
 
 pub const BUNDLE_VERSION: u32 = 1;
 pub const BUNDLE_MANIFEST_VERSION: u32 = 1;
@@ -106,6 +112,28 @@ impl From<EnvelopeError> for BundleError {
 }
 
 impl Bundle {
+    /// An unsigned bundle over `sections`, each section digested at
+    /// `schema_version`.
+    pub fn new(
+        subject_did: String,
+        schema_version: u32,
+        sections: BTreeMap<String, Vec<Value>>,
+    ) -> Result<Self, BundleError> {
+        let mut digests = BTreeMap::new();
+        for (name, records) in &sections {
+            digests.insert(name.clone(), Self::digest(schema_version, records)?);
+        }
+        Ok(Self {
+            manifest: BundleManifest {
+                bundle_version: BUNDLE_VERSION,
+                subject_did,
+                sections: digests,
+            },
+            sections,
+            manifest_signature: None,
+        })
+    }
+
     /// One hash definition, shared with the envelope's own record id.
     pub fn digest(schema_version: u32, records: &[Value]) -> Result<SectionDigest, BundleError> {
         let digest_str = content_digest(
@@ -202,9 +230,65 @@ pub fn check_signed_bundle(bundle: &Bundle, owner: &str, now_secs: u64) -> Resul
     Ok(())
 }
 
+/// Every row of `collection` as a section document,
+/// `{ "id": .., "payload": .. }`, in the order the host returns them. A
+/// row whose payload is not JSON is left out.
+async fn section_rows<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
+    paging::filter_map(host, collection, None, |row| {
+        let payload: Value = serde_json::from_slice(&row.payload).ok()?;
+        Some(json!({ "id": row.id, "payload": payload }))
+    })
+    .await
+}
+
+/// `section_rows` for each `(section, collection)` pair, keyed by section
+/// name.
+pub async fn collect_sections<H: AppHost>(
+    host: &H,
+    pairs: &[(&str, &str)],
+) -> Result<BTreeMap<String, Vec<Value>>, String> {
+    let mut sections = BTreeMap::new();
+    for (section, collection) in pairs {
+        sections.insert(section.to_string(), section_rows(host, collection).await?);
+    }
+    Ok(sections)
+}
+
+/// The answer to every service's `export` verb: `sections` as a bundle
+/// signed by the person. A service with no signing certificate refuses
+/// with `signing-not-enrolled`, the same words on every service, so a
+/// caller can tell "enrol first" apart from a real failure.
+pub async fn export_signed<H: AppHost>(
+    host: &H,
+    subject_did: String,
+    schema_version: u32,
+    sections: BTreeMap<String, Vec<Value>>,
+    now_secs: u64,
+) -> Response {
+    let mut bundle = match Bundle::new(subject_did, schema_version, sections) {
+        Ok(b) => b,
+        Err(e) => return Response::internal_error(e.to_string()),
+    };
+    match signing::sign_bundle(host, &mut bundle, now_secs).await {
+        Ok(()) => {}
+        Err(CertificateError::NotEnrolled) => {
+            return Response::invalid_params("signing-not-enrolled");
+        }
+        Err(e) => return Response::internal_error(e.to_string()),
+    }
+    match serde_json::to_value(&bundle) {
+        Ok(v) => Response::ok(v),
+        Err(e) => Response::internal_error(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        paging::tests::{page, row},
+        signing::tests::TestHost,
+    };
 
     fn sample_bundle() -> Bundle {
         let records = vec![json!({"id": "row1", "val": 10})];
@@ -352,6 +436,45 @@ mod tests {
             b.check_integrity(),
             Err(BundleError::MissingSection(SECTION_MESSAGES.to_string()))
         );
+    }
+
+    #[test]
+    fn new_bundle_digests_every_section_and_passes_integrity() {
+        let sections = BTreeMap::from([
+            (SECTION_LISTINGS.to_string(), vec![json!({ "id": "l1", "payload": {} })]),
+            (SECTION_AVAILABILITY.to_string(), vec![]),
+        ]);
+        let b = Bundle::new("did:key:z6M123".to_string(), 3, sections).unwrap();
+        assert_eq!(b.manifest.bundle_version, BUNDLE_VERSION);
+        assert_eq!(b.manifest.sections[SECTION_LISTINGS].schema_version, 3);
+        assert_eq!(b.manifest.sections[SECTION_LISTINGS].record_count, 1);
+        assert_eq!(b.manifest.sections[SECTION_AVAILABILITY].record_count, 0);
+        assert!(b.manifest_signature.is_none());
+        assert!(b.check_integrity().is_ok());
+    }
+
+    #[tokio::test]
+    async fn collect_sections_reads_each_collection_as_id_and_payload() {
+        let host = TestHost::default();
+        host.push_query_page(page(vec![row("l1", br#"{"t":1}"#), row("bad", b"not json")], None));
+        let sections = collect_sections(
+            &host,
+            &[(SECTION_LISTINGS, "listings"), (SECTION_AVAILABILITY, "availability")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(sections[SECTION_LISTINGS], [json!({ "id": "l1", "payload": { "t": 1 } })]);
+        assert!(sections[SECTION_AVAILABILITY].is_empty());
+        let collections: Vec<String> = host.queries().into_iter().map(|(c, _)| c).collect();
+        assert_eq!(collections, ["listings", "availability"]);
+    }
+
+    #[tokio::test]
+    async fn export_without_a_certificate_is_signing_not_enrolled() {
+        let host = TestHost::default();
+        let resp =
+            export_signed(&host, "did:key:zOwner".to_string(), 1, BTreeMap::new(), 1000).await;
+        assert_eq!(resp, Response::invalid_params("signing-not-enrolled"));
     }
 
     #[test]

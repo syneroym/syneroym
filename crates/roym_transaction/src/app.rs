@@ -17,9 +17,7 @@ use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
     types::{
-        data_layer::{
-            CollectionSchema, IndexDefinition, IndexType, QueryOptions, RecordWriteValue,
-        },
+        data_layer::{CollectionSchema, IndexDefinition, IndexType, RecordWriteValue},
         proxy::CallTarget,
         signing::Principal,
     },
@@ -31,7 +29,7 @@ use syneroym_roym_core::{
     clock,
     conversation::Direction,
     envelope::{Request, Response},
-    fulfilment,
+    fulfilment, paging,
     record::Envelope,
     services,
     signing::{self, CertificateError},
@@ -456,30 +454,7 @@ pub(crate) async fn get_bytes<H: AppHost>(
     Ok(row.map(|r| r.payload))
 }
 
-pub(crate) async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
-                out.push(json!({ "id": r.id, "payload": parsed }));
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
-}
-
+/// How many of `owner`'s own records `collection` holds in `conversation`.
 pub(crate) async fn count_mine<H: AppHost>(
     host: &H,
     collection: &str,
@@ -491,47 +466,7 @@ pub(crate) async fn count_mine<H: AppHost>(
         "issuer": owner,
     })
     .to_string();
-    let mut count = 0;
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: Some(filter.clone()), limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        count += page.records.len() as u32;
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(count)
-}
-
-pub(crate) async fn count_cards_for_conversation<H: AppHost>(
-    host: &H,
-    conversation: &str,
-) -> Result<usize, String> {
-    let filter = json!({ "conversation": conversation }).to_string();
-    let mut count = 0;
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            CARDS.to_string(),
-            QueryOptions { filter: Some(filter.clone()), limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        count += page.records.len();
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(count)
+    Ok(paging::count(host, collection, Some(filter)).await? as u32)
 }
 
 pub(crate) async fn sibling_call<H: AppHost>(
@@ -693,89 +628,4 @@ pub(crate) fn conversation_mine_filter(
         filter_obj.insert("mine".to_string(), json!(m));
     }
     if filter_obj.is_empty() { None } else { Some(Value::Object(filter_obj).to_string()) }
-}
-
-/// Pages through `collection` under `filter`, deserializing every record as
-/// `T` and skipping any that fail to parse.
-pub(crate) async fn collect_typed<H: AppHost, T: for<'a> Deserialize<'a>>(
-    host: &H,
-    collection: &str,
-    filter: Option<String>,
-) -> Result<Vec<T>, Response> {
-    let mut rows = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: filter.clone(), limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Err(Response::internal_error(e.to_string())),
-        };
-        for r in page.records {
-            if let Ok(row) = serde_json::from_slice::<T>(&r.payload) {
-                rows.push(row);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(rows)
-}
-
-/// Pages through `collection`, keeping every envelope whose payload's
-/// `id_field` equals `id_value`, sorted oldest to newest.
-pub(crate) async fn collect_record_history<H: AppHost>(
-    host: &H,
-    collection: &str,
-    id_field: &str,
-    id_value: &str,
-) -> Result<Vec<Value>, Response> {
-    let mut filter_obj = Map::new();
-    filter_obj.insert(format!("payload.{id_field}"), json!(id_value));
-    let history_filter = Value::Object(filter_obj).to_string();
-
-    let mut envelopes: Vec<(u64, String)> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions {
-                filter: Some(history_filter.clone()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Err(Response::internal_error(e.to_string())),
-        };
-        for r in page.records {
-            let env_str = String::from_utf8_lossy(&r.payload).into_owned();
-            if let Ok(env) = Envelope::from_json(&env_str) {
-                let matches = env
-                    .payload
-                    .get(id_field)
-                    .and_then(Value::as_str)
-                    .map(|id| id == id_value)
-                    .unwrap_or(false);
-                if matches {
-                    envelopes.push((env.issued_at_secs, env_str));
-                }
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    envelopes.sort_by_key(|(t, _)| *t);
-    Ok(envelopes.into_iter().map(|(_, e)| Value::String(e)).collect())
 }

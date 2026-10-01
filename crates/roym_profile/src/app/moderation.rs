@@ -9,10 +9,11 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
+    paging,
     record::content_digest,
 };
 
-use super::{BLOCKS, REPORTS, backup::collect, ensure_coll};
+use super::{BLOCKS, REPORTS, ensure_coll};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BlockRow {
@@ -138,23 +139,12 @@ pub(crate) async fn block_list<H: AppHost>(host: &H, req: &Request) -> Response 
     {
         return Response::internal_error(e);
     }
-    let records = match collect(host, BLOCKS).await {
+    let mut list: Vec<BlockRow> = match paging::query_all(host, BLOCKS, None).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-
-    let mut list = Vec::new();
-    for item in records {
-        if let Some(p) = item.get("payload")
-            && let Ok(row) = serde_json::from_value::<BlockRow>(p.clone())
-        {
-            // Skip secondary addr: alias rows for blocks that have a primary did: row
-            if row.key.starts_with("addr:") && row.person_did.is_some() {
-                continue;
-            }
-            list.push(row);
-        }
-    }
+    // Skip secondary addr: alias rows for blocks that have a primary did: row
+    list.retain(|row| !(row.key.starts_with("addr:") && row.person_did.is_some()));
     let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
     let paged: Vec<_> = match limit {
@@ -312,20 +302,11 @@ pub(crate) async fn report_list<H: AppHost>(host: &H, req: &Request) -> Response
     {
         return Response::internal_error(e);
     }
-    let records = match collect(host, REPORTS).await {
+    let mut list: Vec<ReportRow> = match paging::query_all(host, REPORTS, None).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-
-    let mut list = Vec::new();
-    for item in records {
-        if let Some(p) = item.get("payload")
-            && let Ok(row) = serde_json::from_value::<ReportRow>(p.clone())
-            && status_filter.is_none_or(|s| row.status == s)
-        {
-            list.push(row);
-        }
-    }
+    list.retain(|row| status_filter.is_none_or(|s| row.status == s));
     let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
     let paged: Vec<_> = match limit {

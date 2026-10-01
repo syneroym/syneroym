@@ -11,6 +11,7 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
+    paging,
     record::{Envelope, RECORD_QUOTE},
     signing::{self, CertificateError},
     transaction::{
@@ -21,9 +22,8 @@ use syneroym_roym_core::{
 
 use super::{
     AGREEMENTS, AgreementRow, ListParams, QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, RecordPointerRow,
-    catalog_call, collect_record_history, collect_typed, conversation_mine_filter, count_mine,
-    ensure_collections, get_bytes, get_row, put_bytes, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    catalog_call, conversation_mine_filter, count_mine, ensure_collections, get_bytes, get_row,
+    put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -399,9 +399,9 @@ pub(crate) async fn quote_list<H: AppHost>(host: &H, req: &Request) -> Response 
     }
 
     let filter = conversation_mine_filter(params.conversation.as_deref(), params.mine);
-    let mut rows: Vec<RecordPointerRow> = match collect_typed(host, QUOTES, filter).await {
+    let mut rows: Vec<RecordPointerRow> = match paging::query_all(host, QUOTES, filter).await {
         Ok(rows) => rows,
-        Err(e) => return e,
+        Err(e) => return Response::internal_error(e),
     };
     rows.sort_by_key(|p| Reverse(p.updated_at_secs));
     let page: Vec<Value> = rows
@@ -438,11 +438,11 @@ pub(crate) async fn quote_history<H: AppHost>(host: &H, req: &Request) -> Respon
     if let Err(e) = ensure_collections(host).await {
         return Response::internal_error(e);
     }
-    let out = match collect_record_history(host, QUOTE_HISTORY, "quote_id", &params.quote_id).await
-    {
-        Ok(out) => out,
-        Err(e) => return e,
-    };
+    let out =
+        match paging::envelope_history(host, QUOTE_HISTORY, "quote_id", &params.quote_id).await {
+            Ok(out) => out,
+            Err(e) => return Response::internal_error(e),
+        };
     Response::ok(json!({ "history": out }))
 }
 

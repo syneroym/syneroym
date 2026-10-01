@@ -2,8 +2,6 @@
 //! own statements about its members are as much this installation's
 //! signed word as anything else it produces.
 
-use std::collections::BTreeMap;
-
 use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
@@ -11,107 +9,52 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     backup::{
-        self, BUNDLE_VERSION, Bundle, BundleManifest, SECTION_CREDENTIALS, SECTION_DECISIONS,
-        SECTION_HELD_MEMBERSHIPS, SECTION_MEMBERS, SECTION_PUBLICATION_LOG, SECTION_PUBLICATIONS,
-        SECTION_REVOCATIONS, SECTION_SOURCES, SECTION_SYNORG,
+        self, Bundle, SECTION_CREDENTIALS, SECTION_DECISIONS, SECTION_HELD_MEMBERSHIPS,
+        SECTION_MEMBERS, SECTION_PUBLICATION_LOG, SECTION_PUBLICATIONS, SECTION_REVOCATIONS,
+        SECTION_SOURCES, SECTION_SYNORG,
     },
     clock,
     envelope::{Request, Response},
     listing,
-    signing::{self, CertificateError},
 };
 
 use super::{
     CREDENTIALS, DECISIONS, HELD_MEMBERSHIPS, MEMBERS, PUBLICATION_LOG, PUBLICATIONS, REVOCATIONS,
-    SCHEMA_VERSION, SETTINGS, SOURCES, collect, ensure_coll, owner_did_or_node, search_ops,
-    standing,
+    SCHEMA_VERSION, SETTINGS, SOURCES, ensure_coll, owner_did_or_node, search_ops, standing,
 };
+
+/// Each bundle section and the collection it is read from and restored
+/// into. `standing` and `search_index` are derived, so neither is here:
+/// `import` rebuilds both.
+const SECTIONS: [(&str, &str); 9] = [
+    (SECTION_SYNORG, SETTINGS),
+    (SECTION_MEMBERS, MEMBERS),
+    (SECTION_PUBLICATIONS, PUBLICATIONS),
+    (SECTION_PUBLICATION_LOG, PUBLICATION_LOG),
+    (SECTION_SOURCES, SOURCES),
+    (SECTION_CREDENTIALS, CREDENTIALS),
+    (SECTION_REVOCATIONS, REVOCATIONS),
+    (SECTION_DECISIONS, DECISIONS),
+    (SECTION_HELD_MEMBERSHIPS, HELD_MEMBERSHIPS),
+];
 
 pub(in crate::app) async fn export<H: AppHost>(host: &H) -> Response {
     let subject = owner_did_or_node(host).await;
     let now = clock::now_secs();
-    let collections = [
-        SETTINGS,
-        MEMBERS,
-        PUBLICATIONS,
-        PUBLICATION_LOG,
-        SOURCES,
-        CREDENTIALS,
-        REVOCATIONS,
-        DECISIONS,
-        HELD_MEMBERSHIPS,
-    ];
-    for c in collections {
-        if let Err(e) = ensure_coll(host, c, &[]).await {
+    for (_, collection) in SECTIONS {
+        if let Err(e) = ensure_coll(host, collection, &[]).await {
             return Response::internal_error(e);
         }
     }
-    let mut sections = BTreeMap::new();
-    let names = [
-        (SECTION_SYNORG, SETTINGS),
-        (SECTION_MEMBERS, MEMBERS),
-        (SECTION_PUBLICATIONS, PUBLICATIONS),
-        (SECTION_PUBLICATION_LOG, PUBLICATION_LOG),
-        (SECTION_SOURCES, SOURCES),
-        (SECTION_CREDENTIALS, CREDENTIALS),
-        (SECTION_REVOCATIONS, REVOCATIONS),
-        (SECTION_DECISIONS, DECISIONS),
-        (SECTION_HELD_MEMBERSHIPS, HELD_MEMBERSHIPS),
-    ];
-    for (section, collection) in names {
-        match collect(host, collection).await {
-            Ok(v) => {
-                sections.insert(section.to_string(), v);
-            }
-            Err(e) => return Response::internal_error(e),
-        }
-    }
-    // `standing` is derived from `credentials`/`revocations`/
-    // `moderation_decisions` and is not exported -- `import` rebuilds it.
-
-    let mut manifest_sections = BTreeMap::new();
-    for (k, v) in &sections {
-        match Bundle::digest(SCHEMA_VERSION, v) {
-            Ok(d) => {
-                manifest_sections.insert(k.clone(), d);
-            }
-            Err(e) => return Response::internal_error(e.to_string()),
-        }
-    }
-    let mut bundle = Bundle {
-        manifest: BundleManifest {
-            bundle_version: BUNDLE_VERSION,
-            subject_did: subject,
-            sections: manifest_sections,
-        },
-        sections,
-        manifest_signature: None,
+    let sections = match backup::collect_sections(host, &SECTIONS).await {
+        Ok(s) => s,
+        Err(e) => return Response::internal_error(e),
     };
-    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
-        if matches!(e, CertificateError::NotEnrolled) {
-            return Response::invalid_params("signing-not-enrolled");
-        }
-        return Response::internal_error(e.to_string());
-    }
-    match serde_json::to_value(&bundle) {
-        Ok(v) => Response::ok(v),
-        Err(e) => Response::internal_error(e.to_string()),
-    }
+    backup::export_signed(host, subject, SCHEMA_VERSION, sections, now).await
 }
 
 fn collection_for(section: &str) -> Option<&'static str> {
-    match section {
-        SECTION_SYNORG => Some(SETTINGS),
-        SECTION_MEMBERS => Some(MEMBERS),
-        SECTION_PUBLICATIONS => Some(PUBLICATIONS),
-        SECTION_PUBLICATION_LOG => Some(PUBLICATION_LOG),
-        SECTION_SOURCES => Some(SOURCES),
-        SECTION_CREDENTIALS => Some(CREDENTIALS),
-        SECTION_REVOCATIONS => Some(REVOCATIONS),
-        SECTION_DECISIONS => Some(DECISIONS),
-        SECTION_HELD_MEMBERSHIPS => Some(HELD_MEMBERSHIPS),
-        _ => None,
-    }
+    SECTIONS.iter().find(|(name, _)| *name == section).map(|(_, collection)| *collection)
 }
 
 pub(in crate::app) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
