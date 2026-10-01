@@ -48,10 +48,10 @@ slice sections below. **Verdict: not closed — criteria 11 and 12 are open.**
 | 4 | Every record type in the spec's Records table is signed, versioned, and verified by the receiving node | Met | `roym_core::record::RECORD_TYPES` holds all 11 types in the spec table plus `payment-request`; the envelope requires a version (row 14); receiving-node verification per family in the parity suite and `roym_trust_e2e.rs` |
 | 5–9 | R1, R2, R3 and R4 acceptance tests; the R1+R2 flow with no directory | Met | The spec's scope table marks R1–R4 **Passed** (2026-09-08, 09-24, 09-29, 09-30) with per-row evidence in each slice section below. No-directory gate: `assert_no_directory` in `roym_booking_e2e.rs` |
 | 10 | Seven card types plus the unknown fallback; markup, script or a URL leads to no execution, insertion or fetch | Met | `roym-hub.spec.ts` case 3 (seven types + fallback) and case 4 (no script, no request, literal text); `cards/templates/templates.test.ts` (malicious payloads and `javascript:` values per template) |
-| 11 | Every failure and security matrix row has a test | **Open** | 19 of 20 rows covered (table below). **Row 12 is half-met:** the flooding limits and the per-sender contact limit are tested, but "refusal is visible to the sender" is not met for an *inbound* refusal — the host stores and acknowledges a message before Roym's inbox runs. C5 said so and did not claim the row; `deferred-backlog.md` §5 ("no inbound admit/reject hook") holds it. The flooding half also resists only the named attacks, not an attacker who mints a new identity per attempt (C6 review). Closing it needs either the work (the [conversation consolidation](../../conversation-consolidation-plan.md) interstitial's H1 could return the app's refusal to the sender during delivery) or a recorded decision that rewords the row |
+| 11 | Every failure and security matrix row has a test | **Open** | 19 of 20 rows covered (table below). **Row 12 is half-met:** the flooding limits and the per-sender contact limit are tested, but "refusal is visible to the sender" is not met for an *inbound* refusal — the host stores and acknowledges a message before Roym's inbox runs. C5 said so and did not claim the row; `deferred-backlog.md` §5 ("no inbound admit/reject hook") holds it. The flooding half also resists only the named attacks, not an attacker who mints a new identity per attempt (C6 review). A block is different: `D-06C-8` keeps it invisible to the sender on purpose, so the open part is the rate-limit refusal only. **Planned, not done:** decision D-CV-12 in the [conversation consolidation](../../conversation-consolidation-plan.md) interstitial (proposed) reports a rate-limit refusal back to the sender, in the delivery receipt or as a later notice, and never reports a block. Until that lands, or a decision rewords the row, the criterion stays open |
 | 12 | No planning identifier in any crate, module, collection, method, card type, record type, config key, metric or test name | **Open** | One hit: `scenario_73_guard_no_c5_verb_answers_method_not_found_or_wire_refused` in `crates/roym_web/tests/dual_build_parity/wire_origin.rs` names slice C5. Crate, module, collection, method, metric, card and record names are clean (grep, 2026-10-01) |
 | 13 | A backlog row for G5 with the trigger "revisit before first external release", and every deferral this milestone creates | Met | `deferred-backlog.md` "Public contract versioning (`[G5]`)" row; per-slice backlog edits recorded in task.md §"Documents this milestone edits" |
-| 14 | fmt, clippy, workspace tests and doctests, `cargo audit`, `cargo deny check licenses`, e2e all clean | PENDING | See "Gate run" below |
+| 14 | fmt, clippy, workspace tests and doctests, `cargo audit`, `cargo deny check licenses`, e2e all clean | Met | See "Gate run" below. One intermittent test failure noted there |
 
 ### Failure and security matrix coverage
 
@@ -68,7 +68,7 @@ slice sections below. **Verdict: not closed — criteria 11 and 12 are open.**
 | 9 | An unaccepted quote expires | Parity 133, 133b, 148; `roym_core/src/transaction/tests.rs` `expired_quote_envelope_verifies_with_expired_flag` |
 | 10 | Altering a signed receipt | Parity 161 (correction round trip); `is_valid_correction` unit tests |
 | 11 | A blocked sender | Parity 57, 58; `roym_conversation_e2e.rs` |
-| 12 | Flooding / first-contact floods | **Half:** parity 43, 44, 59, 83, 84, 84c. Open half: see criterion 11 |
+| 12 | Flooding / first-contact floods | **Half:** parity 43, 44, 59, 83, 84, 84c. Open half (an inbound rate-limit refusal is not visible to the sender): see criterion 11; planned as D-CV-12 |
 | 13 | Import on a clean node reproduces verification status | Parity 49–51, 63–65; `roym_restore_e2e.rs` |
 | 14 | A record with no version field | Parity 140 |
 | 15 | A suspended member's cached listing | `roym_trust_e2e.rs` `revocation_reaches_the_consumer_on_check`; `membership/tests.rs` `no_instant_removal_and_withheld_revocation_notices_match_the_hub_verbatim` |
@@ -80,7 +80,27 @@ slice sections below. **Verdict: not closed — criteria 11 and 12 are open.**
 
 ### Gate run
 
-PENDING
+Run on 2026-10-01 against `main` at `8ed75a54` (working tree: docs only).
+
+- `mise run verify`: fmt, clippy, file-lengths, lint-suppressions,
+  module-layout, duplication, roym-deps, planning-refs, `cargo audit`,
+  `cargo deny check licenses` — **all passed**. The runner skipped nextest,
+  doctests and e2e because only docs had changed, so those three were run
+  directly with the runner's own commands:
+- `mise run build:test-components && mise run build:roym && cargo nextest run
+  --workspace --no-fail-fast`: **2779 passed, 1 skipped, 0 failed**
+  (1033 s).
+- `cargo test --workspace --doc`: **2 passed, 0 failed**.
+- `mise run test:e2e`: **63 passed** (default config) **+ 4 passed**
+  (multi-hop config).
+
+**One intermittent failure.** The first nextest run (default fail-fast) failed
+one test, `roym_directory_e2e::roym_directory_search_half_across_three_substrates`,
+with `node-x login failed: Ok("Not Found")` at `common/roym.rs:455`, right after
+a first failed endpoint registration. It then passed three times in a row on
+its own and in the full re-run above. That suggests the test logs in before the
+node's login endpoint is ready on a slow start. It is not a product failure,
+but it is a test that can fail at random and should get a readiness wait.
 
 ### Found outside the exit criteria (not blocking M06C, recorded here)
 
