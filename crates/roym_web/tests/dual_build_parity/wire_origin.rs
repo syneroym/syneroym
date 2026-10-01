@@ -64,7 +64,7 @@ async fn scenario_72_web_http_path_unaffected_parity() {
 }
 
 #[tokio::test]
-async fn scenario_73_guard_no_c5_verb_answers_method_not_found_or_wire_refused() {
+async fn scenario_73_every_catalog_and_conversation_verb_is_wired_and_locally_admitted() {
     let h = harness().await;
     enrol_signing(&h, "catalog").await;
     enrol_signing(&h, "conversation").await;
