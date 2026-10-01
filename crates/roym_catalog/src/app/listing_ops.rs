@@ -464,29 +464,10 @@ pub(crate) async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Respon
     // rather than every row crossing the boundary to be dropped here.
     let filter = status.map(|s| json!({ "status": s }).to_string());
 
-    let mut rows: Vec<ListingRow> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            LISTINGS.to_string(),
-            QueryOptions { filter: filter.clone(), limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        for r in page.records {
-            if let Ok(row) = serde_json::from_slice::<ListingRow>(&r.payload) {
-                rows.push(row);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
+    let mut rows: Vec<ListingRow> = match paging::query_all(host, LISTINGS, filter).await {
+        Ok(r) => r,
+        Err(e) => return Response::internal_error(e),
+    };
     rows.sort_by_key(|r| Reverse(r.updated_at_secs));
     let out: Vec<Value> = rows
         .into_iter()
@@ -521,56 +502,16 @@ pub(crate) async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Resp
     if let Err(e) = ensure_coll(host, LISTING_HISTORY, &[]).await {
         return Response::internal_error(e);
     }
-    // The history rows are keyed by record_id, so gather every envelope
-    // whose payload names this listing_id and order them oldest-first by
-    // `issued_at_secs`. Two versions minted in the same second keep store
-    // order; the `supersedes` chain in each payload is the exact order if
-    // a consumer needs it.
-    //
-    // Filtered at the host on the payload's own `listing_id` field,
-    // rather than parsing every envelope in the collection to find the
-    // ones that match -- still a scan (no expression index on a JSON
-    // path), but far fewer rows cross the host boundary.
-    let history_filter = json!({ "payload.listing_id": listing_id }).to_string();
-    let mut envelopes: Vec<(u64, String)> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            LISTING_HISTORY.to_string(),
-            QueryOptions {
-                filter: Some(history_filter.clone()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
+    // The history rows are keyed by record_id, so this gathers every
+    // envelope whose payload names this listing_id, oldest first. The
+    // `supersedes` chain in each payload is the exact order if a consumer
+    // needs to separate two versions minted in the same second.
+    let history =
+        match paging::envelope_history(host, LISTING_HISTORY, "listing_id", &listing_id).await {
+            Ok(h) => h,
+            Err(e) => return Response::internal_error(e),
         };
-        for r in page.records {
-            let env_str = String::from_utf8_lossy(&r.payload).into_owned();
-            if let Ok(env) = Envelope::from_json(&env_str) {
-                let matches = env
-                    .payload
-                    .get("listing_id")
-                    .and_then(Value::as_str)
-                    .map(|id| id == listing_id)
-                    .unwrap_or(false);
-                if matches {
-                    envelopes.push((env.issued_at_secs, env_str));
-                }
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    envelopes.sort_by_key(|(t, _)| *t);
-    let out: Vec<Value> = envelopes.into_iter().map(|(_, e)| Value::String(e)).collect();
-    Response::ok(json!({ "history": out }))
+    Response::ok(json!({ "history": history }))
 }
 
 /// A thin wrapper over `roym_core::listing::verify_envelope` -- the one

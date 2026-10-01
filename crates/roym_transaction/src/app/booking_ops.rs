@@ -7,13 +7,13 @@ use syneroym_roym_core::{
     booking::{self, BookingEvent, BookingProgressPayload, BookingState, NextStep},
     clock,
     envelope::{Request, Response},
-    signing,
+    paging, signing,
     transaction::{PaymentTiming, QuotePayload, Role, pair_state},
 };
 
 use super::{
     AGREEMENTS, AgreementRow, BOOKINGS, BookingRow, CARDS, CardRow, LEDGER, PROGRESS, ProgressRow,
-    collect_typed, default_list_limit, get_row,
+    default_list_limit, get_row,
     ledger::{
         Claim, LedgerKind, LedgerRow, StepRow, claim_decision, claim_seat, load_booking, seat_id,
         step_id,
@@ -436,9 +436,9 @@ pub(crate) async fn booking_history<H: AppHost>(host: &H, req: &Request) -> Resp
         Response::ok(json!({ "history": steps }))
     } else if owner == agr.consumer_did {
         let filter = json!({ "conversation": agr.conversation }).to_string();
-        let cards: Vec<CardRow> = match collect_typed(host, CARDS, Some(filter)).await {
+        let cards: Vec<CardRow> = match paging::query_all(host, CARDS, Some(filter)).await {
             Ok(c) => c,
-            Err(resp) => return resp,
+            Err(e) => return Response::internal_error(e),
         };
         let mut history = Vec::new();
         for card in cards {
@@ -487,9 +487,9 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
     let filter = p.conversation.as_ref().map(|c| json!({ "conversation": c }).to_string());
 
     let provider_bookings: Vec<BookingRow> =
-        match collect_typed(host, BOOKINGS, filter.clone()).await {
+        match paging::query_all(host, BOOKINGS, filter.clone()).await {
             Ok(b) => b,
-            Err(resp) => return resp,
+            Err(e) => return Response::internal_error(e),
         };
 
     for b in provider_bookings {
@@ -515,11 +515,11 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
     }
 
     if views.is_empty() {
-        let consumer_progress: Vec<ProgressRow> = match collect_typed(host, PROGRESS, filter).await
-        {
-            Ok(pr) => pr,
-            Err(resp) => return resp,
-        };
+        let consumer_progress: Vec<ProgressRow> =
+            match paging::query_all(host, PROGRESS, filter).await {
+                Ok(pr) => pr,
+                Err(e) => return Response::internal_error(e),
+            };
         for pr in consumer_progress {
             if let Some(ref st) = p.state
                 && serde_json::to_value(pr.snapshot.state)

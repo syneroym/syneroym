@@ -25,9 +25,7 @@ use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
-        data_layer::{
-            CollectionSchema, IndexDefinition, IndexType, QueryOptions, RecordWriteValue,
-        },
+        data_layer::{CollectionSchema, IndexDefinition, IndexType, RecordWriteValue},
         signing::RecordDraft,
     },
 };
@@ -38,7 +36,7 @@ use syneroym_roym_core::{
     directory::{self, DIRECTORY_SCHEMA_VERSION},
     envelope::{Request, Response},
     membership::{self, CheckInput, ListingRef, MembershipVerdict},
-    person,
+    paging, person,
     record::{self, Envelope},
     services,
     signing::{self, CertificateError},
@@ -125,81 +123,6 @@ pub(in crate::app) fn search_index_indexes() -> [IndexDefinition; 4] {
         idx("issuer", IndexType::String),
         idx("listed_until_secs", IndexType::Numeric),
     ]
-}
-
-/// Every row of `collection`, oldest write order, paging until the
-/// data-layer's own cursor answers `None`.
-pub(in crate::app) async fn collect_raw<H: AppHost>(
-    host: &H,
-    collection: &str,
-) -> Result<Vec<(String, Value)>, String> {
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
-                out.push((r.id, parsed));
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
-}
-
-/// Every row of `collection` whose stored JSON matches `filter`, paging
-/// the data-layer cursor. The filter runs at the host, so a large
-/// collection is never materialized whole in guest memory.
-pub(in crate::app) async fn collect_raw_where<H: AppHost>(
-    host: &H,
-    collection: &str,
-    filter: &Value,
-) -> Result<Vec<(String, Value)>, String> {
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions {
-                filter: Some(filter.to_string()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
-                out.push((r.id, parsed));
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
-}
-
-pub(in crate::app) async fn collect<H: AppHost>(
-    host: &H,
-    collection: &str,
-) -> Result<Vec<Value>, String> {
-    Ok(collect_raw(host, collection)
-        .await?
-        .into_iter()
-        .map(|(id, payload)| json!({ "id": id, "payload": payload }))
-        .collect())
 }
 
 pub(in crate::app) async fn put_json<H: AppHost>(

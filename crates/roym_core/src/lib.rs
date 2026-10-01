@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 //! `syneroym-roym-core`: shared service constants, envelopes, method router,
-//! card definitions, and dual-build helpers for the Roym SynApp.
+//! card definitions, data-layer paging, and dual-build helpers for the Roym
+//! SynApp.
 
 pub mod admit;
 pub mod area;
@@ -16,6 +17,7 @@ pub mod fulfilment;
 pub mod listing;
 pub mod membership;
 pub mod money;
+pub mod paging;
 pub mod payment;
 pub mod person;
 pub mod record;

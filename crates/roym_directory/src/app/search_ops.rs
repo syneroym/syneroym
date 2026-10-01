@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::QueryOptions};
+use syneroym_app_host::{AppDataLayer, AppHost, AppSigning};
 use syneroym_roym_core::{
     area::{self, Area},
     clock,
@@ -13,12 +13,13 @@ use syneroym_roym_core::{
         category_tokens, normalize_category, normalize_text,
     },
     envelope::{Request, Response},
-    listing,
-    membership::{self, CheckInput, ListingRef, MembershipEvidence},
+    listing::{self, ListingStatus},
+    membership::{self, CheckInput, ListingRef, MembershipEvidence, MembershipVerdict},
+    paging::{self, Pages},
 };
 
 use super::{
-    PUBLICATIONS, SEARCH_INDEX, collect_raw, collect_raw_where, ensure_coll, get_json, issuer_did,
+    PUBLICATIONS, SEARCH_INDEX, ensure_coll, get_json, issuer_did,
     publication_ops::{self, PublicationRow},
     put_json, search_index_indexes, serde_str, standing, synorg,
 };
@@ -77,9 +78,9 @@ pub(in crate::app) fn build_index_rows(
 ) -> Vec<SearchIndexRow> {
     let (listed_from_secs, listed_until_secs) = listed_window;
     let status = match payload.status {
-        listing::ListingStatus::Active => "active",
-        listing::ListingStatus::Withdrawn => "withdrawn",
-        listing::ListingStatus::Draft => "draft",
+        ListingStatus::Active => "active",
+        ListingStatus::Withdrawn => "withdrawn",
+        ListingStatus::Draft => "draft",
     }
     .to_string();
     let categories = category_tokens(&payload.categories);
@@ -348,20 +349,9 @@ async fn collect_search_candidates<H: AppHost>(
     let mut candidates: Vec<SearchIndexRow> = Vec::new();
     let mut distinct_listings: BTreeSet<String> = BTreeSet::new();
     let mut truncated = false;
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            SEARCH_INDEX.to_string(),
-            QueryOptions {
-                filter: Some(filter.to_string()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
+    let mut pages = Pages::new(host, SEARCH_INDEX, Some(filter.to_string()));
+    while let Some(records) = pages.next_page().await? {
+        for r in records {
             if let Ok(row) = serde_json::from_slice::<SearchIndexRow>(&r.payload) {
                 distinct_listings.insert(row.listing_id.clone());
                 candidates.push(row);
@@ -371,10 +361,6 @@ async fn collect_search_candidates<H: AppHost>(
             truncated = true;
             break;
         }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
     }
     Ok((candidates, truncated))
 }
@@ -440,8 +426,7 @@ async fn standing_by_issuer<'a, H: AppHost>(
     host: &H,
     rows: impl Iterator<Item = &'a (SearchIndexRow, AreaMatch)>,
 ) -> Result<BTreeMap<String, MembershipEvidence>, String> {
-    let issuers: std::collections::BTreeSet<String> =
-        rows.map(|(row, _)| row.issuer.clone()).collect();
+    let issuers: BTreeSet<String> = rows.map(|(row, _)| row.issuer.clone()).collect();
     let mut out = BTreeMap::new();
     for issuer in issuers {
         let evidence = standing::load(host, &issuer).await?;
@@ -478,7 +463,7 @@ fn listed(
                 evidence_as_of_secs: now,
             },
         ),
-        membership::MembershipVerdict::Valid { .. }
+        MembershipVerdict::Valid { .. }
     )
 }
 
@@ -494,9 +479,10 @@ pub(in crate::app) async fn rewrite_listed_windows<H: AppHost>(
 ) -> Result<(), String> {
     let Some(issuer) = issuer_did(host).await else { return Ok(()) };
     ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
-    let rows = collect_raw_where(host, SEARCH_INDEX, &json!({ "issuer": member_did })).await?;
-    for (key, v) in rows {
-        let Ok(mut row) = serde_json::from_value::<SearchIndexRow>(v) else { continue };
+    let filter = json!({ "issuer": member_did }).to_string();
+    let rows: Vec<(String, SearchIndexRow)> =
+        paging::query_all_with_ids(host, SEARCH_INDEX, Some(filter)).await?;
+    for (key, mut row) in rows {
         let (from, until) =
             membership::listed_window(evidence, &issuer, member_did, &row.listing_id, now);
         if row.listed_from_secs != from || row.listed_until_secs != until {
@@ -562,10 +548,9 @@ pub(in crate::app) async fn rebuild_search_index<H: AppHost>(host: &H) -> Result
     AppDataLayer::delete_many(host, SEARCH_INDEX.to_string(), json!({}).to_string())
         .await
         .map_err(|e| e.to_string())?;
-    let rows = collect_raw(host, PUBLICATIONS).await?;
+    let rows: Vec<PublicationRow> = paging::query_all(host, PUBLICATIONS, None).await?;
     let mut rebuilt = 0u64;
-    for (_, v) in rows {
-        let Ok(row) = serde_json::from_value::<PublicationRow>(v) else { continue };
+    for row in rows {
         let verdict = listing::verify_envelope(&row.envelope, clock::now_secs());
         let Some(payload) = verdict.payload else { continue };
         let now = clock::now_secs();

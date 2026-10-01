@@ -1,12 +1,17 @@
 //! Server half: `member.suspend` / `member.lift` / `member.decisions` --
 //! a SynOrg's signed moderation decisions about its own members.
 
+use syneroym_roym_core::{
+    membership::{ModerationAction, ModerationScope},
+    record::VerifyOptions,
+};
+
 use super::*;
 use crate::app::{credential_ops::sign_as_synorg, standing::IssuedRecordRow};
 
-fn parse_scope(req: &Request) -> Result<membership::ModerationScope, Response> {
+fn parse_scope(req: &Request) -> Result<ModerationScope, Response> {
     match req.params.get("scope") {
-        None | Some(Value::Null) => Ok(membership::ModerationScope::Membership),
+        None | Some(Value::Null) => Ok(ModerationScope::Membership),
         Some(v) => serde_json::from_value(v.clone())
             .map_err(|e| Response::invalid_params(format!("invalid scope: {e}"))),
     }
@@ -45,10 +50,10 @@ pub(in crate::app) async fn suspend<H: AppHost>(host: &H, req: &Request) -> Resp
         return Response::invalid_params("not a member of this SynOrg");
     }
 
-    let is_membership_scope = matches!(scope, membership::ModerationScope::Membership);
+    let is_membership_scope = matches!(scope, ModerationScope::Membership);
     let now = clock::now_secs();
     let payload = membership::ModerationDecisionPayload {
-        action: membership::ModerationAction::Suspend,
+        action: ModerationAction::Suspend,
         member_did: member_did.clone(),
         scope,
         rule,
@@ -122,7 +127,7 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
     // Scoped so the non-`Send` `VerifyOptions` (it carries `&dyn
     // RevocationSource`) does not live across a later `.await`.
     let payload_value = {
-        let opts = record::VerifyOptions::new(now).expecting(&owner);
+        let opts = VerifyOptions::new(now).expecting(&owner);
         match record::verify_json(&row.envelope, &opts) {
             Ok(v) => v.payload,
             Err(e) => return Response::internal_error(e.to_string()),
@@ -133,15 +138,16 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
         Ok(p) => p,
         Err(e) => return Response::internal_error(e.to_string()),
     };
-    if payload.action != membership::ModerationAction::Suspend {
+    if payload.action != ModerationAction::Suspend {
         return Response::invalid_params("that decision is not a suspension");
     }
 
-    let existing: Vec<IssuedRecordRow> =
-        match collect_raw_where(host, DECISIONS, &json!({ "about": decision_record_id })).await {
-            Ok(v) => v.into_iter().filter_map(|(_, v)| serde_json::from_value(v).ok()).collect(),
-            Err(e) => return Response::internal_error(e),
-        };
+    let about = json!({ "about": decision_record_id }).to_string();
+    let existing: Vec<IssuedRecordRow> = match paging::query_all(host, DECISIONS, Some(about)).await
+    {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
+    };
     if let Some(existing) = existing.into_iter().next() {
         // Same idempotent-retry rationale as `credential_ops::revoke`: the
         // lift record already exists, but the rebuild that should follow
@@ -155,7 +161,7 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
     }
 
     let lift_payload = membership::ModerationDecisionPayload {
-        action: membership::ModerationAction::Lift,
+        action: ModerationAction::Lift,
         member_did: row.member_did.clone(),
         scope: payload.scope,
         rule: String::new(),
@@ -195,18 +201,5 @@ pub(in crate::app) async fn lift<H: AppHost>(host: &H, req: &Request) -> Respons
 }
 
 pub(in crate::app) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
-    if let Err(e) = ensure_coll(host, DECISIONS, &standing::issued_record_indexes()).await {
-        return Response::internal_error(e);
-    }
-    let member_did = req.params.get("member_did").and_then(Value::as_str);
-    let rows = match member_did {
-        Some(m) => collect_raw_where(host, DECISIONS, &json!({ "member_did": m })).await,
-        None => collect_raw(host, DECISIONS).await,
-    };
-    match rows {
-        Ok(v) => {
-            Response::ok(json!({ "records": v.into_iter().map(|(_, v)| v).collect::<Vec<_>>() }))
-        }
-        Err(e) => Response::internal_error(e),
-    }
+    credential_ops::list_issued(host, DECISIONS, req).await
 }

@@ -5,19 +5,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppHost,
-    types::proxy::{CallOptions, CallTarget},
+    types::proxy::{CallOptions, CallTarget, ProxyError},
 };
 use syneroym_roym_core::{
     clock,
     directory::DEFAULT_SOURCE_TIMEOUT_MS,
     envelope::{Request, Response},
     membership::{self, CheckInput, MembershipEvidence, MembershipVerdict},
-    services,
+    paging, services,
 };
 
 use super::{
-    HELD_MEMBERSHIPS, SOURCES, client_sources::SourceRow, collect_raw_where, ensure_coll, get_json,
-    put_json,
+    HELD_MEMBERSHIPS, SOURCES, client_sources::SourceRow, ensure_coll, get_json, put_json,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +113,7 @@ async fn handle_standing_reply<H: AppHost>(
     source: &str,
     member_did: &str,
     pinned_issuer: Option<&str>,
-    call_result: Result<String, syneroym_app_host::types::proxy::ProxyError>,
+    call_result: Result<String, ProxyError>,
 ) -> Response {
     let raw = match call_result {
         Ok(r) => r,
@@ -222,18 +221,15 @@ pub(in crate::app) async fn memberships<H: AppHost>(host: &H, req: &Request) -> 
     if let Err(e) = ensure_coll(host, HELD_MEMBERSHIPS, &[]).await {
         return Response::internal_error(e);
     }
-    let filter_member = req.params.get("member_did").and_then(Value::as_str);
-    let rows: Vec<HeldMembershipRow> = match filter_member {
-        Some(m) => match collect_raw_where(host, HELD_MEMBERSHIPS, &json!({ "member_did": m }))
-            .await
-        {
-            Ok(v) => v.into_iter().filter_map(|(_, v)| serde_json::from_value(v).ok()).collect(),
-            Err(e) => return Response::internal_error(e),
-        },
-        None => match collect_raw_where(host, HELD_MEMBERSHIPS, &json!({})).await {
-            Ok(v) => v.into_iter().filter_map(|(_, v)| serde_json::from_value(v).ok()).collect(),
-            Err(e) => return Response::internal_error(e),
-        },
+    let filter = req
+        .params
+        .get("member_did")
+        .and_then(Value::as_str)
+        .map(|m| json!({ "member_did": m }).to_string());
+    let rows: Vec<HeldMembershipRow> = match paging::query_all(host, HELD_MEMBERSHIPS, filter).await
+    {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
     };
     let now = clock::now_secs();
     let out: Vec<Value> = rows

@@ -2,24 +2,21 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use syneroym_app_host::{
-    AppDataLayer, AppHost,
-    types::data_layer::{IndexType, QueryOptions},
-};
+use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::IndexType};
 use syneroym_roym_core::{
     admit::Caller,
     area::Area,
     clock,
     envelope::{Request, Response},
-    listing::{self, ListingVerdict},
+    listing::{self, ListingStatus, ListingVerdict},
     membership::{self, ListingRef, MembershipVerdict},
+    paging,
     safety::{self, Admission, PublicationLimits},
 };
 
 use super::{
-    NODE_STATE, PUBLICATION_LOG, PUBLICATIONS, SEARCH_INDEX, SETTINGS, SETTINGS_KEY, collect_raw,
-    ensure_coll, get_json, idx, owner_did_or_node, put_json, search_index_indexes, search_ops,
-    standing, synorg,
+    NODE_STATE, PUBLICATION_LOG, PUBLICATIONS, SEARCH_INDEX, SETTINGS, SETTINGS_KEY, ensure_coll,
+    get_json, idx, owner_did_or_node, put_json, search_index_indexes, search_ops, standing, synorg,
 };
 
 /// A listing is admitted only from a member whose credential from this
@@ -101,33 +98,11 @@ async fn publication_secs_in_window<H: AppHost>(
     let floor = now.saturating_sub(window_secs);
     let filter =
         json!({ "$and": [ { "published_by": published_by }, { "at_secs": { "$gt": floor } } ] });
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            PUBLICATION_LOG.to_string(),
-            QueryOptions {
-                filter: Some(filter.to_string()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(v) = serde_json::from_slice::<Value>(&r.payload)
-                && let Some(at) = v.get("at_secs").and_then(Value::as_u64)
-            {
-                out.push(at);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
+    paging::filter_map(host, PUBLICATION_LOG, Some(filter.to_string()), |row| {
+        let v: Value = serde_json::from_slice(&row.payload).ok()?;
+        v.get("at_secs").and_then(Value::as_u64)
+    })
+    .await
 }
 
 /// Deletes every `search_index` row for `listing_id`, whatever `area_index`
@@ -208,7 +183,7 @@ pub(in crate::app) async fn publish<H: AppHost>(
         return resp;
     }
 
-    if matches!(payload.status, listing::ListingStatus::Withdrawn) {
+    if matches!(payload.status, ListingStatus::Withdrawn) {
         return withdraw_publication(host, &payload.listing_id).await;
     }
 
@@ -272,10 +247,10 @@ async fn resolve_published_by<H: AppHost>(caller: Caller, host: &H) -> Result<St
 
 fn validate_publishable(payload: &listing::ListingPayload) -> Result<(), Response> {
     match payload.status {
-        listing::ListingStatus::Draft => {
+        ListingStatus::Draft => {
             return Err(Response::invalid_params("a draft listing may not be published"));
         }
-        listing::ListingStatus::Active | listing::ListingStatus::Withdrawn => {}
+        ListingStatus::Active | ListingStatus::Withdrawn => {}
     }
     if payload.conversation_address.trim().is_empty() {
         return Err(Response::internal_error(
@@ -527,15 +502,8 @@ async fn load_publication_for_listing<H: AppHost>(
     host: &H,
     listing_id: &str,
 ) -> Result<Option<PublicationRow>, String> {
-    let rows = collect_raw(host, PUBLICATIONS).await?;
-    for (_, v) in rows {
-        if let Ok(row) = serde_json::from_value::<PublicationRow>(v.clone())
-            && row.listing_id == listing_id
-        {
-            return Ok(Some(row));
-        }
-    }
-    Ok(None)
+    let rows: Vec<PublicationRow> = paging::query_all(host, PUBLICATIONS, None).await?;
+    Ok(rows.into_iter().find(|row| row.listing_id == listing_id))
 }
 
 pub(in crate::app) async fn unpublish<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -568,10 +536,8 @@ pub(in crate::app) async fn publications<H: AppHost>(host: &H) -> Response {
     if let Ok(Some(settings)) = synorg::load_settings(host).await {
         let _ = prune_expired_publications(host, settings.retention_secs).await;
     }
-    match collect_raw(host, PUBLICATIONS).await {
-        Ok(rows) => Response::ok(
-            json!({ "publications": rows.into_iter().map(|(_, v)| v).collect::<Vec<_>>() }),
-        ),
+    match paging::query_all::<_, Value>(host, PUBLICATIONS, None).await {
+        Ok(rows) => Response::ok(json!({ "publications": rows })),
         Err(e) => Response::internal_error(e),
     }
 }

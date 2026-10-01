@@ -25,33 +25,11 @@ pub(crate) async fn publication_secs_in_window<H: AppHost>(
     // path as a parameter, which SQLite will not match against an
     // expression index -- but far fewer rows cross the host boundary.
     let filter = json!({ "at_secs": { "$gt": floor } });
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            PUBLICATIONS.to_string(),
-            QueryOptions {
-                filter: Some(filter.to_string()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(v) = serde_json::from_slice::<Value>(&r.payload)
-                && let Some(at) = v.get("at_secs").and_then(Value::as_u64)
-            {
-                out.push(at);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
+    paging::filter_map(host, PUBLICATIONS, Some(filter.to_string()), |row| {
+        let v: Value = serde_json::from_slice(&row.payload).ok()?;
+        v.get("at_secs").and_then(Value::as_u64)
+    })
+    .await
 }
 
 pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {

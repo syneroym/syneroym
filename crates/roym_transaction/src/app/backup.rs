@@ -5,24 +5,22 @@ pub(crate) mod sections;
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Value, json};
-use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::QueryOptions};
+use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
-        BUNDLE_VERSION, Bundle, BundleManifest, SECTION_AGREEMENTS, SECTION_BOOKINGS,
-        SECTION_CARDS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS, SECTION_PROGRESS,
-        SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_REQUEST_HISTORY, SECTION_REQUESTS,
-        check_signed_bundle,
+        self, Bundle, SECTION_AGREEMENTS, SECTION_BOOKINGS, SECTION_CARDS, SECTION_FULFILMENTS,
+        SECTION_LEDGER, SECTION_PAYMENTS, SECTION_PROGRESS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
+        SECTION_REQUEST_HISTORY, SECTION_REQUESTS,
     },
     booking, clock,
     envelope::{Request, Response},
-    fulfilment, payment,
-    signing::{self, CertificateError},
+    fulfilment, paging, payment, signing,
     transaction::{self, QuotePayload, ReceiptHalf, Role},
 };
 
 use super::{
     AGREEMENTS, AgreementRow, BOOKINGS, CARDS, CardRow, FULFILMENTS, LEDGER, PAYMENTS, PROGRESS,
-    QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, REQUESTS, RecordPointerRow, SCHEMA_VERSION, collect,
+    QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, REQUESTS, RecordPointerRow, SCHEMA_VERSION,
     ensure_collections, get_bytes, put_bytes, put_row,
 };
 
@@ -36,91 +34,36 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_collections(host).await {
         return Response::internal_error(e);
     }
-    let requests = match collect(host, REQUESTS).await {
-        Ok(v) => v,
+    let mut sections = match backup::collect_sections(
+        host,
+        &[
+            (SECTION_REQUESTS, REQUESTS),
+            (SECTION_QUOTES, QUOTES),
+            (SECTION_AGREEMENTS, AGREEMENTS),
+            (SECTION_CARDS, CARDS),
+            (SECTION_LEDGER, LEDGER),
+            (SECTION_BOOKINGS, BOOKINGS),
+            (SECTION_PROGRESS, PROGRESS),
+            (SECTION_PAYMENTS, PAYMENTS),
+            (SECTION_FULFILMENTS, FULFILMENTS),
+        ],
+    )
+    .await
+    {
+        Ok(s) => s,
         Err(e) => return Response::internal_error(e),
     };
-    let request_history = match collect_history(host, REQUEST_HISTORY).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let quotes = match collect(host, QUOTES).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let quote_history = match collect_history(host, QUOTE_HISTORY).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let agreements = match collect(host, AGREEMENTS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let cards = match collect(host, CARDS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let ledger = match collect(host, LEDGER).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let bookings = match collect(host, BOOKINGS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let progress = match collect(host, PROGRESS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let payments = match collect(host, PAYMENTS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let fulfilments = match collect(host, FULFILMENTS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let sections = BTreeMap::from([
-        (SECTION_REQUESTS.to_string(), requests),
-        (SECTION_REQUEST_HISTORY.to_string(), request_history),
-        (SECTION_QUOTES.to_string(), quotes),
-        (SECTION_QUOTE_HISTORY.to_string(), quote_history),
-        (SECTION_AGREEMENTS.to_string(), agreements),
-        (SECTION_CARDS.to_string(), cards),
-        (SECTION_LEDGER.to_string(), ledger),
-        (SECTION_BOOKINGS.to_string(), bookings),
-        (SECTION_PROGRESS.to_string(), progress),
-        (SECTION_PAYMENTS.to_string(), payments),
-        (SECTION_FULFILMENTS.to_string(), fulfilments),
-    ]);
-    let mut manifest_sections = BTreeMap::new();
-    for (k, v) in &sections {
-        match Bundle::digest(SCHEMA_VERSION, v) {
-            Ok(d) => {
-                manifest_sections.insert(k.clone(), d);
+    for (section, collection) in
+        [(SECTION_REQUEST_HISTORY, REQUEST_HISTORY), (SECTION_QUOTE_HISTORY, QUOTE_HISTORY)]
+    {
+        match collect_history(host, collection).await {
+            Ok(rows) => {
+                sections.insert(section.to_string(), rows);
             }
-            Err(e) => return Response::internal_error(e.to_string()),
+            Err(e) => return Response::internal_error(e),
         }
     }
-    let mut bundle = Bundle {
-        manifest: BundleManifest {
-            bundle_version: BUNDLE_VERSION,
-            subject_did: owner,
-            sections: manifest_sections,
-        },
-        sections,
-        manifest_signature: None,
-    };
-    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
-        if matches!(e, CertificateError::NotEnrolled) {
-            return Response::invalid_params("signing-not-enrolled");
-        }
-        return Response::internal_error(e.to_string());
-    }
-    match serde_json::to_value(&bundle) {
-        Ok(v) => Response::ok(v),
-        Err(e) => Response::internal_error(e.to_string()),
-    }
+    backup::export_signed(host, owner, SCHEMA_VERSION, sections, now).await
 }
 
 pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -207,7 +150,7 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
 }
 
 fn validate_bundle_header(bundle: &Bundle, owner: &str, now: u64) -> Result<(), Response> {
-    if let Err(e) = check_signed_bundle(bundle, owner, now) {
+    if let Err(e) = backup::check_signed_bundle(bundle, owner, now) {
         return Err(Response::invalid_params(e.to_string()));
     }
     for (name, declared) in &bundle.manifest.sections {
@@ -259,27 +202,15 @@ async fn import_negotiation_sections<H: AppHost>(
     Ok(())
 }
 
+/// A history collection's rows as section documents. History rows hold
+/// the raw envelope text, not JSON, so they are wrapped as
+/// `{ "envelope": .. }` rather than parsed.
 async fn collect_history<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            let env_str = String::from_utf8_lossy(&r.payload).into_owned();
-            out.push(json!({ "id": r.id, "payload": { "envelope": env_str } }));
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
+    paging::filter_map(host, collection, None, |row| {
+        let env_str = String::from_utf8_lossy(&row.payload).into_owned();
+        Some(json!({ "id": row.id, "payload": { "envelope": env_str } }))
+    })
+    .await
 }
 
 async fn import_history_section<H: AppHost>(

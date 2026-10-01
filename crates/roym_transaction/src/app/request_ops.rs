@@ -12,14 +12,15 @@ use syneroym_roym_core::{
     area::Area,
     clock,
     envelope::{Request, Response},
+    paging,
     record::{Envelope, RECORD_REQUEST},
     transaction::{self, REQUEST_VERSION, RecordVerdict, RequestPayload, TimeWindow},
 };
 
 use super::{
-    ListParams, REQUEST_HISTORY, REQUESTS, RecordPointerRow, collect_record_history, collect_typed,
-    conversation_mine_filter, count_mine, ensure_collections, get_row, put_bytes, put_row,
-    resolve_principal_and_owner, send_card_and_file,
+    ListParams, REQUEST_HISTORY, REQUESTS, RecordPointerRow, conversation_mine_filter, count_mine,
+    ensure_collections, get_row, put_bytes, put_row, resolve_principal_and_owner,
+    send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -277,9 +278,9 @@ pub(crate) async fn request_list<H: AppHost>(host: &H, req: &Request) -> Respons
     }
 
     let filter = conversation_mine_filter(params.conversation.as_deref(), params.mine);
-    let mut rows: Vec<RecordPointerRow> = match collect_typed(host, REQUESTS, filter).await {
+    let mut rows: Vec<RecordPointerRow> = match paging::query_all(host, REQUESTS, filter).await {
         Ok(rows) => rows,
-        Err(e) => return e,
+        Err(e) => return Response::internal_error(e),
     };
     rows.sort_by_key(|p| Reverse(p.updated_at_secs));
     let page: Vec<Value> = rows
@@ -314,12 +315,13 @@ pub(crate) async fn request_history<H: AppHost>(host: &H, req: &Request) -> Resp
     if let Err(e) = ensure_collections(host).await {
         return Response::internal_error(e);
     }
-    let out = match collect_record_history(host, REQUEST_HISTORY, "request_id", &params.request_id)
-        .await
-    {
-        Ok(out) => out,
-        Err(e) => return e,
-    };
+    let out =
+        match paging::envelope_history(host, REQUEST_HISTORY, "request_id", &params.request_id)
+            .await
+        {
+            Ok(out) => out,
+            Err(e) => return Response::internal_error(e),
+        };
     Response::ok(json!({ "history": out }))
 }
 
