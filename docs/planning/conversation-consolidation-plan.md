@@ -357,9 +357,15 @@ chat up the list.**
 - **Which chats `conversations()` lists:**
   - every group this service owns or is a member of, and every restored
     group;
-  - a direct chat only if this service opened it (`open-direct`), sent in
-    it, or has at least one accepted message in it.
+  - a direct chat only if this service opened it (`open-direct`), sent a
+    non-system message in it, or has at least one accepted message in it.
   A stranger whose messages are all held or dropped has no visible chat.
+- **How "opened it" is stored.** `conversations` gains an `opened INTEGER`
+  column, set only by the `open-direct` verb. It is *not* set inside
+  `get_or_create_direct`, because that store function also runs when the
+  host sends a system message (a refusal notice or a delete request) and
+  when an incoming message creates a direct chat. System messages never
+  count as "sent in it".
 - Today Roym uses the newest sender timestamp for activity. The local time
   is simpler and cannot be pushed into the future by a peer's wrong clock.
 
@@ -389,12 +395,13 @@ correct when asked twice.**
   - Sender blocked, in an accepted 1:1 chat or in a shown group →
     `drop("blocked", report = false)`.
   - 1:1 first contact (chat not accepted), blocked or not: the limit is
-    charged per message. Over the limit →
-    `drop("rate-limited", report = true)` (D-CV-12). Under the limit →
-    accept if not blocked, `drop("blocked", report = false)` if blocked.
-    This is what stops a blocked stranger from detecting the block
-    (D-CV-12). A rate-limited message keeps no body on disk; the sender can
-    try again later.
+    checked and charged per message, as if the sender were not blocked.
+    Over the limit → `drop("rate-limited", report = true)` (D-CV-12). Under
+    the limit → write "accepted" to `admissions`, then answer `accept` if
+    not blocked, or `drop("blocked", report = false)` if blocked. This is
+    what stops a blocked stranger from detecting the block (D-CV-12). A
+    rate-limited message keeps no body on disk; the sender can try again
+    later.
   - Group hidden → `hold("group-hidden")`. `group.unhide` calls `readmit`.
   - A group first seen from an owner over the limit: the group's visibility
     becomes `hidden` (today's per-group decision, kept), and its messages are
@@ -481,17 +488,29 @@ is.**
 - **A block is never reported** (`report = false`), so the product keeps
   D-06C-8's promise: it never tells a blocked person they were blocked, and
   never claims the sender was prevented from sending.
-- **A blocked sender must not be able to detect the block by flooding.** If
-  blocked strangers never got a rate-limit report, a stranger could send
-  until a report "should" appear and learn they are blocked when none comes.
-  So in a chat that is not yet accepted, Roym applies the first-contact
-  limit to a blocked stranger exactly as to any other stranger: it charges
-  the limit for each message (once per message id), and when the limit is
-  exceeded it answers `drop("rate-limited", report = true)`. Under the limit
-  it answers `drop("blocked", report = false)`. From the sender's side this
-  looks the same as an unblocked stranger: silence under the limit, a
-  rate-limit report over it. In an accepted chat no message is ever
-  reported, so a block there is silent like everything else.
+- **A blocked sender must not be able to detect the block.** Whatever a
+  blocked stranger sends, the reports they get must be exactly the ones an
+  unblocked stranger would get. Two ways it could leak:
+  - if blocked strangers never got a rate-limit report, flooding until one
+    "should" appear would reveal the block;
+  - if a blocked stranger's chat never became "accepted", every later
+    message would keep being charged against the limit, and a report after
+    N messages would reveal the block (an unblocked stranger's first
+    accepted message ends the limit for that chat).
+
+  **Rule: run the whole first-contact flow as if the sender were not
+  blocked, and change only the final answer.** Roym checks and charges the
+  limit, and on "allow" writes "accepted" to `admissions`, exactly as for
+  anyone. Only then, if the sender is blocked, `accept` becomes
+  `drop("blocked", report = false)`. A rate-limit answer stays a rate-limit
+  answer with `report = true`. After that the chat is accepted, so no limit
+  applies and nothing is reported, for blocked and unblocked senders alike.
+  This is safe because block is checked live on every message: an "accepted"
+  chat with a blocked person still drops every message from them, and if
+  they are unblocked later, their next message is accepted.
+- This needs `contacts.admit-first-contact` to work out the limit answer
+  whether or not the sender is blocked, and to charge the attempt in both
+  cases (H1, Roym list).
 - **Only the chat's peer can refuse your message.** The sending host stores
   a refusal only when all of these hold:
   - it arrives in the delivery receipt for that message, on the connection
@@ -516,9 +535,14 @@ is.**
 - **The refusal notice is invisible to chat bookkeeping.** It is a system
   message, like the delete request. Sending one does not count as "sent in
   it" for D-CV-8's visibility rule, does not update `last-activity-at`, and
-  does not make a direct chat appear in `conversations()`. (The host already
-  marks a conversation `system` when its only messages are system messages;
-  that rule keeps applying.)
+  does not make a direct chat appear in `conversations()`. What protects the
+  stranger's chat is D-CV-8's own visibility rule, not the existing `system`
+  flag: `enqueue_direct` (`lib.rs`) sets `system = 1` only when the
+  conversation holds no non-system row, and the stranger's dropped message is
+  such a row, so the flag stays 0. The system-message send path also calls `get_or_create_direct`, which
+  clears `system` (`store/conversation.rs`); so D-CV-8's "this service
+  opened it" marker is set by the `open-direct` verb only, never inside
+  `get_or_create_direct`.
 - **Why:** this closes row 12 for the case it names (contact limits), with no
   new information for a blocked person. The refusal reveals only that the
   recipient limits new contacts, which is what the row asks the product to
@@ -636,6 +660,8 @@ Base crate:
   `list_conversations`) filter on `accepted` or `outgoing`.
 - `last_activity` updates move from the incoming insert to the accept step
   (D-CV-8). `list_conversations` applies the visibility rule from D-CV-8.
+  `conversations` gains `opened INTEGER`, set only by the `open-direct` verb
+  (not by `get_or_create_direct`).
 - Refusal reports (D-CV-12):
   - `messages` gains `report_refusal INTEGER` beside `admission_reason`, so
     the answer's `report` flag is stored on the row.
@@ -662,6 +688,23 @@ Interface: `admission` variant, `on-message` result, `readmit`, the new
 whether the service has a sink.
 
 Roym (still keeps its copy in this phase):
+- **First-contact verb works out the limit for blocked senders too**
+  (D-CV-12). Today `roym_core::safety::admit_first_contact` returns
+  `Blocked` before it looks at the limit, and `roym_profile`'s
+  `contacts.admit-first-contact` (`app/contacts.rs`) records an attempt only
+  on `Allow`. Change both:
+  - `safety::admit_first_contact` returns the limit answer
+    (`Allow` / `RateLimited`) and the block state separately, so the limit is
+    always computed.
+  - `contacts.admit-first-contact` records the attempt whenever the limit
+    answer is `Allow`, blocked or not, and returns both
+    (`{ "admission": "allow" | "rate-limited", "blocked": bool, ... }`).
+  - Every caller changes with it: the 1:1 inbox and the group first-sight
+    path (`new_group_row`), which now makes a blocked owner's group
+    `hidden` (D-CV-9).
+  - Tests: `roym_core/src/safety` unit tests (a blocked sender is charged
+    and rate-limited at the same count as an unblocked one) and the profile
+    parity scenarios for the verb.
 - Add the `admissions` and `first_contact_charges` collections and write them
   as D-CV-9 says, beside the old rows.
 - `on_message` checks block live, consults `admissions` only for "is this
@@ -710,9 +753,13 @@ Tests:
   - a rate-limited first contact shows the refusal on the sender's side; a
     blocked sender in an accepted chat sees nothing (M06C failure-matrix
     rows 11 and 12)
-  - a blocked stranger flooding first contacts gets the rate-limit report at
-    the same message count as an unblocked stranger, so the block cannot be
-    detected
+  - a blocked stranger and an unblocked stranger, sending the same sequence
+    of messages, receive exactly the same reports. Covered both ways: (a)
+    with the sender's first-contact limit already used up by earlier
+    attempts (for example the same person DID from other addresses), both
+    get a rate-limit report for each message; (b) under the limit, each
+    sends one message and then many more over time, and neither ever gets a
+    report, because the first message made the chat accepted for both
   - a group first seen from a blocked owner is hidden, and can be shown;
     in a shown group only the blocked person's messages are dropped
   - after the H1 switch, nothing in Roym reads a held row through
