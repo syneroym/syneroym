@@ -664,9 +664,20 @@ and the reason would otherwise be lost.
 >   and Hub shell; C3 the signing interface and signed-record envelope.
 >   C4–C7 are R1 and close its gate at C7; C8 is R2, C9 is R3, C10 is R4.
 >   C1.1 is sequenced ahead of C2 and C3 because both are specified against
->   the identity model it settles. **All Complete** — C1 (2026-08-25)
->   through C10 (2026-09-30, merged 2026-10-01); all four releases (R1–R4)
->   closed. See [status.md](./milestones/M06C-roym-product/status.md).
+>   the identity model it settles. **All ten slices complete** — C1
+>   (2026-08-25) through C10 (2026-09-30, merged 2026-10-01); all four
+>   releases (R1–R4) passed. **The milestone is not yet closed:** the exit
+>   audit of 2026-10-01 left two exit criteria open (failure-matrix row 12's
+>   "refusal visible to the sender" for inbound refusals, and one test name
+>   carrying a slice id). See
+>   [status.md](./milestones/M06C-roym-product/status.md) §"Milestone exit
+>   audit".
+>
+> **M6 as a whole is not complete (audit 2026-10-01).** Besides M06C's two
+> open criteria, `[PRD-CUX]` is targeted at M6 in
+> [traceability-matrix.md](./traceability-matrix.md) but no M06 sub-milestone
+> planned its acceptance evidence (a moderated task-success test and an
+> accessibility audit). It needs a plan or a retarget before M6 can close.
 >
 > **Why this order.** M06A removes the only non-WASM piece of Roym — the spec's
 > Web entrypoint service, which exists purely because a component cannot serve
