@@ -309,4 +309,53 @@ describe("Groups screen rendering", () => {
     });
     expect(called.some((c) => c.method === "conversation.send")).toBe(false);
   });
+
+  it("never duplicates group-title or info panel on rapid repeated selection", async () => {
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: 0,
+            group: { name: "Garden Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return {
+          id: "grp-1",
+          name: "Garden Group",
+          owner_address: "did:key:zAlice",
+          is_owner: true,
+          is_member: true,
+          restored_only: false,
+          key_epoch: 1,
+          key_stored_at_ms: 0,
+          members: [{ address: "did:key:zAlice", is_owner: true }],
+        };
+      },
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.history": () => ({ messages: [] }),
+    });
+
+    const host = document.createElement("div");
+    const renderPromise = renderGroups(host);
+
+    await new Promise((r) => setTimeout(r, 2));
+    const item = host.querySelector<HTMLElement>(".conversation-item");
+    expect(item).not.toBeNull();
+
+    item?.click();
+    item?.click();
+
+    await renderPromise;
+    await new Promise((r) => setTimeout(r, 50));
+
+    const titles = host.querySelectorAll(".group-title");
+    expect(titles.length).toBe(1);
+    expect(titles[0].textContent).toBe("Garden Group");
+  });
 });

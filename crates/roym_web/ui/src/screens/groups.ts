@@ -325,12 +325,16 @@ export async function renderGroups(container: HTMLElement) {
     }
   }
 
+  let currentSelectionSeq = 0;
+
   async function selectGroup(gid: string) {
+    const seq = ++currentSelectionSeq;
     rightPane.replaceChildren();
     let info: GroupDetails;
     try {
       info = await call<GroupDetails>("group.info", { conversation: gid });
     } catch (err) {
+      if (seq !== currentSelectionSeq) return;
       if (err instanceof RpcError && err.type === "NotSignedIn") {
         renderSessionEnded(container);
         return;
@@ -585,13 +589,16 @@ export async function renderGroups(container: HTMLElement) {
     actionBox.append(syncBtn, hideBtn);
     infoPanel.appendChild(actionBox);
 
-    rightPane.append(threadCol, infoPanel);
+    if (seq !== currentSelectionSeq) return;
+    rightPane.replaceChildren(threadCol, infoPanel);
 
     async function reloadThread() {
+      if (seq !== currentSelectionSeq) return;
       try {
         const hist = await call<{ messages: GroupMessageRow[] }>("conversation.history", {
           conversation: gid,
         });
+        if (seq !== currentSelectionSeq) return;
         const msgs = hist.messages || [];
         renderThreadMessages(
           threadList,

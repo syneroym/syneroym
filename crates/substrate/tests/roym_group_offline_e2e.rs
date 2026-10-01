@@ -160,9 +160,22 @@ async fn assert_coordinator_has_no_conversation_state(
         assert_ne!(rec.info.substrate_id, coord.0.did());
     }
 
+    let z_svcs = members[0]
+        .node
+        .as_ref()
+        .expect("node z live")
+        .substrate_client
+        .list_svcs()
+        .await
+        .expect("list z svcs");
+    assert!(
+        z_svcs.iter().any(|s| s.interfaces.iter().any(|i| i.contains(":conversation/"))),
+        "member node z must expose the conversation interface"
+    );
+
     let coord_svcs = coord.0.substrate_client.list_svcs().await.expect("list coord svcs");
     assert!(
-        !coord_svcs.iter().any(|s| s.interfaces.iter().any(|i| i == "conversation")),
+        !coord_svcs.iter().any(|s| s.interfaces.iter().any(|i| i.contains(":conversation/"))),
         "coordinator has no conversation service deployed"
     );
 
