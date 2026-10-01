@@ -9,7 +9,7 @@ use syneroym_roym_core::{
 use super::*;
 use crate::app::{credential_ops::sign_as_synorg, standing::IssuedRecordRow};
 
-fn parse_scope(req: &Request) -> Result<membership::ModerationScope, Response> {
+fn parse_scope(req: &Request) -> Result<ModerationScope, Response> {
     match req.params.get("scope") {
         None | Some(Value::Null) => Ok(ModerationScope::Membership),
         Some(v) => serde_json::from_value(v.clone())

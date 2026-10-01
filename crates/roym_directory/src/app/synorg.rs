@@ -49,7 +49,7 @@ pub(in crate::app) async fn set_settings<H: AppHost>(host: &H, req: &Request) ->
 
 async fn member_count<H: AppHost>(host: &H) -> Result<u64, String> {
     ensure_coll(host, MEMBERS, &[]).await?;
-    Ok(paging::query_all::<_, Value>(host, MEMBERS, None).await?.len() as u64)
+    Ok(paging::count(host, MEMBERS, None).await? as u64)
 }
 
 pub(in crate::app) async fn info<H: AppHost>(host: &H) -> Response {

@@ -221,15 +221,16 @@ pub(in crate::app) async fn memberships<H: AppHost>(host: &H, req: &Request) -> 
     if let Err(e) = ensure_coll(host, HELD_MEMBERSHIPS, &[]).await {
         return Response::internal_error(e);
     }
-    let filter = match req.params.get("member_did").and_then(Value::as_str) {
-        Some(m) => json!({ "member_did": m }),
-        None => json!({}),
+    let filter = req
+        .params
+        .get("member_did")
+        .and_then(Value::as_str)
+        .map(|m| json!({ "member_did": m }).to_string());
+    let rows: Vec<HeldMembershipRow> = match paging::query_all(host, HELD_MEMBERSHIPS, filter).await
+    {
+        Ok(v) => v,
+        Err(e) => return Response::internal_error(e),
     };
-    let rows: Vec<HeldMembershipRow> =
-        match paging::query_all(host, HELD_MEMBERSHIPS, Some(filter.to_string())).await {
-            Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
-        };
     let now = clock::now_secs();
     let out: Vec<Value> = rows
         .into_iter()

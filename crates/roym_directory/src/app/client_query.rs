@@ -99,18 +99,16 @@ pub(in crate::app) async fn start_run<H: AppHost>(host: &H) -> Response {
     {
         return Response::internal_error(e.to_string());
     }
-    let source_rows: Vec<(String, Value)> =
-        match paging::query_all_with_ids(host, SOURCES, None).await {
-            Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
-        };
-    let mut source_dids: Vec<String> = source_rows.into_iter().map(|(id, _)| id).collect();
-    source_dids.sort();
-    let existing_runs: Vec<Value> = match paging::query_all(host, RUNS, None).await {
+    let mut source_dids = match paging::filter_map(host, SOURCES, None, |row| Some(row.id)).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-    let run_id = format!("run_{now}_{}", existing_runs.len());
+    source_dids.sort();
+    let existing_runs = match paging::count(host, RUNS, None).await {
+        Ok(n) => n,
+        Err(e) => return Response::internal_error(e),
+    };
+    let run_id = format!("run_{now}_{existing_runs}");
     let run = RunRow { at_secs: now, sources: source_dids.clone() };
     if let Err(e) = put_json(host, RUNS, &run_id, &run).await {
         return Response::internal_error(e);

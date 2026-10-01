@@ -233,7 +233,7 @@ pub fn check_signed_bundle(bundle: &Bundle, owner: &str, now_secs: u64) -> Resul
 /// Every row of `collection` as a section document,
 /// `{ "id": .., "payload": .. }`, in the order the host returns them. A
 /// row whose payload is not JSON is left out.
-pub async fn section_rows<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
+async fn section_rows<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
     paging::filter_map(host, collection, None, |row| {
         let payload: Value = serde_json::from_slice(&row.payload).ok()?;
         Some(json!({ "id": row.id, "payload": payload }))
