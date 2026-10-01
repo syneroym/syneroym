@@ -32,6 +32,12 @@ fn parse_credential(args: &[&str]) -> Result<CredentialCommands, clap::Error> {
     Wrapper::<CredentialCommands>::try_parse_from(full).map(|w| w.command)
 }
 
+fn parse_group(args: &[&str]) -> Result<GroupCommands, clap::Error> {
+    let mut full = vec!["roymctl"];
+    full.extend_from_slice(args);
+    Wrapper::<GroupCommands>::try_parse_from(full).map(|w| w.command)
+}
+
 #[test]
 fn parse_directory_find() {
     let cmd = parse_directory(&["find", "--category", "cycling", "--limit", "10"]).unwrap();
@@ -238,4 +244,127 @@ fn parse_minor_units_handles_various_exponents() {
     assert_eq!(parse_minor_units("12.500", "KWD", 3).unwrap(), 12500);
     assert_eq!(parse_minor_units("12.123", "KWD", 3).unwrap(), 12123);
     assert!(parse_minor_units("12.1234", "KWD", 3).is_err());
+}
+
+#[test]
+fn parse_group_create() {
+    let cmd = parse_group(&["create"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Create { name: None, .. }));
+
+    let cmd = parse_group(&["create", "--name", "Community Garden"]).unwrap();
+    match cmd {
+        GroupCommands::Create { name: Some(n), .. } => assert_eq!(n, "Community Garden"),
+        other => panic!("expected Create with name, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_group_rename() {
+    let cmd = parse_group(&["rename", "--group", "conv:g1", "--name", "New Name"]).unwrap();
+    match cmd {
+        GroupCommands::Rename { group, name, .. } => {
+            assert_eq!(group, "conv:g1");
+            assert_eq!(name, "New Name");
+        }
+        other => panic!("expected Rename, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_group_add_and_mutual_exclusion() {
+    let cmd = parse_group(&["add", "--group", "conv:g1", "--address", "did:key:zAddr"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Add { address: Some(_), person_did: None, .. }));
+
+    let cmd =
+        parse_group(&["add", "--group", "conv:g1", "--person-did", "did:key:zPerson"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Add { address: None, person_did: Some(_), .. }));
+
+    let err = parse_group(&[
+        "add",
+        "--group",
+        "conv:g1",
+        "--address",
+        "did:key:zAddr",
+        "--person-did",
+        "did:key:zPerson",
+    ]);
+    assert!(err.is_err(), "passing both address and person_did must fail parsing");
+}
+
+#[test]
+fn parse_group_remove_and_mutual_exclusion() {
+    let cmd = parse_group(&["remove", "--group", "conv:g1", "--address", "did:key:zAddr"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Remove { address: Some(_), person_did: None, .. }));
+
+    let cmd =
+        parse_group(&["remove", "--group", "conv:g1", "--person-did", "did:key:zPerson"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Remove { address: None, person_did: Some(_), .. }));
+
+    let err = parse_group(&[
+        "remove",
+        "--group",
+        "conv:g1",
+        "--address",
+        "did:key:zAddr",
+        "--person-did",
+        "did:key:zPerson",
+    ]);
+    assert!(err.is_err(), "passing both address and person_did must fail parsing");
+}
+
+#[test]
+fn parse_group_list() {
+    let cmd = parse_group(&["list"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::List { include_hidden: false, .. }));
+
+    let cmd = parse_group(&["list", "--include-hidden"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::List { include_hidden: true, .. }));
+}
+
+#[test]
+fn parse_group_info() {
+    let cmd = parse_group(&["info", "--group", "conv:g1"]).unwrap();
+    match cmd {
+        GroupCommands::Info { group, .. } => assert_eq!(group, "conv:g1"),
+        other => panic!("expected Info, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_group_send() {
+    let cmd = parse_group(&["send", "--group", "conv:g1", "--body", "hello members"]).unwrap();
+    match cmd {
+        GroupCommands::Send { group, body, .. } => {
+            assert_eq!(group, "conv:g1");
+            assert_eq!(body, "hello members");
+        }
+        other => panic!("expected Send, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_group_history() {
+    let cmd = parse_group(&["history", "--group", "conv:g1"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::History { limit: None, .. }));
+
+    let cmd = parse_group(&["history", "--group", "conv:g1", "--limit", "50"]).unwrap();
+    match cmd {
+        GroupCommands::History { limit: Some(50), .. } => {}
+        other => panic!("expected History with limit 50, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_group_sync_check_hide_unhide() {
+    let cmd = parse_group(&["sync", "--group", "conv:g1"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Sync { .. }));
+
+    let cmd = parse_group(&["check", "--group", "conv:g1"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Check { .. }));
+
+    let cmd = parse_group(&["hide", "--group", "conv:g1"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Hide { .. }));
+
+    let cmd = parse_group(&["unhide", "--group", "conv:g1"]).unwrap();
+    assert!(matches!(cmd, GroupCommands::Unhide { .. }));
 }

@@ -2,9 +2,10 @@
 
 use syneroym_async_queue::QueueConfig;
 use syneroym_core::config::RetryPolicy;
+use syneroym_rpc::ConversationHost;
 
 use super::*;
-use crate::store::{ConversationConfig, StoredDagEntry};
+use crate::store::{self, ConversationConfig, StoredDagEntry};
 
 fn store() -> ConversationStore {
     let dir = tempfile::tempdir().unwrap();
@@ -507,4 +508,169 @@ async fn row_10_scheduled_rekey_with_stable_membership_changes_the_key() {
     assert!(epoch_after > epoch_before, "scheduled rekey must advance the epoch");
     let key_after = store.epoch_key(&group_id, epoch_after).unwrap().unwrap();
     assert_ne!(key_before, key_after, "scheduled rekey must generate a new key");
+}
+
+#[tokio::test]
+async fn group_info_reports_owner_members_and_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let group_id = service.create_group_impl("svc:owner").await.unwrap();
+
+    let info = service.group_info("svc:owner", &group_id).await.unwrap();
+    assert_eq!(info.owner, "svc:owner");
+    assert!(info.is_owner);
+    assert!(info.is_member);
+    assert_eq!(info.members, vec!["svc:owner".to_string()]);
+    assert_eq!(info.epoch, 1);
+    assert_eq!(info.key_epoch, 1);
+    assert!(info.key_stored_at > 0);
+}
+
+#[tokio::test]
+async fn group_info_is_invalid_for_a_direct_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let dir_id = service.open_direct("svc:alice", "svc:bob").await.unwrap();
+
+    let res = service.group_info("svc:alice", &dir_id).await;
+    assert!(matches!(res, Err(ConversationError::InvalidArgument(_))));
+}
+
+#[tokio::test]
+async fn group_info_after_scheduled_rekey_shows_a_higher_key_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 0).await;
+    let group_id = service.create_group_impl("svc:owner").await.unwrap();
+
+    let info_before = service.group_info("svc:owner", &group_id).await.unwrap();
+    assert_eq!(info_before.key_epoch, 1);
+
+    service.scheduled_rekey_once().await;
+
+    let info_after = service.group_info("svc:owner", &group_id).await.unwrap();
+    assert!(info_after.key_epoch > info_before.key_epoch);
+    assert_eq!(info_after.epoch, info_after.key_epoch);
+}
+
+#[tokio::test]
+async fn add_member_uses_the_pinned_session_key_when_one_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let group_id = service.create_group_impl("svc:owner").await.unwrap();
+
+    let store = service.store_for("svc:owner").await.unwrap();
+    let pinned_key = [42u8; 32];
+    store
+        .upsert_session(
+            &crate::store::SessionRow {
+                peer_address: "svc:bob".to_string(),
+                pinned_sig_key: pinned_key,
+                state: vec![1, 2, 3],
+            },
+            crate::store::now_ms(),
+        )
+        .unwrap();
+
+    service.add_member("svc:owner", &group_id, "svc:bob").await.unwrap();
+
+    let sig_key = store.member_sig_key(&group_id, "svc:bob").unwrap().unwrap();
+    assert_eq!(sig_key, pinned_key);
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn a_clock_offset_changes_only_signed_times() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let owner = "svc:owner";
+    let offset_ms = -90_000;
+    crate::test_support::set_clock_offset_ms(owner, offset_ms);
+
+    let t_start = crate::store::now_ms();
+    let group_id = service.create_group_impl(owner).await.unwrap();
+
+    let store = service.store_for(owner).await.unwrap();
+    let pinned_key = [7u8; 32];
+    store
+        .upsert_session(
+            &crate::store::SessionRow {
+                peer_address: "svc:bob".to_string(),
+                pinned_sig_key: pinned_key,
+                state: vec![1],
+            },
+            crate::store::now_ms(),
+        )
+        .unwrap();
+    service.add_member(owner, &group_id, "svc:bob").await.unwrap();
+
+    let msg_id = service.send(owner, &group_id, "text/plain", b"hello".to_vec()).await.unwrap();
+    let msg = service.get_message(owner, &msg_id).await.unwrap();
+
+    crate::test_support::clear_clock_offsets();
+
+    let history = store.membership_history(&group_id).unwrap();
+    assert_eq!(history.len(), 2);
+    for h in &history {
+        assert!(
+            h.sender_timestamp <= t_start - 85_000,
+            "membership entry timestamp must reflect clock offset: {} vs {}",
+            h.sender_timestamp,
+            t_start
+        );
+    }
+    assert!(
+        msg.sender_timestamp <= t_start - 85_000,
+        "message sender_timestamp must reflect clock offset: {} vs {}",
+        msg.sender_timestamp,
+        t_start
+    );
+
+    assert!(
+        (msg.received_at - t_start).abs() < 5000,
+        "received_at must be on the real clock: {} vs {}",
+        msg.received_at,
+        t_start
+    );
+
+    let conv = store.get_conversation(&group_id).unwrap().unwrap();
+    assert!(
+        (conv.last_activity_ms - t_start).abs() < 5000,
+        "last_activity must be on the real clock: {} vs {}",
+        conv.last_activity_ms,
+        t_start
+    );
+
+    let (_, epoch_created_at) = store.current_epoch_row(&group_id).unwrap().unwrap();
+    assert!(
+        (epoch_created_at - t_start).abs() < 5000,
+        "epoch_created_at must be on the real clock: {} vs {}",
+        epoch_created_at,
+        t_start
+    );
+}
+
+#[tokio::test]
+async fn get_message_hides_system_messages_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let owner = "svc:owner";
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store = service.store_for(owner).await.unwrap();
+    store
+        .insert_outgoing_and_enqueue(
+            &group_id,
+            "msg:sys_key",
+            owner,
+            store::now_ms(),
+            "application/vnd.syneroym.group-key+json",
+            b"secret-key-material",
+            &[0u8; 64],
+            "svc:bob",
+            store::now_ms(),
+            true,
+        )
+        .unwrap();
+
+    let err = service.get_message(owner, "msg:sys_key").await.unwrap_err();
+    assert_eq!(err, ConversationError::NotFound);
 }

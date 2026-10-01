@@ -161,10 +161,32 @@ pub async fn certify_and_publish(
     (certs, records)
 }
 
+pub struct CoordinatorNode(pub super::SubstrateNode);
+
+impl CoordinatorNode {
+    pub async fn boot() -> Self {
+        let node = super::SubstrateNode::builder().boot().await;
+        Self(node)
+    }
+
+    pub fn registry_url(&self) -> &str {
+        self.0.registry_url()
+    }
+
+    pub fn relay_url(&self) -> &str {
+        self.0.relay_url()
+    }
+
+    pub async fn teardown(self) {
+        self.0.teardown().await;
+    }
+}
+
 pub struct RoymNode {
     pub label: &'static str,
     pub base_path: PathBuf,
     pub shared_registry_url: Option<String>,
+    pub shared_relay_url: Option<String>,
     pub owner: Identity,
     pub masters: BTreeMap<String, Identity>,
     pub role: AppSandboxRole,
@@ -191,7 +213,47 @@ impl RoymNode {
         fs::create_dir_all(&ids_dir).unwrap();
         owner.save_to_path(ids_dir.join("owner.key")).unwrap();
 
-        Self::spawn_substrate(label, base_path, shared_registry_url, owner, role).await
+        Self::spawn_substrate(label, base_path, shared_registry_url, None, owner, role).await
+    }
+
+    pub async fn boot_ready(
+        label: &'static str,
+        base_path: PathBuf,
+        shared_registry_url: Option<String>,
+        owner: Identity,
+        role: AppSandboxRole,
+    ) -> Self {
+        let mut node = Self::boot(label, base_path, shared_registry_url, owner, role).await;
+        node.full_bring_up().await;
+        node
+    }
+
+    pub async fn boot_on(
+        label: &'static str,
+        base_path: PathBuf,
+        coord: &CoordinatorNode,
+        owner: Identity,
+        role: AppSandboxRole,
+    ) -> Self {
+        let ids_dir = base_path.join("identities");
+        fs::create_dir_all(&ids_dir).unwrap();
+        owner.save_to_path(ids_dir.join("owner.key")).unwrap();
+
+        let mut node = Self::spawn_substrate(
+            label,
+            base_path,
+            Some(coord.registry_url().to_string()),
+            Some(coord.relay_url().to_string()),
+            owner,
+            role,
+        )
+        .await;
+        node.full_bring_up().await;
+        node
+    }
+
+    pub fn owner_did(&self) -> String {
+        substrate::derive_did_key(&self.owner.public_key())
     }
 
     pub async fn boot_default(
@@ -211,6 +273,7 @@ impl RoymNode {
     pub fn make_builder(
         base_path: &Path,
         shared_registry_url: Option<&str>,
+        shared_relay_url: Option<&str>,
         owner: &Identity,
         role: &AppSandboxRole,
     ) -> super::NodeBuilder {
@@ -233,6 +296,9 @@ impl RoymNode {
         if let Some(url) = shared_registry_url {
             builder = builder.shared_registry(url.to_string());
         }
+        if let Some(url) = shared_relay_url {
+            builder = builder.shared_relay(url.to_string());
+        }
         builder
     }
 
@@ -240,16 +306,24 @@ impl RoymNode {
         label: &'static str,
         base_path: PathBuf,
         shared_registry_url: Option<String>,
+        shared_relay_url: Option<String>,
         owner: Identity,
         role: AppSandboxRole,
     ) -> Self {
-        let builder = Self::make_builder(&base_path, shared_registry_url.as_deref(), &owner, &role);
+        let builder = Self::make_builder(
+            &base_path,
+            shared_registry_url.as_deref(),
+            shared_relay_url.as_deref(),
+            &owner,
+            &role,
+        );
         let node = builder.clone().boot().await;
 
         Self {
             label,
             base_path,
             shared_registry_url,
+            shared_relay_url,
             owner: Identity::from_bytes(&owner.to_bytes()),
             masters: BTreeMap::new(),
             role,
@@ -478,6 +552,7 @@ impl RoymNode {
             self.builder = Self::make_builder(
                 &self.base_path,
                 self.shared_registry_url.as_deref(),
+                self.shared_relay_url.as_deref(),
                 &self.owner,
                 &self.role,
             );

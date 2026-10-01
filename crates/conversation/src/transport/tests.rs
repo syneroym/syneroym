@@ -1,14 +1,17 @@
 #![allow(clippy::cognitive_complexity)]
 
 use ed25519_dalek::SigningKey;
+use rand::RngCore;
 use syneroym_async_queue::QueueConfig;
 use syneroym_core::config::RetryPolicy;
+use syneroym_rpc::ConversationHost;
 
 use super::*;
 use crate::{
     crypto::{SessionCrypto, X3dhDoubleRatchetCrypto},
-    envelope,
-    store::{ConversationConfig, ConversationStore},
+    dag::{self, EntryKind, GroupSyncRequest, PeerAssertion},
+    envelope, group,
+    store::{self, ConversationConfig, ConversationStore, SessionRow},
 };
 
 fn test_store() -> ConversationStore {
@@ -340,4 +343,369 @@ async fn attempts_at_an_unreachable_peer_do_not_move_the_ratchet() {
 
     store_a.delete_outbound_envelope("msg:1").unwrap();
     assert!(store_a.outbound_envelope("msg:1").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn removed_member_can_sync_its_own_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+
+    store_owner
+        .upsert_session(
+            &crate::store::SessionRow {
+                peer_address: bob.to_string(),
+                pinned_sig_key: bob_vk,
+                state: vec![1],
+            },
+            crate::store::now_ms(),
+        )
+        .unwrap();
+
+    // Owner adds Bob, then removes Bob
+    service.add_member(owner, &group_id, bob).await.unwrap();
+    service.remove_member(owner, &group_id, bob).await.unwrap();
+
+    // Bob sends a group-sync request to owner
+    let now = crate::store::now_ms();
+    let mut nonce = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut nonce);
+    let assertion = crate::dag::sign_peer_assertion(&bob_sk, bob, &group_id, now, &nonce);
+
+    let req = crate::dag::GroupSyncRequest {
+        from: assertion,
+        group: group_id.clone(),
+        after_seq: 0,
+        limit: 10,
+    };
+
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+    assert!(!resp.entries.is_empty(), "removed member must receive removal history");
+    let has_removal = resp.entries.iter().any(|e| {
+        e.kind == crate::dag::EntryKind::Membership
+            && e.payload.as_ref().map(|p| p.action == "remove").unwrap_or(false)
+    });
+    assert!(has_removal, "sync response must contain removal entry");
+}
+
+#[tokio::test]
+async fn removed_member_with_zero_placeholder_and_1to1_session_can_sync_its_own_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+
+    store_owner
+        .upsert_session(
+            &SessionRow { peer_address: bob.to_string(), pinned_sig_key: bob_vk, state: vec![1] },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    service.add_member(owner, &group_id, bob).await.unwrap();
+    service.remove_member(owner, &group_id, bob).await.unwrap();
+
+    // Overwrite group_members.sig_key to the zero placeholder to exercise direct
+    // session fallback
+    {
+        let conn = store_owner.conn().lock().unwrap();
+        conn.execute(
+            "UPDATE group_members SET sig_key = zeroblob(32) WHERE conversation_id = ?1 AND \
+             member_address = ?2",
+            rusqlite::params![&group_id, bob],
+        )
+        .unwrap();
+    }
+
+    let assertion = sign_assertion(&bob_sk, bob, &group_id);
+    let req =
+        GroupSyncRequest { from: assertion, group: group_id.clone(), after_seq: 0, limit: 10 };
+
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+    assert!(!resp.entries.is_empty(), "removed member must receive removal history");
+    let has_removal = resp.entries.iter().any(|e| {
+        e.kind == EntryKind::Membership
+            && e.payload.as_ref().map(|p| p.action == "remove").unwrap_or(false)
+    });
+    assert!(has_removal, "sync response must contain removal entry via 1:1 session fallback");
+}
+
+fn sign_assertion(sk: &SigningKey, addr: &str, group: &str) -> PeerAssertion {
+    let now = store::now_ms();
+    let mut nonce = [0u8; 16];
+    rand::rng().fill_bytes(&mut nonce);
+    dag::sign_peer_assertion(sk, addr, group, now, &nonce)
+}
+
+#[tokio::test]
+async fn a_removed_member_catches_up_on_messages_from_before_its_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+    store_owner
+        .upsert_session(
+            &SessionRow { peer_address: bob.to_string(), pinned_sig_key: bob_vk, state: vec![1] },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    service.add_member(owner, &group_id, bob).await.unwrap();
+    let msg_id =
+        service.send(owner, &group_id, "text/plain", b"pre-removal".to_vec()).await.unwrap();
+    service.remove_member(owner, &group_id, bob).await.unwrap();
+
+    let req = GroupSyncRequest {
+        from: sign_assertion(&bob_sk, bob, &group_id),
+        group: group_id.clone(),
+        after_seq: 0,
+        limit: 10,
+    };
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+
+    let has_msg = resp.entries.iter().any(|e| e.kind == EntryKind::Message && e.entry_id == msg_id);
+    let has_removal = resp.entries.iter().any(|e| {
+        e.kind == EntryKind::Membership
+            && e.payload.as_ref().map(|p| p.action == "remove").unwrap_or(false)
+    });
+    assert!(has_msg, "sync response must contain pre-removal message");
+    assert!(has_removal, "sync response must contain removal entry");
+}
+
+#[tokio::test]
+async fn a_removed_member_gets_no_old_epoch_message_signed_after_its_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+    let alice = "svc:alice";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+    store_owner
+        .upsert_session(
+            &SessionRow { peer_address: bob.to_string(), pinned_sig_key: bob_vk, state: vec![1] },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    let alice_sk = SigningKey::from_bytes(&[77u8; 32]);
+    let alice_vk = alice_sk.verifying_key().to_bytes();
+    store_owner
+        .upsert_session(
+            &SessionRow {
+                peer_address: alice.to_string(),
+                pinned_sig_key: alice_vk,
+                state: vec![1],
+            },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    service.add_member(owner, &group_id, bob).await.unwrap();
+    service.add_member(owner, &group_id, alice).await.unwrap();
+    service.remove_member(owner, &group_id, bob).await.unwrap();
+
+    let removed_epoch = 4;
+    let removed_at_ms = store_owner
+        .removal_entry_timestamp(&group_id, bob, removed_epoch)
+        .unwrap()
+        .expect("removal timestamp must exist");
+
+    let epoch_key = store_owner.epoch_key(&group_id, 3).unwrap().unwrap();
+    let e_before = group::build_message_entry(
+        &alice_sk,
+        &group_id,
+        alice,
+        removed_at_ms - 1_000,
+        3,
+        vec![],
+        &epoch_key,
+        b"signed before removal",
+    )
+    .unwrap();
+    let e_after = group::build_message_entry(
+        &alice_sk,
+        &group_id,
+        alice,
+        removed_at_ms + 1_000,
+        3,
+        vec![],
+        &epoch_key,
+        b"signed after removal",
+    )
+    .unwrap();
+
+    {
+        let conn = store_owner.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        ConversationStore::insert_entry_if_absent(&tx, &group_id, &e_before, true, false).unwrap();
+        ConversationStore::insert_entry_if_absent(&tx, &group_id, &e_after, true, false).unwrap();
+        tx.commit().unwrap();
+    }
+
+    let req = GroupSyncRequest {
+        from: sign_assertion(&bob_sk, bob, &group_id),
+        group: group_id.clone(),
+        after_seq: 0,
+        limit: 10,
+    };
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+
+    let has_before = resp.entries.iter().any(|e| e.entry_id == e_before.entry_id);
+    let has_after = resp.entries.iter().any(|e| e.entry_id == e_after.entry_id);
+    let has_removal = resp.entries.iter().any(|e| {
+        e.kind == EntryKind::Membership
+            && e.payload.as_ref().map(|p| p.action == "remove").unwrap_or(false)
+    });
+
+    assert!(has_before, "message signed before removal must be served to removed member");
+    assert!(!has_after, "message signed after removal must NOT be served to removed member");
+    assert!(has_removal, "removal entry must be served");
+}
+
+#[tokio::test]
+async fn a_removed_member_is_served_nothing_before_the_removal_entry_arrives() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+    store_owner
+        .upsert_session(
+            &SessionRow { peer_address: bob.to_string(), pinned_sig_key: bob_vk, state: vec![1] },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    service.add_member(owner, &group_id, bob).await.unwrap();
+
+    {
+        let conn = store_owner.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE group_members SET removed_epoch = 99 WHERE conversation_id = ?1 AND \
+             member_address = ?2",
+            rusqlite::params![group_id, bob],
+        )
+        .unwrap();
+    }
+
+    let req = GroupSyncRequest {
+        from: sign_assertion(&bob_sk, bob, &group_id),
+        group: group_id.clone(),
+        after_seq: 5,
+        limit: 10,
+    };
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+    assert!(resp.entries.is_empty());
+    assert_eq!(resp.next_seq, 5);
+}
+
+#[tokio::test]
+async fn a_removed_member_gets_no_membership_entry_after_its_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let bob = "svc:bob";
+    let charlie = "svc:charlie";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store_owner = service.store_for(owner).await.unwrap();
+
+    let bob_sk = SigningKey::from_bytes(&[88u8; 32]);
+    let bob_vk = bob_sk.verifying_key().to_bytes();
+    store_owner
+        .upsert_session(
+            &SessionRow { peer_address: bob.to_string(), pinned_sig_key: bob_vk, state: vec![1] },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    let charlie_sk = SigningKey::from_bytes(&[66u8; 32]);
+    let charlie_vk = charlie_sk.verifying_key().to_bytes();
+    store_owner
+        .upsert_session(
+            &SessionRow {
+                peer_address: charlie.to_string(),
+                pinned_sig_key: charlie_vk,
+                state: vec![1],
+            },
+            store::now_ms(),
+        )
+        .unwrap();
+
+    service.add_member(owner, &group_id, bob).await.unwrap();
+    service.remove_member(owner, &group_id, bob).await.unwrap();
+    service.add_member(owner, &group_id, charlie).await.unwrap();
+
+    let req = GroupSyncRequest {
+        from: sign_assertion(&bob_sk, bob, &group_id),
+        group: group_id.clone(),
+        after_seq: 0,
+        limit: 10,
+    };
+    let resp = service.group_sync_impl(owner, bob, req).await.unwrap();
+
+    let has_bob_removal = resp.entries.iter().any(|e| {
+        e.kind == EntryKind::Membership
+            && e.payload
+                .as_ref()
+                .map(|p| p.action == "remove" && p.subject_address == bob)
+                .unwrap_or(false)
+    });
+    let has_charlie_add = resp.entries.iter().any(|e| {
+        e.kind == EntryKind::Membership
+            && e.payload.as_ref().map(|p| p.subject_address == charlie).unwrap_or(false)
+    });
+
+    assert!(has_bob_removal, "removal entry must be present");
+    assert!(!has_charlie_add, "membership changes after removal must not be served");
+}
+
+#[tokio::test]
+async fn a_stranger_is_still_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let owner = "svc:owner";
+    let stranger = "svc:stranger";
+
+    let group_id = service.create_group_impl(owner).await.unwrap();
+
+    let stranger_sk = SigningKey::from_bytes(&[99u8; 32]);
+    let req = GroupSyncRequest {
+        from: sign_assertion(&stranger_sk, stranger, &group_id),
+        group: group_id.clone(),
+        after_seq: 0,
+        limit: 10,
+    };
+
+    let err = service.group_sync_impl(owner, stranger, req).await.unwrap_err();
+    assert_eq!(err, ConversationError::PermissionDenied);
 }

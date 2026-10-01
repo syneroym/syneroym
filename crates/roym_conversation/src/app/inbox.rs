@@ -4,24 +4,26 @@ use serde_json::{Value, json};
 use syneroym_app_host::{
     AppConversation, AppDataLayer, AppHost,
     types::{
-        conversation::{ConversationKind, DeliveryState, Message},
+        conversation::{ConversationError, DeliveryState, Message},
         data_layer::RecordWriteValue,
     },
 };
 use syneroym_roym_core::{
     clock,
     conversation::{
-        ConversationRow, DELETION_REQUEST_CONTENT_TYPE, Direction, MessageRow, StoredState,
-        encode_body, parse_deletion_request,
+        ConversationRow, ConversationRowKind, DELETION_REQUEST_CONTENT_TYPE, Direction, MessageRow,
+        StoredState, encode_body, group::is_group_system_type, parse_deletion_request,
     },
 };
 
 use super::{
-    CONVERSATIONS, REFUSED_MESSAGES, ensure_conversations, ensure_refused, load_conversation,
-    load_message, person_did_for_address, profile_call, put_message,
+    REFUSED_MESSAGES, ensure_refused, load_conversation, load_message, person_did_for_address,
+    profile_call, put_conversation, put_message,
 };
 
-async fn record_refused<H: AppHost>(
+pub(crate) mod group;
+
+pub(crate) async fn record_refused<H: AppHost>(
     host: &H,
     msg: &Message,
     reason: &str,
@@ -71,32 +73,74 @@ fn log_inbox_error(msg: &Message, err: &str) {
     eprintln!("roym conversation inbox: message {} not stored: {err}", msg.id);
 }
 
+pub(crate) async fn is_blocked<H: AppHost>(
+    host: &H,
+    address: &str,
+    person_did: Option<&str>,
+) -> Result<bool, String> {
+    let block =
+        profile_call(host, "block.check", json!({ "address": address, "person_did": person_did }))
+            .await?;
+    Ok(block.result.as_ref().and_then(|v| v.get("blocked")).and_then(Value::as_bool) == Some(true))
+}
+
+pub(crate) async fn honour_deletion_request<H: AppHost>(
+    host: &H,
+    msg: &Message,
+    now: u64,
+) -> Result<(), String> {
+    if let Ok(target_id) = parse_deletion_request(&msg.body)
+        && let Some(mut target) = load_message(host, &target_id).await?
+        && target.conversation == msg.conversation
+        && target.author == msg.author
+    {
+        if is_group_system_type(&target.content_type) {
+            return Ok(());
+        }
+        target.tombstone(now);
+        put_message(host, &target).await?;
+    }
+    Ok(())
+}
+
+pub(crate) fn incoming_row(msg: &Message, now: u64) -> MessageRow {
+    let (body_encoding, body) = encode_body(&msg.content_type, &msg.body);
+    MessageRow {
+        id: msg.id.clone(),
+        conversation: msg.conversation.clone(),
+        author: msg.author.clone(),
+        direction: Direction::Incoming,
+        sender_timestamp_ms: msg.sender_timestamp,
+        content_type: msg.content_type.clone(),
+        body_encoding,
+        body: Some(body),
+        state: StoredState::Delivered,
+        last_error: msg.last_error.clone(),
+        deleted_at_secs: None,
+        stored_at_secs: now,
+    }
+}
+
 async fn on_message_inner<H: AppHost>(host: &H, msg: &Message) -> Result<(), String> {
     let now = clock::now_secs();
 
-    // The kind comes from the host's own summary, never guessed. A group
-    // entry calls the same notifier; without this branch the first group
-    // message would create a direct conversation whose peer is the author.
-    let kind = AppConversation::conversations(host)
-        .await
-        .ok()
-        .and_then(|cs| cs.into_iter().find(|c| c.id == msg.conversation).map(|c| c.kind))
-        .unwrap_or(ConversationKind::Direct);
-    if kind != ConversationKind::Direct {
-        return record_refused(host, msg, "unsupported-kind", now).await;
+    // Identify group conversations before 1:1 state checks. Transient host
+    // errors bubble up as Err so the host retries delivery rather than
+    // misclassifying the message as a 1:1 conversation.
+    let is_group = match AppConversation::group_info(host, msg.conversation.clone()).await {
+        Ok(_) => true,
+        Err(ConversationError::InvalidArgument(_) | ConversationError::NotFound) => false,
+        Err(e) => return Err(format!("group-info lookup failed: {e:?}")),
+    };
+    if is_group {
+        return group::on_group_message(host, msg, now).await;
     }
 
     let person_did = person_did_for_address(host, &msg.author).await;
 
     // Block is checked on every message: a person who blocks somebody
     // mid-conversation means it from that moment on.
-    let block = profile_call(
-        host,
-        "block.check",
-        json!({ "address": msg.author, "person_did": person_did }),
-    )
-    .await?;
-    if block.result.as_ref().and_then(|v| v.get("blocked")).and_then(Value::as_bool) == Some(true) {
+    if is_blocked(host, &msg.author, person_did.as_deref()).await? {
         return record_refused(host, msg, "blocked", now).await;
     }
 
@@ -120,24 +164,13 @@ async fn on_message_inner<H: AppHost>(host: &H, msg: &Message) -> Result<(), Str
     // A deletion request is not a message a person reads. It is honoured
     // only for a message the requester themselves authored here.
     if msg.content_type == DELETION_REQUEST_CONTENT_TYPE {
-        if let Ok(target_id) = parse_deletion_request(&msg.body)
-            && let Some(mut target) = load_message(host, &target_id).await?
-            && target.conversation == msg.conversation
-            && target.author == msg.author
-        {
-            target.tombstone(now);
-            put_message(host, &target).await?;
-        }
+        honour_deletion_request(host, msg, now).await?;
         return Ok(()); // never stored as a message either way
     }
 
     // Idempotent store: the WASM host retries `on-message` after a
-    // transient fault (C5-2). A message already in Roym's copy must not be
-    // stored or counted again -- this catches the common case, a retry
-    // after a `profile` sibling was briefly unavailable, before any store
-    // write ran. A fault strictly between `upsert_conversation` and
-    // `put_message` can still double-count `message_count` on retry; that
-    // narrower window is the C5-9(a) backlog row (unfenced count).
+    // transient fault. A message already in Roym's copy must not be
+    // stored or counted again.
     if load_message(host, &msg.id).await?.is_some() {
         return Ok(());
     }
@@ -150,21 +183,7 @@ async fn on_message_inner<H: AppHost>(host: &H, msg: &Message) -> Result<(), Str
         msg.sender_timestamp,
     )
     .await?;
-    let (body_encoding, body) = encode_body(&msg.content_type, &msg.body);
-    let row = MessageRow {
-        id: msg.id.clone(),
-        conversation: msg.conversation.clone(),
-        author: msg.author.clone(),
-        direction: Direction::Incoming,
-        sender_timestamp_ms: msg.sender_timestamp,
-        content_type: msg.content_type.clone(),
-        body_encoding,
-        body: Some(body),
-        state: StoredState::Delivered,
-        last_error: msg.last_error.clone(),
-        deleted_at_secs: None,
-        stored_at_secs: now,
-    };
+    let row = incoming_row(msg, now);
     put_message(host, &row).await
 }
 
@@ -175,7 +194,6 @@ async fn upsert_conversation<H: AppHost>(
     peer_person_did: Option<String>,
     activity_ms: i64,
 ) -> Result<(), String> {
-    ensure_conversations(host).await?;
     let now = clock::now_secs();
     let existing = load_conversation(host, conversation_id).await?;
     let row = match existing {
@@ -189,23 +207,16 @@ async fn upsert_conversation<H: AppHost>(
         }
         None => ConversationRow {
             id: conversation_id.to_string(),
+            kind: ConversationRowKind::Direct,
             peer_address: peer_address.to_string(),
             peer_person_did,
             opened_at_secs: now,
             last_activity_ms: activity_ms,
             message_count: 1,
+            group: None,
         },
     };
-    AppDataLayer::put(
-        host,
-        CONVERSATIONS.to_string(),
-        RecordWriteValue {
-            id: conversation_id.to_string(),
-            payload: serde_json::to_vec(&row).map_err(|e| e.to_string())?,
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())
+    put_conversation(host, &row).await
 }
 
 /// Called on a delivery-state transition. Updates the row's state and

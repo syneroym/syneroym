@@ -91,7 +91,7 @@ through shared database access.
 | Service | Runs on | Owns | Main API |
 |---|---|---|---|
 | **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
-| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, and its own copy of every message body | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `export`/`import` |
+| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, and its own copy of every message body | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
 | **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
 | **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
@@ -216,7 +216,7 @@ tests before the next begins.
 > | R1 — a usable local guild | **Passed (2026-09-08)**. **C4** (identity, profile, contacts, safety), **C5** (catalog, conversation), **C6** (directory search), **C7** (request → quote → agreement, cards). R1's gate closed at the end of C7 |
 > | R2 — the transaction vertical | **Passed (2026-09-24). C8** |
 > | R3 — cross-installation trust | **Passed (2026-09-29). C9** |
-> | R4 — private group chat | **C10** |
+> | R4 — private group chat | **Passed (2026-09-30). C10** |
 >
 > Three earlier slices carry no release because they are groundwork the whole
 > table sits on: **C1** completes the dual-build shim, **C2** builds the
@@ -257,18 +257,18 @@ tests before the next begins.
 | Group membership means something checkable | Signed membership credential with issuer, scope, and expiry; signed revocation list | Consumer checks a provider's guild membership | Trade licences; third-party credentials | The consumer's own node verifies signature, issuer, scope, and expiry — never the directory that served the result. **Passed (C9).** The verdict is computed on the consumer's node from the group's signed evidence. A directory serving a forged, expired, out-of-scope or wrong-group credential does not win, and a directory's claimed issuer is pinned when it is added and never re-pinned by a later reply |
 | A group can enforce its rules | Signed, scoped moderation decision with source and timestamp | SynOrg suspends a member | Cross-group propagation; global blocklists | A suspended member vanishes from that directory's results; already-cached copies show the revocation on next check, and the document does not claim instant removal. **Passed (C9).** A suspended member's listings leave that directory's search at once; a held copy reads as it did until the consumer checks again, and the Hub says so in the same words on the Memberships screen and beside the group owner's suspend and revoke controls |
 
-### R4 — Private group chat
+### R4 — Private group chat (**Passed 2026-09-30**)
 
 Core, not a stretch. Built last of the core set, because it needs R1's 1:1
 messaging underneath it.
 
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
-| A group can talk with no central chat server | Gossip DAG: messages spread directly between members, each linking to earlier ones | A member posts; every other member receives it without any server in the path | Message search; pinned messages | With no coordinator reachable, members who can reach each other still exchange and order messages |
-| Every member sees the same order | Total order by `(sender_timestamp, sender_did)`, per [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §5 | Two members post at the same moment from skewed clocks | Correcting displayed times | Every member's transcript is byte-identical after sync, whatever order messages arrived in |
-| Only members can read the group | Owner-distributed per-epoch group key; rekey on every join, every removal, and on a schedule (D5) | A member joins, then another is removed | Rejoining and reading the gap; leaderless groups | A joiner cannot read messages from before the join; a removed member cannot read messages after the removal; a scheduled rekey with stable membership still changes the key |
-| Membership is visible to the group | Join and removal are ordinary DAG events, ordered by the same rule as messages | The owner adds a member | Approval votes; member-initiated invites | Every member's membership history is identical after sync; no key reaches a party absent from that history |
-| An offline member catches up | Members hold and serve the DAG to each other; no external store | A member is offline for a day, then returns | Unbounded history retention | The returning member pulls the gap from any online peer and converges to the same transcript |
+| A group can talk with no central chat server | Gossip DAG: messages spread directly between members, each linking to earlier ones | A member posts; every other member receives it without any server in the path other than registry/relay | Message search; pinned messages | **Passed (C10).** With registry and relay reachable and holding no message, members exchange and order messages directly. (WASM build across installations; both builds in parity, D-C10-17) |
+| Every member sees the same order | Total order by `(sender_timestamp, author, id)`, per [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §5 | Two members post at the same moment from skewed clocks | Correcting displayed times | **Passed (C10).** Every member's transcript is byte-identical after sync among members present for those messages, whatever order messages arrived in |
+| Only members can read the group | Owner-distributed per-epoch group key; rekey on every join, every removal, and on a schedule (D5) | A member joins, then another is removed | Rejoining and reading the gap; leaderless groups | **Passed (C10).** A joiner cannot read messages from before the join; a removed member cannot read messages after the removal; a scheduled rekey with stable membership still changes the key |
+| Membership is visible to the group | Join and removal are ordinary DAG events, ordered by the same rule as messages | The owner adds a member | Approval votes; member-initiated invites | **Passed (C10).** Every member's membership history is identical after sync; no key reaches a party absent from that history |
+| An offline member catches up | Members hold and serve the DAG to each other; no external store | A member is offline for a day, then returns | Unbounded history retention | **Passed (C10).** The returning member pulls the gap from any online peer and converges to the same transcript |
 
 ### Beyond the first release
 

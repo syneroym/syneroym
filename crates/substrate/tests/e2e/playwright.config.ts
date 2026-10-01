@@ -8,6 +8,7 @@ export default defineConfig({
     '**/keepalive-session.spec.ts',
     '**/roym-hub.spec.ts',
     '**/roym-trust.spec.ts',
+    '**/roym-groups.spec.ts',
   ],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

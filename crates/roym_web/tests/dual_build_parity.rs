@@ -25,6 +25,10 @@ mod conversation;
 mod directory;
 #[path = "dual_build_parity/fulfilment.rs"]
 mod fulfilment;
+#[path = "dual_build_parity/group.rs"]
+mod group;
+#[path = "dual_build_parity/group_lifecycle.rs"]
+mod group_lifecycle;
 #[path = "dual_build_parity/payment.rs"]
 mod payment;
 #[path = "dual_build_parity/profile.rs"]

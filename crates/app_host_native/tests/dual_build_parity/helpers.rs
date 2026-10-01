@@ -787,13 +787,11 @@ pub(crate) async fn build_native_stack(
     factory.set_conversation_sink(Arc::downgrade(&fixture) as Weak<dyn ConversationSink>);
     factory.set_http_sink(Arc::downgrade(&fixture) as Weak<dyn HttpSink>);
     factory.set_websocket_sink(Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>);
-
     let adapter = Arc::new(NativeHttpAdapter::new(
         factory.clone(),
         Arc::downgrade(&fixture) as Weak<dyn HttpSink>,
         Arc::downgrade(&fixture) as Weak<dyn WebSocketSink>,
     ));
-
     (fixture, factory, storage_provider, conversation, adapter, ws_senders)
 }
 
@@ -834,6 +832,8 @@ pub(crate) const SCENARIOS: &[(&str, &str)] = &[
         r#"{"op":"membership-history","conversation":"conv:does-not-exist"}"#,
     ),
     ("sync-now-unknown", r#"{"op":"sync-now","conversation":"conv:does-not-exist"}"#),
+    ("group-info-unknown", r#"{"op":"group-info","conversation":"conv:does-not-exist"}"#),
+    ("get-message-unknown", r#"{"op":"get-message","message":"msg:does-not-exist"}"#),
     ("read-outbox-empty", r#"{"op":"read-outbox"}"#),
     (
         "proxy-call-self",

@@ -259,6 +259,27 @@ pub(super) async fn dispatch<H: AppHost>(
             host.sync_now(conversation).await.map_err(fmt_err)?;
             Ok(json!({ "synced": true }))
         }
+        Request::GroupInfo { conversation } => {
+            let info = host.group_info(conversation).await.map_err(fmt_err)?;
+            Ok(json!({
+                "owner": info.owner,
+                "is_owner": info.is_owner,
+                "is_member": info.is_member,
+                "members": info.members,
+                "epoch": info.epoch,
+                "key_epoch": info.key_epoch,
+            }))
+        }
+        Request::GetMessage { message } => {
+            let msg = host.get_message(message).await.map_err(fmt_err)?;
+            Ok(json!({
+                "id": msg.id,
+                "conversation": msg.conversation,
+                "author": msg.author,
+                "content_type": msg.content_type,
+                "sender_timestamp": msg.sender_timestamp,
+            }))
+        }
         Request::ListConversations => {
             let list = host.conversations().await.map_err(fmt_err)?;
             let summaries: Vec<_> = list

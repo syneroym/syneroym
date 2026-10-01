@@ -43,6 +43,8 @@ use tokio::{
 use tokio_tungstenite::tungstenite::Message;
 use tracing::debug;
 
+mod common;
+
 /// Every test in this binary boots one or more full substrate
 /// instances (real iroh QUIC socket, self-hosted relay, wasmtime).
 /// Running every test's own full stack concurrently (Rust's default
@@ -100,8 +102,15 @@ async fn test_run_finishes_on_ctrl_c() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     // Create a temporary config file to explicitly enable the client_gateway role
     let mut config_file = NamedTempFile::new().expect("Failed to create temp config file");
-    let config_toml = r#"
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let base_path = temp_dir.path().display();
+    let config_toml = format!(
+        r#"
     profile = "enduser"
+    app_local_data_dir = "{base_path}/data"
+    app_data_dir = "{base_path}/user_data"
+    app_cache_dir = "{base_path}/cache"
+    app_log_dir = "{base_path}/logs"
     [substrate]
     enable_bep0044_dht = false
     [roles.client_gateway]
@@ -114,7 +123,8 @@ async fn test_run_finishes_on_ctrl_c() {
     enabled = false
     bind_address = "0.0.0.0:0"
     endpoint = "/metrics"
-    "#;
+    "#
+    );
     write!(config_file, "{config_toml}").expect("Failed to write to temp config file");
 
     let mut command = Command::cargo_bin("syneroym-substrate").unwrap();
@@ -173,12 +183,6 @@ async fn test_run_finishes_on_ctrl_c() {
     // Verify the process exited successfully (graceful shutdown)
     assert!(status.success(), "Process did not exit successfully after SIGINT, status: {status:?}");
 }
-
-const IROH_PORT: u16 = 7994;
-const REGISTRY_PORT: u16 = 7991;
-const GATEWAY_PORT: u16 = 7990;
-const MOCK_APP_PORT: u16 = 30001;
-const MOCK_APP_HTTPS_PORT: u16 = 30002;
 
 /// This in-process integration test context manages the lifecycle of a
 /// substrate for testing purposes.
@@ -249,6 +253,7 @@ impl SubstrateTestContext {
         let substrate_service_id = substrate_identity_state.did.clone();
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        common::release_held_ports(&[iroh_port, registry_port, gateway_port]);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
 
@@ -302,15 +307,18 @@ async fn test_substrate_lifecycle_scenarios() {
     let _serial_guard = SUBSTRATE_TEST_LOCK.lock().await;
     let _ = ring::default_provider().install_default();
 
+    let [iroh_port, registry_port, gateway_port, mock_app_port, mock_app_https_port] =
+        common::alloc_ports::<5>();
+
     // We use a single substrate instance to run multiple scenarios.
-    // Use non-standard ports to avoid conflicts with other tests.
-    let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
+    // Use dynamically allocated ports to avoid conflicts with other tests.
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     // Run WASM app scenario
     test_wasm_app_scenario(&ctx).await;
 
     // Run TCP service scenario
-    test_tcp_service_scenario(&ctx).await;
+    test_tcp_service_scenario(&ctx, mock_app_port, mock_app_https_port).await;
 
     ctx.teardown().await;
 }
@@ -393,20 +401,20 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
 }
 
 #[expect(clippy::too_many_lines, reason = "linear tcp service lifecycle scenario")]
-async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
+async fn test_tcp_service_scenario(ctx: &SubstrateTestContext, app_port: u16, https_port: u16) {
     debug!(">>> Starting TCP Scenario");
 
     // Start miniapp-demo1-web on a specific port
-    let app_port = MOCK_APP_PORT;
     let app_addr = SocketAddr::from(([127, 0, 0, 1], app_port));
     let (app_shutdown_tx, mut app_shutdown_rx) = mpsc::channel::<()>(1);
 
     let app_data_dir = ctx.temp_dir.path().join("app_data_tcp").to_string_lossy().to_string();
+    common::release_held_ports(&[app_port, https_port]);
     let app_handle = tokio::spawn(async move {
         let args = Args {
             service_name: "tcp-demo-app".to_string(),
             port: app_port,
-            https_port: MOCK_APP_HTTPS_PORT,
+            https_port,
             data_dir: app_data_dir,
         };
         miniapp_demo1_web::run_server(args, app_addr, async move {
@@ -541,7 +549,6 @@ async fn test_tcp_service_scenario(ctx: &SubstrateTestContext) {
 
     // 6. HTTPS Test
     debug!(">>> TCP Scenario: HTTPS Test");
-    let https_port = MOCK_APP_HTTPS_PORT;
     let https_app_identity = Identity::generate().unwrap();
     let https_app_service_id = substrate::derive_did_key(&https_app_identity.public_key());
 

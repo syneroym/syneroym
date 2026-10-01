@@ -11,8 +11,8 @@ use syneroym_app_host::{
         app_config::ConfigError,
         blob_store::BlobError,
         conversation::{
-            ConversationError, ConversationSummary, DeliveryState, HistoryPage, MembershipEvent,
-            Message,
+            ConversationError, ConversationSummary, DeliveryState, GroupInfo, HistoryPage,
+            MembershipEvent, Message,
         },
         data_layer::{
             CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RawQueryResult,
@@ -490,6 +490,22 @@ impl AppConversation for NativeAppHost {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::sync_now(&mut *state, conversation)
             .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn group_info(&self, conversation: String) -> Result<GroupInfo, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::get_group_info(&mut *state, conversation)
+            .await
+            .map(convert::group_info_out)
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn get_message(&self, message: String) -> Result<Message, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::get_message(&mut *state, message)
+            .await
+            .map(convert::message_out)
             .map_err(convert::conversation_error_out)
     }
 }

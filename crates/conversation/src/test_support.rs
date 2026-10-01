@@ -21,6 +21,7 @@ pub struct SendOverride {
 static DROP_ACKS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 static SEND_OVERRIDES: LazyLock<Mutex<HashMap<String, SendOverride>>> =
     LazyLock::new(Mutex::default);
+static CLOCK_OFFSETS: LazyLock<Mutex<HashMap<String, i64>>> = LazyLock::new(Mutex::default);
 
 /// A poisoned lock still holds a valid set: a panicking test must not turn
 /// every later test's hook into a second panic.
@@ -52,4 +53,19 @@ pub(crate) fn take_drop_ack(service_id: &str) -> bool {
 
 pub(crate) fn take_send_override(service_id: &str) -> Option<SendOverride> {
     locked(&SEND_OVERRIDES).remove(service_id)
+}
+
+/// From now on, `service_id` signs group entries as if its clock were
+/// `offset_ms` ahead (negative: behind). The receiver's own checks use
+/// the real clock, as they would against a real skewed peer.
+pub fn set_clock_offset_ms(service_id: &str, offset_ms: i64) {
+    locked(&CLOCK_OFFSETS).insert(service_id.to_string(), offset_ms);
+}
+
+pub fn clear_clock_offsets() {
+    locked(&CLOCK_OFFSETS).clear();
+}
+
+pub(crate) fn clock_offset_ms(service_id: &str) -> i64 {
+    locked(&CLOCK_OFFSETS).get(service_id).copied().unwrap_or(0)
 }

@@ -24,9 +24,8 @@ interface conversation {
 
     enum delivery-state { pending, delivered, failed }
 
-    /// `group` is reserved for the group slice and is never returned by
-    /// this version. Present so a guest's match is not broken by its
-    /// arrival.
+    /// `direct` for a 1:1 conversation, `group` for a group created by
+    /// `create-group` or joined by receiving its key.
     enum conversation-kind { direct, group }
 
     record conversation-summary {
@@ -102,6 +101,30 @@ interface conversation {
         sender-timestamp: s64,
     }
 
+    /// What this substrate knows about one group, in one call.
+    record group-info {
+        /// The group's owner, as a routing service id. Fixed at creation.
+        owner: string,
+        /// True when this service is the owner.
+        is-owner: bool,
+        /// True when this service is in the current member list.
+        is-member: bool,
+        /// Current members, sorted. The same list `members` returns.
+        members: list<string>,
+        /// The newest epoch this substrate has seen named, by a key or by
+        /// a membership entry.
+        epoch: u64,
+        /// The newest epoch this substrate holds a key for. Lower than
+        /// `epoch` once this service has learned it was removed: it holds
+        /// the removal entry but was not given the new key. Until it
+        /// learns (it may have been offline), `is-member` stays true.
+        key-epoch: u64,
+        /// When this substrate stored the key for `key-epoch`, in Unix
+        /// milliseconds on its own clock. For the owner, when the key was
+        /// made; for a member, when the key arrived.
+        key-stored-at: s64,
+    }
+
     /// Returns the existing 1:1 conversation with `peer-address`, or
     /// creates one. `peer-address` is the peer's Conversation *service*
     /// id -- the same string a proxy call would target. Idempotent.
@@ -174,6 +197,15 @@ interface conversation {
     /// pass's guarantee; this only makes it prompt. Call it again to make
     /// further progress.
     sync-now: func(conversation: conversation-id) -> result<_, conversation-error>;
+
+    /// `invalid-argument` for a direct conversation, `not-found` for an
+    /// unknown id.
+    get-group-info: func(conversation: conversation-id) -> result<group-info, conversation-error>;
+
+    /// One message this service stored, sent or received, in any state.
+    /// `not-found` for an unknown id and for a system message (a group
+    /// key).
+    get-message: func(message: message-id) -> result<message, conversation-error>;
 }
 
 /// Optional guest exports. A component that exports neither still

@@ -9,17 +9,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_app_host::types::conversation::DeliveryState;
 
-pub const CONVERSATION_SCHEMA_VERSION: u32 = 1;
+pub mod group;
 
 /// Reserved for the one message a person never reads. A client that does
 /// not understand it ignores it, which is the honest failure mode: this is
 /// a request, and the other side's copy is theirs.
 pub const DELETION_REQUEST_CONTENT_TYPE: &str = "application/vnd.roym.deletion-request+json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConversationRowKind {
+    Direct,
+    Group,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationRow {
     /// The host's own conversation id.
     pub id: String,
+    pub kind: ConversationRowKind,
+    /// Direct: the other party. Group: the group's owner.
     pub peer_address: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_person_did: Option<String>,
@@ -27,6 +36,8 @@ pub struct ConversationRow {
     /// From the newest message's sender timestamp.
     pub last_activity_ms: i64,
     pub message_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<group::GroupMeta>,
 }
 
 /// What the host said, never what this service hoped. `Pending` is what a

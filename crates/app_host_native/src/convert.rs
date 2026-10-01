@@ -8,8 +8,8 @@ use syneroym_app_host::types::{
     conversation::{
         ConversationError as GuestConversationError, ConversationKind as GuestConversationKind,
         ConversationSummary as GuestConversationSummary, DeliveryState as GuestDeliveryState,
-        HistoryPage as GuestHistoryPage, MembershipEvent as GuestMembershipEvent,
-        Message as GuestMessage,
+        GroupInfo as GuestGroupInfo, HistoryPage as GuestHistoryPage,
+        MembershipEvent as GuestMembershipEvent, Message as GuestMessage,
     },
     data_layer::{
         CollectionSchema as GuestCollectionSchema, DataLayerError as GuestDataLayerError,
@@ -37,8 +37,8 @@ use syneroym_wit_interfaces::{
     conversation_host::syneroym::conversation::conversation::{
         ConversationError as HostConversationError, ConversationKind as HostConversationKind,
         ConversationSummary as HostConversationSummary, DeliveryState as HostDeliveryState,
-        HistoryPage as HostHistoryPage, MembershipEvent as HostMembershipEvent,
-        Message as HostMessage,
+        GroupInfo as HostGroupInfo, HistoryPage as HostHistoryPage,
+        MembershipEvent as HostMembershipEvent, Message as HostMessage,
     },
     host::syneroym::{
         app_config::app_config::ConfigError as HostConfigError,

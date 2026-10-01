@@ -97,6 +97,18 @@ mod conversation_wire {
             sender_timestamp: e.sender_timestamp,
         }
     }
+
+    pub(super) fn map_group_info(g: rpc::ConversationGroupInfo) -> wit::GroupInfo {
+        wit::GroupInfo {
+            owner: g.owner,
+            is_owner: g.is_owner,
+            is_member: g.is_member,
+            members: g.members,
+            epoch: g.epoch,
+            key_epoch: g.key_epoch,
+            key_stored_at: g.key_stored_at,
+        }
+    }
 }
 
 impl wit_conversation::Host for HostState {
@@ -245,5 +257,27 @@ impl wit_conversation::Host for HostState {
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.sync_now(&self.component_id, &conversation).await.map_err(conversation_wire::map_error)
+    }
+
+    async fn get_group_info(
+        &mut self,
+        conversation: String,
+    ) -> Result<wit_conversation::GroupInfo, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.group_info(&self.component_id, &conversation)
+            .await
+            .map(conversation_wire::map_group_info)
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn get_message(
+        &mut self,
+        message: String,
+    ) -> Result<wit_conversation::Message, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.get_message(&self.component_id, &message)
+            .await
+            .map(conversation_wire::map_message)
+            .map_err(conversation_wire::map_error)
     }
 }

@@ -596,3 +596,52 @@ fn an_outbound_envelope_is_kept_until_deleted() {
     s.delete_outbound_envelope("msg:1").unwrap();
     assert!(s.outbound_envelope("msg:1").unwrap().is_none());
 }
+
+#[test]
+fn get_message_returns_stored_message_and_preserves_signed_timestamp() {
+    let s = store();
+    let conv = s.get_or_create_direct("did:key:zAlice", "did:key:zBob", 1_000).unwrap();
+    s.insert_outgoing_and_enqueue(
+        &conv,
+        "msg:test",
+        "did:key:zAlice",
+        1_500,
+        "text/plain",
+        b"body",
+        &[0u8; 64],
+        "did:key:zBob",
+        2_000,
+        false,
+    )
+    .unwrap();
+
+    let m = s.get_message("msg:test").unwrap().unwrap();
+    assert_eq!(m.id, "msg:test");
+    assert_eq!(m.sender_timestamp_ms, 1_500);
+    assert_eq!(m.received_at_ms, 2_000);
+    assert_eq!(m.content_type, "text/plain");
+    assert_eq!(m.body, b"body");
+    assert!(!m.system);
+}
+
+#[test]
+fn get_message_marks_system_messages() {
+    let s = store();
+    let conv = s.get_or_create_direct("did:key:zAlice", "did:key:zBob", 1_000).unwrap();
+    s.insert_outgoing_and_enqueue(
+        &conv,
+        "msg:sys_key",
+        "did:key:zAlice",
+        1_500,
+        "application/vnd.syneroym.group-key+json",
+        b"secret-key-material",
+        &[0u8; 64],
+        "did:key:zBob",
+        2_000,
+        true,
+    )
+    .unwrap();
+
+    let raw = s.get_message("msg:sys_key").unwrap().unwrap();
+    assert!(raw.system);
+}
