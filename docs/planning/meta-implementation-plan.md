@@ -664,7 +664,9 @@ and the reason would otherwise be lost.
 >   and Hub shell; C3 the signing interface and signed-record envelope.
 >   C4–C7 are R1 and close its gate at C7; C8 is R2, C9 is R3, C10 is R4.
 >   C1.1 is sequenced ahead of C2 and C3 because both are specified against
->   the identity model it settles.
+>   the identity model it settles. **All Complete** — C1 (2026-08-25)
+>   through C10 (2026-09-30, merged 2026-10-01); all four releases (R1–R4)
+>   closed. See [status.md](./milestones/M06C-roym-product/status.md).
 >
 > **Why this order.** M06A removes the only non-WASM piece of Roym — the spec's
 > Web entrypoint service, which exists purely because a component cannot serve
@@ -731,6 +733,55 @@ and the reason would otherwise be lost.
 > service verifies. **The gap B1 closed stays closed** (a guest handler still
 > sees the calling person) and **M06B stays Complete**; only the mechanism
 > moves, in M06C slice **C1.1**.
+
+---
+
+## Interstitial: Conversation capability consolidation (`[PLT-DAT]`, `[PRD-SAF]`) (2026-10-01)
+
+> **Proposed.** Executed **after M06C, before Milestone 7**, tracked in
+> [conversation-consolidation-plan.md](conversation-consolidation-plan.md)
+> and to be decided in ADR-0025. This follows the *`[FND-CFG]` Deploy-Time
+> Artifact Delivery* precedent above: work owned by no single milestone,
+> given its own ADR and plan doc, and a breaking WIT change
+> (`syneroym:conversation`).
+
+Roym stores every message twice: once in the substrate's conversation store
+(`crates/conversation`), and again in its own data layer
+(`crates/roym_conversation`). The second copy exists because the
+conversation capability has no delete, no search, no history export or
+import, and no way for an app to refuse an incoming message (M06C
+`task.md` Gaps 3 and 4, decisions D-06C-5 and D-06C-8). Keeping two stores
+in step caused lost messages, copied delivery states, a transcript check that
+can differ between members, double disk use, and "deleted" messages that stay
+readable in the substrate store. Every future chat SynApp would face the
+same gaps.
+
+The fix moves these features into the conversation capability:
+- the app's answer to each incoming message (accept / hold / drop), asked
+  again until answered
+- local delete and an author-only "please delete" request
+- group events and group names inside history, and the transcript digest
+- full-text search (FTS5)
+- paged export and import of history.
+
+It then removes Roym's second store. `roym_conversation` keeps only Roym
+policy (block list, first-contact limit, group visibility), contacts lookup,
+the "cards only in 1:1" send rule, and its Hub verbs. Card and transaction
+logic stays in `roym_transaction`. This is the split
+[ADR-0013](../decisions/0013-p2p-messaging-architecture.md) §6 already
+describes: the substrate owns the messaging core, and a chat app is a light
+wrapper over it.
+
+**Why it is not an M06C slice.** M06C's ten slices and all four releases are
+complete, and most of this work is Layer 3 capability code, not product code.
+M06B, which built the conversation capability, is Complete and is not
+reopened.
+
+**Why before Milestone 7.** It is independent of M7's replication work. But
+M7 item 7 (encrypted remote backups with tested restore paths) should use the
+history export this work adds, rather than build its own. A breaking WIT
+change is also cheapest now, while only Roym and one test fixture use the
+interface.
 
 ---
 
