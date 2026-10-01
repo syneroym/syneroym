@@ -7,11 +7,12 @@ use syneroym_roym_core::{
     directory::{Member, SynOrgSettings},
     envelope::{Request, Response},
     membership::MembershipVerdict,
+    paging,
 };
 
 use super::{
-    MEMBERS, SETTINGS, SETTINGS_KEY, collect_raw, ensure_coll, get_json, issuer_did,
-    publication_ops, put_json, standing,
+    MEMBERS, SETTINGS, SETTINGS_KEY, ensure_coll, get_json, issuer_did, publication_ops, put_json,
+    standing,
 };
 
 pub(in crate::app) async fn load_settings<H: AppHost>(
@@ -48,7 +49,7 @@ pub(in crate::app) async fn set_settings<H: AppHost>(host: &H, req: &Request) ->
 
 async fn member_count<H: AppHost>(host: &H) -> Result<u64, String> {
     ensure_coll(host, MEMBERS, &[]).await?;
-    Ok(collect_raw(host, MEMBERS).await?.len() as u64)
+    Ok(paging::query_all::<_, Value>(host, MEMBERS, None).await?.len() as u64)
 }
 
 pub(in crate::app) async fn info<H: AppHost>(host: &H) -> Response {
@@ -131,10 +132,9 @@ pub(in crate::app) async fn member_list<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_coll(host, MEMBERS, &[]).await {
         return Response::internal_error(e);
     }
-    let rows = match collect_raw(host, MEMBERS).await {
+    let members: Vec<Value> = match paging::query_all(host, MEMBERS, None).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-    let members: Vec<Value> = rows.into_iter().map(|(_, v)| v).collect();
     Response::ok(json!({ "members": members }))
 }

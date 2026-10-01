@@ -4,10 +4,7 @@
 use std::cmp::Reverse;
 
 use serde_json::{Map, Value, json};
-use syneroym_app_host::{
-    AppConversation, AppDataLayer, AppHost,
-    types::{conversation::ConversationError, data_layer::QueryOptions},
-};
+use syneroym_app_host::{AppConversation, AppHost, types::conversation::ConversationError};
 use syneroym_roym_core::{
     clock,
     conversation::{
@@ -21,6 +18,7 @@ use syneroym_roym_core::{
         sort_key,
     },
     envelope::{Request, Response},
+    paging,
 };
 
 use super::{
@@ -104,48 +102,16 @@ pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
         group::adopt_new_groups(host).await;
     }
 
-    let mut rows: Vec<ConversationRow> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            CONVERSATIONS.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        for r in page.records {
-            if let Ok(row) = serde_json::from_slice::<ConversationRow>(&r.payload) {
-                if let Some(kind) = kind_filter {
-                    let matches_kind = match kind {
-                        "direct" => row.kind == ConversationRowKind::Direct,
-                        "group" => row.kind == ConversationRowKind::Group,
-                        _ => false,
-                    };
-                    if !matches_kind {
-                        continue;
-                    }
-                }
-                if row.kind == ConversationRowKind::Group && !include_hidden {
-                    let is_shown = row
-                        .group
-                        .as_ref()
-                        .is_some_and(|g| matches!(g.admission, GroupAdmission::Shown));
-                    if !is_shown {
-                        continue;
-                    }
-                }
-                rows.push(row);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
+    let listed = paging::filter_map(host, CONVERSATIONS, None, |r| {
+        serde_json::from_slice::<ConversationRow>(&r.payload)
+            .ok()
+            .filter(|row| is_listed(row, kind_filter, include_hidden))
+    })
+    .await;
+    let mut rows = match listed {
+        Ok(r) => r,
+        Err(e) => return Response::internal_error(e),
+    };
     rows.sort_by_key(|r| Reverse(r.last_activity_ms));
     let out: Vec<Value> = rows
         .into_iter()
@@ -154,6 +120,21 @@ pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
         .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
         .collect();
     Response::ok(json!({ "conversations": out }))
+}
+
+/// Whether `list` shows `row`: it is of the asked-for kind, if any, and it
+/// is not a group the person has hidden, unless they asked for those too.
+fn is_listed(row: &ConversationRow, kind_filter: Option<&str>, include_hidden: bool) -> bool {
+    let matches_kind = match kind_filter {
+        None => true,
+        Some("direct") => row.kind == ConversationRowKind::Direct,
+        Some("group") => row.kind == ConversationRowKind::Group,
+        Some(_) => false,
+    };
+    let shown = row.kind != ConversationRowKind::Group
+        || include_hidden
+        || row.group.as_ref().is_some_and(|g| matches!(g.admission, GroupAdmission::Shown));
+    matches_kind && shown
 }
 
 pub(crate) async fn send_and_record<H: AppHost>(
@@ -281,31 +262,8 @@ async fn upsert_conversation_activity<H: AppHost>(
 
 async fn messages_of<H: AppHost>(host: &H, conversation: &str) -> Result<Vec<MessageRow>, String> {
     ensure_messages(host).await?;
-    let mut rows = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            MESSAGES.to_string(),
-            QueryOptions {
-                filter: Some(json!({ "conversation": conversation }).to_string()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(row) = serde_json::from_slice::<MessageRow>(&r.payload) {
-                rows.push(row);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(rows)
+    let filter = json!({ "conversation": conversation }).to_string();
+    paging::query_all(host, MESSAGES, Some(filter)).await
 }
 
 pub(crate) async fn history<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -596,31 +554,15 @@ pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
             "group" => ConversationRowKind::Group,
             _ => return Response::invalid_params("unknown kind"),
         };
-        let mut conv_ids = Vec::new();
-        let mut conv_cursor = None;
-        loop {
-            let page = match AppDataLayer::query(
-                host,
-                CONVERSATIONS.to_string(),
-                QueryOptions { filter: None, limit: Some(500), cursor: conv_cursor.clone() },
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return Response::internal_error(e.to_string()),
-            };
-            for r in page.records {
-                if let Ok(row) = serde_json::from_slice::<ConversationRow>(&r.payload)
-                    && row.kind == expected_kind
-                {
-                    conv_ids.push(row.id);
-                }
-            }
-            if page.next_cursor.is_none() || page.next_cursor == conv_cursor {
-                break;
-            }
-            conv_cursor = page.next_cursor;
-        }
+        let of_kind = paging::filter_map(host, CONVERSATIONS, None, |r| {
+            let row = serde_json::from_slice::<ConversationRow>(&r.payload).ok()?;
+            (row.kind == expected_kind).then_some(row.id)
+        })
+        .await;
+        let conv_ids = match of_kind {
+            Ok(ids) => ids,
+            Err(e) => return Response::internal_error(e),
+        };
         if conv_ids.is_empty() {
             return Response::ok(json!({ "matches": [] }));
         }
@@ -636,35 +578,16 @@ pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         filter.insert("conversation".to_string(), json!(c));
     }
 
-    let mut matches: Vec<MessageRow> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = match AppDataLayer::query(
-            host,
-            MESSAGES.to_string(),
-            QueryOptions {
-                filter: Some(Value::Object(filter.clone()).to_string()),
-                limit: Some(500),
-                cursor: cursor.clone(),
-            },
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => return Response::internal_error(e.to_string()),
-        };
-        for r in page.records {
-            if let Ok(row) = serde_json::from_slice::<MessageRow>(&r.payload)
-                && row.deleted_at_secs.is_none()
-            {
-                matches.push(row);
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
+    let found = paging::filter_map(host, MESSAGES, Some(Value::Object(filter).to_string()), |r| {
+        serde_json::from_slice::<MessageRow>(&r.payload)
+            .ok()
+            .filter(|row| row.deleted_at_secs.is_none())
+    })
+    .await;
+    let mut matches = match found {
+        Ok(m) => m,
+        Err(e) => return Response::internal_error(e),
+    };
     matches.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
     let out: Vec<Value> = matches
         .into_iter()

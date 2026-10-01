@@ -9,12 +9,13 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
+    paging,
     person::{ProfilePayload, is_did_key},
     record::{RECORD_PROFILE, VerifyOptions, verify_json},
     safety::{self, Admission, ContactLimits},
 };
 
-use super::{BLOCKS, CONTACT_ATTEMPTS, CONTACTS, PROFILES, SETTINGS, backup::collect, ensure_coll};
+use super::{BLOCKS, CONTACT_ATTEMPTS, CONTACTS, PROFILES, SETTINGS, ensure_coll};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ContactRow {
@@ -50,20 +51,11 @@ pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
     {
         return Response::internal_error(e);
     }
-    let records = match collect(host, CONTACTS).await {
+    let mut list: Vec<ContactRow> = match paging::query_all(host, CONTACTS, None).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
-
-    let mut list = Vec::new();
-    for item in records {
-        if let Some(p) = item.get("payload")
-            && let Ok(row) = serde_json::from_value::<ContactRow>(p.clone())
-            && (!favourites_only || row.favourite)
-        {
-            list.push(row);
-        }
-    }
+    list.retain(|row| !favourites_only || row.favourite);
     let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
     let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
     let paged: Vec<_> = match limit {

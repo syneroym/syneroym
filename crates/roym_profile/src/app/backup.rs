@@ -1,64 +1,30 @@
 //! Profile backup export and import.
 
-use std::collections::BTreeMap;
-
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
-    types::data_layer::{Mutation, QueryOptions, RecordWriteValue},
+    types::data_layer::{Mutation, RecordWriteValue},
 };
 use syneroym_roym_core::{
-    backup::{
-        BUNDLE_VERSION, Bundle, BundleManifest, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE,
-        SECTION_REPORTS, check_signed_bundle,
-    },
+    backup::{self, Bundle, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE, SECTION_REPORTS},
     clock,
     envelope::{Request, Response},
+    paging,
     record::{RECORD_PROFILE, VerifyOptions, verify_json},
-    signing::{self, CertificateError},
+    signing,
 };
 
 use super::{BLOCKS, CONTACTS, PROFILES, REPORTS, SCHEMA_VERSION, ensure_coll};
 
-pub(crate) async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
-    ensure_coll(host, collection, &[]).await?;
-    let mut results = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-        for r in page.records {
-            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
-                results.push(json!({ "id": r.id, "payload": parsed }));
-            }
-        }
-
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(results)
-}
-
 async fn reverify_profiles<H: AppHost>(host: &H, now: u64) -> Result<u64, String> {
     ensure_coll(host, PROFILES, &[]).await?;
-    let records = collect(host, PROFILES).await?;
+    let records: Vec<(String, Value)> = paging::query_all_with_ids(host, PROFILES, None).await?;
     let mut verified = 0;
-    for rec in records {
-        if let Some(payload) = rec.get("payload")
-            && let Some(env_str) = payload.get("envelope").and_then(|v| v.as_str())
+    for (did, payload) in records {
+        if let Some(env_str) = payload.get("envelope").and_then(|v| v.as_str())
+            && verify_json(env_str, &VerifyOptions::new(now).expecting(&did)).is_ok()
         {
-            let did = rec.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-            if verify_json(env_str, &VerifyOptions::new(now).expecting(did)).is_ok() {
-                verified += 1;
-            }
+            verified += 1;
         }
     }
     Ok(verified)
@@ -70,58 +36,22 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
         Err(e) => return Response::internal_error(e.to_string()),
     };
     let now = clock::now_secs();
-
-    let p_sec = match collect(host, PROFILES).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let c_sec = match collect(host, CONTACTS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let b_sec = match collect(host, BLOCKS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let r_sec = match collect(host, REPORTS).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-
-    let sections = BTreeMap::from([
-        (SECTION_PROFILE.to_string(), p_sec),
-        (SECTION_CONTACTS.to_string(), c_sec),
-        (SECTION_BLOCKS.to_string(), b_sec),
-        (SECTION_REPORTS.to_string(), r_sec),
-    ]);
-
-    let mut manifest_sections = BTreeMap::new();
-    for (k, v) in &sections {
-        match Bundle::digest(SCHEMA_VERSION, v) {
-            Ok(d) => {
-                manifest_sections.insert(k.clone(), d);
-            }
-            Err(e) => return Response::internal_error(e.to_string()),
+    let pairs = [
+        (SECTION_PROFILE, PROFILES),
+        (SECTION_CONTACTS, CONTACTS),
+        (SECTION_BLOCKS, BLOCKS),
+        (SECTION_REPORTS, REPORTS),
+    ];
+    for (_, collection) in pairs {
+        if let Err(e) = ensure_coll(host, collection, &[]).await {
+            return Response::internal_error(e);
         }
     }
-
-    let manifest = BundleManifest {
-        bundle_version: BUNDLE_VERSION,
-        subject_did: owner,
-        sections: manifest_sections,
+    let sections = match backup::collect_sections(host, &pairs).await {
+        Ok(s) => s,
+        Err(e) => return Response::internal_error(e),
     };
-
-    let mut bundle = Bundle { manifest, sections, manifest_signature: None };
-    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
-        if matches!(e, CertificateError::NotEnrolled) {
-            return Response::invalid_params("signing-not-enrolled");
-        }
-        return Response::internal_error(e.to_string());
-    }
-    match serde_json::to_value(&bundle) {
-        Ok(v) => Response::ok(v),
-        Err(e) => Response::internal_error(e.to_string()),
-    }
+    backup::export_signed(host, owner, SCHEMA_VERSION, sections, now).await
 }
 
 fn validate_bundle_manifest(bundle: &Bundle, owner: &str) -> Result<(), Response> {
@@ -226,7 +156,7 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return Response::internal_error(e.to_string()),
     };
 
-    if let Err(e) = check_signed_bundle(&bundle, &owner, now) {
+    if let Err(e) = backup::check_signed_bundle(&bundle, &owner, now) {
         return Response::invalid_params(e.to_string());
     }
 

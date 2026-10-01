@@ -2,6 +2,8 @@
 //! withdrawing signed membership statements about its own members
 //! its own members.
 
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::app::standing::IssuedRecordRow;
 
@@ -58,7 +60,7 @@ fn validate_categories_within_synorg(
     categories: &[String],
     settings: &directory::SynOrgSettings,
 ) -> Result<(), Response> {
-    let own: std::collections::BTreeSet<String> =
+    let own: BTreeSet<String> =
         settings.categories.iter().map(|c| directory::normalize_category(c)).collect();
     for c in categories {
         let normalized = directory::normalize_category(c);
@@ -207,12 +209,8 @@ async fn current_credential_id<H: AppHost>(
     host: &H,
     member_did: &str,
 ) -> Result<Option<String>, String> {
-    let mut rows: Vec<IssuedRecordRow> =
-        collect_raw_where(host, CREDENTIALS, &json!({ "member_did": member_did }))
-            .await?
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_value(v).ok())
-            .collect();
+    let filter = json!({ "member_did": member_did }).to_string();
+    let mut rows: Vec<IssuedRecordRow> = paging::query_all(host, CREDENTIALS, Some(filter)).await?;
     rows.sort_by(|a, b| {
         b.issued_at_secs.cmp(&a.issued_at_secs).then(a.record_id.cmp(&b.record_id))
     });
@@ -241,10 +239,10 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
         return Response::invalid_params("no credential with that id was issued here");
     };
 
+    let about = json!({ "about": credential_record_id }).to_string();
     let existing: Vec<IssuedRecordRow> =
-        match collect_raw_where(host, REVOCATIONS, &json!({ "about": credential_record_id })).await
-        {
-            Ok(v) => v.into_iter().filter_map(|(_, v)| serde_json::from_value(v).ok()).collect(),
+        match paging::query_all(host, REVOCATIONS, Some(about)).await {
+            Ok(v) => v,
             Err(e) => return Response::internal_error(e),
         };
     if let Some(existing) = existing.into_iter().next() {
@@ -265,16 +263,12 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
     // is already ignored by `pick_current`, so revoking it would sign a
     // real record that changes no verdict anywhere. Refuse and name the
     // credential that actually needs revoking.
-    let siblings: Vec<IssuedRecordRow> = match collect_raw_where(
-        host,
-        CREDENTIALS,
-        &json!({ "member_did": row.member_did }),
-    )
-    .await
-    {
-        Ok(v) => v.into_iter().filter_map(|(_, v)| serde_json::from_value(v).ok()).collect(),
-        Err(e) => return Response::internal_error(e),
-    };
+    let member_filter = json!({ "member_did": row.member_did }).to_string();
+    let siblings: Vec<IssuedRecordRow> =
+        match paging::query_all(host, CREDENTIALS, Some(member_filter)).await {
+            Ok(v) => v,
+            Err(e) => return Response::internal_error(e),
+        };
     if let Some(newer) = siblings.iter().find(|sib| {
         Envelope::from_json(&sib.envelope)
             .is_ok_and(|env| env.supersedes.as_deref() == Some(credential_record_id.as_str()))
@@ -326,19 +320,23 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
     Response::ok(json!({ "record_id": record_id, "envelope": envelope }))
 }
 
-async fn list_issued<H: AppHost>(host: &H, collection: &str, req: &Request) -> Response {
+/// Every record `collection` holds, or only one member's when the request
+/// names `member_did`.
+pub(in crate::app) async fn list_issued<H: AppHost>(
+    host: &H,
+    collection: &str,
+    req: &Request,
+) -> Response {
     if let Err(e) = ensure_coll(host, collection, &standing::issued_record_indexes()).await {
         return Response::internal_error(e);
     }
-    let member_did = req.params.get("member_did").and_then(Value::as_str);
-    let rows = match member_did {
-        Some(m) => collect_raw_where(host, collection, &json!({ "member_did": m })).await,
-        None => collect_raw(host, collection).await,
-    };
-    match rows {
-        Ok(v) => {
-            Response::ok(json!({ "records": v.into_iter().map(|(_, v)| v).collect::<Vec<_>>() }))
-        }
+    let filter = req
+        .params
+        .get("member_did")
+        .and_then(Value::as_str)
+        .map(|m| json!({ "member_did": m }).to_string());
+    match paging::query_all::<_, Value>(host, collection, filter).await {
+        Ok(rows) => Response::ok(json!({ "records": rows })),
         Err(e) => Response::internal_error(e),
     }
 }

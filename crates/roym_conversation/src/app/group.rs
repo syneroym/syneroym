@@ -4,10 +4,7 @@
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppConversation, AppDataLayer, AppHost,
-    types::{
-        conversation::{ConversationError, ConversationKind, GroupInfo, Message},
-        data_layer::QueryOptions,
-    },
+    types::conversation::{ConversationError, ConversationKind, GroupInfo, Message},
 };
 use syneroym_roym_core::{
     clock,
@@ -23,6 +20,7 @@ use syneroym_roym_core::{
         },
     },
     envelope::{Request, Response},
+    paging::Pages,
 };
 
 use super::{
@@ -610,6 +608,31 @@ pub(crate) async fn hide<H: AppHost>(host: &H, req: &Request) -> Response {
     Response::ok(json!({ "admission": { "state": "hidden" } }))
 }
 
+/// One pass over the refused messages `filter` selects. Each message the
+/// group now keeps is taken off the refused list; returns how many were.
+async fn fill_in_refused<H: AppHost>(
+    host: &H,
+    row: &mut ConversationRow,
+    info: &GroupInfo,
+    filter: &str,
+    now: u64,
+) -> Result<u32, String> {
+    let mut kept = 0;
+    let mut pages = Pages::new(host, REFUSED_MESSAGES, Some(filter.to_string()));
+    while let Some(records) = pages.next_page().await? {
+        for rec in records {
+            let msg_id = rec.id;
+            if let Ok(msg) = AppConversation::get_message(host, msg_id.clone()).await
+                && let Ok(Stored::Kept) = store_group_message(host, row, info, &msg, now).await
+            {
+                let _ = AppDataLayer::delete(host, REFUSED_MESSAGES.to_string(), msg_id).await;
+                kept += 1;
+            }
+        }
+    }
+    Ok(kept)
+}
+
 pub(crate) async fn unhide<H: AppHost>(host: &H, req: &Request) -> Response {
     let conversation = match extract_conversation_param(req) {
         Some(c) => c,
@@ -644,39 +667,11 @@ pub(crate) async fn unhide<H: AppHost>(host: &H, req: &Request) -> Response {
     let mut filled_in = 0u32;
     let now = clock::now_secs();
     for _pass in 0..2 {
-        let mut cursor = None;
-        let mut pass_filled = 0;
-        loop {
-            let page = match AppDataLayer::query(
-                host,
-                REFUSED_MESSAGES.to_string(),
-                QueryOptions {
-                    filter: Some(filter.clone()),
-                    limit: Some(500),
-                    cursor: cursor.clone(),
-                },
-            )
-            .await
-            {
-                Ok(p) => p,
-                Err(e) => return Response::internal_error(e.to_string()),
-            };
-            for rec in page.records {
-                let msg_id = rec.id;
-                if let Ok(msg) = AppConversation::get_message(host, msg_id.clone()).await
-                    && let Ok(Stored::Kept) =
-                        store_group_message(host, &mut row, &info, &msg, now).await
-                {
-                    let _ = AppDataLayer::delete(host, REFUSED_MESSAGES.to_string(), msg_id).await;
-                    filled_in += 1;
-                    pass_filled += 1;
-                }
-            }
-            if page.next_cursor.is_none() || page.next_cursor == cursor {
-                break;
-            }
-            cursor = page.next_cursor;
-        }
+        let pass_filled = match fill_in_refused(host, &mut row, &info, &filter, now).await {
+            Ok(n) => n,
+            Err(e) => return Response::internal_error(e),
+        };
+        filled_in += pass_filled;
         if pass_filled == 0 {
             break;
         }

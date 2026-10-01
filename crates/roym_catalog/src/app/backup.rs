@@ -1,30 +1,6 @@
-use super::*;
+use syneroym_roym_core::backup;
 
-/// Every row of `collection`, as `{ id, payload }` -- the shape a `Bundle`
-/// section holds and `profile.export` uses.
-pub(crate) async fn collect<H: AppHost>(host: &H, collection: &str) -> Result<Vec<Value>, String> {
-    let mut out = Vec::new();
-    let mut cursor = None;
-    loop {
-        let page = AppDataLayer::query(
-            host,
-            collection.to_string(),
-            QueryOptions { filter: None, limit: Some(500), cursor: cursor.clone() },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        for r in page.records {
-            if let Ok(parsed) = serde_json::from_slice::<Value>(&r.payload) {
-                out.push(json!({ "id": r.id, "payload": parsed }));
-            }
-        }
-        if page.next_cursor.is_none() || page.next_cursor == cursor {
-            break;
-        }
-        cursor = page.next_cursor;
-    }
-    Ok(out)
-}
+use super::*;
 
 pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     let owner = match signing::owner_did(host).await {
@@ -38,46 +14,16 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     if let Err(e) = ensure_availability(host).await {
         return Response::internal_error(e);
     }
-    let listings = match collect(host, LISTINGS).await {
-        Ok(v) => v,
+    let sections = match backup::collect_sections(
+        host,
+        &[(SECTION_LISTINGS, LISTINGS), (SECTION_AVAILABILITY, AVAILABILITY)],
+    )
+    .await
+    {
+        Ok(s) => s,
         Err(e) => return Response::internal_error(e),
     };
-    let availability = match collect(host, AVAILABILITY).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    let sections = BTreeMap::from([
-        (SECTION_LISTINGS.to_string(), listings),
-        (SECTION_AVAILABILITY.to_string(), availability),
-    ]);
-    let mut manifest_sections = BTreeMap::new();
-    for (k, v) in &sections {
-        match Bundle::digest(SCHEMA_VERSION, v) {
-            Ok(d) => {
-                manifest_sections.insert(k.clone(), d);
-            }
-            Err(e) => return Response::internal_error(e.to_string()),
-        }
-    }
-    let mut bundle = Bundle {
-        manifest: BundleManifest {
-            bundle_version: BUNDLE_VERSION,
-            subject_did: owner,
-            sections: manifest_sections,
-        },
-        sections,
-        manifest_signature: None,
-    };
-    if let Err(e) = signing::sign_bundle(host, &mut bundle, now).await {
-        if matches!(e, CertificateError::NotEnrolled) {
-            return Response::invalid_params("signing-not-enrolled");
-        }
-        return Response::internal_error(e.to_string());
-    }
-    match serde_json::to_value(&bundle) {
-        Ok(v) => Response::ok(v),
-        Err(e) => Response::internal_error(e.to_string()),
-    }
+    backup::export_signed(host, owner, SCHEMA_VERSION, sections, now).await
 }
 
 pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -94,7 +40,7 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
     };
-    if let Err(e) = syneroym_roym_core::backup::check_signed_bundle(&bundle, &owner, now) {
+    if let Err(e) = backup::check_signed_bundle(&bundle, &owner, now) {
         return Response::invalid_params(e.to_string());
     }
     for (name, declared) in &bundle.manifest.sections {

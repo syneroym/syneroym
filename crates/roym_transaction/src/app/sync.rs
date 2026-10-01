@@ -10,15 +10,15 @@ use syneroym_roym_core::{
     clock,
     conversation::{Direction, group::CARDS_NOT_IN_GROUPS_MESSAGE},
     envelope::{Request, Response},
-    signing,
+    paging, signing,
     transaction::{self, MAX_CARDS_PER_CONVERSATION, ReceiptHalf, SYNC_OVERLAP, SYNC_WINDOW},
 };
 
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTE_HISTORY, REQUEST_HISTORY, SYNC_STATE,
-    SyncStateRow, agreement_ops::maybe_countersign, conversation_call,
-    count_cards_for_conversation, ensure_collections, get_bytes, get_row, put_row,
-    quote_ops::store_received_quote, request_ops::store_received_request,
+    SyncStateRow, agreement_ops::maybe_countersign, conversation_call, ensure_collections,
+    get_bytes, get_row, put_row, quote_ops::store_received_quote,
+    request_ops::store_received_request,
 };
 
 #[derive(Debug, Deserialize)]
@@ -63,7 +63,8 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::invalid_params(CARDS_NOT_IN_GROUPS_MESSAGE);
     }
 
-    let mut card_count = match count_cards_for_conversation(host, &params.conversation).await {
+    let card_filter = json!({ "conversation": params.conversation }).to_string();
+    let mut card_count = match paging::count(host, CARDS, Some(card_filter)).await {
         Ok(c) => c,
         Err(e) => return Response::internal_error(e),
     };

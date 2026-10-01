@@ -13,14 +13,14 @@ use syneroym_roym_core::{
         MAX_STORED_PER_SOURCE, RUN_RETENTION_SECS, SearchHit, SearchQuery, SourceError,
     },
     envelope::{Request, Response},
-    listing::{self, ListingVerdict},
+    listing::{self, ListingStatus, ListingVerdict},
     membership::{CheckInput, ListingRef, MembershipVerdict, evaluate},
-    services,
+    paging, services,
 };
 
 use super::{
-    RUNS, SEARCH_RUNS, SOURCES, client_sources::SourceRow, collect_raw, ensure_coll, get_json,
-    held, put_json, search_runs_indexes, serde_str,
+    RUNS, SEARCH_RUNS, SOURCES, client_sources::SourceRow, ensure_coll, get_json, held, put_json,
+    search_runs_indexes, serde_str,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,13 +99,14 @@ pub(in crate::app) async fn start_run<H: AppHost>(host: &H) -> Response {
     {
         return Response::internal_error(e.to_string());
     }
-    let source_rows = match collect_raw(host, SOURCES).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
+    let source_rows: Vec<(String, Value)> =
+        match paging::query_all_with_ids(host, SOURCES, None).await {
+            Ok(v) => v,
+            Err(e) => return Response::internal_error(e),
+        };
     let mut source_dids: Vec<String> = source_rows.into_iter().map(|(id, _)| id).collect();
     source_dids.sort();
-    let existing_runs = match collect_raw(host, RUNS).await {
+    let existing_runs: Vec<Value> = match paging::query_all(host, RUNS, None).await {
         Ok(v) => v,
         Err(e) => return Response::internal_error(e),
     };
@@ -356,7 +357,7 @@ async fn store_verified_hit<H: AppHost>(
         summary: payload.summary,
         categories: payload.categories,
         conversation_address: verdict.conversation_address.unwrap_or_default(),
-        status: serde_str(&verdict.status.unwrap_or(listing::ListingStatus::Active)),
+        status: serde_str(&verdict.status.unwrap_or(ListingStatus::Active)),
         verified: true,
         reason: None,
         revocation_status: verdict.revocation_status.unwrap_or_else(|| "unknown".to_string()),

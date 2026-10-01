@@ -13,6 +13,7 @@ use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
     envelope::{Request, Response},
+    paging,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
     transaction::{
@@ -22,9 +23,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, QUOTE_HISTORY, booking_ops, collect_typed, conversation_call,
-    default_list_limit, ensure_collections, file_own_card, get_bytes, get_row, put_row,
-    resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRow, QUOTE_HISTORY, booking_ops, conversation_call, default_list_limit,
+    ensure_collections, file_own_card, get_bytes, get_row, put_row, resolve_principal_and_owner,
+    send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -339,9 +340,9 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
     }
 
     let filter = params.conversation.map(|c| json!({ "conversation": c }).to_string());
-    let mut rows: Vec<AgreementRow> = match collect_typed(host, AGREEMENTS, filter).await {
+    let mut rows: Vec<AgreementRow> = match paging::query_all(host, AGREEMENTS, filter).await {
         Ok(rows) => rows,
-        Err(e) => return e,
+        Err(e) => return Response::internal_error(e),
     };
     rows.sort_by_key(|a| Reverse(a.updated_at_secs));
     let page: Vec<Value> = rows

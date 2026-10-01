@@ -8,11 +8,10 @@ use syneroym_roym_core::{
     clock,
     directory::{MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS, MAX_SEARCH_RESULTS},
     envelope::{Request, Response},
+    paging,
 };
 
-use super::{
-    SEARCH_RUNS, client_query::SearchRunRow, collect_raw_where, ensure_coll, search_runs_indexes,
-};
+use super::{SEARCH_RUNS, client_query::SearchRunRow, ensure_coll, search_runs_indexes};
 
 pub(in crate::app) async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
     let run_id = match req.params.get("run_id").and_then(Value::as_str) {
@@ -56,11 +55,11 @@ async fn load_run_rows<H: AppHost>(
     host: &H,
     run_id: &str,
 ) -> Result<(Vec<SearchRunRow>, Vec<SearchRunRow>), String> {
-    let rows = collect_raw_where(host, SEARCH_RUNS, &json!({ "run_id": run_id })).await?;
+    let rows: Vec<SearchRunRow> =
+        paging::query_all(host, SEARCH_RUNS, Some(json!({ "run_id": run_id }).to_string())).await?;
     let mut verified_rows: Vec<SearchRunRow> = Vec::new();
     let mut refused_rows: Vec<SearchRunRow> = Vec::new();
-    for (_id, v) in rows {
-        let Ok(row) = serde_json::from_value::<SearchRunRow>(v) else { continue };
+    for row in rows {
         if row.refused {
             refused_rows.push(row);
         } else {
@@ -278,15 +277,15 @@ pub(in crate::app) async fn run_envelope<H: AppHost>(host: &H, req: &Request) ->
     // refused row's `record_id` is whatever the source claimed,
     // unverified, so a hostile source could set one to collide with a
     // genuine record -- excluded here rather than trusted to sort last.
-    let rows = match collect_raw_where(host, SEARCH_RUNS, &json!({ "run_id": run_id })).await {
-        Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
-    };
-    for (_id, v) in rows {
-        if let Ok(row) = serde_json::from_value::<SearchRunRow>(v)
-            && !row.refused
-            && row.record_id == record_id
+    let rows: Vec<SearchRunRow> =
+        match paging::query_all(host, SEARCH_RUNS, Some(json!({ "run_id": run_id }).to_string()))
+            .await
         {
+            Ok(v) => v,
+            Err(e) => return Response::internal_error(e),
+        };
+    for row in rows {
+        if !row.refused && row.record_id == record_id {
             return Response::ok(json!({ "envelope": row.envelope }));
         }
     }

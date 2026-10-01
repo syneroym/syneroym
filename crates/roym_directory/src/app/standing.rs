@@ -4,6 +4,8 @@
 //! (`directory.standing`'s answer, and its own membership verdict on a
 //! publish or search).
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +50,7 @@ pub(in crate::app) fn issued_record_indexes() -> [IndexDefinition; 2] {
 /// it got there. A suspend and its lift are always kept or dropped
 /// together, so a lift never rides without the decision it lifts.
 fn select_evidence_decisions(all: &[IssuedRecordRow], now: u64) -> Vec<IssuedRecordRow> {
-    let lifts_by_target: std::collections::BTreeMap<&str, &IssuedRecordRow> =
+    let lifts_by_target: BTreeMap<&str, &IssuedRecordRow> =
         all.iter().filter(|d| !d.about.is_empty()).map(|d| (d.about.as_str(), d)).collect();
 
     struct Group<'a> {
@@ -110,8 +112,7 @@ fn select_evidence_decisions(all: &[IssuedRecordRow], now: u64) -> Vec<IssuedRec
             selected.push(g.suspend.clone());
         }
     }
-    let already: std::collections::BTreeSet<String> =
-        selected.iter().map(|r| r.record_id.clone()).collect();
+    let already: BTreeSet<String> = selected.iter().map(|r| r.record_id.clone()).collect();
     let mut remaining = membership::MAX_EVIDENCE_DECISIONS.saturating_sub(selected.len());
     for g in groups.iter().filter(|g| !already.contains(g.suspend.record_id.as_str())) {
         if remaining == 0 {
@@ -147,18 +148,14 @@ pub(in crate::app) async fn rebuild_for<H: AppHost>(
     ensure_coll(host, STANDING, &[]).await?;
     let now = clock::now_secs();
 
+    let member_filter = json!({ "member_did": member_did }).to_string();
     let mut creds: Vec<IssuedRecordRow> =
-        collect_raw_where(host, CREDENTIALS, &json!({ "member_did": member_did }))
-            .await?
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_value(v).ok())
-            .collect();
+        paging::query_all(host, CREDENTIALS, Some(member_filter.clone())).await?;
     creds.sort_by(|a, b| {
         b.issued_at_secs.cmp(&a.issued_at_secs).then(a.record_id.cmp(&b.record_id))
     });
     creds.truncate(membership::MAX_EVIDENCE_CREDENTIALS);
-    let cred_ids: std::collections::BTreeSet<String> =
-        creds.iter().map(|c| c.record_id.clone()).collect();
+    let cred_ids: BTreeSet<String> = creds.iter().map(|c| c.record_id.clone()).collect();
 
     // At most one revocation per credential: two `revocation.issue` calls
     // racing on the same credential (a read-then-write, like the
@@ -166,11 +163,10 @@ pub(in crate::app) async fn rebuild_for<H: AppHost>(
     // check and store a separate row. Keeping every row here would let
     // the surviving credentials' true revocations be outnumbered and
     // pushed past `evaluate`'s own per-reply cap by such a duplicate.
-    let mut revs_by_credential: std::collections::BTreeMap<String, IssuedRecordRow> =
-        std::collections::BTreeMap::new();
-    for (_, v) in collect_raw_where(host, REVOCATIONS, &json!({ "member_did": member_did })).await?
-    {
-        let Some(r) = serde_json::from_value::<IssuedRecordRow>(v).ok() else { continue };
+    let mut revs_by_credential: BTreeMap<String, IssuedRecordRow> = BTreeMap::new();
+    let all_revs: Vec<IssuedRecordRow> =
+        paging::query_all(host, REVOCATIONS, Some(member_filter.clone())).await?;
+    for r in all_revs {
         if !cred_ids.contains(&r.about) {
             continue;
         }
@@ -186,11 +182,7 @@ pub(in crate::app) async fn rebuild_for<H: AppHost>(
     let revs: Vec<IssuedRecordRow> = revs_by_credential.into_values().collect();
 
     let all_decs: Vec<IssuedRecordRow> =
-        collect_raw_where(host, DECISIONS, &json!({ "member_did": member_did }))
-            .await?
-            .into_iter()
-            .filter_map(|(_, v)| serde_json::from_value(v).ok())
-            .collect();
+        paging::query_all(host, DECISIONS, Some(member_filter)).await?;
     let decs = select_evidence_decisions(&all_decs, now);
 
     if creds.is_empty() && revs.is_empty() && decs.is_empty() {
@@ -227,9 +219,9 @@ pub(in crate::app) async fn rebuild_all<H: AppHost>(host: &H) -> Result<u64, Str
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut members: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut members: BTreeSet<String> = BTreeSet::new();
     for c in [CREDENTIALS, REVOCATIONS, DECISIONS] {
-        for (_, v) in collect_raw(host, c).await? {
+        for v in paging::query_all::<_, Value>(host, c, None).await? {
             if let Some(m) = v.get("member_did").and_then(Value::as_str) {
                 members.insert(m.to_string());
             }

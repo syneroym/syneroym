@@ -292,7 +292,10 @@ pub async fn handle_certificate_verb<H: AppHost>(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{
+        collections::{HashMap, VecDeque},
+        sync::Mutex,
+    };
 
     use syneroym_app_host::{
         AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppInvocation, AppMessaging,
@@ -331,11 +334,24 @@ pub(crate) mod tests {
         /// What `AppInvocation::caller` reports. `None` reads as
         /// `CallerOrigin::Internal`, the ordinary local-dispatch answer.
         caller_origin: Mutex<Option<CallerOrigin>>,
+        /// What `AppDataLayer::query` answers, one page per call. An empty
+        /// queue answers an empty last page.
+        query_pages: Mutex<VecDeque<QueryResult>>,
+        /// The collection and options of every `query` call, in order.
+        queries: Mutex<Vec<(String, QueryOptions)>>,
     }
 
     impl TestHost {
         pub(crate) fn set_caller_origin(&self, origin: CallerOrigin) {
             *self.caller_origin.lock().unwrap() = Some(origin);
+        }
+
+        pub(crate) fn push_query_page(&self, page: QueryResult) {
+            self.query_pages.lock().unwrap().push_back(page);
+        }
+
+        pub(crate) fn queries(&self) -> Vec<(String, QueryOptions)> {
+            self.queries.lock().unwrap().clone()
         }
     }
 
@@ -394,10 +410,12 @@ pub(crate) mod tests {
         }
         async fn query(
             &self,
-            _col: String,
-            _opts: QueryOptions,
+            collection: String,
+            opts: QueryOptions,
         ) -> Result<QueryResult, DataLayerError> {
-            unimplemented!()
+            self.queries.lock().unwrap().push((collection, opts));
+            let next = self.query_pages.lock().unwrap().pop_front();
+            Ok(next.unwrap_or(QueryResult { records: vec![], next_cursor: None }))
         }
         async fn aggregate(
             &self,
