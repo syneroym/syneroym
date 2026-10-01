@@ -250,9 +250,12 @@ export async function renderGroups(container: HTMLElement) {
   hiddenBox.append(hiddenSummary, hiddenItems);
   leftPane.appendChild(hiddenBox);
 
+  // Two reloads can overlap (the first load and the one after "New
+  // group"). Only the newest one draws, or both would append their rows.
+  let currentListSeq = 0;
+
   async function reloadGroupList(selectedId?: string) {
-    groupItems.replaceChildren();
-    hiddenItems.replaceChildren();
+    const seq = ++currentListSeq;
     let rows: GroupListItem[] = [];
     let allRows: GroupListItem[] = [];
     try {
@@ -264,13 +267,18 @@ export async function renderGroups(container: HTMLElement) {
       });
       allRows = hiddenRes.conversations || [];
     } catch (err) {
+      if (seq !== currentListSeq) return;
       if (err instanceof RpcError && err.type === "NotSignedIn") {
         renderSessionEnded(container);
         return;
       }
-      groupItems.appendChild(text("p", `Could not load: ${errText(err)}`));
+      groupItems.replaceChildren(text("p", `Could not load: ${errText(err)}`));
+      hiddenItems.replaceChildren();
       return;
     }
+    if (seq !== currentListSeq) return;
+    groupItems.replaceChildren();
+    hiddenItems.replaceChildren();
 
     const hiddenList = allRows.filter(
       (r) => r.group?.admission?.state === "hidden" || r.group?.admission?.state === "refused",
