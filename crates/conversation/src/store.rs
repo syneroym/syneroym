@@ -23,6 +23,7 @@ mod conversation;
 mod dag_store;
 mod history;
 mod message;
+pub(crate) use message::is_searchable_content_type;
 mod schema;
 mod search;
 mod session;

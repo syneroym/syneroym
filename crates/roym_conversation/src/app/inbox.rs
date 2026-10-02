@@ -77,10 +77,17 @@ pub(crate) async fn is_blocked<H: AppHost>(
     address: &str,
     person_did: Option<&str>,
 ) -> Result<bool, String> {
-    let block =
+    let resp =
         profile_call(host, "block.check", json!({ "address": address, "person_did": person_did }))
             .await?;
-    Ok(block.result.as_ref().and_then(|v| v.get("blocked")).and_then(Value::as_bool) == Some(true))
+    if resp.error.is_some() {
+        return Err(format!("block.check returned an error: {:?}", resp.error));
+    }
+    let blocked = resp.result.as_ref().and_then(|v| v.get("blocked")).and_then(Value::as_bool);
+    match blocked {
+        Some(v) => Ok(v),
+        None => Err("block.check: missing 'blocked' field in result".to_string()),
+    }
 }
 
 pub async fn on_message<H: AppHost>(host: &H, msg: Message) -> Result<Admission, String> {
@@ -144,8 +151,18 @@ async fn on_direct_message<H: AppHost>(
                 json!({ "sender_address": msg.author, "sender_person_did": person_did }),
             )
             .await?;
-            let res = admit.result.unwrap_or(Value::Null);
-            let adm_str = res.get("admission").and_then(Value::as_str).unwrap_or("rate-limited");
+            if admit.error.is_some() {
+                return Err(format!(
+                    "contacts.admit-first-contact returned an error: {:?}",
+                    admit.error
+                ));
+            }
+            let res = admit
+                .result
+                .ok_or_else(|| "contacts.admit-first-contact: missing result".to_string())?;
+            let adm_str = res.get("admission").and_then(Value::as_str).ok_or_else(|| {
+                "contacts.admit-first-contact: missing 'admission' field".to_string()
+            })?;
             let blk = res.get("blocked").and_then(Value::as_bool).unwrap_or(blocked);
             let retry = res.get("retry_after_secs").and_then(Value::as_u64);
             let c = FirstContactCharge {
@@ -201,31 +218,18 @@ async fn on_group_message<H: AppHost>(
     let visibility = match load_admission(host, &msg.conversation).await? {
         Some(vis) => vis,
         None => {
-            let vis = if info.is_owner {
-                "shown".to_string()
-            } else {
-                let owner_did = person_did_for_address(host, &info.owner).await;
-                let owner_blocked = is_blocked(host, &info.owner, owner_did.as_deref()).await?;
-                if owner_blocked {
-                    "refused".to_string()
-                } else {
-                    let admit = profile_call(
-                        host,
-                        "contacts.admit-first-contact",
-                        json!({ "sender_address": info.owner, "sender_person_did": owner_did }),
-                    )
-                    .await?;
-                    let res = admit.result.unwrap_or(Value::Null);
-                    let adm =
-                        res.get("admission").and_then(Value::as_str).unwrap_or("rate-limited");
-                    if adm == "allow" { "shown".to_string() } else { "refused".to_string() }
-                }
-            };
+            let vis = decide_group_visibility(host, info).await?;
+            // Use insert-only: if two concurrent messages race here, one
+            // will find the key already set on the next call. The important
+            // guarantee is that we never store a charge twice for the same
+            // message id — that is handled in first_contact_charges.
             set_admission(host, &msg.conversation, &vis).await?;
             vis
         }
     };
 
+    // 'hidden' and 'refused' both mean the group is not shown; hold the
+    // message so it can be admitted later when the user shows the group.
     if matches!(visibility.as_str(), "hidden" | "refused") {
         return Ok(Admission::Hold("group-hidden".to_string()));
     }
@@ -235,4 +239,33 @@ async fn on_group_message<H: AppHost>(
     }
 
     Ok(Admission::Accept)
+}
+
+async fn decide_group_visibility<H: AppHost>(host: &H, info: &GroupInfo) -> Result<String, String> {
+    if info.is_owner {
+        return Ok("shown".to_string());
+    }
+    let owner_did = person_did_for_address(host, &info.owner).await;
+    let owner_blocked = is_blocked(host, &info.owner, owner_did.as_deref()).await?;
+    // A blocked owner's group starts hidden, not refused, so the user can
+    // show it later after unblocking (D-CV-9).
+    if owner_blocked {
+        return Ok("hidden".to_string());
+    }
+    let admit = profile_call(
+        host,
+        "contacts.admit-first-contact",
+        json!({ "sender_address": info.owner, "sender_person_did": owner_did }),
+    )
+    .await?;
+    if admit.error.is_some() {
+        return Err(format!("contacts.admit-first-contact returned an error: {:?}", admit.error));
+    }
+    let res =
+        admit.result.ok_or_else(|| "contacts.admit-first-contact: missing result".to_string())?;
+    let adm = res
+        .get("admission")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "contacts.admit-first-contact: missing 'admission' field".to_string())?;
+    if adm == "allow" { Ok("shown".to_string()) } else { Ok("hidden".to_string()) }
 }

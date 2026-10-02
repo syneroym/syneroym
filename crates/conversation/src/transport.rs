@@ -242,9 +242,19 @@ impl ConversationService {
             Disposition::Terminal("peer returned an undecodable delivery ack".to_string())
         })?;
         if let Some(refused_reason) = ack.refused {
-            let _ =
-                store.record_refusal(&msg.conversation_id, &msg.id, peer_address, &refused_reason);
+            // Cap reason length to match parse_refusal_notice.
+            let capped: String = refused_reason.chars().take(120).collect();
+            if let Err(e) =
+                store.record_refusal(&msg.conversation_id, &msg.id, peer_address, &capped)
+            {
+                tracing::warn!(
+                    message = msg.id,
+                    error = ?e,
+                    "failed to record refusal on own sent message"
+                );
+            }
         }
+
         Ok(())
     }
 
@@ -393,10 +403,11 @@ impl ConversationService {
                 )?;
                 if is_system {
                     tx.execute(
-                        "UPDATE messages SET system = 1 WHERE id = ?1",
+                        "UPDATE messages SET system = 1, admission = 'accepted' WHERE id = ?1",
                         rusqlite::params![payload.message_id],
                     )?;
                 }
+
                 if is_deletion_req {
                     ConversationStore::handle_inbound_deletion_request(
                         tx,

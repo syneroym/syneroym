@@ -392,10 +392,12 @@ impl ConversationService {
         let system_val = if is_system { 1 } else { 0 };
 
         ConversationStore::insert_entry_if_absent(tx, conv_id, entry, true, false)?;
+        let vseq = ConversationStore::next_visible_seq(tx, conv_id)?;
         tx.execute(
             "INSERT INTO messages (id, conversation_id, author, sender_timestamp, received_at, \
              content_type, body, signature, outgoing, verified, state, last_error, system, \
-             entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, 'pending', NULL, ?9, ?1)",
+             entry_id, admission, visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, \
+             'pending', NULL, ?9, ?1, 'accepted', ?10)",
             rusqlite::params![
                 entry.entry_id,
                 conv_id,
@@ -406,8 +408,19 @@ impl ConversationService {
                 body,
                 entry.signature.as_slice(),
                 system_val,
+                vseq as i64,
             ],
         )?;
+        if !is_system
+            && crate::store::is_searchable_content_type(content_type)
+            && let Ok(body_str) = std::str::from_utf8(body)
+        {
+            let rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO messages_fts (rowid, body) VALUES (?1, ?2)",
+                rusqlite::params![rowid, body_str],
+            )?;
+        }
 
         for m in members {
             if m != service_id {
@@ -424,7 +437,9 @@ impl ConversationService {
                 txq.enqueue(tx, conv_id, &format!("{}:{m}", entry.entry_id), &payload, now)?;
             }
         }
-        ConversationStore::touch_conversation(tx, conv_id, now)?;
+        if !is_system {
+            ConversationStore::touch_conversation(tx, conv_id, now)?;
+        }
         Ok(())
     }
 

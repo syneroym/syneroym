@@ -176,7 +176,16 @@ impl ConversationService {
         msg: &StoredMessage,
         now: i64,
     ) {
-        let outcome = self.notify_message(service_id, msg.clone().into_wire()).await;
+        let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
+        let outcome = match tokio::time::timeout(
+            ask_timeout,
+            self.notify_message(service_id, msg.clone().into_wire()),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => NotifyOutcome::NoAnswer,
+        };
         match outcome {
             NotifyOutcome::Answered(admission) => {
                 let _ = store.apply_admission(&msg.id, &admission, now);

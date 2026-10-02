@@ -353,8 +353,15 @@ impl ConversationService {
         for svc in services {
             let Ok(store) = self.store_for(&svc).await else { continue };
             let Ok(msgs) = store.undecided_messages(now) else { continue };
+            let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
             for msg in msgs {
-                let outcome = self.notify_message(&svc, msg.clone().into_wire()).await;
+                let outcome = tokio::time::timeout(
+                    ask_timeout,
+                    self.notify_message(&svc, msg.clone().into_wire()),
+                )
+                .await
+                .unwrap_or(syneroym_rpc::NotifyOutcome::NoAnswer);
+                let age_ms = now.saturating_sub(msg.received_at_ms);
                 match outcome {
                     syneroym_rpc::NotifyOutcome::Answered(admission) => {
                         let _ = store.apply_admission(&msg.id, &admission, now);
@@ -381,7 +388,24 @@ impl ConversationService {
                         let _ =
                             store.apply_admission(&msg.id, &syneroym_rpc::Admission::Accept, now);
                     }
-                    syneroym_rpc::NotifyOutcome::NoAnswer => {}
+                    syneroym_rpc::NotifyOutcome::NoAnswer => {
+                        let new_attempts = msg.notify_attempts.saturating_add(1);
+                        let next = now + backoff_for_age(age_ms);
+                        let _ = store.update_undecided_retry(&msg.id, new_attempts, next);
+                        if new_attempts % 20 == 0 {
+                            warn!(
+                                service = svc,
+                                message = msg.id,
+                                attempts = new_attempts,
+                                "message still undecided after many re-asks"
+                            );
+                            metrics::counter!(
+                                "substrate.conversation.admission.stuck",
+                                "service" => svc.to_string(),
+                            )
+                            .increment(1);
+                        }
+                    }
                 }
             }
         }
@@ -391,9 +415,14 @@ impl ConversationService {
         let now = now_ms();
         let services = self.candidate_service_ids();
         for svc in services {
-            if let Ok(store) = self.store_for(&svc).await {
-                let max_age_ms = (store.config().max_held_age_secs as i64).saturating_mul(1000);
-                let _ = store.expire_held_messages(max_age_ms, now);
+            let Ok(store) = self.store_for(&svc).await else { continue };
+            let max_age_ms = (store.config().max_held_age_secs as i64).saturating_mul(1000);
+            let Ok(expired) = store.expire_held_messages(max_age_ms, now) else { continue };
+            for (_conv_id, msg_id) in expired {
+                let drop_ans =
+                    syneroym_rpc::DropAnswer { reason: "expired".to_string(), report: false };
+                let _ =
+                    store.apply_admission(&msg_id, &syneroym_rpc::Admission::Drop(drop_ans), now);
             }
         }
     }
@@ -404,14 +433,24 @@ impl ConversationService {
             if let Ok(store) = self.store_for(&svc).await
                 && store.take_wal_checkpoint_flag()
             {
-                let res = {
+                let busy = {
                     let Ok(conn) = store.conn().lock() else {
                         store.flag_wal_checkpoint();
                         continue;
                     };
-                    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                    // FTS5 optimize merges index segments, removing trigrams
+                    // of deleted/dropped text before the WAL is truncated.
+                    let _ = conn.execute_batch(
+                        "INSERT INTO messages_fts(messages_fts) VALUES('optimize');",
+                    );
+                    // wal_checkpoint(TRUNCATE) returns a result row whose
+                    // first column is 1 when readers were blocking.
+                    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0))
+                        .ok()
+                        == Some(1)
                 };
-                if res.is_err() {
+                if busy {
+                    // A reader was active; re-flag so we try again next tick.
                     store.flag_wal_checkpoint();
                 }
             }

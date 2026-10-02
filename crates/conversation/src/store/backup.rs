@@ -230,7 +230,10 @@ impl ConversationStore {
                     .unwrap_or(false);
                 !has_keys
             } else {
-                let existing: bool = tx
+                // For direct chats: mark restored only when the id is new
+                // on this node. A same-address restore produces the same id,
+                // so the chat stays live (restored=0) and open_direct works.
+                let id_exists: bool = tx
                     .query_row(
                         "SELECT COUNT(*) FROM conversations WHERE id = ?1",
                         params![c.id],
@@ -238,14 +241,15 @@ impl ConversationStore {
                     )
                     .map(|count| count > 0)
                     .unwrap_or(false);
-                !existing
+                !id_exists
             };
 
             tx.execute(
                 "INSERT INTO conversations (id, kind, peer_address, owner_address, current_epoch, \
                  system, opened, restored, name, created_at, last_activity) VALUES (?1, ?2, ?3, \
-                 ?4, ?5, 0, 0, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET name = \
-                 COALESCE(conversations.name, excluded.name)",
+                 ?4, ?5, 0, 0, ?6, ?7, ?8, ?9) ON CONFLICT(id) DO UPDATE SET restored = \
+                 MIN(conversations.restored, ?6), name = COALESCE(conversations.name, \
+                 excluded.name)",
                 params![
                     c.id,
                     c.kind,
@@ -282,22 +286,43 @@ impl ConversationStore {
     fn import_messages(tx: &Transaction<'_>, messages: Vec<BackupMessage>) -> Result<u32> {
         let mut count = 0u32;
         for m in messages {
+            // Skip messages that already exist; the plan says duplicate ids are
+            // ignored on import.
+            let already_exists: bool = tx
+                .query_row("SELECT COUNT(*) FROM messages WHERE id = ?1", params![m.id], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            if already_exists {
+                continue;
+            }
+
             let (state, last_error) = if m.outgoing && m.state == "pending" {
                 ("failed".to_string(), Some("restored from a backup".to_string()))
             } else {
                 (m.state, m.last_error)
             };
 
+            // Restored flag follows the conversation: a message in a live chat
+            // is not restored, even if it came from the bundle.
+            let conv_restored: bool = tx
+                .query_row(
+                    "SELECT restored FROM conversations WHERE id = ?1",
+                    params![m.conversation_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|v| v != 0)
+                .unwrap_or(true);
+
             let vseq = Self::next_visible_seq(tx, &m.conversation_id)?;
-            let _ = tx.execute(
+            tx.execute(
                 "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
                  received_at, content_type, body, signature, outgoing, verified, state, \
                  last_error, system, entry_id, admission, admission_reason, admission_changed_at, \
                  notify_attempts, next_notify_at, report_refusal, refused, deleted_at, restored, \
                  visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13, \
-                 ?14, ?15, NULL, 0, NULL, 0, NULL, ?16, 1, ?17) ON CONFLICT(id) DO UPDATE SET \
-                 state = excluded.state, last_error = excluded.last_error, deleted_at = \
-                 COALESCE(messages.deleted_at, excluded.deleted_at)",
+                 ?14, ?15, NULL, 0, NULL, 0, NULL, ?16, ?17, ?18)",
                 params![
                     m.id,
                     m.conversation_id,
@@ -315,17 +340,19 @@ impl ConversationStore {
                     m.admission,
                     m.admission_reason,
                     m.deleted_at,
+                    if conv_restored { 1i64 } else { 0i64 },
                     vseq as i64,
                 ],
             )?;
-
             count += 1;
-            let rowid = tx.last_insert_rowid();
+
+            // Index for search only when the message is accepted and not deleted.
             if m.deleted_at.is_none()
                 && m.admission == "accepted"
                 && is_searchable_content_type(&m.content_type)
                 && let Ok(body_str) = str::from_utf8(&m.body)
             {
+                let rowid = tx.last_insert_rowid();
                 let _ = tx.execute(
                     "INSERT OR IGNORE INTO messages_fts (rowid, body) VALUES (?1, ?2)",
                     params![rowid, body_str],

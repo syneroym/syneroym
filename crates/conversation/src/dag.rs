@@ -249,7 +249,11 @@ pub fn parse_refusal_notice(body: &[u8]) -> Option<(String, String)> {
     if msg_id.is_empty() {
         return None;
     }
-    Some((msg_id.to_string(), reason.to_string()))
+    // Cap reason length so a peer cannot store an unbounded string in every
+    // history page.
+    const MAX_REASON_CHARS: usize = 120;
+    let reason_capped: String = reason.chars().take(MAX_REASON_CHARS).collect();
+    Some((msg_id.to_string(), reason_capped))
 }
 
 #[must_use]

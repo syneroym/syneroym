@@ -116,7 +116,10 @@ impl ConversationStore {
                     params![rowid, body_str],
                 )?;
             }
-            Self::touch_conversation(tx, conversation_id, now_ms)?;
+
+            if !system {
+                Self::touch_conversation(tx, conversation_id, now_ms)?;
+            }
             txq.enqueue(tx, conversation_id, message_id, &payload, now_ms)?;
             Ok(())
         })?;
@@ -309,16 +312,20 @@ impl ConversationStore {
         message_id: &str,
         now_ms: i64,
     ) -> Result<bool> {
-        let info: Option<(i64, String, Vec<u8>)> = conn
+        let info: Option<(i64, String, Vec<u8>, String)> = conn
             .query_row(
-                "SELECT rowid, content_type, body FROM messages WHERE id = ?1 AND conversation_id \
-                 = ?2",
+                "SELECT rowid, content_type, body, admission FROM messages WHERE id = ?1 AND \
+                 conversation_id = ?2",
                 params![message_id, conversation_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        let Some((rowid, ct, body)) = info else { return Ok(false) };
-        if is_searchable_content_type(&ct)
+        let Some((rowid, ct, body, admission)) = info else { return Ok(false) };
+        // FTS delete only for rows that were indexed (accepted, non-empty body).
+        // Issuing 'delete' for a never-indexed row corrupts the FTS table.
+        if admission == "accepted"
+            && !body.is_empty()
+            && is_searchable_content_type(&ct)
             && let Ok(body_str) = str::from_utf8(&body)
         {
             let _ = conn.execute(
@@ -414,8 +421,14 @@ impl ConversationStore {
                 }
             }
         }
+        // Reset to undecided so the worker re-asks the app, which runs the
+        // live block check. Applying Accept here would bypass it.
         for id in &msg_ids {
-            Self::apply_admission_conn(&conn, id, &Admission::Accept, now)?;
+            conn.execute(
+                "UPDATE messages SET admission = 'undecided', admission_reason = NULL, \
+                 admission_changed_at = ?1, next_notify_at = ?1 WHERE id = ?2",
+                params![now, id],
+            )?;
         }
         Ok(msg_ids.len() as u32)
     }
@@ -454,8 +467,8 @@ impl ConversationStore {
              body, signature, outgoing, verified, state, last_error, system, entry_id, admission, \
              admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
              report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE \
-             admission = 'undecided' AND (next_notify_at IS NULL OR next_notify_at <= ?1) ORDER \
-             BY received_at ASC LIMIT 64",
+             admission = 'undecided' AND system = 0 AND (next_notify_at IS NULL OR next_notify_at \
+             <= ?1) ORDER BY next_notify_at ASC LIMIT 64",
         )?;
         let mut rows = stmt.query(params![now_ms])?;
         let mut out = Vec::new();
