@@ -401,11 +401,18 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     h.deliver(true, card_agr.clone()).await;
     h.deliver(false, card_agr).await;
 
-    // Next sync files both agreement and the deferred payment ack
+    // Next sync files agreement; deferred payment ack rewinds and files on
+    // subsequent sync
     let (s2w, s2n) =
         both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-    assert_eq!(s2w["result"]["filed"], 2, "s2w: {s2w}");
-    assert_eq!(s2n["result"]["filed"], 2, "s2n: {s2n}");
+    assert_eq!(s2w["result"]["filed"], 1, "s2w: {s2w}");
+    assert_eq!(s2n["result"]["filed"], 1, "s2n: {s2n}");
+    assert_eq!(s2w["result"]["deferred"], 1, "s2w: {s2w}");
+    assert_eq!(s2n["result"]["deferred"], 1, "s2n: {s2n}");
+
+    let (s3w, s3n) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    assert_eq!(s3w["result"]["filed"], 1, "s3w: {s3w}");
+    assert_eq!(s3n["result"]["filed"], 1, "s3n: {s3n}");
 
     let (pw, pn) = both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id })).await;
     assert_eq!(pw["result"]["track"], "claimed", "pw: {pw}");

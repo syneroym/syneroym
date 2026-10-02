@@ -771,6 +771,7 @@ pub(crate) async fn build_native_stack(
         resolver,
         conversation.clone(),
         ws_senders.clone(),
+        true,
     );
     let f = factory.clone();
     let f_http = factory.clone();

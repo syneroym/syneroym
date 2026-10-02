@@ -18,10 +18,13 @@ use zeroize::Zeroizing;
 
 use crate::dag::{EntryKind, MembershipPayload, WireEntry};
 
+mod backup;
 mod conversation;
 mod dag_store;
+mod history;
 mod message;
 mod schema;
+mod search;
 mod session;
 
 #[cfg(test)]
@@ -59,6 +62,9 @@ pub struct ConversationConfig {
     pub conversation_relay_fanout: u32,
     pub conversation_sync_now_budget_ms: u64,
     pub conversation_background_sync_budget_ms: u64,
+    pub max_held_age_secs: u64,
+    pub admission_ask_timeout_ms: u64,
+    pub admission_claim_secs: u64,
 }
 
 impl Default for ConversationConfig {
@@ -78,6 +84,9 @@ impl Default for ConversationConfig {
             conversation_relay_fanout: 3,
             conversation_sync_now_budget_ms: 3_000,
             conversation_background_sync_budget_ms: 160_000,
+            max_held_age_secs: 2_592_000,
+            admission_ask_timeout_ms: 3_000,
+            admission_claim_secs: 10,
         }
     }
 }
@@ -101,6 +110,16 @@ pub struct StoredMessage {
     pub last_error: Option<String>,
     pub system: bool,
     pub entry_id: Option<String>,
+    pub admission: String,
+    pub admission_reason: Option<String>,
+    pub admission_changed_at: Option<i64>,
+    pub notify_attempts: u32,
+    pub next_notify_at: Option<i64>,
+    pub report_refusal: bool,
+    pub refused: Option<String>,
+    pub deleted_at: Option<i64>,
+    pub restored: bool,
+    pub visible_seq: u64,
 }
 
 impl StoredMessage {
@@ -117,6 +136,11 @@ impl StoredMessage {
             state: self.state,
             verified: self.verified,
             last_error: self.last_error,
+            outgoing: self.outgoing,
+            deleted_at: self.deleted_at,
+            restored: self.restored,
+            visible_seq: self.visible_seq,
+            refused: self.refused,
         }
     }
 }
@@ -130,12 +154,9 @@ pub struct ConversationRow {
     pub last_activity_ms: i64,
     pub owner_address: Option<String>,
     pub current_epoch: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct HistoryPage {
-    pub messages: Vec<StoredMessage>,
-    pub next_cursor: Option<String>,
+    pub opened: bool,
+    pub restored: bool,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +172,7 @@ pub struct StoredDagEntry {
     pub ciphertext: Option<Vec<u8>>,
     pub nonce: Option<[u8; 12]>,
     pub payload: Option<MembershipPayload>,
+    pub profile_payload: Option<crate::dag::ProfilePayload>,
     pub signature: [u8; 64],
     pub applied: bool,
     pub relay_pending: bool,
@@ -171,6 +193,7 @@ impl StoredDagEntry {
             ciphertext: self.ciphertext,
             nonce: self.nonce,
             payload: self.payload,
+            profile_payload: self.profile_payload,
             signature: self.signature,
         }
     }
@@ -197,6 +220,7 @@ pub struct ConversationStore {
     pub(super) conn: Arc<Mutex<Connection>>,
     pub(super) queue: Queue,
     pub(super) config: ConversationConfig,
+    pub(super) needs_wal_checkpoint: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for ConversationStore {
@@ -218,6 +242,14 @@ impl ConversationStore {
 
     pub fn conn(&self) -> &std::sync::Mutex<Connection> {
         &self.conn
+    }
+
+    pub fn flag_wal_checkpoint(&self) {
+        self.needs_wal_checkpoint.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn take_wal_checkpoint_flag(&self) -> bool {
+        self.needs_wal_checkpoint.swap(false, std::sync::atomic::Ordering::AcqRel)
     }
 }
 

@@ -40,9 +40,8 @@ pub const GROUP_ADD_UNREACHABLE_MESSAGE: &str = "Could not reach this person to 
 pub const GROUP_HIDDEN_NOTICE: &str =
     "A hidden group is not shown, and its new messages are not kept here. This installation still \
      receives them underneath, and you stay a member until the owner removes you.";
-pub const TRANSCRIPT_CHECK_NOTICE: &str = "Members who see the same code hold the same messages \
-                                           in the same order. A member who blocked someone in the \
-                                           group sees a different code.";
+pub const TRANSCRIPT_CHECK_NOTICE: &str =
+    "Members who see the same code hold the same messages in the same order.";
 pub const CARDS_NOT_IN_GROUPS_MESSAGE: &str = "Cards are sent only in a 1:1 conversation.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

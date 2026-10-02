@@ -453,7 +453,7 @@ function messageElement(
       wrap.appendChild(renderRefusedCard("card", 1, "Unfiled card"));
     }
   } else {
-    if (m.deleted_at_secs !== undefined) {
+    if (m.deleted_at_secs != null) {
       wrap.appendChild(text("span", "(message deleted)", "message-body deleted"));
     } else {
       wrap.appendChild(text("span", m.body ?? "(no body)", "message-body"));
@@ -484,7 +484,7 @@ function messageElement(
     actions.appendChild(retryBtn);
   }
 
-  if (m.deleted_at_secs === undefined) {
+  if (m.deleted_at_secs == null) {
     const deleteBtn = text("button", "Delete", "button delete-message") as HTMLButtonElement;
     deleteBtn.onclick = () => openDeleteDialog(wrap, m, refresh);
     actions.appendChild(deleteBtn);

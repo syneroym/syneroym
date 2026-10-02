@@ -37,6 +37,9 @@ interface conversation {
         participants: list<string>,
         created-at: s64,
         last-activity-at: s64,
+        message-count: u32,
+        name: option<string>,
+        restored: bool,
     }
 
     record message {
@@ -59,75 +62,81 @@ interface conversation {
         content-type: string,
         body: list<u8>,
         state: delivery-state,
-        /// The host's own verdict: always true for stored messages. A
-        /// message whose envelope cannot be decrypted under the session
-        /// pinned to `author` or whose signature fails verification under
-        /// the key pinned for `author` is refused at the transport layer
-        /// and never stored. Always true for outgoing messages.
+        /// The host's own verdict: true for every row this node sent or
+        /// received itself; false for restored rows.
         verified: bool,
         /// Set only on `failed`.
         last-error: option<string>,
+        outgoing: bool,
+        deleted-at: option<s64>,
+        restored: bool,
+        visible-seq: u64,
+        refused: option<string>,
+    }
+
+    record drop-answer {
+        reason: string,
+        report: bool,
+    }
+
+    variant admission {
+        accept,
+        hold(string),
+        drop(drop-answer),
+    }
+
+    record name-event {
+        entry: string,
+        name: string,
+        sender-timestamp: s64,
+    }
+
+    variant history-item {
+        message(message),
+        membership(membership-event),
+        group-name(name-event),
     }
 
     record history-page {
-        /// Oldest first within the page, ordered by
-        /// (sender-timestamp, author, id).
-        messages: list<message>,
+        items: list<history-item>,
         next-cursor: option<string>,
     }
 
+    record change-page {
+        messages: list<message>,
+        last-seq: u64,
+    }
+
     /// One membership change, as it appears in the group's own DAG. Signed
-    /// by the group's owner and never encrypted: a member that has just
-    /// joined must be able to verify the chain that admitted it, which it
-    /// could not do if the entry were sealed under an epoch it may not
-    /// read.
+    /// by the group's owner and never encrypted.
     record membership-event {
-        /// The DAG entry this change came from. Stable, content-derived,
-        /// and identical on every member's substrate.
         entry: string,
-        /// `add` or `remove`. A string, not an enum: a future action
-        /// (`transfer-ownership`) must not break a guest's match, and this
-        /// value is already carried inside a signed entry a guest cannot
-        /// influence.
         action: string,
-        /// The member being added or removed, as a routing service id --
-        /// the same namespace `open-direct` takes.
         subject: string,
-        /// The epoch this change opened. Every message entry at or after
-        /// it is encrypted under a different key than the one before.
         epoch: u64,
-        /// The owner's own clock when it issued the change, in Unix
-        /// milliseconds. Ordered by the same rule as messages.
         sender-timestamp: s64,
     }
 
     /// What this substrate knows about one group, in one call.
     record group-info {
-        /// The group's owner, as a routing service id. Fixed at creation.
         owner: string,
-        /// True when this service is the owner.
         is-owner: bool,
-        /// True when this service is in the current member list.
         is-member: bool,
-        /// Current members, sorted. The same list `members` returns.
         members: list<string>,
-        /// The newest epoch this substrate has seen named, by a key or by
-        /// a membership entry.
         epoch: u64,
-        /// The newest epoch this substrate holds a key for. Lower than
-        /// `epoch` once this service has learned it was removed: it holds
-        /// the removal entry but was not given the new key. Until it
-        /// learns (it may have been offline), `is-member` stays true.
         key-epoch: u64,
-        /// When this substrate stored the key for `key-epoch`, in Unix
-        /// milliseconds on its own clock. For the owner, when the key was
-        /// made; for a member, when the key arrived.
         key-stored-at: s64,
+        name: option<string>,
+        restored: bool,
+    }
+
+    record export-chunk {
+        data: list<u8>,
+        next-cursor: option<string>,
     }
 
     /// Returns the existing 1:1 conversation with `peer-address`, or
-    /// creates one. `peer-address` is the peer's Conversation *service*
-    /// id -- the same string a proxy call would target. Idempotent.
+    /// creates one.
     open-direct: func(peer-address: string) -> result<conversation-id, conversation-error>;
 
     conversations: func() -> result<list<conversation-summary>, conversation-error>;
@@ -148,81 +157,60 @@ interface conversation {
 
     delivery-status: func(message: message-id) -> result<delivery-state, conversation-error>;
 
-    /// Every message this service still owes delivery for, plus every one
-    /// that gave up. The outbox surface, folded in here rather than given
-    /// a package of its own.
     outbox: func() -> result<list<message>, conversation-error>;
 
-    /// Re-arms a `failed` message. A `pending` or `delivered` message is
-    /// `invalid-argument`.
     retry: func(message: message-id) -> result<_, conversation-error>;
 
-    /// Creates a group owned by this service and returns its id. The
-    /// caller is its first and, until `add-member`, only member.
     create-group: func() -> result<conversation-id, conversation-error>;
 
-    /// Owner-only. Adds `member-address` and opens a new epoch, whose key
-    /// reaches every member -- including the joiner -- over the 1:1
-    /// channel. The joiner cannot read anything from before the change:
-    /// earlier entries are sealed under earlier epochs.
     add-member: func(
         conversation: conversation-id,
         member-address: string,
     ) -> result<_, conversation-error>;
 
-    /// Owner-only. Removes `member-address` and opens a new epoch whose
-    /// key reaches everyone except them.
     remove-member: func(
         conversation: conversation-id,
         member-address: string,
     ) -> result<_, conversation-error>;
 
-    /// Current members, sorted. Same namespace as
-    /// `conversation-summary.participants`, which reports the same list.
     members: func(conversation: conversation-id)
         -> result<list<string>, conversation-error>;
 
-    /// Every membership change this substrate has observed, oldest first,
-    /// ordered by the same (sender-timestamp, author, entry) rule messages
-    /// use -- one ordering rule for the whole conversation, not two.
-    /// Identical on every member once synced.
-    membership-history: func(conversation: conversation-id)
-        -> result<list<membership-event>, conversation-error>;
-
-    /// Pulls whatever peers hold and this substrate does not, now, instead
-    /// of waiting for the next scheduled pass. Runs one round under a
-    /// short time budget and returns `ok` whether or not that round
-    /// reached every member -- a caller's own time budget is small, and an
-    /// unreachable member must not spend it. Convergence is the periodic
-    /// pass's guarantee; this only makes it prompt. Call it again to make
-    /// further progress.
     sync-now: func(conversation: conversation-id) -> result<_, conversation-error>;
 
-    /// `invalid-argument` for a direct conversation, `not-found` for an
-    /// unknown id.
     get-group-info: func(conversation: conversation-id) -> result<group-info, conversation-error>;
 
-    /// One message this service stored, sent or received, in any state.
-    /// `not-found` for an unknown id and for a system message (a group
-    /// key).
     get-message: func(message: message-id) -> result<message, conversation-error>;
+
+    delete-message: func(message: message-id, ask-others: bool) -> result<_, conversation-error>;
+
+    readmit: func(conversation: conversation-id, reasons: list<string>) -> result<u32, conversation-error>;
+
+    changes: func(conversation: conversation-id, after-seq: u64, limit: u32)
+        -> result<change-page, conversation-error>;
+
+    search: func(query: string, conversation: option<conversation-id>, limit: u32)
+        -> result<list<message>, conversation-error>;
+
+    set-group-name: func(conversation: conversation-id, name: string) -> result<_, conversation-error>;
+
+    transcript-digest: func(conversation: conversation-id) -> result<string, conversation-error>;
+
+    export-history: func(cursor: option<string>) -> result<export-chunk, conversation-error>;
+
+    import-history: func(data: list<u8>) -> result<u32, conversation-error>;
 }
 
-/// Optional guest exports. A component that exports neither still
-/// receives messages durably -- they are in the store either way.
+/// Optional guest exports.
 interface guest-api {
-    use conversation.{message-id, message, delivery-state};
+    use conversation.{message-id, message, delivery-state, admission};
 
-    on-message: func(msg: message) -> result<_, string>;
+    on-message: func(msg: message) -> result<admission, string>;
     on-delivery-state: func(msg: message-id, state: delivery-state) -> result<_, string>;
 }
 
 world conversation-guest { import conversation; export guest-api; }
 
-/// Import-only view. Without this, every consumer inherits `guest-api`'s
-/// export requirement into its own component-type section and encoding
-/// fails -- the finding that produced `data-layer-import` and
-/// `messaging-import`.
 world conversation-import { import conversation; }
 
 world conversation-host { import conversation; export guest-api; }

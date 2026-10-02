@@ -280,6 +280,7 @@ async fn a_transient_fdae_policy_load_failure_is_not_memoized() {
         resolver,
         conversation,
         WebSocketSenders::new(),
+        false,
     );
     factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
 

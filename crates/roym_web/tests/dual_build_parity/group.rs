@@ -9,7 +9,7 @@ use syneroym_roym_core::{
         },
     },
 };
-use syneroym_rpc::{ConversationDeliveryState, ConversationMessage};
+use syneroym_rpc::ConversationMessage;
 
 use super::{fixtures::*, helpers::*};
 
@@ -21,18 +21,10 @@ fn inbound_custom(
     content_type: &str,
     body: Vec<u8>,
 ) -> ConversationMessage {
-    ConversationMessage {
-        id: id.to_string(),
-        conversation: conversation.to_string(),
-        author: author.to_string(),
-        sender_timestamp: ts,
-        received_at: ts,
-        content_type: content_type.to_string(),
-        body,
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    }
+    let mut m = inbound(id, conversation, author, ts, "");
+    m.content_type = content_type.to_string();
+    m.body = body;
+    m
 }
 
 #[tokio::test]
@@ -76,13 +68,22 @@ async fn scenario_201_group_create_with_name_parity() {
     let hn = one_rpc(&h, false, "conversation.history", json!({ "conversation": group_n })).await;
     let msgs_w = hw["result"]["messages"].as_array().unwrap();
     let msgs_n = hn["result"]["messages"].as_array().unwrap();
-    assert_eq!(msgs_w.len(), 1);
-    assert_eq!(msgs_n.len(), 1);
-    assert_eq!(msgs_w[0]["content_type"], MEMBERSHIP_EVENT_CONTENT_TYPE);
-    assert_eq!(msgs_n[0]["content_type"], MEMBERSHIP_EVENT_CONTENT_TYPE);
-    let body_w: Value = serde_json::from_str(msgs_w[0]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(msgs_w.len(), 2);
+    assert_eq!(msgs_n.len(), 2);
+    let mem_w = msgs_w.iter().find(|m| m["content_type"] == MEMBERSHIP_EVENT_CONTENT_TYPE).unwrap();
+    let mem_n = msgs_n.iter().find(|m| m["content_type"] == MEMBERSHIP_EVENT_CONTENT_TYPE).unwrap();
+    let body_w: Value = serde_json::from_str(mem_w["body"].as_str().unwrap()).unwrap();
     assert_eq!(body_w["action"], "add");
     assert_eq!(body_w["epoch"], 1);
+    let body_n: Value = serde_json::from_str(mem_n["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body_w, body_n);
+    let prof_w = msgs_w.iter().find(|m| m["content_type"] == GROUP_PROFILE_CONTENT_TYPE).unwrap();
+    let prof_n = msgs_n.iter().find(|m| m["content_type"] == GROUP_PROFILE_CONTENT_TYPE).unwrap();
+    assert_eq!(prof_w["content_type"], prof_n["content_type"]);
+    let prof_body_w: Value = serde_json::from_str(prof_w["body"].as_str().unwrap()).unwrap();
+    let prof_body_n: Value = serde_json::from_str(prof_n["body"].as_str().unwrap()).unwrap();
+    assert_eq!(prof_body_w["name"], "Garden Club");
+    assert_eq!(prof_body_w, prof_body_n);
 }
 
 #[tokio::test]
@@ -143,8 +144,8 @@ async fn scenario_203_send_into_group_with_no_other_member_fails_parity() {
 
     let hw = one_rpc(&h, true, "conversation.history", json!({ "conversation": group_w })).await;
     let hn = one_rpc(&h, false, "conversation.history", json!({ "conversation": group_n })).await;
-    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 1);
-    assert_eq!(hn["result"]["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(hn["result"]["messages"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -174,12 +175,12 @@ async fn scenario_204_two_inbound_messages_update_count_and_activity_parity() {
     let hn = one_rpc(&h, false, "conversation.history", json!({ "conversation": group_n })).await;
     let msgs_w = hw["result"]["messages"].as_array().unwrap();
     let msgs_n = hn["result"]["messages"].as_array().unwrap();
-    assert_eq!(msgs_w.len(), 3);
-    assert_eq!(msgs_n.len(), 3);
-    assert_eq!(msgs_w[1]["id"], "m-204a");
-    assert_eq!(msgs_w[2]["id"], "m-204b");
-    assert_eq!(msgs_n[1]["id"], "m-204a");
-    assert_eq!(msgs_n[2]["id"], "m-204b");
+    assert_eq!(msgs_w.len(), 4);
+    assert_eq!(msgs_n.len(), 4);
+    assert!(msgs_w.iter().any(|m| m["id"] == "m-204a"));
+    assert!(msgs_w.iter().any(|m| m["id"] == "m-204b"));
+    assert!(msgs_n.iter().any(|m| m["id"] == "m-204a"));
+    assert!(msgs_n.iter().any(|m| m["id"] == "m-204b"));
 }
 
 #[tokio::test]
@@ -200,15 +201,19 @@ async fn scenario_205_blocked_author_in_shown_group_refused_parity() {
     h.deliver(false, inbound("m-205", &group_n, "did:key:zBlocked205", 1_000, "spam")).await;
 
     for wasm in [true, false] {
-        let refused = h.conv_rows(wasm, "refused_messages").await;
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0]["reason"], "blocked");
+        let conv = if wasm { &h.wasm_conversation } else { &h.native_conversation };
+        let conv_did = did_for_service("conversation");
+        let store = conv.store_for(&conv_did).await.unwrap();
+        let msg = store.get_message("m-205").unwrap().expect("stored message");
+        assert_eq!(msg.admission, "dropped");
+        assert_eq!(msg.admission_reason.as_deref(), Some("blocked"));
+        assert!(msg.body.is_empty());
     }
 
     let hw = one_rpc(&h, true, "conversation.history", json!({ "conversation": group_w })).await;
     let hn = one_rpc(&h, false, "conversation.history", json!({ "conversation": group_n })).await;
-    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 1);
-    assert_eq!(hn["result"]["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(hw["result"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(hn["result"]["messages"].as_array().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -217,7 +222,6 @@ async fn scenario_206_group_profile_from_non_owner_and_ordering_parity() {
     let (gw, gn) = both_rpc(&h, "group.create", json!({ "name": "Initial" })).await;
     let group_w = gw["result"]["conversation_id"].as_str().unwrap().to_string();
     let group_n = gn["result"]["conversation_id"].as_str().unwrap().to_string();
-    let conv_svc = did_for_service("conversation");
 
     let bad_body = group_profile_body("Hijacked");
     h.deliver(
@@ -246,79 +250,27 @@ async fn scenario_206_group_profile_from_non_owner_and_ordering_parity() {
     .await;
 
     for wasm in [true, false] {
-        let refused = h.conv_rows(wasm, "refused_messages").await;
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0]["reason"], "not-owner");
+        let conv = if wasm { &h.wasm_conversation } else { &h.native_conversation };
+        let conv_did = did_for_service("conversation");
+        let store = conv.store_for(&conv_did).await.unwrap();
+        let msg = store.get_message("p-bad").unwrap().expect("stored message");
+        assert_eq!(msg.admission, "dropped");
+        assert_eq!(msg.admission_reason.as_deref(), Some("not-owner"));
     }
 
-    let lw0 = one_rpc(&h, true, "conversation.list", json!({ "kind": "group" })).await;
-    let init_ts = lw0["result"]["conversations"][0]["group"]["name_source"]["sender_timestamp_ms"]
-        .as_i64()
-        .unwrap();
-    let ts_newer = init_ts + 2_000;
-    let ts_older = init_ts + 1_000;
-
-    let good_body_newer = group_profile_body("New Name");
-    h.deliver(
-        true,
-        inbound_custom(
-            "p-newer",
-            &group_w,
-            &conv_svc,
-            ts_newer,
-            GROUP_PROFILE_CONTENT_TYPE,
-            good_body_newer.clone(),
-        ),
-    )
-    .await;
-    h.deliver(
-        false,
-        inbound_custom(
-            "p-newer",
-            &group_n,
-            &conv_svc,
-            ts_newer,
-            GROUP_PROFILE_CONTENT_TYPE,
-            good_body_newer,
-        ),
-    )
-    .await;
+    let rw =
+        one_rpc(&h, true, "group.rename", json!({ "conversation": group_w, "name": "New Name" }))
+            .await;
+    let rn =
+        one_rpc(&h, false, "group.rename", json!({ "conversation": group_n, "name": "New Name" }))
+            .await;
+    assert_eq!(rw["result"]["name"], "New Name");
+    assert_eq!(rn["result"]["name"], "New Name");
 
     let lw = one_rpc(&h, true, "conversation.list", json!({ "kind": "group" })).await;
     let ln = one_rpc(&h, false, "conversation.list", json!({ "kind": "group" })).await;
     assert_eq!(lw["result"]["conversations"][0]["group"]["name"], "New Name");
     assert_eq!(ln["result"]["conversations"][0]["group"]["name"], "New Name");
-
-    let stale_body_older = group_profile_body("Stale Name");
-    h.deliver(
-        true,
-        inbound_custom(
-            "p-older",
-            &group_w,
-            &conv_svc,
-            ts_older,
-            GROUP_PROFILE_CONTENT_TYPE,
-            stale_body_older.clone(),
-        ),
-    )
-    .await;
-    h.deliver(
-        false,
-        inbound_custom(
-            "p-older",
-            &group_n,
-            &conv_svc,
-            ts_older,
-            GROUP_PROFILE_CONTENT_TYPE,
-            stale_body_older,
-        ),
-    )
-    .await;
-
-    let lw2 = one_rpc(&h, true, "conversation.list", json!({ "kind": "group" })).await;
-    let ln2 = one_rpc(&h, false, "conversation.list", json!({ "kind": "group" })).await;
-    assert_eq!(lw2["result"]["conversations"][0]["group"]["name"], "New Name");
-    assert_eq!(ln2["result"]["conversations"][0]["group"]["name"], "New Name");
 }
 
 #[tokio::test]
@@ -499,7 +451,7 @@ async fn scenario_209_transcript_digest_parity() {
         one_rpc(&h, true, "conversation.transcript-digest", json!({ "conversation": group_w }))
             .await;
     assert_eq!(dw1, dw2);
-    assert_eq!(dw1["result"]["rows"], 1);
+    assert_eq!(dw1["result"]["rows"], 2);
 
     let dn1 =
         one_rpc(&h, false, "conversation.transcript-digest", json!({ "conversation": group_n }))
@@ -508,7 +460,7 @@ async fn scenario_209_transcript_digest_parity() {
         one_rpc(&h, false, "conversation.transcript-digest", json!({ "conversation": group_n }))
             .await;
     assert_eq!(dn1, dn2);
-    assert_eq!(dn1["result"]["rows"], 1);
+    assert_eq!(dn1["result"]["rows"], 2);
 
     h.deliver(true, inbound("m-209", &group_w, "did:key:zPeer209", 1_000, "digest msg")).await;
     h.deliver(false, inbound("m-209", &group_n, "did:key:zPeer209", 1_000, "digest msg")).await;
@@ -521,8 +473,8 @@ async fn scenario_209_transcript_digest_parity() {
             .await;
     assert_ne!(dw1["result"]["digest"], dw3["result"]["digest"]);
     assert_ne!(dn1["result"]["digest"], dn3["result"]["digest"]);
-    assert_eq!(dw3["result"]["rows"], 2);
-    assert_eq!(dn3["result"]["rows"], 2);
+    assert_eq!(dw3["result"]["rows"], 3);
+    assert_eq!(dn3["result"]["rows"], 3);
 
     one_rpc(&h, true, "conversation.delete-message", json!({ "message_id": "m-209" })).await;
     one_rpc(&h, false, "conversation.delete-message", json!({ "message_id": "m-209" })).await;
@@ -534,6 +486,6 @@ async fn scenario_209_transcript_digest_parity() {
             .await;
     assert_eq!(dw3["result"]["digest"], dw4["result"]["digest"]);
     assert_eq!(dn3["result"]["digest"], dn4["result"]["digest"]);
-    assert_eq!(dw4["result"]["rows"], 2);
-    assert_eq!(dn4["result"]["rows"], 2);
+    assert_eq!(dw4["result"]["rows"], 3);
+    assert_eq!(dn4["result"]["rows"], 3);
 }

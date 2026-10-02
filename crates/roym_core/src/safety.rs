@@ -94,6 +94,12 @@ pub enum Admission {
     RateLimited { retry_after_secs: u64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirstContactResult {
+    pub admission: Admission,
+    pub blocked: bool,
+}
+
 fn admit_windowed(
     prior_secs: &[u64],
     window_secs: u64,
@@ -124,11 +130,10 @@ pub fn admit_first_contact(
     attempts_secs: &[u64],
     limits: &ContactLimits,
     now_secs: u64,
-) -> Admission {
-    if blocked {
-        return Admission::Blocked;
-    }
-    admit_windowed(attempts_secs, limits.window_secs, limits.max_per_window, now_secs)
+) -> FirstContactResult {
+    let admission =
+        admit_windowed(attempts_secs, limits.window_secs, limits.max_per_window, now_secs);
+    FirstContactResult { admission, blocked }
 }
 
 pub fn admit_publication(
@@ -146,13 +151,19 @@ mod tests {
     #[test]
     fn empty_history_allows() {
         let limits = ContactLimits::default();
-        assert_eq!(admit_first_contact(false, &[], &limits, 1000), Admission::Allow);
+        assert_eq!(
+            admit_first_contact(false, &[], &limits, 1000),
+            FirstContactResult { admission: Admission::Allow, blocked: false }
+        );
     }
 
     #[test]
-    fn blocked_beats_clean_history() {
+    fn blocked_computes_limit_and_reports_blocked() {
         let limits = ContactLimits::default();
-        assert_eq!(admit_first_contact(true, &[], &limits, 1000), Admission::Blocked);
+        assert_eq!(
+            admit_first_contact(true, &[], &limits, 1000),
+            FirstContactResult { admission: Admission::Allow, blocked: true }
+        );
     }
 
     #[test]
@@ -160,7 +171,10 @@ mod tests {
         let limits = ContactLimits { window_secs: 3600, max_per_window: 0 };
         assert_eq!(
             admit_first_contact(false, &[], &limits, 1000),
-            Admission::RateLimited { retry_after_secs: 3600 }
+            FirstContactResult {
+                admission: Admission::RateLimited { retry_after_secs: 3600 },
+                blocked: false,
+            }
         );
     }
 
@@ -171,7 +185,13 @@ mod tests {
         let now = 1000;
         let res = admit_first_contact(false, &history, &limits, now);
         // oldest inside window (floor = 900) is 950. 950 + 100 - 1000 = 50.
-        assert_eq!(res, Admission::RateLimited { retry_after_secs: 50 });
+        assert_eq!(
+            res,
+            FirstContactResult {
+                admission: Admission::RateLimited { retry_after_secs: 50 },
+                blocked: false,
+            }
+        );
     }
 
     #[test]
@@ -180,7 +200,10 @@ mod tests {
         // floor is 1000 - 100 = 900. 900 is outside floor (*t > floor).
         let history = vec![900, 950];
         let now = 1000;
-        assert_eq!(admit_first_contact(false, &history, &limits, now), Admission::Allow);
+        assert_eq!(
+            admit_first_contact(false, &history, &limits, now),
+            FirstContactResult { admission: Admission::Allow, blocked: false }
+        );
     }
 
     #[test]
@@ -189,11 +212,17 @@ mod tests {
         let history = vec![1000];
         let now = 1000;
         let res = admit_first_contact(false, &history, &limits, now);
-        assert_eq!(res, Admission::RateLimited { retry_after_secs: 100 });
+        assert_eq!(
+            res,
+            FirstContactResult {
+                admission: Admission::RateLimited { retry_after_secs: 100 },
+                blocked: false,
+            }
+        );
 
         let history_future = vec![1050];
         let res_fut = admit_first_contact(false, &history_future, &limits, now);
-        if let Admission::RateLimited { retry_after_secs } = res_fut {
+        if let Admission::RateLimited { retry_after_secs } = res_fut.admission {
             assert!(retry_after_secs >= 1);
         } else {
             panic!("expected RateLimited");

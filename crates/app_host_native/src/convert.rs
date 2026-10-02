@@ -6,10 +6,13 @@ use syneroym_app_host::types::{
     app_config::ConfigError as GuestConfigError,
     blob_store::BlobError as GuestBlobError,
     conversation::{
+        Admission as GuestAdmission, ChangePage as GuestChangePage,
         ConversationError as GuestConversationError, ConversationKind as GuestConversationKind,
         ConversationSummary as GuestConversationSummary, DeliveryState as GuestDeliveryState,
-        GroupInfo as GuestGroupInfo, HistoryPage as GuestHistoryPage,
+        ExportChunk as GuestExportChunk, GroupInfo as GuestGroupInfo,
+        HistoryItem as GuestHistoryItem, HistoryPage as GuestHistoryPage,
         MembershipEvent as GuestMembershipEvent, Message as GuestMessage,
+        NameEvent as GuestNameEvent,
     },
     data_layer::{
         CollectionSchema as GuestCollectionSchema, DataLayerError as GuestDataLayerError,
@@ -31,14 +34,16 @@ use syneroym_app_host::types::{
     vault::VaultError as GuestVaultError,
 };
 use syneroym_rpc::{
-    ConversationDeliveryState as RpcDeliveryState, ConversationMessage as RpcMessage,
+    Admission as RpcAdmission, ConversationDeliveryState as RpcDeliveryState,
+    ConversationMessage as RpcMessage, DropAnswer as RpcDropAnswer,
 };
 use syneroym_wit_interfaces::{
     conversation_host::syneroym::conversation::conversation::{
-        ConversationError as HostConversationError, ConversationKind as HostConversationKind,
-        ConversationSummary as HostConversationSummary, DeliveryState as HostDeliveryState,
-        GroupInfo as HostGroupInfo, HistoryPage as HostHistoryPage,
-        MembershipEvent as HostMembershipEvent, Message as HostMessage,
+        ChangePage as HostChangePage, ConversationError as HostConversationError,
+        ConversationKind as HostConversationKind, ConversationSummary as HostConversationSummary,
+        DeliveryState as HostDeliveryState, ExportChunk as HostExportChunk,
+        GroupInfo as HostGroupInfo, HistoryItem as HostHistoryItem, HistoryPage as HostHistoryPage,
+        MembershipEvent as HostMembershipEvent, Message as HostMessage, NameEvent as HostNameEvent,
     },
     host::syneroym::{
         app_config::app_config::ConfigError as HostConfigError,

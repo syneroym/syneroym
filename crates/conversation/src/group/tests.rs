@@ -206,7 +206,7 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
     assert_eq!(unapplied[0].entry_id, entry.entry_id);
 
     // Now key arrives
-    {
+    let msg_id = {
         let conn = s.conn().lock().unwrap();
         let tx = conn.unchecked_transaction().unwrap();
         tx.execute(
@@ -218,14 +218,22 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
         let (_, msg_opt) =
             apply_entry(&tx, "svc:me", conv_id, &unapplied[0], s.config(), now).unwrap();
         assert!(msg_opt.is_some());
+        let msg = msg_opt.unwrap();
         tx.commit().unwrap();
-    }
+        msg.id
+    };
+    s.apply_admission(&msg_id, &syneroym_rpc::Admission::Accept, now).unwrap();
 
     // Unapplied should now be empty
     assert!(s.unapplied_dag_entries(conv_id).unwrap().is_empty());
     let hist = s.history(conv_id, 10, None).unwrap();
-    assert_eq!(hist.messages.len(), 1);
-    assert_eq!(hist.messages[0].body, b"msg");
+    assert_eq!(hist.items.len(), 1);
+    match &hist.items[0] {
+        syneroym_rpc::ConversationHistoryItem::Message(m) => {
+            assert_eq!(m.body, b"msg");
+        }
+        _ => panic!("expected message item"),
+    }
 }
 
 #[test]
@@ -332,6 +340,7 @@ fn stored_dag_from(entry: &WireEntry) -> StoredDagEntry {
         ciphertext: entry.ciphertext.clone(),
         nonce: entry.nonce,
         payload: entry.payload.clone(),
+        profile_payload: entry.profile_payload.clone(),
         signature: entry.signature,
         applied: false,
         relay_pending: false,

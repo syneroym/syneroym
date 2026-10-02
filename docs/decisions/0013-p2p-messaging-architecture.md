@@ -3,7 +3,8 @@
 ## Status
 Proposed — **amended 2026-08-13**: Decision 6's MLS choice is replaced by an
 owner-distributed group key. See *Amendment 1* below. Decision 5's ordering rule
-is unaffected and still stands.
+is unaffected and still stands. **Amended 2026-10-02**: Inbound admission, deletion,
+search, and history export ownership are defined in [ADR-0025](0025-conversation-capability-owns-history.md).
 
 ## Context
 Syneroym requires a messaging architecture that strictly adheres to locality-first, offline-first, and data sovereignty principles. A core challenge in true P2P networks is handling asynchronous messaging and multi-device sync without falling back to centralized SaaS-like database structures or "always-on" third-party maildrops. 

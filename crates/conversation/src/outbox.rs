@@ -33,6 +33,9 @@ impl ConversationService {
                 () = tokio::time::sleep(tick) => {
                     self.drain_once().await;
                     self.drain_relay_pending_once().await;
+                    self.renotify_undecided_once().await;
+                    self.expire_held_once().await;
+                    self.wal_checkpoint_once().await;
                     self.scheduled_rekey_once().await;
                     sync_tick_count = sync_tick_count.wrapping_add(1);
                     self.periodic_group_sync_once(tick, sync_tick_count).await;
@@ -56,6 +59,9 @@ impl ConversationService {
                 }
                 if let Ok(convs) = store.group_conversations() {
                     for conv in convs {
+                        if conv.restored {
+                            continue;
+                        }
                         let _ = self
                             .periodic_group_sync_pass(&svc, &conv.id, tick_count as usize)
                             .await;
@@ -84,6 +90,11 @@ impl ConversationService {
             {
                 let fanout = store.config().conversation_relay_fanout.max(1) as usize;
                 for entry in entries {
+                    if let Ok(Some(conv)) = store.get_conversation(&entry.conversation_id)
+                        && conv.restored
+                    {
+                        continue;
+                    }
                     if let Ok(members) = store.current_members(&entry.conversation_id) {
                         let wire = entry.into_wire();
                         let mut targets: Vec<String> = members
@@ -169,7 +180,7 @@ impl ConversationService {
             let _ = store.queue().complete(item.id);
             return;
         };
-        if msg.state != ConversationDeliveryState::Pending {
+        if msg.restored || msg.state != ConversationDeliveryState::Pending {
             let _ = store.delete_outbound_envelope(&msg.id);
             let _ = store.queue().complete(item.id);
             return;
@@ -333,6 +344,77 @@ impl ConversationService {
                 error = reason,
                 "conversation delivery gave up"
             );
+        }
+    }
+
+    async fn renotify_undecided_once(&self) {
+        let now = now_ms();
+        let services = self.candidate_service_ids();
+        for svc in services {
+            let Ok(store) = self.store_for(&svc).await else { continue };
+            let Ok(msgs) = store.undecided_messages(now) else { continue };
+            for msg in msgs {
+                let outcome = self.notify_message(&svc, msg.clone().into_wire()).await;
+                match outcome {
+                    syneroym_rpc::NotifyOutcome::Answered(admission) => {
+                        let _ = store.apply_admission(&msg.id, &admission, now);
+                        if let syneroym_rpc::Admission::Drop(drop_ans) = admission
+                            && drop_ans.report
+                            && let Ok(Some(conv)) = store.get_conversation(&msg.conversation_id)
+                            && conv.kind == syneroym_rpc::ConversationKind::Direct
+                            && let Some(peer) = conv.peer_address
+                        {
+                            let body = crate::dag::refusal_notice_body(&msg.id, &drop_ans.reason);
+                            let _ = self
+                                .enqueue_direct(
+                                    &store,
+                                    &svc,
+                                    &peer,
+                                    crate::dag::REFUSAL_NOTICE_CONTENT_TYPE,
+                                    &body,
+                                    true,
+                                )
+                                .await;
+                        }
+                    }
+                    syneroym_rpc::NotifyOutcome::NoHandler => {
+                        let _ =
+                            store.apply_admission(&msg.id, &syneroym_rpc::Admission::Accept, now);
+                    }
+                    syneroym_rpc::NotifyOutcome::NoAnswer => {}
+                }
+            }
+        }
+    }
+
+    async fn expire_held_once(&self) {
+        let now = now_ms();
+        let services = self.candidate_service_ids();
+        for svc in services {
+            if let Ok(store) = self.store_for(&svc).await {
+                let max_age_ms = (store.config().max_held_age_secs as i64).saturating_mul(1000);
+                let _ = store.expire_held_messages(max_age_ms, now);
+            }
+        }
+    }
+
+    async fn wal_checkpoint_once(&self) {
+        let services = self.candidate_service_ids();
+        for svc in services {
+            if let Ok(store) = self.store_for(&svc).await
+                && store.take_wal_checkpoint_flag()
+            {
+                let res = {
+                    let Ok(conn) = store.conn().lock() else {
+                        store.flag_wal_checkpoint();
+                        continue;
+                    };
+                    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                };
+                if res.is_err() {
+                    store.flag_wal_checkpoint();
+                }
+            }
         }
     }
 }

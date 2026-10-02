@@ -175,6 +175,11 @@ impl AppSandboxEngine {
             "state": Self::conversation_state_str(msg.state),
             "verified": msg.verified,
             "last-error": msg.last_error,
+            "outgoing": msg.outgoing,
+            "deleted-at": msg.deleted_at,
+            "restored": msg.restored,
+            "visible-seq": msg.visible_seq,
+            "refused": msg.refused,
         })
     }
 
@@ -186,6 +191,57 @@ impl AppSandboxEngine {
         }
     }
 
+    fn parse_admission_from_wasm_val(val: &Val) -> Option<syneroym_rpc::Admission> {
+        match val {
+            Val::Result(Ok(Some(boxed))) => match boxed.as_ref() {
+                Val::Variant(tag, payload) => match tag.as_str() {
+                    "accept" => Some(syneroym_rpc::Admission::Accept),
+                    "hold" => {
+                        if let Some(inner) = payload
+                            && let Val::String(reason) = inner.as_ref()
+                        {
+                            Some(syneroym_rpc::Admission::Hold(reason.clone()))
+                        } else {
+                            None
+                        }
+                    }
+                    "drop" => {
+                        if let Some(inner) = payload
+                            && let Val::Record(fields) = inner.as_ref()
+                        {
+                            let mut reason = None;
+                            let mut report = None;
+                            for (name, fval) in fields {
+                                if name == "reason"
+                                    && let Val::String(r) = fval
+                                {
+                                    reason = Some(r.clone());
+                                } else if name == "report"
+                                    && let Val::Bool(b) = fval
+                                {
+                                    report = Some(*b);
+                                }
+                            }
+                            if let (Some(reason), Some(report)) = (reason, report) {
+                                Some(syneroym_rpc::Admission::Drop(syneroym_rpc::DropAnswer {
+                                    reason,
+                                    report,
+                                }))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Invokes the deployed component's optional
     /// `syneroym:conversation/guest-api::on-message` export, mirroring
     /// [`Self::deliver_message`]'s shape exactly (retry budget,
@@ -194,7 +250,7 @@ impl AppSandboxEngine {
         &self,
         service_id: &str,
         msg: syneroym_rpc::ConversationMessage,
-    ) {
+    ) -> syneroym_rpc::NotifyOutcome {
         const GUEST_API_INTERFACE: &str = "syneroym:conversation/guest-api@0.1.0";
         const MAX_ATTEMPTS: u32 = 4;
         const RETRY_BACKOFF: Duration = Duration::from_millis(50);
@@ -219,7 +275,7 @@ impl AppSandboxEngine {
                 }
                 Err(e) => {
                     warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: failed to instantiate for on-message, giving up");
-                    return;
+                    return syneroym_rpc::NotifyOutcome::NoAnswer;
                 }
             };
 
@@ -235,12 +291,12 @@ impl AppSandboxEngine {
                         service_id,
                         "conversation: component does not export guest-api::on-message, discarding"
                     );
-                    return;
+                    return syneroym_rpc::NotifyOutcome::NoHandler;
                 }
             };
             let params_iter = match &item {
                 ComponentItem::ComponentFunc(f) => f.params(),
-                _ => return,
+                _ => return syneroym_rpc::NotifyOutcome::NoAnswer,
             };
             let wasm_params = match conversions::json_to_wasm_params(
                 params_iter,
@@ -249,7 +305,7 @@ impl AppSandboxEngine {
                 Ok(p) => p,
                 Err(e) => {
                     warn!(service_id, error = %e, "conversation: could not encode on-message params");
-                    return;
+                    return syneroym_rpc::NotifyOutcome::NoAnswer;
                 }
             };
             let mut results = vec![Val::Bool(false); results_len];
@@ -257,8 +313,15 @@ impl AppSandboxEngine {
                 Ok(()) => {
                     if let Some(msg) = Self::wasm_result_err(&results) {
                         warn!(service_id, error = %msg, "conversation: on-message returned an error");
+                        return syneroym_rpc::NotifyOutcome::NoAnswer;
                     }
-                    return;
+                    if let Some(res) = results.first()
+                        && let Some(adm) = Self::parse_admission_from_wasm_val(res)
+                    {
+                        return syneroym_rpc::NotifyOutcome::Answered(adm);
+                    }
+                    warn!(service_id, "conversation: on-message returned unparseable admission");
+                    return syneroym_rpc::NotifyOutcome::NoAnswer;
                 }
                 Err(e) if !last_attempt => {
                     debug!(service_id, attempt, error = %e, "conversation: on-message invocation trapped, retrying");
@@ -266,10 +329,11 @@ impl AppSandboxEngine {
                 }
                 Err(e) => {
                     warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: on-message invocation trapped, giving up");
-                    return;
+                    return syneroym_rpc::NotifyOutcome::NoAnswer;
                 }
             }
         }
+        syneroym_rpc::NotifyOutcome::NoAnswer
     }
 
     /// Invokes the deployed component's optional
@@ -415,8 +479,12 @@ impl RowAuthorizer for AppSandboxEngine {
 
 #[async_trait::async_trait]
 impl syneroym_rpc::ConversationNotifier for AppSandboxEngine {
-    async fn notify_message(&self, service_id: &str, msg: syneroym_rpc::ConversationMessage) {
-        self.notify_guest_message(service_id, msg).await;
+    async fn notify_message(
+        &self,
+        service_id: &str,
+        msg: syneroym_rpc::ConversationMessage,
+    ) -> syneroym_rpc::NotifyOutcome {
+        self.notify_guest_message(service_id, msg).await
     }
 
     async fn notify_delivery_state(

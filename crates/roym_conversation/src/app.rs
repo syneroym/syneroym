@@ -1,37 +1,31 @@
 //! Conversation service application logic, target-independent.
-//!
-//! Two things live here: Roym's own copy of every message it sends and
-//! receives (what export, search and delete act on), and the product's
-//! inbox -- the enforcement point for the block list and the first-contact
-//! rate limit.
 
 pub mod backup;
 pub mod group;
 pub mod inbox;
 pub mod messages;
 
-pub use inbox::{on_delivery_state, on_message};
+use std::collections::HashMap;
+
+pub use inbox::on_message;
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
     types::{
+        conversation::ConversationError,
         data_layer::{CollectionSchema, IndexDefinition, IndexType, RecordWriteValue},
         proxy::CallTarget,
     },
 };
 use syneroym_roym_core::{
     admit,
-    conversation::{ConversationRow, MessageRow},
     envelope::{Request, Response},
     services, signing,
 };
 
-/// Bumped in this slice: group conversations added.
-pub const SCHEMA_VERSION: u32 = 3;
-
-pub const CONVERSATIONS: &str = "conversations";
-pub const MESSAGES: &str = "messages";
-pub const REFUSED_MESSAGES: &str = "refused_messages";
+pub const SCHEMA_VERSION: u32 = 4;
+pub const ADMISSIONS: &str = "admissions";
+pub const FIRST_CONTACT_CHARGES: &str = "first_contact_charges";
 
 pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     Ok(json!({
@@ -58,97 +52,78 @@ pub(crate) async fn ensure_coll<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
-pub(crate) async fn ensure_conversations<H: AppHost>(host: &H) -> Result<(), String> {
-    ensure_coll(host, CONVERSATIONS, &[idx("last_activity_ms", IndexType::Numeric)]).await
+pub(crate) async fn ensure_admissions<H: AppHost>(host: &H) -> Result<(), String> {
+    ensure_coll(host, ADMISSIONS, &[]).await
 }
 
-pub(crate) async fn ensure_messages<H: AppHost>(host: &H) -> Result<(), String> {
-    ensure_coll(
-        host,
-        MESSAGES,
-        &[
-            idx("conversation", IndexType::String),
-            idx("sender_timestamp_ms", IndexType::Numeric),
-            idx("state", IndexType::String),
-        ],
-    )
-    .await
+pub(crate) async fn ensure_charges<H: AppHost>(host: &H) -> Result<(), String> {
+    ensure_coll(host, FIRST_CONTACT_CHARGES, &[idx("at_secs", IndexType::Numeric)]).await
 }
 
-pub(crate) async fn ensure_refused<H: AppHost>(host: &H) -> Result<(), String> {
-    ensure_coll(
-        host,
-        REFUSED_MESSAGES,
-        &[idx("at_secs", IndexType::Numeric), idx("conversation", IndexType::String)],
-    )
-    .await
-}
-
-pub(crate) async fn put_conversation<H: AppHost>(
+pub(crate) async fn load_admission_info<H: AppHost>(
     host: &H,
-    row: &ConversationRow,
-) -> Result<(), String> {
-    ensure_conversations(host).await?;
-    let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
-    AppDataLayer::put(
-        host,
-        CONVERSATIONS.to_string(),
-        RecordWriteValue { id: row.id.clone(), payload: bytes },
-    )
-    .await
-    .map_err(|e| e.to_string())
-}
-
-pub(crate) async fn create_conversation<H: AppHost>(
-    host: &H,
-    row: &ConversationRow,
-) -> Result<bool, String> {
-    ensure_conversations(host).await?;
-    let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
-    let val = RecordWriteValue { id: row.id.clone(), payload: bytes };
-    let res = AppDataLayer::create(host, CONVERSATIONS.to_string(), vec![val])
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(res.is_none())
-}
-
-pub(crate) async fn put_message<H: AppHost>(host: &H, row: &MessageRow) -> Result<(), String> {
-    ensure_messages(host).await?;
-    let bytes = serde_json::to_vec(row).map_err(|e| e.to_string())?;
-    AppDataLayer::put(
-        host,
-        MESSAGES.to_string(),
-        RecordWriteValue { id: row.id.clone(), payload: bytes },
-    )
-    .await
-    .map_err(|e| e.to_string())
-}
-
-pub(crate) async fn load_message<H: AppHost>(
-    host: &H,
-    id: &str,
-) -> Result<Option<MessageRow>, String> {
-    ensure_messages(host).await?;
-    let row = AppDataLayer::get(host, MESSAGES.to_string(), id.to_string())
+    conversation_id: &str,
+) -> Result<(Option<String>, Option<String>), String> {
+    ensure_admissions(host).await?;
+    let row = AppDataLayer::get(host, ADMISSIONS.to_string(), conversation_id.to_string())
         .await
         .map_err(|e| e.to_string())?;
     match row {
-        Some(r) => serde_json::from_slice(&r.payload).map(Some).map_err(|e| e.to_string()),
-        None => Ok(None),
+        Some(r) => {
+            let v: Value = serde_json::from_slice(&r.payload).map_err(|e| e.to_string())?;
+            let state = v.get("state").and_then(Value::as_str).map(str::to_string);
+            let peer = v.get("peer_address").and_then(Value::as_str).map(str::to_string);
+            Ok((state, peer))
+        }
+        None => Ok((None, None)),
     }
 }
 
-pub(crate) async fn load_conversation<H: AppHost>(
+pub(crate) async fn load_admission<H: AppHost>(
     host: &H,
-    id: &str,
-) -> Result<Option<ConversationRow>, String> {
-    ensure_conversations(host).await?;
-    let row = AppDataLayer::get(host, CONVERSATIONS.to_string(), id.to_string())
-        .await
-        .map_err(|e| e.to_string())?;
-    match row {
-        Some(r) => serde_json::from_slice(&r.payload).map(Some).map_err(|e| e.to_string()),
-        None => Ok(None),
+    conversation_id: &str,
+) -> Result<Option<String>, String> {
+    let (state, _) = load_admission_info(host, conversation_id).await?;
+    Ok(state)
+}
+
+pub(crate) async fn set_admission<H: AppHost>(
+    host: &H,
+    conversation_id: &str,
+    state: &str,
+) -> Result<(), String> {
+    set_admission_peer(host, conversation_id, state, None).await
+}
+
+pub(crate) async fn set_admission_peer<H: AppHost>(
+    host: &H,
+    conversation_id: &str,
+    state: &str,
+    peer_address: Option<&str>,
+) -> Result<(), String> {
+    ensure_admissions(host).await?;
+    let mut obj = json!({ "state": state });
+    if let Some(peer) = peer_address {
+        obj["peer_address"] = json!(peer);
+    }
+    let payload = serde_json::to_vec(&obj).map_err(|e| e.to_string())?;
+    AppDataLayer::put(
+        host,
+        ADMISSIONS.to_string(),
+        RecordWriteValue { id: conversation_id.to_string(), payload },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) fn from_host(err: ConversationError) -> Response {
+    match err {
+        ConversationError::NotFound => Response::invalid_params("not found"),
+        ConversationError::InvalidArgument(m) => Response::invalid_params(m),
+        ConversationError::PermissionDenied => Response::err(-32003, "permission denied"),
+        ConversationError::Unreachable(m) => Response::internal_error(m),
+        ConversationError::QuotaExceeded => Response::err(-32004, "quota exceeded"),
+        ConversationError::Internal(m) => Response::internal_error(m),
     }
 }
 
@@ -173,10 +148,8 @@ pub(crate) async fn profile_call<H: AppHost>(
 }
 
 /// Map of conversation_address -> person_did from contacts.list.
-pub(crate) async fn contacts_map<H: AppHost>(
-    host: &H,
-) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
+pub(crate) async fn contacts_map<H: AppHost>(host: &H) -> HashMap<String, String> {
+    let mut map = HashMap::new();
     if let Ok(resp) = profile_call(host, "contacts.list", json!({})).await
         && let Some(rows) = resp.result.and_then(|v| v.as_array().cloned())
     {
@@ -212,6 +185,7 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         "conversation.list" => messages::list(host, &req).await,
         "conversation.send" => messages::send(host, &req).await,
         "conversation.history" => messages::history(host, &req).await,
+        "conversation.changes" => messages::changes(host, &req).await,
         "conversation.delivery-status" => messages::delivery_status(host, &req).await,
         "conversation.outbox" => messages::outbox(host).await,
         "conversation.retry" => messages::retry(host, &req).await,

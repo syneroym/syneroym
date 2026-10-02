@@ -8,7 +8,7 @@ use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobWriter, AppConversation, AppDataLayer, AppHost,
     AppInvocation, AppWebSocket,
     types::{
-        conversation::{ConversationKind, DeliveryState, Message},
+        conversation::{Admission, ConversationKind, DeliveryState, HistoryItem, Message},
         data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
         http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
         invocation::CallerOrigin,

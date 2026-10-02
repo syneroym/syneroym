@@ -23,8 +23,8 @@ use types::{
     app_config::ConfigError,
     blob_store::BlobError,
     conversation::{
-        ConversationError, ConversationSummary, DeliveryState, GroupInfo, HistoryPage,
-        MembershipEvent, Message,
+        Admission, ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
+        GroupInfo, HistoryPage, Message,
     },
     data_layer::*,
     http::FrameKind,
@@ -331,10 +331,6 @@ pub trait AppConversation {
         &self,
         conversation: String,
     ) -> impl Future<Output = Result<Vec<String>, ConversationError>> + Send;
-    fn membership_history(
-        &self,
-        conversation: String,
-    ) -> impl Future<Output = Result<Vec<MembershipEvent>, ConversationError>> + Send;
     fn sync_now(
         &self,
         conversation: String,
@@ -347,6 +343,45 @@ pub trait AppConversation {
         &self,
         message: String,
     ) -> impl Future<Output = Result<Message, ConversationError>> + Send;
+    fn delete_message(
+        &self,
+        message: String,
+        ask_others: bool,
+    ) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    fn readmit(
+        &self,
+        conversation: String,
+        reasons: Vec<String>,
+    ) -> impl Future<Output = Result<u32, ConversationError>> + Send;
+    fn changes(
+        &self,
+        conversation: String,
+        after_seq: u64,
+        limit: u32,
+    ) -> impl Future<Output = Result<ChangePage, ConversationError>> + Send;
+    fn search(
+        &self,
+        query: String,
+        conversation: Option<String>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Message>, ConversationError>> + Send;
+    fn set_group_name(
+        &self,
+        conversation: String,
+        name: String,
+    ) -> impl Future<Output = Result<(), ConversationError>> + Send;
+    fn transcript_digest(
+        &self,
+        conversation: String,
+    ) -> impl Future<Output = Result<String, ConversationError>> + Send;
+    fn export_history(
+        &self,
+        cursor: Option<String>,
+    ) -> impl Future<Output = Result<ExportChunk, ConversationError>> + Send;
+    fn import_history(
+        &self,
+        data: Vec<u8>,
+    ) -> impl Future<Output = Result<u32, ConversationError>> + Send;
 }
 
 /// The host -> app direction for conversations.
@@ -354,6 +389,6 @@ pub trait AppConversation {
 /// contract, and used as `dyn`.
 #[async_trait::async_trait]
 pub trait ConversationSink: Send + Sync + core::fmt::Debug {
-    async fn on_message(&self, msg: Message) -> Result<(), String>;
+    async fn on_message(&self, msg: Message) -> Result<Admission, String>;
     async fn on_delivery_state(&self, message: String, state: DeliveryState) -> Result<(), String>;
 }

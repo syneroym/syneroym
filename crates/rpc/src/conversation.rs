@@ -54,6 +54,9 @@ pub struct ConversationSummary {
     pub participants: Vec<String>,
     pub created_at: i64,
     pub last_activity_at: i64,
+    pub message_count: u32,
+    pub name: Option<String>,
+    pub restored: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,11 +80,62 @@ pub struct ConversationMessage {
     pub state: ConversationDeliveryState,
     pub verified: bool,
     pub last_error: Option<String>,
+    pub outgoing: bool,
+    pub deleted_at: Option<i64>,
+    pub restored: bool,
+    pub visible_seq: u64,
+    pub refused: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropAnswer {
+    pub reason: String,
+    pub report: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    Accept,
+    Hold(String),
+    Drop(DropAnswer),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotifyOutcome {
+    Answered(Admission),
+    NoHandler,
+    NoAnswer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationNameEvent {
+    pub entry: String,
+    pub name: String,
+    pub sender_timestamp: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversationHistoryItem {
+    Message(ConversationMessage),
+    Membership(ConversationMembershipEvent),
+    GroupName(ConversationNameEvent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationHistoryPage {
+    pub items: Vec<ConversationHistoryItem>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationChangePage {
     pub messages: Vec<ConversationMessage>,
+    pub last_seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationExportChunk {
+    pub data: Vec<u8>,
     pub next_cursor: Option<String>,
 }
 
@@ -104,17 +158,15 @@ pub struct ConversationGroupInfo {
     pub key_epoch: u64,
     /// When this substrate stored the key for `key_epoch`, Unix milliseconds.
     pub key_stored_at: i64,
+    pub name: Option<String>,
+    pub restored: bool,
 }
 
-/// The guest-facing surface (`syneroym:conversation/conversation`, seven
-/// functions) plus the two peer-facing transport verbs
-/// (`prekey_bundle`/`peer_deliver`) reached only through the native-capability
-/// `conversation` dispatch arm, never through this trait from a guest.
+/// The guest-facing surface (`syneroym:conversation/conversation`) plus
+/// peer-facing transport verbs reached through the native-capability
+/// `conversation` dispatch arm.
 ///
-/// Every method is keyed by `service_id` (`HostState.component_id` /
-/// `SynSvcNativeService.service_id`) -- never by anything a caller passes --
-/// so one service can never reach another's conversation store: no
-/// cross-service conversation access exists, and no interface for one.
+/// Every method is keyed by `service_id`.
 #[async_trait::async_trait]
 pub trait ConversationHost: Send + Sync + Debug {
     async fn open_direct(
@@ -179,19 +231,10 @@ pub trait ConversationHost: Send + Sync + Debug {
         conversation: &str,
     ) -> Result<Vec<String>, ConversationError>;
 
-    async fn membership_history(
-        &self,
-        service_id: &str,
-        conversation: &str,
-    ) -> Result<Vec<ConversationMembershipEvent>, ConversationError>;
-
     async fn sync_now(&self, service_id: &str, conversation: &str)
     -> Result<(), ConversationError>;
 
     /// Returns owner, membership, epoch, and key state for a group.
-    ///
-    /// `InvalidArgument` for a direct conversation; `NotFound` for an
-    /// unknown id.
     async fn group_info(
         &self,
         service_id: &str,
@@ -199,17 +242,68 @@ pub trait ConversationHost: Send + Sync + Debug {
     ) -> Result<ConversationGroupInfo, ConversationError>;
 
     /// Returns one stored message by id.
-    ///
-    /// `NotFound` for an unknown id and for system messages (group keys).
     async fn get_message(
         &self,
         service_id: &str,
         message: &str,
     ) -> Result<ConversationMessage, ConversationError>;
 
-    /// Peer-facing: accepts DAG entries pushed by another member. The
-    /// bytes are a serde-encoded `GroupPushRequest`; both ends agree on
-    /// the encoding, so this trait need not name it.
+    async fn delete_message(
+        &self,
+        service_id: &str,
+        message: &str,
+        ask_others: bool,
+    ) -> Result<(), ConversationError>;
+
+    async fn readmit(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        reasons: Vec<String>,
+    ) -> Result<u32, ConversationError>;
+
+    async fn changes(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<ConversationChangePage, ConversationError>;
+
+    async fn search(
+        &self,
+        service_id: &str,
+        query: &str,
+        conversation: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ConversationMessage>, ConversationError>;
+
+    async fn set_group_name(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        name: &str,
+    ) -> Result<(), ConversationError>;
+
+    async fn transcript_digest(
+        &self,
+        service_id: &str,
+        conversation: &str,
+    ) -> Result<String, ConversationError>;
+
+    async fn export_history(
+        &self,
+        service_id: &str,
+        cursor: Option<String>,
+    ) -> Result<ConversationExportChunk, ConversationError>;
+
+    async fn import_history(
+        &self,
+        service_id: &str,
+        data: Vec<u8>,
+    ) -> Result<u32, ConversationError>;
+
+    /// Peer-facing: accepts DAG entries pushed by another member.
     async fn group_push(
         &self,
         service_id: &str,
@@ -218,8 +312,7 @@ pub trait ConversationHost: Send + Sync + Debug {
     ) -> Result<Vec<u8>, ConversationError>;
 
     /// Peer-facing: serves entries this substrate holds past the
-    /// requester's cursor. Bytes are a serde-encoded `GroupSyncRequest`
-    /// / `GroupSyncResponse`.
+    /// requester's cursor.
     async fn group_sync(
         &self,
         service_id: &str,
@@ -228,18 +321,14 @@ pub trait ConversationHost: Send + Sync + Debug {
     ) -> Result<Vec<u8>, ConversationError>;
 
     /// Peer-facing: serves this service's own X3DH prekey bundle to a
-    /// verified requester, rate-limited per `requester_did`. The returned
-    /// bytes are a JSON/serde-encoded `PrekeyBundle`; the transport layer
-    /// on both ends agrees on the encoding, so this trait need not name it.
+    /// verified requester.
     async fn prekey_bundle(
         &self,
         service_id: &str,
         requester_did: &str,
     ) -> Result<Vec<u8>, ConversationError>;
 
-    /// Peer-facing: receives one encrypted envelope from `requester_did`
-    /// (the transport-verified owner Master DID, a coarse gate only).
-    /// Returns the encoded `DeliveryAck` on success.
+    /// Peer-facing: receives one encrypted envelope from `requester_did`.
     async fn peer_deliver(
         &self,
         service_id: &str,
@@ -248,12 +337,10 @@ pub trait ConversationHost: Send + Sync + Debug {
     ) -> Result<Vec<u8>, ConversationError>;
 }
 
-/// The host -> app direction (`syneroym:conversation/guest-api`), mirroring
-/// `MessageSink`'s shape: the half with no automatic parity,
-/// so both builds implement it explicitly.
+/// The host -> app direction (`syneroym:conversation/guest-api`).
 #[async_trait::async_trait]
 pub trait ConversationNotifier: Send + Sync + Debug {
-    async fn notify_message(&self, service_id: &str, msg: ConversationMessage);
+    async fn notify_message(&self, service_id: &str, msg: ConversationMessage) -> NotifyOutcome;
     async fn notify_delivery_state(
         &self,
         service_id: &str,

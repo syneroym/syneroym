@@ -1,5 +1,4 @@
 use serde_json::json;
-use syneroym_data_db::host_store::RecordWriteValue;
 use syneroym_roym_core::{
     card::CARD_CONTENT_TYPE,
     conversation::group::{
@@ -19,18 +18,10 @@ fn inbound_custom(
     content_type: &str,
     body: Vec<u8>,
 ) -> ConversationMessage {
-    ConversationMessage {
-        id: id.to_string(),
-        conversation: conversation.to_string(),
-        author: author.to_string(),
-        sender_timestamp: ts,
-        received_at: ts,
-        content_type: content_type.to_string(),
-        body,
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    }
+    let mut m = inbound(id, conversation, author, ts, "");
+    m.content_type = content_type.to_string();
+    m.body = body;
+    m
 }
 
 #[tokio::test]
@@ -48,10 +39,13 @@ async fn scenario_210_hide_and_unhide_parity() {
     h.deliver(true, inbound("m-210a", &group_w, "did:key:zPeer210", 1_000, "hidden msg")).await;
     h.deliver(false, inbound("m-210a", &group_n, "did:key:zPeer210", 1_000, "hidden msg")).await;
 
+    let conv_svc = did_for_service("conversation");
     for wasm in [true, false] {
-        let refused = h.conv_rows(wasm, "refused_messages").await;
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0]["reason"], "group-hidden");
+        let conv = if wasm { &h.wasm_conversation } else { &h.native_conversation };
+        let store = conv.store_for(&conv_svc).await.unwrap();
+        let msg = store.get_message("m-210a").unwrap().unwrap();
+        assert_eq!(msg.admission, "held");
+        assert_eq!(msg.admission_reason.as_deref(), Some("group-hidden"));
     }
 
     let lw = one_rpc(&h, true, "conversation.list", json!({ "kind": "group" })).await;
@@ -71,8 +65,8 @@ async fn scenario_210_hide_and_unhide_parity() {
     let unn = one_rpc(&h, false, "group.unhide", json!({ "conversation": group_n })).await;
     assert_eq!(unw["result"]["admission"]["state"], "shown");
     assert_eq!(unn["result"]["admission"]["state"], "shown");
-    assert_eq!(unw["result"]["filled_in"], 0);
-    assert_eq!(unn["result"]["filled_in"], 0);
+    assert_eq!(unw["result"]["filled_in"], 1);
+    assert_eq!(unn["result"]["filled_in"], 1);
 
     h.deliver(true, inbound("m-210b", &group_w, "did:key:zPeer210", 2_000, "shown msg")).await;
     h.deliver(false, inbound("m-210b", &group_n, "did:key:zPeer210", 2_000, "shown msg")).await;
@@ -81,8 +75,8 @@ async fn scenario_210_hide_and_unhide_parity() {
         one_rpc(&h, true, "conversation.history", json!({ "conversation": group_w })).await;
     let hist_n =
         one_rpc(&h, false, "conversation.history", json!({ "conversation": group_n })).await;
-    assert_eq!(hist_w["result"]["messages"].as_array().unwrap().len(), 2);
-    assert_eq!(hist_n["result"]["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(hist_w["result"]["messages"].as_array().unwrap().len(), 4);
+    assert_eq!(hist_n["result"]["messages"].as_array().unwrap().len(), 4);
 }
 
 #[tokio::test]
@@ -193,8 +187,14 @@ async fn scenario_212_export_import_roundtrip_restored_only_parity() {
     let group_n = gn["result"]["conversation_id"].as_str().unwrap().to_string();
 
     let (exp_w, exp_n) = both_rpc(&h, "conversation.export", json!({})).await;
-    assert_eq!(exp_w["result"]["manifest"]["sections"]["conversations"]["schema_version"], 3);
-    assert_eq!(exp_n["result"]["manifest"]["sections"]["conversations"]["schema_version"], 3);
+    assert_eq!(
+        exp_w["result"]["manifest"]["sections"]["conversation_history"]["schema_version"],
+        4
+    );
+    assert_eq!(
+        exp_n["result"]["manifest"]["sections"]["conversation_history"]["schema_version"],
+        4
+    );
 
     let h2 = harness().await;
     one_rpc(&h2, true, "conversation.import", json!({ "bundle": exp_w["result"].clone() })).await;
@@ -215,8 +215,8 @@ async fn scenario_212_export_import_roundtrip_restored_only_parity() {
     let hn = one_rpc(&h2, false, "conversation.history", json!({ "conversation": group_n })).await;
     let msgs_w = hw["result"]["messages"].as_array().unwrap();
     let msgs_n = hn["result"]["messages"].as_array().unwrap();
-    assert_eq!(msgs_w.len(), 1);
-    assert_eq!(msgs_n.len(), 1);
+    assert_eq!(msgs_w.len(), 2);
+    assert_eq!(msgs_n.len(), 2);
 
     let genesis_id_w = msgs_w[0]["id"].as_str().unwrap();
     let genesis_id_n = msgs_n[0]["id"].as_str().unwrap();
@@ -241,27 +241,26 @@ async fn scenario_212_export_import_roundtrip_restored_only_parity() {
 }
 
 async fn seed_outgoing_message(h: &Harness, wasm: bool, msg_id: &str, conv_id: &str) {
-    let (storage, ks) =
-        if wasm { (&h.wasm_storage, &h.wasm_ks) } else { (&h.native_storage, &h.native_ks) };
-    let db = storage
-        .open_service_db(&did_for_service("conversation"), ks)
-        .await
-        .expect("open conversation db");
-    let row = json!({
-        "id": msg_id,
-        "conversation": conv_id,
-        "author": owner_did(),
-        "direction": "outgoing",
-        "sender_timestamp_ms": 25_000,
-        "content_type": "text/plain",
-        "body_encoding": "utf8",
-        "body": "test outgoing message",
-        "state": "delivered",
-        "stored_at_secs": 25,
-    });
-    let bytes = serde_json::to_vec(&row).expect("serialize outgoing message");
-    let write_val = RecordWriteValue { id: msg_id.to_string(), payload: bytes };
-    db.put("messages", &write_val, "seed", None).await.expect("put outgoing message");
+    let conv = if wasm { &h.wasm_conversation } else { &h.native_conversation };
+    let conv_svc = did_for_service("conversation");
+    let store = conv.store_for(&conv_svc).await.expect("store_for conversation");
+    store
+        .insert_outgoing_and_enqueue(
+            conv_id,
+            msg_id,
+            &owner_did(),
+            25_000,
+            "text/plain",
+            b"test outgoing message",
+            &[0u8; 64],
+            "",
+            25_000,
+            false,
+        )
+        .expect("insert outgoing message");
+    store
+        .set_state(msg_id, ConversationDeliveryState::Delivered, None)
+        .expect("set delivered state");
 }
 
 async fn verify_restored_group_deletions(

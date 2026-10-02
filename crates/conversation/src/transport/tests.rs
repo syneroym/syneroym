@@ -274,6 +274,7 @@ async fn group_push_with_unregistered_assertion_sender_is_refused() {
         ciphertext: Some(vec![1]),
         nonce: Some([0u8; 12]),
         payload: None,
+        profile_payload: None,
         signature: [0u8; 64],
     };
     let assertion =
@@ -304,6 +305,16 @@ fn pending_message(id: &str, body: &[u8]) -> StoredMessage {
         last_error: None,
         system: false,
         entry_id: None,
+        admission: "accepted".to_string(),
+        admission_reason: None,
+        admission_changed_at: None,
+        notify_attempts: 0,
+        next_notify_at: None,
+        report_refusal: false,
+        refused: None,
+        deleted_at: None,
+        restored: false,
+        visible_seq: 1,
     }
 }
 

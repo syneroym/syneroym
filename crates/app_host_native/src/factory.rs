@@ -20,7 +20,7 @@ use syneroym_fdae::Policy;
 use syneroym_mqtt_broker::{MqttBroker, SubscriptionHandle, namespace_topic};
 use syneroym_rpc::{
     CallerContext, ConversationDeliveryState, ConversationHost, ConversationMessage,
-    ConversationNotifier, ServiceProxy, WebSocketSenders,
+    ConversationNotifier, NotifyOutcome, ServiceProxy, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{
     HostState, InvocationOrigin, MessagingContext, StreamContext, empty_service_proxy,
@@ -68,6 +68,7 @@ pub struct NativeHostFactory {
     fdae_policy: RwLock<Option<Option<Arc<Policy>>>>,
     fdae_policy_generation: AtomicU64,
     record_signer: OnceLock<Arc<NodeRecordSigner>>,
+    declares_conversation_sink: bool,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -94,6 +95,7 @@ impl NativeHostFactory {
         logical_resolver: Arc<LogicalResolver>,
         conversation: Arc<ConversationService>,
         websocket_senders: Arc<WebSocketSenders>,
+        declares_conversation_sink: bool,
     ) -> Arc<Self> {
         let factory = Arc::new(Self {
             service_id: service_id.clone(),
@@ -114,6 +116,7 @@ impl NativeHostFactory {
             fdae_policy: RwLock::new(None),
             fdae_policy_generation: AtomicU64::new(0),
             record_signer: OnceLock::new(),
+            declares_conversation_sink,
         });
         // The factory registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
@@ -154,6 +157,11 @@ impl NativeHostFactory {
     /// `set_sink`.
     #[allow(clippy::expect_used)]
     pub fn set_conversation_sink(&self, sink: Weak<dyn ConversationSink>) {
+        assert!(
+            self.declares_conversation_sink,
+            "NativeHostFactory::set_conversation_sink called on factory that did not declare \
+             conversation sink"
+        );
         self.conversation_sink
             .set(sink)
             .expect("NativeHostFactory::set_conversation_sink called more than once");
@@ -386,14 +394,23 @@ impl NativeHostFactory {
 /// the store contents afterward, not the delivery mechanism or its timing.
 #[async_trait::async_trait]
 impl ConversationNotifier for NativeHostFactory {
-    async fn notify_message(&self, service_id: &str, msg: ConversationMessage) {
+    async fn notify_message(&self, service_id: &str, msg: ConversationMessage) -> NotifyOutcome {
         debug_assert_eq!(
             service_id, self.service_id,
             "a factory only ever hears about its own service"
         );
-        let Some(sink) = self.conversation_sink.get().and_then(Weak::upgrade) else { return };
-        if let Err(e) = sink.on_message(convert::rpc_message_to_guest(msg)).await {
-            tracing::warn!(service_id, error = %e, "native conversation on-message delivery failed");
+        if !self.declares_conversation_sink {
+            return NotifyOutcome::NoHandler;
+        }
+        let Some(sink) = self.conversation_sink.get().and_then(Weak::upgrade) else {
+            return NotifyOutcome::NoAnswer;
+        };
+        match sink.on_message(convert::rpc_message_to_guest(msg)).await {
+            Ok(admission) => NotifyOutcome::Answered(convert::guest_admission_to_rpc(admission)),
+            Err(e) => {
+                tracing::warn!(service_id, error = %e, "native conversation on-message delivery failed");
+                NotifyOutcome::NoAnswer
+            }
         }
     }
 
@@ -488,6 +505,7 @@ mod tests {
             syneroym_app_orchestration::empty_resolver(),
             conversation,
             syneroym_rpc::WebSocketSenders::new(),
+            false,
         )
     }
 
@@ -569,6 +587,7 @@ mod tests {
             syneroym_app_orchestration::empty_resolver(),
             conversation,
             syneroym_rpc::WebSocketSenders::new(),
+            false,
         );
         let host = factory.host_with(caller(), true, InvocationOrigin::Local);
 

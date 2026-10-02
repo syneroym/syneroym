@@ -60,15 +60,21 @@ impl<H: AppHost + 'static> NativeService for NativeConversation<H> {
 
 #[async_trait::async_trait]
 impl<H: AppHost + 'static> ConversationSink for NativeConversation<H> {
-    async fn on_message(&self, msg: Message) -> Result<(), String> {
+    async fn on_message(
+        &self,
+        msg: Message,
+    ) -> Result<syneroym_app_host::types::conversation::Admission, String> {
         // The same identity the WASM delivery path uses, so an elevated
         // caller cannot arrive with a delivered message.
         let host = (self.host_for)(CallerContext::service_system(&self.service_id));
         crate::app::on_message(&host, msg).await
     }
 
-    async fn on_delivery_state(&self, message: String, state: DeliveryState) -> Result<(), String> {
-        let host = (self.host_for)(CallerContext::service_system(&self.service_id));
-        crate::app::on_delivery_state(&host, message, state).await
+    async fn on_delivery_state(
+        &self,
+        _message: String,
+        _state: DeliveryState,
+    ) -> Result<(), String> {
+        Ok(())
     }
 }

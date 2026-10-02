@@ -4,8 +4,8 @@
 
 use bindings::exports::{
     syneroym::conversation::guest_api::{
-        DeliveryState as WitDeliveryState, Guest as ConversationGuestApiGuest,
-        Message as WitMessage,
+        Admission as WitAdmission, DeliveryState as WitDeliveryState,
+        Guest as ConversationGuestApiGuest, Message as WitMessage,
     },
     syneroym_roym::conversation::api::Guest as ApiGuest,
 };
@@ -58,11 +58,11 @@ impl ApiGuest for Conversation {
 }
 
 impl ConversationGuestApiGuest for Conversation {
-    fn on_message(msg: WitMessage) -> Result<(), String> {
+    fn on_message(msg: WitMessage) -> Result<WitAdmission, String> {
         block_on(crate::app::on_message(&GuestHost, msg))
     }
 
-    fn on_delivery_state(msg: String, state: WitDeliveryState) -> Result<(), String> {
-        block_on(crate::app::on_delivery_state(&GuestHost, msg, state))
+    fn on_delivery_state(_msg: String, _state: WitDeliveryState) -> Result<(), String> {
+        Ok(())
     }
 }

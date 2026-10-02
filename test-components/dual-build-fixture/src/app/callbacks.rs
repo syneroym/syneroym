@@ -33,7 +33,10 @@ pub async fn on_message<H: AppHost>(
 /// `ConversationSink::on_message` natively. Persists through `data-layer`,
 /// never in-process state, keyed by the message's own id so a
 /// redelivery overwrites rather than duplicates.
-pub async fn on_conversation_message<H: AppHost>(host: &H, msg: Message) -> Result<(), String> {
+pub async fn on_conversation_message<H: AppHost>(
+    host: &H,
+    msg: Message,
+) -> Result<Admission, String> {
     ensure_collection(host, CONV_INBOX).await?;
     host.put(
         CONV_INBOX.into(),
@@ -43,7 +46,8 @@ pub async fn on_conversation_message<H: AppHost>(host: &H, msg: Message) -> Resu
         },
     )
     .await
-    .map_err(fmt_err)
+    .map_err(fmt_err)?;
+    Ok(Admission::Accept)
 }
 
 /// Called by both builds on a delivery-state transition. Appends rather

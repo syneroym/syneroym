@@ -290,9 +290,18 @@ impl ConversationStore {
         let kind_str = match entry.kind {
             EntryKind::Message => "message",
             EntryKind::Membership => "membership",
+            EntryKind::Profile => "profile",
         };
         let header = canonical_entry_bytes(entry);
-        let payload_json = entry.payload.as_ref().map(serde_json::to_string).transpose()?;
+        let payload_json = match entry.kind {
+            EntryKind::Membership => {
+                entry.payload.as_ref().map(serde_json::to_string).transpose()?
+            }
+            EntryKind::Profile => {
+                entry.profile_payload.as_ref().map(serde_json::to_string).transpose()?
+            }
+            EntryKind::Message => None,
+        };
         let nonce_slice = entry.nonce.as_ref().map(|n| n.as_slice());
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO dag_entries (
@@ -628,14 +637,25 @@ impl ConversationStore {
         Ok(entry.map(|e| e.into_wire()))
     }
 
-    fn row_to_dag_entry(
+    pub fn apply_profile(tx: &Transaction<'_>, conversation_id: &str, name: &str) -> Result<()> {
+        tx.execute(
+            "UPDATE conversations SET name = ?1 WHERE id = ?2",
+            params![name, conversation_id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn row_to_dag_entry(
         conn: &Connection,
         row: &rusqlite::Row<'_>,
     ) -> rusqlite::Result<StoredDagEntry> {
         let entry_id: String = row.get(1)?;
         let kind_str: String = row.get(6)?;
-        let kind =
-            if kind_str == "membership" { EntryKind::Membership } else { EntryKind::Message };
+        let kind = match kind_str.as_str() {
+            "membership" => EntryKind::Membership,
+            "profile" => EntryKind::Profile,
+            _ => EntryKind::Message,
+        };
         let header: Vec<u8> = row.get(7)?;
         let ciphertext: Option<Vec<u8>> = row.get(8)?;
         let nonce_blob: Option<Vec<u8>> = row.get(9)?;
@@ -652,7 +672,18 @@ impl ConversationStore {
             None
         };
         let payload_str: Option<String> = row.get(10)?;
-        let payload = payload_str.and_then(|s| serde_json::from_str::<MembershipPayload>(&s).ok());
+        let payload = if kind == EntryKind::Membership {
+            payload_str.as_deref().and_then(|s| serde_json::from_str::<MembershipPayload>(s).ok())
+        } else {
+            None
+        };
+        let profile_payload = if kind == EntryKind::Profile {
+            payload_str
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<crate::dag::ProfilePayload>(s).ok())
+        } else {
+            None
+        };
         let sig_bytes: Vec<u8> = row.get(11)?;
         let signature: [u8; 64] = sig_bytes.as_slice().try_into().map_err(|_| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -686,10 +717,21 @@ impl ConversationStore {
             ciphertext,
             nonce,
             payload,
+            profile_payload,
             signature,
             applied: applied != 0,
             relay_pending: relay_pending != 0,
             parents,
         })
+    }
+
+    pub fn has_dag_entry(&self, entry_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM dag_entries WHERE entry_id = ?1",
+            params![entry_id],
+            |r| r.get(0),
+        )?;
+        Ok(count > 0)
     }
 }

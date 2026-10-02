@@ -569,6 +569,9 @@ fn build_conversation_service(
                 conversation_sync_now_budget_ms: app_sandbox_role.conversation_sync_now_budget_ms,
                 conversation_background_sync_budget_ms: app_sandbox_role
                     .conversation_background_sync_budget_ms,
+                max_held_age_secs: 2_592_000,
+                admission_ask_timeout_ms: 3_000,
+                admission_claim_secs: 10,
             },
         },
     )

@@ -1,20 +1,25 @@
 //! The peer-facing verbs (`prekey-bundle`, `deliver`) and the outbound
 //! call they travel over.
 
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rusqlite::Transaction;
 use syneroym_rpc::{
-    CallOrigin, CallerContext, ConversationError, ProxyError, ProxyProtocol, ProxyRequest,
+    Admission, CallOrigin, CallerContext, ConversationError, NotifyOutcome, ProxyError,
+    ProxyProtocol, ProxyRequest,
 };
+use tokio::time;
 
 #[cfg(feature = "test-support")]
 use crate::test_support;
 use crate::{
     ConversationService,
     crypto::{self, Envelope, PrekeyBundle, Session},
-    dag::{GROUP_KEY_CONTENT_TYPE, GroupKeyPayload},
+    dag::{
+        DELETION_REQUEST_CONTENT_TYPE, GROUP_KEY_CONTENT_TYPE, GroupKeyPayload,
+        REFUSAL_NOTICE_CONTENT_TYPE,
+    },
     envelope::{self, DeliveryPayload},
     ids::derive_conversation_id,
     store::{ConversationStore, StoreError, StoredMessage, now_ms},
@@ -26,13 +31,15 @@ mod group_sync;
 #[allow(clippy::unwrap_used)]
 mod tests;
 
-pub(super) fn internal(e: impl std::fmt::Display) -> ConversationError {
+pub(super) fn internal(e: impl fmt::Display) -> ConversationError {
     ConversationError::Internal(e.to_string())
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DeliveryAck {
     pub message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 /// What one delivery attempt's failure actually means for the outbox item.
@@ -231,9 +238,13 @@ impl ConversationService {
         if test_support::take_drop_ack(svc) {
             return Err(Disposition::Unreachable);
         }
-        let _ack: DeliveryAck = serde_json::from_value(ack_json).map_err(|_| {
+        let ack: DeliveryAck = serde_json::from_value(ack_json).map_err(|_| {
             Disposition::Terminal("peer returned an undecodable delivery ack".to_string())
         })?;
+        if let Some(refused_reason) = ack.refused {
+            let _ =
+                store.record_refusal(&msg.conversation_id, &msg.id, peer_address, &refused_reason);
+        }
         Ok(())
     }
 
@@ -347,7 +358,12 @@ impl ConversationService {
         let my_sig_key: [u8; 32] = my_ident.sig_secret.as_slice().try_into().unwrap_or([0u8; 32]);
         let my_vk = SigningKey::from_bytes(&my_sig_key).verifying_key().to_bytes();
 
+        let is_deletion_req = payload.content_type == DELETION_REQUEST_CONTENT_TYPE;
+        let is_refusal_notice = payload.content_type == REFUSAL_NOTICE_CONTENT_TYPE;
+        let is_system = is_group_key || is_deletion_req || is_refusal_notice;
+
         let mut group_id_to_apply = None;
+        let mut inserted = false;
         store
             .queue()
             .transaction(|tx, _txq| {
@@ -363,7 +379,7 @@ impl ConversationService {
                     )?);
                 }
 
-                store.insert_incoming_if_absent(
+                inserted = store.insert_incoming_if_absent(
                     tx,
                     &payload.conversation_id,
                     &payload.message_id,
@@ -375,10 +391,27 @@ impl ConversationService {
                     now,
                     store.config().max_messages_per_conversation,
                 )?;
-                if is_group_key {
+                if is_system {
                     tx.execute(
                         "UPDATE messages SET system = 1 WHERE id = ?1",
                         rusqlite::params![payload.message_id],
+                    )?;
+                }
+                if is_deletion_req {
+                    ConversationStore::handle_inbound_deletion_request(
+                        tx,
+                        &payload.conversation_id,
+                        &author,
+                        &payload.body,
+                        now,
+                    )?;
+                }
+                if is_refusal_notice {
+                    ConversationStore::handle_inbound_refusal_notice(
+                        tx,
+                        &payload.conversation_id,
+                        &author,
+                        &payload.body,
                     )?;
                 }
                 self.crypto
@@ -398,11 +431,60 @@ impl ConversationService {
             if let Some(gid) = group_id_to_apply {
                 self.apply_pending_entries(&store, svc, &gid).await;
             }
-        } else if let Ok(Some(stored)) = store.get_message(&payload.message_id) {
-            self.notify_message(svc, stored.into_wire()).await;
+            return Ok(DeliveryAck { message_id: payload.message_id, refused: None });
         }
 
-        Ok(DeliveryAck { message_id: payload.message_id })
+        if is_system {
+            return Ok(DeliveryAck { message_id: payload.message_id, refused: None });
+        }
+
+        let refused_out =
+            self.resolve_delivery_admission(&store, svc, &payload.message_id, inserted, now).await;
+
+        Ok(DeliveryAck { message_id: payload.message_id, refused: refused_out })
+    }
+
+    async fn resolve_delivery_admission(
+        &self,
+        store: &ConversationStore,
+        svc: &str,
+        message_id: &str,
+        inserted: bool,
+        now: i64,
+    ) -> Option<String> {
+        if inserted {
+            let stored = store.get_message(message_id).ok().flatten()?;
+            let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
+            let outcome = match time::timeout(
+                ask_timeout,
+                self.notify_message(svc, stored.into_wire()),
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                Err(_) => NotifyOutcome::NoAnswer,
+            };
+            match outcome {
+                NotifyOutcome::Answered(admission) => {
+                    let _ = store.apply_admission(message_id, &admission, now);
+                    if let Admission::Drop(drop_ans) = admission
+                        && drop_ans.report
+                    {
+                        return Some(drop_ans.reason);
+                    }
+                }
+                NotifyOutcome::NoHandler => {
+                    let _ = store.apply_admission(message_id, &Admission::Accept, now);
+                }
+                NotifyOutcome::NoAnswer => {}
+            }
+        } else if let Ok(Some(msg)) = store.get_message(message_id)
+            && msg.admission == "dropped"
+            && msg.report_refusal
+        {
+            return msg.admission_reason;
+        }
+        None
     }
 }
 

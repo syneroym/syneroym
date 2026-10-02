@@ -63,6 +63,7 @@ pub(super) async fn init_dual_build_fixture(
         shared.logical_resolver().clone(),
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
+        true,
     );
     factory.set_record_signer(shared.record_signer().clone());
     let f = factory.clone();
