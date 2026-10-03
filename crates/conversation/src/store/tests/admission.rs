@@ -1,6 +1,7 @@
 use syneroym_rpc::{Admission, DropAnswer};
 
-use super::store;
+use super::{store, store_with_config};
+use crate::store::{ConversationConfig, ConversationStore};
 
 #[test]
 fn admission_visibility_filters_unaccepted_rows() {
@@ -270,4 +271,96 @@ fn system_messages_skip_touch_conversation() {
 
     let row = s.get_conversation(&conv).unwrap().unwrap();
     assert_eq!(row.last_activity_ms, 1_000, "system message must not advance last_activity");
+}
+
+fn drop_one(s: &ConversationStore, conv: &str, id: &str, at: i64) {
+    {
+        let conn = s.conn().lock().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        s.insert_incoming_if_absent(
+            &tx,
+            conv,
+            id,
+            "did:key:zPeer",
+            at,
+            "text/plain",
+            b"unwanted",
+            &[0u8; 64],
+            at,
+            100_000,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    s.apply_admission(
+        id,
+        &Admission::Drop(DropAnswer { reason: "blocked".into(), report: false }),
+        at,
+    )
+    .unwrap();
+}
+
+#[test]
+fn only_the_newest_dropped_rows_of_a_direct_chat_are_kept() {
+    let (s, _dir) = store_with_config(ConversationConfig {
+        max_dropped_per_conversation: 3,
+        ..Default::default()
+    });
+    let conv = s.get_or_create_direct("did:key:zMe", "did:key:zPeer", 1_000).unwrap();
+    for i in 0..6 {
+        drop_one(&s, &conv, &format!("m:{i}"), 1_000 + i);
+    }
+    assert!(s.take_drop_prune_flag(), "a drop asks for a prune");
+
+    let removed = s.prune_dropped().unwrap();
+
+    assert_eq!(removed, 3);
+    for gone in ["m:0", "m:1", "m:2"] {
+        assert!(s.get_message(gone).unwrap().is_none(), "{gone} is the oldest");
+    }
+    for kept in ["m:3", "m:4", "m:5"] {
+        assert!(s.get_message(kept).unwrap().is_some(), "{kept} is recent");
+    }
+}
+
+#[test]
+fn pruning_never_touches_accepted_rows_or_group_conversations() {
+    let (s, _dir) = store_with_config(ConversationConfig {
+        max_dropped_per_conversation: 1,
+        ..Default::default()
+    });
+    let conv = s.get_or_create_direct("did:key:zMe", "did:key:zPeer", 1_000).unwrap();
+    s.insert_outgoing_without_enqueue(
+        &conv,
+        "m:mine",
+        "did:key:zMe",
+        1,
+        "text/plain",
+        b"hi",
+        1,
+        "delivered",
+    )
+    .unwrap();
+    {
+        let conn = s.conn().lock().unwrap();
+        conn.execute(
+            "INSERT INTO conversations (id, kind, owner_address, created_at, last_activity) \
+             VALUES ('grp', 'group', 'did:key:zOwner', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    for i in 0..4 {
+        drop_one(&s, "grp", &format!("g:{i}"), 1_000 + i);
+    }
+
+    assert_eq!(s.prune_dropped().unwrap(), 0);
+
+    assert!(s.get_message("m:mine").unwrap().is_some());
+    for i in 0..4 {
+        assert!(
+            s.get_message(&format!("g:{i}")).unwrap().is_some(),
+            "every member keeps the same rows"
+        );
+    }
 }

@@ -259,6 +259,15 @@ pub struct AppSandboxRole {
     /// worker asks the app about it, so the delivery path answers first.
     #[serde(default = "default_conversation_admission_claim_secs")]
     pub conversation_admission_claim_secs: u64,
+    /// How many dropped messages a direct conversation keeps. A dropped row
+    /// holds only an id, sender and time, so a repeat delivery is still
+    /// recognised; older rows beyond this number are deleted.
+    #[serde(default = "default_conversation_max_dropped_per_conversation")]
+    pub conversation_max_dropped_per_conversation: u32,
+    /// The shortest time between two passes that rewrite the search index
+    /// and truncate the write-ahead log after a delete or drop.
+    #[serde(default = "default_conversation_scrub_min_interval_secs")]
+    pub conversation_scrub_min_interval_secs: u64,
 }
 
 /// The guest proxy outbox lives wherever a guest does, so its knobs live on
@@ -371,6 +380,12 @@ const fn default_conversation_admission_ask_timeout_ms() -> u64 {
 const fn default_conversation_admission_claim_secs() -> u64 {
     10
 }
+const fn default_conversation_max_dropped_per_conversation() -> u32 {
+    10_000
+}
+const fn default_conversation_scrub_min_interval_secs() -> u64 {
+    60
+}
 
 impl AppSandboxRole {
     #[must_use]
@@ -433,6 +448,9 @@ impl Default for AppSandboxRole {
             conversation_max_held_age_secs: default_conversation_max_held_age_secs(),
             conversation_admission_ask_timeout_ms: default_conversation_admission_ask_timeout_ms(),
             conversation_admission_claim_secs: default_conversation_admission_claim_secs(),
+            conversation_max_dropped_per_conversation:
+                default_conversation_max_dropped_per_conversation(),
+            conversation_scrub_min_interval_secs: default_conversation_scrub_min_interval_secs(),
         }
     }
 }

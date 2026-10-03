@@ -4,16 +4,19 @@
 //! `attempts`; an unreadable payload is terminal; a target that no longer
 //! resolves is terminal on its own terms.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use syneroym_async_queue::{FailOutcome, QueueItem};
-use syneroym_rpc::ConversationDeliveryState;
+use syneroym_rpc::{
+    Admission, ConversationDeliveryState, ConversationKind, DropAnswer, NotifyOutcome,
+};
+use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::{
     ConversationService,
-    dag::EntryKind,
+    dag::{self, EntryKind, REFUSAL_NOTICE_CONTENT_TYPE},
     store::{ConversationStore, OutboxItem, StoredMessage, now_ms},
     transport::Disposition,
 };
@@ -21,6 +24,9 @@ use crate::{
 /// How many items one service may have claimed in a single worker tick —
 /// set to 64 because group fan-out multiplies outbox rows by member count.
 const CLAIM_LIMIT_PER_TICK: u32 = 64;
+
+/// The longest one service's re-ask pass may run, in ask timeouts.
+const ASK_PASS_BUDGET_FACTOR: u32 = 4;
 
 impl ConversationService {
     /// Runs until `cancel` fires. Spawned once, beside
@@ -35,6 +41,7 @@ impl ConversationService {
                     self.drain_relay_pending_once().await;
                     self.renotify_undecided_once().await;
                     self.expire_held_once().await;
+                    self.prune_dropped_once().await;
                     self.wal_checkpoint_once().await;
                     self.scheduled_rekey_once().await;
                     sync_tick_count = sync_tick_count.wrapping_add(1);
@@ -353,6 +360,11 @@ impl ConversationService {
         self.renotify_undecided_once().await;
     }
 
+    /// Asks the app about undecided rows that are due. One service's pass
+    /// ends at its first timed-out ask, and never runs longer than
+    /// `ASK_PASS_BUDGET_FACTOR` ask timeouts: an app that hangs costs the
+    /// worker one timeout per tick, not one per waiting row. Rows not
+    /// reached keep their due time and are asked on a later tick.
     async fn renotify_undecided_once(&self) {
         let now = now_ms();
         let services = self.candidate_service_ids();
@@ -360,61 +372,81 @@ impl ConversationService {
             let Ok(store) = self.store_for(&svc).await else { continue };
             let Ok(msgs) = store.undecided_messages(now) else { continue };
             let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
+            let started = Instant::now();
             for msg in msgs {
-                let outcome = tokio::time::timeout(
-                    ask_timeout,
-                    self.notify_message(&svc, msg.clone().into_wire()),
-                )
-                .await
-                .unwrap_or(syneroym_rpc::NotifyOutcome::NoAnswer);
-                let age_ms = now.saturating_sub(msg.received_at_ms);
-                match outcome {
-                    syneroym_rpc::NotifyOutcome::Answered(admission) => {
-                        let _ = store.apply_admission(&msg.id, &admission, now);
-                        if let syneroym_rpc::Admission::Drop(drop_ans) = admission
-                            && drop_ans.report
-                            && let Ok(Some(conv)) = store.get_conversation(&msg.conversation_id)
-                            && conv.kind == syneroym_rpc::ConversationKind::Direct
-                            && let Some(peer) = conv.peer_address
-                        {
-                            let body = crate::dag::refusal_notice_body(&msg.id, &drop_ans.reason);
-                            let _ = self
-                                .enqueue_direct(
-                                    &store,
-                                    &svc,
-                                    &peer,
-                                    crate::dag::REFUSAL_NOTICE_CONTENT_TYPE,
-                                    &body,
-                                    true,
-                                )
-                                .await;
-                        }
-                    }
-                    syneroym_rpc::NotifyOutcome::NoHandler => {
-                        let _ =
-                            store.apply_admission(&msg.id, &syneroym_rpc::Admission::Accept, now);
-                    }
-                    syneroym_rpc::NotifyOutcome::NoAnswer => {
-                        let new_attempts = msg.notify_attempts.saturating_add(1);
-                        let next = now + backoff_for_age(age_ms);
-                        let _ = store.update_undecided_retry(&msg.id, new_attempts, next);
-                        if new_attempts % 20 == 0 {
-                            warn!(
-                                service = svc,
-                                message = msg.id,
-                                attempts = new_attempts,
-                                "message still undecided after many re-asks"
-                            );
-                            metrics::counter!(
-                                "substrate.conversation.admission.stuck",
-                                "service" => svc.to_string(),
-                            )
-                            .increment(1);
-                        }
-                    }
+                if started.elapsed() >= ask_timeout * ASK_PASS_BUDGET_FACTOR {
+                    break;
+                }
+                if self.ask_undecided_one(&svc, &store, &msg, now, ask_timeout).await {
+                    break;
                 }
             }
         }
+    }
+
+    /// One re-ask. Returns `true` when the app did not answer in time.
+    async fn ask_undecided_one(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        msg: &StoredMessage,
+        now: i64,
+        ask_timeout: Duration,
+    ) -> bool {
+        let asked =
+            time::timeout(ask_timeout, self.notify_message(svc, msg.clone().into_wire())).await;
+        let timed_out = asked.is_err();
+        match asked.unwrap_or(NotifyOutcome::NoAnswer) {
+            NotifyOutcome::Answered(admission) => {
+                let _ = store.apply_admission(&msg.id, &admission, now);
+                self.report_late_refusal(svc, store, msg, &admission).await;
+            }
+            NotifyOutcome::NoHandler => {
+                let _ = store.apply_admission(&msg.id, &Admission::Accept, now);
+            }
+            NotifyOutcome::NoAnswer => {
+                let age_ms = now.saturating_sub(msg.received_at_ms);
+                let attempts = msg.notify_attempts.saturating_add(1);
+                let next = now + backoff_for_age(age_ms);
+                let _ = store.update_undecided_retry(&msg.id, attempts, next);
+                if attempts.is_multiple_of(20) {
+                    warn!(
+                        service = svc,
+                        message = msg.id,
+                        attempts,
+                        "message still undecided after many re-asks"
+                    );
+                    metrics::counter!(
+                        "substrate.conversation.admission.stuck",
+                        "service" => svc.to_string(),
+                    )
+                    .increment(1);
+                }
+            }
+        }
+        timed_out
+    }
+
+    /// A drop that the app asked to report, answered after the delivery
+    /// receipt was already sent, reaches the sender as a refusal notice.
+    async fn report_late_refusal(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        msg: &StoredMessage,
+        admission: &Admission,
+    ) {
+        let Admission::Drop(drop_ans) = admission else { return };
+        if !drop_ans.report {
+            return;
+        }
+        let Ok(Some(conv)) = store.get_conversation(&msg.conversation_id) else { return };
+        let Some(peer) = conv.peer_address.filter(|_| conv.kind == ConversationKind::Direct) else {
+            return;
+        };
+        let body = dag::refusal_notice_body(&msg.id, &drop_ans.reason);
+        let _ =
+            self.enqueue_direct(store, svc, &peer, REFUSAL_NOTICE_CONTENT_TYPE, &body, true).await;
     }
 
     async fn expire_held_once(&self) {
@@ -425,25 +457,45 @@ impl ConversationService {
             let max_age_ms = (store.config().max_held_age_secs as i64).saturating_mul(1000);
             let Ok(expired) = store.expire_held_messages(max_age_ms, now) else { continue };
             for (_conv_id, msg_id) in expired {
-                let drop_ans =
-                    syneroym_rpc::DropAnswer { reason: "expired".to_string(), report: false };
-                let _ =
-                    store.apply_admission(&msg_id, &syneroym_rpc::Admission::Drop(drop_ans), now);
+                let drop_ans = DropAnswer { reason: "expired".to_string(), report: false };
+                let _ = store.apply_admission(&msg_id, &Admission::Drop(drop_ans), now);
             }
         }
     }
 
-    async fn wal_checkpoint_once(&self) {
+    /// Deletes dropped rows beyond each direct conversation's cap, after
+    /// any tick in which a message was dropped.
+    async fn prune_dropped_once(&self) {
         let services = self.candidate_service_ids();
         for svc in services {
             if let Ok(store) = self.store_for(&svc).await
-                && store.take_wal_checkpoint_flag()
+                && store.take_drop_prune_flag()
+                && store.prune_dropped().is_err()
             {
-                let retry = store.scrub_and_checkpoint();
-                if retry {
-                    // A reader was active; re-flag so we try again next tick.
-                    store.flag_wal_checkpoint();
-                }
+                store.flag_drop_prune();
+            }
+        }
+    }
+
+    /// Rewrites the search index and truncates the log after a delete or
+    /// drop. A burst of them is spread over `scrub_min_interval_secs`; the
+    /// flag stays set until a pass finishes.
+    async fn wal_checkpoint_once(&self) {
+        let services = self.candidate_service_ids();
+        for svc in services {
+            let Ok(store) = self.store_for(&svc).await else { continue };
+            if !store.take_wal_checkpoint_flag() {
+                continue;
+            }
+            if !store.scrub_due() {
+                store.flag_wal_checkpoint();
+                continue;
+            }
+            if store.scrub_and_checkpoint() {
+                // A reader was active; try again next tick.
+                store.flag_wal_checkpoint();
+            } else {
+                store.mark_scrubbed();
             }
         }
     }

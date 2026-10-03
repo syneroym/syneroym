@@ -572,6 +572,9 @@ fn build_conversation_service(
                 max_held_age_secs: app_sandbox_role.conversation_max_held_age_secs,
                 admission_ask_timeout_ms: app_sandbox_role.conversation_admission_ask_timeout_ms,
                 admission_claim_secs: app_sandbox_role.conversation_admission_claim_secs,
+                max_dropped_per_conversation: app_sandbox_role
+                    .conversation_max_dropped_per_conversation,
+                scrub_min_interval_secs: app_sandbox_role.conversation_scrub_min_interval_secs,
             },
         },
     )

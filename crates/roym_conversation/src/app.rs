@@ -26,6 +26,9 @@ use syneroym_roym_core::{
 pub const SCHEMA_VERSION: u32 = 4;
 pub const ADMISSIONS: &str = "admissions";
 pub const FIRST_CONTACT_CHARGES: &str = "first_contact_charges";
+/// Small bookkeeping rows that belong to no conversation, such as when the
+/// old first-contact charges were last pruned.
+pub const CONVERSATION_META: &str = "conversation_meta";
 
 pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     Ok(json!({
@@ -54,6 +57,10 @@ pub(crate) async fn ensure_coll<H: AppHost>(
 
 pub(crate) async fn ensure_admissions<H: AppHost>(host: &H) -> Result<(), String> {
     ensure_coll(host, ADMISSIONS, &[]).await
+}
+
+pub(crate) async fn ensure_meta<H: AppHost>(host: &H) -> Result<(), String> {
+    ensure_coll(host, CONVERSATION_META, &[]).await
 }
 
 pub(crate) async fn ensure_charges<H: AppHost>(host: &H) -> Result<(), String> {

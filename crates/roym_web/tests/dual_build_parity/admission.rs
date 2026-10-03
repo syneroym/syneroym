@@ -1,7 +1,11 @@
 //! Who may reach the inbox: the app's answer to "may this message be shown?",
 //! seen through history and the host's stored rows on both builds.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde_json::json;
+use syneroym_conversation::store::ConversationStore;
+use syneroym_data_db::host_store::RecordWriteValue;
 use syneroym_rpc::{ConversationError, ConversationHost};
 
 use super::{fixtures::*, helpers::*};
@@ -141,4 +145,138 @@ async fn scenario_220_a_message_held_for_a_hidden_group_is_not_readable() {
     let (sw, sn) = both_rpc(&h, "conversation.search", json!({ "query": "secret plan" })).await;
     assert!(sw["result"]["matches"].as_array().unwrap().is_empty());
     assert!(sn["result"]["matches"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn scenario_224_a_blocked_stranger_draws_the_same_reports_as_any_other() {
+    let h = harness().await;
+    both_rpc(&h, "contacts.set-limits", json!({ "window_secs": 3600, "max_per_window": 100 }))
+        .await;
+    both_rpc(&h, "block.add", json!({ "person_did": STRANGER_B, "address": STRANGER_B })).await;
+
+    // Under the limit, each stranger sends one message and then many more.
+    for (conv, author) in [("conv-224-a", STRANGER_A), ("conv-224-b", STRANGER_B)] {
+        for i in 0..4 {
+            deliver_both(&h, &format!("m-224-{conv}-{i}"), conv, author, 1_000 + i).await;
+        }
+    }
+
+    // Neither is ever reported back: the first message made the chat
+    // accepted for both, so nothing is charged and nothing is refused.
+    for conv in ["conv-224-a", "conv-224-b"] {
+        for i in 0..4 {
+            let (_, reason, report) = stored_admission(&h, &format!("m-224-{conv}-{i}")).await;
+            assert!(!report, "{conv} #{i}: nobody is told they were refused");
+            assert_ne!(reason.as_deref(), Some("rate-limited"), "{conv} #{i}");
+        }
+    }
+    assert_eq!(visible_count(&h, "conv-224-a").await, 4);
+    assert_eq!(visible_count(&h, "conv-224-b").await, 0);
+}
+
+#[tokio::test]
+async fn scenario_225_a_block_set_while_a_group_was_hidden_still_applies_on_unhide() {
+    let h = harness().await;
+    let (gw, gn) = both_rpc(&h, "group.create", json!({ "name": "Hidden 225" })).await;
+    let group_w = gw["result"]["conversation_id"].as_str().unwrap().to_string();
+    let group_n = gn["result"]["conversation_id"].as_str().unwrap().to_string();
+    for (wasm, group) in [(true, &group_w), (false, &group_n)] {
+        one_rpc(&h, wasm, "group.hide", json!({ "conversation": group })).await;
+        h.deliver(wasm, inbound("m-225", group, STRANGER_B, 1_000, "while hidden")).await;
+    }
+    assert_eq!(stored_admission(&h, "m-225").await.0, "held");
+
+    both_rpc(&h, "block.add", json!({ "person_did": STRANGER_B, "address": STRANGER_B })).await;
+    one_rpc(&h, true, "group.unhide", json!({ "conversation": group_w })).await;
+    one_rpc(&h, false, "group.unhide", json!({ "conversation": group_n })).await;
+    h.ask_undecided_now().await;
+
+    let (state, reason, report) = stored_admission(&h, "m-225").await;
+    assert_eq!((state.as_str(), reason.as_deref(), report), ("dropped", Some("blocked"), false));
+}
+
+#[tokio::test]
+async fn scenario_226_a_profile_outage_leaves_the_message_waiting() {
+    let h = harness_with_unbound(Some("profile")).await;
+    deliver_both(&h, "m-226", "conv-226", STRANGER_A, 1_000).await;
+
+    // The inbox could not reach the block list, so it did not answer. The
+    // message waits, unread, and is asked about again once the list is back.
+    let (state, reason, report) = stored_admission(&h, "m-226").await;
+    assert_eq!((state.as_str(), reason, report), ("undecided", None, false));
+    assert_eq!(visible_count(&h, "conv-226").await, 0);
+}
+
+async fn seed_row(h: &Harness, wasm: bool, collection: &str, id: &str, row: serde_json::Value) {
+    let (storage, ks) =
+        if wasm { (&h.wasm_storage, &h.wasm_ks) } else { (&h.native_storage, &h.native_ks) };
+    let db = storage.open_service_db(&did_for_service("conversation"), ks).await.unwrap();
+    let write = RecordWriteValue { id: id.to_string(), payload: serde_json::to_vec(&row).unwrap() };
+    db.put(collection, &write, "seed", None).await.unwrap();
+}
+
+async fn old_charge_rows(h: &Harness, wasm: bool) -> usize {
+    let rows = h.conv_rows(wasm, "first_contact_charges").await;
+    rows.iter().filter(|r| r["marker"] == "seeded-old").count()
+}
+
+#[tokio::test]
+async fn scenario_227_old_first_contact_charges_are_pruned_at_most_once_an_hour() {
+    let h = harness().await;
+    // A first message creates the collections on both builds.
+    deliver_both(&h, "m-227-first", "conv-227-a", STRANGER_A, 1_000).await;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let old = json!({ "marker": "seeded-old", "at_secs": 0, "admission": "allow" });
+
+    for wasm in [true, false] {
+        // The last prune was just now: an old row survives the next message,
+        // even though each WASM call starts from a fresh component.
+        seed_row(&h, wasm, "first_contact_charges", "old-227", old.clone()).await;
+        seed_row(&h, wasm, "conversation_meta", "charge-prune", json!({ "at_secs": now })).await;
+    }
+    deliver_both(&h, "m-227-second", "conv-227-b", STRANGER_A, 2_000).await;
+    for wasm in [true, false] {
+        assert_eq!(old_charge_rows(&h, wasm).await, 1, "pruned too early (wasm: {wasm})");
+    }
+
+    // The last prune was long ago: the next message prunes the old row.
+    for wasm in [true, false] {
+        seed_row(&h, wasm, "conversation_meta", "charge-prune", json!({ "at_secs": 0 })).await;
+    }
+    deliver_both(&h, "m-227-third", "conv-227-c", STRANGER_A, 3_000).await;
+    for wasm in [true, false] {
+        assert_eq!(old_charge_rows(&h, wasm).await, 0, "not pruned (wasm: {wasm})");
+    }
+}
+
+#[tokio::test]
+async fn scenario_228_a_group_first_seen_from_a_blocked_owner_starts_hidden_and_can_be_shown() {
+    let h = harness().await;
+    let owner = STRANGER_B;
+    both_rpc(&h, "block.add", json!({ "person_did": owner, "address": owner })).await;
+    let svc = did_for_service("conversation");
+    for conv in [&h.wasm_conversation, &h.native_conversation] {
+        let store = conv.store_for(&svc).await.unwrap();
+        let conn = store.conn().lock().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        ConversationStore::get_or_create_group_shell(&tx, "grp-228", owner, 1, 1_000).unwrap();
+        tx.commit().unwrap();
+    }
+
+    // Another member writes in the group the blocked person owns.
+    deliver_both(&h, "m-228", "grp-228", STRANGER_A, 2_000).await;
+
+    let (state, reason, _) = stored_admission(&h, "m-228").await;
+    assert_eq!((state.as_str(), reason.as_deref()), ("held", Some("group-hidden")));
+    let (lw, ln) = both_rpc(&h, "conversation.list", json!({ "kind": "group" })).await;
+    for list in [lw, ln] {
+        assert!(list["result"]["conversations"].as_array().unwrap().is_empty());
+    }
+
+    // Unblocking the owner and showing the group brings the message in.
+    both_rpc(&h, "block.remove", json!({ "person_did": owner, "address": owner })).await;
+    one_rpc(&h, true, "group.unhide", json!({ "conversation": "grp-228" })).await;
+    one_rpc(&h, false, "group.unhide", json!({ "conversation": "grp-228" })).await;
+    h.ask_undecided_now().await;
+    assert_eq!(stored_admission(&h, "m-228").await.0, "accepted");
 }

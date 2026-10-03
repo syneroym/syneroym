@@ -1,15 +1,20 @@
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicUsize, Ordering},
 };
 
 use async_trait::async_trait;
 use syneroym_rpc::{
-    ConversationDeliveryState, ConversationMessage, ConversationNotifier, NotifyOutcome,
+    Admission, ConversationDeliveryState, ConversationMessage, ConversationNotifier, DropAnswer,
+    NotifyOutcome,
 };
+use tokio::time;
 
 use super::*;
-use crate::{store::now_ms, transport::tests::test_service};
+use crate::{
+    store::{ConversationConfig as StoreConfig, now_ms},
+    transport::tests::{test_service, test_service_with},
+};
 
 const SVC: &str = "svc:receiver";
 const PEER: &str = "did:key:zPeer";
@@ -165,4 +170,91 @@ async fn a_delete_is_followed_by_a_scrub_on_the_next_tick() {
     service.wal_checkpoint_once().await;
 
     assert!(!store.take_wal_checkpoint_flag(), "a finished scrub leaves nothing to retry");
+}
+
+#[derive(Debug)]
+struct Hangs {
+    asked: AtomicUsize,
+}
+
+#[async_trait]
+impl ConversationNotifier for Hangs {
+    async fn notify_message(&self, _: &str, _: ConversationMessage) -> NotifyOutcome {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        time::sleep(Duration::from_secs(60)).await;
+        NotifyOutcome::NoAnswer
+    }
+
+    async fn notify_delivery_state(&self, _: &str, _: String, _: ConversationDeliveryState) {}
+}
+
+#[tokio::test]
+async fn an_app_that_hangs_costs_one_timeout_per_tick_not_one_per_waiting_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::ConversationConfig {
+        store: StoreConfig { admission_ask_timeout_ms: 50, ..Default::default() },
+    };
+    let service = test_service_with(dir.path(), config).await;
+    let notifier = Arc::new(Hangs { asked: AtomicUsize::new(0) });
+    service.register_service_notifier(
+        SVC.to_string(),
+        Arc::downgrade(&notifier) as Weak<dyn ConversationNotifier>,
+    );
+    let store = service.store_for(SVC).await.unwrap();
+    for i in 0..8 {
+        due_undecided(&store, &format!("m:{i}"), now_ms() + i);
+    }
+
+    let started = Instant::now();
+    service.renotify_undecided_once().await;
+
+    assert!(started.elapsed() < Duration::from_secs(5), "the pass must give up on a hung app");
+    assert_eq!(notifier.asked.load(Ordering::SeqCst), 1, "the rest wait for a later tick");
+}
+
+#[tokio::test]
+async fn a_drop_flood_is_pruned_on_the_next_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::ConversationConfig {
+        store: StoreConfig { max_dropped_per_conversation: 2, ..Default::default() },
+    };
+    let service = test_service_with(dir.path(), config).await;
+    let notifier = Fixed::new(|| {
+        NotifyOutcome::Answered(Admission::Drop(DropAnswer {
+            reason: "blocked".to_string(),
+            report: false,
+        }))
+    });
+    service.register_service_notifier(
+        SVC.to_string(),
+        Arc::downgrade(&notifier) as Weak<dyn ConversationNotifier>,
+    );
+    let store = service.store_for(SVC).await.unwrap();
+    for i in 0..5 {
+        due_undecided(&store, &format!("m:{i}"), now_ms() + i);
+    }
+    service.renotify_undecided_once().await;
+
+    service.prune_dropped_once().await;
+
+    let left = (0..5).filter(|i| store.get_message(&format!("m:{i}")).unwrap().is_some()).count();
+    assert_eq!(left, 2);
+}
+
+#[tokio::test]
+async fn a_second_scrub_inside_the_interval_waits_and_keeps_its_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::ConversationConfig {
+        store: StoreConfig { scrub_min_interval_secs: 3_600, ..Default::default() },
+    };
+    let service = test_service_with(dir.path(), config).await;
+    let store = service.store_for(SVC).await.unwrap();
+    store.flag_wal_checkpoint();
+    service.wal_checkpoint_once().await;
+    assert!(!store.take_wal_checkpoint_flag(), "the first scrub runs at once");
+
+    store.flag_wal_checkpoint();
+    service.wal_checkpoint_once().await;
+
+    assert!(store.take_wal_checkpoint_flag(), "the second waits for its turn");
 }

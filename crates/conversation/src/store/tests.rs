@@ -1,5 +1,7 @@
 #![allow(clippy::cognitive_complexity)]
 
+use std::path::PathBuf;
+
 use syneroym_core::config::RetryPolicy;
 
 use super::*;
@@ -10,7 +12,12 @@ pub(crate) fn store() -> ConversationStore {
 
 /// Like [`store`], also returning the directory that holds the database
 /// files, for tests that look at the bytes on disk or open a second reader.
-pub(crate) fn store_in_dir() -> (ConversationStore, std::path::PathBuf) {
+pub(crate) fn store_in_dir() -> (ConversationStore, PathBuf) {
+    store_with_config(ConversationConfig::default())
+}
+
+/// Like [`store_in_dir`], with the bounds a test wants to change.
+pub(crate) fn store_with_config(config: ConversationConfig) -> (ConversationStore, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     // Leak the tempdir so the file lives for the test's duration; each
     // test gets its own directory so this is bounded.
@@ -29,7 +36,7 @@ pub(crate) fn store_in_dir() -> (ConversationStore, std::path::PathBuf) {
             dlq_max_rows: 100,
             max_pending_rows: 1000,
         },
-        ConversationConfig::default(),
+        config,
     )
     .unwrap();
     (store, path.to_path_buf())

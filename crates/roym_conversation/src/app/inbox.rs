@@ -16,8 +16,8 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    FIRST_CONTACT_CHARGES, ensure_charges, load_admission, person_did_for_address, profile_call,
-    set_admission, set_admission_peer,
+    CONVERSATION_META, FIRST_CONTACT_CHARGES, ensure_charges, ensure_meta, load_admission,
+    person_did_for_address, profile_call, set_admission, set_admission_peer,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,15 +58,43 @@ pub(crate) async fn save_charge<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
-static LAST_PRUNE_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How long after one prune the next may run. The time is kept in the data
+/// layer, not in memory: a component is built fresh for each call, and
+/// several nodes can share one process.
 const PRUNE_INTERVAL_SECS: u64 = 3600;
+const PRUNE_META_ID: &str = "charge-prune";
+
+async fn charge_prune_due<H: AppHost>(host: &H, now_secs: u64) -> bool {
+    if ensure_meta(host).await.is_err() {
+        return false;
+    }
+    let last =
+        match AppDataLayer::get(host, CONVERSATION_META.to_string(), PRUNE_META_ID.into()).await {
+            Ok(Some(row)) => serde_json::from_slice::<Value>(&row.payload)
+                .ok()
+                .and_then(|v| v.get("at_secs").and_then(Value::as_u64))
+                .unwrap_or(0),
+            Ok(None) => 0,
+            Err(_) => return false,
+        };
+    now_secs.saturating_sub(last) >= PRUNE_INTERVAL_SECS
+}
+
+async fn mark_charge_pruned<H: AppHost>(host: &H, now_secs: u64) {
+    let payload = json!({ "at_secs": now_secs }).to_string().into_bytes();
+    let _ = AppDataLayer::put(
+        host,
+        CONVERSATION_META.to_string(),
+        RecordWriteValue { id: PRUNE_META_ID.to_string(), payload },
+    )
+    .await;
+}
 
 pub(crate) async fn prune_old_charges<H: AppHost>(host: &H, now_secs: u64) {
-    let last = LAST_PRUNE_SECS.load(std::sync::atomic::Ordering::Relaxed);
-    if now_secs.saturating_sub(last) < PRUNE_INTERVAL_SECS {
+    if !charge_prune_due(host, now_secs).await {
         return;
     }
-    LAST_PRUNE_SECS.store(now_secs, std::sync::atomic::Ordering::Relaxed);
+    mark_charge_pruned(host, now_secs).await;
     let floor = now_secs.saturating_sub(30 * 24 * 3600);
     let filter = json!({ "at_secs": { "$lt": floor } }).to_string();
     if let Ok(old) =

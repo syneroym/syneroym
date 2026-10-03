@@ -162,7 +162,8 @@ fn a_restore_at_the_same_address_leaves_the_chat_live() {
     let reopened = fresh.get_or_create_direct(PEER, &derive_conversation_id(ME, PEER), 5_000);
     assert_eq!(reopened.unwrap(), conv, "open-direct must find the restored chat, not fail");
     let first = fresh.get_message("m:0000").unwrap().unwrap();
-    assert!(!first.restored, "a message in a live chat is not read-only history");
+    assert!(first.restored, "every imported row says it came from a backup");
+    assert!(!first.verified, "its signature cannot be checked again");
 }
 
 #[test]

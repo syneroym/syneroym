@@ -6,7 +6,7 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
 use anyhow::Result;
@@ -32,7 +32,9 @@ impl ConversationStore {
             conn,
             queue,
             config,
-            needs_wal_checkpoint: std::sync::atomic::AtomicBool::new(false),
+            needs_wal_checkpoint: AtomicBool::new(false),
+            needs_drop_prune: AtomicBool::new(false),
+            last_scrub: Mutex::new(None),
         })
     }
 

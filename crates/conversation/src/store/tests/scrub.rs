@@ -5,8 +5,8 @@ use std::{fs, path::Path};
 use rusqlite::Connection;
 use syneroym_rpc::{Admission, DropAnswer};
 
-use super::{store, store_in_dir};
-use crate::store::ConversationStore;
+use super::{store, store_in_dir, store_with_config};
+use crate::store::{ConversationConfig, ConversationStore};
 
 /// Unique enough to appear nowhere else: the word and one of its trigrams.
 const WORD: &[u8] = b"zqxjvk";
@@ -121,4 +121,28 @@ fn dropping_a_row_that_was_never_indexed_keeps_the_index_sound() {
     let found = s.search("indexed text", None, 10).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].id, "m:visible");
+}
+
+#[test]
+fn a_burst_of_deletes_is_spread_over_the_scrub_interval() {
+    let (s, _dir) = store_with_config(ConversationConfig {
+        scrub_min_interval_secs: 3_600,
+        ..ConversationConfig::default()
+    });
+    assert!(s.scrub_due(), "the first scrub after a quiet time is not delayed");
+
+    s.mark_scrubbed();
+
+    assert!(!s.scrub_due(), "a second pass inside the interval waits");
+}
+
+#[test]
+fn a_zero_interval_never_delays_a_scrub() {
+    let (s, _dir) = store_with_config(ConversationConfig {
+        scrub_min_interval_secs: 0,
+        ..ConversationConfig::default()
+    });
+    s.mark_scrubbed();
+
+    assert!(s.scrub_due());
 }

@@ -270,6 +270,7 @@ impl ConversationStore {
         tx.commit()?;
         if matches!(admission, Admission::Drop(_)) {
             self.flag_wal_checkpoint();
+            self.flag_drop_prune();
         }
         Ok(())
     }

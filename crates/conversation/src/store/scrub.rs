@@ -1,13 +1,15 @@
-//! Removing deleted text from the database file itself.
+//! Removing deleted text from the database file itself, and keeping the
+//! number of dropped rows bounded.
 //!
 //! A delete or drop clears the message body and tells the search index to
 //! forget it, but neither rewrites the pages that still hold the old text:
 //! the index keeps the trigrams of the removed body until its segments are
 //! merged, and the write-ahead log keeps the old row until it is truncated.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rusqlite::Connection;
+use anyhow::Result;
+use rusqlite::{Connection, params};
 
 use super::ConversationStore;
 
@@ -15,6 +17,47 @@ use super::ConversationStore;
 // no safe recovery path, matching `syneroym-async-queue`'s own precedent.
 #[allow(clippy::expect_used)]
 impl ConversationStore {
+    /// Whether enough time has passed since the last finished scrub. The
+    /// first scrub after a quiet period is never delayed; only a burst of
+    /// deletes or drops is spread out, because rewriting the whole search
+    /// index holds the connection lock for as long as the index is large.
+    #[must_use]
+    pub fn scrub_due(&self) -> bool {
+        let min_gap = Duration::from_secs(self.config.scrub_min_interval_secs);
+        let last = self.last_scrub.lock().expect("scrub clock lock poisoned");
+        last.is_none_or(|at| at.elapsed() >= min_gap)
+    }
+
+    /// Records that a scrub finished just now.
+    pub fn mark_scrubbed(&self) {
+        *self.last_scrub.lock().expect("scrub clock lock poisoned") = Some(Instant::now());
+    }
+
+    /// Deletes the oldest dropped rows of each direct conversation beyond
+    /// `max_dropped_per_conversation`, and returns how many went. A dropped
+    /// row is kept so a repeat delivery is recognised; without a bound, a
+    /// blocked sender could add rows for ever. Group conversations are
+    /// skipped: their rows are bounded by the group log, and every member
+    /// must keep the same rows for the transcript code to match.
+    pub fn prune_dropped(&self) -> Result<usize> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let removed = conn.execute(
+            "DELETE FROM messages WHERE rowid IN (
+                 SELECT rowid FROM (
+                     SELECT rowid, ROW_NUMBER() OVER (
+                         PARTITION BY conversation_id ORDER BY received_at DESC, rowid DESC
+                     ) AS n
+                     FROM messages
+                     WHERE admission = 'dropped' AND conversation_id IN (
+                         SELECT id FROM conversations WHERE kind = 'direct'
+                     )
+                 ) WHERE n > ?1
+             )",
+            params![self.config.max_dropped_per_conversation],
+        )?;
+        Ok(removed)
+    }
+
     /// Merges the search index and truncates the log. Returns `true` when
     /// the pass did not finish (a reader held the log, or a statement
     /// failed) and must be tried again on a later tick.

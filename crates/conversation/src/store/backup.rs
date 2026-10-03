@@ -391,17 +391,6 @@ impl ConversationStore {
                 (m.state, m.last_error)
             };
 
-            // Restored flag follows the conversation: a message in a live chat
-            // is not restored, even if it came from the bundle.
-            let conv_restored: bool = tx
-                .query_row(
-                    "SELECT restored FROM conversations WHERE id = ?1",
-                    params![m.conversation_id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .map(|v| v != 0)
-                .unwrap_or(true);
-
             let vseq = Self::next_visible_seq(tx, &m.conversation_id)?;
             tx.execute(
                 "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
@@ -409,7 +398,7 @@ impl ConversationStore {
                  last_error, system, entry_id, admission, admission_reason, admission_changed_at, \
                  notify_attempts, next_notify_at, report_refusal, refused, deleted_at, restored, \
                  visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13, \
-                 ?14, ?15, NULL, 0, NULL, 0, NULL, ?16, ?17, ?18)",
+                 ?14, ?15, NULL, 0, NULL, 0, NULL, ?16, 1, ?17)",
                 params![
                     m.id,
                     m.conversation_id,
@@ -427,7 +416,6 @@ impl ConversationStore {
                     m.admission,
                     m.admission_reason,
                     m.deleted_at,
-                    if conv_restored { 1i64 } else { 0i64 },
                     vseq as i64,
                 ],
             )?;

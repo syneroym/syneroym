@@ -2,6 +2,7 @@ use syneroym_rpc::{Admission, ConversationDeliveryState, ConversationError, Conv
 
 use crate::{
     dag::{DELETION_REQUEST_CONTENT_TYPE, REFUSAL_NOTICE_CONTENT_TYPE},
+    store::{SessionRow, now_ms},
     transport::tests::test_service,
 };
 
@@ -133,4 +134,78 @@ async fn the_transcript_row_count_covers_what_the_digest_covers() {
     // the held one.
     assert_eq!(transcript.rows, 2);
     assert!(transcript.digest.starts_with("roym-transcript:"));
+}
+
+#[tokio::test]
+async fn an_imported_message_that_was_pending_cannot_be_retried() {
+    let old_dir = tempfile::tempdir().unwrap();
+    let old = test_service(old_dir.path()).await;
+    let conv = old.open_direct(ME, PEER).await.unwrap();
+    let pending = old.send(ME, &conv, "text/plain", b"never left this machine".to_vec()).await;
+    let pending = pending.unwrap();
+    let new_dir = tempfile::tempdir().unwrap();
+    let fresh = test_service(new_dir.path()).await;
+    let mut cursor = None;
+    loop {
+        let chunk = old.export_history(ME, cursor).await.unwrap();
+        fresh.import_history(ME, chunk.data).await.unwrap();
+        cursor = chunk.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    let err = fresh.retry(ME, &pending).await.unwrap_err();
+
+    assert!(matches!(err, ConversationError::InvalidArgument(_)), "{err:?}");
+    let row = fresh.store_for(ME).await.unwrap().get_message(&pending).unwrap().unwrap();
+    assert_eq!(row.state, ConversationDeliveryState::Failed);
+    assert!(row.restored);
+}
+
+#[tokio::test]
+async fn deleting_a_group_message_still_on_its_way_sends_the_request_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let group = service.create_group(ME).await.unwrap();
+    let store = service.store_for(ME).await.unwrap();
+    store
+        .upsert_session(
+            &SessionRow {
+                peer_address: "svc:bob".to_string(),
+                pinned_sig_key: [42u8; 32],
+                state: vec![1, 2, 3],
+            },
+            now_ms(),
+        )
+        .unwrap();
+    service.add_member(ME, &group, "svc:bob").await.unwrap();
+    store
+        .insert_outgoing_without_enqueue(
+            &group,
+            "m:on-its-way",
+            ME,
+            1_000,
+            "text/plain",
+            b"not everyone has it yet",
+            1_000,
+            "pending",
+        )
+        .unwrap();
+
+    service.delete_message(ME, "m:on-its-way", true).await.unwrap();
+
+    assert!(store.get_message("m:on-its-way").unwrap().unwrap().body.is_empty());
+    let requests: i64 = store
+        .conn()
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND system = 1 AND \
+             content_type = ?2",
+            rusqlite::params![group, DELETION_REQUEST_CONTENT_TYPE],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(requests, 1, "the group is asked to delete it too");
 }

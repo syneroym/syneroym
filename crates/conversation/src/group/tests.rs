@@ -730,3 +730,34 @@ async fn an_own_group_message_is_numbered_in_the_feed_and_searchable() {
     let hits = service.search(owner, "findable group", Some(&group_id), 10).await.unwrap();
     assert_eq!(hits.len(), 1);
 }
+
+#[tokio::test]
+async fn an_own_group_message_is_numbered_and_searchable_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let group_id = service.create_group_impl("svc:owner").await.unwrap();
+    let store = service.store_for("svc:owner").await.unwrap();
+    store
+        .upsert_session(
+            &store::SessionRow {
+                peer_address: "svc:bob".to_string(),
+                pinned_sig_key: [42u8; 32],
+                state: vec![1, 2, 3],
+            },
+            store::now_ms(),
+        )
+        .unwrap();
+    service.add_member("svc:owner", &group_id, "svc:bob").await.unwrap();
+
+    let id = service
+        .send("svc:owner", &group_id, "text/plain", b"lighthouse keeper".to_vec())
+        .await
+        .unwrap();
+
+    let sent = store.get_message(&id).unwrap().unwrap();
+    assert!(sent.visible_seq > 0, "an own message gets its number when it is stored");
+    let changes = store.changes(&group_id, 0, 10).unwrap();
+    assert!(changes.messages.iter().any(|m| m.id == id), "the feed returns it");
+    let found = store.search("lighthouse", Some(&group_id), 10).unwrap();
+    assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
+}

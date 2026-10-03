@@ -91,7 +91,7 @@ through shared database access.
 | Service | Runs on | Owns | Main API |
 |---|---|---|---|
 | **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
-| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, and its own copy of every message body | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
+| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, message bodies, and the search index over them | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
 | **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
 | **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |

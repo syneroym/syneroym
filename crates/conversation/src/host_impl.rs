@@ -323,7 +323,12 @@ impl ConversationHost for ConversationService {
         let now = store::now_ms();
         store.delete_message(&conv.id, message, now).map_err(internal)?;
 
-        if ask_others && !was_pending {
+        // A 1:1 message that never left is taken back by cancelling its
+        // delivery, so there is nothing to ask. A group message is already in
+        // the group log, which members read on their own: the request goes
+        // out behind it so those who read the entry first then apply it.
+        let cancelled = was_pending && conv.kind == ConversationKind::Direct;
+        if ask_others && !cancelled {
             let body = deletion_request_body(message);
             if conv.kind == ConversationKind::Group {
                 let _ = self

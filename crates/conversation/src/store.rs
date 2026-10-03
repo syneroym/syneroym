@@ -3,7 +3,13 @@
 //! atomic. Every `BLOB` column here is inside a DEK-opened database,
 //! matching the rest of the tree's per-service stores.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 #[cfg(test)]
 use anyhow::anyhow;
@@ -71,6 +77,8 @@ pub struct ConversationConfig {
     pub max_held_age_secs: u64,
     pub admission_ask_timeout_ms: u64,
     pub admission_claim_secs: u64,
+    pub max_dropped_per_conversation: u32,
+    pub scrub_min_interval_secs: u64,
 }
 
 impl Default for ConversationConfig {
@@ -93,6 +101,8 @@ impl Default for ConversationConfig {
             max_held_age_secs: 2_592_000,
             admission_ask_timeout_ms: 3_000,
             admission_claim_secs: 10,
+            max_dropped_per_conversation: 10_000,
+            scrub_min_interval_secs: 60,
         }
     }
 }
@@ -226,7 +236,9 @@ pub struct ConversationStore {
     pub(super) conn: Arc<Mutex<Connection>>,
     pub(super) queue: Queue,
     pub(super) config: ConversationConfig,
-    pub(super) needs_wal_checkpoint: std::sync::atomic::AtomicBool,
+    pub(super) needs_wal_checkpoint: AtomicBool,
+    pub(super) needs_drop_prune: AtomicBool,
+    pub(super) last_scrub: Mutex<Option<Instant>>,
 }
 
 impl std::fmt::Debug for ConversationStore {
@@ -251,11 +263,19 @@ impl ConversationStore {
     }
 
     pub fn flag_wal_checkpoint(&self) {
-        self.needs_wal_checkpoint.store(true, std::sync::atomic::Ordering::Release);
+        self.needs_wal_checkpoint.store(true, Ordering::Release);
     }
 
     pub fn take_wal_checkpoint_flag(&self) -> bool {
-        self.needs_wal_checkpoint.swap(false, std::sync::atomic::Ordering::AcqRel)
+        self.needs_wal_checkpoint.swap(false, Ordering::AcqRel)
+    }
+
+    pub fn flag_drop_prune(&self) {
+        self.needs_drop_prune.store(true, Ordering::Release);
+    }
+
+    pub fn take_drop_prune_flag(&self) -> bool {
+        self.needs_drop_prune.swap(false, Ordering::AcqRel)
     }
 }
 
