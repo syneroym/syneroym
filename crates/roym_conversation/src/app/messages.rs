@@ -479,16 +479,12 @@ pub(crate) async fn transcript_digest<H: AppHost>(host: &H, req: &Request) -> Re
         Some(c) => c.to_string(),
         None => return Response::invalid_params("conversation is required"),
     };
-    let digest = match AppConversation::transcript_digest(host, conversation.clone()).await {
-        Ok(d) => d,
+    let transcript = match AppConversation::transcript_digest(host, conversation).await {
+        Ok(t) => t,
         Err(e) => return from_host(e),
     };
-    let count = match AppConversation::history(host, conversation, 10_000, None).await {
-        Ok(p) => p.items.len(),
-        Err(_) => 0,
-    };
     Response::ok(json!({
-        "digest": digest,
-        "rows": count,
+        "digest": transcript.digest,
+        "rows": transcript.rows,
     }))
 }

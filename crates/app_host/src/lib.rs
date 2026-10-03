@@ -24,7 +24,7 @@ use types::{
     blob_store::BlobError,
     conversation::{
         Admission, ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
-        GroupInfo, HistoryPage, Message,
+        GroupInfo, HistoryPage, Message, Transcript,
     },
     data_layer::*,
     http::FrameKind,
@@ -373,7 +373,7 @@ pub trait AppConversation {
     fn transcript_digest(
         &self,
         conversation: String,
-    ) -> impl Future<Output = Result<String, ConversationError>> + Send;
+    ) -> impl Future<Output = Result<Transcript, ConversationError>> + Send;
     fn export_history(
         &self,
         cursor: Option<String>,

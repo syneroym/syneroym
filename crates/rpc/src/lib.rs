@@ -24,7 +24,7 @@ pub use conversation::{
     ConversationExportChunk, ConversationGroupInfo, ConversationHistoryItem,
     ConversationHistoryPage, ConversationHost, ConversationKind, ConversationMembershipEvent,
     ConversationMessage, ConversationNameEvent, ConversationNotifier, ConversationSummary,
-    DropAnswer, NotifyOutcome,
+    ConversationTranscript, DropAnswer, NotifyOutcome,
 };
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};

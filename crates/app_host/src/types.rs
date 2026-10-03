@@ -21,7 +21,7 @@ pub mod conversation {
     pub use syneroym_wit_interfaces::conversation::syneroym::conversation::conversation::{
         Admission, ChangePage, ConversationError, ConversationKind, ConversationSummary,
         DeliveryState, DropAnswer, ExportChunk, GroupInfo, HistoryItem, HistoryPage,
-        MembershipEvent, Message, NameEvent,
+        MembershipEvent, Message, NameEvent, Transcript,
     };
 }
 

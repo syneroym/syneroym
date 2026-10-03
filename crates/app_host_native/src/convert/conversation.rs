@@ -91,6 +91,10 @@ pub(crate) fn change_page_out(v: HostChangePage) -> GuestChangePage {
     }
 }
 
+pub(crate) fn transcript_out(v: HostTranscript) -> GuestTranscript {
+    GuestTranscript { digest: v.digest, rows: v.rows }
+}
+
 pub(crate) fn export_chunk_out(v: HostExportChunk) -> GuestExportChunk {
     GuestExportChunk { data: v.data, next_cursor: v.next_cursor }
 }

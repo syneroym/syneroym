@@ -80,7 +80,8 @@ fn transcript_digest_changes_when_messages_are_added() {
     )
     .unwrap();
 
-    let digest1 = s.transcript_digest(&conv).unwrap();
+    let (digest1, rows1) = s.transcript_digest(&conv).unwrap();
+    assert_eq!(rows1, 1);
     assert!(digest1.starts_with("roym-transcript:"));
 
     // Add a second message — digest must change.
@@ -105,7 +106,8 @@ fn transcript_digest_changes_when_messages_are_added() {
 
     // Digest changes even before admission is applied — all non-system rows
     // contribute to the fingerprint.
-    let digest2 = s.transcript_digest(&conv).unwrap();
+    let (digest2, rows2) = s.transcript_digest(&conv).unwrap();
+    assert_eq!(rows2, 2, "the count covers every row the digest covers");
     assert_ne!(digest1, digest2, "adding a message must change the digest");
 }
 

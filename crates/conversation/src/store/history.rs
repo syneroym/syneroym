@@ -136,7 +136,7 @@ impl ConversationStore {
         Ok((i64::MIN, String::new(), String::new()))
     }
 
-    pub fn transcript_digest(&self, conversation_id: &str) -> Result<String> {
+    pub fn transcript_digest(&self, conversation_id: &str) -> Result<(String, u32)> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         // All non-system messages (whatever admission, plus deleted)
         let mut m_stmt = conn.prepare(
@@ -174,6 +174,7 @@ impl ConversationStore {
 
         // Sort by (sender_timestamp, author, id)
         entries.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+        let rows = entries.len() as u32;
         let lines: Vec<Value> = entries
             .into_iter()
             .map(|(ts, author, id, ct)| {
@@ -185,8 +186,9 @@ impl ConversationStore {
                 })
             })
             .collect();
-        content_digest(TRANSCRIPT_DIGEST_PREFIX, &Value::Array(lines))
-            .map_err(|e| anyhow::anyhow!("{e:?}"))
+        let digest = content_digest(TRANSCRIPT_DIGEST_PREFIX, &Value::Array(lines))
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        Ok((digest, rows))
     }
 }
 

@@ -98,3 +98,39 @@ async fn a_cursor_the_host_did_not_issue_is_an_invalid_argument() {
 
     assert!(matches!(err, ConversationError::InvalidArgument(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn the_transcript_row_count_covers_what_the_digest_covers() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let conv = service.open_direct(ME, PEER).await.unwrap();
+    service.send(ME, &conv, "text/plain", b"mine".to_vec()).await.unwrap();
+    let store = service.store_for(ME).await.unwrap();
+    {
+        let conn = store.conn().lock().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        store
+            .insert_incoming_if_absent(
+                &tx,
+                &conv,
+                "m:held",
+                PEER,
+                1_000,
+                "text/plain",
+                b"held text",
+                &[0u8; 64],
+                1_000,
+                100,
+            )
+            .unwrap();
+        tx.commit().unwrap();
+    }
+    store.apply_admission("m:held", &Admission::Hold("group-hidden".into()), 1_000).unwrap();
+
+    let transcript = service.transcript_digest(ME, &conv).await.unwrap();
+
+    // History shows one message; the digest, and so the count, also covers
+    // the held one.
+    assert_eq!(transcript.rows, 2);
+    assert!(transcript.digest.starts_with("roym-transcript:"));
+}

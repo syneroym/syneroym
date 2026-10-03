@@ -135,6 +135,13 @@ pub struct ConversationChangePage {
     pub last_seq: u64,
 }
 
+/// A transcript digest and the number of rows it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationTranscript {
+    pub digest: String,
+    pub rows: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationExportChunk {
     pub data: Vec<u8>,
@@ -322,7 +329,7 @@ pub trait ConversationHost: Send + Sync + Debug {
         &self,
         service_id: &str,
         conversation: &str,
-    ) -> Result<String, ConversationError>;
+    ) -> Result<ConversationTranscript, ConversationError>;
 
     /// Paged export of conversation history bundle.
     async fn export_history(

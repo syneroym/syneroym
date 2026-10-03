@@ -153,7 +153,7 @@ impl ConversationHost for NeverConstructed {
         &self,
         _: &str,
         _: &str,
-    ) -> Result<String, syneroym_rpc::ConversationError> {
+    ) -> Result<syneroym_rpc::ConversationTranscript, syneroym_rpc::ConversationError> {
         unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")
     }
     async fn export_history(

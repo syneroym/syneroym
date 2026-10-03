@@ -305,7 +305,7 @@ pub(crate) mod tests {
             blob_store::BlobError,
             conversation::{
                 ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
-                GroupInfo, HistoryPage, Message,
+                GroupInfo, HistoryPage, Message, Transcript,
             },
             data_layer::{
                 CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
@@ -618,7 +618,7 @@ pub(crate) mod tests {
         async fn transcript_digest(
             &self,
             _conversation: String,
-        ) -> Result<String, ConversationError> {
+        ) -> Result<Transcript, ConversationError> {
             unimplemented!()
         }
         async fn export_history(

@@ -282,8 +282,10 @@ impl ConversationService {
         })
     }
 
-    /// Ingests an inbound message into the service's conversation store and
-    /// notifies the host/guest listener, applying any admission decision.
+    /// Feeds one inbound message through the same storage, admission and
+    /// receipt code as a real delivery, skipping only the encrypted channel
+    /// and the signature check. For tests that need many messages from many
+    /// authors without building a session for each.
     #[cfg(any(test, feature = "test-support"))]
     pub async fn deliver_inbound(
         &self,
@@ -295,69 +297,16 @@ impl ConversationService {
             .await
             .map_err(|e| ConversationError::Internal(e.to_string()))?;
         let now = if msg.received_at > 0 { msg.received_at } else { store::now_ms() };
-        let is_deletion_req = msg.content_type == dag::DELETION_REQUEST_CONTENT_TYPE;
-        let is_refusal_notice = msg.content_type == dag::REFUSAL_NOTICE_CONTENT_TYPE;
-        let is_system = is_deletion_req || is_refusal_notice;
-
-        let mut inserted = false;
-        store
-            .queue()
-            .transaction(|tx, _txq| {
-                inserted = store.insert_incoming_if_absent(
-                    tx,
-                    &msg.conversation,
-                    &msg.id,
-                    &msg.author,
-                    msg.sender_timestamp,
-                    &msg.content_type,
-                    &msg.body,
-                    &[0u8; 64],
-                    now,
-                    store.config().max_messages_per_conversation,
-                )?;
-                if is_system {
-                    tx.execute(
-                        "UPDATE messages SET system = 1, admission = 'accepted' WHERE id = ?1",
-                        rusqlite::params![msg.id],
-                    )?;
-                }
-                if is_deletion_req {
-                    ConversationStore::handle_inbound_deletion_request(
-                        tx,
-                        &msg.conversation,
-                        &msg.author,
-                        &msg.body,
-                        now,
-                    )?;
-                }
-                if is_refusal_notice {
-                    ConversationStore::handle_inbound_refusal_notice(
-                        tx,
-                        &msg.conversation,
-                        &msg.author,
-                        &msg.body,
-                    )?;
-                }
-                Ok(())
-            })
-            .map_err(|e| ConversationError::Internal(e.to_string()))?;
-
-        if is_system {
-            return Ok(());
-        }
-
-        if inserted {
-            let outcome = self.notify_message(service_id, msg.clone()).await;
-            match outcome {
-                NotifyOutcome::Answered(admission) => {
-                    let _ = store.apply_admission(&msg.id, &admission, now);
-                }
-                NotifyOutcome::NoHandler => {
-                    let _ = store.apply_admission(&msg.id, &Admission::Accept, now);
-                }
-                NotifyOutcome::NoAnswer => {}
-            }
-        }
+        let payload = envelope::DeliveryPayload {
+            message_id: msg.id,
+            conversation_id: msg.conversation,
+            author: msg.author.clone(),
+            sender_timestamp_ms: msg.sender_timestamp,
+            content_type: msg.content_type,
+            body: msg.body,
+            signature: [0u8; 64],
+        };
+        self.ingest_verified(service_id, &store, payload, &msg.author, None, now).await?;
         Ok(())
     }
 

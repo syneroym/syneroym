@@ -353,7 +353,10 @@ impl AppConversation for GuestHost {
         conv::set_group_name(&conversation, &name)
     }
 
-    async fn transcript_digest(&self, conversation: String) -> Result<String, ConversationError> {
+    async fn transcript_digest(
+        &self,
+        conversation: String,
+    ) -> Result<crate::types::conversation::Transcript, ConversationError> {
         conv::transcript_digest(&conversation)
     }
 

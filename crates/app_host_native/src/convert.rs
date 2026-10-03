@@ -12,7 +12,7 @@ use syneroym_app_host::types::{
         ExportChunk as GuestExportChunk, GroupInfo as GuestGroupInfo,
         HistoryItem as GuestHistoryItem, HistoryPage as GuestHistoryPage,
         MembershipEvent as GuestMembershipEvent, Message as GuestMessage,
-        NameEvent as GuestNameEvent,
+        NameEvent as GuestNameEvent, Transcript as GuestTranscript,
     },
     data_layer::{
         CollectionSchema as GuestCollectionSchema, DataLayerError as GuestDataLayerError,
@@ -44,6 +44,7 @@ use syneroym_wit_interfaces::{
         DeliveryState as HostDeliveryState, ExportChunk as HostExportChunk,
         GroupInfo as HostGroupInfo, HistoryItem as HostHistoryItem, HistoryPage as HostHistoryPage,
         MembershipEvent as HostMembershipEvent, Message as HostMessage, NameEvent as HostNameEvent,
+        Transcript as HostTranscript,
     },
     host::syneroym::{
         app_config::app_config::ConfigError as HostConfigError,

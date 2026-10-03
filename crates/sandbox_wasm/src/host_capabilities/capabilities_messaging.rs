@@ -118,6 +118,10 @@ mod conversation_wire {
         }
     }
 
+    pub(super) fn map_transcript(t: rpc::ConversationTranscript) -> wit::Transcript {
+        wit::Transcript { digest: t.digest, rows: t.rows }
+    }
+
     pub(super) fn map_export_chunk(c: rpc::ConversationExportChunk) -> wit::ExportChunk {
         wit::ExportChunk { data: c.data, next_cursor: c.next_cursor }
     }
@@ -379,10 +383,11 @@ impl wit_conversation::Host for HostState {
     async fn transcript_digest(
         &mut self,
         conversation: String,
-    ) -> Result<String, wit_conversation::ConversationError> {
+    ) -> Result<wit_conversation::Transcript, wit_conversation::ConversationError> {
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
         conv.transcript_digest(&self.component_id, &conversation)
             .await
+            .map(conversation_wire::map_transcript)
             .map_err(conversation_wire::map_error)
     }
 

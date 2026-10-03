@@ -159,6 +159,12 @@ interface conversation {
         restored: bool,
     }
 
+    /// A transcript digest and the number of rows it covers.
+    record transcript {
+        digest: string,
+        rows: u32,
+    }
+
     record export-chunk {
         data: list<u8>,
         next-cursor: option<string>,
@@ -276,8 +282,9 @@ interface conversation {
     /// non-system message row of the conversation, whatever its admission
     /// state, and every stored membership and name log entry, ordered by
     /// (sender-timestamp, author, id). Members who hold the same rows get the
-    /// same digest.
-    transcript-digest: func(conversation: conversation-id) -> result<string, conversation-error>;
+    /// same digest. `rows` is how many rows the digest covers, so a caller
+    /// never has to read the history to count them.
+    transcript-digest: func(conversation: conversation-id) -> result<transcript, conversation-error>;
 
     /// Paged export of conversation history. Pass no cursor for the first
     /// chunk, then pass each `next-cursor` back until it is absent. The first

@@ -12,7 +12,7 @@ use syneroym_app_host::{
         blob_store::BlobError,
         conversation::{
             ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
-            GroupInfo, HistoryPage, Message,
+            GroupInfo, HistoryPage, Message, Transcript,
         },
         data_layer::{
             CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RawQueryResult,
@@ -557,10 +557,14 @@ impl AppConversation for NativeAppHost {
             .map_err(convert::conversation_error_out)
     }
 
-    async fn transcript_digest(&self, conversation: String) -> Result<String, ConversationError> {
+    async fn transcript_digest(
+        &self,
+        conversation: String,
+    ) -> Result<Transcript, ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::transcript_digest(&mut *state, conversation)
             .await
+            .map(convert::transcript_out)
             .map_err(convert::conversation_error_out)
     }
 

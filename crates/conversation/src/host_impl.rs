@@ -3,7 +3,7 @@
 use syneroym_rpc::{
     ConversationChangePage, ConversationDeliveryState, ConversationError, ConversationExportChunk,
     ConversationGroupInfo, ConversationHistoryPage, ConversationHost, ConversationKind,
-    ConversationMessage, ConversationSummary,
+    ConversationMessage, ConversationSummary, ConversationTranscript,
 };
 
 use crate::{
@@ -396,12 +396,13 @@ impl ConversationHost for ConversationService {
         &self,
         service_id: &str,
         conversation: &str,
-    ) -> Result<String, ConversationError> {
+    ) -> Result<ConversationTranscript, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
         let c = conversation.to_string();
         tokio::task::spawn_blocking(move || store.transcript_digest(&c))
             .await
             .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
+            .map(|(digest, rows)| ConversationTranscript { digest, rows })
             .map_err(internal)
     }
 

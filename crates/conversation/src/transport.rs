@@ -350,7 +350,21 @@ impl ConversationService {
 
         let (session, payload, author) =
             self.verify_incoming_envelope(svc, &store, &env, now).await?;
+        self.ingest_verified(svc, &store, payload, &author, Some(&session), now).await
+    }
 
+    /// Everything after the signature check: size bounds, storage, the
+    /// question to the app and the receipt. `session` is `None` only for the
+    /// test hook, which has no encrypted channel to advance.
+    pub(crate) async fn ingest_verified(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        payload: DeliveryPayload,
+        author: &str,
+        session: Option<&Session>,
+        now: i64,
+    ) -> Result<DeliveryAck, ConversationError> {
         // Apply per-conversation bounds on the receive path. The same
         // limits `send` enforces for outgoing messages must hold for
         // incoming ones — an unchecked peer can otherwise write unbounded
@@ -360,7 +374,7 @@ impl ConversationService {
             return Err(ConversationError::QuotaExceeded);
         }
 
-        let group_key = parse_and_validate_group_key(svc, &author, &payload)?;
+        let group_key = parse_and_validate_group_key(svc, author, &payload)?;
         let is_group_key = group_key.is_some();
 
         let my_ident =
@@ -378,9 +392,11 @@ impl ConversationService {
             .queue()
             .transaction(|tx, _txq| {
                 if let Some(key_payload) = &group_key {
+                    let session = session
+                        .ok_or_else(|| anyhow::anyhow!("a group key needs an encrypted session"))?;
                     group_id_to_apply = Some(apply_incoming_group_key(
                         tx,
-                        &author,
+                        author,
                         svc,
                         &session.peer_sig_key,
                         my_vk,
@@ -393,7 +409,7 @@ impl ConversationService {
                     tx,
                     &payload.conversation_id,
                     &payload.message_id,
-                    &author,
+                    author,
                     payload.sender_timestamp_ms,
                     &payload.content_type,
                     &payload.body,
@@ -412,7 +428,7 @@ impl ConversationService {
                     ConversationStore::handle_inbound_deletion_request(
                         tx,
                         &payload.conversation_id,
-                        &author,
+                        author,
                         &payload.body,
                         now,
                     )?;
@@ -421,13 +437,15 @@ impl ConversationService {
                     ConversationStore::handle_inbound_refusal_notice(
                         tx,
                         &payload.conversation_id,
-                        &author,
+                        author,
                         &payload.body,
                     )?;
                 }
-                self.crypto
-                    .commit_in(tx, &session)
-                    .map_err(|e| anyhow::anyhow!("session commit failed: {e}"))?;
+                if let Some(session) = session {
+                    self.crypto
+                        .commit_in(tx, session)
+                        .map_err(|e| anyhow::anyhow!("session commit failed: {e}"))?;
+                }
                 Ok(())
             })
             .map_err(|e| {
@@ -440,7 +458,7 @@ impl ConversationService {
 
         if is_group_key {
             if let Some(gid) = group_id_to_apply {
-                self.apply_pending_entries(&store, svc, &gid).await;
+                self.apply_pending_entries(store, svc, &gid).await;
             }
             return Ok(DeliveryAck { message_id: payload.message_id, refused: None });
         }
@@ -450,7 +468,7 @@ impl ConversationService {
         }
 
         let refused_out =
-            self.resolve_delivery_admission(&store, svc, &payload.message_id, inserted, now).await;
+            self.resolve_delivery_admission(store, svc, &payload.message_id, inserted, now).await;
 
         Ok(DeliveryAck { message_id: payload.message_id, refused: refused_out })
     }
