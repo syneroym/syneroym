@@ -210,18 +210,22 @@ async fn on_group_message<H: AppHost>(
         Some(vis) => vis,
         None => {
             let vis = decide_group_visibility(host, info).await?;
-            // Use insert-only: if two concurrent messages race here, one
-            // will find the key already set on the next call. The important
-            // guarantee is that we never store a charge twice for the same
-            // message id — that is handled in first_contact_charges.
-            set_admission(host, &msg.conversation, &vis).await?;
-            vis
+            // A concurrent first message may have decided while this one
+            // waited on the profile service. The earlier decision stands, so
+            // the group never flips between two answers.
+            match load_admission(host, &msg.conversation).await? {
+                Some(existing) => existing,
+                None => {
+                    set_admission(host, &msg.conversation, &vis).await?;
+                    vis
+                }
+            }
         }
     };
 
-    // 'hidden' and 'refused' both mean the group is not shown; hold the
-    // message so it can be admitted later when the user shows the group.
-    if matches!(visibility.as_str(), "hidden" | "refused") {
+    // A hidden group is not shown; hold the message so it can be admitted
+    // later when the user shows the group.
+    if visibility == "hidden" {
         return Ok(Admission::Hold("group-hidden".to_string()));
     }
 
@@ -238,8 +242,8 @@ async fn decide_group_visibility<H: AppHost>(host: &H, info: &GroupInfo) -> Resu
     }
     let owner_did = person_did_for_address(host, &info.owner).await;
     let owner_blocked = is_blocked(host, &info.owner, owner_did.as_deref()).await?;
-    // A blocked owner's group starts hidden, not refused, so the user can
-    // show it later after unblocking (D-CV-9).
+    // A blocked owner's group starts hidden, so the person can show it
+    // later after unblocking.
     if owner_blocked {
         return Ok("hidden".to_string());
     }

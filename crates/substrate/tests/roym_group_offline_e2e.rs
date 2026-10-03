@@ -253,7 +253,7 @@ async fn a_stranger_adding_you_is_a_first_contact() {
                         .and_then(|g| g.get("admission"))
                         .and_then(|a| a.get("state"))
                         .and_then(Value::as_str)
-                        == Some("refused")
+                        == Some("hidden")
             })
         })
     })
@@ -261,7 +261,16 @@ async fn a_stranger_adding_you_is_a_first_contact() {
     assert!(ok);
 
     let unh = x.rpc_ok("group.unhide", json!({ "group": &gid })).await;
-    assert_eq!(unh["filled_in"], 2);
+    assert_eq!(unh["filled_in"], 1, "only msg A was held");
+
+    // Unhide returns the held message to the app; the host's background pass
+    // asks again and only then does it show.
+    let shown = wait_until(Duration::from_secs(60), || async {
+        let hx = x.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
+        hx["messages"].as_array().is_some_and(|rows| rows.iter().any(|m| m["body"] == "msg A"))
+    })
+    .await;
+    assert!(shown, "msg A must show once the app has answered again");
 
     let info_x = x.rpc_ok("group.info", json!({ "conversation": &gid })).await;
     assert_eq!(info_x["name"], "Stranger Group");
@@ -273,11 +282,8 @@ async fn a_stranger_adding_you_is_a_first_contact() {
         .iter()
         .find(|r| r["id"] == gid)
         .expect("unhidden group row");
-    assert_eq!(row_x["message_count"], 2);
+    assert_eq!(row_x["message_count"], 1);
     assert_eq!(row_x["group"]["name"], "Stranger Group");
-
-    let hx = x.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
-    assert!(hx["messages"].as_array().unwrap().iter().any(|m| m["body"] == "msg A"));
 
     w.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "msg B" })).await;
     let ok_b = wait_until(Duration::from_secs(60), || async {

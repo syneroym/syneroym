@@ -35,6 +35,9 @@ interface conversation {
         /// `direct`. This is the same namespace `open-direct` takes and
         /// `message.author` reports -- see the note on `author`.
         participants: list<string>,
+        /// The other side of a `direct` conversation, in the same address
+        /// namespace as `participants`. Absent for a `group`.
+        peer-address: option<string>,
         created-at: s64,
         last-activity-at: s64,
         message-count: u32,
@@ -269,19 +272,28 @@ interface conversation {
     /// a signed group-profile DAG entry. `permission-denied` if not group owner.
     set-group-name: func(conversation: conversation-id, name: string) -> result<_, conversation-error>;
 
-    /// Content-derived BLAKE3 digest ("roym-transcript:<hash>") computed over
-    /// all accepted messages in the conversation, ordered by (sender-timestamp,
-    /// author, message-id). Returns `not-found` if conversation does not exist.
+    /// Content-derived BLAKE3 digest ("roym-transcript:<hash>") over every
+    /// non-system message row of the conversation, whatever its admission
+    /// state, and every stored membership and name log entry, ordered by
+    /// (sender-timestamp, author, id). Members who hold the same rows get the
+    /// same digest.
     transcript-digest: func(conversation: conversation-id) -> result<string, conversation-error>;
 
-    /// Paged export of conversation history. Returns serialized JSON bytes
-    /// containing conversation metadata, DAG entries, and messages, with an
-    /// opaque `next-cursor` to continue paging until complete.
+    /// Paged export of conversation history. Pass no cursor for the first
+    /// chunk, then pass each `next-cursor` back until it is absent. The first
+    /// chunk carries conversations and group members; the chunks after it
+    /// carry log entries and then messages, so every chunk can be imported in
+    /// the order it was produced. A cursor that was not returned by this verb
+    /// is `invalid-argument`.
     export-history: func(cursor: option<string>) -> result<export-chunk, conversation-error>;
 
-    /// Imports a serialized history export bundle produced by `export-history`.
-    /// Validates backup version, admission state strings, and rejects overwriting
-    /// live group DAG entries. Returns the number of imported messages.
+    /// Imports one chunk produced by `export-history`. Each chunk is its own
+    /// transaction. Messages, log entries and members that are already stored
+    /// are skipped, and a live group keeps its own log and members, so a failed
+    /// import is resumed by importing the same chunks again. An unknown backup
+    /// version, admission value or delivery state is `invalid-argument`. A direct chat
+    /// whose id is not the one this node derives for that peer is imported as
+    /// read-only history. Returns the number of messages added.
     import-history: func(data: list<u8>) -> result<u32, conversation-error>;
 }
 

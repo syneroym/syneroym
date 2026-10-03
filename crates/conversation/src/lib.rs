@@ -317,7 +317,7 @@ impl ConversationService {
                 )?;
                 if is_system {
                     tx.execute(
-                        "UPDATE messages SET system = 1 WHERE id = ?1",
+                        "UPDATE messages SET system = 1, admission = 'accepted' WHERE id = ?1",
                         rusqlite::params![msg.id],
                     )?;
                 }

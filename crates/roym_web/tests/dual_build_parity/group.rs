@@ -255,7 +255,9 @@ async fn scenario_206_group_profile_from_non_owner_and_ordering_parity() {
         let store = conv.store_for(&conv_did).await.unwrap();
         let msg = store.get_message("p-bad").unwrap().expect("stored message");
         assert_eq!(msg.admission, "dropped");
-        assert_eq!(msg.admission_reason.as_deref(), Some("not-owner"));
+        // The group name is a signed log entry now, so a chat message of the
+        // old group-profile type is reserved for everyone, owner included.
+        assert_eq!(msg.admission_reason.as_deref(), Some("reserved-content-type"));
     }
 
     let rw =

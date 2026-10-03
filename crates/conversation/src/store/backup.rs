@@ -7,8 +7,8 @@ use rusqlite::{Connection, Transaction, params};
 use serde::{Deserialize, Serialize};
 use syneroym_rpc::ConversationExportChunk;
 
-use super::{ConversationStore, StoredDagEntry, message::is_searchable_content_type};
-use crate::dag::WireEntry;
+use super::{ConversationStore, StoreError, StoredDagEntry, message::is_searchable_content_type};
+use crate::{dag::WireEntry, ids::derive_conversation_id};
 
 pub const BACKUP_VERSION: u32 = 1;
 const EXPORT_PAGE_SIZE: i64 = 200;
@@ -65,37 +65,59 @@ pub struct BackupBundle {
     pub group_members: Vec<BackupGroupMember>,
 }
 
+/// Where an export call resumes. Conversations and members come first,
+/// then log entries, then messages, so an importer always sees a parent
+/// before its children.
+enum ExportCursor {
+    Start,
+    Entries(i64),
+    Messages(i64),
+}
+
+impl ExportCursor {
+    fn parse(raw: Option<&str>) -> Result<Self> {
+        let Some(raw) = raw else { return Ok(Self::Start) };
+        let bad = || StoreError::InvalidInput(format!("invalid export cursor: {raw}"));
+        let (kind, n) = raw.split_once(':').ok_or_else(bad)?;
+        let n: i64 = n.parse().map_err(|_| bad())?;
+        match kind {
+            "d" => Ok(Self::Entries(n)),
+            "m" => Ok(Self::Messages(n)),
+            _ => Err(bad().into()),
+        }
+    }
+}
+
 // Lock-poisoning from a panicking holder is a programming error; there is
 // no safe recovery path, matching `syneroym-async-queue`'s own precedent.
 #[allow(clippy::expect_used)]
 impl ConversationStore {
+    /// One page of the history bundle. The cursor is opaque to callers:
+    /// `d:<seq>` continues the log entries, `m:<rowid>` continues the
+    /// messages. The first chunk also carries the conversations and group
+    /// members, which every later chunk needs to exist first.
     pub fn export_history(&self, cursor: Option<String>) -> Result<ConversationExportChunk> {
+        let cursor = ExportCursor::parse(cursor.as_deref())?;
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let offset: i64 = match cursor.as_deref() {
-            Some(c) => {
-                c.parse::<i64>().map_err(|_| anyhow::anyhow!("invalid export cursor: {c}"))?
-            }
-            None => 0,
-        };
-
-        let (conversations, dag_entries, group_members) = if offset == 0 {
-            (
-                Self::export_conversations(&conn)?,
-                Self::export_dag_entries(&conn)?,
-                Self::export_group_members(&conn)?,
-            )
-        } else {
-            (Vec::new(), Vec::new(), Vec::new())
-        };
-
-        let (messages, next_cursor) = Self::export_messages_page(&conn, offset)?;
-
-        let bundle = BackupBundle {
+        let mut bundle = BackupBundle {
             version: BACKUP_VERSION,
-            conversations,
-            messages,
-            dag_entries,
-            group_members,
+            conversations: Vec::new(),
+            messages: Vec::new(),
+            dag_entries: Vec::new(),
+            group_members: Vec::new(),
+        };
+        let next_cursor = match cursor {
+            ExportCursor::Start => {
+                bundle.conversations = Self::export_conversations(&conn)?;
+                bundle.group_members = Self::export_group_members(&conn)?;
+                Self::export_dag_page(&conn, 0, &mut bundle)?
+            }
+            ExportCursor::Entries(after_seq) => {
+                Self::export_dag_page(&conn, after_seq, &mut bundle)?
+            }
+            ExportCursor::Messages(after_rowid) => {
+                Self::export_messages_page(&conn, after_rowid, &mut bundle)?
+            }
         };
         let data = serde_json::to_vec(&bundle)?;
         Ok(ConversationExportChunk { data, next_cursor })
@@ -123,19 +145,30 @@ impl ConversationStore {
         Ok(convs)
     }
 
-    fn export_dag_entries(conn: &Connection) -> Result<Vec<WireEntry>> {
+    /// Adds the next page of log entries to `bundle` and returns the cursor
+    /// for what follows: more entries, or the first message page.
+    fn export_dag_page(
+        conn: &Connection,
+        after_seq: i64,
+        bundle: &mut BackupBundle,
+    ) -> Result<Option<String>> {
         let mut stmt = conn.prepare(
             "SELECT seq, entry_id, conversation_id, author, sender_timestamp, epoch, kind, \
              header, ciphertext, nonce, payload, signature, applied, relay_pending FROM \
-             dag_entries ORDER BY seq ASC",
+             dag_entries WHERE seq > ?1 ORDER BY seq ASC LIMIT ?2",
         )?;
-        let mut rows = stmt.query([])?;
-        let mut dags = Vec::new();
+        let mut rows = stmt.query(params![after_seq, EXPORT_PAGE_SIZE + 1])?;
+        let mut entries = Vec::new();
         while let Some(r) = rows.next()? {
-            let entry: StoredDagEntry = Self::row_to_dag_entry(conn, r)?;
-            dags.push(entry.into_wire());
+            entries.push(Self::row_to_dag_entry(conn, r)?);
         }
-        Ok(dags)
+        let more = entries.len() as i64 > EXPORT_PAGE_SIZE;
+        if more {
+            entries.pop();
+        }
+        let last_seq = entries.last().map_or(after_seq, |e| e.seq);
+        bundle.dag_entries = entries.into_iter().map(StoredDagEntry::into_wire).collect();
+        Ok(Some(if more { format!("d:{last_seq}") } else { "m:0".to_string() }))
     }
 
     fn export_group_members(conn: &Connection) -> Result<Vec<BackupGroupMember>> {
@@ -160,22 +193,26 @@ impl ConversationStore {
         Ok(members)
     }
 
+    /// Adds the next page of messages (in row order, so a message that
+    /// arrives mid-export is picked up by a later page, never skipped) to
+    /// `bundle`.
     fn export_messages_page(
         conn: &Connection,
-        offset: i64,
-    ) -> Result<(Vec<BackupMessage>, Option<String>)> {
+        after_rowid: i64,
+        bundle: &mut BackupBundle,
+    ) -> Result<Option<String>> {
         let mut m_stmt = conn.prepare(
             "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
              body, signature, outgoing, state, last_error, system, entry_id, admission, \
-             admission_reason, deleted_at FROM messages WHERE system = 0 ORDER BY \
-             sender_timestamp ASC, author ASC, id ASC LIMIT ?1 OFFSET ?2",
+             admission_reason, deleted_at, rowid FROM messages WHERE system = 0 AND rowid > ?1 \
+             ORDER BY rowid ASC LIMIT ?2",
         )?;
-        let mut m_rows = m_stmt.query(params![EXPORT_PAGE_SIZE + 1, offset])?;
-        let mut messages = Vec::new();
+        let mut m_rows = m_stmt.query(params![after_rowid, EXPORT_PAGE_SIZE + 1])?;
+        let mut rowids = Vec::new();
         while let Some(r) = m_rows.next()? {
             let sig_blob: Vec<u8> = r.get(7)?;
             let signature: [u8; 64] = sig_blob.as_slice().try_into().unwrap_or([0u8; 64]);
-            messages.push(BackupMessage {
+            bundle.messages.push(BackupMessage {
                 id: r.get(0)?,
                 conversation_id: r.get(1)?,
                 author: r.get(2)?,
@@ -193,26 +230,33 @@ impl ConversationStore {
                 admission_reason: r.get(14)?,
                 deleted_at: r.get(15)?,
             });
+            rowids.push(r.get::<_, i64>(16)?);
         }
-
-        let next_cursor = if messages.len() as i64 > EXPORT_PAGE_SIZE {
-            messages.pop();
-            Some((offset + EXPORT_PAGE_SIZE).to_string())
-        } else {
-            None
-        };
-        Ok((messages, next_cursor))
+        if bundle.messages.len() as i64 > EXPORT_PAGE_SIZE {
+            bundle.messages.pop();
+            rowids.pop();
+            return Ok(rowids.last().map(|id| format!("m:{id}")));
+        }
+        Ok(None)
     }
 
-    pub fn import_history(&self, data: &[u8]) -> Result<u32> {
+    /// Imports one chunk. Safe to repeat: existing messages, log entries and
+    /// members are skipped, so a failed import is resumed by running the
+    /// whole bundle again. `service_id` is this node's own address; it decides
+    /// whether a direct chat in the bundle is still live here.
+    pub fn import_history(&self, service_id: &str, data: &[u8]) -> Result<u32> {
         let bundle: BackupBundle = serde_json::from_slice(data)?;
         if bundle.version != BACKUP_VERSION {
-            anyhow::bail!("unsupported backup version: {}", bundle.version);
+            return Err(StoreError::InvalidInput(format!(
+                "unsupported backup version: {}",
+                bundle.version
+            ))
+            .into());
         }
         let mut conn = self.conn.lock().expect("conversation connection lock poisoned");
         let tx = conn.transaction()?;
 
-        Self::import_conversations(&tx, bundle.conversations)?;
+        Self::import_conversations(&tx, service_id, bundle.conversations)?;
         Self::import_group_members(&tx, bundle.group_members)?;
 
         for de in bundle.dag_entries {
@@ -234,7 +278,11 @@ impl ConversationStore {
         Ok(count)
     }
 
-    fn import_conversations(tx: &Transaction<'_>, convs: Vec<BackupConversation>) -> Result<()> {
+    fn import_conversations(
+        tx: &Transaction<'_>,
+        service_id: &str,
+        convs: Vec<BackupConversation>,
+    ) -> Result<()> {
         for c in convs {
             let is_group = c.kind == "group";
             let restored = if is_group {
@@ -248,18 +296,13 @@ impl ConversationStore {
                     .unwrap_or(false);
                 !has_keys
             } else {
-                // For direct chats: mark restored only when the id is new
-                // on this node. A same-address restore produces the same id,
-                // so the chat stays live (restored=0) and open_direct works.
-                let id_exists: bool = tx
-                    .query_row(
-                        "SELECT COUNT(*) FROM conversations WHERE id = ?1",
-                        params![c.id],
-                        |r| r.get::<_, i64>(0),
-                    )
-                    .map(|count| count > 0)
-                    .unwrap_or(false);
-                !id_exists
+                // A direct chat is live when its id is the one this node derives
+                // for that peer, which is the case after a restore at the same
+                // address. Any other id came from another node's address, so the
+                // chat is read-only history here.
+                c.peer_address
+                    .as_deref()
+                    .is_none_or(|peer| c.id != derive_conversation_id(service_id, peer))
             };
 
             tx.execute(
@@ -316,14 +359,22 @@ impl ConversationStore {
         let mut count = 0u32;
         for m in messages {
             if !matches!(m.admission.as_str(), "accepted" | "held" | "dropped" | "undecided") {
-                anyhow::bail!("invalid admission value in backup: {}", m.admission);
+                return Err(StoreError::InvalidInput(format!(
+                    "invalid admission value in backup: {}",
+                    m.admission
+                ))
+                .into());
             }
             if !matches!(m.state.as_str(), "pending" | "delivered" | "failed") {
-                anyhow::bail!("invalid state value in backup: {}", m.state);
+                return Err(StoreError::InvalidInput(format!(
+                    "invalid state value in backup: {}",
+                    m.state
+                ))
+                .into());
             }
 
-            // Skip messages that already exist; the plan says duplicate ids are
-            // ignored on import.
+            // A message that is already stored is skipped, so importing the same
+            // bundle twice changes nothing and an interrupted import can be rerun.
             let already_exists: bool = tx
                 .query_row("SELECT COUNT(*) FROM messages WHERE id = ?1", params![m.id], |r| {
                     r.get::<_, i64>(0)

@@ -59,6 +59,7 @@ mod conversation_wire {
             id: s.id,
             kind: map_kind(s.kind),
             participants: s.participants,
+            peer_address: s.peer_address,
             created_at: s.created_at,
             last_activity_at: s.last_activity_at,
             message_count: s.message_count,

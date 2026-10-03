@@ -4,12 +4,18 @@ use syneroym_core::config::RetryPolicy;
 
 use super::*;
 
-fn store() -> ConversationStore {
+pub(crate) fn store() -> ConversationStore {
+    store_in_dir().0
+}
+
+/// Like [`store`], also returning the directory that holds the database
+/// files, for tests that look at the bytes on disk or open a second reader.
+pub(crate) fn store_in_dir() -> (ConversationStore, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     // Leak the tempdir so the file lives for the test's duration; each
     // test gets its own directory so this is bounded.
     let path = Box::leak(Box::new(dir)).path();
-    ConversationStore::open_encrypted(
+    let store = ConversationStore::open_encrypted(
         path,
         None,
         QueueConfig {
@@ -25,7 +31,8 @@ fn store() -> ConversationStore {
         },
         ConversationConfig::default(),
     )
-    .unwrap()
+    .unwrap();
+    (store, path.to_path_buf())
 }
 
 #[test]
@@ -690,3 +697,8 @@ fn get_message_marks_system_messages() {
     let raw = s.get_message("msg:sys_key").unwrap().unwrap();
     assert!(raw.system);
 }
+
+mod admission;
+mod backup_roundtrip;
+mod scrub;
+mod search_and_delete;

@@ -280,14 +280,22 @@ impl ConversationStore {
         admission: &Admission,
         now_ms: i64,
     ) -> Result<()> {
-        let msg_info: Option<(i64, String, String, Vec<u8>)> = conn
+        let msg_info: Option<(i64, String, String, Vec<u8>, String)> = conn
             .query_row(
-                "SELECT rowid, conversation_id, content_type, body FROM messages WHERE id = ?1",
+                "SELECT rowid, conversation_id, content_type, body, admission FROM messages WHERE \
+                 id = ?1",
                 params![message_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        let Some((rowid, conv_id, ct, body)) = msg_info else { return Ok(()) };
+        let Some((rowid, conv_id, ct, body, prior)) = msg_info else { return Ok(()) };
+        // A dropped row has no body left to decide on, and an accepted row
+        // already has its sequence number and index entry: only a drop may
+        // still change it. A late answer from a racing re-ask must not hand
+        // out a second number or hide an indexed row.
+        if prior == "dropped" || (prior == "accepted" && !matches!(admission, Admission::Drop(_))) {
+            return Ok(());
+        }
 
         match admission {
             Admission::Accept => {
@@ -323,14 +331,17 @@ impl ConversationStore {
                     )
                     .unwrap_or(false);
                 let report = if is_group { false } else { drop_ans.report };
-                if is_searchable_content_type(&ct)
+                // Only an accepted row is in the index. An FTS5 'delete' for
+                // text that was never indexed corrupts an external-content table.
+                if prior == "accepted"
+                    && is_searchable_content_type(&ct)
                     && let Ok(body_str) = str::from_utf8(&body)
                 {
-                    let _ = conn.execute(
+                    conn.execute(
                         "INSERT INTO messages_fts (messages_fts, rowid, body) VALUES ('delete', \
                          ?1, ?2)",
                         params![rowid, body_str],
-                    );
+                    )?;
                 }
                 conn.execute(
                     "UPDATE messages SET admission = 'dropped', admission_reason = ?1, \

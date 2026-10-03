@@ -29,7 +29,7 @@ mod group_sync;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests;
+pub(crate) mod tests;
 
 pub(super) fn internal(e: impl fmt::Display) -> ConversationError {
     ConversationError::Internal(e.to_string())

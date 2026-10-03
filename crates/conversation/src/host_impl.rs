@@ -13,7 +13,7 @@ use crate::{
     },
     ids::derive_conversation_id,
     internal, store,
-    store::StoredMessage,
+    store::{StoreError, StoredMessage},
 };
 
 #[async_trait::async_trait]
@@ -45,13 +45,13 @@ impl ConversationHost for ConversationService {
         let rows = store.list_conversations().map_err(internal)?;
         let mut summaries = Vec::new();
         for r in rows {
+            let peer_address =
+                if r.kind == ConversationKind::Group { None } else { r.peer_address.clone() };
             let participants = if r.kind == ConversationKind::Group {
                 store.current_members(&r.id).unwrap_or_default()
             } else {
                 let mut p = vec![service_id.to_string()];
-                if let Some(peer) = r.peer_address {
-                    p.push(peer);
-                }
+                p.extend(peer_address.clone());
                 p.sort();
                 p
             };
@@ -60,6 +60,7 @@ impl ConversationHost for ConversationService {
                 id: r.id,
                 kind: r.kind,
                 participants,
+                peer_address,
                 created_at: r.created_at_ms,
                 last_activity_at: r.last_activity_ms,
                 message_count: count,
@@ -413,7 +414,7 @@ impl ConversationHost for ConversationService {
         tokio::task::spawn_blocking(move || store.export_history(cursor))
             .await
             .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
-            .map_err(internal)
+            .map_err(bad_input_or_internal)
     }
 
     async fn import_history(
@@ -422,10 +423,11 @@ impl ConversationHost for ConversationService {
         data: Vec<u8>,
     ) -> Result<u32, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
-        tokio::task::spawn_blocking(move || store.import_history(&data))
+        let svc = service_id.to_string();
+        tokio::task::spawn_blocking(move || store.import_history(&svc, &data))
             .await
             .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
-            .map_err(internal)
+            .map_err(bad_input_or_internal)
     }
 
     async fn group_push(
@@ -487,3 +489,16 @@ impl ConversationHost for ConversationService {
         serde_json::to_vec(&ack).map_err(internal)
     }
 }
+
+/// A value the caller supplied that the store refused is the caller's
+/// mistake; anything else is a fault of ours.
+fn bad_input_or_internal(e: anyhow::Error) -> ConversationError {
+    match e.downcast_ref::<StoreError>() {
+        Some(StoreError::InvalidInput(m)) => ConversationError::InvalidArgument(m.clone()),
+        _ => internal(e),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests;

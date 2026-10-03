@@ -113,7 +113,6 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         "countersigned": stats.countersigned,
         "deferred": stats.deferred,
         "last_seq": new_last_seq,
-        "scanned_count": new_last_seq,
     }))
 }
 

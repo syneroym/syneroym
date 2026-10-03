@@ -25,6 +25,7 @@ mod history;
 mod message;
 pub(crate) use message::is_searchable_content_type;
 mod schema;
+mod scrub;
 mod search;
 mod session;
 
@@ -40,6 +41,10 @@ pub enum StoreError {
     MessageQuotaExceeded,
     #[error("quota exceeded: max dag entries per conversation reached")]
     DagEntryQuotaExceeded,
+    /// A caller-supplied value the store cannot use, such as a cursor it did
+    /// not issue or a backup it does not understand.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 /// Per-conversation and per-service bounds, plus the clock/age

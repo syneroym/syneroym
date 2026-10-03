@@ -175,7 +175,8 @@ fn apply_message_entry(
         ],
     )?;
     ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
-    ConversationStore::touch_conversation(tx, conv_id, now)?;
+    // The chat moves up the list when the app accepts the message, not when
+    // it arrives: a held or dropped message must not show as activity.
     if inserted > 0 {
         let msg = StoredMessage {
             id: entry.entry_id.clone(),

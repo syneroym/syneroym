@@ -347,6 +347,12 @@ impl ConversationService {
         }
     }
 
+    /// Runs the background re-ask pass once, for tests that have no worker.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn ask_undecided_now(&self) {
+        self.renotify_undecided_once().await;
+    }
+
     async fn renotify_undecided_once(&self) {
         let now = now_ms();
         let services = self.candidate_service_ids();
@@ -433,23 +439,8 @@ impl ConversationService {
             if let Ok(store) = self.store_for(&svc).await
                 && store.take_wal_checkpoint_flag()
             {
-                let busy = {
-                    let Ok(conn) = store.conn().lock() else {
-                        store.flag_wal_checkpoint();
-                        continue;
-                    };
-                    // FTS5 optimize merges index segments, removing trigrams
-                    // of deleted/dropped text before the WAL is truncated.
-                    let _ = conn.execute_batch(
-                        "INSERT INTO messages_fts(messages_fts) VALUES('optimize');",
-                    );
-                    // wal_checkpoint(TRUNCATE) returns a result row whose
-                    // first column is 1 when readers were blocking.
-                    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0))
-                        .ok()
-                        == Some(1)
-                };
-                if busy {
+                let retry = store.scrub_and_checkpoint();
+                if retry {
                     // A reader was active; re-flag so we try again next tick.
                     store.flag_wal_checkpoint();
                 }
@@ -488,20 +479,5 @@ fn backoff_for_age(age_ms: i64) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backoff_curve_grows_with_age_and_caps() {
-        assert_eq!(backoff_for_age(0), 1_000);
-        assert_eq!(backoff_for_age(500), 1_000);
-        assert_eq!(backoff_for_age(1_500), 2_000);
-        assert_eq!(backoff_for_age(4_000), 4_000);
-        assert_eq!(backoff_for_age(10_000), 8_000);
-        assert_eq!(backoff_for_age(20_000), 16_000);
-        assert_eq!(backoff_for_age(100_000), 64_000);
-        assert_eq!(backoff_for_age(300_000), 256_000);
-        assert_eq!(backoff_for_age(600_000), 300_000);
-        assert_eq!(backoff_for_age(1_000_000), 300_000);
-    }
-}
+#[allow(clippy::unwrap_used)]
+mod tests;

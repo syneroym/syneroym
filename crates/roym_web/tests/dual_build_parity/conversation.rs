@@ -1,5 +1,5 @@
 use serde_json::json;
-use syneroym_roym_core::backup::Bundle;
+use syneroym_roym_core::backup::{self, Bundle};
 use syneroym_rpc::{ConversationDeliveryState, ConversationHost};
 
 use super::{fixtures::*, helpers::*};
@@ -350,7 +350,7 @@ async fn scenario_65_conversation_import_tampered_message_refused_parity() {
         && let Some(rec) = records.first_mut()
     {
         let data_val = rec.get("payload").and_then(|p| p.get("data")).unwrap();
-        let bytes: Vec<u8> = serde_json::from_value(data_val.clone()).unwrap();
+        let bytes = backup::bytes_from_hex(data_val.as_str().unwrap()).unwrap();
         let mut bb: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         if let Some(messages) = bb.get_mut("messages").and_then(|m| m.as_array_mut())
             && let Some(first_msg) = messages.first_mut()
@@ -358,7 +358,7 @@ async fn scenario_65_conversation_import_tampered_message_refused_parity() {
             first_msg["body"] = json!([116, 97, 109, 112, 101, 114, 101, 100]);
         }
         let tampered_bytes = serde_json::to_vec(&bb).unwrap();
-        rec["payload"] = json!({ "data": tampered_bytes });
+        rec["payload"] = json!({ "data": backup::bytes_to_hex(&tampered_bytes) });
     }
 
     let (w, n) = both_rpc(

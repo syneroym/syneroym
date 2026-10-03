@@ -408,6 +408,14 @@ export function isQuoteSuperseded(
   return false;
 }
 
+/** What a sender is told when the other side turned a delivered message away. */
+export function refusalText(reason: string): string {
+  if (reason === "rate-limited") {
+    return "Not accepted: this person limits messages from new contacts. Try again later.";
+  }
+  return `Not accepted: ${reason}.`;
+}
+
 function messageElement(
   m: MessageRow,
   cardMap: Map<string, CardRow>,
@@ -465,7 +473,7 @@ function messageElement(
   // "delivered" is never shown until the service says so.
   wrap.appendChild(text("span", m.state, `message-state state-${m.state}`));
   if (m.refused) {
-    wrap.appendChild(text("span", `(refused: ${m.refused})`, "message-refused"));
+    wrap.appendChild(text("span", refusalText(m.refused), "message-refused"));
   }
   if (m.state === "failed" && m.last_error) {
     wrap.appendChild(text("span", m.last_error, "message-error"));

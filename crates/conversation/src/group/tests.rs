@@ -699,3 +699,34 @@ async fn get_message_hides_system_messages_host() {
     let err = service.get_message(owner, "msg:sys_key").await.unwrap_err();
     assert_eq!(err, ConversationError::NotFound);
 }
+
+#[tokio::test]
+async fn an_own_group_message_is_numbered_in_the_feed_and_searchable() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let owner = "svc:owner";
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store = service.store_for(owner).await.unwrap();
+    store
+        .upsert_session(
+            &crate::store::SessionRow {
+                peer_address: "svc:bob".to_string(),
+                pinned_sig_key: [42u8; 32],
+                state: vec![1, 2, 3],
+            },
+            crate::store::now_ms(),
+        )
+        .unwrap();
+    service.add_member(owner, &group_id, "svc:bob").await.unwrap();
+
+    let id = service
+        .send(owner, &group_id, "text/plain", b"findable group text".to_vec())
+        .await
+        .unwrap();
+
+    let feed = service.changes(owner, &group_id, 0, 10).await.unwrap();
+    assert_eq!(feed.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
+    assert!(feed.messages[0].visible_seq > 0);
+    let hits = service.search(owner, "findable group", Some(&group_id), 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+}

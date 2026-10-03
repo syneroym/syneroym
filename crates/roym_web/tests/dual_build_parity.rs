@@ -13,10 +13,14 @@ pub(crate) mod trust_fixtures;
 #[path = "dual_build_parity/trust_harness.rs"]
 pub(crate) mod trust_harness;
 
+#[path = "dual_build_parity/admission.rs"]
+mod admission;
 #[path = "dual_build_parity/booking.rs"]
 mod booking;
 #[path = "dual_build_parity/bundles.rs"]
 mod bundles;
+#[path = "dual_build_parity/card_sync.rs"]
+mod card_sync;
 #[path = "dual_build_parity/catalog.rs"]
 mod catalog;
 #[path = "dual_build_parity/conversation.rs"]

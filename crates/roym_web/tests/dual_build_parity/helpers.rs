@@ -704,6 +704,13 @@ impl Harness {
         conv.deliver_inbound(&conv_id, msg).await.expect("deliver inbound");
     }
 
+    /// Runs the host's background re-ask pass on both stacks, which is what
+    /// answers a message that `readmit` returned to the app.
+    pub(crate) async fn ask_undecided_now(&self) {
+        self.wasm_conversation.ask_undecided_now().await;
+        self.native_conversation.ask_undecided_now().await;
+    }
+
     pub(crate) async fn notify_state(
         &self,
         wasm: bool,

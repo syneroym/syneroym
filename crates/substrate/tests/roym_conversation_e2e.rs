@@ -259,9 +259,12 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     //     restart). ------------------------------------------------------
     let a_export = node_a.rpc_ok("conversation.export", json!({})).await;
     let import_counts = node_a.rpc_ok("conversation.import", json!({ "bundle": a_export })).await;
-    assert!(
-        import_counts["imported"]["messages"].as_u64().unwrap_or(0) >= 2,
-        "the bundle carried both messages: {import_counts}"
+    // Both messages are already stored here, so importing adds none; the
+    // wipe-and-restore variant (parity 63-65) shows them arriving.
+    assert_eq!(
+        import_counts["imported"]["messages"].as_u64(),
+        Some(0),
+        "messages already stored are skipped, not duplicated: {import_counts}"
     );
     let a_hist_after =
         node_a.rpc_ok("conversation.history", json!({ "conversation": conversation_id })).await;

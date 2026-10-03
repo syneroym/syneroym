@@ -52,6 +52,8 @@ pub struct ConversationSummary {
     pub id: String,
     pub kind: ConversationKind,
     pub participants: Vec<String>,
+    /// The other side of a direct conversation; `None` for a group.
+    pub peer_address: Option<String>,
     pub created_at: i64,
     pub last_activity_at: i64,
     pub message_count: u32,
@@ -313,8 +315,9 @@ pub trait ConversationHost: Send + Sync + Debug {
         name: &str,
     ) -> Result<(), ConversationError>;
 
-    /// Returns content-derived BLAKE3 digest ("roym-transcript:<hash>") over
-    /// accepted messages.
+    /// Returns a content-derived BLAKE3 digest ("roym-transcript:<hash>") over
+    /// every non-system message row, whatever its admission state, and every
+    /// stored membership and name log entry.
     async fn transcript_digest(
         &self,
         service_id: &str,

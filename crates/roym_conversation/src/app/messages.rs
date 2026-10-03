@@ -5,7 +5,7 @@ use std::{cmp::Reverse, collections::HashMap};
 
 use serde_json::{Value, json};
 use syneroym_app_host::{
-    AppConversation, AppHost, AppSigning,
+    AppConversation, AppHost,
     types::conversation::{ConversationError, ConversationKind, HistoryItem, Message},
 };
 use syneroym_roym_core::{
@@ -69,23 +69,9 @@ pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
         Err(e) => return from_host(e),
     };
     let contacts = contacts_map(host).await;
-    let mut my_addr = my_conversation_address(host).await;
-    let mut participant_counts: HashMap<String, usize> = HashMap::new();
     let mut admissions: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
     for s in &summaries {
-        if s.kind == ConversationKind::Direct {
-            for p in &s.participants {
-                *participant_counts.entry(p.clone()).or_default() += 1;
-            }
-        }
         if let Ok(info) = load_admission_info(host, &s.id).await {
-            if my_addr.is_none()
-                && s.kind == ConversationKind::Direct
-                && let Some(ref peer) = info.1
-                && let Some(other) = s.participants.iter().find(|p| p.as_str() != peer)
-            {
-                my_addr = Some(other.clone());
-            }
             admissions.insert(s.id.clone(), info);
         }
     }
@@ -109,22 +95,12 @@ pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
             .and_then(|(st, _)| st.as_deref())
             .unwrap_or(if is_group { "shown" } else { "accepted" });
 
-        if is_group && !include_hidden && matches!(admission_str, "hidden" | "refused") {
+        if is_group && !include_hidden && admission_str == "hidden" {
             continue;
         }
 
-        let peer_addr = if is_group {
-            String::new()
-        } else if let Some((_, Some(peer))) = admission_info {
-            peer.clone()
-        } else {
-            resolve_peer_address(
-                &s.participants,
-                my_addr.as_deref(),
-                &contacts,
-                &participant_counts,
-            )
-        };
+        let peer_addr =
+            if is_group { String::new() } else { s.peer_address.clone().unwrap_or_default() };
         let person_did = contacts.get(&peer_addr).cloned();
 
         let row = json!({
@@ -515,50 +491,4 @@ pub(crate) async fn transcript_digest<H: AppHost>(host: &H, req: &Request) -> Re
         "digest": digest,
         "rows": count,
     }))
-}
-
-async fn my_conversation_address<H: AppHost>(host: &H) -> Option<String> {
-    if let Ok(id) = AppSigning::signing_identity(host).await {
-        return Some(id.signing_did);
-    }
-    let resp = profile_call(host, "profile.get", json!({})).await.ok()?;
-    let val = resp.result?;
-    if val.is_null() {
-        return None;
-    }
-    let env_str = val.get("envelope").and_then(Value::as_str)?;
-    let env = serde_json::from_str::<Value>(env_str).ok()?;
-    env.get("payload")
-        .and_then(|p| p.get("conversation_address"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn is_internal_address(addr: &str) -> bool {
-    addr.starts_with("did:key:roym-") || addr.starts_with("did:key:zRoym")
-}
-
-fn resolve_peer_address(
-    participants: &[String],
-    my_addr: Option<&str>,
-    contacts: &HashMap<String, String>,
-    counts: &HashMap<String, usize>,
-) -> String {
-    if let Some(my) = my_addr
-        && let Some(peer) = participants.iter().find(|p| p.as_str() != my)
-    {
-        return peer.clone();
-    }
-    if let Some(peer) = participants.iter().find(|p| contacts.contains_key(*p)) {
-        return peer.clone();
-    }
-    if let Some(peer) = participants.iter().find(|p| !is_internal_address(p)) {
-        return peer.clone();
-    }
-    if let Some(peer) =
-        participants.iter().find(|p| counts.get(p.as_str()).copied().unwrap_or(0) == 1)
-    {
-        return peer.clone();
-    }
-    participants.first().cloned().unwrap_or_default()
 }

@@ -216,6 +216,37 @@ impl Bundle {
     }
 }
 
+/// Lower-case hex of `bytes`, for carrying binary host data inside a bundle
+/// record. Half the size of a JSON array of numbers.
+#[must_use]
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push(DIGITS[usize::from(b >> 4)] as char);
+        out.push(DIGITS[usize::from(b & 15)] as char);
+    }
+    out
+}
+
+/// The inverse of [`bytes_to_hex`]; `None` for odd length or a non-hex digit.
+#[must_use]
+pub fn bytes_from_hex(text: &str) -> Option<Vec<u8>> {
+    fn nibble(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+    let raw = text.as_bytes();
+    if !raw.len().is_multiple_of(2) {
+        return None;
+    }
+    raw.chunks(2).map(|pair| Some(nibble(pair[0])? << 4 | nibble(pair[1])?)).collect()
+}
+
 /// What every person-signed service's `import` runs before touching a row:
 /// integrity, signature, and that the bundle is this node owner's.
 pub fn check_signed_bundle(bundle: &Bundle, owner: &str, now_secs: u64) -> Result<(), BundleError> {
@@ -284,6 +315,17 @@ pub async fn export_signed<H: AppHost>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hex_round_trips_and_refuses_bad_input() {
+        let bytes = [0u8, 1, 15, 16, 127, 128, 255];
+        let text = bytes_to_hex(&bytes);
+        assert_eq!(text, "00010f107f80ff");
+        assert_eq!(bytes_from_hex(&text).as_deref(), Some(bytes.as_slice()));
+        assert_eq!(bytes_from_hex("00FF"), Some(vec![0, 255]));
+        assert_eq!(bytes_from_hex("abc"), None);
+        assert_eq!(bytes_from_hex("zz"), None);
+    }
+
     use super::*;
     use crate::{
         paging::tests::{page, row},

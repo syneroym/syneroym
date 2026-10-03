@@ -244,12 +244,19 @@ pub struct AppSandboxRole {
     /// `dispatch_epoch_timeout_secs` for the guest-facing `sync-now` call,
     /// while the background pass has no guest waiting on it and needs
     /// enough time to reach every member of a large group, not just the
+    /// first two.
     #[serde(default = "default_conversation_background_sync_budget_ms")]
     pub conversation_background_sync_budget_ms: u64,
+    /// How long a held incoming message is kept before it is dropped as
+    /// expired. Held messages wait for the owner to show a hidden group.
     #[serde(default = "default_conversation_max_held_age_secs")]
     pub conversation_max_held_age_secs: u64,
+    /// How long the host waits for an app to answer one admission question
+    /// before it treats the message as unanswered and asks again later.
     #[serde(default = "default_conversation_admission_ask_timeout_ms")]
     pub conversation_admission_ask_timeout_ms: u64,
+    /// How long a new incoming message is left alone before the background
+    /// worker asks the app about it, so the delivery path answers first.
     #[serde(default = "default_conversation_admission_claim_secs")]
     pub conversation_admission_claim_secs: u64,
 }

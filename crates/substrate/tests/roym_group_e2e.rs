@@ -182,7 +182,10 @@ async fn a_joiner_reads_nothing_before_joining() {
     assert!(ok);
 
     trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "post-join" })).await;
-    converge(&[&trio.z, &trio.x], &gid, 8).await;
+    // Rows: the name entry, three membership events (creation, x, y), the two
+    // early messages and the post-join message. Adding a member no longer
+    // posts the name again as a chat message.
+    converge(&[&trio.z, &trio.x], &gid, 7).await;
 
     let ok_w = wait_until(Duration::from_secs(60), || async {
         let _ = trio.y.rpc("group.sync", json!({ "group": &gid })).await;

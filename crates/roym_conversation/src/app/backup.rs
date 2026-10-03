@@ -39,7 +39,7 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
         history_records.push(json!({
             "id": format!("chunk:{idx}"),
             "payload": {
-                "data": chunk.data,
+                "data": backup::bytes_to_hex(&chunk.data),
             }
         }));
         idx += 1;
@@ -96,16 +96,18 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
                         Some(d) => d,
                         None => return Response::invalid_params("history chunk missing data"),
                     };
-                    let bytes: Vec<u8> = match serde_json::from_value(data_val.clone()) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            return Response::invalid_params(format!("invalid chunk bytes: {e}"));
-                        }
+                    let Some(bytes) = data_val.as_str().and_then(backup::bytes_from_hex) else {
+                        return Response::invalid_params("history chunk data is not hex");
                     };
                     let count = match AppConversation::import_history(host, bytes).await {
                         Ok(n) => n,
                         Err(e) => {
-                            return Response::internal_error(format!("import_history: {e:?}"));
+                            // Importing skips what is already stored, so running the
+                            // same import again resumes after this failure.
+                            return Response::internal_error(format!(
+                                "import_history failed ({e:?}); run the same import again to \
+                                 resume"
+                            ));
                         }
                     };
                     message_count += count as u64;

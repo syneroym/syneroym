@@ -68,6 +68,13 @@ async fn scenario_210_hide_and_unhide_parity() {
     assert_eq!(unw["result"]["filled_in"], 1);
     assert_eq!(unn["result"]["filled_in"], 1);
 
+    // Unhide returns the held message to the app; it is not visible until
+    // the app has answered again (so a block set meanwhile still applies).
+    let before_w =
+        one_rpc(&h, true, "conversation.history", json!({ "conversation": group_w })).await;
+    assert_eq!(before_w["result"]["messages"].as_array().unwrap().len(), 2);
+    h.ask_undecided_now().await;
+
     h.deliver(true, inbound("m-210b", &group_w, "did:key:zPeer210", 2_000, "shown msg")).await;
     h.deliver(false, inbound("m-210b", &group_n, "did:key:zPeer210", 2_000, "shown msg")).await;
 
@@ -75,6 +82,8 @@ async fn scenario_210_hide_and_unhide_parity() {
         one_rpc(&h, true, "conversation.history", json!({ "conversation": group_w })).await;
     let hist_n =
         one_rpc(&h, false, "conversation.history", json!({ "conversation": group_n })).await;
+    // The two log entries every group starts with (creation and name), the
+    // message returned to the app by unhide, and the new one.
     assert_eq!(hist_w["result"]["messages"].as_array().unwrap().len(), 4);
     assert_eq!(hist_n["result"]["messages"].as_array().unwrap().len(), 4);
 }
@@ -215,6 +224,7 @@ async fn scenario_212_export_import_roundtrip_restored_only_parity() {
     let hn = one_rpc(&h2, false, "conversation.history", json!({ "conversation": group_n })).await;
     let msgs_w = hw["result"]["messages"].as_array().unwrap();
     let msgs_n = hn["result"]["messages"].as_array().unwrap();
+    // A fresh group's history is its two log entries: creation and name.
     assert_eq!(msgs_w.len(), 2);
     assert_eq!(msgs_n.len(), 2);
 
