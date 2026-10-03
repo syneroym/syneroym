@@ -72,6 +72,7 @@ pub fn build_membership_entry(
         ciphertext: None,
         nonce: None,
         payload: Some(payload),
+        profile_payload: None,
         signature: [0u8; 64],
     };
     let header = canonical_entry_bytes(&entry);
@@ -111,6 +112,7 @@ pub fn build_message_entry(
         ciphertext: Some(ciphertext),
         nonce: Some(nonce),
         payload: None,
+        profile_payload: None,
         signature: [0u8; 64],
     };
     let header = canonical_entry_bytes(&entry);
@@ -354,6 +356,93 @@ impl ConversationService {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn record_outgoing_group_message(
+        tx: &rusqlite::Transaction<'_>,
+        txq: &syneroym_async_queue::TxQueue<'_>,
+        conv_id: &str,
+        service_id: &str,
+        entry: &WireEntry,
+        content_type: &str,
+        body: &[u8],
+        members: &[String],
+        now: i64,
+        signed_at: i64,
+        config: &crate::store::ConversationConfig,
+    ) -> Result<()> {
+        let pending_count: u32 = tx.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state = 'pending'",
+            rusqlite::params![conv_id],
+            |r| r.get::<_, i64>(0),
+        )? as u32;
+        if pending_count >= config.max_pending_per_conversation {
+            return Err(crate::store::StoreError::PendingQuotaExceeded.into());
+        }
+        let message_count: u32 = tx.query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND admission != 'dropped'",
+            rusqlite::params![conv_id],
+            |r| r.get::<_, i64>(0),
+        )? as u32;
+        if message_count >= config.max_messages_per_conversation {
+            return Err(crate::store::StoreError::MessageQuotaExceeded.into());
+        }
+
+        let is_system = content_type == crate::dag::DELETION_REQUEST_CONTENT_TYPE
+            || content_type == crate::dag::REFUSAL_NOTICE_CONTENT_TYPE;
+        let system_val = if is_system { 1 } else { 0 };
+
+        ConversationStore::insert_entry_if_absent(tx, conv_id, entry, true, false)?;
+        let vseq = ConversationStore::next_visible_seq(tx, conv_id)?;
+        tx.execute(
+            "INSERT INTO messages (id, conversation_id, author, sender_timestamp, received_at, \
+             content_type, body, signature, outgoing, verified, state, last_error, system, \
+             entry_id, admission, visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, \
+             'pending', NULL, ?9, ?1, 'accepted', ?10)",
+            rusqlite::params![
+                entry.entry_id,
+                conv_id,
+                service_id,
+                signed_at,
+                now,
+                content_type,
+                body,
+                entry.signature.as_slice(),
+                system_val,
+                vseq as i64,
+            ],
+        )?;
+        if !is_system
+            && crate::store::is_searchable_content_type(content_type)
+            && let Ok(body_str) = std::str::from_utf8(body)
+        {
+            let rowid = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO messages_fts (rowid, body) VALUES (?1, ?2)",
+                rusqlite::params![rowid, body_str],
+            )?;
+        }
+
+        for m in members {
+            if m != service_id {
+                tx.execute(
+                    "INSERT INTO message_recipients (message_id, member_address, state, \
+                     last_error) VALUES (?1, ?2, 'pending', NULL)",
+                    rusqlite::params![entry.entry_id, m],
+                )?;
+                let payload = serde_json::to_vec(&crate::store::OutboxItem {
+                    message_id: entry.entry_id.clone(),
+                    peer_address: m.clone(),
+                    group: Some(conv_id.to_string()),
+                })?;
+                txq.enqueue(tx, conv_id, &format!("{}:{m}", entry.entry_id), &payload, now)?;
+            }
+        }
+        if !is_system {
+            ConversationStore::touch_conversation(tx, conv_id, now)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn send_group(
         &self,
         service_id: &str,
@@ -384,66 +473,24 @@ impl ConversationService {
         )
         .map_err(internal)?;
         let entry_id = entry.entry_id.clone();
-
-        let max_pending = store.config().max_pending_per_conversation;
-        let max_messages = store.config().max_messages_per_conversation;
+        let config = store.config().clone();
 
         store
             .queue()
             .transaction(|tx, txq| {
-                let pending_count: u32 = tx.query_row(
-                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state = \
-                     'pending'",
-                    rusqlite::params![conv.id],
-                    |r| r.get::<_, i64>(0),
-                )? as u32;
-                if pending_count >= max_pending {
-                    return Err(crate::store::StoreError::PendingQuotaExceeded.into());
-                }
-                let message_count: u32 = tx.query_row(
-                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
-                    rusqlite::params![conv.id],
-                    |r| r.get::<_, i64>(0),
-                )? as u32;
-                if message_count >= max_messages {
-                    return Err(crate::store::StoreError::MessageQuotaExceeded.into());
-                }
-
-                ConversationStore::insert_entry_if_absent(tx, &conv.id, &entry, true, false)?;
-                tx.execute(
-                    "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
-                     received_at, content_type, body, signature, outgoing, verified, state, \
-                     last_error, system, entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, \
-                     'pending', NULL, 0, ?1)",
-                    rusqlite::params![
-                        entry_id,
-                        conv.id,
-                        service_id,
-                        signed_at,
-                        now,
-                        content_type,
-                        body,
-                        entry.signature.as_slice(),
-                    ],
-                )?;
-
-                for m in &members {
-                    if m != service_id {
-                        tx.execute(
-                            "INSERT INTO message_recipients (message_id, member_address, state, \
-                             last_error) VALUES (?1, ?2, 'pending', NULL)",
-                            rusqlite::params![entry_id, m],
-                        )?;
-                        let payload = serde_json::to_vec(&crate::store::OutboxItem {
-                            message_id: entry_id.clone(),
-                            peer_address: m.clone(),
-                            group: Some(conv.id.clone()),
-                        })?;
-                        txq.enqueue(tx, &conv.id, &format!("{entry_id}:{m}"), &payload, now)?;
-                    }
-                }
-                ConversationStore::touch_conversation(tx, &conv.id, now)?;
-                Ok(())
+                Self::record_outgoing_group_message(
+                    tx,
+                    txq,
+                    &conv.id,
+                    service_id,
+                    &entry,
+                    content_type,
+                    body,
+                    &members,
+                    now,
+                    signed_at,
+                    &config,
+                )
             })
             .map_err(|e| {
                 if e.downcast_ref::<crate::store::StoreError>().is_some() {
@@ -479,7 +526,7 @@ impl ConversationService {
                 .transaction(|tx, _| apply_entry(tx, svc, group_id, entry, store.config(), now));
             match result {
                 Ok((_, Some(msg))) => {
-                    self.notify_message(svc, msg.into_wire()).await;
+                    self.notify_and_apply_admission(store, svc, &msg, now).await;
                 }
                 Ok((_, None)) => {}
                 Err(e) => {
@@ -505,7 +552,7 @@ impl ConversationService {
                 continue;
             };
             for conv in convs {
-                if conv.owner_address.as_deref() != Some(&svc) {
+                if conv.restored || conv.owner_address.as_deref() != Some(&svc) {
                     continue;
                 }
                 let Ok(Some((_epoch, created_at))) = store.current_epoch_row(&conv.id) else {
@@ -594,6 +641,65 @@ impl ConversationService {
             epoch: conv.current_epoch,
             key_epoch,
             key_stored_at,
+            name: conv.name,
+            restored: conv.restored,
         })
+    }
+
+    pub(crate) async fn set_group_name_impl(
+        &self,
+        service_id: &str,
+        conversation: &str,
+        name: &str,
+    ) -> Result<(), ConversationError> {
+        let valid_name = crate::dag::validate_group_name(name)?;
+        let store = self.store_for(service_id).await.map_err(internal)?;
+        let conv = store
+            .get_conversation(conversation)
+            .map_err(internal)?
+            .ok_or(ConversationError::NotFound)?;
+        if conv.kind != ConversationKind::Group {
+            return Err(ConversationError::InvalidArgument("not a group conversation".to_string()));
+        }
+        if conv.owner_address.as_deref() != Some(service_id) {
+            return Err(ConversationError::PermissionDenied);
+        }
+
+        let now = now_ms();
+        let signed_at = sender_now_ms(service_id);
+        let heads = store.heads(conversation).map_err(internal)?;
+        let sk = load_signing_key(&store)?;
+
+        let payload = crate::dag::ProfilePayload { name: valid_name.clone() };
+        let mut entry = WireEntry {
+            entry_id: String::new(),
+            conversation_id: conversation.to_string(),
+            author: service_id.to_string(),
+            sender_timestamp_ms: signed_at,
+            epoch: conv.current_epoch,
+            kind: EntryKind::Profile,
+            parents: heads,
+            ciphertext: None,
+            nonce: None,
+            payload: None,
+            profile_payload: Some(payload),
+            signature: [0u8; 64],
+        };
+        let header = canonical_entry_bytes(&entry);
+        entry.entry_id = crate::ids::derive_entry_id(&header);
+        entry.signature = crate::dag::sign_entry(&sk, &header);
+
+        store
+            .queue()
+            .transaction(|tx, _| {
+                ConversationStore::insert_entry_if_absent(tx, conversation, &entry, true, true)?;
+                ConversationStore::apply_profile(tx, conversation, &valid_name)?;
+                ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
+                ConversationStore::touch_conversation(tx, conversation, now)?;
+                Ok(())
+            })
+            .map_err(internal)?;
+
+        Ok(())
     }
 }

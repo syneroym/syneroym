@@ -304,8 +304,8 @@ pub(crate) mod tests {
             app_config::ConfigError,
             blob_store::BlobError,
             conversation::{
-                ConversationError, ConversationSummary, DeliveryState, GroupInfo, HistoryPage,
-                MembershipEvent, Message,
+                ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
+                GroupInfo, HistoryPage, Message, Transcript,
             },
             data_layer::{
                 CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
@@ -569,12 +569,6 @@ pub(crate) mod tests {
         async fn members(&self, _cid: String) -> Result<Vec<String>, ConversationError> {
             unimplemented!()
         }
-        async fn membership_history(
-            &self,
-            _cid: String,
-        ) -> Result<Vec<MembershipEvent>, ConversationError> {
-            unimplemented!()
-        }
         async fn sync_now(&self, _cid: String) -> Result<(), ConversationError> {
             unimplemented!()
         }
@@ -583,6 +577,58 @@ pub(crate) mod tests {
         }
         async fn get_message(&self, _mid: String) -> Result<Message, ConversationError> {
             Err(ConversationError::NotFound)
+        }
+        async fn delete_message(
+            &self,
+            _message: String,
+            _ask_others: bool,
+        ) -> Result<(), ConversationError> {
+            unimplemented!()
+        }
+        async fn readmit(
+            &self,
+            _conversation: String,
+            _reasons: Vec<String>,
+        ) -> Result<u32, ConversationError> {
+            unimplemented!()
+        }
+        async fn changes(
+            &self,
+            _conversation: String,
+            _after_seq: u64,
+            _limit: u32,
+        ) -> Result<ChangePage, ConversationError> {
+            unimplemented!()
+        }
+        async fn search(
+            &self,
+            _query: String,
+            _conversation: Option<String>,
+            _limit: u32,
+        ) -> Result<Vec<Message>, ConversationError> {
+            unimplemented!()
+        }
+        async fn set_group_name(
+            &self,
+            _conversation: String,
+            _name: String,
+        ) -> Result<(), ConversationError> {
+            unimplemented!()
+        }
+        async fn transcript_digest(
+            &self,
+            _conversation: String,
+        ) -> Result<Transcript, ConversationError> {
+            unimplemented!()
+        }
+        async fn export_history(
+            &self,
+            _cursor: Option<String>,
+        ) -> Result<ExportChunk, ConversationError> {
+            unimplemented!()
+        }
+        async fn import_history(&self, _data: Vec<u8>) -> Result<u32, ConversationError> {
+            unimplemented!()
         }
     }
 

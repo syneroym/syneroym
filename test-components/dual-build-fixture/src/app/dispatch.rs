@@ -201,8 +201,16 @@ pub(super) async fn dispatch<H: AppHost>(
         }
         Request::ReadHistory { conversation, limit } => {
             let page = host.history(conversation, limit, None).await.map_err(fmt_err)?;
+            let messages: Vec<_> = page
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    HistoryItem::Message(m) => Some(message_json(m)),
+                    _ => None,
+                })
+                .collect();
             Ok(json!({
-                "messages": page.messages.iter().map(message_json).collect::<Vec<_>>(),
+                "messages": messages,
                 "next-cursor": page.next_cursor,
             }))
         }
@@ -238,17 +246,19 @@ pub(super) async fn dispatch<H: AppHost>(
             Ok(json!({ "members": members }))
         }
         Request::MembershipHistory { conversation } => {
-            let history = host.membership_history(conversation).await.map_err(fmt_err)?;
-            let events: Vec<_> = history
+            let page = host.history(conversation, 100, None).await.map_err(fmt_err)?;
+            let events: Vec<_> = page
+                .items
                 .iter()
-                .map(|e| {
-                    json!({
+                .filter_map(|it| match it {
+                    HistoryItem::Membership(e) => Some(json!({
                         "entry": e.entry,
                         "action": e.action,
                         "subject": e.subject,
                         "epoch": e.epoch,
                         "sender-timestamp": e.sender_timestamp,
-                    })
+                    })),
+                    _ => None,
                 })
                 .collect();
             Ok(json!({

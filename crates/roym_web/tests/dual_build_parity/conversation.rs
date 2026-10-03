@@ -1,5 +1,6 @@
 use serde_json::json;
-use syneroym_rpc::{ConversationDeliveryState, ConversationHost, ConversationMessage};
+use syneroym_roym_core::backup::{self, Bundle};
+use syneroym_rpc::{ConversationDeliveryState, ConversationHost};
 
 use super::{fixtures::*, helpers::*};
 
@@ -136,12 +137,15 @@ async fn scenario_57_blocked_sender_never_reaches_inbox_parity() {
     assert_eq!(lw["result"]["conversations"].as_array().unwrap().len(), 0);
     assert_eq!(ln["result"]["conversations"].as_array().unwrap().len(), 0);
 
-    // Recorded in the bodiless refused collection on both builds.
+    // In the host store, the refused message has dropped admission and empty body.
     for wasm in [true, false] {
-        let refused = h.conv_rows(wasm, "refused_messages").await;
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0]["reason"], "blocked");
-        assert!(refused[0].get("body").is_none());
+        let conv = if wasm { &h.wasm_conversation } else { &h.native_conversation };
+        let conv_did = did_for_service("conversation");
+        let store = conv.store_for(&conv_did).await.unwrap();
+        let msg = store.get_message("m-57").unwrap().expect("stored message");
+        assert_eq!(msg.admission, "dropped");
+        assert_eq!(msg.admission_reason.as_deref(), Some("blocked"));
+        assert!(msg.body.is_empty());
     }
 }
 
@@ -185,7 +189,7 @@ async fn scenario_59_first_contact_rate_limit_at_inbox_parity() {
 }
 
 #[tokio::test]
-async fn scenario_60_group_message_is_stored_in_roym_copy_parity() {
+async fn scenario_60_group_message_history_and_list_parity() {
     let h = harness().await;
     let conv_svc = did_for_service("conversation");
     let gw = h.wasm_conversation.create_group(&conv_svc).await.unwrap();
@@ -257,17 +261,16 @@ async fn scenario_62_inbound_deletion_request_honoured_only_for_own_message_pari
     h.deliver(false, inbound("m-62", conv, "did:key:zPeer62", 1_000, "keep me")).await;
 
     // A deletion request from the same peer, naming their own message.
-    let del_own = |target: &str| ConversationMessage {
-        id: format!("del-{target}"),
-        conversation: conv.to_string(),
-        author: "did:key:zPeer62".to_string(),
-        sender_timestamp: 2_000,
-        received_at: 2_000,
-        content_type: "application/vnd.roym.deletion-request+json".to_string(),
-        body: json!({ "message_id": target }).to_string().into_bytes(),
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
+    let del_own = |target: &str| {
+        let mut m = inbound(
+            &format!("del-{target}"),
+            conv,
+            "did:key:zPeer62",
+            2_000,
+            &json!({ "message_id": target }).to_string(),
+        );
+        m.content_type = "application/vnd.roym.deletion-request+json".to_string();
+        m
     };
     h.deliver(true, del_own("m-62")).await;
     h.deliver(false, del_own("m-62")).await;
@@ -298,12 +301,15 @@ async fn scenario_63_conversation_export_integrity_parity() {
     h.deliver(false, inbound("m-63", conv, "did:key:zPeer63", 1_000, "archive me")).await;
 
     let (mut w, mut n) = both_rpc(&h, "conversation.export", json!({})).await;
+    for res in [&w, &n] {
+        let bundle: Bundle = serde_json::from_value(res["result"].clone()).unwrap();
+        bundle.check_integrity().expect("exported bundle integrity");
+        assert!(bundle.manifest.sections.contains_key("conversation_history"));
+    }
     verify_and_strip_manifest_signature(&mut w);
     verify_and_strip_manifest_signature(&mut n);
     strip_volatile(&mut w);
     strip_volatile(&mut n);
-    assert_eq!(normalize_message_ids(&mut w), 1);
-    assert_eq!(normalize_message_ids(&mut n), 1);
     assert_eq!(w, n);
 }
 
@@ -339,13 +345,44 @@ async fn scenario_65_conversation_import_tampered_message_refused_parity() {
     h.deliver(false, inbound("m-65", conv, "did:key:zPeer65", 1_000, "original")).await;
 
     let (exp, _) = both_rpc(&h, "conversation.export", json!({})).await;
-    let mut bundle = exp["result"].clone();
-    let rows = bundle["sections"]["messages"].as_array_mut().unwrap();
-    rows[0]["payload"]["body"] = json!("tampered");
+    let mut bundle: Bundle = serde_json::from_value(exp["result"].clone()).unwrap();
+    if let Some(records) = bundle.sections.get_mut("conversation_history")
+        && let Some(rec) = records.first_mut()
+    {
+        let data_val = rec.get("payload").and_then(|p| p.get("data")).unwrap();
+        let bytes = backup::bytes_from_hex(data_val.as_str().unwrap()).unwrap();
+        let mut bb: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if let Some(messages) = bb.get_mut("messages").and_then(|m| m.as_array_mut())
+            && let Some(first_msg) = messages.first_mut()
+        {
+            first_msg["body"] = json!([116, 97, 109, 112, 101, 114, 101, 100]);
+        }
+        let tampered_bytes = serde_json::to_vec(&bb).unwrap();
+        rec["payload"] = json!({ "data": backup::bytes_to_hex(&tampered_bytes) });
+    }
 
-    let (w, n) = both_rpc(&h, "conversation.import", json!({ "bundle": bundle })).await;
+    let (w, n) = both_rpc(
+        &h,
+        "conversation.import",
+        json!({ "bundle": serde_json::to_value(&bundle).unwrap() }),
+    )
+    .await;
     assert_eq!(w, n);
     assert!(is_err(&w, -32602));
+
+    let mut bundle2: Bundle = serde_json::from_value(exp["result"].clone()).unwrap();
+    if let Some(decl) = bundle2.manifest.sections.get_mut("conversation_history") {
+        decl.digest =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    }
+    let (w2, n2) = both_rpc(
+        &h,
+        "conversation.import",
+        json!({ "bundle": serde_json::to_value(&bundle2).unwrap() }),
+    )
+    .await;
+    assert_eq!(w2, n2);
+    assert!(is_err(&w2, -32602));
 }
 
 #[tokio::test]

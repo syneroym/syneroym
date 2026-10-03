@@ -8,7 +8,6 @@ use syneroym_roym_core::{
     transaction,
 };
 use syneroym_roym_transaction::app as transaction_app;
-use syneroym_rpc::{ConversationDeliveryState, ConversationMessage};
 use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::{fixtures::*, helpers::*};
@@ -21,31 +20,12 @@ async fn scenario_140_malformed_oversized_and_missing_version_cards_refused_pari
     let conv = open_conv(&h, &peer_did()).await;
 
     // 1. Not JSON
-    let msg1 = ConversationMessage {
-        id: "m-not-json-140".to_string(),
-        conversation: conv.clone(),
-        author: peer_did(),
-        sender_timestamp: 1_000,
-        received_at: 1_000,
-        content_type: card::CARD_CONTENT_TYPE.to_string(),
-        body: b"this is not json {".to_vec(),
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    };
+    let mut msg1 = inbound("m-not-json-140", &conv, &peer_did(), 1_000, "this is not json {");
+    msg1.content_type = card::CARD_CONTENT_TYPE.to_string();
     // 2. Over MAX_CARD_BODY_BYTES (65_536)
-    let msg2 = ConversationMessage {
-        id: "m-oversized-140".to_string(),
-        conversation: conv.clone(),
-        author: peer_did(),
-        sender_timestamp: 1_001,
-        received_at: 1_001,
-        content_type: card::CARD_CONTENT_TYPE.to_string(),
-        body: vec![b' '; 70_000],
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    };
+    let mut msg2 = inbound("m-oversized-140", &conv, &peer_did(), 1_001, "");
+    msg2.content_type = card::CARD_CONTENT_TYPE.to_string();
+    msg2.body = vec![b' '; 70_000];
     // 3. Envelope JSON has no version field
     let no_version_envelope = json!({
         "record_type": "request",
@@ -63,18 +43,8 @@ async fn scenario_140_malformed_oversized_and_missing_version_cards_refused_pari
         "envelope": no_version_envelope,
     })
     .to_string();
-    let msg3 = ConversationMessage {
-        id: "m-no-version-140".to_string(),
-        conversation: conv.clone(),
-        author: peer_did(),
-        sender_timestamp: 1_002,
-        received_at: 1_002,
-        content_type: card::CARD_CONTENT_TYPE.to_string(),
-        body: msg3_body.into_bytes(),
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    };
+    let mut msg3 = inbound("m-no-version-140", &conv, &peer_did(), 1_002, &msg3_body);
+    msg3.content_type = card::CARD_CONTENT_TYPE.to_string();
 
     for m in [msg1, msg2, msg3] {
         h.deliver(true, m.clone()).await;

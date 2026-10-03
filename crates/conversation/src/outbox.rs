@@ -4,16 +4,19 @@
 //! `attempts`; an unreadable payload is terminal; a target that no longer
 //! resolves is terminal on its own terms.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use syneroym_async_queue::{FailOutcome, QueueItem};
-use syneroym_rpc::ConversationDeliveryState;
+use syneroym_rpc::{
+    Admission, ConversationDeliveryState, ConversationKind, DropAnswer, NotifyOutcome,
+};
+use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::{
     ConversationService,
-    dag::EntryKind,
+    dag::{self, EntryKind, REFUSAL_NOTICE_CONTENT_TYPE},
     store::{ConversationStore, OutboxItem, StoredMessage, now_ms},
     transport::Disposition,
 };
@@ -21,6 +24,9 @@ use crate::{
 /// How many items one service may have claimed in a single worker tick —
 /// set to 64 because group fan-out multiplies outbox rows by member count.
 const CLAIM_LIMIT_PER_TICK: u32 = 64;
+
+/// The longest one service's re-ask pass may run, in ask timeouts.
+const ASK_PASS_BUDGET_FACTOR: u32 = 4;
 
 impl ConversationService {
     /// Runs until `cancel` fires. Spawned once, beside
@@ -33,6 +39,10 @@ impl ConversationService {
                 () = tokio::time::sleep(tick) => {
                     self.drain_once().await;
                     self.drain_relay_pending_once().await;
+                    self.renotify_undecided_once().await;
+                    self.expire_held_once().await;
+                    self.prune_dropped_once().await;
+                    self.wal_checkpoint_once().await;
                     self.scheduled_rekey_once().await;
                     sync_tick_count = sync_tick_count.wrapping_add(1);
                     self.periodic_group_sync_once(tick, sync_tick_count).await;
@@ -56,6 +66,9 @@ impl ConversationService {
                 }
                 if let Ok(convs) = store.group_conversations() {
                     for conv in convs {
+                        if conv.restored {
+                            continue;
+                        }
                         let _ = self
                             .periodic_group_sync_pass(&svc, &conv.id, tick_count as usize)
                             .await;
@@ -84,6 +97,11 @@ impl ConversationService {
             {
                 let fanout = store.config().conversation_relay_fanout.max(1) as usize;
                 for entry in entries {
+                    if let Ok(Some(conv)) = store.get_conversation(&entry.conversation_id)
+                        && conv.restored
+                    {
+                        continue;
+                    }
                     if let Ok(members) = store.current_members(&entry.conversation_id) {
                         let wire = entry.into_wire();
                         let mut targets: Vec<String> = members
@@ -169,7 +187,7 @@ impl ConversationService {
             let _ = store.queue().complete(item.id);
             return;
         };
-        if msg.state != ConversationDeliveryState::Pending {
+        if msg.restored || msg.state != ConversationDeliveryState::Pending {
             let _ = store.delete_outbound_envelope(&msg.id);
             let _ = store.queue().complete(item.id);
             return;
@@ -335,6 +353,152 @@ impl ConversationService {
             );
         }
     }
+
+    /// Runs the background re-ask pass once, for tests that have no worker.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn ask_undecided_now(&self) {
+        self.renotify_undecided_once().await;
+    }
+
+    /// Asks the app about undecided rows that are due. One service's pass
+    /// ends at its first timed-out ask, and never runs longer than
+    /// `ASK_PASS_BUDGET_FACTOR` ask timeouts: an app that hangs costs the
+    /// worker one timeout per tick, not one per waiting row. Rows not
+    /// reached keep their due time and are asked on a later tick.
+    async fn renotify_undecided_once(&self) {
+        let now = now_ms();
+        let services = self.candidate_service_ids();
+        for svc in services {
+            let Ok(store) = self.store_for(&svc).await else { continue };
+            let Ok(msgs) = store.undecided_messages(now) else { continue };
+            let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
+            let started = Instant::now();
+            for msg in msgs {
+                if started.elapsed() >= ask_timeout * ASK_PASS_BUDGET_FACTOR {
+                    break;
+                }
+                if self.ask_undecided_one(&svc, &store, &msg, now, ask_timeout).await {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// One re-ask. Returns `true` when the app did not answer in time.
+    async fn ask_undecided_one(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        msg: &StoredMessage,
+        now: i64,
+        ask_timeout: Duration,
+    ) -> bool {
+        let asked =
+            time::timeout(ask_timeout, self.notify_message(svc, msg.clone().into_wire())).await;
+        let timed_out = asked.is_err();
+        match asked.unwrap_or(NotifyOutcome::NoAnswer) {
+            NotifyOutcome::Answered(admission) => {
+                let _ = store.apply_admission(&msg.id, &admission, now);
+                self.report_late_refusal(svc, store, msg, &admission).await;
+            }
+            NotifyOutcome::NoHandler => {
+                let _ = store.apply_admission(&msg.id, &Admission::Accept, now);
+            }
+            NotifyOutcome::NoAnswer => {
+                let age_ms = now.saturating_sub(msg.received_at_ms);
+                let attempts = msg.notify_attempts.saturating_add(1);
+                let next = now + backoff_for_age(age_ms);
+                let _ = store.update_undecided_retry(&msg.id, attempts, next);
+                if attempts.is_multiple_of(20) {
+                    warn!(
+                        service = svc,
+                        message = msg.id,
+                        attempts,
+                        "message still undecided after many re-asks"
+                    );
+                    metrics::counter!(
+                        "substrate.conversation.admission.stuck",
+                        "service" => svc.to_string(),
+                    )
+                    .increment(1);
+                }
+            }
+        }
+        timed_out
+    }
+
+    /// A drop that the app asked to report, answered after the delivery
+    /// receipt was already sent, reaches the sender as a refusal notice.
+    async fn report_late_refusal(
+        &self,
+        svc: &str,
+        store: &ConversationStore,
+        msg: &StoredMessage,
+        admission: &Admission,
+    ) {
+        let Admission::Drop(drop_ans) = admission else { return };
+        if !drop_ans.report {
+            return;
+        }
+        let Ok(Some(conv)) = store.get_conversation(&msg.conversation_id) else { return };
+        let Some(peer) = conv.peer_address.filter(|_| conv.kind == ConversationKind::Direct) else {
+            return;
+        };
+        let body = dag::refusal_notice_body(&msg.id, &drop_ans.reason);
+        let _ =
+            self.enqueue_direct(store, svc, &peer, REFUSAL_NOTICE_CONTENT_TYPE, &body, true).await;
+    }
+
+    async fn expire_held_once(&self) {
+        let now = now_ms();
+        let services = self.candidate_service_ids();
+        for svc in services {
+            let Ok(store) = self.store_for(&svc).await else { continue };
+            let max_age_ms = (store.config().max_held_age_secs as i64).saturating_mul(1000);
+            let Ok(expired) = store.expire_held_messages(max_age_ms, now) else { continue };
+            for (_conv_id, msg_id) in expired {
+                let drop_ans = DropAnswer { reason: "expired".to_string(), report: false };
+                let _ = store.apply_admission(&msg_id, &Admission::Drop(drop_ans), now);
+            }
+        }
+    }
+
+    /// Deletes dropped rows beyond each direct conversation's cap, after
+    /// any tick in which a message was dropped.
+    async fn prune_dropped_once(&self) {
+        let services = self.candidate_service_ids();
+        for svc in services {
+            if let Ok(store) = self.store_for(&svc).await
+                && store.take_drop_prune_flag()
+                && store.prune_dropped().is_err()
+            {
+                store.flag_drop_prune();
+            }
+        }
+    }
+
+    /// Rewrites the search index and truncates the log after a delete or
+    /// drop. A burst of them is spread over `scrub_min_interval_secs`; the
+    /// flag stays set until a pass finishes.
+    async fn wal_checkpoint_once(&self) {
+        let services = self.candidate_service_ids();
+        for svc in services {
+            let Ok(store) = self.store_for(&svc).await else { continue };
+            if !store.take_wal_checkpoint_flag() {
+                continue;
+            }
+            if !store.scrub_due() {
+                store.flag_wal_checkpoint();
+                continue;
+            }
+            if store.scrub_and_checkpoint() {
+                // A reader was active; try again next tick.
+                store.flag_wal_checkpoint();
+            } else {
+                store.mark_scrubbed();
+            }
+        }
+    }
 }
 
 #[must_use]
@@ -367,20 +531,5 @@ fn backoff_for_age(age_ms: i64) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backoff_curve_grows_with_age_and_caps() {
-        assert_eq!(backoff_for_age(0), 1_000);
-        assert_eq!(backoff_for_age(500), 1_000);
-        assert_eq!(backoff_for_age(1_500), 2_000);
-        assert_eq!(backoff_for_age(4_000), 4_000);
-        assert_eq!(backoff_for_age(10_000), 8_000);
-        assert_eq!(backoff_for_age(20_000), 16_000);
-        assert_eq!(backoff_for_age(100_000), 64_000);
-        assert_eq!(backoff_for_age(300_000), 256_000);
-        assert_eq!(backoff_for_age(600_000), 300_000);
-        assert_eq!(backoff_for_age(1_000_000), 300_000);
-    }
-}
+#[allow(clippy::unwrap_used)]
+mod tests;

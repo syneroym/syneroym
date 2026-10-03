@@ -51,6 +51,7 @@ interface MessageRow {
   body?: string;
   state: "pending" | "delivered" | "failed";
   last_error?: string;
+  refused?: string | null;
   deleted_at_secs?: number;
 }
 
@@ -407,6 +408,14 @@ export function isQuoteSuperseded(
   return false;
 }
 
+/** What a sender is told when the other side turned a delivered message away. */
+export function refusalText(reason: string): string {
+  if (reason === "rate-limited") {
+    return "Not accepted: this person limits messages from new contacts. Try again later.";
+  }
+  return `Not accepted: ${reason}.`;
+}
+
 function messageElement(
   m: MessageRow,
   cardMap: Map<string, CardRow>,
@@ -453,7 +462,7 @@ function messageElement(
       wrap.appendChild(renderRefusedCard("card", 1, "Unfiled card"));
     }
   } else {
-    if (m.deleted_at_secs !== undefined) {
+    if (m.deleted_at_secs != null) {
       wrap.appendChild(text("span", "(message deleted)", "message-body deleted"));
     } else {
       wrap.appendChild(text("span", m.body ?? "(no body)", "message-body"));
@@ -463,6 +472,9 @@ function messageElement(
   // The state word is exactly what the API returned -- never inferred, and
   // "delivered" is never shown until the service says so.
   wrap.appendChild(text("span", m.state, `message-state state-${m.state}`));
+  if (m.refused) {
+    wrap.appendChild(text("span", refusalText(m.refused), "message-refused"));
+  }
   if (m.state === "failed" && m.last_error) {
     wrap.appendChild(text("span", m.last_error, "message-error"));
   }
@@ -484,7 +496,7 @@ function messageElement(
     actions.appendChild(retryBtn);
   }
 
-  if (m.deleted_at_secs === undefined) {
+  if (m.deleted_at_secs == null) {
     const deleteBtn = text("button", "Delete", "button delete-message") as HTMLButtonElement;
     deleteBtn.onclick = () => openDeleteDialog(wrap, m, refresh);
     actions.appendChild(deleteBtn);

@@ -7603,6 +7603,7 @@ dependencies = [
  "syneroym-data-db",
  "syneroym-data-keystore",
  "syneroym-rpc",
+ "syneroym-signed-record",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -7963,6 +7964,7 @@ name = "syneroym-roym-conversation"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "serde",
  "serde_json",
  "syneroym-app-host",
  "syneroym-roym-core",

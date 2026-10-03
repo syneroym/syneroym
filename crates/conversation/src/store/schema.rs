@@ -6,7 +6,7 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
 use anyhow::Result;
@@ -28,7 +28,14 @@ impl ConversationStore {
         Self::init_schema(&conn)?;
         let conn = Arc::new(Mutex::new(conn));
         let queue = Queue::from_connection(conn.clone(), queue_config)?;
-        Ok(Self { conn, queue, config })
+        Ok(Self {
+            conn,
+            queue,
+            config,
+            needs_wal_checkpoint: AtomicBool::new(false),
+            needs_drop_prune: AtomicBool::new(false),
+            last_scrub: Mutex::new(None),
+        })
     }
 
     /// Creates every table and index this crate's stores assume already
@@ -56,32 +63,59 @@ const TABLE_GROUP_DDL: &[&str] = &[
         owner_address TEXT,
         current_epoch INTEGER NOT NULL DEFAULT 0,
         system        INTEGER NOT NULL DEFAULT 0,
+        opened        INTEGER NOT NULL DEFAULT 0,
+        restored      INTEGER NOT NULL DEFAULT 0,
+        name          TEXT,
         created_at    INTEGER NOT NULL,
         last_activity INTEGER NOT NULL
      );
      CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_direct_peer
-         ON conversations(peer_address) WHERE kind = 'direct';
+         ON conversations(peer_address) WHERE kind = 'direct' AND restored = 0;
 
      CREATE TABLE IF NOT EXISTS messages (
-        id               TEXT PRIMARY KEY,
-        conversation_id  TEXT NOT NULL REFERENCES conversations(id),
-        author           TEXT NOT NULL,
-        sender_timestamp INTEGER NOT NULL,
-        received_at      INTEGER NOT NULL,
-        content_type     TEXT NOT NULL,
-        body             BLOB NOT NULL,
-        signature        BLOB NOT NULL,
-        outgoing         INTEGER NOT NULL,
-        verified         INTEGER NOT NULL,
-        state            TEXT NOT NULL,
-        last_error       TEXT,
-        system           INTEGER NOT NULL DEFAULT 0,
-        entry_id         TEXT
+        id                   TEXT PRIMARY KEY,
+        conversation_id      TEXT NOT NULL REFERENCES conversations(id),
+        author               TEXT NOT NULL,
+        sender_timestamp     INTEGER NOT NULL,
+        received_at          INTEGER NOT NULL,
+        content_type         TEXT NOT NULL,
+        body                 BLOB NOT NULL,
+        signature            BLOB NOT NULL,
+        outgoing             INTEGER NOT NULL,
+        verified             INTEGER NOT NULL,
+        state                TEXT NOT NULL,
+        last_error           TEXT,
+        system               INTEGER NOT NULL DEFAULT 0,
+        entry_id             TEXT,
+        admission            TEXT NOT NULL DEFAULT 'accepted',
+        admission_reason     TEXT,
+        admission_changed_at INTEGER,
+        notify_attempts      INTEGER NOT NULL DEFAULT 0,
+        next_notify_at       INTEGER,
+        report_refusal       INTEGER NOT NULL DEFAULT 0,
+        refused              TEXT,
+        deleted_at           INTEGER,
+        restored             INTEGER NOT NULL DEFAULT 0,
+        visible_seq          INTEGER NOT NULL DEFAULT 0
      );
      CREATE INDEX IF NOT EXISTS idx_messages_order
          ON messages(conversation_id, sender_timestamp, author, id);
      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(author, id);
-     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);",
+     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+     CREATE INDEX IF NOT EXISTS idx_messages_visible_seq ON messages(conversation_id, visible_seq);
+     CREATE INDEX IF NOT EXISTS idx_messages_undecided ON messages(admission, next_notify_at);
+
+     CREATE TABLE IF NOT EXISTS conversation_seq (
+        conversation_id TEXT PRIMARY KEY,
+        last_seq        INTEGER NOT NULL
+     );
+
+     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        body,
+        content='messages',
+        content_rowid='rowid',
+        tokenize='trigram'
+     );",
     // sessions, local_identity, prekey_requests
     "CREATE TABLE IF NOT EXISTS sessions (
         peer_address   TEXT PRIMARY KEY,
@@ -188,6 +222,6 @@ fn open_connection(path: &Path, dek: Option<&[u8; 32]>) -> Result<Connection> {
         let pragma = Zeroizing::new(format!("x'{}'", hex::encode(dek)));
         conn.pragma_update(None, "key", &*pragma)?;
     }
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA secure_delete = ON;")?;
     Ok(conn)
 }

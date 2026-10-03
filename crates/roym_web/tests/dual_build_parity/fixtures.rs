@@ -167,6 +167,11 @@ pub(crate) fn inbound(
         state: ConversationDeliveryState::Delivered,
         verified: true,
         last_error: None,
+        outgoing: false,
+        deleted_at: None,
+        restored: false,
+        visible_seq: 1,
+        refused: None,
     }
 }
 
@@ -217,18 +222,9 @@ pub(crate) fn inbound_card(
     envelope: &str,
 ) -> ConversationMessage {
     let body = card::card_body(card_type, version, envelope).unwrap();
-    ConversationMessage {
-        id: id.to_string(),
-        conversation: conversation.to_string(),
-        author: author.to_string(),
-        sender_timestamp: ts,
-        received_at: ts,
-        content_type: card::CARD_CONTENT_TYPE.to_string(),
-        body: body.into_bytes(),
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    }
+    let mut msg = inbound(id, conversation, author, ts, &body);
+    msg.content_type = card::CARD_CONTENT_TYPE.to_string();
+    msg
 }
 
 pub(crate) fn sample_quote_terms() -> Value {

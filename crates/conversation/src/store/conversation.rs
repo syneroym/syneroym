@@ -13,7 +13,7 @@ use super::{ConversationRow, ConversationStore};
 // no safe recovery path, matching `syneroym-async-queue`'s own precedent.
 #[allow(clippy::expect_used)]
 impl ConversationStore {
-    /// Idempotent: returns the existing direct conversation with
+    /// Idempotent: returns the existing live direct conversation with
     /// `peer_address`, or creates one.
     pub fn get_or_create_direct(
         &self,
@@ -24,7 +24,8 @@ impl ConversationStore {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let existing: Option<String> = conn
             .query_row(
-                "SELECT id FROM conversations WHERE peer_address = ?1 AND kind = 'direct'",
+                "SELECT id FROM conversations WHERE peer_address = ?1 AND kind = 'direct' AND \
+                 restored = 0",
                 params![peer_address],
                 |r| r.get(0),
             )
@@ -34,13 +35,14 @@ impl ConversationStore {
         } else {
             conn.execute(
                 "INSERT INTO conversations (id, kind, peer_address, owner_address, current_epoch, \
-                 system, created_at, last_activity)
-                 VALUES (?1, 'direct', ?2, NULL, 0, 0, ?3, ?3)
-                 ON CONFLICT(peer_address) WHERE kind = 'direct' DO NOTHING",
+                 system, opened, restored, created_at, last_activity)
+                 VALUES (?1, 'direct', ?2, NULL, 0, 0, 0, 0, ?3, ?3)
+                 ON CONFLICT(peer_address) WHERE kind = 'direct' AND restored = 0 DO NOTHING",
                 params![id, peer_address, now_ms],
             )?;
             conn.query_row(
-                "SELECT id FROM conversations WHERE peer_address = ?1 AND kind = 'direct'",
+                "SELECT id FROM conversations WHERE peer_address = ?1 AND kind = 'direct' AND \
+                 restored = 0",
                 params![peer_address],
                 |r| r.get(0),
             )
@@ -53,11 +55,23 @@ impl ConversationStore {
         Ok(res_id)
     }
 
+    pub fn mark_direct_opened(&self, conv_id: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute("UPDATE conversations SET opened = 1 WHERE id = ?1", params![conv_id])?;
+        Ok(())
+    }
+
+    pub fn set_conversation_name(&self, conv_id: &str, name: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        conn.execute("UPDATE conversations SET name = ?1 WHERE id = ?2", params![name, conv_id])?;
+        Ok(())
+    }
+
     pub fn get_conversation(&self, id: &str) -> Result<Option<ConversationRow>> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         conn.query_row(
             "SELECT id, kind, peer_address, created_at, last_activity, owner_address, \
-             current_epoch FROM conversations WHERE id = ?1",
+             current_epoch, opened, restored, name FROM conversations WHERE id = ?1",
             params![id],
             |r| {
                 let kind_str: String = r.get(1)?;
@@ -73,6 +87,9 @@ impl ConversationStore {
                     last_activity_ms: r.get(4)?,
                     owner_address: r.get(5)?,
                     current_epoch: r.get::<_, i64>(6)? as u64,
+                    opened: r.get::<_, i64>(7)? != 0,
+                    restored: r.get::<_, i64>(8)? != 0,
+                    name: r.get(9)?,
                 })
             },
         )
@@ -84,7 +101,24 @@ impl ConversationStore {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, kind, peer_address, created_at, last_activity, owner_address, \
-             current_epoch FROM conversations WHERE system = 0 ORDER BY last_activity DESC",
+             current_epoch, opened, restored, name FROM conversations c
+             WHERE c.system = 0
+               AND (
+                 c.kind = 'group'
+                 OR (
+                   c.kind = 'direct'
+                   AND (
+                     c.opened = 1
+                     OR EXISTS (
+                       SELECT 1 FROM messages m
+                       WHERE m.conversation_id = c.id
+                         AND m.system = 0
+                         AND (m.outgoing = 1 OR m.admission = 'accepted')
+                     )
+                   )
+                 )
+               )
+             ORDER BY c.last_activity DESC",
         )?;
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
@@ -102,6 +136,9 @@ impl ConversationStore {
                 last_activity_ms: row.get(4)?,
                 owner_address: row.get(5)?,
                 current_epoch: row.get::<_, i64>(6)? as u64,
+                opened: row.get::<_, i64>(7)? != 0,
+                restored: row.get::<_, i64>(8)? != 0,
+                name: row.get(9)?,
             });
         }
         Ok(out)
@@ -111,7 +148,8 @@ impl ConversationStore {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let mut stmt = conn.prepare(
             "SELECT id, kind, peer_address, created_at, last_activity, owner_address, \
-             current_epoch FROM conversations WHERE kind = 'group' ORDER BY last_activity DESC",
+             current_epoch, opened, restored, name FROM conversations WHERE kind = 'group' ORDER \
+             BY last_activity DESC",
         )?;
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
@@ -124,6 +162,9 @@ impl ConversationStore {
                 last_activity_ms: row.get(4)?,
                 owner_address: row.get(5)?,
                 current_epoch: row.get::<_, i64>(6)? as u64,
+                opened: row.get::<_, i64>(7)? != 0,
+                restored: row.get::<_, i64>(8)? != 0,
+                name: row.get(9)?,
             });
         }
         Ok(out)
@@ -139,7 +180,7 @@ impl ConversationStore {
         let existing: Option<ConversationRow> = tx
             .query_row(
                 "SELECT id, kind, peer_address, created_at, last_activity, owner_address, \
-                 current_epoch FROM conversations WHERE id = ?1",
+                 current_epoch, opened, restored, name FROM conversations WHERE id = ?1",
                 params![group_id],
                 |r| {
                     let kind_str: String = r.get(1)?;
@@ -162,6 +203,9 @@ impl ConversationStore {
                         last_activity_ms: r.get(4)?,
                         owner_address: r.get(5)?,
                         current_epoch: r.get::<_, i64>(6)? as u64,
+                        opened: r.get::<_, i64>(7)? != 0,
+                        restored: r.get::<_, i64>(8)? != 0,
+                        name: r.get(9)?,
                     })
                 },
             )
@@ -171,7 +215,8 @@ impl ConversationStore {
         }
         tx.execute(
             "INSERT INTO conversations (id, kind, peer_address, owner_address, current_epoch, \
-             system, created_at, last_activity) VALUES (?1, 'group', NULL, ?2, ?3, 0, ?4, ?4)",
+             system, opened, restored, created_at, last_activity) VALUES (?1, 'group', NULL, ?2, \
+             ?3, 0, 0, 0, ?4, ?4)",
             params![group_id, owner_address, epoch as i64, now_ms],
         )?;
         Ok(ConversationRow {
@@ -182,6 +227,9 @@ impl ConversationStore {
             last_activity_ms: now_ms,
             owner_address: Some(owner_address.to_string()),
             current_epoch: epoch,
+            opened: false,
+            restored: false,
+            name: None,
         })
     }
 

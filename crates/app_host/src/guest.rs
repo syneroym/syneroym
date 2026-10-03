@@ -293,13 +293,6 @@ impl AppConversation for GuestHost {
         conv::members(&conversation)
     }
 
-    async fn membership_history(
-        &self,
-        conversation: String,
-    ) -> Result<Vec<crate::types::conversation::MembershipEvent>, ConversationError> {
-        conv::membership_history(&conversation)
-    }
-
     async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
         conv::sync_now(&conversation)
     }
@@ -316,6 +309,66 @@ impl AppConversation for GuestHost {
         message: String,
     ) -> Result<crate::types::conversation::Message, ConversationError> {
         conv::get_message(&message)
+    }
+
+    async fn delete_message(
+        &self,
+        message: String,
+        ask_others: bool,
+    ) -> Result<(), ConversationError> {
+        conv::delete_message(&message, ask_others)
+    }
+
+    async fn readmit(
+        &self,
+        conversation: String,
+        reasons: Vec<String>,
+    ) -> Result<u32, ConversationError> {
+        conv::readmit(&conversation, &reasons)
+    }
+
+    async fn changes(
+        &self,
+        conversation: String,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<crate::types::conversation::ChangePage, ConversationError> {
+        conv::changes(&conversation, after_seq, limit)
+    }
+
+    async fn search(
+        &self,
+        query: String,
+        conversation: Option<String>,
+        limit: u32,
+    ) -> Result<Vec<crate::types::conversation::Message>, ConversationError> {
+        conv::search(&query, conversation.as_deref(), limit)
+    }
+
+    async fn set_group_name(
+        &self,
+        conversation: String,
+        name: String,
+    ) -> Result<(), ConversationError> {
+        conv::set_group_name(&conversation, &name)
+    }
+
+    async fn transcript_digest(
+        &self,
+        conversation: String,
+    ) -> Result<crate::types::conversation::Transcript, ConversationError> {
+        conv::transcript_digest(&conversation)
+    }
+
+    async fn export_history(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<crate::types::conversation::ExportChunk, ConversationError> {
+        conv::export_history(cursor.as_deref())
+    }
+
+    async fn import_history(&self, data: Vec<u8>) -> Result<u32, ConversationError> {
+        conv::import_history(&data)
     }
 }
 

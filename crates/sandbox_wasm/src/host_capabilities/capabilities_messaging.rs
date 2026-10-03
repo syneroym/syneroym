@@ -59,8 +59,12 @@ mod conversation_wire {
             id: s.id,
             kind: map_kind(s.kind),
             participants: s.participants,
+            peer_address: s.peer_address,
             created_at: s.created_at,
             last_activity_at: s.last_activity_at,
+            message_count: s.message_count,
+            name: s.name,
+            restored: s.restored,
         }
     }
 
@@ -76,14 +80,50 @@ mod conversation_wire {
             state: map_state(m.state),
             verified: m.verified,
             last_error: m.last_error,
+            outgoing: m.outgoing,
+            deleted_at: m.deleted_at,
+            restored: m.restored,
+            visible_seq: m.visible_seq,
+            refused: m.refused,
+        }
+    }
+
+    pub(super) fn map_name_event(n: rpc::ConversationNameEvent) -> wit::NameEvent {
+        wit::NameEvent { entry: n.entry, name: n.name, sender_timestamp: n.sender_timestamp }
+    }
+
+    pub(super) fn map_history_item(i: rpc::ConversationHistoryItem) -> wit::HistoryItem {
+        match i {
+            rpc::ConversationHistoryItem::Message(m) => wit::HistoryItem::Message(map_message(m)),
+            rpc::ConversationHistoryItem::Membership(e) => {
+                wit::HistoryItem::Membership(map_membership_event(e))
+            }
+            rpc::ConversationHistoryItem::GroupName(n) => {
+                wit::HistoryItem::GroupName(map_name_event(n))
+            }
         }
     }
 
     pub(super) fn map_history(p: rpc::ConversationHistoryPage) -> wit::HistoryPage {
         wit::HistoryPage {
-            messages: p.messages.into_iter().map(map_message).collect(),
+            items: p.items.into_iter().map(map_history_item).collect(),
             next_cursor: p.next_cursor,
         }
+    }
+
+    pub(super) fn map_change_page(p: rpc::ConversationChangePage) -> wit::ChangePage {
+        wit::ChangePage {
+            messages: p.messages.into_iter().map(map_message).collect(),
+            last_seq: p.last_seq,
+        }
+    }
+
+    pub(super) fn map_transcript(t: rpc::ConversationTranscript) -> wit::Transcript {
+        wit::Transcript { digest: t.digest, rows: t.rows }
+    }
+
+    pub(super) fn map_export_chunk(c: rpc::ConversationExportChunk) -> wit::ExportChunk {
+        wit::ExportChunk { data: c.data, next_cursor: c.next_cursor }
     }
 
     pub(super) fn map_membership_event(
@@ -107,6 +147,8 @@ mod conversation_wire {
             epoch: g.epoch,
             key_epoch: g.key_epoch,
             key_stored_at: g.key_stored_at,
+            name: g.name,
+            restored: g.restored,
         }
     }
 }
@@ -237,17 +279,6 @@ impl wit_conversation::Host for HostState {
         conv.members(&self.component_id, &conversation).await.map_err(conversation_wire::map_error)
     }
 
-    async fn membership_history(
-        &mut self,
-        conversation: String,
-    ) -> Result<Vec<wit_conversation::MembershipEvent>, wit_conversation::ConversationError> {
-        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
-        conv.membership_history(&self.component_id, &conversation)
-            .await
-            .map(|v| v.into_iter().map(conversation_wire::map_membership_event).collect())
-            .map_err(conversation_wire::map_error)
-    }
-
     async fn sync_now(
         &mut self,
         conversation: String,
@@ -279,5 +310,106 @@ impl wit_conversation::Host for HostState {
             .await
             .map(conversation_wire::map_message)
             .map_err(conversation_wire::map_error)
+    }
+
+    async fn delete_message(
+        &mut self,
+        message: String,
+        ask_others: bool,
+    ) -> Result<(), wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.delete_message(&self.component_id, &message, ask_others)
+            .await
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn readmit(
+        &mut self,
+        conversation: String,
+        reasons: Vec<String>,
+    ) -> Result<u32, wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.readmit(&self.component_id, &conversation, reasons)
+            .await
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn changes(
+        &mut self,
+        conversation: String,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<wit_conversation::ChangePage, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.changes(&self.component_id, &conversation, after_seq, limit)
+            .await
+            .map(conversation_wire::map_change_page)
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn search(
+        &mut self,
+        query: String,
+        conversation: Option<String>,
+        limit: u32,
+    ) -> Result<Vec<wit_conversation::Message>, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.search(&self.component_id, &query, conversation.as_deref(), limit)
+            .await
+            .map(|v| v.into_iter().map(conversation_wire::map_message).collect())
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn set_group_name(
+        &mut self,
+        conversation: String,
+        name: String,
+    ) -> Result<(), wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.set_group_name(&self.component_id, &conversation, &name)
+            .await
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn transcript_digest(
+        &mut self,
+        conversation: String,
+    ) -> Result<wit_conversation::Transcript, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.transcript_digest(&self.component_id, &conversation)
+            .await
+            .map(conversation_wire::map_transcript)
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn export_history(
+        &mut self,
+        cursor: Option<String>,
+    ) -> Result<wit_conversation::ExportChunk, wit_conversation::ConversationError> {
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.export_history(&self.component_id, cursor)
+            .await
+            .map(conversation_wire::map_export_chunk)
+            .map_err(conversation_wire::map_error)
+    }
+
+    async fn import_history(
+        &mut self,
+        data: Vec<u8>,
+    ) -> Result<u32, wit_conversation::ConversationError> {
+        if self.read_only {
+            return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
+        }
+        let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
+        conv.import_history(&self.component_id, data).await.map_err(conversation_wire::map_error)
     }
 }

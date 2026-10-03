@@ -206,7 +206,7 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
     assert_eq!(unapplied[0].entry_id, entry.entry_id);
 
     // Now key arrives
-    {
+    let msg_id = {
         let conn = s.conn().lock().unwrap();
         let tx = conn.unchecked_transaction().unwrap();
         tx.execute(
@@ -218,14 +218,22 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
         let (_, msg_opt) =
             apply_entry(&tx, "svc:me", conv_id, &unapplied[0], s.config(), now).unwrap();
         assert!(msg_opt.is_some());
+        let msg = msg_opt.unwrap();
         tx.commit().unwrap();
-    }
+        msg.id
+    };
+    s.apply_admission(&msg_id, &syneroym_rpc::Admission::Accept, now).unwrap();
 
     // Unapplied should now be empty
     assert!(s.unapplied_dag_entries(conv_id).unwrap().is_empty());
     let hist = s.history(conv_id, 10, None).unwrap();
-    assert_eq!(hist.messages.len(), 1);
-    assert_eq!(hist.messages[0].body, b"msg");
+    assert_eq!(hist.items.len(), 1);
+    match &hist.items[0] {
+        syneroym_rpc::ConversationHistoryItem::Message(m) => {
+            assert_eq!(m.body, b"msg");
+        }
+        _ => panic!("expected message item"),
+    }
 }
 
 #[test]
@@ -312,11 +320,19 @@ fn membership_history_orders_on_the_same_three_part_key_as_messages() {
         tx.commit().unwrap();
     }
 
-    let hist = s.membership_history(conv_id).unwrap();
-    assert_eq!(hist.len(), 2);
-    assert_eq!(hist[0].sender_timestamp, 1000);
-    assert_eq!(hist[1].sender_timestamp, 1000);
-    assert!(hist[0].entry < hist[1].entry);
+    let hist = s.history(conv_id, 10, None).unwrap();
+    let events: Vec<_> = hist
+        .items
+        .into_iter()
+        .filter_map(|it| match it {
+            syneroym_rpc::ConversationHistoryItem::Membership(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].sender_timestamp, 1000);
+    assert_eq!(events[1].sender_timestamp, 1000);
+    assert!(events[0].entry < events[1].entry);
 }
 
 fn stored_dag_from(entry: &WireEntry) -> StoredDagEntry {
@@ -332,6 +348,7 @@ fn stored_dag_from(entry: &WireEntry) -> StoredDagEntry {
         ciphertext: entry.ciphertext.clone(),
         nonce: entry.nonce,
         payload: entry.payload.clone(),
+        profile_payload: entry.profile_payload.clone(),
         signature: entry.signature,
         applied: false,
         relay_pending: false,
@@ -608,7 +625,15 @@ async fn a_clock_offset_changes_only_signed_times() {
 
     crate::test_support::clear_clock_offsets();
 
-    let history = store.membership_history(&group_id).unwrap();
+    let hist = store.history(&group_id, 10, None).unwrap();
+    let history: Vec<_> = hist
+        .items
+        .into_iter()
+        .filter_map(|it| match it {
+            syneroym_rpc::ConversationHistoryItem::Membership(m) => Some(m),
+            _ => None,
+        })
+        .collect();
     assert_eq!(history.len(), 2);
     for h in &history {
         assert!(
@@ -673,4 +698,66 @@ async fn get_message_hides_system_messages_host() {
 
     let err = service.get_message(owner, "msg:sys_key").await.unwrap_err();
     assert_eq!(err, ConversationError::NotFound);
+}
+
+#[tokio::test]
+async fn an_own_group_message_is_numbered_in_the_feed_and_searchable() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let owner = "svc:owner";
+    let group_id = service.create_group_impl(owner).await.unwrap();
+    let store = service.store_for(owner).await.unwrap();
+    store
+        .upsert_session(
+            &crate::store::SessionRow {
+                peer_address: "svc:bob".to_string(),
+                pinned_sig_key: [42u8; 32],
+                state: vec![1, 2, 3],
+            },
+            crate::store::now_ms(),
+        )
+        .unwrap();
+    service.add_member(owner, &group_id, "svc:bob").await.unwrap();
+
+    let id = service
+        .send(owner, &group_id, "text/plain", b"findable group text".to_vec())
+        .await
+        .unwrap();
+
+    let feed = service.changes(owner, &group_id, 0, 10).await.unwrap();
+    assert_eq!(feed.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
+    assert!(feed.messages[0].visible_seq > 0);
+    let hits = service.search(owner, "findable group", Some(&group_id), 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+}
+
+#[tokio::test]
+async fn an_own_group_message_is_numbered_and_searchable_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = service_for_rekey_test(dir.path(), 3600).await;
+    let group_id = service.create_group_impl("svc:owner").await.unwrap();
+    let store = service.store_for("svc:owner").await.unwrap();
+    store
+        .upsert_session(
+            &store::SessionRow {
+                peer_address: "svc:bob".to_string(),
+                pinned_sig_key: [42u8; 32],
+                state: vec![1, 2, 3],
+            },
+            store::now_ms(),
+        )
+        .unwrap();
+    service.add_member("svc:owner", &group_id, "svc:bob").await.unwrap();
+
+    let id = service
+        .send("svc:owner", &group_id, "text/plain", b"lighthouse keeper".to_vec())
+        .await
+        .unwrap();
+
+    let sent = store.get_message(&id).unwrap().unwrap();
+    assert!(sent.visible_seq > 0, "an own message gets its number when it is stored");
+    let changes = store.changes(&group_id, 0, 10).unwrap();
+    assert!(changes.messages.iter().any(|m| m.id == id), "the feed returns it");
+    let found = store.search("lighthouse", Some(&group_id), 10).unwrap();
+    assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
 }

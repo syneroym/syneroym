@@ -181,8 +181,8 @@ async fn scenario_8_status_on_all_six_services() {
         assert_eq!(val["service"], svc.name);
         // profile, catalog, conversation, transaction and directory carry real state.
         let expected_schema_version = match svc.name {
-            "directory" => 4,
-            "conversation" | "transaction" => 3,
+            "directory" | "conversation" => 4,
+            "transaction" => 3,
             "profile" | "catalog" => 2,
             _ => 1,
         };
@@ -968,14 +968,12 @@ async fn scenario_33_contacts_admit_first_contact_parity() {
     let val: Value = serde_json::from_slice(&wasm_res.body).unwrap();
     assert_ne!(val.get("error").and_then(|e| e.get("code")), Some(&json!(-32601)));
     assert_eq!(val["result"]["admission"], "allow");
+    assert_eq!(val["result"]["blocked"], false);
 
-    // 2. Blocked sender -> blocked
+    // 2. Blocked sender -> allow under limit, blocked: true
     let block_req = json!({
         "method": "block.add",
-        "params": {
-            "person_did": "did:key:zBlocked33",
-            "address": "syneroym://blocked33"
-        }
+        "params": { "person_did": "did:key:zBlocked33", "address": "syneroym://blocked33" }
     })
     .to_string()
     .into_bytes();
@@ -995,15 +993,13 @@ async fn scenario_33_contacts_admit_first_contact_parity() {
     let native_blk = h.native_http.post("/rpc", admit_blocked_req, Some(caller())).await;
     assert_eq!(wasm_blk.body, native_blk.body);
     let blk_val: Value = serde_json::from_slice(&wasm_blk.body).unwrap();
-    assert_eq!(blk_val["result"]["admission"], "blocked");
+    assert_eq!(blk_val["result"]["admission"], "allow");
+    assert_eq!(blk_val["result"]["blocked"], true);
 
     // 3. Sender hitting rate limit -> rate-limited
     let set_limits_req = json!({
         "method": "contacts.set-limits",
-        "params": {
-            "max_per_window": 1,
-            "window_secs": 3600
-        }
+        "params": { "max_per_window": 1, "window_secs": 3600 }
     })
     .to_string()
     .into_bytes();
@@ -1025,6 +1021,7 @@ async fn scenario_33_contacts_admit_first_contact_parity() {
     assert_eq!(wasm_r1.body, native_r1.body);
     let r1_val: Value = serde_json::from_slice(&wasm_r1.body).unwrap();
     assert_eq!(r1_val["result"]["admission"], "allow");
+    assert_eq!(r1_val["result"]["blocked"], false);
 
     // Second attempt within window -> rate-limited
     let wasm_r2 = h.wasm_http.post("/rpc", rate_req.clone(), Some(caller())).await;
@@ -1035,6 +1032,7 @@ async fn scenario_33_contacts_admit_first_contact_parity() {
     strip_volatile(&mut native_r2_val);
     assert_eq!(wasm_r2_val, native_r2_val);
     assert_eq!(wasm_r2_val["result"]["admission"], "rate-limited");
+    assert_eq!(wasm_r2_val["result"]["blocked"], false);
 }
 
 #[tokio::test]

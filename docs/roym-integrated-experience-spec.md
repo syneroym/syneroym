@@ -91,7 +91,7 @@ through shared database access.
 | Service | Runs on | Owns | Main API |
 |---|---|---|---|
 | **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
-| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, and its own copy of every message body | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
+| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, message bodies, and the search index over them | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
 | **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
 | **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
@@ -625,9 +625,8 @@ These are requirements, not polish, and they are in R1.
 - **Retention and deletion:** every durable record has a stated owner, retention
   policy, and deletion or tombstone behaviour. Export and account deletion are
   separate actions. The product does not promise deletion it cannot enforce.
-  Roym keeps its own copy of every message it sends and receives, separate from
-  the copy the substrate keeps for delivery — that copy is what export, search,
-  and delete act on, and it means each message is stored twice on this machine.
+  Delete and drop remove the readable body on this machine, and a group's
+  encrypted log entry and key remain. Search index data is also removed on delete.
   `profile.policy` states this in plain words.
 - **Backup and recovery:** encrypted backup with a restore path that is tested
   on a clean node before release.

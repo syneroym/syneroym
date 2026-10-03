@@ -310,7 +310,8 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
         Err(e) => return Response::internal_error(e),
     };
 
-    match safety::admit_first_contact(blocked, &attempts, &limits, now) {
+    let res = safety::admit_first_contact(blocked, &attempts, &limits, now);
+    match res.admission {
         Admission::Allow => {
             let attempt_val = json!({ "sender_key": key, "at_secs": now });
             let payload = match serde_json::to_vec(&attempt_val) {
@@ -326,12 +327,14 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
             {
                 return Response::internal_error(e.to_string());
             }
-            Response::ok(json!({ "admission": "allow" }))
+            Response::ok(json!({ "admission": "allow", "blocked": res.blocked }))
         }
-        Admission::Blocked => Response::ok(json!({ "admission": "blocked" })),
-        Admission::RateLimited { retry_after_secs } => Response::ok(
-            json!({ "admission": "rate-limited", "retry_after_secs": retry_after_secs }),
-        ),
+        Admission::RateLimited { retry_after_secs } => Response::ok(json!({
+            "admission": "rate-limited",
+            "blocked": res.blocked,
+            "retry_after_secs": retry_after_secs
+        })),
+        Admission::Blocked => Response::ok(json!({ "admission": "blocked", "blocked": true })),
     }
 }
 

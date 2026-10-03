@@ -27,10 +27,10 @@ export const GROUP_ADD_UNREACHABLE_MESSAGE =
   "Could not reach this person to add them. Someone you have not talked to before must be online when you add them.";
 
 export const GROUP_HIDDEN_NOTICE =
-  "A hidden group is not shown, and its new messages are not kept here. This installation still receives them underneath, and you stay a member until the owner removes you.";
+  "A hidden group is not shown. New messages are held for up to 30 days, and you stay a member until the owner removes you.";
 
 export const TRANSCRIPT_CHECK_NOTICE =
-  "Members who see the same code hold the same messages in the same order. A member who blocked someone in the group sees a different code.";
+  "Members who see the same code hold the same messages in the same order.";
 
 export const CARDS_NOT_IN_GROUPS_MESSAGE =
   "Cards are sent only in a 1:1 conversation.";

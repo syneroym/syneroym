@@ -1,15 +1,28 @@
 #![allow(clippy::cognitive_complexity)]
 
+use std::path::PathBuf;
+
 use syneroym_core::config::RetryPolicy;
 
 use super::*;
 
-fn store() -> ConversationStore {
+pub(crate) fn store() -> ConversationStore {
+    store_in_dir().0
+}
+
+/// Like [`store`], also returning the directory that holds the database
+/// files, for tests that look at the bytes on disk or open a second reader.
+pub(crate) fn store_in_dir() -> (ConversationStore, PathBuf) {
+    store_with_config(ConversationConfig::default())
+}
+
+/// Like [`store_in_dir`], with the bounds a test wants to change.
+pub(crate) fn store_with_config(config: ConversationConfig) -> (ConversationStore, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     // Leak the tempdir so the file lives for the test's duration; each
     // test gets its own directory so this is bounded.
     let path = Box::leak(Box::new(dir)).path();
-    ConversationStore::open_encrypted(
+    let store = ConversationStore::open_encrypted(
         path,
         None,
         QueueConfig {
@@ -23,9 +36,10 @@ fn store() -> ConversationStore {
             dlq_max_rows: 100,
             max_pending_rows: 1000,
         },
-        ConversationConfig::default(),
+        config,
     )
-    .unwrap()
+    .unwrap();
+    (store, path.to_path_buf())
 }
 
 #[test]
@@ -215,7 +229,14 @@ fn history_returns_the_documented_order_under_a_skewed_clock() {
         .unwrap();
     }
     let page = s.history(&conv_id, 10, None).unwrap();
-    let ids: Vec<&str> = page.messages.iter().map(|m| m.id.as_str()).collect();
+    let ids: Vec<&str> = page
+        .items
+        .iter()
+        .map(|item| match item {
+            syneroym_rpc::ConversationHistoryItem::Message(m) => m.id.as_str(),
+            _ => panic!("expected message item"),
+        })
+        .collect();
     // (sender_timestamp, author, id): msg:c (100) first, then msg:a
     // before msg:b at the same timestamp (id tiebreak).
     assert_eq!(ids, vec!["msg:c", "msg:a", "msg:b"]);
@@ -241,14 +262,30 @@ fn history_pages_and_reports_a_next_cursor() {
         .unwrap();
     }
     let page1 = s.history(&conv_id, 2, None).unwrap();
-    assert_eq!(page1.messages.len(), 2);
-    assert_eq!(page1.messages[0].id, "msg:0");
-    assert_eq!(page1.messages[1].id, "msg:1");
+    assert_eq!(page1.items.len(), 2);
+    let msg0 = match &page1.items[0] {
+        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        _ => panic!("expected message item"),
+    };
+    let msg1 = match &page1.items[1] {
+        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        _ => panic!("expected message item"),
+    };
+    assert_eq!(msg0.id, "msg:0");
+    assert_eq!(msg1.id, "msg:1");
     assert!(page1.next_cursor.is_some());
 
     let page2 = s.history(&conv_id, 2, page1.next_cursor.as_deref()).unwrap();
-    assert_eq!(page2.messages[0].id, "msg:2");
-    assert_eq!(page2.messages[1].id, "msg:3");
+    let msg2 = match &page2.items[0] {
+        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        _ => panic!("expected message item"),
+    };
+    let msg3 = match &page2.items[1] {
+        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        _ => panic!("expected message item"),
+    };
+    assert_eq!(msg2.id, "msg:2");
+    assert_eq!(msg3.id, "msg:3");
 }
 
 #[test]
@@ -314,6 +351,7 @@ fn heads_are_the_entries_with_no_child() {
             ciphertext: Some(vec![1]),
             nonce: Some([0u8; 12]),
             payload: None,
+            profile_payload: None,
             signature: [0u8; 64],
         };
         ConversationStore::insert_entry_if_absent(&tx, conv_id, &entry1, true, false).unwrap();
@@ -329,6 +367,7 @@ fn heads_are_the_entries_with_no_child() {
             ciphertext: Some(vec![2]),
             nonce: Some([0u8; 12]),
             payload: None,
+            profile_payload: None,
             signature: [0u8; 64],
         };
         ConversationStore::insert_entry_if_absent(&tx, conv_id, &entry2, true, false).unwrap();
@@ -359,6 +398,7 @@ fn the_sync_cursor_never_skips_an_entry_inserted_out_of_timestamp_order() {
                 ciphertext: Some(vec![1]),
                 nonce: Some([0u8; 12]),
                 payload: None,
+                profile_payload: None,
                 signature: [0u8; 64],
             };
             ConversationStore::insert_entry_if_absent(&tx, conv_id, &entry, true, false).unwrap();
@@ -395,6 +435,7 @@ fn dag_entry_quota_is_per_conversation() {
             ciphertext: Some(vec![1]),
             nonce: Some([0u8; 12]),
             payload: None,
+            profile_payload: None,
             signature: [0u8; 64],
         };
         ConversationStore::insert_entry_if_absent(&tx, conv1, &entry1, true, false).unwrap();
@@ -478,8 +519,13 @@ fn history_and_outbox_exclude_system_messages() {
     .unwrap();
 
     let hist = s.history(&conv_id, 10, None).unwrap();
-    assert_eq!(hist.messages.len(), 1);
-    assert_eq!(hist.messages[0].id, "msg:regular");
+    assert_eq!(hist.items.len(), 1);
+    match &hist.items[0] {
+        syneroym_rpc::ConversationHistoryItem::Message(m) => {
+            assert_eq!(m.id, "msg:regular");
+        }
+        _ => panic!("expected message item"),
+    }
 
     let outbox = s.outbox_messages().unwrap();
     assert_eq!(outbox.len(), 1);
@@ -526,7 +572,20 @@ fn get_or_create_direct_clears_the_system_flag_on_an_existing_row() {
     // Now open_direct on the same peer
     let returned_id = s.get_or_create_direct(peer, "conv:ignored", 2000).unwrap();
     assert_eq!(returned_id, conv_id);
+    let is_sys: i64 = s
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT system FROM conversations WHERE id = ?1",
+            rusqlite::params![conv_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(is_sys, 0);
 
+    // After marking opened (as open_direct does), it appears in list_conversations
+    s.mark_direct_opened(&returned_id).unwrap();
     let list = s.list_conversations().unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, conv_id);
@@ -645,3 +704,8 @@ fn get_message_marks_system_messages() {
     let raw = s.get_message("msg:sys_key").unwrap().unwrap();
     assert!(raw.system);
 }
+
+mod admission;
+mod backup_roundtrip;
+mod scrub;
+mod search_and_delete;

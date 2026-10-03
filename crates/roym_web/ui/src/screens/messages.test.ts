@@ -3,6 +3,7 @@ import {
   type CardRow,
   computeNewestRequestMap,
   isQuoteSuperseded,
+  refusalText,
 } from "./messages.js";
 
 describe("newestRequestMap and quote superseded notice", () => {
@@ -96,5 +97,17 @@ describe("newestRequestMap and quote superseded notice", () => {
 
     expect(isQuoteSuperseded(quoteAgainstV1, allCards, map)).toBe(true);
     expect(isQuoteSuperseded(quoteAgainstV2, allCards, map)).toBe(false);
+  });
+});
+
+describe("refusalText", () => {
+  it("explains a rate limit in plain words", () => {
+    expect(refusalText("rate-limited")).toBe(
+      "Not accepted: this person limits messages from new contacts. Try again later.",
+    );
+  });
+
+  it("shows any other reason as given", () => {
+    expect(refusalText("too-large")).toBe("Not accepted: too-large.");
   });
 });

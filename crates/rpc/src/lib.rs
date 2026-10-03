@@ -20,9 +20,11 @@ mod types;
 mod websocket_senders;
 
 pub use conversation::{
-    ConversationDeliveryState, ConversationError, ConversationGroupInfo, ConversationHistoryPage,
-    ConversationHost, ConversationKind, ConversationMembershipEvent, ConversationMessage,
-    ConversationNotifier, ConversationSummary,
+    Admission, ConversationChangePage, ConversationDeliveryState, ConversationError,
+    ConversationExportChunk, ConversationGroupInfo, ConversationHistoryItem,
+    ConversationHistoryPage, ConversationHost, ConversationKind, ConversationMembershipEvent,
+    ConversationMessage, ConversationNameEvent, ConversationNotifier, ConversationSummary,
+    ConversationTranscript, DropAnswer, NotifyOutcome,
 };
 pub use converter::JsonRpcConverter;
 pub use dispatch_registry::{NativeDispatchRegistry, WeakNativeDispatchRegistry};

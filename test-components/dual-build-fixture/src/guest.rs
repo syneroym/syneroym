@@ -11,8 +11,8 @@
 use bindings::exports::{
     syneroym::{
         conversation::guest_api::{
-            DeliveryState as WitDeliveryState, Guest as ConversationGuestApiGuest,
-            Message as WitMessage,
+            Admission as WitAdmission, DeliveryState as WitDeliveryState,
+            Guest as ConversationGuestApiGuest, Message as WitMessage,
         },
         http::{
             incoming_handler::{
@@ -97,7 +97,7 @@ impl GuestApiGuest for Fixture {
 }
 
 impl ConversationGuestApiGuest for Fixture {
-    fn on_message(msg: WitMessage) -> Result<(), String> {
+    fn on_message(msg: WitMessage) -> Result<WitAdmission, String> {
         block_on(crate::app::on_conversation_message(&GuestHost, msg))
     }
 

@@ -22,7 +22,7 @@ pub(crate) fn policy() -> Response {
     Response::ok(json!({
         "statement": "A blocked sender's messages are refused at this node's inbox. They are never shown in any conversation, never fire a notification, and are never counted. Block is enforced locally by this installation's own Conversation service.",
         "one_person_per_installation": true,
-        "retention": "app-data stored until explicitly deleted or restored. This installation keeps its own copy of every message it sends and receives, separate from the copy the substrate keeps for delivery. That is what an export, a search, and a delete act on, and it means each message is stored twice on this machine.",
+        "retention": "app-data stored until explicitly deleted or restored. Delete removes the readable message body on this machine, while group log entries and encryption keys remain. A dropped message keeps only its id, sender and time; its text is removed.",
     }))
 }
 

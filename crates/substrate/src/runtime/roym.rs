@@ -152,6 +152,7 @@ async fn init_roym_web(
         shared.logical_resolver().clone(),
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
+        false,
     );
     let f = factory.clone();
     let f_http = factory.clone();
@@ -221,6 +222,7 @@ async fn init_roym_profile(
         shared.logical_resolver().clone(),
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
+        false,
     );
     let f = factory.clone();
     let profile = Arc::new(syneroym_roym_profile::native::NativeProfile::new(
@@ -264,6 +266,7 @@ async fn init_roym_conversation(
         shared.logical_resolver().clone(),
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
+        true,
     );
     let f = factory.clone();
     let conv = Arc::new(syneroym_roym_conversation::native::NativeConversation::new(
@@ -308,6 +311,7 @@ async fn init_roym_catalog(
         shared.logical_resolver().clone(),
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
+        false,
     );
     let f = factory.clone();
     let cat = Arc::new(syneroym_roym_catalog::native::NativeCatalog::new(
@@ -348,6 +352,7 @@ async fn init_roym_transaction(
         shared.logical_resolver().clone(),
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
+        false,
     );
     let f = factory.clone();
     let tx = Arc::new(syneroym_roym_transaction::native::NativeTransaction::new(
@@ -388,6 +393,7 @@ async fn init_roym_directory(
         shared.logical_resolver().clone(),
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
+        false,
     );
     let f = factory.clone();
     let dir = Arc::new(syneroym_roym_directory::native::NativeDirectory::new(

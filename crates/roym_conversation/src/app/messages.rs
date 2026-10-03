@@ -1,31 +1,26 @@
-//! Conversation messaging operations: open, send, history, search, and
+//! Conversation messaging operations: open, send, history, changes, search, and
 //! deletion.
 
-use std::cmp::Reverse;
+use std::{cmp::Reverse, collections::HashMap};
 
-use serde_json::{Map, Value, json};
-use syneroym_app_host::{AppConversation, AppHost, types::conversation::ConversationError};
+use serde_json::{Value, json};
+use syneroym_app_host::{
+    AppConversation, AppHost,
+    types::conversation::{ConversationError, ConversationKind, HistoryItem, Message},
+};
 use syneroym_roym_core::{
-    clock,
     conversation::{
-        ConversationRow, ConversationRowKind, DELETION_REQUEST_CONTENT_TYPE, Direction, MessageRow,
-        StoredState, deletion_request_body, encode_body,
+        DELETION_REQUEST_CONTENT_TYPE, StoredState, encode_body,
         group::{
             CARDS_NOT_IN_GROUPS_MESSAGE, GROUP_PROFILE_CONTENT_TYPE, GROUP_REMOVED_NOTICE,
-            GROUP_RESTORED_NOTICE, GroupAdmission, MEMBERSHIP_EVENT_CONTENT_TYPE,
-            is_group_system_type, transcript_digest as calculate_transcript_digest,
+            GROUP_RESTORED_NOTICE, MEMBERSHIP_EVENT_CONTENT_TYPE, group_profile_body,
+            is_group_system_type, membership_event_body,
         },
-        sort_key,
     },
     envelope::{Request, Response},
-    paging,
 };
 
-use super::{
-    CONVERSATIONS, MESSAGES, ensure_conversations, ensure_messages, group, inbox::host_last_error,
-    load_conversation, load_message, person_did_for_address, profile_call, put_conversation,
-    put_message,
-};
+use super::{contacts_map, from_host, load_admission_info, profile_call, set_admission_peer};
 
 pub(crate) async fn resolve_open_address<H: AppHost>(
     host: &H,
@@ -55,136 +50,84 @@ pub(crate) async fn open<H: AppHost>(host: &H, req: &Request) -> Response {
     };
     let conversation_id = match AppConversation::open_direct(host, address.clone()).await {
         Ok(id) => id,
-        Err(e) => return Response::internal_error(format!("{e:?}")),
+        Err(e) => return from_host(e),
     };
-    let person_did = person_did_for_address(host, &address).await;
-    if let Err(e) = upsert_conversation_open(host, &conversation_id, &address, person_did).await {
+    if let Err(e) = set_admission_peer(host, &conversation_id, "accepted", Some(&address)).await {
         return Response::internal_error(e);
     }
     Response::ok(json!({ "conversation_id": conversation_id, "peer_address": address }))
 }
 
-/// Like `upsert_conversation` but does not bump `message_count` -- opening
-/// a conversation is not a message.
-async fn upsert_conversation_open<H: AppHost>(
-    host: &H,
-    conversation_id: &str,
-    peer_address: &str,
-    peer_person_did: Option<String>,
-) -> Result<(), String> {
-    if load_conversation(host, conversation_id).await?.is_some() {
-        return Ok(());
-    }
-    let now = clock::now_secs();
-    let row = ConversationRow {
-        id: conversation_id.to_string(),
-        kind: ConversationRowKind::Direct,
-        peer_address: peer_address.to_string(),
-        peer_person_did,
-        opened_at_secs: now,
-        last_activity_ms: 0,
-        message_count: 0,
-        group: None,
-    };
-    put_conversation(host, &row).await
-}
-
 pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
-    if let Err(e) = ensure_conversations(host).await {
-        return Response::internal_error(e);
-    }
     let offset = req.params.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
     let kind_filter = req.params.get("kind").and_then(Value::as_str);
     let include_hidden = req.params.get("include_hidden").and_then(Value::as_bool).unwrap_or(false);
 
-    if kind_filter != Some("direct") {
-        group::adopt_new_groups(host).await;
+    let summaries = match AppConversation::conversations(host).await {
+        Ok(s) => s,
+        Err(e) => return from_host(e),
+    };
+    let contacts = contacts_map(host).await;
+    let mut admissions: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    for s in &summaries {
+        if let Ok(info) = load_admission_info(host, &s.id).await {
+            admissions.insert(s.id.clone(), info);
+        }
+    }
+    let mut rows = Vec::new();
+
+    for s in summaries {
+        let is_group = s.kind == ConversationKind::Group;
+        if let Some("direct") = kind_filter
+            && is_group
+        {
+            continue;
+        }
+        if let Some("group") = kind_filter
+            && !is_group
+        {
+            continue;
+        }
+
+        let admission_info = admissions.get(&s.id);
+        let admission_str = admission_info
+            .and_then(|(st, _)| st.as_deref())
+            .unwrap_or(if is_group { "shown" } else { "accepted" });
+
+        if is_group && !include_hidden && admission_str == "hidden" {
+            continue;
+        }
+
+        let peer_addr =
+            if is_group { String::new() } else { s.peer_address.clone().unwrap_or_default() };
+        let person_did = contacts.get(&peer_addr).cloned();
+
+        let row = json!({
+            "id": s.id,
+            "kind": if is_group { "group" } else { "direct" },
+            "peer_address": peer_addr,
+            "peer_person_did": person_did,
+            "opened_at_secs": s.created_at,
+            "last_activity_ms": s.last_activity_at,
+            "message_count": s.message_count,
+            "name": s.name,
+            "restored": s.restored,
+            "group": if is_group {
+                Some(json!({
+                    "name": s.name,
+                    "admission": { "state": admission_str },
+                }))
+            } else {
+                None
+            },
+        });
+        rows.push((s.last_activity_at, row));
     }
 
-    let listed = paging::filter_map(host, CONVERSATIONS, None, |r| {
-        serde_json::from_slice::<ConversationRow>(&r.payload)
-            .ok()
-            .filter(|row| is_listed(row, kind_filter, include_hidden))
-    })
-    .await;
-    let mut rows = match listed {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
-    };
-    rows.sort_by_key(|r| Reverse(r.last_activity_ms));
-    let out: Vec<Value> = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
-        .collect();
+    rows.sort_by_key(|(act, _)| Reverse(*act));
+    let out: Vec<Value> = rows.into_iter().skip(offset).take(limit).map(|(_, r)| r).collect();
     Response::ok(json!({ "conversations": out }))
-}
-
-/// Whether `list` shows `row`: it is of the asked-for kind, if any, and it
-/// is not a group the person has hidden, unless they asked for those too.
-fn is_listed(row: &ConversationRow, kind_filter: Option<&str>, include_hidden: bool) -> bool {
-    let matches_kind = match kind_filter {
-        None => true,
-        Some("direct") => row.kind == ConversationRowKind::Direct,
-        Some("group") => row.kind == ConversationRowKind::Group,
-        Some(_) => false,
-    };
-    let shown = row.kind != ConversationRowKind::Group
-        || include_hidden
-        || row.group.as_ref().is_some_and(|g| matches!(g.admission, GroupAdmission::Shown));
-    matches_kind && shown
-}
-
-pub(crate) async fn send_and_record<H: AppHost>(
-    host: &H,
-    conversation: &str,
-    content_type: &str,
-    body: &[u8],
-) -> Result<MessageRow, Response> {
-    let message_id = match AppConversation::send(
-        host,
-        conversation.to_string(),
-        content_type.to_string(),
-        body.to_vec(),
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err(ConversationError::InvalidArgument(m)) => return Err(Response::invalid_params(m)),
-        Err(e) => return Err(Response::internal_error(format!("{e:?}"))),
-    };
-
-    let host_msg = match AppConversation::get_message(host, message_id.clone()).await {
-        Ok(m) => m,
-        Err(e) => return Err(Response::internal_error(format!("get_message: {e:?}"))),
-    };
-
-    let now = clock::now_secs();
-    let (body_encoding, stored_body) = encode_body(content_type, body);
-    let row = MessageRow {
-        id: message_id,
-        conversation: conversation.to_string(),
-        author: host_msg.author,
-        direction: Direction::Outgoing,
-        sender_timestamp_ms: host_msg.sender_timestamp,
-        content_type: content_type.to_string(),
-        body_encoding,
-        body: Some(stored_body),
-        state: StoredState::from(host_msg.state),
-        last_error: host_msg.last_error,
-        deleted_at_secs: None,
-        stored_at_secs: now,
-    };
-    if let Err(e) = put_message(host, &row).await {
-        return Err(Response::internal_error(e));
-    }
-    if let Err(e) = upsert_conversation_activity(host, conversation, row.sender_timestamp_ms).await
-    {
-        return Err(Response::internal_error(e));
-    }
-    Ok(row)
 }
 
 pub(crate) async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -199,24 +142,24 @@ pub(crate) async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
     let content_type =
         req.params.get("content_type").and_then(Value::as_str).unwrap_or("text/plain");
 
-    let row = match load_conversation(host, &conversation).await {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
+    let is_group = match AppConversation::group_info(host, conversation.clone()).await {
+        Ok(info) => {
+            if info.restored {
+                return Response::invalid_params(GROUP_RESTORED_NOTICE);
+            }
+            if !info.is_member {
+                return Response::invalid_params(GROUP_REMOVED_NOTICE);
+            }
+            true
+        }
+        Err(ConversationError::InvalidArgument(_) | ConversationError::NotFound) => false,
+        Err(e) => return from_host(e),
     };
-    let is_group = match &row {
-        Some(r) => r.kind == ConversationRowKind::Group,
-        None => match AppConversation::group_info(host, conversation.clone()).await {
-            Ok(_) => true,
-            Err(ConversationError::InvalidArgument(_)) => false,
-            Err(ConversationError::NotFound) => false,
-            Err(e) => return Response::internal_error(format!("{e:?}")),
-        },
-    };
+
     if content_type == MEMBERSHIP_EVENT_CONTENT_TYPE
         || content_type == DELETION_REQUEST_CONTENT_TYPE
-        || (is_group
-            && (content_type == "application/vnd.roym.card+json"
-                || content_type == GROUP_PROFILE_CONTENT_TYPE))
+        || content_type == GROUP_PROFILE_CONTENT_TYPE
+        || (is_group && content_type == "application/vnd.roym.card+json")
     {
         return Response::invalid_params(if content_type == "application/vnd.roym.card+json" {
             CARDS_NOT_IN_GROUPS_MESSAGE
@@ -224,46 +167,103 @@ pub(crate) async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
             "this content type is reserved"
         });
     }
-    if is_group {
-        let info = match AppConversation::group_info(host, conversation.clone()).await {
-            Ok(i) => i,
-            Err(ConversationError::NotFound) => {
-                return Response::invalid_params(GROUP_RESTORED_NOTICE);
-            }
-            Err(e) => return Response::internal_error(format!("{e:?}")),
-        };
-        if !info.is_member {
-            return Response::invalid_params(GROUP_REMOVED_NOTICE);
+
+    let message_id = match AppConversation::send(
+        host,
+        conversation.clone(),
+        content_type.to_string(),
+        body.into_bytes(),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => return from_host(e),
+    };
+
+    let host_msg = AppConversation::get_message(host, message_id.clone()).await.ok();
+    Response::ok(json!({
+        "message_id": message_id,
+        "state": host_msg.as_ref().map(|m| StoredState::from(m.state)).unwrap_or(StoredState::Pending),
+        "sender_timestamp_ms": host_msg.map(|m| m.sender_timestamp).unwrap_or(0),
+    }))
+}
+
+pub(crate) fn message_to_json(m: &Message) -> Value {
+    let (body_encoding, body_str) = encode_body(&m.content_type, &m.body);
+    let mut val = json!({
+        "id": m.id,
+        "conversation": m.conversation,
+        "author": m.author,
+        "direction": if m.outgoing { "outgoing" } else { "incoming" },
+        "sender_timestamp_ms": m.sender_timestamp,
+        "content_type": m.content_type,
+        "body_encoding": body_encoding,
+        "state": StoredState::from(m.state),
+        "last_error": m.last_error,
+        "stored_at_secs": m.received_at,
+        "refused": m.refused,
+        "restored": m.restored,
+        "visible_seq": m.visible_seq,
+        "verified": m.verified,
+    });
+    if let Some(del) = m.deleted_at
+        && let Some(obj) = val.as_object_mut()
+    {
+        obj.insert("deleted_at_secs".to_string(), json!(del));
+    }
+    if m.deleted_at.is_none()
+        && let Some(obj) = val.as_object_mut()
+    {
+        obj.insert("body".to_string(), Value::String(body_str));
+    }
+    val
+}
+
+fn history_item_to_json(conversation: &str, item: HistoryItem) -> Value {
+    match item {
+        HistoryItem::Message(m) => message_to_json(&m),
+        HistoryItem::Membership(ev) => {
+            let body = membership_event_body(&ev.action, &ev.subject, ev.epoch);
+            json!({
+                "id": ev.entry,
+                "conversation": conversation,
+                "author": ev.subject,
+                "direction": "incoming",
+                "sender_timestamp_ms": ev.sender_timestamp,
+                "content_type": MEMBERSHIP_EVENT_CONTENT_TYPE,
+                "body_encoding": "utf8",
+                "body": body,
+                "state": "delivered",
+                "last_error": Value::Null,
+                "stored_at_secs": ev.sender_timestamp / 1000,
+                "refused": Value::Null,
+                "restored": false,
+                "visible_seq": 0,
+                "verified": true,
+            })
+        }
+        HistoryItem::GroupName(ev) => {
+            let body = String::from_utf8(group_profile_body(&ev.name))
+                .unwrap_or_else(|_| format!("{{\"name\":\"{}\"}}", ev.name));
+            json!({
+                "id": ev.entry,
+                "conversation": conversation,
+                "author": String::new(),
+                "direction": "incoming",
+                "sender_timestamp_ms": ev.sender_timestamp,
+                "content_type": GROUP_PROFILE_CONTENT_TYPE,
+                "body_encoding": "utf8",
+                "body": body,
+                "state": "delivered",
+                "last_error": Value::Null,
+                "stored_at_secs": ev.sender_timestamp / 1000,
+                "refused": Value::Null,
+                "restored": false,
+                "visible_seq": 0,
+                "verified": true,
+            })
         }
     }
-
-    match send_and_record(host, &conversation, content_type, body.as_bytes()).await {
-        Ok(msg) => Response::ok(json!({
-            "message_id": msg.id,
-            "state": msg.state,
-            "sender_timestamp_ms": msg.sender_timestamp_ms,
-        })),
-        Err(resp) => resp,
-    }
-}
-
-async fn upsert_conversation_activity<H: AppHost>(
-    host: &H,
-    conversation_id: &str,
-    activity_ms: i64,
-) -> Result<(), String> {
-    if let Some(mut row) = load_conversation(host, conversation_id).await? {
-        row.message_count += 1;
-        row.last_activity_ms = row.last_activity_ms.max(activity_ms);
-        put_conversation(host, &row).await?;
-    }
-    Ok(())
-}
-
-async fn messages_of<H: AppHost>(host: &H, conversation: &str) -> Result<Vec<MessageRow>, String> {
-    ensure_messages(host).await?;
-    let filter = json!({ "conversation": conversation }).to_string();
-    paging::query_all(host, MESSAGES, Some(filter)).await
 }
 
 pub(crate) async fn history<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -271,70 +271,57 @@ pub(crate) async fn history<H: AppHost>(host: &H, req: &Request) -> Response {
         Some(c) => c.to_string(),
         None => return Response::invalid_params("conversation is required"),
     };
-    let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(200) as usize;
-    let offset = req.params.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
-
-    let (kind_str, conv_row) = match load_conversation(host, &conversation).await {
-        Ok(Some(r)) => {
-            let k = match r.kind {
-                ConversationRowKind::Direct => "direct",
-                ConversationRowKind::Group => "group",
-            };
-            (k, Some(r))
+    let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(200) as u32;
+    let cursor = req.params.get("cursor").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        } else {
+            None
         }
-        Ok(None) => ("direct", None),
-        Err(e) => return Response::internal_error(e),
-    };
-    if let Some(mut row) = conv_row
-        && row.kind == ConversationRowKind::Group
-        && let Ok(info) = AppConversation::group_info(host, conversation.clone()).await
-        && let Ok(copied) = group::sync_membership_rows(host, &mut row, &info).await
-        && copied > 0
-    {
-        let _ = put_conversation(host, &row).await;
-    }
+    });
 
-    let mut rows = match messages_of(host, &conversation).await {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
+    let is_group = match AppConversation::group_info(host, conversation.clone()).await {
+        Ok(_) => true,
+        Err(ConversationError::InvalidArgument(_) | ConversationError::NotFound) => false,
+        Err(e) => return from_host(e),
     };
 
-    // Reconcile: re-read the host's delivery-status for every row that is
-    // not yet `Delivered` and not deleted, and persist what it read. A
-    // `Delivered` row is terminal. A `Failed` row was told so explicitly
-    // by an `on-delivery-state` notification, so a stale host read must
-    // not walk it back to `pending` -- but a retry that succeeded while no
-    // notification was listened for is real, so a `Failed` row does move
-    // forward to `Delivered`. The cost is bounded by the number of
-    // messages not yet delivered, not by history length.
-    for row in rows.iter_mut() {
-        if row.state == StoredState::Delivered || row.deleted_at_secs.is_some() {
-            continue;
-        }
-        let Ok(live) = AppConversation::delivery_status(host, row.id.clone()).await else {
-            continue;
-        };
-        let live = StoredState::from(live);
-        if live == row.state {
-            continue;
-        }
-        if row.state == StoredState::Failed && live != StoredState::Delivered {
-            continue;
-        }
-        row.state = live;
-        row.last_error =
-            if live == StoredState::Failed { host_last_error(host, &row.id).await } else { None };
-        let _ = put_message(host, row).await;
-    }
+    let page = match AppConversation::history(host, conversation.clone(), limit, cursor).await {
+        Ok(p) => p,
+        Err(e) => return from_host(e),
+    };
 
-    rows.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
-    let page: Vec<Value> = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
-        .collect();
-    Response::ok(json!({ "messages": page, "kind": kind_str }))
+    let items: Vec<Value> =
+        page.items.into_iter().map(|item| history_item_to_json(&conversation, item)).collect();
+
+    Response::ok(json!({
+        "messages": items,
+        "next_cursor": page.next_cursor,
+        "kind": if is_group { "group" } else { "direct" },
+    }))
+}
+
+pub(crate) async fn changes<H: AppHost>(host: &H, req: &Request) -> Response {
+    let conversation = match req.params.get("conversation").and_then(Value::as_str) {
+        Some(c) => c.to_string(),
+        None => return Response::invalid_params("conversation is required"),
+    };
+    let after_seq = req.params.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
+    let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(200) as u32;
+
+    let is_group = AppConversation::group_info(host, conversation.clone()).await.is_ok();
+
+    let page = match AppConversation::changes(host, conversation, after_seq, limit).await {
+        Ok(p) => p,
+        Err(e) => return from_host(e),
+    };
+
+    let msgs: Vec<Value> = page.messages.iter().map(message_to_json).collect();
+    Response::ok(json!({
+        "messages": msgs,
+        "last_seq": page.last_seq,
+        "kind": if is_group { "group" } else { "direct" },
+    }))
 }
 
 pub(crate) async fn delivery_status<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -344,7 +331,7 @@ pub(crate) async fn delivery_status<H: AppHost>(host: &H, req: &Request) -> Resp
     };
     match AppConversation::delivery_status(host, message_id).await {
         Ok(s) => Response::ok(json!({ "state": StoredState::from(s) })),
-        Err(e) => Response::internal_error(format!("{e:?}")),
+        Err(e) => from_host(e),
     }
 }
 
@@ -364,7 +351,7 @@ pub(crate) async fn outbox<H: AppHost>(host: &H) -> Response {
                 .collect();
             Response::ok(json!({ "outbox": out }))
         }
-        Err(e) => Response::internal_error(format!("{e:?}")),
+        Err(e) => from_host(e),
     }
 }
 
@@ -373,26 +360,9 @@ pub(crate) async fn retry<H: AppHost>(host: &H, req: &Request) -> Response {
         Some(m) => m.to_string(),
         None => return Response::invalid_params("message_id is required"),
     };
-    match AppConversation::retry(host, message_id.clone()).await {
-        Ok(()) => {
-            mark_retried(host, &message_id).await;
-            Response::ok(json!({ "retried": true }))
-        }
-        Err(e) => Response::internal_error(format!("{e:?}")),
-    }
-}
-
-/// A failed row is never walked back to `pending` by a history read (a
-/// stale host read must not undo a real failure), so the retry has to move
-/// it itself. Otherwise the Hub shows `failed` for a message the host is
-/// attempting again.
-async fn mark_retried<H: AppHost>(host: &H, message_id: &str) {
-    if let Ok(Some(mut row)) = load_message(host, message_id).await
-        && row.state == StoredState::Failed
-    {
-        row.state = StoredState::Pending;
-        row.last_error = None;
-        let _ = put_message(host, &row).await;
+    match AppConversation::retry(host, message_id).await {
+        Ok(()) => Response::ok(json!({ "retried": true })),
+        Err(e) => from_host(e),
     }
 }
 
@@ -415,116 +385,39 @@ pub(crate) async fn delete_message<H: AppHost>(host: &H, req: &Request) -> Respo
         Some(m) => m.to_string(),
         None => return Response::invalid_params("message_id is required"),
     };
-    let ask_peer = req.params.get("ask_peer").and_then(Value::as_bool).unwrap_or(true);
+    let ask_peer_req = req.params.get("ask_peer").and_then(Value::as_bool).unwrap_or(true);
 
-    let Some(mut row) = (match load_message(host, &message_id).await {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
-    }) else {
-        return Response::invalid_params("no such message");
+    let msg = match AppConversation::get_message(host, message_id.clone()).await {
+        Ok(m) => Some(m),
+        Err(ConversationError::NotFound) => None,
+        Err(e) => return from_host(e),
     };
 
-    if is_group_system_type(&row.content_type) {
-        return Response::invalid_params("this row records a group change and cannot be deleted");
-    }
-
-    let now = clock::now_secs();
-    row.tombstone(now);
-    if let Err(e) = put_message(host, &row).await {
-        return Response::internal_error(e);
-    }
-
-    let conv = load_conversation(host, &row.conversation).await.ok().flatten();
-    let is_group = conv.as_ref().is_some_and(|c| c.kind == ConversationRowKind::Group);
-
-    if row.direction == Direction::Incoming {
-        return Response::ok(json!({
-            "deleted": message_id,
-            "asked_peer": false,
-            "note": DELETE_NOTE_NO_PEER,
-        }));
-    }
-
-    if !is_group {
-        let mut asked_peer = false;
-        if ask_peer {
-            if let Err(e) = AppConversation::send(
-                host,
-                row.conversation.clone(),
-                DELETION_REQUEST_CONTENT_TYPE.to_string(),
-                deletion_request_body(&row.id),
-            )
-            .await
-            {
-                return Response::internal_error(format!("deletion request not queued: {e:?}"));
+    let (ask_peer, note) = if let Some(m) = &msg {
+        let group_info = AppConversation::group_info(host, m.conversation.clone()).await.ok();
+        if !m.outgoing {
+            (false, DELETE_NOTE_NO_PEER)
+        } else if let Some(g) = group_info {
+            if !g.is_member || g.restored || g.members.len() <= 1 {
+                (false, DELETE_NOTE_GROUP_ALONE)
+            } else {
+                (ask_peer_req, DELETE_NOTE_GROUP)
             }
-            asked_peer = true;
+        } else {
+            (ask_peer_req, DELETE_NOTE)
         }
-        return Response::ok(json!({
-            "deleted": message_id,
-            "asked_peer": asked_peer,
-            "note": DELETE_NOTE,
-        }));
-    }
-
-    let info = match AppConversation::group_info(host, row.conversation.clone()).await {
-        Ok(i) => i,
-        Err(ConversationError::NotFound) => {
-            return Response::ok(json!({
-                "deleted": message_id,
-                "asked_peer": false,
-                "note": DELETE_NOTE_GROUP_ALONE,
-            }));
-        }
-        Err(e) => return Response::internal_error(format!("{e:?}")),
+    } else {
+        (ask_peer_req, DELETE_NOTE)
     };
-    if !info.is_member || info.members.len() <= 1 {
-        return Response::ok(json!({
+
+    match AppConversation::delete_message(host, message_id.clone(), ask_peer).await {
+        Ok(()) => Response::ok(json!({
             "deleted": message_id,
-            "asked_peer": false,
-            "note": DELETE_NOTE_GROUP_ALONE,
-        }));
+            "asked_peer": ask_peer,
+            "note": note,
+        })),
+        Err(e) => from_host(e),
     }
-
-    let mut asked_peer = false;
-    let mut send_error = None;
-    if ask_peer {
-        match AppConversation::send(
-            host,
-            row.conversation.clone(),
-            DELETION_REQUEST_CONTENT_TYPE.to_string(),
-            deletion_request_body(&row.id),
-        )
-        .await
-        {
-            Ok(_) => asked_peer = true,
-            Err(e) => {
-                send_error = Some(format!("{e:?}"));
-            }
-        }
-    }
-    let mut res = json!({
-        "deleted": message_id,
-        "asked_peer": asked_peer,
-        "note": DELETE_NOTE_GROUP,
-    });
-    if let Some(err) = send_error {
-        res["send_error"] = json!(err);
-    }
-    Response::ok(res)
-}
-
-/// Escapes every regex metacharacter, so a person typing `(` is searching
-/// for a bracket rather than writing a pattern.
-fn escape_regex(query: &str) -> String {
-    let mut out = String::with_capacity(query.len() * 2);
-    for c in query.chars() {
-        if "\\^$.|?*+()[]{}".contains(c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
 }
 
 pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -532,69 +425,48 @@ pub(crate) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
         Some(q) if !q.is_empty() => q.to_string(),
         _ => return Response::invalid_params("query is required"),
     };
-    let conversation = req.params.get("conversation").and_then(Value::as_str);
-    let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
+    let conversation = req.params.get("conversation").and_then(Value::as_str).map(str::to_string);
+    let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(100) as u32;
     let kind_filter = req.params.get("kind").and_then(Value::as_str);
 
-    if let Err(e) = ensure_messages(host).await {
-        return Response::internal_error(e);
-    }
-
-    let mut filter = Map::new();
-    filter.insert("body".to_string(), json!({ "$regex": escape_regex(&query) }));
-    filter.insert("body_encoding".to_string(), json!("utf8"));
-    filter.insert(
-        "content_type".to_string(),
-        json!({ "$nin": [MEMBERSHIP_EVENT_CONTENT_TYPE, GROUP_PROFILE_CONTENT_TYPE] }),
-    );
-
-    if let Some(kind) = kind_filter {
-        let expected_kind = match kind {
-            "direct" => ConversationRowKind::Direct,
-            "group" => ConversationRowKind::Group,
-            _ => return Response::invalid_params("unknown kind"),
-        };
-        let of_kind = paging::filter_map(host, CONVERSATIONS, None, |r| {
-            let row = serde_json::from_slice::<ConversationRow>(&r.payload).ok()?;
-            (row.kind == expected_kind).then_some(row.id)
-        })
-        .await;
-        let conv_ids = match of_kind {
-            Ok(ids) => ids,
-            Err(e) => return Response::internal_error(e),
-        };
-        if conv_ids.is_empty() {
-            return Response::ok(json!({ "matches": [] }));
-        }
-        if let Some(c) = conversation {
-            if !conv_ids.contains(&c.to_string()) {
-                return Response::ok(json!({ "matches": [] }));
-            }
-            filter.insert("conversation".to_string(), json!(c));
-        } else {
-            filter.insert("conversation".to_string(), json!({ "$in": conv_ids }));
-        }
-    } else if let Some(c) = conversation {
-        filter.insert("conversation".to_string(), json!(c));
-    }
-
-    let found = paging::filter_map(host, MESSAGES, Some(Value::Object(filter).to_string()), |r| {
-        serde_json::from_slice::<MessageRow>(&r.payload)
-            .ok()
-            .filter(|row| row.deleted_at_secs.is_none())
-    })
-    .await;
-    let mut matches = match found {
-        Ok(m) => m,
-        Err(e) => return Response::internal_error(e),
+    let expected_kind = match kind_filter {
+        Some("direct") => Some(ConversationKind::Direct),
+        Some("group") => Some(ConversationKind::Group),
+        Some(_) => return Response::invalid_params("unknown kind"),
+        None => None,
     };
-    matches.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
-    let out: Vec<Value> = matches
-        .into_iter()
-        .take(limit)
-        .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
-        .collect();
-    Response::ok(json!({ "matches": out }))
+
+    let conv_kinds = if expected_kind.is_some() {
+        match AppConversation::conversations(host).await {
+            Ok(summaries) => {
+                let map: HashMap<String, ConversationKind> =
+                    summaries.into_iter().map(|s| (s.id, s.kind)).collect();
+                Some(map)
+            }
+            Err(e) => return from_host(e),
+        }
+    } else {
+        None
+    };
+
+    match AppConversation::search(host, query, conversation, limit).await {
+        Ok(msgs) => {
+            let out: Vec<Value> = msgs
+                .into_iter()
+                .filter(|m| !is_group_system_type(&m.content_type))
+                .filter(|m| {
+                    if let (Some(k), Some(map)) = (expected_kind, &conv_kinds) {
+                        map.get(&m.conversation).copied() == Some(k)
+                    } else {
+                        true
+                    }
+                })
+                .map(|m| message_to_json(&m))
+                .collect();
+            Response::ok(json!({ "matches": out }))
+        }
+        Err(e) => from_host(e),
+    }
 }
 
 pub(crate) async fn transcript_digest<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -607,16 +479,12 @@ pub(crate) async fn transcript_digest<H: AppHost>(host: &H, req: &Request) -> Re
         Some(c) => c.to_string(),
         None => return Response::invalid_params("conversation is required"),
     };
-    let rows = match messages_of(host, &conversation).await {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
-    };
-    let digest = match calculate_transcript_digest(&rows) {
-        Ok(d) => d,
-        Err(e) => return Response::internal_error(e.to_string()),
+    let transcript = match AppConversation::transcript_digest(host, conversation).await {
+        Ok(t) => t,
+        Err(e) => return from_host(e),
     };
     Response::ok(json!({
-        "digest": digest,
-        "rows": rows.len(),
+        "digest": transcript.digest,
+        "rows": transcript.rows,
     }))
 }

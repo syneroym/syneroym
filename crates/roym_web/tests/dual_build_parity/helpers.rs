@@ -135,6 +135,7 @@ pub(crate) fn strip_volatile(val: &mut Value) {
                 "last_activity_ms",
                 "track_window_ends_at_secs",
                 "progress_record_id",
+                "visible_seq",
             ] {
                 map.remove(k);
             }
@@ -504,7 +505,7 @@ pub(crate) struct Harness {
     /// The one factory whose conversation sink is wired, so a test can
     /// push an inbound message straight at Roym's own inbox on the native
     /// stack the same way `AppSandboxEngine` does on the wasm one.
-    pub(crate) conv_factory: Arc<NativeHostFactory>,
+    pub(crate) _conv_factory: Arc<NativeHostFactory>,
     /// The shared host `ConversationService` per stack -- a test creates a
     /// group here (a kind the inbox refuses) or reads delivery state.
     pub(crate) wasm_conversation: Arc<ConversationService>,
@@ -699,11 +700,15 @@ impl Harness {
     /// the same entry point `ConversationService`'s delivery worker uses.
     pub(crate) async fn deliver(&self, wasm: bool, msg: ConversationMessage) {
         let conv_id = did_for_service("conversation");
-        if wasm {
-            ConversationNotifier::notify_message(&*self.wasm.engine, &conv_id, msg).await;
-        } else {
-            ConversationNotifier::notify_message(&*self.conv_factory, &conv_id, msg).await;
-        }
+        let conv = if wasm { &self.wasm_conversation } else { &self.native_conversation };
+        conv.deliver_inbound(&conv_id, msg).await.expect("deliver inbound");
+    }
+
+    /// Runs the host's background re-ask pass on both stacks, which is what
+    /// answers a message that `readmit` returned to the app.
+    pub(crate) async fn ask_undecided_now(&self) {
+        self.wasm_conversation.ask_undecided_now().await;
+        self.native_conversation.ask_undecided_now().await;
     }
 
     pub(crate) async fn notify_state(
@@ -713,23 +718,10 @@ impl Harness {
         state: ConversationDeliveryState,
     ) {
         let conv_id = did_for_service("conversation");
-        if wasm {
-            ConversationNotifier::notify_delivery_state(
-                &*self.wasm.engine,
-                &conv_id,
-                message_id.to_string(),
-                state,
-            )
-            .await;
-        } else {
-            ConversationNotifier::notify_delivery_state(
-                &*self.conv_factory,
-                &conv_id,
-                message_id.to_string(),
-                state,
-            )
-            .await;
-        }
+        let conv = if wasm { &self.wasm_conversation } else { &self.native_conversation };
+        conv.update_delivery_state(&conv_id, message_id, state)
+            .await
+            .expect("update delivery state");
     }
 
     /// Reads every row of a `conversation`-service collection no verb
@@ -1237,9 +1229,8 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         NodeRecordSigner::with_clock(node_identity, native_reg.clone(), fixed_clock);
 
     let make_factory = |name: &str| {
-        let service_id = did_for_service(name);
         NativeHostFactory::new(
-            service_id,
+            did_for_service(name),
             native_ks.clone(),
             native_storage.clone(),
             native_blobs.clone(),
@@ -1248,6 +1239,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
             native_resolver.clone(),
             native_conversation.clone(),
             native_ws_senders.clone(),
+            name == "conversation",
         )
     };
 
@@ -1435,7 +1427,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         native_factories,
         wasm_proxy,
         native_proxy,
-        conv_factory: f_conversation.clone(),
+        _conv_factory: f_conversation.clone(),
         wasm_conversation: wasm_conversation.clone(),
         native_conversation: native_conversation.clone(),
         wire_native,
