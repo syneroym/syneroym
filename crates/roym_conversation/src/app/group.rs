@@ -6,8 +6,8 @@ use syneroym_app_host::{AppConversation, AppHost, types::conversation::Conversat
 use syneroym_roym_core::{
     conversation::group::{
         GROUP_ADD_UNREACHABLE_MESSAGE, GROUP_DELIVERY_NOTICE, GROUP_JOIN_BOUNDARY_NOTICE,
-        GROUP_KEY_TRUST_NOTICE, GROUP_PROFILE_CONTENT_TYPE, GROUP_REMOVED_NOTICE,
-        GROUP_RESTORED_NOTICE, OWNER_CAN_READ_NOTICE, group_profile_body, validate_group_name,
+        GROUP_KEY_TRUST_NOTICE, GROUP_REMOVED_NOTICE, GROUP_RESTORED_NOTICE, OWNER_CAN_READ_NOTICE,
+        validate_group_name,
     },
     envelope::{Request, Response},
 };
@@ -97,33 +97,10 @@ pub(crate) async fn add_member<H: AppHost>(host: &H, req: &Request) -> Response 
         Err(e) => return from_host(e),
     };
 
-    let mut name_sent = false;
-    let mut send_error = None;
-    if let Some(name) = updated_info.name.filter(|n| !n.is_empty()) {
-        match AppConversation::send(
-            host,
-            group.clone(),
-            GROUP_PROFILE_CONTENT_TYPE.to_string(),
-            group_profile_body(&name),
-        )
-        .await
-        {
-            Ok(_) => name_sent = true,
-            Err(e) => {
-                send_error = Some(format!("{e:?}"));
-            }
-        }
-    }
-
-    let mut res = json!({
+    Response::ok(json!({
         "added": address,
         "epoch": updated_info.epoch,
-        "name_sent": name_sent,
-    });
-    if let Some(err) = send_error {
-        res["send_error"] = json!(err);
-    }
-    Response::ok(res)
+    }))
 }
 
 pub(crate) async fn remove_member<H: AppHost>(host: &H, req: &Request) -> Response {

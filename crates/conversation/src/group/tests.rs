@@ -320,11 +320,19 @@ fn membership_history_orders_on_the_same_three_part_key_as_messages() {
         tx.commit().unwrap();
     }
 
-    let hist = s.membership_history(conv_id).unwrap();
-    assert_eq!(hist.len(), 2);
-    assert_eq!(hist[0].sender_timestamp, 1000);
-    assert_eq!(hist[1].sender_timestamp, 1000);
-    assert!(hist[0].entry < hist[1].entry);
+    let hist = s.history(conv_id, 10, None).unwrap();
+    let events: Vec<_> = hist
+        .items
+        .into_iter()
+        .filter_map(|it| match it {
+            syneroym_rpc::ConversationHistoryItem::Membership(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].sender_timestamp, 1000);
+    assert_eq!(events[1].sender_timestamp, 1000);
+    assert!(events[0].entry < events[1].entry);
 }
 
 fn stored_dag_from(entry: &WireEntry) -> StoredDagEntry {
@@ -617,7 +625,15 @@ async fn a_clock_offset_changes_only_signed_times() {
 
     crate::test_support::clear_clock_offsets();
 
-    let history = store.membership_history(&group_id).unwrap();
+    let hist = store.history(&group_id, 10, None).unwrap();
+    let history: Vec<_> = hist
+        .items
+        .into_iter()
+        .filter_map(|it| match it {
+            syneroym_rpc::ConversationHistoryItem::Membership(m) => Some(m),
+            _ => None,
+        })
+        .collect();
     assert_eq!(history.len(), 2);
     for h in &history {
         assert!(

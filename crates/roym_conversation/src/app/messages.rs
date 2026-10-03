@@ -5,7 +5,7 @@ use std::{cmp::Reverse, collections::HashMap};
 
 use serde_json::{Value, json};
 use syneroym_app_host::{
-    AppConversation, AppHost,
+    AppConversation, AppHost, AppSigning,
     types::conversation::{ConversationError, ConversationKind, HistoryItem, Message},
 };
 use syneroym_roym_core::{
@@ -182,9 +182,8 @@ pub(crate) async fn send<H: AppHost>(host: &H, req: &Request) -> Response {
 
     if content_type == MEMBERSHIP_EVENT_CONTENT_TYPE
         || content_type == DELETION_REQUEST_CONTENT_TYPE
-        || (is_group
-            && (content_type == "application/vnd.roym.card+json"
-                || content_type == GROUP_PROFILE_CONTENT_TYPE))
+        || content_type == GROUP_PROFILE_CONTENT_TYPE
+        || (is_group && content_type == "application/vnd.roym.card+json")
     {
         return Response::invalid_params(if content_type == "application/vnd.roym.card+json" {
             CARDS_NOT_IN_GROUPS_MESSAGE
@@ -519,6 +518,9 @@ pub(crate) async fn transcript_digest<H: AppHost>(host: &H, req: &Request) -> Re
 }
 
 async fn my_conversation_address<H: AppHost>(host: &H) -> Option<String> {
+    if let Ok(id) = AppSigning::signing_identity(host).await {
+        return Some(id.signing_did);
+    }
     let resp = profile_call(host, "profile.get", json!({})).await.ok()?;
     let val = resp.result?;
     if val.is_null() {
@@ -533,9 +535,7 @@ async fn my_conversation_address<H: AppHost>(host: &H) -> Option<String> {
 }
 
 fn is_internal_address(addr: &str) -> bool {
-    addr.starts_with("did:key:roym-")
-        || addr.starts_with("did:key:zRoym")
-        || addr.contains("conversation")
+    addr.starts_with("did:key:roym-") || addr.starts_with("did:key:zRoym")
 }
 
 fn resolve_peer_address(

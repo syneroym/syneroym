@@ -169,12 +169,15 @@ pub struct ConversationGroupInfo {
 /// Every method is keyed by `service_id`.
 #[async_trait::async_trait]
 pub trait ConversationHost: Send + Sync + Debug {
+    /// Returns the existing 1:1 conversation with `peer_address`, or creates
+    /// one.
     async fn open_direct(
         &self,
         service_id: &str,
         peer_address: &str,
     ) -> Result<String, ConversationError>;
 
+    /// Lists summaries of all known conversations, direct and group.
     async fn conversations(
         &self,
         service_id: &str,
@@ -190,6 +193,9 @@ pub trait ConversationHost: Send + Sync + Debug {
         body: Vec<u8>,
     ) -> Result<String, ConversationError>;
 
+    /// Pages conversation items (messages, membership events, name changes)
+    /// in chronological order (sender-timestamp, author, entry/id).
+    /// Omits dropped/held/undecided incoming messages.
     async fn history(
         &self,
         service_id: &str,
@@ -198,19 +204,25 @@ pub trait ConversationHost: Send + Sync + Debug {
         cursor: Option<String>,
     ) -> Result<ConversationHistoryPage, ConversationError>;
 
+    /// Queries the delivery state of an outgoing message.
     async fn delivery_status(
         &self,
         service_id: &str,
         message: &str,
     ) -> Result<ConversationDeliveryState, ConversationError>;
 
+    /// Returns every message this service still owes delivery for, plus failed
+    /// ones.
     async fn outbox(&self, service_id: &str)
     -> Result<Vec<ConversationMessage>, ConversationError>;
 
+    /// Re-arms a `failed` message for delivery.
     async fn retry(&self, service_id: &str, message: &str) -> Result<(), ConversationError>;
 
+    /// Creates a group owned by this service and returns its id.
     async fn create_group(&self, service_id: &str) -> Result<String, ConversationError>;
 
+    /// Owner-only. Adds a member to the group and advances the group epoch.
     async fn add_member(
         &self,
         service_id: &str,
@@ -218,6 +230,8 @@ pub trait ConversationHost: Send + Sync + Debug {
         member_address: &str,
     ) -> Result<(), ConversationError>;
 
+    /// Owner-only. Removes a member from the group and advances the group
+    /// epoch.
     async fn remove_member(
         &self,
         service_id: &str,
@@ -225,12 +239,14 @@ pub trait ConversationHost: Send + Sync + Debug {
         member_address: &str,
     ) -> Result<(), ConversationError>;
 
+    /// Returns current member addresses of the group conversation.
     async fn members(
         &self,
         service_id: &str,
         conversation: &str,
     ) -> Result<Vec<String>, ConversationError>;
 
+    /// Runs a fast synchronization round across group members.
     async fn sync_now(&self, service_id: &str, conversation: &str)
     -> Result<(), ConversationError>;
 
@@ -241,13 +257,18 @@ pub trait ConversationHost: Send + Sync + Debug {
         conversation: &str,
     ) -> Result<ConversationGroupInfo, ConversationError>;
 
-    /// Returns one stored message by id.
+    /// Returns one stored message by id. Returns not-found for unaccepted
+    /// incoming rows.
     async fn get_message(
         &self,
         service_id: &str,
         message: &str,
     ) -> Result<ConversationMessage, ConversationError>;
 
+    /// Deletes a message locally from disk, outbox, and search index. If
+    /// `ask_others` is true and the message was an outgoing message sent by
+    /// this service, sends best-effort deletion requests to conversation
+    /// peers.
     async fn delete_message(
         &self,
         service_id: &str,
@@ -255,6 +276,8 @@ pub trait ConversationHost: Send + Sync + Debug {
         ask_others: bool,
     ) -> Result<(), ConversationError>;
 
+    /// Resets held incoming messages matching any of `reasons` to `undecided`
+    /// for re-admission evaluation.
     async fn readmit(
         &self,
         service_id: &str,
@@ -262,6 +285,8 @@ pub trait ConversationHost: Send + Sync + Debug {
         reasons: Vec<String>,
     ) -> Result<u32, ConversationError>;
 
+    /// Feed of newly visible messages with `visible_seq > after_seq`, ordered
+    /// by `visible_seq`.
     async fn changes(
         &self,
         service_id: &str,
@@ -270,6 +295,7 @@ pub trait ConversationHost: Send + Sync + Debug {
         limit: u32,
     ) -> Result<ConversationChangePage, ConversationError>;
 
+    /// Full-text search over accepted message bodies. Capped at 500 rows.
     async fn search(
         &self,
         service_id: &str,
@@ -278,6 +304,8 @@ pub trait ConversationHost: Send + Sync + Debug {
         limit: u32,
     ) -> Result<Vec<ConversationMessage>, ConversationError>;
 
+    /// Owner-only. Sets the display name for a group conversation by issuing a
+    /// profile DAG entry.
     async fn set_group_name(
         &self,
         service_id: &str,
@@ -285,18 +313,22 @@ pub trait ConversationHost: Send + Sync + Debug {
         name: &str,
     ) -> Result<(), ConversationError>;
 
+    /// Returns content-derived BLAKE3 digest ("roym-transcript:<hash>") over
+    /// accepted messages.
     async fn transcript_digest(
         &self,
         service_id: &str,
         conversation: &str,
     ) -> Result<String, ConversationError>;
 
+    /// Paged export of conversation history bundle.
     async fn export_history(
         &self,
         service_id: &str,
         cursor: Option<String>,
     ) -> Result<ConversationExportChunk, ConversationError>;
 
+    /// Imports a serialized history export bundle.
     async fn import_history(
         &self,
         service_id: &str,

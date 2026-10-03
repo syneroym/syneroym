@@ -45,7 +45,7 @@ syneroym-data-keystore.workspace = true
 syneroym-sandbox-wasm.workspace = true
 syneroym-app-orchestration.workspace = true
 syneroym-async-queue.workspace = true
-syneroym-conversation.workspace = true
+syneroym-conversation = { workspace = true, features = ["test-support"] }
 syneroym-mqtt-broker.workspace = true
 syneroym-identity.workspace = true
 syneroym-roym-conversation = { path = "../roym_conversation" }

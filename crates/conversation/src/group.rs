@@ -379,7 +379,7 @@ impl ConversationService {
             return Err(crate::store::StoreError::PendingQuotaExceeded.into());
         }
         let message_count: u32 = tx.query_row(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND admission != 'dropped'",
             rusqlite::params![conv_id],
             |r| r.get::<_, i64>(0),
         )? as u32;

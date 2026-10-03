@@ -50,11 +50,11 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let sync_state: SyncStateRow = match get_row(host, SYNC_STATE, &params.conversation).await {
         Ok(Some(s)) => s,
-        Ok(None) => SyncStateRow { scanned_count: 0 },
+        Ok(None) => SyncStateRow { last_seq: 0 },
         Err(e) => return Response::internal_error(e),
     };
 
-    let start = if params.full { 0 } else { sync_state.scanned_count };
+    let start = if params.full { 0 } else { sync_state.last_seq };
     let (messages, last_seq, kind) =
         match fetch_sync_messages(host, &params.conversation, start).await {
             Ok(m) => m,
@@ -94,17 +94,13 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         }
     }
 
-    let new_scanned_count = match first_declined {
+    let new_last_seq = match first_declined {
         Some(o) => o,
-        None => sync_state.scanned_count.max(last_seq),
+        None => sync_state.last_seq.max(last_seq),
     };
-    if let Err(e) = put_row(
-        host,
-        SYNC_STATE,
-        &params.conversation,
-        &SyncStateRow { scanned_count: new_scanned_count },
-    )
-    .await
+    if let Err(e) =
+        put_row(host, SYNC_STATE, &params.conversation, &SyncStateRow { last_seq: new_last_seq })
+            .await
     {
         return Response::internal_error(e);
     }
@@ -116,7 +112,8 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         "unknown": stats.unknown,
         "countersigned": stats.countersigned,
         "deferred": stats.deferred,
-        "scanned_count": new_scanned_count,
+        "last_seq": new_last_seq,
+        "scanned_count": new_last_seq,
     }))
 }
 

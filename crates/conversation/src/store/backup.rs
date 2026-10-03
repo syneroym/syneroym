@@ -71,7 +71,12 @@ pub struct BackupBundle {
 impl ConversationStore {
     pub fn export_history(&self, cursor: Option<String>) -> Result<ConversationExportChunk> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let offset: i64 = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
+        let offset: i64 = match cursor.as_deref() {
+            Some(c) => {
+                c.parse::<i64>().map_err(|_| anyhow::anyhow!("invalid export cursor: {c}"))?
+            }
+            None => 0,
+        };
 
         let (conversations, dag_entries, group_members) = if offset == 0 {
             (
@@ -201,6 +206,9 @@ impl ConversationStore {
 
     pub fn import_history(&self, data: &[u8]) -> Result<u32> {
         let bundle: BackupBundle = serde_json::from_slice(data)?;
+        if bundle.version != BACKUP_VERSION {
+            anyhow::bail!("unsupported backup version: {}", bundle.version);
+        }
         let mut conn = self.conn.lock().expect("conversation connection lock poisoned");
         let tx = conn.transaction()?;
 
@@ -208,7 +216,17 @@ impl ConversationStore {
         Self::import_group_members(&tx, bundle.group_members)?;
 
         for de in bundle.dag_entries {
-            Self::insert_entry_if_absent(&tx, &de.conversation_id, &de, true, false)?;
+            let is_live: bool = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM group_epochs WHERE conversation_id = ?1",
+                    params![de.conversation_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            if !is_live {
+                Self::insert_entry_if_absent(&tx, &de.conversation_id, &de, true, false)?;
+            }
         }
 
         let count = Self::import_messages(&tx, bundle.messages)?;
@@ -268,6 +286,17 @@ impl ConversationStore {
 
     fn import_group_members(tx: &Transaction<'_>, members: Vec<BackupGroupMember>) -> Result<()> {
         for gm in members {
+            let is_live: bool = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM group_epochs WHERE conversation_id = ?1",
+                    params![gm.conversation_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(false);
+            if is_live {
+                continue;
+            }
             tx.execute(
                 "INSERT OR IGNORE INTO group_members (conversation_id, member_address, sig_key, \
                  joined_epoch, removed_epoch, epoch_confirmed) VALUES (?1, ?2, ?3, ?4, ?5, 1)",
@@ -286,6 +315,13 @@ impl ConversationStore {
     fn import_messages(tx: &Transaction<'_>, messages: Vec<BackupMessage>) -> Result<u32> {
         let mut count = 0u32;
         for m in messages {
+            if !matches!(m.admission.as_str(), "accepted" | "held" | "dropped" | "undecided") {
+                anyhow::bail!("invalid admission value in backup: {}", m.admission);
+            }
+            if !matches!(m.state.as_str(), "pending" | "delivered" | "failed") {
+                anyhow::bail!("invalid state value in backup: {}", m.state);
+            }
+
             // Skip messages that already exist; the plan says duplicate ids are
             // ignored on import.
             let already_exists: bool = tx

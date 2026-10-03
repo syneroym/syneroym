@@ -51,6 +51,7 @@ interface MessageRow {
   body?: string;
   state: "pending" | "delivered" | "failed";
   last_error?: string;
+  refused?: string | null;
   deleted_at_secs?: number;
 }
 
@@ -463,6 +464,9 @@ function messageElement(
   // The state word is exactly what the API returned -- never inferred, and
   // "delivered" is never shown until the service says so.
   wrap.appendChild(text("span", m.state, `message-state state-${m.state}`));
+  if (m.refused) {
+    wrap.appendChild(text("span", `(refused: ${m.refused})`, "message-refused"));
+  }
   if (m.state === "failed" && m.last_error) {
     wrap.appendChild(text("span", m.last_error, "message-error"));
   }

@@ -284,6 +284,7 @@ impl ConversationService {
 
     /// Ingests an inbound message into the service's conversation store and
     /// notifies the host/guest listener, applying any admission decision.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn deliver_inbound(
         &self,
         service_id: &str,
@@ -361,6 +362,7 @@ impl ConversationService {
     }
 
     /// Updates the delivery state of an outbox message and notifies listeners.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn update_delivery_state(
         &self,
         service_id: &str,

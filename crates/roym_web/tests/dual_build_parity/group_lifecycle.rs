@@ -6,7 +6,7 @@ use syneroym_roym_core::{
         group_profile_body,
     },
 };
-use syneroym_rpc::{ConversationDeliveryState, ConversationHost, ConversationMessage};
+use syneroym_rpc::{ConversationHost, ConversationMessage};
 
 use super::{fixtures::*, helpers::*};
 
@@ -245,22 +245,17 @@ async fn seed_outgoing_message(h: &Harness, wasm: bool, msg_id: &str, conv_id: &
     let conv_svc = did_for_service("conversation");
     let store = conv.store_for(&conv_svc).await.expect("store_for conversation");
     store
-        .insert_outgoing_and_enqueue(
+        .insert_outgoing_without_enqueue(
             conv_id,
             msg_id,
             &owner_did(),
             25_000,
             "text/plain",
             b"test outgoing message",
-            &[0u8; 64],
-            "",
             25_000,
-            false,
+            "delivered",
         )
         .expect("insert outgoing message");
-    store
-        .set_state(msg_id, ConversationDeliveryState::Delivered, None)
-        .expect("set delivered state");
 }
 
 async fn verify_restored_group_deletions(

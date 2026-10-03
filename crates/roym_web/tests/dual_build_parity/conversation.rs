@@ -189,7 +189,7 @@ async fn scenario_59_first_contact_rate_limit_at_inbox_parity() {
 }
 
 #[tokio::test]
-async fn scenario_60_group_message_is_stored_in_roym_copy_parity() {
+async fn scenario_60_group_message_history_and_list_parity() {
     let h = harness().await;
     let conv_svc = did_for_service("conversation");
     let gw = h.wasm_conversation.create_group(&conv_svc).await.unwrap();
@@ -349,7 +349,16 @@ async fn scenario_65_conversation_import_tampered_message_refused_parity() {
     if let Some(records) = bundle.sections.get_mut("conversation_history")
         && let Some(rec) = records.first_mut()
     {
-        rec["payload"] = json!({ "data": [0x42, 0x13, 0x37] });
+        let data_val = rec.get("payload").and_then(|p| p.get("data")).unwrap();
+        let bytes: Vec<u8> = serde_json::from_value(data_val.clone()).unwrap();
+        let mut bb: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if let Some(messages) = bb.get_mut("messages").and_then(|m| m.as_array_mut())
+            && let Some(first_msg) = messages.first_mut()
+        {
+            first_msg["body"] = json!([116, 97, 109, 112, 101, 114, 101, 100]);
+        }
+        let tampered_bytes = serde_json::to_vec(&bb).unwrap();
+        rec["payload"] = json!({ "data": tampered_bytes });
     }
 
     let (w, n) = both_rpc(
@@ -360,6 +369,20 @@ async fn scenario_65_conversation_import_tampered_message_refused_parity() {
     .await;
     assert_eq!(w, n);
     assert!(is_err(&w, -32602));
+
+    let mut bundle2: Bundle = serde_json::from_value(exp["result"].clone()).unwrap();
+    if let Some(decl) = bundle2.manifest.sections.get_mut("conversation_history") {
+        decl.digest =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    }
+    let (w2, n2) = both_rpc(
+        &h,
+        "conversation.import",
+        json!({ "bundle": serde_json::to_value(&bundle2).unwrap() }),
+    )
+    .await;
+    assert_eq!(w2, n2);
+    assert!(is_err(&w2, -32602));
 }
 
 #[tokio::test]

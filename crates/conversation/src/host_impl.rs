@@ -318,10 +318,11 @@ impl ConversationHost for ConversationService {
             .get_conversation(&msg.conversation_id)
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
+        let was_pending = msg.outgoing && msg.state == ConversationDeliveryState::Pending;
         let now = store::now_ms();
         store.delete_message(&conv.id, message, now).map_err(internal)?;
 
-        if ask_others {
+        if ask_others && !was_pending {
             let body = deletion_request_body(message);
             if conv.kind == ConversationKind::Group {
                 let _ = self
@@ -372,7 +373,12 @@ impl ConversationHost for ConversationService {
         limit: u32,
     ) -> Result<Vec<ConversationMessage>, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
-        let msgs = store.search(query, conversation, limit).map_err(internal)?;
+        let q = query.to_string();
+        let c = conversation.map(str::to_string);
+        let msgs = tokio::task::spawn_blocking(move || store.search(&q, c.as_deref(), limit))
+            .await
+            .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
+            .map_err(internal)?;
         Ok(msgs.into_iter().map(StoredMessage::into_wire).collect())
     }
 
@@ -391,7 +397,11 @@ impl ConversationHost for ConversationService {
         conversation: &str,
     ) -> Result<String, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
-        store.transcript_digest(conversation).map_err(internal)
+        let c = conversation.to_string();
+        tokio::task::spawn_blocking(move || store.transcript_digest(&c))
+            .await
+            .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
+            .map_err(internal)
     }
 
     async fn export_history(
@@ -400,7 +410,10 @@ impl ConversationHost for ConversationService {
         cursor: Option<String>,
     ) -> Result<ConversationExportChunk, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
-        store.export_history(cursor).map_err(internal)
+        tokio::task::spawn_blocking(move || store.export_history(cursor))
+            .await
+            .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
+            .map_err(internal)
     }
 
     async fn import_history(
@@ -409,7 +422,10 @@ impl ConversationHost for ConversationService {
         data: Vec<u8>,
     ) -> Result<u32, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
-        store.import_history(&data).map_err(internal)
+        tokio::task::spawn_blocking(move || store.import_history(&data))
+            .await
+            .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
+            .map_err(internal)
     }
 
     async fn group_push(

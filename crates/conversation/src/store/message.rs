@@ -77,7 +77,8 @@ impl ConversationStore {
                 return Err(StoreError::PendingQuotaExceeded.into());
             }
             let message_count: u32 = tx.query_row(
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND admission != \
+                 'dropped'",
                 rusqlite::params![conversation_id],
                 |r| r.get::<_, i64>(0),
             )? as u32;
@@ -126,6 +127,54 @@ impl ConversationStore {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn insert_outgoing_without_enqueue(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        author: &str,
+        sender_timestamp_ms: i64,
+        content_type: &str,
+        body: &[u8],
+        now_ms: i64,
+        state: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let vseq = Self::next_visible_seq(&conn, conversation_id)?;
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, author, sender_timestamp, received_at, \
+             content_type, body, signature, outgoing, verified, state, last_error, system, \
+             entry_id, admission, admission_reason, admission_changed_at, notify_attempts, \
+             next_notify_at, report_refusal, refused, deleted_at, restored, visible_seq) VALUES \
+             (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, ?9, NULL, 0, NULL, 'accepted', NULL, ?5, 0, \
+             NULL, 0, NULL, NULL, 0, ?10)",
+            params![
+                message_id,
+                conversation_id,
+                author,
+                sender_timestamp_ms,
+                now_ms,
+                content_type,
+                body,
+                [0u8; 64].as_slice(),
+                state,
+                vseq as i64,
+            ],
+        )?;
+        let rowid = conn.last_insert_rowid();
+        if is_searchable_content_type(content_type)
+            && let Ok(body_str) = str::from_utf8(body)
+        {
+            let _ = conn.execute(
+                "INSERT INTO messages_fts (rowid, body) VALUES (?1, ?2)",
+                params![rowid, body_str],
+            );
+        }
+        Self::touch_conversation(&conn, conversation_id, now_ms)?;
+        Ok(())
+    }
+
     /// Inbound insert-or-ignore: stores incoming message starting as
     /// `undecided` (or `accepted` if system).
     #[allow(clippy::too_many_arguments)]
@@ -160,7 +209,7 @@ impl ConversationStore {
             )?;
         }
         let message_count: u32 = tx.query_row(
-            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND admission != 'dropped'",
             params![conversation_id],
             |r| r.get::<_, i64>(0),
         )? as u32;
@@ -215,8 +264,10 @@ impl ConversationStore {
         admission: &Admission,
         now_ms: i64,
     ) -> Result<()> {
-        let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        Self::apply_admission_conn(&conn, message_id, admission, now_ms)?;
+        let mut conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let tx = conn.transaction()?;
+        Self::apply_admission_conn(&tx, message_id, admission, now_ms)?;
+        tx.commit()?;
         if matches!(admission, Admission::Drop(_)) {
             self.flag_wal_checkpoint();
         }
@@ -298,8 +349,10 @@ impl ConversationStore {
         message_id: &str,
         now_ms: i64,
     ) -> Result<bool> {
-        let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let deleted = Self::delete_message_conn(&conn, conversation_id, message_id, now_ms)?;
+        let mut conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let tx = conn.transaction()?;
+        let deleted = Self::delete_message_conn(&tx, conversation_id, message_id, now_ms)?;
+        tx.commit()?;
         if deleted {
             self.flag_wal_checkpoint();
         }
@@ -312,15 +365,15 @@ impl ConversationStore {
         message_id: &str,
         now_ms: i64,
     ) -> Result<bool> {
-        let info: Option<(i64, String, Vec<u8>, String)> = conn
+        let info: Option<(i64, String, Vec<u8>, String, i64, String)> = conn
             .query_row(
-                "SELECT rowid, content_type, body, admission FROM messages WHERE id = ?1 AND \
-                 conversation_id = ?2",
+                "SELECT rowid, content_type, body, admission, outgoing, state FROM messages WHERE \
+                 id = ?1 AND conversation_id = ?2",
                 params![message_id, conversation_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .optional()?;
-        let Some((rowid, ct, body, admission)) = info else { return Ok(false) };
+        let Some((rowid, ct, body, admission, outgoing, state)) = info else { return Ok(false) };
         // FTS delete only for rows that were indexed (accepted, non-empty body).
         // Issuing 'delete' for a never-indexed row corrupts the FTS table.
         if admission == "accepted"
@@ -333,10 +386,27 @@ impl ConversationStore {
                 params![rowid, body_str],
             );
         }
-        conn.execute(
-            "UPDATE messages SET body = zeroblob(0), deleted_at = ?1 WHERE id = ?2",
-            params![now_ms, message_id],
-        )?;
+        if outgoing != 0 && state == "pending" {
+            let _ = conn.execute(
+                "DELETE FROM outbound_envelopes WHERE message_id = ?1",
+                params![message_id],
+            );
+            conn.execute(
+                "UPDATE messages SET body = zeroblob(0), deleted_at = ?1, state = 'failed', \
+                 last_error = 'deleted before delivery' WHERE id = ?2",
+                params![now_ms, message_id],
+            )?;
+            let _ = conn.execute(
+                "UPDATE message_recipients SET state = 'failed', last_error = 'deleted before \
+                 delivery' WHERE message_id = ?1",
+                params![message_id],
+            );
+        } else {
+            conn.execute(
+                "UPDATE messages SET body = zeroblob(0), deleted_at = ?1 WHERE id = ?2",
+                params![now_ms, message_id],
+            )?;
+        }
         Ok(true)
     }
 
@@ -397,11 +467,12 @@ impl ConversationStore {
     }
 
     pub fn readmit(&self, conversation_id: &str, reasons: &[String]) -> Result<u32> {
-        let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let mut conn = self.conn.lock().expect("conversation connection lock poisoned");
+        let tx = conn.transaction()?;
         let now = now_ms();
         let mut msg_ids = Vec::new();
         if reasons.is_empty() {
-            let mut stmt = conn.prepare(
+            let mut stmt = tx.prepare(
                 "SELECT id FROM messages WHERE conversation_id = ?1 AND admission = 'held'",
             )?;
             let rows = stmt.query_map(params![conversation_id], |r| r.get::<_, String>(0))?;
@@ -410,7 +481,7 @@ impl ConversationStore {
             }
         } else {
             for r in reasons {
-                let mut stmt = conn.prepare(
+                let mut stmt = tx.prepare(
                     "SELECT id FROM messages WHERE conversation_id = ?1 AND admission = 'held' \
                      AND admission_reason = ?2",
                 )?;
@@ -424,12 +495,13 @@ impl ConversationStore {
         // Reset to undecided so the worker re-asks the app, which runs the
         // live block check. Applying Accept here would bypass it.
         for id in &msg_ids {
-            conn.execute(
+            tx.execute(
                 "UPDATE messages SET admission = 'undecided', admission_reason = NULL, \
                  admission_changed_at = ?1, next_notify_at = ?1 WHERE id = ?2",
                 params![now, id],
             )?;
         }
+        tx.commit()?;
         Ok(msg_ids.len() as u32)
     }
 

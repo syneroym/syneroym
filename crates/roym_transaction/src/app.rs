@@ -140,7 +140,8 @@ pub(crate) struct CardRow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SyncStateRow {
-    pub(crate) scanned_count: u64,
+    #[serde(alias = "scanned_count")]
+    pub(crate) last_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

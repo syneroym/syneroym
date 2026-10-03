@@ -157,14 +157,14 @@ impl NativeHostFactory {
     /// `set_sink`.
     #[allow(clippy::expect_used)]
     pub fn set_conversation_sink(&self, sink: Weak<dyn ConversationSink>) {
-        assert!(
-            self.declares_conversation_sink,
-            "NativeHostFactory::set_conversation_sink called on factory that did not declare \
-             conversation sink"
-        );
-        self.conversation_sink
-            .set(sink)
-            .expect("NativeHostFactory::set_conversation_sink called more than once");
+        if !self.declares_conversation_sink {
+            tracing::warn!(
+                "NativeHostFactory::set_conversation_sink called on factory that did not declare \
+                 conversation sink"
+            );
+            return;
+        }
+        let _ = self.conversation_sink.set(sink);
     }
 
     #[allow(clippy::expect_used)]

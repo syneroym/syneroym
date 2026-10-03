@@ -11,9 +11,7 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     clock,
-    conversation::group::{
-        GROUP_PROFILE_CONTENT_TYPE, MEMBERSHIP_EVENT_CONTENT_TYPE, parse_group_profile,
-    },
+    conversation::group::{GROUP_PROFILE_CONTENT_TYPE, MEMBERSHIP_EVENT_CONTENT_TYPE},
     paging,
 };
 
@@ -60,7 +58,15 @@ pub(crate) async fn save_charge<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
+static LAST_PRUNE_SECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const PRUNE_INTERVAL_SECS: u64 = 3600;
+
 pub(crate) async fn prune_old_charges<H: AppHost>(host: &H, now_secs: u64) {
+    let last = LAST_PRUNE_SECS.load(std::sync::atomic::Ordering::Relaxed);
+    if now_secs.saturating_sub(last) < PRUNE_INTERVAL_SECS {
+        return;
+    }
+    LAST_PRUNE_SECS.store(now_secs, std::sync::atomic::Ordering::Relaxed);
     let floor = now_secs.saturating_sub(30 * 24 * 3600);
     let filter = json!({ "at_secs": { "$lt": floor } }).to_string();
     if let Ok(old) =
@@ -107,15 +113,15 @@ pub async fn on_message<H: AppHost>(host: &H, msg: Message) -> Result<Admission,
         Err(e) => return Err(format!("group-info lookup failed: {e:?}")),
     };
 
-    if let Some(info) = is_group {
-        return on_group_message(host, &msg, &info).await;
-    }
-
     if msg.content_type == GROUP_PROFILE_CONTENT_TYPE {
         return Ok(Admission::Drop(DropAnswer {
             reason: "reserved-content-type".to_string(),
             report: false,
         }));
+    }
+
+    if let Some(info) = is_group {
+        return on_group_message(host, &msg, &info).await;
     }
 
     on_direct_message(host, &msg, now).await
@@ -197,21 +203,6 @@ async fn on_group_message<H: AppHost>(
     msg: &Message,
     info: &GroupInfo,
 ) -> Result<Admission, String> {
-    if msg.content_type == GROUP_PROFILE_CONTENT_TYPE {
-        if msg.author != info.owner {
-            return Ok(Admission::Drop(DropAnswer {
-                reason: "not-owner".to_string(),
-                report: false,
-            }));
-        }
-        if parse_group_profile(&msg.body).is_err() {
-            return Ok(Admission::Drop(DropAnswer {
-                reason: "bad-group-profile".to_string(),
-                report: false,
-            }));
-        }
-    }
-
     let author_did = person_did_for_address(host, &msg.author).await;
     let author_blocked = is_blocked(host, &msg.author, author_did.as_deref()).await?;
 

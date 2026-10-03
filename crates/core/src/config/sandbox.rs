@@ -244,9 +244,14 @@ pub struct AppSandboxRole {
     /// `dispatch_epoch_timeout_secs` for the guest-facing `sync-now` call,
     /// while the background pass has no guest waiting on it and needs
     /// enough time to reach every member of a large group, not just the
-    /// first two.
     #[serde(default = "default_conversation_background_sync_budget_ms")]
     pub conversation_background_sync_budget_ms: u64,
+    #[serde(default = "default_conversation_max_held_age_secs")]
+    pub conversation_max_held_age_secs: u64,
+    #[serde(default = "default_conversation_admission_ask_timeout_ms")]
+    pub conversation_admission_ask_timeout_ms: u64,
+    #[serde(default = "default_conversation_admission_claim_secs")]
+    pub conversation_admission_claim_secs: u64,
 }
 
 /// The guest proxy outbox lives wherever a guest does, so its knobs live on
@@ -350,6 +355,15 @@ const fn default_conversation_sync_now_budget_ms() -> u64 {
 const fn default_conversation_background_sync_budget_ms() -> u64 {
     160_000
 }
+const fn default_conversation_max_held_age_secs() -> u64 {
+    2_592_000
+}
+const fn default_conversation_admission_ask_timeout_ms() -> u64 {
+    3_000
+}
+const fn default_conversation_admission_claim_secs() -> u64 {
+    10
+}
 
 impl AppSandboxRole {
     #[must_use]
@@ -409,6 +423,9 @@ impl Default for AppSandboxRole {
             conversation_sync_now_budget_ms: default_conversation_sync_now_budget_ms(),
             conversation_background_sync_budget_ms: default_conversation_background_sync_budget_ms(
             ),
+            conversation_max_held_age_secs: default_conversation_max_held_age_secs(),
+            conversation_admission_ask_timeout_ms: default_conversation_admission_ask_timeout_ms(),
+            conversation_admission_claim_secs: default_conversation_admission_claim_secs(),
         }
     }
 }

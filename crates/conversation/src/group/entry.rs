@@ -79,23 +79,28 @@ fn apply_profile_entry(
     entry: &StoredDagEntry,
     now: i64,
 ) -> Result<(bool, Option<StoredMessage>)> {
-    if let Some(payload) = &entry.profile_payload
-        && let Ok(valid_name) = crate::dag::validate_group_name(&payload.name)
-    {
-        let is_newest: bool = tx
-            .query_row(
-                "SELECT COUNT(*) FROM dag_entries WHERE conversation_id = ?1 AND kind = 'profile' \
-                 AND applied = 1 AND (sender_timestamp > ?2 OR (sender_timestamp = ?2 AND (author \
-                 > ?3 OR (author = ?3 AND entry_id > ?4))))",
-                rusqlite::params![conv_id, entry.sender_timestamp_ms, entry.author, entry.entry_id],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|c| c == 0)
-            .unwrap_or(true);
+    if let Some(payload) = &entry.profile_payload {
+        if let Ok(valid_name) = crate::dag::validate_group_name(&payload.name) {
+            let is_newest: bool = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM dag_entries WHERE conversation_id = ?1 AND kind = \
+                     'profile' AND applied = 1 AND (sender_timestamp > ?2 OR (sender_timestamp = \
+                     ?2 AND (author > ?3 OR (author = ?3 AND entry_id > ?4))))",
+                    rusqlite::params![
+                        conv_id,
+                        entry.sender_timestamp_ms,
+                        entry.author,
+                        entry.entry_id
+                    ],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|c| c == 0)
+                .unwrap_or(true);
 
-        if is_newest {
-            ConversationStore::apply_profile(tx, conv_id, &valid_name)?;
-            ConversationStore::touch_conversation(tx, conv_id, now)?;
+            if is_newest {
+                ConversationStore::apply_profile(tx, conv_id, &valid_name)?;
+                ConversationStore::touch_conversation(tx, conv_id, now)?;
+            }
         }
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
     }

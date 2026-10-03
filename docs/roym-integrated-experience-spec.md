@@ -625,9 +625,8 @@ These are requirements, not polish, and they are in R1.
 - **Retention and deletion:** every durable record has a stated owner, retention
   policy, and deletion or tombstone behaviour. Export and account deletion are
   separate actions. The product does not promise deletion it cannot enforce.
-  Roym keeps its own copy of every message it sends and receives, separate from
-  the copy the substrate keeps for delivery — that copy is what export, search,
-  and delete act on, and it means each message is stored twice on this machine.
+  Delete and drop remove the readable body on this machine, and a group's
+  encrypted log entry and key remain. Search index data is also removed on delete.
   `profile.policy` states this in plain words.
 - **Backup and recovery:** encrypted backup with a restore path that is tested
   on a clean node before release.

@@ -5,7 +5,6 @@
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use syneroym_rpc::ConversationMembershipEvent;
 
 use super::{ConversationStore, StoredDagEntry};
 use crate::dag::{EntryKind, MAX_PARENTS, MembershipPayload, WireEntry, canonical_entry_bytes};
@@ -460,37 +459,6 @@ impl ConversationStore {
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(Self::row_to_dag_entry(&conn, row)?);
-        }
-        Ok(out)
-    }
-
-    pub fn membership_history(
-        &self,
-        conversation_id: &str,
-    ) -> Result<Vec<ConversationMembershipEvent>> {
-        let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT entry_id, payload, sender_timestamp, author FROM dag_entries
-             WHERE conversation_id = ?1 AND kind = 'membership'
-             ORDER BY sender_timestamp ASC, author ASC, entry_id ASC",
-        )?;
-        let mut rows = stmt.query(params![conversation_id])?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            let entry: String = row.get(0)?;
-            let payload_str: Option<String> = row.get(1)?;
-            let sender_timestamp: i64 = row.get(2)?;
-            if let Some(str) = payload_str
-                && let Ok(payload) = serde_json::from_str::<MembershipPayload>(&str)
-            {
-                out.push(ConversationMembershipEvent {
-                    entry,
-                    action: payload.action,
-                    subject: payload.subject_address,
-                    epoch: payload.new_epoch,
-                    sender_timestamp,
-                });
-            }
         }
         Ok(out)
     }
