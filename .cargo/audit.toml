@@ -31,4 +31,17 @@ ignore = [
     # Revisit with a dedicated wasmtime upgrade; remove both entries then.
     "RUSTSEC-2026-0316",
     "RUSTSEC-2026-0314",
+
+    # Five more wasmtime / wasmtime-wasi 46.0.3 advisories (published
+    # 2026-10-02): an async-lifted callback result count that is not checked
+    # (0327), uninitialised padding copied by fd_readdir (0323), host memory
+    # use for guests without stdio (0322), poll_oneoff skipping fuel (0321),
+    # and a host panic from a pre-epoch timestamp on wasip3 (0324). Fixed in
+    # wasmtime 48.0.4 / 49.0.2, so the same dedicated wasmtime upgrade
+    # clears them. Remove these entries with the two above.
+    "RUSTSEC-2026-0327",
+    "RUSTSEC-2026-0323",
+    "RUSTSEC-2026-0322",
+    "RUSTSEC-2026-0321",
+    "RUSTSEC-2026-0324",
 ]
