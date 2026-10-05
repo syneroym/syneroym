@@ -1,4 +1,6 @@
-use syneroym_rpc::{Admission, DropAnswer, NotifyOutcome};
+use syneroym_rpc::{
+    Admission, ConversationMessage, ConversationNotifier, DropAnswer, NotifyOutcome,
+};
 
 use super::*;
 
@@ -165,7 +167,7 @@ impl AppSandboxEngine {
     /// names (verified by `wasmtime::component::Val::Record`'s field
     /// names, which are the WIT identifiers verbatim, not Rust's
     /// snake_case).
-    fn conversation_message_json(msg: &syneroym_rpc::ConversationMessage) -> serde_json::Value {
+    fn conversation_message_json(msg: &ConversationMessage) -> Value {
         serde_json::json!({
             "id": msg.id,
             "conversation": msg.conversation,
@@ -185,7 +187,7 @@ impl AppSandboxEngine {
         })
     }
 
-    fn conversation_state_str(s: syneroym_rpc::ConversationDeliveryState) -> &'static str {
+    fn conversation_state_str(s: ConversationDeliveryState) -> &'static str {
         match s {
             ConversationDeliveryState::Pending => "pending",
             ConversationDeliveryState::Delivered => "delivered",
@@ -248,7 +250,7 @@ impl AppSandboxEngine {
     pub(crate) async fn notify_guest_message(
         &self,
         service_id: &str,
-        msg: syneroym_rpc::ConversationMessage,
+        msg: ConversationMessage,
     ) -> NotifyOutcome {
         const GUEST_API_INTERFACE: &str = "syneroym:conversation/guest-api@0.1.0";
         const MAX_ATTEMPTS: u32 = 4;
@@ -342,7 +344,7 @@ impl AppSandboxEngine {
         &self,
         service_id: &str,
         message_id: String,
-        state: syneroym_rpc::ConversationDeliveryState,
+        state: ConversationDeliveryState,
     ) {
         const GUEST_API_INTERFACE: &str = "syneroym:conversation/guest-api@0.1.0";
         const MAX_ATTEMPTS: u32 = 4;
@@ -477,12 +479,8 @@ impl RowAuthorizer for AppSandboxEngine {
 }
 
 #[async_trait::async_trait]
-impl syneroym_rpc::ConversationNotifier for AppSandboxEngine {
-    async fn notify_message(
-        &self,
-        service_id: &str,
-        msg: syneroym_rpc::ConversationMessage,
-    ) -> NotifyOutcome {
+impl ConversationNotifier for AppSandboxEngine {
+    async fn notify_message(&self, service_id: &str, msg: ConversationMessage) -> NotifyOutcome {
         self.notify_guest_message(service_id, msg).await
     }
 
@@ -490,7 +488,7 @@ impl syneroym_rpc::ConversationNotifier for AppSandboxEngine {
         &self,
         service_id: &str,
         message_id: String,
-        state: syneroym_rpc::ConversationDeliveryState,
+        state: ConversationDeliveryState,
     ) {
         self.notify_guest_state(service_id, message_id, state).await;
     }
