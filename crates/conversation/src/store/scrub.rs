@@ -86,16 +86,14 @@ impl ConversationStore {
     }
 
     fn scrub(conn: &Connection) -> bool {
-        // Cleared first, under the same lock: a delete cannot slip in between,
-        // and a pass that fails sets it again below.
-        if conn.execute("UPDATE store_flags SET needs_scrub = 0 WHERE id = 1", []).is_err() {
+        if Self::merge_and_truncate(conn) {
             return true;
         }
-        let retry = Self::merge_and_truncate(conn);
-        if retry {
-            let _ = Self::mark_scrub_needed(conn);
-        }
-        retry
+        // Cleared only after the pass finished, so a crash during the rewrite
+        // leaves it set for the next start. The caller holds the connection
+        // lock, so no delete can land between the pass and this write.
+        let _ = conn.execute("UPDATE store_flags SET needs_scrub = 0 WHERE id = 1", []);
+        false
     }
 
     fn merge_and_truncate(conn: &Connection) -> bool {
