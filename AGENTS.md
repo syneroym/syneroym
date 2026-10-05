@@ -124,7 +124,7 @@ how the drift happened, so do not add one here without an enforcement path.**
   change before you finish (filtered to your files; recipe under **Context
   Budget** below).
   *Checked by:* `cargo xtask check-duplication` (and `mise run
-  check:duplication`), ratcheted at `--max-exact-percent 8.9` for now.
+  check:duplication`), ratcheted in both directions: it fails above `MAX_EXACT_DUPLICATE_PERCENT` (`xtask/src/main.rs`), and also when the real value is more than 0.3 below it, so the ceiling is lowered in the same change. The same rule holds for `xtask/oversized-test-files.txt` (limit must equal the real size) and the `too_many_lines` suppression cap. The duplication ceiling stops at a 5% floor.
 - **Reuse the test harness.** Substrate integration tests use
   `crates/substrate/tests/common` (`SubstrateTestContext`, `alloc_ports`). Do not
   write your own `struct Node` / `fn boot`; extend the shared one if it does not

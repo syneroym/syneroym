@@ -331,6 +331,9 @@ fn check_test_file_length(
                  {MAX_TEST_LINES})"
             ));
         }
+        if total_lines < recorded_limit && total_lines > STANDARD_TEST_LIMIT {
+            violations.push(stale_limit_message(rel_path, total_lines, recorded_limit));
+        }
     } else if total_lines > STANDARD_TEST_LIMIT {
         violations.push(format!(
             "{rel_path}: {total_lines} lines (maximum allowed for test files is \
@@ -373,12 +376,24 @@ fn check_production_file_length(
                  test blocks is {MAX_TEST_LINES})"
             ));
         }
+        if inline_test_lines < recorded_limit && inline_test_lines > STANDARD_TEST_LIMIT {
+            violations.push(stale_limit_message(rel_path, inline_test_lines, recorded_limit));
+        }
     } else if inline_test_lines > STANDARD_TEST_LIMIT {
         violations.push(format!(
             "{rel_path}: {inline_test_lines} inline test lines (maximum allowed for inline tests \
              is {STANDARD_TEST_LIMIT}; add to xtask/oversized-test-files.txt or decompose)"
         ));
     }
+}
+
+/// The recorded limit must equal the real size, so a file that shrank cannot
+/// grow back to its old size without the list being edited in review.
+fn stale_limit_message(rel_path: &str, actual: usize, recorded_limit: usize) -> String {
+    format!(
+        "{rel_path}: {actual} lines is below the recorded limit of {recorded_limit}; set it to \
+         {actual} in xtask/oversized-test-files.txt"
+    )
 }
 
 pub fn check_file_lengths() -> Result<()> {

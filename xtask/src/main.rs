@@ -415,40 +415,70 @@ fn perf_summary() -> Result<()> {
 
 /// Ceiling on exact duplicate code percentage across the workspace.
 ///
-/// This value is a ratchet guard against regrowth, not a target: `cargo-dupes`
-/// normalises SQL strings (such as distinct `init_schema` definitions) and
-/// detects similar repetitive structure patterns across crates as duplicates.
-const MAX_EXACT_DUPLICATE_PERCENT: &str = "8.9";
+/// This is a ratchet, not a target: `cargo-dupes` also counts normalised SQL
+/// strings (such as distinct `init_schema` definitions) and repeated
+/// structure across crates, so zero is not reachable. The check fails when
+/// the measured value is above the ceiling, and also when it is more than
+/// `DUPLICATION_SLACK` below it. Then the ceiling must be lowered in the same
+/// change, so quality that was gained cannot be given back later. Below
+/// `DUPLICATION_FLOOR` the ceiling stops moving.
+const MAX_EXACT_DUPLICATE_PERCENT: f64 = 8.0;
+const DUPLICATION_SLACK: f64 = 0.3;
+const DUPLICATION_FLOOR: f64 = 5.0;
 
-fn check_duplication() -> Result<()> {
-    println!("Checking exact-duplicate code percentage (max {MAX_EXACT_DUPLICATE_PERCENT}%)...");
-    let workspace_root = get_workspace_root();
-    let status = Command::new("cargo")
+fn measure_exact_duplicate_percent(workspace_root: &Path) -> Result<f64> {
+    let output = Command::new("cargo")
         .args([
             "dupes",
-            "check",
-            "--max-exact-percent",
-            MAX_EXACT_DUPLICATE_PERCENT,
+            "stats",
+            "--format",
+            "json",
             "--exclude",
             "bindings.rs",
             "--exclude",
             "target",
         ])
-        .current_dir(&workspace_root)
-        .stdout(Stdio::inherit())
+        .current_dir(workspace_root)
         .stderr(Stdio::inherit())
-        .status()
+        .output()
         .map_err(|e| {
             anyhow::anyhow!(
-                "failed to run `cargo dupes check` -- is cargo-dupes installed? (`cargo install \
+                "failed to run `cargo dupes stats` -- is cargo-dupes installed? (`cargo install \
                  cargo-dupes`): {e}"
             )
         })?;
+    if !output.status.success() {
+        bail!("`cargo dupes stats` failed");
+    }
+    let stats: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    stats["exact_duplicate_percent"]
+        .as_f64()
+        .ok_or_else(|| anyhow::anyhow!("`cargo dupes stats` output has no exact_duplicate_percent"))
+}
 
-    if !status.success() {
-        bail!("Duplication check failed: exact duplication exceeds {MAX_EXACT_DUPLICATE_PERCENT}%");
+fn check_duplication() -> Result<()> {
+    println!(
+        "Checking exact-duplicate code percentage (ceiling {MAX_EXACT_DUPLICATE_PERCENT}%)..."
+    );
+    let measured = measure_exact_duplicate_percent(&get_workspace_root())?;
+    println!("Exact duplication: {measured:.2}%");
+
+    if measured > MAX_EXACT_DUPLICATE_PERCENT {
+        bail!(
+            "Duplication check failed: {measured:.2}% exceeds the ceiling of \
+             {MAX_EXACT_DUPLICATE_PERCENT}%"
+        );
     }
 
+    let lowest_useful = (measured + DUPLICATION_SLACK).max(DUPLICATION_FLOOR);
+    if MAX_EXACT_DUPLICATE_PERCENT > lowest_useful {
+        bail!(
+            "Duplication is {measured:.2}%, well below the ceiling of \
+             {MAX_EXACT_DUPLICATE_PERCENT}%. Lower MAX_EXACT_DUPLICATE_PERCENT in \
+             xtask/src/main.rs to {:.1}.",
+            (lowest_useful * 10.0).ceil() / 10.0
+        );
+    }
     Ok(())
 }
 
