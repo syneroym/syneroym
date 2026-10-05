@@ -12,6 +12,7 @@ use serde_json::Value;
 use sysinfo::System;
 use walkdir::WalkDir;
 
+mod duplication;
 mod file_lengths;
 mod lint_suppressions;
 mod module_layout;
@@ -413,45 +414,6 @@ fn perf_summary() -> Result<()> {
     append_perf_summary_sections("PERF_SUMMARY.md", &timestamp, &commit, &env_line, &results)
 }
 
-/// Ceiling on exact duplicate code percentage across the workspace.
-///
-/// This value is a ratchet guard against regrowth, not a target: `cargo-dupes`
-/// normalises SQL strings (such as distinct `init_schema` definitions) and
-/// detects similar repetitive structure patterns across crates as duplicates.
-const MAX_EXACT_DUPLICATE_PERCENT: &str = "8.9";
-
-fn check_duplication() -> Result<()> {
-    println!("Checking exact-duplicate code percentage (max {MAX_EXACT_DUPLICATE_PERCENT}%)...");
-    let workspace_root = get_workspace_root();
-    let status = Command::new("cargo")
-        .args([
-            "dupes",
-            "check",
-            "--max-exact-percent",
-            MAX_EXACT_DUPLICATE_PERCENT,
-            "--exclude",
-            "bindings.rs",
-            "--exclude",
-            "target",
-        ])
-        .current_dir(&workspace_root)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to run `cargo dupes check` -- is cargo-dupes installed? (`cargo install \
-                 cargo-dupes`): {e}"
-            )
-        })?;
-
-    if !status.success() {
-        bail!("Duplication check failed: exact duplication exceeds {MAX_EXACT_DUPLICATE_PERCENT}%");
-    }
-
-    Ok(())
-}
-
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -459,7 +421,7 @@ fn main() -> Result<()> {
         Some("check-file-lengths") => file_lengths::check_file_lengths(),
         Some("check-lint-suppressions") => lint_suppressions::check_lint_suppressions(),
         Some("check-module-layout") => module_layout::check_module_layout(),
-        Some("check-duplication") => check_duplication(),
+        Some("check-duplication") => duplication::check_duplication(),
         Some("verify") => verify::run(args),
         Some("perf-summary") | None => perf_summary(),
         Some(other) => bail!("Unknown xtask command: {other}"),

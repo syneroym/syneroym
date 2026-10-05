@@ -789,7 +789,7 @@ against an unbounded mint, not a policy: `roymctl svc deploy
 manual cadence, are nowhere near it.
 
 > **The restart trade, stated plainly.** The supervisor's vault is locked
-> after every restart — the KEK arrives by `security inject-kek` and does not
+> after every restart — the KEK arrives by `roymctl kek inject` and does not
 > survive one — and nothing renews while it is locked. With
 > `renewed_cert_expires_hours = 4`, the window to re-inject the KEK before
 > managed members start failing handshakes closed is **between roughly 1 and
@@ -798,7 +798,7 @@ manual cadence, are nowhere near it.
 > the start of a member's near-expiry window leaves about an hour. The
 > `VaultLocked` alert fires on the first pass that finds a member due for
 > renewal with the vault shut, once per affected member, and its text names
-> `inject-kek`. Treat it as page-worthy, not informational.
+> the KEK injection step. Treat it as page-worthy, not informational.
 
 ##### Master anchors are refreshed on the same tick
 
@@ -865,7 +865,7 @@ restart.** Boot order matters:
 #    a startup warning names the fix).
 # 2. Inject the KEK -- required before the FIRST submit, and again after
 #    every restart:
-roymctl --substrate <supervisor-node-did> security inject-kek --kek-hex <64-hex-chars>
+roymctl --substrate <supervisor-node-did> --as <owner> kek inject <64-hex-chars>
 # 3. Now `supervisor submit` can mint.
 ```
 
@@ -968,11 +968,20 @@ substrates, not a server to services):
 
 ```bash
 roymctl --dir <DIR> --as <managed-substrate-owner> identity issue-grant \
+  --from <managed-substrate-owner> \
   --to did:key:<supervisor-node-did> \
-  --resource "substrate:did:key:<managed-substrate-did>" \
-  --can orchestrator/deploy --can orchestrator/status \
-  --out grants/supervisor-on-edge-1.json
+  --with "substrate:did:key:<managed-substrate-did>" \
+  --can orchestrator/deploy \
+  --expires-days 30 > grants/supervisor-deploy-on-edge-1.json
+# Repeat with `--can orchestrator/status` for a second token.
 ```
+
+`issue-grant` writes the signed token to standard output (redirect it, as
+above) and takes **one** `--can` per token. The supervisor needs both
+abilities on every managed node (see below), but the inventory carries one
+token per node alias, so a single token with both abilities cannot be made
+from the command line yet. This is tracked in
+[deferred-backlog.md](planning/deferred-backlog.md).
 
 **Both abilities, node-wide, not app-scoped.** `claim-app-instance`/
 `release-app-instance` need `orchestrator/deploy`; `resolve-instance-identity`
@@ -1038,10 +1047,11 @@ caller needs `supervisor/resolve` on `synapp:<app-did>` specifically:
 
 ```bash
 roymctl --dir <DIR> --as <supervisor-node-owner> identity issue-grant \
+  --from <supervisor-node-owner> \
   --to did:key:<caller-did> \
-  --resource "synapp:did:key:<app-instance-master-did>" \
+  --with "synapp:did:key:<app-instance-master-did>" \
   --can supervisor/resolve \
-  --out grants/resolve-guild-instance-1.json
+  --expires-days 30 > grants/resolve-guild-instance-1.json
 ```
 
 An unknown app DID and a caller holding no grant for a real one are
