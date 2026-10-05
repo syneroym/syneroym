@@ -110,6 +110,7 @@ async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
         resolver,
         conversation,
         WebSocketSenders::new(),
+        false,
     );
     factory.set_service_proxy(Arc::downgrade(&stub) as Weak<dyn ServiceProxy>);
 

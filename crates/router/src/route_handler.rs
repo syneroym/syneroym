@@ -496,7 +496,7 @@ impl RouteHandler {
     /// reached.
     pub fn acquire_connection_slot(&self) -> Option<ConnectionSlot> {
         if let Some(max_conns) = self.inner.max_connections {
-            let res = self.inner.active_connections.fetch_update(
+            let res = self.inner.active_connections.try_update(
                 Ordering::SeqCst,
                 Ordering::SeqCst,
                 |curr| {

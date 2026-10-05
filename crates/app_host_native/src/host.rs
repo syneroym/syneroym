@@ -11,8 +11,8 @@ use syneroym_app_host::{
         app_config::ConfigError,
         blob_store::BlobError,
         conversation::{
-            ConversationError, ConversationSummary, DeliveryState, GroupInfo, HistoryPage,
-            MembershipEvent, Message,
+            ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
+            GroupInfo, HistoryPage, Message, Transcript,
         },
         data_layer::{
             CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RawQueryResult,
@@ -475,17 +475,6 @@ impl AppConversation for NativeAppHost {
             .map_err(convert::conversation_error_out)
     }
 
-    async fn membership_history(
-        &self,
-        conversation: String,
-    ) -> Result<Vec<MembershipEvent>, ConversationError> {
-        let mut state = self.0.state_mutex().await.lock().await;
-        HostConversation::membership_history(&mut *state, conversation)
-            .await
-            .map(|v| v.into_iter().map(convert::membership_event_out).collect())
-            .map_err(convert::conversation_error_out)
-    }
-
     async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostConversation::sync_now(&mut *state, conversation)
@@ -506,6 +495,94 @@ impl AppConversation for NativeAppHost {
         HostConversation::get_message(&mut *state, message)
             .await
             .map(convert::message_out)
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn delete_message(
+        &self,
+        message: String,
+        ask_others: bool,
+    ) -> Result<(), ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::delete_message(&mut *state, message, ask_others)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn readmit(
+        &self,
+        conversation: String,
+        reasons: Vec<String>,
+    ) -> Result<u32, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::readmit(&mut *state, conversation, reasons)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn changes(
+        &self,
+        conversation: String,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<ChangePage, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::changes(&mut *state, conversation, after_seq, limit)
+            .await
+            .map(convert::change_page_out)
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn search(
+        &self,
+        query: String,
+        conversation: Option<String>,
+        limit: u32,
+    ) -> Result<Vec<Message>, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::search(&mut *state, query, conversation, limit)
+            .await
+            .map(|v| v.into_iter().map(convert::message_out).collect())
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn set_group_name(
+        &self,
+        conversation: String,
+        name: String,
+    ) -> Result<(), ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::set_group_name(&mut *state, conversation, name)
+            .await
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn transcript_digest(
+        &self,
+        conversation: String,
+    ) -> Result<Transcript, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::transcript_digest(&mut *state, conversation)
+            .await
+            .map(convert::transcript_out)
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn export_history(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ExportChunk, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::export_history(&mut *state, cursor)
+            .await
+            .map(convert::export_chunk_out)
+            .map_err(convert::conversation_error_out)
+    }
+
+    async fn import_history(&self, data: Vec<u8>) -> Result<u32, ConversationError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostConversation::import_history(&mut *state, data)
+            .await
             .map_err(convert::conversation_error_out)
     }
 }

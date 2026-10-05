@@ -6,7 +6,7 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
 use anyhow::Result;
@@ -26,9 +26,18 @@ impl ConversationStore {
         std::fs::create_dir_all(dir)?;
         let conn = open_connection(&dir.join("conversation.db"), dek)?;
         Self::init_schema(&conn)?;
+        let needs_scrub: bool =
+            conn.query_row("SELECT needs_scrub FROM store_flags WHERE id = 1", [], |r| r.get(0))?;
         let conn = Arc::new(Mutex::new(conn));
         let queue = Queue::from_connection(conn.clone(), queue_config)?;
-        Ok(Self { conn, queue, config })
+        Ok(Self {
+            conn,
+            queue,
+            config,
+            needs_wal_checkpoint: AtomicBool::new(needs_scrub),
+            needs_drop_prune: AtomicBool::new(false),
+            last_scrub: Mutex::new(None),
+        })
     }
 
     /// Creates every table and index this crate's stores assume already
@@ -56,32 +65,59 @@ const TABLE_GROUP_DDL: &[&str] = &[
         owner_address TEXT,
         current_epoch INTEGER NOT NULL DEFAULT 0,
         system        INTEGER NOT NULL DEFAULT 0,
+        opened        INTEGER NOT NULL DEFAULT 0,
+        restored      INTEGER NOT NULL DEFAULT 0,
+        name          TEXT,
         created_at    INTEGER NOT NULL,
         last_activity INTEGER NOT NULL
      );
      CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_direct_peer
-         ON conversations(peer_address) WHERE kind = 'direct';
+         ON conversations(peer_address) WHERE kind = 'direct' AND restored = 0;
 
      CREATE TABLE IF NOT EXISTS messages (
-        id               TEXT PRIMARY KEY,
-        conversation_id  TEXT NOT NULL REFERENCES conversations(id),
-        author           TEXT NOT NULL,
-        sender_timestamp INTEGER NOT NULL,
-        received_at      INTEGER NOT NULL,
-        content_type     TEXT NOT NULL,
-        body             BLOB NOT NULL,
-        signature        BLOB NOT NULL,
-        outgoing         INTEGER NOT NULL,
-        verified         INTEGER NOT NULL,
-        state            TEXT NOT NULL,
-        last_error       TEXT,
-        system           INTEGER NOT NULL DEFAULT 0,
-        entry_id         TEXT
+        id                   TEXT PRIMARY KEY,
+        conversation_id      TEXT NOT NULL REFERENCES conversations(id),
+        author               TEXT NOT NULL,
+        sender_timestamp     INTEGER NOT NULL,
+        received_at          INTEGER NOT NULL,
+        content_type         TEXT NOT NULL,
+        body                 BLOB NOT NULL,
+        signature            BLOB NOT NULL,
+        outgoing             INTEGER NOT NULL,
+        verified             INTEGER NOT NULL,
+        state                TEXT NOT NULL,
+        last_error           TEXT,
+        system               INTEGER NOT NULL DEFAULT 0,
+        entry_id             TEXT,
+        admission            TEXT NOT NULL DEFAULT 'accepted',
+        admission_reason     TEXT,
+        admission_changed_at INTEGER,
+        notify_attempts      INTEGER NOT NULL DEFAULT 0,
+        next_notify_at       INTEGER,
+        report_refusal       INTEGER NOT NULL DEFAULT 0,
+        refused              TEXT,
+        deleted_at           INTEGER,
+        restored             INTEGER NOT NULL DEFAULT 0,
+        visible_seq          INTEGER NOT NULL DEFAULT 0
      );
      CREATE INDEX IF NOT EXISTS idx_messages_order
          ON messages(conversation_id, sender_timestamp, author, id);
      CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedup ON messages(author, id);
-     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);",
+     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+     CREATE INDEX IF NOT EXISTS idx_messages_visible_seq ON messages(conversation_id, visible_seq);
+     CREATE INDEX IF NOT EXISTS idx_messages_undecided ON messages(admission, next_notify_at);
+
+     CREATE TABLE IF NOT EXISTS conversation_seq (
+        conversation_id TEXT PRIMARY KEY,
+        last_seq        INTEGER NOT NULL
+     );
+
+     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        body,
+        content='messages',
+        content_rowid='rowid',
+        tokenize='trigram'
+     );",
     // sessions, local_identity, prekey_requests
     "CREATE TABLE IF NOT EXISTS sessions (
         peer_address   TEXT PRIMARY KEY,
@@ -174,7 +210,33 @@ const TABLE_GROUP_DDL: &[&str] = &[
         PRIMARY KEY (message_id, member_address)
      );
      CREATE INDEX IF NOT EXISTS idx_message_recipients_state
-         ON message_recipients(message_id, state);",
+         ON message_recipients(message_id, state);
+
+     -- Dropped rows are counted and pruned per conversation; this keeps
+     -- that cheap while a blocked sender floods a chat.
+     CREATE INDEX IF NOT EXISTS idx_messages_dropped
+         ON messages(conversation_id, received_at) WHERE admission = 'dropped';
+
+     -- Whether deleted or dropped text may still sit in the search index or
+     -- the log. Set in the same transaction as the delete or drop, cleared
+     -- by a finished scrub, and read at open so a restart neither loses a
+     -- needed scrub nor runs one that is not needed.
+     CREATE TABLE IF NOT EXISTS store_flags (
+        id          INTEGER PRIMARY KEY CHECK (id = 1),
+        needs_scrub INTEGER NOT NULL
+     );
+     INSERT OR IGNORE INTO store_flags (id, needs_scrub) VALUES (1, 0);
+
+     -- A group deletion request that named a message this node does not
+     -- hold yet. Keyed by author too, so a request from someone who did not
+     -- write the message cannot block the real author's request.
+     CREATE TABLE IF NOT EXISTS pending_deletions (
+        conversation_id TEXT NOT NULL,
+        message_id      TEXT NOT NULL,
+        author          TEXT NOT NULL,
+        requested_at    INTEGER NOT NULL,
+        PRIMARY KEY (conversation_id, message_id, author)
+     );",
 ];
 
 /// Opens (creating on first use) a WAL-mode SQLite connection, applying
@@ -188,6 +250,6 @@ fn open_connection(path: &Path, dek: Option<&[u8; 32]>) -> Result<Connection> {
         let pragma = Zeroizing::new(format!("x'{}'", hex::encode(dek)));
         conn.pragma_update(None, "key", &*pragma)?;
     }
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA secure_delete = ON;")?;
     Ok(conn)
 }

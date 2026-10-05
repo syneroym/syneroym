@@ -6,15 +6,20 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use serde_json::Value;
+use syneroym_rpc::ConversationError;
 
 pub const MAX_PARENTS: usize = 8;
 pub const GROUP_KEY_CONTENT_TYPE: &str = "application/vnd.syneroym.group-key+json";
+pub const DELETION_REQUEST_CONTENT_TYPE: &str = "application/vnd.roym.deletion-request+json";
+pub const REFUSAL_NOTICE_CONTENT_TYPE: &str = "application/vnd.syneroym.refusal-notice+json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EntryKind {
     Message,
     Membership,
+    Profile,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -25,6 +30,11 @@ pub struct MembershipPayload {
     pub subject_sig_key: [u8; 32],
     pub new_epoch: u64,
     pub member_list_hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ProfilePayload {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -39,6 +49,7 @@ pub struct WireEntry {
     pub ciphertext: Option<Vec<u8>>,
     pub nonce: Option<[u8; 12]>,
     pub payload: Option<MembershipPayload>,
+    pub profile_payload: Option<ProfilePayload>,
     #[serde(with = "crate::wire::fixed_bytes")]
     pub signature: [u8; 64],
 }
@@ -123,6 +134,7 @@ pub fn canonical_entry_prefix(
     match kind {
         EntryKind::Message => out.extend_from_slice(b"message"),
         EntryKind::Membership => out.extend_from_slice(b"membership"),
+        EntryKind::Profile => out.extend_from_slice(b"profile"),
     }
     out.push(0);
     out.extend_from_slice(&(parents.len() as u64).to_be_bytes());
@@ -158,12 +170,6 @@ pub fn canonical_entry_bytes(entry: &WireEntry) -> Vec<u8> {
             }
         }
         EntryKind::Membership => {
-            // `MembershipPayload` is plain data (strings, fixed-size byte
-            // arrays, a u64) with no type that can fail to serialize —
-            // an error here means the struct grew a field that can't
-            // round-trip, a real bug. Failing loud beats silently
-            // canonicalizing to empty bytes, which would still produce a
-            // signature, just not one over the payload actually being sent.
             #[allow(clippy::expect_used)]
             let payload_bytes = entry
                 .payload
@@ -174,8 +180,75 @@ pub fn canonical_entry_bytes(entry: &WireEntry) -> Vec<u8> {
             out.extend_from_slice(&payload_bytes);
             out.extend_from_slice(&0u64.to_be_bytes());
         }
+        EntryKind::Profile => {
+            #[allow(clippy::expect_used)]
+            let payload_bytes = entry
+                .profile_payload
+                .as_ref()
+                .map(|p| serde_json::to_vec(p).expect("ProfilePayload always serializes"))
+                .unwrap_or_default();
+            out.extend_from_slice(&(payload_bytes.len() as u64).to_be_bytes());
+            out.extend_from_slice(&payload_bytes);
+            out.extend_from_slice(&0u64.to_be_bytes());
+        }
     }
     out
+}
+
+pub const MAX_GROUP_NAME_CHARS: usize = 80;
+
+/// Validates group name: 1..=80 characters after trimming, no control
+/// characters.
+pub fn validate_group_name(raw: &str) -> Result<String, ConversationError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ConversationError::InvalidArgument("group name cannot be empty".to_string()));
+    }
+    if trimmed.chars().count() > MAX_GROUP_NAME_CHARS {
+        return Err(ConversationError::InvalidArgument("group name too long".to_string()));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(ConversationError::InvalidArgument(
+            "group name cannot contain control characters".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+#[must_use]
+pub fn deletion_request_body(target_message_id: &str) -> Vec<u8> {
+    serde_json::json!({ "message_id": target_message_id }).to_string().into_bytes()
+}
+
+pub fn parse_deletion_request(body: &[u8]) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let obj = v.as_object()?;
+    if obj.len() != 1 {
+        return None;
+    }
+    obj.get("message_id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+#[must_use]
+pub fn refusal_notice_body(target_message_id: &str, reason: &str) -> Vec<u8> {
+    serde_json::json!({ "message_id": target_message_id, "reason": reason })
+        .to_string()
+        .into_bytes()
+}
+
+pub fn parse_refusal_notice(body: &[u8]) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let obj = v.as_object()?;
+    let msg_id = obj.get("message_id")?.as_str()?;
+    let reason = obj.get("reason")?.as_str()?;
+    if msg_id.is_empty() {
+        return None;
+    }
+    // Cap reason length so a peer cannot store an unbounded string in every
+    // history page.
+    const MAX_REASON_CHARS: usize = 120;
+    let reason_capped: String = reason.chars().take(MAX_REASON_CHARS).collect();
+    Some((msg_id.to_string(), reason_capped))
 }
 
 #[must_use]
@@ -319,6 +392,7 @@ mod tests {
             ciphertext: Some(ciphertext),
             nonce: Some(nonce),
             payload: None,
+            profile_payload: None,
             signature: [0u8; 64],
         };
         let header = canonical_entry_bytes(&entry);

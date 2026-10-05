@@ -1,6 +1,5 @@
 use serde_json::{Value, json};
 use syneroym_roym_core::{card, transaction};
-use syneroym_rpc::{ConversationDeliveryState, ConversationMessage};
 use syneroym_signed_record::Envelope;
 
 use super::{fixtures::*, helpers::*};
@@ -798,18 +797,8 @@ async fn scenario_137_unknown_card_type_filed_unknown_unverified_parity() {
         "envelope": "{}",
     })
     .to_string();
-    let msg = ConversationMessage {
-        id: "m-unknown-137".to_string(),
-        conversation: conv.clone(),
-        author: peer_did(),
-        sender_timestamp: 1_000,
-        received_at: 1_000,
-        content_type: card::CARD_CONTENT_TYPE.to_string(),
-        body: raw_body.into_bytes(),
-        state: ConversationDeliveryState::Delivered,
-        verified: true,
-        last_error: None,
-    };
+    let mut msg = inbound("m-unknown-137", &conv, &peer_did(), 1_000, &raw_body);
+    msg.content_type = card::CARD_CONTENT_TYPE.to_string();
     h.deliver(true, msg.clone()).await;
     h.deliver(false, msg).await;
 

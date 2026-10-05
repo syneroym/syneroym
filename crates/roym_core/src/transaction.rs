@@ -66,10 +66,6 @@ pub const MAX_QUOTE_LIFETIME_SECS: u64 = 90 * 24 * 3600;
 /// How many messages one `sync` reads, in **one** `conversation.history`
 /// call. Not a page size: `sync` never loops.
 pub const SYNC_WINDOW: u32 = 500;
-/// How far behind its own watermark a `sync` re-reads. `history` orders by
-/// sender timestamp, so a message that arrives late inserts before the
-/// watermark; this is the window in which that is invisible.
-pub const SYNC_OVERLAP: u64 = 50;
 /// Cards one conversation keeps. A conversation past this stops filing
 /// new ones rather than growing without bound.
 pub const MAX_CARDS_PER_CONVERSATION: usize = 2_000;

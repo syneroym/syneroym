@@ -162,7 +162,10 @@ async fn a_joiner_reads_nothing_before_joining() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|m| m["content_type"] != MEMBERSHIP_EVENT_CONTENT_TYPE)
+        .filter(|m| {
+            m["content_type"] != MEMBERSHIP_EVENT_CONTENT_TYPE
+                && m["content_type"] != GROUP_PROFILE_CONTENT_TYPE
+        })
         .map(|m| m["id"].as_str().unwrap().to_string())
         .collect();
 
@@ -179,7 +182,10 @@ async fn a_joiner_reads_nothing_before_joining() {
     assert!(ok);
 
     trio.z.rpc_ok("conversation.send", json!({ "conversation": &gid, "body": "post-join" })).await;
-    converge(&[&trio.z, &trio.x], &gid, 8).await;
+    // Rows: the name entry, three membership events (creation, x, y), the two
+    // early messages and the post-join message. Adding a member no longer
+    // posts the name again as a chat message.
+    converge(&[&trio.z, &trio.x], &gid, 7).await;
 
     let ok_w = wait_until(Duration::from_secs(60), || async {
         let _ = trio.y.rpc("group.sync", json!({ "group": &gid })).await;
@@ -200,9 +206,10 @@ async fn a_joiner_reads_nothing_before_joining() {
         })
         .expect("add W event found in W");
     let add_w_ts = add_w_event["sender_timestamp_ms"].as_i64().unwrap();
-
     for m in msgs_w {
-        if m["content_type"] != MEMBERSHIP_EVENT_CONTENT_TYPE {
+        if m["content_type"] != MEMBERSHIP_EVENT_CONTENT_TYPE
+            && m["content_type"] != GROUP_PROFILE_CONTENT_TYPE
+        {
             assert!(m["sender_timestamp_ms"].as_i64().unwrap() >= add_w_ts);
             assert!(!early_ids.contains(&m["id"].as_str().unwrap().to_string()));
         }
@@ -275,7 +282,9 @@ async fn a_removed_member_reads_nothing_after_removal() {
     let ok = wait_until(Duration::from_secs(60), || async {
         let _ = trio.y.rpc("group.sync", json!({ "group": &gid })).await;
         let info = trio.y.rpc_ok("group.info", json!({ "conversation": &gid })).await;
+        let hy = trio.y.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
         info["is_member"] == false
+            && hy["messages"].as_array().is_some_and(|m| m.iter().any(|r| r["id"] == p_id))
     })
     .await;
     assert!(ok);

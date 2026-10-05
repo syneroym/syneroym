@@ -4,14 +4,14 @@
 
 use anyhow::Result;
 use ed25519_dalek::VerifyingKey;
-use rusqlite::Transaction;
+use rusqlite::{OptionalExtension, Transaction};
 use syneroym_rpc::{ConversationDeliveryState, ConversationError};
 
 use super::internal;
 use crate::{
     dag::{
-        EntryKind, MAX_PARENTS, WireEntry, canonical_entry_bytes, canonical_entry_prefix,
-        decode_body, open, verify_entry,
+        self, DELETION_REQUEST_CONTENT_TYPE, EntryKind, MAX_PARENTS, WireEntry,
+        canonical_entry_bytes, canonical_entry_prefix, decode_body, open, verify_entry,
     },
     ids::derive_entry_id,
     store::{
@@ -31,6 +31,7 @@ pub fn apply_entry(
     match entry.kind {
         EntryKind::Membership => apply_membership_entry(tx, conv_id, entry, now),
         EntryKind::Message => apply_message_entry(tx, conv_id, entry, config, now),
+        EntryKind::Profile => apply_profile_entry(tx, conv_id, entry, now),
     }
 }
 
@@ -67,6 +68,40 @@ fn apply_membership_entry(
              WHERE id = ?3",
             rusqlite::params![payload.new_epoch as i64, now, conv_id],
         )?;
+        ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
+    }
+    Ok((false, None))
+}
+
+fn apply_profile_entry(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    entry: &StoredDagEntry,
+    now: i64,
+) -> Result<(bool, Option<StoredMessage>)> {
+    if let Some(payload) = &entry.profile_payload {
+        if let Ok(valid_name) = dag::validate_group_name(&payload.name) {
+            let is_newest: bool = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM dag_entries WHERE conversation_id = ?1 AND kind = \
+                     'profile' AND applied = 1 AND (sender_timestamp > ?2 OR (sender_timestamp = \
+                     ?2 AND (author > ?3 OR (author = ?3 AND entry_id > ?4))))",
+                    rusqlite::params![
+                        conv_id,
+                        entry.sender_timestamp_ms,
+                        entry.author,
+                        entry.entry_id
+                    ],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|c| c == 0)
+                .unwrap_or(true);
+
+            if is_newest {
+                ConversationStore::apply_profile(tx, conv_id, &valid_name)?;
+                ConversationStore::touch_conversation(tx, conv_id, now)?;
+            }
+        }
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
     }
     Ok((false, None))
@@ -115,10 +150,23 @@ fn apply_message_entry(
     if body.len() as u32 > config.max_body_bytes {
         return Ok((false, None));
     }
+    if content_type == DELETION_REQUEST_CONTENT_TYPE {
+        apply_group_deletion_request(tx, conv_id, &entry.author, &body, now)?;
+        ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
+        return Ok((false, None));
+    }
+    if take_pending_deletion(tx, conv_id, &entry.entry_id, &entry.author)? {
+        store_withdrawn_message(tx, conv_id, entry, &content_type, now)?;
+        ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
+        return Ok((false, None));
+    }
+    let claim_window_ms = (config.admission_claim_secs as i64) * 1000;
+    let next_notify_at = now + claim_window_ms;
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
          received_at, content_type, body, signature, outgoing, verified, state, last_error, \
-         system, entry_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 1, 'delivered', NULL, 0, ?1)",
+         system, entry_id, admission, next_notify_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, \
+         1, 'delivered', NULL, 0, ?1, 'undecided', ?9)",
         rusqlite::params![
             entry.entry_id,
             conv_id,
@@ -127,11 +175,13 @@ fn apply_message_entry(
             now,
             content_type,
             body,
-            entry.signature.as_slice()
+            entry.signature.as_slice(),
+            next_notify_at,
         ],
     )?;
     ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
-    ConversationStore::touch_conversation(tx, conv_id, now)?;
+    // The chat moves up the list when the app accepts the message, not when
+    // it arrives: a held or dropped message must not show as activity.
     if inserted > 0 {
         let msg = StoredMessage {
             id: entry.entry_id.clone(),
@@ -148,11 +198,103 @@ fn apply_message_entry(
             last_error: None,
             system: false,
             entry_id: Some(entry.entry_id.clone()),
+            admission: "undecided".to_string(),
+            admission_reason: None,
+            admission_changed_at: None,
+            notify_attempts: 0,
+            next_notify_at: Some(next_notify_at),
+            report_refusal: false,
+            refused: None,
+            deleted_at: None,
+            restored: false,
+            visible_seq: 0,
         };
         Ok((true, Some(msg)))
     } else {
         Ok((false, None))
     }
+}
+
+fn apply_group_deletion_request(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    author: &str,
+    body: &[u8],
+    now: i64,
+) -> Result<()> {
+    if let Some(target_id) = dag::parse_deletion_request(body) {
+        let target_info: Option<(String, String)> = tx
+            .query_row(
+                "SELECT conversation_id, author FROM messages WHERE id = ?1",
+                rusqlite::params![target_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        match target_info {
+            Some((target_conv, target_author))
+                if target_conv == conv_id && target_author == author =>
+            {
+                ConversationStore::delete_message_conn(tx, conv_id, &target_id, now)?;
+            }
+            // Not here yet: the request can arrive before the message, for
+            // example when the message is pulled by a later sync. Remember it
+            // and apply it when the message arrives.
+            None => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_deletions (conversation_id, message_id, \
+                     author, requested_at) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![conv_id, target_id, author, now],
+                )?;
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Consumes a remembered deletion request for this message from its own
+/// author, if one arrived first.
+fn take_pending_deletion(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    message_id: &str,
+    author: &str,
+) -> Result<bool> {
+    let removed = tx.execute(
+        "DELETE FROM pending_deletions WHERE conversation_id = ?1 AND message_id = ?2 AND author \
+         = ?3",
+        rusqlite::params![conv_id, message_id, author],
+    )?;
+    Ok(removed > 0)
+}
+
+/// Stores a message its author withdrew before it reached this node: the
+/// row is kept, so the transcript code matches members who saw it and then
+/// deleted it, but it has no text and the app is never asked about it.
+fn store_withdrawn_message(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    entry: &StoredDagEntry,
+    content_type: &str,
+    now: i64,
+) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
+         received_at, content_type, body, signature, outgoing, verified, state, last_error, \
+         system, entry_id, admission, admission_reason, admission_changed_at, deleted_at) VALUES \
+         (?1, ?2, ?3, ?4, ?5, ?6, X'', ?7, 0, 1, 'delivered', NULL, 0, ?1, 'dropped', \
+         'deleted-by-author', ?5, ?5)",
+        rusqlite::params![
+            entry.entry_id,
+            conv_id,
+            entry.author,
+            entry.sender_timestamp_ms,
+            now,
+            content_type,
+            entry.signature.as_slice(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// Resolves the signing key that should have produced `entry`'s signature.
@@ -167,7 +309,7 @@ fn resolve_entry_sig_key(
     conv: &ConversationRow,
     entry: &WireEntry,
 ) -> Result<[u8; 32], ConversationError> {
-    let sig_key = if entry.kind == EntryKind::Membership {
+    let sig_key = if entry.kind == EntryKind::Membership || entry.kind == EntryKind::Profile {
         if conv.owner_address.as_deref() != Some(&entry.author) {
             return Err(ConversationError::PermissionDenied);
         }
@@ -304,6 +446,7 @@ pub fn validate_and_insert(
                 ciphertext: entry.ciphertext.clone(),
                 nonce: entry.nonce,
                 payload: entry.payload.clone(),
+                profile_payload: entry.profile_payload.clone(),
                 signature: entry.signature,
                 applied: false,
                 relay_pending: true,

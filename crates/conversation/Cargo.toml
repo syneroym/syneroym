@@ -19,6 +19,7 @@ syneroym-data-db.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-async-queue.workspace = true
 syneroym-rpc.workspace = true
+syneroym-signed-record.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true

@@ -1,9 +1,8 @@
-//! Roym's own copy of conversation content: the row types, the one
-//! ordering rule, and the reserved deletion-request content type.
+//! Conversation messaging primitives: row types, ordering, and the
+//! reserved deletion-request content type.
 //!
-//! This copy is what export, search, and delete act on. It stores the
-//! message body and is bounded by the host's own retention caps -- so the
-//! on-disk cost is two copies of every message, and the product says so.
+//! Delete removes the readable body on this machine, while group log entries
+//! and keys remain.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

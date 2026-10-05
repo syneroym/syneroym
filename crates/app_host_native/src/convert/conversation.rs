@@ -1,3 +1,6 @@
+#[cfg(test)]
+use syneroym_app_host::types::conversation::DropAnswer as GuestDropAnswer;
+
 use super::*;
 
 // ---- conversation: out (host -> guest) ----
@@ -33,8 +36,12 @@ pub(crate) fn conversation_summary_out(v: HostConversationSummary) -> GuestConve
         id: v.id,
         kind: conversation_kind_out(v.kind),
         participants: v.participants,
+        peer_address: v.peer_address,
         created_at: v.created_at,
         last_activity_at: v.last_activity_at,
+        message_count: v.message_count,
+        name: v.name,
+        restored: v.restored,
     }
 }
 
@@ -50,14 +57,46 @@ pub(crate) fn message_out(v: HostMessage) -> GuestMessage {
         state: delivery_state_out(v.state),
         verified: v.verified,
         last_error: v.last_error,
+        outgoing: v.outgoing,
+        deleted_at: v.deleted_at,
+        restored: v.restored,
+        visible_seq: v.visible_seq,
+        refused: v.refused,
+    }
+}
+
+pub(crate) fn name_event_out(v: HostNameEvent) -> GuestNameEvent {
+    GuestNameEvent { entry: v.entry, name: v.name, sender_timestamp: v.sender_timestamp }
+}
+
+pub(crate) fn history_item_out(v: HostHistoryItem) -> GuestHistoryItem {
+    match v {
+        HostHistoryItem::Message(m) => GuestHistoryItem::Message(message_out(m)),
+        HostHistoryItem::Membership(e) => GuestHistoryItem::Membership(membership_event_out(e)),
+        HostHistoryItem::GroupName(n) => GuestHistoryItem::GroupName(name_event_out(n)),
     }
 }
 
 pub(crate) fn history_page_out(v: HostHistoryPage) -> GuestHistoryPage {
     GuestHistoryPage {
-        messages: v.messages.into_iter().map(message_out).collect(),
+        items: v.items.into_iter().map(history_item_out).collect(),
         next_cursor: v.next_cursor,
     }
+}
+
+pub(crate) fn change_page_out(v: HostChangePage) -> GuestChangePage {
+    GuestChangePage {
+        messages: v.messages.into_iter().map(message_out).collect(),
+        last_seq: v.last_seq,
+    }
+}
+
+pub(crate) fn transcript_out(v: HostTranscript) -> GuestTranscript {
+    GuestTranscript { digest: v.digest, rows: v.rows }
+}
+
+pub(crate) fn export_chunk_out(v: HostExportChunk) -> GuestExportChunk {
+    GuestExportChunk { data: v.data, next_cursor: v.next_cursor }
 }
 
 pub(crate) fn membership_event_out(v: HostMembershipEvent) -> GuestMembershipEvent {
@@ -79,6 +118,29 @@ pub(crate) fn group_info_out(v: HostGroupInfo) -> GuestGroupInfo {
         epoch: v.epoch,
         key_epoch: v.key_epoch,
         key_stored_at: v.key_stored_at,
+        name: v.name,
+        restored: v.restored,
+    }
+}
+
+pub(crate) fn guest_admission_to_rpc(v: GuestAdmission) -> RpcAdmission {
+    match v {
+        GuestAdmission::Accept => RpcAdmission::Accept,
+        GuestAdmission::Hold(r) => RpcAdmission::Hold(r),
+        GuestAdmission::Drop(d) => {
+            RpcAdmission::Drop(RpcDropAnswer { reason: d.reason, report: d.report })
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn rpc_admission_to_guest(v: RpcAdmission) -> GuestAdmission {
+    match v {
+        RpcAdmission::Accept => GuestAdmission::Accept,
+        RpcAdmission::Hold(r) => GuestAdmission::Hold(r),
+        RpcAdmission::Drop(d) => {
+            GuestAdmission::Drop(GuestDropAnswer { reason: d.reason, report: d.report })
+        }
     }
 }
 
@@ -108,6 +170,11 @@ pub(crate) fn rpc_message_to_guest(v: RpcMessage) -> GuestMessage {
         state: rpc_delivery_state_to_guest(v.state),
         verified: v.verified,
         last_error: v.last_error,
+        outgoing: v.outgoing,
+        deleted_at: v.deleted_at,
+        restored: v.restored,
+        visible_seq: v.visible_seq,
+        refused: v.refused,
     }
 }
 
@@ -165,11 +232,16 @@ mod tests {
             id: "conv:1".to_string(),
             kind: HostConversationKind::Direct,
             participants: vec!["a".to_string(), "b".to_string()],
+            peer_address: Some("b".to_string()),
             created_at: 1,
             last_activity_at: 2,
+            message_count: 5,
+            name: None,
+            restored: false,
         });
         assert!(matches!(direct.kind, GuestConversationKind::Direct));
         assert_eq!(direct.participants, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(direct.message_count, 5);
     }
 
     #[test]
@@ -185,18 +257,25 @@ mod tests {
             state: HostDeliveryState::Delivered,
             verified: true,
             last_error: None,
+            outgoing: true,
+            deleted_at: None,
+            restored: false,
+            visible_seq: 42,
+            refused: None,
         };
         let g = message_out(h);
         assert_eq!(g.id, "msg:1");
         assert_eq!(g.body, vec![1, 2, 3]);
         assert!(matches!(g.state, GuestDeliveryState::Delivered));
         assert!(g.verified);
+        assert!(g.outgoing);
+        assert_eq!(g.visible_seq, 42);
     }
 
     #[test]
     fn history_page_round_trips() {
         let h = HostHistoryPage {
-            messages: vec![HostMessage {
+            items: vec![HostHistoryItem::Message(HostMessage {
                 id: "msg:1".to_string(),
                 conversation: "conv:1".to_string(),
                 author: "did:key:zA".to_string(),
@@ -207,11 +286,16 @@ mod tests {
                 state: HostDeliveryState::Pending,
                 verified: true,
                 last_error: None,
-            }],
+                outgoing: false,
+                deleted_at: None,
+                restored: false,
+                visible_seq: 1,
+                refused: None,
+            })],
             next_cursor: Some("cursor-1".to_string()),
         };
         let g = history_page_out(h);
-        assert_eq!(g.messages.len(), 1);
+        assert_eq!(g.items.len(), 1);
         assert_eq!(g.next_cursor, Some("cursor-1".to_string()));
     }
 
@@ -228,10 +312,26 @@ mod tests {
             state: RpcDeliveryState::Failed,
             verified: false,
             last_error: Some("gave up".to_string()),
+            outgoing: false,
+            deleted_at: None,
+            restored: false,
+            visible_seq: 10,
+            refused: Some("blocked".to_string()),
         };
         let g = rpc_message_to_guest(rpc_msg);
         assert_eq!(g.body, vec![9]);
         assert!(matches!(g.state, GuestDeliveryState::Failed));
         assert_eq!(g.last_error, Some("gave up".to_string()));
+        assert_eq!(g.visible_seq, 10);
+        assert_eq!(g.refused.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn admission_conversions_round_trip() {
+        let adm =
+            GuestAdmission::Drop(GuestDropAnswer { reason: "spam".to_string(), report: true });
+        let rpc = guest_admission_to_rpc(adm);
+        let back = rpc_admission_to_guest(rpc);
+        assert!(matches!(back, GuestAdmission::Drop(d) if d.reason == "spam" && d.report));
     }
 }

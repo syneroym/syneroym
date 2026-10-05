@@ -392,7 +392,10 @@ async fn a_binding_push_to_an_offline_substrate_converges_after_it_returns() {
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         if active_alert_kinds(&supervisor_node, &managed_b_did).await.contains("BINDING_CONFLICT") {
-            break;
+            let status = supervisor_status(&supervisor_node).await;
+            if str_field(&status, "state") == Some("Degraded") && !is_converged(&status) {
+                break;
+            }
         }
         assert!(
             Instant::now() < deadline,

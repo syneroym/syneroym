@@ -1,20 +1,25 @@
 #![allow(clippy::cognitive_complexity)]
 
+use std::{path::Path, sync::Arc};
+
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use syneroym_async_queue::QueueConfig;
-use syneroym_core::config::RetryPolicy;
+use syneroym_core::{config::RetryPolicy, local_registry::EndpointRegistry, storage::MockStorage};
+use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::ConversationHost;
 
 use super::*;
 use crate::{
+    ConversationConfig as ServiceConfig,
     crypto::{SessionCrypto, X3dhDoubleRatchetCrypto},
     dag::{self, EntryKind, GroupSyncRequest, PeerAssertion},
     envelope, group,
     store::{self, ConversationConfig, ConversationStore, SessionRow},
 };
 
-fn test_store() -> ConversationStore {
+pub(crate) fn test_store() -> ConversationStore {
     let dir = tempfile::tempdir().unwrap();
     let path = Box::leak(Box::new(dir)).path();
     ConversationStore::open_encrypted(
@@ -36,17 +41,18 @@ fn test_store() -> ConversationStore {
     .unwrap()
 }
 
-async fn test_service(dir: &std::path::Path) -> std::sync::Arc<ConversationService> {
-    let storage_provider: std::sync::Arc<dyn syneroym_data_db::traits::StorageProvider> =
-        std::sync::Arc::new(
-            syneroym_data_db::SqliteStorageProvider::new(dir.join("data"), false).unwrap(),
-        );
-    let key_store = std::sync::Arc::new(syneroym_data_keystore::KeyStore::new());
-    let registry = syneroym_core::local_registry::EndpointRegistry::new(std::sync::Arc::new(
-        syneroym_core::storage::MockStorage::new(),
-    ))
-    .await
-    .unwrap();
+pub(crate) async fn test_service(dir: &Path) -> Arc<ConversationService> {
+    test_service_with(dir, ServiceConfig::default()).await
+}
+
+pub(crate) async fn test_service_with(
+    dir: &Path,
+    config: ServiceConfig,
+) -> Arc<ConversationService> {
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.join("data"), false).unwrap());
+    let key_store = Arc::new(KeyStore::new());
+    let registry = EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap();
     ConversationService::new(
         storage_provider,
         key_store,
@@ -62,7 +68,7 @@ async fn test_service(dir: &std::path::Path) -> std::sync::Arc<ConversationServi
             dlq_max_rows: 100,
             max_pending_rows: 1000,
         },
-        crate::ConversationConfig::default(),
+        config,
     )
     .unwrap()
 }
@@ -274,6 +280,7 @@ async fn group_push_with_unregistered_assertion_sender_is_refused() {
         ciphertext: Some(vec![1]),
         nonce: Some([0u8; 12]),
         payload: None,
+        profile_payload: None,
         signature: [0u8; 64],
     };
     let assertion =
@@ -304,6 +311,16 @@ fn pending_message(id: &str, body: &[u8]) -> StoredMessage {
         last_error: None,
         system: false,
         entry_id: None,
+        admission: "accepted".to_string(),
+        admission_reason: None,
+        admission_changed_at: None,
+        notify_attempts: 0,
+        next_notify_at: None,
+        report_refusal: false,
+        refused: None,
+        deleted_at: None,
+        restored: false,
+        visible_seq: 1,
     }
 }
 
@@ -709,3 +726,5 @@ async fn a_stranger_is_still_refused() {
     let err = service.group_sync_impl(owner, stranger, req).await.unwrap_err();
     assert_eq!(err, ConversationError::PermissionDenied);
 }
+
+mod delivery;

@@ -19,8 +19,9 @@ pub mod messaging {
 
 pub mod conversation {
     pub use syneroym_wit_interfaces::conversation::syneroym::conversation::conversation::{
-        ConversationError, ConversationKind, ConversationSummary, DeliveryState, GroupInfo,
-        HistoryPage, MembershipEvent, Message,
+        Admission, ChangePage, ConversationError, ConversationKind, ConversationSummary,
+        DeliveryState, DropAnswer, ExportChunk, GroupInfo, HistoryItem, HistoryPage,
+        MembershipEvent, Message, NameEvent, Transcript,
     };
 }
 

@@ -123,7 +123,7 @@ impl ConversationService {
                 accepted.push(entry.entry_id.clone());
             }
             if let Some(msg) = msg_opt {
-                self.notify_message(svc, msg.into_wire()).await;
+                self.notify_and_apply_admission(&store, svc, &msg, now_ms()).await;
             }
         }
 
@@ -337,7 +337,7 @@ impl ConversationService {
                         if !saw_failure {
                             highest_applied_seq = highest_applied_seq.max(seq);
                         }
-                        self.notify_message(service_id, msg.into_wire()).await;
+                        self.notify_and_apply_admission(&store, service_id, &msg, now_ms()).await;
                     }
                     Ok(_) => {
                         if !saw_failure {

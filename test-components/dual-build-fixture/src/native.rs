@@ -8,7 +8,7 @@ use std::fmt;
 use serde_json::Value;
 use syneroym_app_host::{
     AppHost, ConversationSink, MessageSink,
-    types::conversation::{DeliveryState, Message},
+    types::conversation::{Admission, DeliveryState, Message},
 };
 use syneroym_rpc::{CallerContext, NativeInvocation, NativeResponse, RpcError, RpcResult};
 
@@ -91,7 +91,7 @@ impl<H: AppHost + 'static> MessageSink for NativeFixture<H> {
 
 #[async_trait::async_trait]
 impl<H: AppHost + 'static> ConversationSink for NativeFixture<H> {
-    async fn on_message(&self, msg: Message) -> Result<(), String> {
+    async fn on_message(&self, msg: Message) -> Result<Admission, String> {
         let host = (self.host_for)(CallerContext::service_system(&self.service_id));
         crate::app::on_conversation_message(&host, msg).await
     }

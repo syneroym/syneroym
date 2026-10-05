@@ -34,7 +34,7 @@ use crate::{
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
-        conversation::ConversationError,
+        conversation::{ChangePage, ConversationError, ExportChunk, Message, Transcript},
         data_layer::*,
         http::FrameKind,
         invocation::CallerOrigin,
@@ -261,7 +261,7 @@ impl AppConversation for GuestHost {
         conv::delivery_status(&message)
     }
 
-    async fn outbox(&self) -> Result<Vec<crate::types::conversation::Message>, ConversationError> {
+    async fn outbox(&self) -> Result<Vec<Message>, ConversationError> {
         conv::outbox()
     }
 
@@ -293,13 +293,6 @@ impl AppConversation for GuestHost {
         conv::members(&conversation)
     }
 
-    async fn membership_history(
-        &self,
-        conversation: String,
-    ) -> Result<Vec<crate::types::conversation::MembershipEvent>, ConversationError> {
-        conv::membership_history(&conversation)
-    }
-
     async fn sync_now(&self, conversation: String) -> Result<(), ConversationError> {
         conv::sync_now(&conversation)
     }
@@ -311,11 +304,68 @@ impl AppConversation for GuestHost {
         conv::get_group_info(&conversation)
     }
 
-    async fn get_message(
+    async fn get_message(&self, message: String) -> Result<Message, ConversationError> {
+        conv::get_message(&message)
+    }
+
+    async fn delete_message(
         &self,
         message: String,
-    ) -> Result<crate::types::conversation::Message, ConversationError> {
-        conv::get_message(&message)
+        ask_others: bool,
+    ) -> Result<(), ConversationError> {
+        conv::delete_message(&message, ask_others)
+    }
+
+    async fn readmit(
+        &self,
+        conversation: String,
+        reasons: Vec<String>,
+    ) -> Result<u32, ConversationError> {
+        conv::readmit(&conversation, &reasons)
+    }
+
+    async fn changes(
+        &self,
+        conversation: String,
+        after_seq: u64,
+        limit: u32,
+    ) -> Result<ChangePage, ConversationError> {
+        conv::changes(&conversation, after_seq, limit)
+    }
+
+    async fn search(
+        &self,
+        query: String,
+        conversation: Option<String>,
+        limit: u32,
+    ) -> Result<Vec<Message>, ConversationError> {
+        conv::search(&query, conversation.as_deref(), limit)
+    }
+
+    async fn set_group_name(
+        &self,
+        conversation: String,
+        name: String,
+    ) -> Result<(), ConversationError> {
+        conv::set_group_name(&conversation, &name)
+    }
+
+    async fn transcript_digest(
+        &self,
+        conversation: String,
+    ) -> Result<Transcript, ConversationError> {
+        conv::transcript_digest(&conversation)
+    }
+
+    async fn export_history(
+        &self,
+        cursor: Option<String>,
+    ) -> Result<ExportChunk, ConversationError> {
+        conv::export_history(cursor.as_deref())
+    }
+
+    async fn import_history(&self, data: Vec<u8>) -> Result<u32, ConversationError> {
+        conv::import_history(&data)
     }
 }
 

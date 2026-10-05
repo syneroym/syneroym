@@ -11,7 +11,7 @@ use syneroym_roym_core::{
     conversation::{Direction, group::CARDS_NOT_IN_GROUPS_MESSAGE},
     envelope::{Request, Response},
     paging, signing,
-    transaction::{self, MAX_CARDS_PER_CONVERSATION, ReceiptHalf, SYNC_OVERLAP, SYNC_WINDOW},
+    transaction::{self, MAX_CARDS_PER_CONVERSATION, ReceiptHalf, SYNC_WINDOW},
 };
 
 use super::{
@@ -50,15 +50,16 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let sync_state: SyncStateRow = match get_row(host, SYNC_STATE, &params.conversation).await {
         Ok(Some(s)) => s,
-        Ok(None) => SyncStateRow { scanned_count: 0 },
+        Ok(None) => SyncStateRow { last_seq: 0 },
         Err(e) => return Response::internal_error(e),
     };
 
-    let start = if params.full { 0 } else { sync_state.scanned_count.saturating_sub(SYNC_OVERLAP) };
-    let (messages, kind) = match fetch_sync_messages(host, &params.conversation, start).await {
-        Ok(m) => m,
-        Err(resp) => return resp,
-    };
+    let start = if params.full { 0 } else { sync_state.last_seq };
+    let (messages, last_seq, kind) =
+        match fetch_sync_messages(host, &params.conversation, start).await {
+            Ok(m) => m,
+            Err(resp) => return resp,
+        };
     if kind.as_deref() == Some("group") {
         return Response::invalid_params(CARDS_NOT_IN_GROUPS_MESSAGE);
     }
@@ -70,20 +71,19 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
     };
 
     let mut stats = SyncStats::default();
-    let mut offset = start;
     let mut first_declined: Option<u64> = None;
     let owner = signing::owner_did(host).await.unwrap_or_default();
 
     for m in messages {
-        offset += 1;
         stats.scanned += 1;
+        let vseq = m.get("visible_seq").and_then(Value::as_u64);
         match classify_sync_message(host, &m, &params.conversation, now, &owner, card_count).await {
             Ok(SyncOutcome::Skip) => {}
             Ok(SyncOutcome::Declined) => {
-                first_declined = first_declined.or(Some(offset - 1));
+                first_declined = first_declined.or(vseq.map(|s| s.saturating_sub(1)));
             }
             Ok(SyncOutcome::Deferred) => {
-                first_declined = first_declined.or(Some(offset - 1));
+                first_declined = first_declined.or(vseq.map(|s| s.saturating_sub(1)));
                 stats.deferred += 1;
             }
             Ok(SyncOutcome::Filed(file_res)) => {
@@ -94,17 +94,13 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         }
     }
 
-    let new_scanned_count = match first_declined {
+    let new_last_seq = match first_declined {
         Some(o) => o,
-        None => sync_state.scanned_count.max(offset),
+        None => sync_state.last_seq.max(last_seq),
     };
-    if let Err(e) = put_row(
-        host,
-        SYNC_STATE,
-        &params.conversation,
-        &SyncStateRow { scanned_count: new_scanned_count },
-    )
-    .await
+    if let Err(e) =
+        put_row(host, SYNC_STATE, &params.conversation, &SyncStateRow { last_seq: new_last_seq })
+            .await
     {
         return Response::internal_error(e);
     }
@@ -116,7 +112,7 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         "unknown": stats.unknown,
         "countersigned": stats.countersigned,
         "deferred": stats.deferred,
-        "scanned_count": new_scanned_count,
+        "last_seq": new_last_seq,
     }))
 }
 
@@ -124,14 +120,14 @@ async fn fetch_sync_messages<H: AppHost>(
     host: &H,
     conversation: &str,
     start: u64,
-) -> Result<(Vec<Value>, Option<String>), Response> {
+) -> Result<(Vec<Value>, u64, Option<String>), Response> {
     let page_resp = match conversation_call(
         host,
-        "conversation.history",
+        "conversation.changes",
         json!({
             "conversation": conversation,
             "limit": SYNC_WINDOW,
-            "cursor": start,
+            "after_seq": start,
         }),
     )
     .await
@@ -146,8 +142,9 @@ async fn fetch_sync_messages<H: AppHost>(
 
     let res = page_resp.result.unwrap_or(Value::Null);
     let kind = res.get("kind").and_then(Value::as_str).map(str::to_string);
+    let last_seq = res.get("last_seq").and_then(Value::as_u64).unwrap_or(start);
     let messages = res.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
-    Ok((messages, kind))
+    Ok((messages, last_seq, kind))
 }
 
 #[derive(Default)]

@@ -1,76 +1,110 @@
-//! Inbound message delivery, validation, rate limiting, and delivery state.
+//! Inbound message admission and first-contact rate limiting.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppConversation, AppDataLayer, AppHost,
     types::{
-        conversation::{ConversationError, DeliveryState, Message},
+        conversation::{Admission, ConversationError, DropAnswer, GroupInfo, Message},
         data_layer::RecordWriteValue,
     },
 };
 use syneroym_roym_core::{
     clock,
-    conversation::{
-        ConversationRow, ConversationRowKind, DELETION_REQUEST_CONTENT_TYPE, Direction, MessageRow,
-        StoredState, encode_body, group::is_group_system_type, parse_deletion_request,
-    },
+    conversation::group::{GROUP_PROFILE_CONTENT_TYPE, MEMBERSHIP_EVENT_CONTENT_TYPE},
+    paging,
 };
 
 use super::{
-    REFUSED_MESSAGES, ensure_refused, load_conversation, load_message, person_did_for_address,
-    profile_call, put_conversation, put_message,
+    CONVERSATION_META, FIRST_CONTACT_CHARGES, ensure_charges, ensure_meta, load_admission,
+    person_did_for_address, profile_call, set_admission, set_admission_peer,
 };
 
-pub(crate) mod group;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct FirstContactCharge {
+    pub at_secs: u64,
+    pub admission: String,
+    pub blocked: bool,
+    pub retry_after_secs: Option<u64>,
+}
 
-pub(crate) async fn record_refused<H: AppHost>(
+pub(crate) async fn load_charge<H: AppHost>(
     host: &H,
-    msg: &Message,
-    reason: &str,
-    now_secs: u64,
+    message_id: &str,
+) -> Result<Option<FirstContactCharge>, String> {
+    ensure_charges(host).await?;
+    let row = AppDataLayer::get(host, FIRST_CONTACT_CHARGES.to_string(), message_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    match row {
+        Some(r) => serde_json::from_slice(&r.payload).map(Some).map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
+}
+
+pub(crate) async fn save_charge<H: AppHost>(
+    host: &H,
+    message_id: &str,
+    charge: &FirstContactCharge,
 ) -> Result<(), String> {
-    ensure_refused(host).await?;
-    let row = json!({
-        "id": msg.id,
-        "conversation": msg.conversation,
-        "author": msg.author,
-        "reason": reason,
-        "at_secs": now_secs,
-    });
+    ensure_charges(host).await?;
+    let payload = serde_json::to_vec(charge).map_err(|e| e.to_string())?;
     AppDataLayer::put(
         host,
-        REFUSED_MESSAGES.to_string(),
-        RecordWriteValue {
-            id: msg.id.clone(),
-            payload: serde_json::to_vec(&row).unwrap_or_default(),
-        },
+        FIRST_CONTACT_CHARGES.to_string(),
+        RecordWriteValue { id: message_id.to_string(), payload },
     )
     .await
     .map_err(|e| e.to_string())
 }
 
-/// Roym's inbox. Called from the guest `on-message` export on WASM and
-/// from `ConversationSink::on_message` natively.
-///
-/// A deliberate product decision -- block, first-contact rate limit,
-/// unsupported kind -- writes a `refused_messages` row and returns `Ok`:
-/// there is nothing to retry. A storage fault or an unavailable `profile`
-/// sibling returns `Err`, so the WASM host's retry and the native
-/// notifier's warning both fire; without that the message is dropped with
-/// only a `stderr` line and nothing ever repairs it (`conversation.history`
-/// reads only Roym's own copy).
-pub async fn on_message<H: AppHost>(host: &H, msg: Message) -> Result<(), String> {
-    if let Err(e) = on_message_inner(host, &msg).await {
-        log_inbox_error(&msg, &e);
-        return Err(e);
-    }
-    Ok(())
+/// How long after one prune the next may run. The time is kept in the data
+/// layer, not in memory: a component is built fresh for each call, and
+/// several nodes can share one process.
+const PRUNE_INTERVAL_SECS: u64 = 3600;
+const PRUNE_META_ID: &str = "charge-prune";
+
+/// One read per message. A missing collection or row reads as "never
+/// pruned"; the collection is created only when the time is written.
+async fn charge_prune_due<H: AppHost>(host: &H, now_secs: u64) -> bool {
+    let last =
+        match AppDataLayer::get(host, CONVERSATION_META.to_string(), PRUNE_META_ID.into()).await {
+            Ok(Some(row)) => serde_json::from_slice::<Value>(&row.payload)
+                .ok()
+                .and_then(|v| v.get("at_secs").and_then(Value::as_u64))
+                .unwrap_or(0),
+            Ok(None) | Err(_) => 0,
+        };
+    now_secs.saturating_sub(last) >= PRUNE_INTERVAL_SECS
 }
 
-fn log_inbox_error(msg: &Message, err: &str) {
-    // No `tracing` dependency in this crate's wasm build; a stderr line is
-    // enough and the native build's logger picks it up.
-    eprintln!("roym conversation inbox: message {} not stored: {err}", msg.id);
+async fn mark_charge_pruned<H: AppHost>(host: &H, now_secs: u64) {
+    if ensure_meta(host).await.is_err() {
+        return;
+    }
+    let payload = json!({ "at_secs": now_secs }).to_string().into_bytes();
+    let _ = AppDataLayer::put(
+        host,
+        CONVERSATION_META.to_string(),
+        RecordWriteValue { id: PRUNE_META_ID.to_string(), payload },
+    )
+    .await;
+}
+
+pub(crate) async fn prune_old_charges<H: AppHost>(host: &H, now_secs: u64) {
+    if !charge_prune_due(host, now_secs).await {
+        return;
+    }
+    mark_charge_pruned(host, now_secs).await;
+    let floor = now_secs.saturating_sub(30 * 24 * 3600);
+    let filter = json!({ "at_secs": { "$lt": floor } }).to_string();
+    if let Ok(old) =
+        paging::filter_map(host, FIRST_CONTACT_CHARGES, Some(filter), |r| Some(r.id)).await
+    {
+        for id in old {
+            let _ = AppDataLayer::delete(host, FIRST_CONTACT_CHARGES.to_string(), id).await;
+        }
+    }
 }
 
 pub(crate) async fn is_blocked<H: AppHost>(
@@ -78,176 +112,184 @@ pub(crate) async fn is_blocked<H: AppHost>(
     address: &str,
     person_did: Option<&str>,
 ) -> Result<bool, String> {
-    let block =
+    let resp =
         profile_call(host, "block.check", json!({ "address": address, "person_did": person_did }))
             .await?;
-    Ok(block.result.as_ref().and_then(|v| v.get("blocked")).and_then(Value::as_bool) == Some(true))
+    if resp.error.is_some() {
+        return Err(format!("block.check returned an error: {:?}", resp.error));
+    }
+    let blocked = resp.result.as_ref().and_then(|v| v.get("blocked")).and_then(Value::as_bool);
+    match blocked {
+        Some(v) => Ok(v),
+        None => Err("block.check: missing 'blocked' field in result".to_string()),
+    }
 }
 
-pub(crate) async fn honour_deletion_request<H: AppHost>(
+pub async fn on_message<H: AppHost>(host: &H, msg: Message) -> Result<Admission, String> {
+    let now = clock::now_secs();
+    prune_old_charges(host, now).await;
+
+    if msg.content_type == MEMBERSHIP_EVENT_CONTENT_TYPE {
+        return Ok(Admission::Drop(DropAnswer {
+            reason: "reserved-content-type".to_string(),
+            report: false,
+        }));
+    }
+
+    let is_group = match AppConversation::group_info(host, msg.conversation.clone()).await {
+        Ok(info) => Some(info),
+        Err(ConversationError::InvalidArgument(_) | ConversationError::NotFound) => None,
+        Err(e) => return Err(format!("group-info lookup failed: {e:?}")),
+    };
+
+    if msg.content_type == GROUP_PROFILE_CONTENT_TYPE {
+        return Ok(Admission::Drop(DropAnswer {
+            reason: "reserved-content-type".to_string(),
+            report: false,
+        }));
+    }
+
+    if let Some(info) = is_group {
+        return on_group_message(host, &msg, &info).await;
+    }
+
+    on_direct_message(host, &msg, now).await
+}
+
+async fn on_direct_message<H: AppHost>(
     host: &H,
     msg: &Message,
     now: u64,
-) -> Result<(), String> {
-    if let Ok(target_id) = parse_deletion_request(&msg.body)
-        && let Some(mut target) = load_message(host, &target_id).await?
-        && target.conversation == msg.conversation
-        && target.author == msg.author
-    {
-        if is_group_system_type(&target.content_type) {
-            return Ok(());
-        }
-        target.tombstone(now);
-        put_message(host, &target).await?;
-    }
-    Ok(())
-}
-
-pub(crate) fn incoming_row(msg: &Message, now: u64) -> MessageRow {
-    let (body_encoding, body) = encode_body(&msg.content_type, &msg.body);
-    MessageRow {
-        id: msg.id.clone(),
-        conversation: msg.conversation.clone(),
-        author: msg.author.clone(),
-        direction: Direction::Incoming,
-        sender_timestamp_ms: msg.sender_timestamp,
-        content_type: msg.content_type.clone(),
-        body_encoding,
-        body: Some(body),
-        state: StoredState::Delivered,
-        last_error: msg.last_error.clone(),
-        deleted_at_secs: None,
-        stored_at_secs: now,
-    }
-}
-
-async fn on_message_inner<H: AppHost>(host: &H, msg: &Message) -> Result<(), String> {
-    let now = clock::now_secs();
-
-    // Identify group conversations before 1:1 state checks. Transient host
-    // errors bubble up as Err so the host retries delivery rather than
-    // misclassifying the message as a 1:1 conversation.
-    let is_group = match AppConversation::group_info(host, msg.conversation.clone()).await {
-        Ok(_) => true,
-        Err(ConversationError::InvalidArgument(_) | ConversationError::NotFound) => false,
-        Err(e) => return Err(format!("group-info lookup failed: {e:?}")),
-    };
-    if is_group {
-        return group::on_group_message(host, msg, now).await;
-    }
-
+) -> Result<Admission, String> {
     let person_did = person_did_for_address(host, &msg.author).await;
+    let blocked = is_blocked(host, &msg.author, person_did.as_deref()).await?;
 
-    // Block is checked on every message: a person who blocks somebody
-    // mid-conversation means it from that moment on.
-    if is_blocked(host, &msg.author, person_did.as_deref()).await? {
-        return record_refused(host, msg, "blocked", now).await;
-    }
+    let is_accepted =
+        load_admission(host, &msg.conversation).await?.is_some_and(|s| s == "accepted");
 
-    // The rate limit is a *first contact* limit, and calling the verb that
-    // enforces it consumes a budget -- so it is consulted only when this
-    // node holds no conversation with this peer yet.
-    if load_conversation(host, &msg.conversation).await?.is_none() {
-        let admit = profile_call(
-            host,
-            "contacts.admit-first-contact",
-            json!({ "sender_address": msg.author, "sender_person_did": person_did }),
-        )
-        .await?;
-        match admit.result.as_ref().and_then(|v| v.get("admission")).and_then(Value::as_str) {
-            Some("allow") => {}
-            Some("blocked") => return record_refused(host, msg, "blocked", now).await,
-            _ => return record_refused(host, msg, "rate-limited", now).await,
+    if is_accepted {
+        if blocked {
+            return Ok(Admission::Drop(DropAnswer {
+                reason: "blocked".to_string(),
+                report: false,
+            }));
         }
+        return Ok(Admission::Accept);
     }
 
-    // A deletion request is not a message a person reads. It is honoured
-    // only for a message the requester themselves authored here.
-    if msg.content_type == DELETION_REQUEST_CONTENT_TYPE {
-        honour_deletion_request(host, msg, now).await?;
-        return Ok(()); // never stored as a message either way
+    let charge = match load_charge(host, &msg.id).await? {
+        Some(c) => c,
+        None => {
+            let admit = profile_call(
+                host,
+                "contacts.admit-first-contact",
+                json!({ "sender_address": msg.author, "sender_person_did": person_did }),
+            )
+            .await?;
+            if admit.error.is_some() {
+                return Err(format!(
+                    "contacts.admit-first-contact returned an error: {:?}",
+                    admit.error
+                ));
+            }
+            let res = admit
+                .result
+                .ok_or_else(|| "contacts.admit-first-contact: missing result".to_string())?;
+            let adm_str = res.get("admission").and_then(Value::as_str).ok_or_else(|| {
+                "contacts.admit-first-contact: missing 'admission' field".to_string()
+            })?;
+            let blk = res.get("blocked").and_then(Value::as_bool).unwrap_or(blocked);
+            let retry = res.get("retry_after_secs").and_then(Value::as_u64);
+            let c = FirstContactCharge {
+                at_secs: now,
+                admission: adm_str.to_string(),
+                blocked: blk,
+                retry_after_secs: retry,
+            };
+            save_charge(host, &msg.id, &c).await?;
+            c
+        }
+    };
+
+    if charge.admission == "rate-limited" {
+        return Ok(Admission::Drop(DropAnswer {
+            reason: "rate-limited".to_string(),
+            report: true,
+        }));
     }
 
-    // Idempotent store: the WASM host retries `on-message` after a
-    // transient fault. A message already in Roym's copy must not be
-    // stored or counted again.
-    if load_message(host, &msg.id).await?.is_some() {
-        return Ok(());
+    set_admission_peer(host, &msg.conversation, "accepted", Some(&msg.author)).await?;
+
+    if charge.blocked || blocked {
+        return Ok(Admission::Drop(DropAnswer { reason: "blocked".to_string(), report: false }));
     }
 
-    upsert_conversation(
+    Ok(Admission::Accept)
+}
+
+async fn on_group_message<H: AppHost>(
+    host: &H,
+    msg: &Message,
+    info: &GroupInfo,
+) -> Result<Admission, String> {
+    let author_did = person_did_for_address(host, &msg.author).await;
+    let author_blocked = is_blocked(host, &msg.author, author_did.as_deref()).await?;
+
+    let visibility = match load_admission(host, &msg.conversation).await? {
+        Some(vis) => vis,
+        None => {
+            let vis = decide_group_visibility(host, info).await?;
+            // A concurrent first message may have decided while this one
+            // waited on the profile service. The earlier decision stands, so
+            // the group never flips between two answers.
+            match load_admission(host, &msg.conversation).await? {
+                Some(existing) => existing,
+                None => {
+                    set_admission(host, &msg.conversation, &vis).await?;
+                    vis
+                }
+            }
+        }
+    };
+
+    // A hidden group is not shown; hold the message so it can be admitted
+    // later when the user shows the group.
+    if visibility == "hidden" {
+        return Ok(Admission::Hold("group-hidden".to_string()));
+    }
+
+    if author_blocked {
+        return Ok(Admission::Drop(DropAnswer { reason: "blocked".to_string(), report: false }));
+    }
+
+    Ok(Admission::Accept)
+}
+
+async fn decide_group_visibility<H: AppHost>(host: &H, info: &GroupInfo) -> Result<String, String> {
+    if info.is_owner {
+        return Ok("shown".to_string());
+    }
+    let owner_did = person_did_for_address(host, &info.owner).await;
+    let owner_blocked = is_blocked(host, &info.owner, owner_did.as_deref()).await?;
+    // A blocked owner's group starts hidden, so the person can show it
+    // later after unblocking.
+    if owner_blocked {
+        return Ok("hidden".to_string());
+    }
+    let admit = profile_call(
         host,
-        &msg.conversation,
-        &msg.author,
-        person_did.clone(),
-        msg.sender_timestamp,
+        "contacts.admit-first-contact",
+        json!({ "sender_address": info.owner, "sender_person_did": owner_did }),
     )
     .await?;
-    let row = incoming_row(msg, now);
-    put_message(host, &row).await
-}
-
-async fn upsert_conversation<H: AppHost>(
-    host: &H,
-    conversation_id: &str,
-    peer_address: &str,
-    peer_person_did: Option<String>,
-    activity_ms: i64,
-) -> Result<(), String> {
-    let now = clock::now_secs();
-    let existing = load_conversation(host, conversation_id).await?;
-    let row = match existing {
-        Some(mut r) => {
-            r.message_count += 1;
-            r.last_activity_ms = r.last_activity_ms.max(activity_ms);
-            if r.peer_person_did.is_none() {
-                r.peer_person_did = peer_person_did;
-            }
-            r
-        }
-        None => ConversationRow {
-            id: conversation_id.to_string(),
-            kind: ConversationRowKind::Direct,
-            peer_address: peer_address.to_string(),
-            peer_person_did,
-            opened_at_secs: now,
-            last_activity_ms: activity_ms,
-            message_count: 1,
-            group: None,
-        },
-    };
-    put_conversation(host, &row).await
-}
-
-/// Called on a delivery-state transition. Updates the row's state and
-/// error, or does nothing if Roym holds no such row. The WIT
-/// `delivery-state` carries no reason, so on a `failed` transition the
-/// host's own reason is read back from its outbox, where the failed
-/// message keeps its `last-error`.
-pub async fn on_delivery_state<H: AppHost>(
-    host: &H,
-    message_id: String,
-    state: DeliveryState,
-) -> Result<(), String> {
-    let Some(mut row) = load_message(host, &message_id).await? else { return Ok(()) };
-    row.state = StoredState::from(state);
-    match row.state {
-        StoredState::Failed => {
-            row.last_error = host_last_error(host, &message_id).await;
-        }
-        _ => row.last_error = None,
+    if admit.error.is_some() {
+        return Err(format!("contacts.admit-first-contact returned an error: {:?}", admit.error));
     }
-    put_message(host, &row).await
-}
-
-/// The host's own record for a message still in flight, from its outbox.
-/// A `delivered` message has left the outbox, so this returns `None` for
-/// one -- callers only need it for `pending`/`failed` rows.
-pub(crate) async fn host_message<H: AppHost>(host: &H, message_id: &str) -> Option<Message> {
-    AppConversation::outbox(host).await.ok()?.into_iter().find(|m| m.id == message_id)
-}
-
-/// The host's own reason for a message's current state, from its outbox.
-pub(crate) async fn host_last_error<H: AppHost>(host: &H, message_id: &str) -> Option<String> {
-    host_message(host, message_id).await.and_then(|m| m.last_error)
+    let res =
+        admit.result.ok_or_else(|| "contacts.admit-first-contact: missing result".to_string())?;
+    let adm = res
+        .get("admission")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "contacts.admit-first-contact: missing 'admission' field".to_string())?;
+    if adm == "allow" { Ok("shown".to_string()) } else { Ok("hidden".to_string()) }
 }
