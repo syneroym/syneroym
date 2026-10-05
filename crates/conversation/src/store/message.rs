@@ -14,6 +14,9 @@ use super::{
 };
 use crate::dag::{parse_deletion_request, parse_refusal_notice};
 
+/// How many undecided rows one re-ask pass reads.
+pub(crate) const UNDECIDED_PER_PASS: u32 = 64;
+
 pub(crate) fn is_searchable_content_type(ct: &str) -> bool {
     ct.starts_with("text/") || ct == "application/json" || ct.ends_with("+json")
 }
@@ -563,9 +566,9 @@ impl ConversationStore {
              admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
              report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE \
              admission = 'undecided' AND system = 0 AND (next_notify_at IS NULL OR next_notify_at \
-             <= ?1) ORDER BY next_notify_at ASC LIMIT 64",
+             <= ?1) ORDER BY next_notify_at ASC LIMIT ?2",
         )?;
-        let mut rows = stmt.query(params![now_ms])?;
+        let mut rows = stmt.query(params![now_ms, UNDECIDED_PER_PASS])?;
         let mut out = Vec::new();
         while let Some(r) = rows.next()? {
             out.push(row_to_message(r)?);

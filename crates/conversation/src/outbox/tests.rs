@@ -300,12 +300,14 @@ async fn pass_with(ask_timeout_ms: u64, delay: Duration, rows: i64) -> (usize, D
 #[tokio::test]
 async fn a_slow_app_that_answers_is_cut_off_at_the_pass_budget() {
     // Each answer takes 10 ms, well inside the 50 ms timeout; the pass may
-    // run for 4 timeouts (200 ms), so it asks about 20 of the 60 rows. The
-    // rows stay under the 64 one pass reads, so without the budget all 60
-    // would be asked and this fails.
-    let (asked, took) = pass_with(50, Duration::from_millis(10), 60).await;
+    // run for 4 timeouts (200 ms), so it asks about 20 rows. There are fewer
+    // rows than one pass reads, so without the budget every row would be
+    // asked and this fails.
+    let rows = i64::from(crate::store::UNDECIDED_PER_PASS) - 4;
+    assert!(rows > 30, "the read limit is too low for this test to see the budget");
+    let (asked, took) = pass_with(50, Duration::from_millis(10), rows).await;
 
-    assert!((2..60).contains(&asked), "asked {asked}");
+    assert!((2..rows as usize).contains(&asked), "asked {asked} of {rows}");
     assert!(took < Duration::from_millis(1_000), "took {took:?}");
 }
 

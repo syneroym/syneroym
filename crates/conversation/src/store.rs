@@ -29,6 +29,8 @@ mod conversation;
 mod dag_store;
 mod history;
 mod message;
+#[cfg(test)]
+pub(crate) use message::UNDECIDED_PER_PASS;
 pub(crate) use message::is_searchable_content_type;
 mod schema;
 mod scrub;
