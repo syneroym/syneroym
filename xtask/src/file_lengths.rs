@@ -19,6 +19,8 @@ const STANDARD_TEST_LIMIT: usize = 800;
 /// 800-line production limit over time as large test files are decomposed.
 const MAX_TEST_LINES: usize = 1800;
 
+const OVERSIZED_LIST: &str = "xtask/oversized-test-files.txt";
+
 fn is_test_path(path: &Path) -> bool {
     for component in path.iter() {
         if component == "tests" {
@@ -367,14 +369,14 @@ fn check_recorded_limit(
     what: &str,
     violations: &mut Vec<String>,
 ) {
-    let list = "xtask/oversized-test-files.txt";
     if actual <= STANDARD_TEST_LIMIT {
         violations.push(format!(
-            "{rel_path}: {actual} {what} is <= {STANDARD_TEST_LIMIT}; remove from {list}"
+            "{rel_path}: {actual} {what} is <= {STANDARD_TEST_LIMIT}; remove from {OVERSIZED_LIST}"
         ));
     } else if actual > recorded_limit {
         violations.push(format!(
-            "{rel_path}: {actual} {what} exceeds recorded limit of {recorded_limit} in {list}"
+            "{rel_path}: {actual} {what} exceeds recorded limit of {recorded_limit} in \
+             {OVERSIZED_LIST}"
         ));
     } else if actual > MAX_TEST_LINES {
         violations.push(format!(
@@ -384,7 +386,7 @@ fn check_recorded_limit(
     } else if actual < recorded_limit {
         violations.push(format!(
             "{rel_path}: {actual} {what} is below the recorded limit of {recorded_limit}; set it \
-             to {actual} in {list}"
+             to {actual} in {OVERSIZED_LIST}"
         ));
     }
 }

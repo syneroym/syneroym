@@ -57,29 +57,27 @@ fn highest_accepted_ceiling(measured: f64) -> f64 {
     (((measured + DUPLICATION_SLACK).max(DUPLICATION_FLOOR)) * 10.0).floor() / 10.0
 }
 
-fn duplication_verdict(measured: f64, ceiling: f64) -> Result<(), String> {
+fn duplication_verdict(measured: f64, ceiling: f64) -> Result<()> {
     if measured > ceiling {
-        return Err(format!(
-            "Duplication check failed: {measured:.2}% exceeds the ceiling of {ceiling}%"
-        ));
+        bail!("Duplication check failed: {measured:.2}% exceeds the ceiling of {ceiling:.1}%");
     }
     let highest = highest_accepted_ceiling(measured);
     if ceiling > highest {
-        return Err(format!(
-            "Duplication is {measured:.2}%, well below the ceiling of {ceiling}%. Lower \
+        bail!(
+            "Duplication is {measured:.2}%, well below the ceiling of {ceiling:.1}%. Lower \
              MAX_EXACT_DUPLICATE_PERCENT in xtask/src/duplication.rs to {highest:.1}."
-        ));
+        );
     }
     Ok(())
 }
 
 pub fn check_duplication() -> Result<()> {
     println!(
-        "Checking exact-duplicate code percentage (ceiling {MAX_EXACT_DUPLICATE_PERCENT}%)..."
+        "Checking exact-duplicate code percentage (ceiling {MAX_EXACT_DUPLICATE_PERCENT:.1}%)..."
     );
     let measured = measure_exact_duplicate_percent(&crate::get_workspace_root())?;
     println!("Exact duplication: {measured:.2}%");
-    duplication_verdict(measured, MAX_EXACT_DUPLICATE_PERCENT).map_err(anyhow::Error::msg)
+    duplication_verdict(measured, MAX_EXACT_DUPLICATE_PERCENT)
 }
 
 #[cfg(test)]
@@ -87,7 +85,7 @@ mod tests {
     use super::*;
 
     fn message(measured: f64, ceiling: f64) -> String {
-        duplication_verdict(measured, ceiling).err().unwrap_or_default()
+        duplication_verdict(measured, ceiling).err().map(|e| e.to_string()).unwrap_or_default()
     }
 
     #[test]
