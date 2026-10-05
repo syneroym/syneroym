@@ -1,9 +1,13 @@
 //! Who may reach the inbox: the app's answer to "may this message be shown?",
 //! seen through history and the host's stored rows on both builds.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
+use syneroym_app_orchestration::{
+    AppInstanceId, AppRegistry, LogicalServiceName, ServiceId, TopologyEntry, TopologyEpoch,
+    TopologyKey, TopologyMode,
+};
 use syneroym_conversation::store::ConversationStore;
 use syneroym_data_db::host_store::RecordWriteValue;
 use syneroym_rpc::{ConversationError, ConversationHost};
@@ -205,6 +209,34 @@ async fn scenario_226_a_profile_outage_leaves_the_message_waiting() {
     let (state, reason, report) = stored_admission(&h, "m-226").await;
     assert_eq!((state.as_str(), reason, report), ("undecided", None, false));
     assert_eq!(visible_count(&h, "conv-226").await, 0);
+
+    bring_back(&h, "profile");
+    let svc = did_for_service("conversation");
+    for conv in [&h.wasm_conversation, &h.native_conversation] {
+        let store = conv.store_for(&svc).await.unwrap();
+        store.update_undecided_retry("m-226", 1, 0).unwrap();
+    }
+    h.ask_undecided_now().await;
+    assert_eq!(stored_admission(&h, "m-226").await.0, "accepted");
+    assert_eq!(visible_count(&h, "conv-226").await, 1);
+}
+
+/// Makes a service the harness left unreachable reachable again, on both
+/// builds, as when it comes back after an outage.
+fn bring_back(h: &Harness, name: &str) {
+    for inventory in &h.inventories {
+        inventory.register(
+            TopologyKey::local(AppInstanceId::new("roym"), LogicalServiceName::new(name)),
+            TopologyEntry {
+                mode: TopologyMode::Singleton,
+                members: vec![ServiceId::new(did_for_service(name))],
+                sharding_strategy: None,
+                epoch: TopologyEpoch(1),
+                cache_ttl: Duration::from_secs(60),
+                not_after: None,
+            },
+        );
+    }
 }
 
 async fn seed_row(h: &Harness, wasm: bool, collection: &str, id: &str, row: serde_json::Value) {

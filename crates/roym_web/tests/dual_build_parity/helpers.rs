@@ -524,6 +524,7 @@ pub(crate) struct Harness {
     pub(crate) _native_ws_senders: Arc<WebSocketSenders>,
     pub(crate) _wasm_dir: tempfile::TempDir,
     pub(crate) _native_dir: tempfile::TempDir,
+    pub(crate) inventories: [Arc<StaticInventory>; 2],
 }
 
 impl Harness {
@@ -1060,7 +1061,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     let owner = owner_identity();
     let owner_did = owner_did();
     let node_identity = Arc::new(Identity::generate().unwrap());
-    let wasm_resolver = Arc::new(LogicalResolver::new(wasm_inventory));
+    let wasm_resolver = Arc::new(LogicalResolver::new(wasm_inventory.clone()));
     for svc in services::ALL {
         let service_id = did_for_service(svc.name);
         wasm_reg
@@ -1200,7 +1201,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
             },
         );
     }
-    let native_resolver = Arc::new(LogicalResolver::new(native_inventory));
+    let native_resolver = Arc::new(LogicalResolver::new(native_inventory.clone()));
     for svc in services::ALL {
         let service_id = did_for_service(svc.name);
         native_reg
@@ -1439,5 +1440,6 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         _native_ws_senders: native_ws_senders,
         _wasm_dir: wasm_dir,
         _native_dir: native_dir,
+        inventories: [wasm_inventory, native_inventory],
     }
 }

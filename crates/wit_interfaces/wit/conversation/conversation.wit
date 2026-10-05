@@ -283,7 +283,9 @@ interface conversation {
     /// state, and every stored membership and name log entry, ordered by
     /// (sender-timestamp, author, id). Members who hold the same rows get the
     /// same digest. `rows` is how many rows the digest covers, so a caller
-    /// never has to read the history to count them.
+    /// never has to read the history to count them. The digest is meant for
+    /// comparing groups: a direct conversation deletes its oldest dropped
+    /// rows past a cap, which changes its digest on that side only.
     transcript-digest: func(conversation: conversation-id) -> result<transcript, conversation-error>;
 
     /// Paged export of conversation history. Pass no cursor for the first

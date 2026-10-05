@@ -146,3 +146,13 @@ fn a_zero_interval_never_delays_a_scrub() {
 
     assert!(s.scrub_due());
 }
+
+#[test]
+fn a_freshly_opened_store_asks_for_one_scrub() {
+    // A delete just before a restart left text in the index; the flag that
+    // would have scrubbed it lived only in memory.
+    let s = store();
+
+    assert!(s.take_wal_checkpoint_flag(), "the first tick after opening scrubs once");
+    assert!(!s.scrub_and_checkpoint(), "with nothing to merge the pass finishes");
+}

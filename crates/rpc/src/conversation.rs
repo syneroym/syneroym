@@ -324,7 +324,8 @@ pub trait ConversationHost: Send + Sync + Debug {
 
     /// Returns a content-derived BLAKE3 digest ("roym-transcript:<hash>") over
     /// every non-system message row, whatever its admission state, and every
-    /// stored membership and name log entry.
+    /// stored membership and name log entry. Meant for comparing groups: a
+    /// direct conversation prunes old dropped rows, which changes its digest.
     async fn transcript_digest(
         &self,
         service_id: &str,

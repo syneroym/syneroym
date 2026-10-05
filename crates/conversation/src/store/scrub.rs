@@ -41,6 +41,8 @@ impl ConversationStore {
     /// must keep the same rows for the transcript code to match.
     pub fn prune_dropped(&self) -> Result<usize> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
+        // Only chats over the cap are sorted; the count per chat comes from
+        // the partial index on dropped rows.
         let removed = conn.execute(
             "DELETE FROM messages WHERE rowid IN (
                  SELECT rowid FROM (
@@ -49,7 +51,10 @@ impl ConversationStore {
                      ) AS n
                      FROM messages
                      WHERE admission = 'dropped' AND conversation_id IN (
-                         SELECT id FROM conversations WHERE kind = 'direct'
+                         SELECT d.conversation_id FROM messages d
+                         JOIN conversations c ON c.id = d.conversation_id
+                         WHERE d.admission = 'dropped' AND c.kind = 'direct'
+                         GROUP BY d.conversation_id HAVING COUNT(*) > ?1
                      )
                  ) WHERE n > ?1
              )",

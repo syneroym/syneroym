@@ -64,23 +64,24 @@ pub(crate) async fn save_charge<H: AppHost>(
 const PRUNE_INTERVAL_SECS: u64 = 3600;
 const PRUNE_META_ID: &str = "charge-prune";
 
+/// One read per message. A missing collection or row reads as "never
+/// pruned"; the collection is created only when the time is written.
 async fn charge_prune_due<H: AppHost>(host: &H, now_secs: u64) -> bool {
-    if ensure_meta(host).await.is_err() {
-        return false;
-    }
     let last =
         match AppDataLayer::get(host, CONVERSATION_META.to_string(), PRUNE_META_ID.into()).await {
             Ok(Some(row)) => serde_json::from_slice::<Value>(&row.payload)
                 .ok()
                 .and_then(|v| v.get("at_secs").and_then(Value::as_u64))
                 .unwrap_or(0),
-            Ok(None) => 0,
-            Err(_) => return false,
+            Ok(None) | Err(_) => 0,
         };
     now_secs.saturating_sub(last) >= PRUNE_INTERVAL_SECS
 }
 
 async fn mark_charge_pruned<H: AppHost>(host: &H, now_secs: u64) {
+    if ensure_meta(host).await.is_err() {
+        return;
+    }
     let payload = json!({ "at_secs": now_secs }).to_string().into_bytes();
     let _ = AppDataLayer::put(
         host,

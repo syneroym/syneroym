@@ -32,7 +32,10 @@ impl ConversationStore {
             conn,
             queue,
             config,
-            needs_wal_checkpoint: AtomicBool::new(false),
+            // The flag lives only in memory, so a delete just before a restart
+            // would otherwise never be scrubbed. One pass at startup is cheap
+            // when the index has nothing to merge.
+            needs_wal_checkpoint: AtomicBool::new(true),
             needs_drop_prune: AtomicBool::new(false),
             last_scrub: Mutex::new(None),
         })
@@ -209,6 +212,11 @@ const TABLE_GROUP_DDL: &[&str] = &[
      );
      CREATE INDEX IF NOT EXISTS idx_message_recipients_state
          ON message_recipients(message_id, state);
+
+     -- Dropped rows are counted and pruned per conversation; this keeps
+     -- that cheap while a blocked sender floods a chat.
+     CREATE INDEX IF NOT EXISTS idx_messages_dropped
+         ON messages(conversation_id, received_at) WHERE admission = 'dropped';
 
      -- A group deletion request that named a message this node does not
      -- hold yet. Keyed by author too, so a request from someone who did not
