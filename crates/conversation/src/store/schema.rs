@@ -208,7 +208,18 @@ const TABLE_GROUP_DDL: &[&str] = &[
         PRIMARY KEY (message_id, member_address)
      );
      CREATE INDEX IF NOT EXISTS idx_message_recipients_state
-         ON message_recipients(message_id, state);",
+         ON message_recipients(message_id, state);
+
+     -- A group deletion request that named a message this node does not
+     -- hold yet. Keyed by author too, so a request from someone who did not
+     -- write the message cannot block the real author's request.
+     CREATE TABLE IF NOT EXISTS pending_deletions (
+        conversation_id TEXT NOT NULL,
+        message_id      TEXT NOT NULL,
+        author          TEXT NOT NULL,
+        requested_at    INTEGER NOT NULL,
+        PRIMARY KEY (conversation_id, message_id, author)
+     );",
 ];
 
 /// Opens (creating on first use) a WAL-mode SQLite connection, applying

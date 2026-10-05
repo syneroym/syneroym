@@ -152,6 +152,14 @@ impl ConversationHost for ConversationService {
                 "cannot retry a restored message".to_string(),
             ));
         }
+        // A message deleted before it was delivered is marked failed; sending
+        // it again would undo the delete (for a group, the log entry still
+        // holds the encrypted text).
+        if msg.deleted_at.is_some() {
+            return Err(ConversationError::InvalidArgument(
+                "cannot retry a deleted message".to_string(),
+            ));
+        }
         if msg.state != ConversationDeliveryState::Failed {
             return Err(ConversationError::InvalidArgument(
                 "only a failed message can be retried".to_string(),

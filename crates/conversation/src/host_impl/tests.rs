@@ -209,3 +209,18 @@ async fn deleting_a_group_message_still_on_its_way_sends_the_request_behind_it()
         .unwrap();
     assert_eq!(requests, 1, "the group is asked to delete it too");
 }
+
+#[tokio::test]
+async fn a_message_deleted_before_delivery_cannot_be_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let conv = service.open_direct(ME, PEER).await.unwrap();
+    let id = service.send(ME, &conv, "text/plain", b"changed my mind".to_vec()).await.unwrap();
+    service.delete_message(ME, &id, false).await.unwrap();
+
+    let err = service.retry(ME, &id).await.unwrap_err();
+
+    assert!(matches!(err, ConversationError::InvalidArgument(_)), "{err:?}");
+    let row = service.store_for(ME).await.unwrap().get_message(&id).unwrap().unwrap();
+    assert_eq!(row.state, ConversationDeliveryState::Failed, "it stays settled");
+}

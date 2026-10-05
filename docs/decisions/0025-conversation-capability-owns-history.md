@@ -28,7 +28,7 @@ Apps keep only their policy (who to accept) and their product data.
 - Restore of history is a capability feature, not an app feature. A restored group is read-only.
 - Every imported message is marked restored, also in a chat that stays live after a same-address restore. `retry` refuses it, so a message that was still pending at backup time can never be sent again.
 - A dropped row is kept so a repeat delivery is recognised. Each direct chat keeps the newest `max_dropped_per_conversation` of them; group chats keep all, because every member must hold the same rows for the transcript code to match.
-- Deleting a 1:1 message that is still pending cancels its delivery. A group message is already in the group log, which members read on their own, so delete removes the local text and sends the deletion request behind the entry; a member who reads the request before the entry keeps the message.
+- Deleting a 1:1 message that is still pending cancels its delivery. A group message is already in the group log, which members read on their own, so delete removes the local text and sends a deletion request. A member that receives the request before the message remembers it, and stores the message without its text when it arrives. A deleted message cannot be retried.
 - Rewriting the search index after a delete or drop is spread over `scrub_min_interval_secs`, so a flood of drops cannot hold the store busy. The first scrub after a quiet time runs at once.
 - The WIT interface changes four records, adds six types and eight functions, removes `membership-history`, and changes the `on-message` result.
 - Continuing a conversation after a move to a new machine is still open and tracked in deferred backlog.

@@ -761,3 +761,5 @@ async fn an_own_group_message_is_numbered_and_searchable_at_once() {
     let found = store.search("lighthouse", Some(&group_id), 10).unwrap();
     assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
 }
+
+mod deletion;

@@ -155,6 +155,11 @@ fn apply_message_entry(
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
         return Ok((false, None));
     }
+    if take_pending_deletion(tx, conv_id, &entry.entry_id, &entry.author)? {
+        store_withdrawn_message(tx, conv_id, entry, &content_type, now)?;
+        ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
+        return Ok((false, None));
+    }
     let claim_window_ms = (config.admission_claim_secs as i64) * 1000;
     let next_notify_at = now + claim_window_ms;
     let inserted = tx.execute(
@@ -225,13 +230,70 @@ fn apply_group_deletion_request(
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()?;
-        if let Some((target_conv, target_author)) = target_info
-            && target_conv == conv_id
-            && target_author == author
-        {
-            ConversationStore::delete_message_conn(tx, conv_id, &target_id, now)?;
+        match target_info {
+            Some((target_conv, target_author))
+                if target_conv == conv_id && target_author == author =>
+            {
+                ConversationStore::delete_message_conn(tx, conv_id, &target_id, now)?;
+            }
+            // Not here yet: the request can arrive before the message, for
+            // example when the message is pulled by a later sync. Remember it
+            // and apply it when the message arrives.
+            None => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO pending_deletions (conversation_id, message_id, \
+                     author, requested_at) VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![conv_id, target_id, author, now],
+                )?;
+            }
+            Some(_) => {}
         }
     }
+    Ok(())
+}
+
+/// Consumes a remembered deletion request for this message from its own
+/// author, if one arrived first.
+fn take_pending_deletion(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    message_id: &str,
+    author: &str,
+) -> Result<bool> {
+    let removed = tx.execute(
+        "DELETE FROM pending_deletions WHERE conversation_id = ?1 AND message_id = ?2 AND author \
+         = ?3",
+        rusqlite::params![conv_id, message_id, author],
+    )?;
+    Ok(removed > 0)
+}
+
+/// Stores a message its author withdrew before it reached this node: the
+/// row is kept, so the transcript code matches members who saw it and then
+/// deleted it, but it has no text and the app is never asked about it.
+fn store_withdrawn_message(
+    tx: &Transaction<'_>,
+    conv_id: &str,
+    entry: &StoredDagEntry,
+    content_type: &str,
+    now: i64,
+) -> Result<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
+         received_at, content_type, body, signature, outgoing, verified, state, last_error, \
+         system, entry_id, admission, admission_reason, admission_changed_at, deleted_at) VALUES \
+         (?1, ?2, ?3, ?4, ?5, ?6, X'', ?7, 0, 1, 'delivered', NULL, 0, ?1, 'dropped', \
+         'deleted-by-author', ?5, ?5)",
+        rusqlite::params![
+            entry.entry_id,
+            conv_id,
+            entry.author,
+            entry.sender_timestamp_ms,
+            now,
+            content_type,
+            entry.signature.as_slice(),
+        ],
+    )?;
     Ok(())
 }
 

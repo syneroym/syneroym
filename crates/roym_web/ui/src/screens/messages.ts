@@ -482,7 +482,8 @@ function messageElement(
   const actions = document.createElement("div");
   actions.className = "message-actions";
 
-  if (m.state === "failed") {
+  // A deleted message is never offered for sending again.
+  if (m.state === "failed" && m.deleted_at_secs == null) {
     const retryBtn = text("button", "Retry", "button retry-message") as HTMLButtonElement;
     retryBtn.onclick = async () => {
       retryBtn.disabled = true;
