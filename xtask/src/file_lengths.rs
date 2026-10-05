@@ -315,25 +315,7 @@ fn check_test_file_length(
 ) {
     if let Some(&recorded_limit) = oversized_files.get(rel_path) {
         seen_oversized.insert(rel_path.to_string());
-        if total_lines <= STANDARD_TEST_LIMIT {
-            violations.push(format!(
-                "{rel_path}: {total_lines} lines is <= {STANDARD_TEST_LIMIT}; remove from \
-                 xtask/oversized-test-files.txt"
-            ));
-        } else if total_lines > recorded_limit {
-            violations.push(format!(
-                "{rel_path}: {total_lines} lines exceeds recorded limit of {recorded_limit} in \
-                 xtask/oversized-test-files.txt"
-            ));
-        } else if total_lines > MAX_TEST_LINES {
-            violations.push(format!(
-                "{rel_path}: {total_lines} lines (maximum allowed for oversized test files is \
-                 {MAX_TEST_LINES})"
-            ));
-        }
-        if total_lines < recorded_limit && total_lines > STANDARD_TEST_LIMIT {
-            violations.push(stale_limit_message(rel_path, total_lines, recorded_limit));
-        }
+        check_recorded_limit(rel_path, total_lines, recorded_limit, "lines", violations);
     } else if total_lines > STANDARD_TEST_LIMIT {
         violations.push(format!(
             "{rel_path}: {total_lines} lines (maximum allowed for test files is \
@@ -360,25 +342,13 @@ fn check_production_file_length(
     let inline_test_lines = total_lines.saturating_sub(prod_lines);
     if let Some(&recorded_limit) = oversized_files.get(rel_path) {
         seen_oversized.insert(rel_path.to_string());
-        if inline_test_lines <= STANDARD_TEST_LIMIT {
-            violations.push(format!(
-                "{rel_path}: inline test lines {inline_test_lines} <= {STANDARD_TEST_LIMIT}; \
-                 remove from xtask/oversized-test-files.txt"
-            ));
-        } else if inline_test_lines > recorded_limit {
-            violations.push(format!(
-                "{rel_path}: {inline_test_lines} inline test lines exceeds recorded limit of \
-                 {recorded_limit} in xtask/oversized-test-files.txt"
-            ));
-        } else if inline_test_lines > MAX_TEST_LINES {
-            violations.push(format!(
-                "{rel_path}: {inline_test_lines} inline test lines (maximum allowed for oversized \
-                 test blocks is {MAX_TEST_LINES})"
-            ));
-        }
-        if inline_test_lines < recorded_limit && inline_test_lines > STANDARD_TEST_LIMIT {
-            violations.push(stale_limit_message(rel_path, inline_test_lines, recorded_limit));
-        }
+        check_recorded_limit(
+            rel_path,
+            inline_test_lines,
+            recorded_limit,
+            "inline test lines",
+            violations,
+        );
     } else if inline_test_lines > STANDARD_TEST_LIMIT {
         violations.push(format!(
             "{rel_path}: {inline_test_lines} inline test lines (maximum allowed for inline tests \
@@ -387,13 +357,36 @@ fn check_production_file_length(
     }
 }
 
-/// The recorded limit must equal the real size, so a file that shrank cannot
-/// grow back to its old size without the list being edited in review.
-fn stale_limit_message(rel_path: &str, actual: usize, recorded_limit: usize) -> String {
-    format!(
-        "{rel_path}: {actual} lines is below the recorded limit of {recorded_limit}; set it to \
-         {actual} in xtask/oversized-test-files.txt"
-    )
+/// Checks a listed oversized file against its recorded limit. The limit must
+/// equal the real size, so a file that shrank cannot grow back to its old size
+/// without the list being edited in review. `what` names the counted lines.
+fn check_recorded_limit(
+    rel_path: &str,
+    actual: usize,
+    recorded_limit: usize,
+    what: &str,
+    violations: &mut Vec<String>,
+) {
+    let list = "xtask/oversized-test-files.txt";
+    if actual <= STANDARD_TEST_LIMIT {
+        violations.push(format!(
+            "{rel_path}: {actual} {what} is <= {STANDARD_TEST_LIMIT}; remove from {list}"
+        ));
+    } else if actual > recorded_limit {
+        violations.push(format!(
+            "{rel_path}: {actual} {what} exceeds recorded limit of {recorded_limit} in {list}"
+        ));
+    } else if actual > MAX_TEST_LINES {
+        violations.push(format!(
+            "{rel_path}: {actual} {what} (maximum allowed for oversized test files is \
+             {MAX_TEST_LINES})"
+        ));
+    } else if actual < recorded_limit {
+        violations.push(format!(
+            "{rel_path}: {actual} {what} is below the recorded limit of {recorded_limit}; set it \
+             to {actual} in {list}"
+        ));
+    }
 }
 
 pub fn check_file_lengths() -> Result<()> {
@@ -571,5 +564,37 @@ pub fn bar() {}
 
         let _ = fs::remove_dir_all(&temp_dir);
         Ok(())
+    }
+
+    fn recorded_limit_violations(actual: usize, recorded: usize) -> Vec<String> {
+        let mut violations = Vec::new();
+        check_recorded_limit("a.rs", actual, recorded, "lines", &mut violations);
+        violations
+    }
+
+    #[test]
+    fn recorded_limit_matching_actual_is_clean() {
+        assert!(recorded_limit_violations(900, 900).is_empty());
+    }
+
+    #[test]
+    fn recorded_limit_above_actual_asks_to_lower() {
+        let v = recorded_limit_violations(900, 1000);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("set it to 900"), "{}", v[0]);
+    }
+
+    #[test]
+    fn recorded_limit_below_actual_fails() {
+        let v = recorded_limit_violations(1100, 1000);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("exceeds recorded limit"), "{}", v[0]);
+    }
+
+    #[test]
+    fn file_under_standard_limit_only_asks_for_removal() {
+        let v = recorded_limit_violations(700, 1000);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].contains("remove from"), "{}", v[0]);
     }
 }

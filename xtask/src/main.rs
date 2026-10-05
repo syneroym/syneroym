@@ -12,6 +12,7 @@ use serde_json::Value;
 use sysinfo::System;
 use walkdir::WalkDir;
 
+mod duplication;
 mod file_lengths;
 mod lint_suppressions;
 mod module_layout;
@@ -413,75 +414,6 @@ fn perf_summary() -> Result<()> {
     append_perf_summary_sections("PERF_SUMMARY.md", &timestamp, &commit, &env_line, &results)
 }
 
-/// Ceiling on exact duplicate code percentage across the workspace.
-///
-/// This is a ratchet, not a target: `cargo-dupes` also counts normalised SQL
-/// strings (such as distinct `init_schema` definitions) and repeated
-/// structure across crates, so zero is not reachable. The check fails when
-/// the measured value is above the ceiling, and also when it is more than
-/// `DUPLICATION_SLACK` below it. Then the ceiling must be lowered in the same
-/// change, so quality that was gained cannot be given back later. Below
-/// `DUPLICATION_FLOOR` the ceiling stops moving.
-const MAX_EXACT_DUPLICATE_PERCENT: f64 = 8.0;
-const DUPLICATION_SLACK: f64 = 0.3;
-const DUPLICATION_FLOOR: f64 = 5.0;
-
-fn measure_exact_duplicate_percent(workspace_root: &Path) -> Result<f64> {
-    let output = Command::new("cargo")
-        .args([
-            "dupes",
-            "stats",
-            "--format",
-            "json",
-            "--exclude",
-            "bindings.rs",
-            "--exclude",
-            "target",
-        ])
-        .current_dir(workspace_root)
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to run `cargo dupes stats` -- is cargo-dupes installed? (`cargo install \
-                 cargo-dupes`): {e}"
-            )
-        })?;
-    if !output.status.success() {
-        bail!("`cargo dupes stats` failed");
-    }
-    let stats: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    stats["exact_duplicate_percent"]
-        .as_f64()
-        .ok_or_else(|| anyhow::anyhow!("`cargo dupes stats` output has no exact_duplicate_percent"))
-}
-
-fn check_duplication() -> Result<()> {
-    println!(
-        "Checking exact-duplicate code percentage (ceiling {MAX_EXACT_DUPLICATE_PERCENT}%)..."
-    );
-    let measured = measure_exact_duplicate_percent(&get_workspace_root())?;
-    println!("Exact duplication: {measured:.2}%");
-
-    if measured > MAX_EXACT_DUPLICATE_PERCENT {
-        bail!(
-            "Duplication check failed: {measured:.2}% exceeds the ceiling of \
-             {MAX_EXACT_DUPLICATE_PERCENT}%"
-        );
-    }
-
-    let lowest_useful = (measured + DUPLICATION_SLACK).max(DUPLICATION_FLOOR);
-    if MAX_EXACT_DUPLICATE_PERCENT > lowest_useful {
-        bail!(
-            "Duplication is {measured:.2}%, well below the ceiling of \
-             {MAX_EXACT_DUPLICATE_PERCENT}%. Lower MAX_EXACT_DUPLICATE_PERCENT in \
-             xtask/src/main.rs to {:.1}.",
-            (lowest_useful * 10.0).ceil() / 10.0
-        );
-    }
-    Ok(())
-}
-
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -489,7 +421,7 @@ fn main() -> Result<()> {
         Some("check-file-lengths") => file_lengths::check_file_lengths(),
         Some("check-lint-suppressions") => lint_suppressions::check_lint_suppressions(),
         Some("check-module-layout") => module_layout::check_module_layout(),
-        Some("check-duplication") => check_duplication(),
+        Some("check-duplication") => duplication::check_duplication(),
         Some("verify") => verify::run(args),
         Some("perf-summary") | None => perf_summary(),
         Some(other) => bail!("Unknown xtask command: {other}"),

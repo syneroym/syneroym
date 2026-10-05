@@ -124,7 +124,7 @@ how the drift happened, so do not add one here without an enforcement path.**
   change before you finish (filtered to your files; recipe under **Context
   Budget** below).
   *Checked by:* `cargo xtask check-duplication` (and `mise run
-  check:duplication`), ratcheted in both directions: it fails above `MAX_EXACT_DUPLICATE_PERCENT` (`xtask/src/main.rs`), and also when the real value is more than 0.3 below it, so the ceiling is lowered in the same change. The same rule holds for `xtask/oversized-test-files.txt` (limit must equal the real size) and the `too_many_lines` suppression cap. The duplication ceiling stops at a 5% floor.
+  check:duplication`), a two-sided ratchet (see **Mandatory Ratchet Update**).
 - **Reuse the test harness.** Substrate integration tests use
   `crates/substrate/tests/common` (`SubstrateTestContext`, `alloc_ports`). Do not
   write your own `struct Node` / `fn boot`; extend the shared one if it does not
@@ -154,7 +154,20 @@ how the drift happened, so do not add one here without an enforcement path.**
 ## AI Agent Guidelines
 - **Mandatory Pre-Completion Verification**: Before concluding any coding task, you MUST run `mise run verify` (`cargo xtask verify` — see **Commands**) and confirm it ends with every gate passing. It runs fmt, clippy (confirming zero `clippy::too_many_lines` warnings and clean clippy with `-- -D warnings`), the xtask checks, nextest, doctests, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e`, in that order, and does not skip any of them. It takes ~20 minutes end to end, longer than a foreground tool call's timeout, so run it as a background job and read its summary when it finishes. The final completion-pass run must not use `--skip`; that flag is only for fast local iteration while still working. A checklist command is added to `xtask/src/verify.rs`'s `GATES` list, not to this document.
 - **Mandatory Import Cleanup**: Before finishing any coding task, you MUST perform a dedicated final pass over the files you edited to clean up imports. You must strictly enforce the import rules (Types via standard `use`, Functions qualified by parent module) and proactively remove inline fully-qualified paths (lines with multiple `::`). For conflicting types like `Result` or `Error`, import their parent module (e.g., `use std::fmt;`) and use `fmt::Result` to avoid multiple `::`.
-- **Mandatory Ratchet Update**: The size and duplication gates move in both directions. If your change made things better than the recorded baseline (you split a file in `xtask/oversized-test-files.txt`, removed a `too_many_lines` suppression, or lowered duplication), the gate fails until you record the new value. Do it in the same change: remove or lower the entry in `xtask/oversized-test-files.txt`, lower `MAX_TOO_MANY_LINES_SUPPRESSIONS` in `xtask/src/lint_suppressions.rs`, or lower `MAX_EXACT_DUPLICATE_PERCENT` in `xtask/src/main.rs` (the gate message names the value to use). Never raise any of them to make a gate pass; fix the code instead.
+- **Mandatory Ratchet Update**: The size and duplication gates fail in both
+  directions. They fail when a number gets worse. They also fail when it gets
+  better than the recorded baseline, until you record the new value in the
+  same change. The gate message names the value to use. Never raise a baseline
+  to make a gate pass; fix the code instead.
+  - Oversized test files: remove the entry from
+    `xtask/oversized-test-files.txt`, or set it to the real line count.
+  - `too_many_lines` suppressions: lower `MAX_TOO_MANY_LINES_SUPPRESSIONS` in
+    `xtask/src/lint_suppressions.rs`.
+  - Duplication: lower `MAX_EXACT_DUPLICATE_PERCENT` in
+    `xtask/src/duplication.rs`. It has a slack (`DUPLICATION_SLACK`) and
+    stops at `DUPLICATION_FLOOR`. Because the percent covers the whole
+    workspace, an unrelated change that only adds a lot of code can also
+    trigger this; just lower the value. Two open PRs may conflict on the line.
 - **Mandatory Deferred-Backlog Update**: Before finishing any task, do a final sanity pass (same discipline as the import cleanup) asking: *did this change postpone, shortcut, coarsely gate as a stand-in, or scope out anything?* If yes, record it in [docs/planning/deferred-backlog.md](docs/planning/deferred-backlog.md) — the single running backlog — under the right theme, with the reason, a target milestone/phase (or `TBD`), and a link to the source of record or `file.rs:line`. Every new open `TODO`/`FIXME` marker that encodes a real deferral needs a matching row in that doc's "Open in-code markers" section. Conversely, when you *resolve* a deferral, delete its code marker and move its backlog row to "Recently resolved". Keeping this doc current is part of "done," not optional.
 - **No Planning-Doc References in Code**: Never cite milestone/slice/task IDs (`M04A`, `Slice B6`, `B7a`, etc.) or planning-doc section numbers in code comments, doc comments, or test names. These docs get archived, renumbered, or deleted, so the reference rots and the comment becomes misleading noise. ADR references (`ADR-0014`) are fine since ADRs are stable, permanent records. Comments should explain the current WHY (invariant, constraint, non-obvious tradeoff) standing on its own — that context belongs in the commit message or PR description, not the code.
 - **Prompt Clarity**: This is very important. If you don't understand what I am saying in the prompt clearly, it seems vague or confusing, please say so. Ask more questions, or explain how you would like me to rephrase the prompt. Or write out your understanding of the ask and request me to confirm before going ahead.
