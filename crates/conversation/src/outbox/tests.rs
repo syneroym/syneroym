@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    path::Path,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use async_trait::async_trait;
@@ -12,7 +15,7 @@ use tokio::time;
 
 use super::*;
 use crate::{
-    store::{ConversationConfig as StoreConfig, now_ms},
+    store::{ConversationConfig as StoreConfig, UNDECIDED_PER_PASS, now_ms},
     transport::tests::{test_service, test_service_with},
 };
 
@@ -56,14 +59,14 @@ impl ConversationNotifier for Fixed {
 }
 
 async fn service_with(
-    dir: &std::path::Path,
+    dir: &Path,
     outcome: fn() -> NotifyOutcome,
 ) -> (Arc<ConversationService>, Arc<Fixed>, Arc<ConversationStore>) {
     let service = test_service(dir).await;
     let notifier = Fixed::new(outcome);
     service.register_service_notifier(
         SVC.to_string(),
-        Arc::downgrade(&notifier) as std::sync::Weak<dyn ConversationNotifier>,
+        Arc::downgrade(&notifier) as Weak<dyn ConversationNotifier>,
     );
     let store = service.store_for(SVC).await.unwrap();
     (service, notifier, store)
@@ -113,7 +116,7 @@ async fn an_unanswered_ask_is_counted_and_not_repeated_at_once() {
 async fn an_answered_ask_settles_the_row() {
     let dir = tempfile::tempdir().unwrap();
     let (service, _notifier, store) =
-        service_with(dir.path(), || NotifyOutcome::Answered(syneroym_rpc::Admission::Accept)).await;
+        service_with(dir.path(), || NotifyOutcome::Answered(Admission::Accept)).await;
     due_undecided(&store, "m:1", now_ms());
 
     service.renotify_undecided_once().await;
@@ -162,7 +165,7 @@ async fn an_old_held_message_expires_and_its_text_is_removed() {
 async fn a_delete_is_followed_by_a_scrub_on_the_next_tick() {
     let dir = tempfile::tempdir().unwrap();
     let (service, _notifier, store) =
-        service_with(dir.path(), || NotifyOutcome::Answered(syneroym_rpc::Admission::Accept)).await;
+        service_with(dir.path(), || NotifyOutcome::Answered(Admission::Accept)).await;
     due_undecided(&store, "m:1", now_ms());
     service.renotify_undecided_once().await;
     store.delete_message("conv:1", "m:1", now_ms()).unwrap();
@@ -303,7 +306,7 @@ async fn a_slow_app_that_answers_is_cut_off_at_the_pass_budget() {
     // run for 4 timeouts (200 ms), so it asks about 20 rows. There are fewer
     // rows than one pass reads, so without the budget every row would be
     // asked and this fails.
-    let rows = i64::from(crate::store::UNDECIDED_PER_PASS) - 4;
+    let rows = i64::from(UNDECIDED_PER_PASS) - 4;
     assert!(rows > 30, "the read limit is too low for this test to see the budget");
     let (asked, took) = pass_with(50, Duration::from_millis(10), rows).await;
 

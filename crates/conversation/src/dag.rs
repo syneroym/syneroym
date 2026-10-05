@@ -6,6 +6,8 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use serde_json::Value;
+use syneroym_rpc::ConversationError;
 
 pub const MAX_PARENTS: usize = 8;
 pub const GROUP_KEY_CONTENT_TYPE: &str = "application/vnd.syneroym.group-key+json";
@@ -197,20 +199,16 @@ pub const MAX_GROUP_NAME_CHARS: usize = 80;
 
 /// Validates group name: 1..=80 characters after trimming, no control
 /// characters.
-pub fn validate_group_name(raw: &str) -> Result<String, syneroym_rpc::ConversationError> {
+pub fn validate_group_name(raw: &str) -> Result<String, ConversationError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(syneroym_rpc::ConversationError::InvalidArgument(
-            "group name cannot be empty".to_string(),
-        ));
+        return Err(ConversationError::InvalidArgument("group name cannot be empty".to_string()));
     }
     if trimmed.chars().count() > MAX_GROUP_NAME_CHARS {
-        return Err(syneroym_rpc::ConversationError::InvalidArgument(
-            "group name too long".to_string(),
-        ));
+        return Err(ConversationError::InvalidArgument("group name too long".to_string()));
     }
     if trimmed.chars().any(char::is_control) {
-        return Err(syneroym_rpc::ConversationError::InvalidArgument(
+        return Err(ConversationError::InvalidArgument(
             "group name cannot contain control characters".to_string(),
         ));
     }
@@ -228,10 +226,7 @@ pub fn parse_deletion_request(body: &[u8]) -> Option<String> {
     if obj.len() != 1 {
         return None;
     }
-    obj.get("message_id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+    obj.get("message_id").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 #[must_use]

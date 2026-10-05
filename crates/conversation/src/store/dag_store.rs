@@ -7,7 +7,9 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use super::{ConversationStore, StoredDagEntry};
-use crate::dag::{EntryKind, MAX_PARENTS, MembershipPayload, WireEntry, canonical_entry_bytes};
+use crate::dag::{
+    EntryKind, MAX_PARENTS, MembershipPayload, ProfilePayload, WireEntry, canonical_entry_bytes,
+};
 
 // Lock-poisoning from a panicking holder is a programming error; there is
 // no safe recovery path, matching `syneroym-async-queue`'s own precedent.
@@ -646,9 +648,7 @@ impl ConversationStore {
             None
         };
         let profile_payload = if kind == EntryKind::Profile {
-            payload_str
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<crate::dag::ProfilePayload>(s).ok())
+            payload_str.as_deref().and_then(|s| serde_json::from_str::<ProfilePayload>(s).ok())
         } else {
             None
         };

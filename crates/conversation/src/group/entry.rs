@@ -10,8 +10,8 @@ use syneroym_rpc::{ConversationDeliveryState, ConversationError};
 use super::internal;
 use crate::{
     dag::{
-        EntryKind, MAX_PARENTS, WireEntry, canonical_entry_bytes, canonical_entry_prefix,
-        decode_body, open, verify_entry,
+        self, DELETION_REQUEST_CONTENT_TYPE, EntryKind, MAX_PARENTS, WireEntry,
+        canonical_entry_bytes, canonical_entry_prefix, decode_body, open, verify_entry,
     },
     ids::derive_entry_id,
     store::{
@@ -80,7 +80,7 @@ fn apply_profile_entry(
     now: i64,
 ) -> Result<(bool, Option<StoredMessage>)> {
     if let Some(payload) = &entry.profile_payload {
-        if let Ok(valid_name) = crate::dag::validate_group_name(&payload.name) {
+        if let Ok(valid_name) = dag::validate_group_name(&payload.name) {
             let is_newest: bool = tx
                 .query_row(
                     "SELECT COUNT(*) FROM dag_entries WHERE conversation_id = ?1 AND kind = \
@@ -150,7 +150,7 @@ fn apply_message_entry(
     if body.len() as u32 > config.max_body_bytes {
         return Ok((false, None));
     }
-    if content_type == crate::dag::DELETION_REQUEST_CONTENT_TYPE {
+    if content_type == DELETION_REQUEST_CONTENT_TYPE {
         apply_group_deletion_request(tx, conv_id, &entry.author, &body, now)?;
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
         return Ok((false, None));
@@ -222,7 +222,7 @@ fn apply_group_deletion_request(
     body: &[u8],
     now: i64,
 ) -> Result<()> {
-    if let Some(target_id) = crate::dag::parse_deletion_request(body) {
+    if let Some(target_id) = dag::parse_deletion_request(body) {
         let target_info: Option<(String, String)> = tx
             .query_row(
                 "SELECT conversation_id, author FROM messages WHERE id = ?1",

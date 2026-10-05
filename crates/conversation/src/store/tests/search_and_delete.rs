@@ -1,4 +1,4 @@
-use syneroym_rpc::Admission;
+use syneroym_rpc::{Admission, ConversationDeliveryState};
 
 use super::store;
 
@@ -67,7 +67,7 @@ fn delete_pending_outgoing_marks_failed_and_cleans_outbox() {
 
     // State is failed
     let msg = s.get_message("m:pending_del").unwrap().unwrap();
-    assert_eq!(msg.state, syneroym_rpc::ConversationDeliveryState::Failed);
+    assert_eq!(msg.state, ConversationDeliveryState::Failed);
 }
 
 #[test]

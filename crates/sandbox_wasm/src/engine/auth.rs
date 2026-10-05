@@ -1,3 +1,5 @@
+use syneroym_rpc::{Admission, DropAnswer, NotifyOutcome};
+
 use super::*;
 
 impl AppSandboxEngine {
@@ -191,16 +193,16 @@ impl AppSandboxEngine {
         }
     }
 
-    fn parse_admission_from_wasm_val(val: &Val) -> Option<syneroym_rpc::Admission> {
+    fn parse_admission_from_wasm_val(val: &Val) -> Option<Admission> {
         match val {
             Val::Result(Ok(Some(boxed))) => match boxed.as_ref() {
                 Val::Variant(tag, payload) => match tag.as_str() {
-                    "accept" => Some(syneroym_rpc::Admission::Accept),
+                    "accept" => Some(Admission::Accept),
                     "hold" => {
                         if let Some(inner) = payload
                             && let Val::String(reason) = inner.as_ref()
                         {
-                            Some(syneroym_rpc::Admission::Hold(reason.clone()))
+                            Some(Admission::Hold(reason.clone()))
                         } else {
                             None
                         }
@@ -223,10 +225,7 @@ impl AppSandboxEngine {
                                 }
                             }
                             if let (Some(reason), Some(report)) = (reason, report) {
-                                Some(syneroym_rpc::Admission::Drop(syneroym_rpc::DropAnswer {
-                                    reason,
-                                    report,
-                                }))
+                                Some(Admission::Drop(DropAnswer { reason, report }))
                             } else {
                                 None
                             }
@@ -250,7 +249,7 @@ impl AppSandboxEngine {
         &self,
         service_id: &str,
         msg: syneroym_rpc::ConversationMessage,
-    ) -> syneroym_rpc::NotifyOutcome {
+    ) -> NotifyOutcome {
         const GUEST_API_INTERFACE: &str = "syneroym:conversation/guest-api@0.1.0";
         const MAX_ATTEMPTS: u32 = 4;
         const RETRY_BACKOFF: Duration = Duration::from_millis(50);
@@ -275,7 +274,7 @@ impl AppSandboxEngine {
                 }
                 Err(e) => {
                     warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: failed to instantiate for on-message, giving up");
-                    return syneroym_rpc::NotifyOutcome::NoAnswer;
+                    return NotifyOutcome::NoAnswer;
                 }
             };
 
@@ -291,12 +290,12 @@ impl AppSandboxEngine {
                         service_id,
                         "conversation: component does not export guest-api::on-message, discarding"
                     );
-                    return syneroym_rpc::NotifyOutcome::NoHandler;
+                    return NotifyOutcome::NoHandler;
                 }
             };
             let params_iter = match &item {
                 ComponentItem::ComponentFunc(f) => f.params(),
-                _ => return syneroym_rpc::NotifyOutcome::NoAnswer,
+                _ => return NotifyOutcome::NoAnswer,
             };
             let wasm_params = match conversions::json_to_wasm_params(
                 params_iter,
@@ -305,7 +304,7 @@ impl AppSandboxEngine {
                 Ok(p) => p,
                 Err(e) => {
                     warn!(service_id, error = %e, "conversation: could not encode on-message params");
-                    return syneroym_rpc::NotifyOutcome::NoAnswer;
+                    return NotifyOutcome::NoAnswer;
                 }
             };
             let mut results = vec![Val::Bool(false); results_len];
@@ -313,15 +312,15 @@ impl AppSandboxEngine {
                 Ok(()) => {
                     if let Some(msg) = Self::wasm_result_err(&results) {
                         warn!(service_id, error = %msg, "conversation: on-message returned an error");
-                        return syneroym_rpc::NotifyOutcome::NoAnswer;
+                        return NotifyOutcome::NoAnswer;
                     }
                     if let Some(res) = results.first()
                         && let Some(adm) = Self::parse_admission_from_wasm_val(res)
                     {
-                        return syneroym_rpc::NotifyOutcome::Answered(adm);
+                        return NotifyOutcome::Answered(adm);
                     }
                     warn!(service_id, "conversation: on-message returned unparseable admission");
-                    return syneroym_rpc::NotifyOutcome::NoAnswer;
+                    return NotifyOutcome::NoAnswer;
                 }
                 Err(e) if !last_attempt => {
                     debug!(service_id, attempt, error = %e, "conversation: on-message invocation trapped, retrying");
@@ -329,11 +328,11 @@ impl AppSandboxEngine {
                 }
                 Err(e) => {
                     warn!(service_id, attempts = MAX_ATTEMPTS, error = %e, "conversation: on-message invocation trapped, giving up");
-                    return syneroym_rpc::NotifyOutcome::NoAnswer;
+                    return NotifyOutcome::NoAnswer;
                 }
             }
         }
-        syneroym_rpc::NotifyOutcome::NoAnswer
+        NotifyOutcome::NoAnswer
     }
 
     /// Invokes the deployed component's optional
@@ -483,7 +482,7 @@ impl syneroym_rpc::ConversationNotifier for AppSandboxEngine {
         &self,
         service_id: &str,
         msg: syneroym_rpc::ConversationMessage,
-    ) -> syneroym_rpc::NotifyOutcome {
+    ) -> NotifyOutcome {
         self.notify_guest_message(service_id, msg).await
     }
 

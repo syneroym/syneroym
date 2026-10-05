@@ -34,7 +34,7 @@ use crate::{
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
-        conversation::ConversationError,
+        conversation::{ChangePage, ConversationError, ExportChunk, Message, Transcript},
         data_layer::*,
         http::FrameKind,
         invocation::CallerOrigin,
@@ -261,7 +261,7 @@ impl AppConversation for GuestHost {
         conv::delivery_status(&message)
     }
 
-    async fn outbox(&self) -> Result<Vec<crate::types::conversation::Message>, ConversationError> {
+    async fn outbox(&self) -> Result<Vec<Message>, ConversationError> {
         conv::outbox()
     }
 
@@ -304,10 +304,7 @@ impl AppConversation for GuestHost {
         conv::get_group_info(&conversation)
     }
 
-    async fn get_message(
-        &self,
-        message: String,
-    ) -> Result<crate::types::conversation::Message, ConversationError> {
+    async fn get_message(&self, message: String) -> Result<Message, ConversationError> {
         conv::get_message(&message)
     }
 
@@ -332,7 +329,7 @@ impl AppConversation for GuestHost {
         conversation: String,
         after_seq: u64,
         limit: u32,
-    ) -> Result<crate::types::conversation::ChangePage, ConversationError> {
+    ) -> Result<ChangePage, ConversationError> {
         conv::changes(&conversation, after_seq, limit)
     }
 
@@ -341,7 +338,7 @@ impl AppConversation for GuestHost {
         query: String,
         conversation: Option<String>,
         limit: u32,
-    ) -> Result<Vec<crate::types::conversation::Message>, ConversationError> {
+    ) -> Result<Vec<Message>, ConversationError> {
         conv::search(&query, conversation.as_deref(), limit)
     }
 
@@ -356,14 +353,14 @@ impl AppConversation for GuestHost {
     async fn transcript_digest(
         &self,
         conversation: String,
-    ) -> Result<crate::types::conversation::Transcript, ConversationError> {
+    ) -> Result<Transcript, ConversationError> {
         conv::transcript_digest(&conversation)
     }
 
     async fn export_history(
         &self,
         cursor: Option<String>,
-    ) -> Result<crate::types::conversation::ExportChunk, ConversationError> {
+    ) -> Result<ExportChunk, ConversationError> {
         conv::export_history(cursor.as_deref())
     }
 

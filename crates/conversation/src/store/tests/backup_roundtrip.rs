@@ -1,7 +1,10 @@
 use super::store;
 use crate::{
     ids::derive_conversation_id,
-    store::backup::{BACKUP_VERSION, BackupBundle},
+    store::{
+        ConversationStore,
+        backup::{BACKUP_VERSION, BackupBundle, BackupMessage},
+    },
 };
 
 #[test]
@@ -32,7 +35,7 @@ fn import_rejects_invalid_admission_and_state() {
     let bad_admission_bundle = BackupBundle {
         version: BACKUP_VERSION,
         conversations: vec![],
-        messages: vec![crate::store::backup::BackupMessage {
+        messages: vec![BackupMessage {
             id: "m:bad".to_string(),
             conversation_id: "conv:1".to_string(),
             author: "a".to_string(),
@@ -115,7 +118,7 @@ const ME: &str = "svc:me";
 const PEER: &str = "svc:peer";
 
 /// Exports every chunk and returns them in order.
-fn export_all(s: &crate::store::ConversationStore) -> Vec<Vec<u8>> {
+fn export_all(s: &ConversationStore) -> Vec<Vec<u8>> {
     let mut chunks = Vec::new();
     let mut cursor = None;
     loop {
@@ -128,7 +131,7 @@ fn export_all(s: &crate::store::ConversationStore) -> Vec<Vec<u8>> {
     }
 }
 
-fn node_with_history(messages: usize) -> (crate::store::ConversationStore, String) {
+fn node_with_history(messages: usize) -> (ConversationStore, String) {
     let s = store();
     let conv_id = derive_conversation_id(ME, PEER);
     let conv = s.get_or_create_direct(PEER, &conv_id, 1_000).unwrap();

@@ -1,13 +1,18 @@
 #![allow(clippy::cognitive_complexity)]
 
+use std::{path::Path, sync::Arc};
+
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use syneroym_async_queue::QueueConfig;
-use syneroym_core::config::RetryPolicy;
+use syneroym_core::{config::RetryPolicy, local_registry::EndpointRegistry, storage::MockStorage};
+use syneroym_data_db::{SqliteStorageProvider, traits::StorageProvider};
+use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::ConversationHost;
 
 use super::*;
 use crate::{
+    ConversationConfig as ServiceConfig,
     crypto::{SessionCrypto, X3dhDoubleRatchetCrypto},
     dag::{self, EntryKind, GroupSyncRequest, PeerAssertion},
     envelope, group,
@@ -36,24 +41,18 @@ pub(crate) fn test_store() -> ConversationStore {
     .unwrap()
 }
 
-pub(crate) async fn test_service(dir: &std::path::Path) -> std::sync::Arc<ConversationService> {
-    test_service_with(dir, crate::ConversationConfig::default()).await
+pub(crate) async fn test_service(dir: &Path) -> Arc<ConversationService> {
+    test_service_with(dir, ServiceConfig::default()).await
 }
 
 pub(crate) async fn test_service_with(
-    dir: &std::path::Path,
-    config: crate::ConversationConfig,
-) -> std::sync::Arc<ConversationService> {
-    let storage_provider: std::sync::Arc<dyn syneroym_data_db::traits::StorageProvider> =
-        std::sync::Arc::new(
-            syneroym_data_db::SqliteStorageProvider::new(dir.join("data"), false).unwrap(),
-        );
-    let key_store = std::sync::Arc::new(syneroym_data_keystore::KeyStore::new());
-    let registry = syneroym_core::local_registry::EndpointRegistry::new(std::sync::Arc::new(
-        syneroym_core::storage::MockStorage::new(),
-    ))
-    .await
-    .unwrap();
+    dir: &Path,
+    config: ServiceConfig,
+) -> Arc<ConversationService> {
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(dir.join("data"), false).unwrap());
+    let key_store = Arc::new(KeyStore::new());
+    let registry = EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap();
     ConversationService::new(
         storage_provider,
         key_store,

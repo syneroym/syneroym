@@ -1,8 +1,9 @@
 #![allow(clippy::cognitive_complexity)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use syneroym_core::config::RetryPolicy;
+use syneroym_rpc::ConversationHistoryItem;
 
 use super::*;
 
@@ -26,7 +27,7 @@ pub(crate) fn store_with_config(config: ConversationConfig) -> (ConversationStor
 }
 
 /// Opens (or reopens, as after a restart) the store in `path`.
-pub(crate) fn open_at(path: &std::path::Path, config: ConversationConfig) -> ConversationStore {
+pub(crate) fn open_at(path: &Path, config: ConversationConfig) -> ConversationStore {
     ConversationStore::open_encrypted(
         path,
         None,
@@ -237,7 +238,7 @@ fn history_returns_the_documented_order_under_a_skewed_clock() {
         .items
         .iter()
         .map(|item| match item {
-            syneroym_rpc::ConversationHistoryItem::Message(m) => m.id.as_str(),
+            ConversationHistoryItem::Message(m) => m.id.as_str(),
             _ => panic!("expected message item"),
         })
         .collect();
@@ -268,11 +269,11 @@ fn history_pages_and_reports_a_next_cursor() {
     let page1 = s.history(&conv_id, 2, None).unwrap();
     assert_eq!(page1.items.len(), 2);
     let msg0 = match &page1.items[0] {
-        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        ConversationHistoryItem::Message(m) => m,
         _ => panic!("expected message item"),
     };
     let msg1 = match &page1.items[1] {
-        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        ConversationHistoryItem::Message(m) => m,
         _ => panic!("expected message item"),
     };
     assert_eq!(msg0.id, "msg:0");
@@ -281,11 +282,11 @@ fn history_pages_and_reports_a_next_cursor() {
 
     let page2 = s.history(&conv_id, 2, page1.next_cursor.as_deref()).unwrap();
     let msg2 = match &page2.items[0] {
-        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        ConversationHistoryItem::Message(m) => m,
         _ => panic!("expected message item"),
     };
     let msg3 = match &page2.items[1] {
-        syneroym_rpc::ConversationHistoryItem::Message(m) => m,
+        ConversationHistoryItem::Message(m) => m,
         _ => panic!("expected message item"),
     };
     assert_eq!(msg2.id, "msg:2");
@@ -525,7 +526,7 @@ fn history_and_outbox_exclude_system_messages() {
     let hist = s.history(&conv_id, 10, None).unwrap();
     assert_eq!(hist.items.len(), 1);
     match &hist.items[0] {
-        syneroym_rpc::ConversationHistoryItem::Message(m) => {
+        ConversationHistoryItem::Message(m) => {
             assert_eq!(m.id, "msg:regular");
         }
         _ => panic!("expected message item"),

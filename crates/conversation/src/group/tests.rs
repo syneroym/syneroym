@@ -2,10 +2,10 @@
 
 use syneroym_async_queue::QueueConfig;
 use syneroym_core::config::RetryPolicy;
-use syneroym_rpc::ConversationHost;
+use syneroym_rpc::{Admission, ConversationHistoryItem, ConversationHost};
 
 use super::*;
-use crate::store::{self, ConversationConfig, StoredDagEntry};
+use crate::store::{self, ConversationConfig, SessionRow, StoredDagEntry};
 
 fn store() -> ConversationStore {
     let dir = tempfile::tempdir().unwrap();
@@ -222,14 +222,14 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
         tx.commit().unwrap();
         msg.id
     };
-    s.apply_admission(&msg_id, &syneroym_rpc::Admission::Accept, now).unwrap();
+    s.apply_admission(&msg_id, &Admission::Accept, now).unwrap();
 
     // Unapplied should now be empty
     assert!(s.unapplied_dag_entries(conv_id).unwrap().is_empty());
     let hist = s.history(conv_id, 10, None).unwrap();
     assert_eq!(hist.items.len(), 1);
     match &hist.items[0] {
-        syneroym_rpc::ConversationHistoryItem::Message(m) => {
+        ConversationHistoryItem::Message(m) => {
             assert_eq!(m.body, b"msg");
         }
         _ => panic!("expected message item"),
@@ -325,7 +325,7 @@ fn membership_history_orders_on_the_same_three_part_key_as_messages() {
         .items
         .into_iter()
         .filter_map(|it| match it {
-            syneroym_rpc::ConversationHistoryItem::Membership(m) => Some(m),
+            ConversationHistoryItem::Membership(m) => Some(m),
             _ => None,
         })
         .collect();
@@ -579,12 +579,12 @@ async fn add_member_uses_the_pinned_session_key_when_one_exists() {
     let pinned_key = [42u8; 32];
     store
         .upsert_session(
-            &crate::store::SessionRow {
+            &SessionRow {
                 peer_address: "svc:bob".to_string(),
                 pinned_sig_key: pinned_key,
                 state: vec![1, 2, 3],
             },
-            crate::store::now_ms(),
+            store::now_ms(),
         )
         .unwrap();
 
@@ -603,19 +603,19 @@ async fn a_clock_offset_changes_only_signed_times() {
     let offset_ms = -90_000;
     crate::test_support::set_clock_offset_ms(owner, offset_ms);
 
-    let t_start = crate::store::now_ms();
+    let t_start = store::now_ms();
     let group_id = service.create_group_impl(owner).await.unwrap();
 
     let store = service.store_for(owner).await.unwrap();
     let pinned_key = [7u8; 32];
     store
         .upsert_session(
-            &crate::store::SessionRow {
+            &SessionRow {
                 peer_address: "svc:bob".to_string(),
                 pinned_sig_key: pinned_key,
                 state: vec![1],
             },
-            crate::store::now_ms(),
+            store::now_ms(),
         )
         .unwrap();
     service.add_member(owner, &group_id, "svc:bob").await.unwrap();
@@ -630,7 +630,7 @@ async fn a_clock_offset_changes_only_signed_times() {
         .items
         .into_iter()
         .filter_map(|it| match it {
-            syneroym_rpc::ConversationHistoryItem::Membership(m) => Some(m),
+            ConversationHistoryItem::Membership(m) => Some(m),
             _ => None,
         })
         .collect();
@@ -709,12 +709,12 @@ async fn an_own_group_message_is_numbered_in_the_feed_and_searchable() {
     let store = service.store_for(owner).await.unwrap();
     store
         .upsert_session(
-            &crate::store::SessionRow {
+            &SessionRow {
                 peer_address: "svc:bob".to_string(),
                 pinned_sig_key: [42u8; 32],
                 state: vec![1, 2, 3],
             },
-            crate::store::now_ms(),
+            store::now_ms(),
         )
         .unwrap();
     service.add_member(owner, &group_id, "svc:bob").await.unwrap();

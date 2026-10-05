@@ -3,10 +3,10 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -15,10 +15,11 @@ use syneroym_rpc::{
     Admission, ConversationDeliveryState, ConversationError, ConversationHost, ConversationMessage,
     ConversationNotifier, DropAnswer, NotifyOutcome,
 };
+use tokio::time;
 
 use super::{test_service, test_service_with, test_store};
 use crate::{
-    ConversationConfig, ConversationService,
+    ConversationConfig, ConversationService, crypto,
     crypto::{PrekeyBundle, Session, SessionCrypto, X3dhDoubleRatchetCrypto},
     dag::{
         DELETION_REQUEST_CONTENT_TYPE, REFUSAL_NOTICE_CONTENT_TYPE, deletion_request_body,
@@ -26,7 +27,8 @@ use crate::{
     },
     envelope::{self, DeliveryPayload},
     ids::derive_conversation_id,
-    store::{ConversationConfig as StoreConfig, ConversationStore},
+    store::{self, ConversationConfig as StoreConfig, ConversationStore, StoredMessage},
+    transport::DeliveryAck,
 };
 
 const SVC: &str = "svc:receiver";
@@ -46,8 +48,7 @@ impl Sender {
         let store: ConversationStore = test_store();
         let crypto = X3dhDoubleRatchetCrypto::new();
         let session = crypto.begin_session(&store, address, SVC, &bundle).await.unwrap();
-        let identity =
-            store.local_identity_or_generate(crate::crypto::generate_identity_bytes).unwrap();
+        let identity = store.local_identity_or_generate(crypto::generate_identity_bytes).unwrap();
         let secret: [u8; 32] = identity.sig_secret.as_slice().try_into().unwrap();
         Self { crypto, session, key: SigningKey::from_bytes(&secret), address: address.to_string() }
     }
@@ -66,7 +67,7 @@ impl Sender {
         body: &[u8],
     ) -> Result<Option<String>, ConversationError> {
         let conversation = self.conversation();
-        let ts = crate::store::now_ms();
+        let ts = store::now_ms();
         let payload = DeliveryPayload {
             message_id: id.to_string(),
             conversation_id: conversation.clone(),
@@ -87,7 +88,7 @@ impl Sender {
         let env = self.crypto.encrypt(&mut self.session, &payload).unwrap();
         let ack =
             service.peer_deliver(SVC, &self.address, serde_json::to_vec(&env).unwrap()).await?;
-        let ack: crate::transport::DeliveryAck = serde_json::from_slice(&ack).unwrap();
+        let ack: DeliveryAck = serde_json::from_slice(&ack).unwrap();
         Ok(ack.refused)
     }
 }
@@ -114,7 +115,7 @@ impl Scripted {
 impl ConversationNotifier for Scripted {
     async fn notify_message(&self, _service_id: &str, _msg: ConversationMessage) -> NotifyOutcome {
         self.asked.fetch_add(1, Ordering::SeqCst);
-        tokio::time::sleep(self.delay).await;
+        time::sleep(self.delay).await;
         (self.answer)()
     }
 
@@ -135,11 +136,11 @@ fn drop_and_report() -> NotifyOutcome {
 fn register(service: &ConversationService, notifier: &Arc<Scripted>) {
     service.register_service_notifier(
         SVC.to_string(),
-        Arc::downgrade(notifier) as std::sync::Weak<dyn ConversationNotifier>,
+        Arc::downgrade(notifier) as Weak<dyn ConversationNotifier>,
     );
 }
 
-async fn stored(service: &ConversationService, id: &str) -> crate::store::StoredMessage {
+async fn stored(service: &ConversationService, id: &str) -> StoredMessage {
     service.store_for(SVC).await.unwrap().get_message(id).unwrap().unwrap()
 }
 
@@ -197,7 +198,7 @@ async fn a_slow_app_does_not_hold_back_the_receipt() {
     register(&service, &notifier);
     let mut sender = Sender::connect(&service, "svc:sender").await;
 
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let refused = sender.deliver(&service, "m:1", "text/plain", b"hello").await.unwrap();
 
     assert!(started.elapsed() < Duration::from_secs(5), "the ask must be cut short");

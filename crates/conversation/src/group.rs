@@ -1,6 +1,8 @@
 //! Group conversation management: creation, membership changes, epochs,
 //! rekeying, entry validation, application, and history queries.
 
+use std::str;
+
 use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -9,11 +11,15 @@ use syneroym_rpc::{ConversationError, ConversationGroupInfo, ConversationKind};
 use crate::{
     ConversationService, crypto,
     dag::{
-        EntryKind, GROUP_KEY_CONTENT_TYPE, GroupKeyPayload, MembershipPayload, WireEntry,
+        self, DELETION_REQUEST_CONTENT_TYPE, EntryKind, GROUP_KEY_CONTENT_TYPE, GroupKeyPayload,
+        MembershipPayload, ProfilePayload, REFUSAL_NOTICE_CONTENT_TYPE, WireEntry,
         canonical_entry_bytes, canonical_entry_prefix, encode_body, seal, sign_entry,
     },
     ids::{derive_entry_id, derive_group_id},
-    store::{ConversationRow, ConversationStore, now_ms},
+    store::{
+        self, ConversationConfig, ConversationRow, ConversationStore, OutboxItem, StoreError,
+        now_ms,
+    },
 };
 
 mod entry;
@@ -368,7 +374,7 @@ impl ConversationService {
         members: &[String],
         now: i64,
         signed_at: i64,
-        config: &crate::store::ConversationConfig,
+        config: &ConversationConfig,
     ) -> Result<()> {
         let pending_count: u32 = tx.query_row(
             "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state = 'pending'",
@@ -376,7 +382,7 @@ impl ConversationService {
             |r| r.get::<_, i64>(0),
         )? as u32;
         if pending_count >= config.max_pending_per_conversation {
-            return Err(crate::store::StoreError::PendingQuotaExceeded.into());
+            return Err(StoreError::PendingQuotaExceeded.into());
         }
         let message_count: u32 = tx.query_row(
             "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND admission != 'dropped'",
@@ -384,11 +390,11 @@ impl ConversationService {
             |r| r.get::<_, i64>(0),
         )? as u32;
         if message_count >= config.max_messages_per_conversation {
-            return Err(crate::store::StoreError::MessageQuotaExceeded.into());
+            return Err(StoreError::MessageQuotaExceeded.into());
         }
 
-        let is_system = content_type == crate::dag::DELETION_REQUEST_CONTENT_TYPE
-            || content_type == crate::dag::REFUSAL_NOTICE_CONTENT_TYPE;
+        let is_system = content_type == DELETION_REQUEST_CONTENT_TYPE
+            || content_type == REFUSAL_NOTICE_CONTENT_TYPE;
         let system_val = if is_system { 1 } else { 0 };
 
         ConversationStore::insert_entry_if_absent(tx, conv_id, entry, true, false)?;
@@ -412,8 +418,8 @@ impl ConversationService {
             ],
         )?;
         if !is_system
-            && crate::store::is_searchable_content_type(content_type)
-            && let Ok(body_str) = std::str::from_utf8(body)
+            && store::is_searchable_content_type(content_type)
+            && let Ok(body_str) = str::from_utf8(body)
         {
             let rowid = tx.last_insert_rowid();
             tx.execute(
@@ -429,7 +435,7 @@ impl ConversationService {
                      last_error) VALUES (?1, ?2, 'pending', NULL)",
                     rusqlite::params![entry.entry_id, m],
                 )?;
-                let payload = serde_json::to_vec(&crate::store::OutboxItem {
+                let payload = serde_json::to_vec(&OutboxItem {
                     message_id: entry.entry_id.clone(),
                     peer_address: m.clone(),
                     group: Some(conv_id.to_string()),
@@ -493,7 +499,7 @@ impl ConversationService {
                 )
             })
             .map_err(|e| {
-                if e.downcast_ref::<crate::store::StoreError>().is_some() {
+                if e.downcast_ref::<StoreError>().is_some() {
                     ConversationError::QuotaExceeded
                 } else {
                     internal(e)
@@ -661,7 +667,7 @@ impl ConversationService {
         conversation: &str,
         name: &str,
     ) -> Result<(), ConversationError> {
-        let valid_name = crate::dag::validate_group_name(name)?;
+        let valid_name = dag::validate_group_name(name)?;
         let store = self.store_for(service_id).await.map_err(internal)?;
         let conv = store
             .get_conversation(conversation)
@@ -679,7 +685,7 @@ impl ConversationService {
         let heads = store.heads(conversation).map_err(internal)?;
         let sk = load_signing_key(&store)?;
 
-        let payload = crate::dag::ProfilePayload { name: valid_name.clone() };
+        let payload = ProfilePayload { name: valid_name.clone() };
         let mut entry = WireEntry {
             entry_id: String::new(),
             conversation_id: conversation.to_string(),
@@ -695,8 +701,8 @@ impl ConversationService {
             signature: [0u8; 64],
         };
         let header = canonical_entry_bytes(&entry);
-        entry.entry_id = crate::ids::derive_entry_id(&header);
-        entry.signature = crate::dag::sign_entry(&sk, &header);
+        entry.entry_id = derive_entry_id(&header);
+        entry.signature = sign_entry(&sk, &header);
 
         store
             .queue()

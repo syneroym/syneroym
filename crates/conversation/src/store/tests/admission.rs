@@ -1,7 +1,10 @@
 use syneroym_rpc::{Admission, DropAnswer};
 
 use super::{store, store_with_config};
-use crate::store::{ConversationConfig, ConversationStore};
+use crate::{
+    dag::DELETION_REQUEST_CONTENT_TYPE,
+    store::{ConversationConfig, ConversationStore},
+};
 
 #[test]
 fn admission_visibility_filters_unaccepted_rows() {
@@ -71,7 +74,7 @@ fn admission_visibility_filters_unaccepted_rows() {
     assert_eq!(chg.messages[0].id, "m:2");
 }
 
-fn insert_undecided(s: &crate::store::ConversationStore, conv: &str, id: &str, body: &[u8]) {
+fn insert_undecided(s: &ConversationStore, conv: &str, id: &str, body: &[u8]) {
     let conn = s.conn().lock().unwrap();
     let tx = conn.unchecked_transaction().unwrap();
     s.insert_incoming_if_absent(
@@ -260,7 +263,7 @@ fn system_messages_skip_touch_conversation() {
         "m:sys",
         "did:key:zMe",
         5_000,
-        crate::dag::DELETION_REQUEST_CONTENT_TYPE,
+        DELETION_REQUEST_CONTENT_TYPE,
         b"{}",
         &[0u8; 64],
         "did:key:zPeer",

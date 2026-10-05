@@ -5,11 +5,13 @@ use syneroym_rpc::{
     ConversationGroupInfo, ConversationHistoryPage, ConversationHost, ConversationKind,
     ConversationMessage, ConversationSummary, ConversationTranscript,
 };
+use tokio::task;
 
 use crate::{
     ConversationService, crypto,
     dag::{
-        DELETION_REQUEST_CONTENT_TYPE, GroupPushRequest, GroupSyncRequest, deletion_request_body,
+        DELETION_REQUEST_CONTENT_TYPE, GroupPushRequest, GroupSyncRequest,
+        REFUSAL_NOTICE_CONTENT_TYPE, deletion_request_body,
     },
     ids::derive_conversation_id,
     internal, store,
@@ -80,8 +82,8 @@ impl ConversationHost for ConversationService {
     ) -> Result<String, ConversationError> {
         // Reject the host's own reserved content types so apps cannot send
         // system messages and have them treated as ordinary visible rows.
-        if content_type == crate::dag::DELETION_REQUEST_CONTENT_TYPE
-            || content_type == crate::dag::REFUSAL_NOTICE_CONTENT_TYPE
+        if content_type == DELETION_REQUEST_CONTENT_TYPE
+            || content_type == REFUSAL_NOTICE_CONTENT_TYPE
         {
             return Err(ConversationError::InvalidArgument(
                 "this content type is reserved".to_string(),
@@ -387,7 +389,7 @@ impl ConversationHost for ConversationService {
         let store = self.store_for(service_id).await.map_err(internal)?;
         let q = query.to_string();
         let c = conversation.map(str::to_string);
-        let msgs = tokio::task::spawn_blocking(move || store.search(&q, c.as_deref(), limit))
+        let msgs = task::spawn_blocking(move || store.search(&q, c.as_deref(), limit))
             .await
             .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
             .map_err(internal)?;
@@ -410,7 +412,7 @@ impl ConversationHost for ConversationService {
     ) -> Result<ConversationTranscript, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
         let c = conversation.to_string();
-        tokio::task::spawn_blocking(move || store.transcript_digest(&c))
+        task::spawn_blocking(move || store.transcript_digest(&c))
             .await
             .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
             .map(|(digest, rows)| ConversationTranscript { digest, rows })
@@ -423,7 +425,7 @@ impl ConversationHost for ConversationService {
         cursor: Option<String>,
     ) -> Result<ConversationExportChunk, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
-        tokio::task::spawn_blocking(move || store.export_history(cursor))
+        task::spawn_blocking(move || store.export_history(cursor))
             .await
             .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
             .map_err(bad_input_or_internal)
@@ -436,7 +438,7 @@ impl ConversationHost for ConversationService {
     ) -> Result<u32, ConversationError> {
         let store = self.store_for(service_id).await.map_err(internal)?;
         let svc = service_id.to_string();
-        tokio::task::spawn_blocking(move || store.import_history(&svc, &data))
+        task::spawn_blocking(move || store.import_history(&svc, &data))
             .await
             .map_err(|e| internal(anyhow::anyhow!("spawn_blocking failed: {e}")))?
             .map_err(bad_input_or_internal)

@@ -40,7 +40,7 @@ use syneroym_rpc::{
     Admission, ConversationDeliveryState, ConversationError, ConversationMessage,
     ConversationNotifier, NotifyOutcome, ServiceProxy,
 };
-use tokio::{sync::Mutex as TokioMutex, task};
+use tokio::{sync::Mutex as TokioMutex, task, time};
 use transport::Disposition;
 
 /// Node-level configuration, converted from `AppSandboxRole`'s
@@ -177,7 +177,7 @@ impl ConversationService {
         now: i64,
     ) {
         let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
-        let outcome = match tokio::time::timeout(
+        let outcome = match time::timeout(
             ask_timeout,
             self.notify_message(service_id, msg.clone().into_wire()),
         )

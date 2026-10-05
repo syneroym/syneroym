@@ -1,3 +1,5 @@
+use std::{thread, time::Duration};
+
 use syneroym_rpc::{Admission, ConversationDeliveryState, ConversationError, ConversationHost};
 
 use crate::{
@@ -96,7 +98,7 @@ async fn a_system_message_does_not_move_a_chat_up_the_list() {
     store.set_state(&id, ConversationDeliveryState::Delivered, None).unwrap();
     let before = store.get_conversation(&conv).unwrap().unwrap().last_activity_ms;
 
-    std::thread::sleep(std::time::Duration::from_millis(5));
+    thread::sleep(Duration::from_millis(5));
     service.delete_message(ME, &id, true).await.unwrap();
 
     let after = store.get_conversation(&conv).unwrap().unwrap().last_activity_ms;

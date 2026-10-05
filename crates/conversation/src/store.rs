@@ -22,7 +22,7 @@ use syneroym_async_queue::QueueConfig;
 use syneroym_rpc::{ConversationDeliveryState, ConversationKind, ConversationMessage};
 use zeroize::Zeroizing;
 
-use crate::dag::{EntryKind, MembershipPayload, WireEntry};
+use crate::dag::{EntryKind, MembershipPayload, ProfilePayload, WireEntry};
 
 mod backup;
 mod conversation;
@@ -190,7 +190,7 @@ pub struct StoredDagEntry {
     pub ciphertext: Option<Vec<u8>>,
     pub nonce: Option<[u8; 12]>,
     pub payload: Option<MembershipPayload>,
-    pub profile_payload: Option<crate::dag::ProfilePayload>,
+    pub profile_payload: Option<ProfilePayload>,
     pub signature: [u8; 64],
     pub applied: bool,
     pub relay_pending: bool,
