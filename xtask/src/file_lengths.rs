@@ -274,7 +274,7 @@ pub(crate) fn count_production_lines(content: &str) -> usize {
 }
 
 fn load_oversized_test_files(workspace_root: &Path) -> Result<BTreeMap<String, usize>> {
-    let list_path = workspace_root.join("xtask/oversized-test-files.txt");
+    let list_path = workspace_root.join(OVERSIZED_LIST);
     if !list_path.exists() {
         return Ok(BTreeMap::new());
     }
