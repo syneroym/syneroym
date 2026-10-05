@@ -350,6 +350,7 @@ impl ConversationStore {
                      = ?4",
                     params![drop_ans.reason, if report { 1i64 } else { 0i64 }, now_ms, message_id],
                 )?;
+                Self::mark_scrub_needed(conn)?;
             }
         }
         Ok(())
@@ -408,17 +409,27 @@ impl ConversationStore {
                  last_error = 'deleted before delivery' WHERE id = ?2",
                 params![now_ms, message_id],
             )?;
+            // Members who already have it keep their delivered state.
             let _ = conn.execute(
                 "UPDATE message_recipients SET state = 'failed', last_error = 'deleted before \
-                 delivery' WHERE message_id = ?1",
+                 delivery' WHERE message_id = ?1 AND state = 'pending'",
                 params![message_id],
             );
+        } else if outgoing == 0 && matches!(admission.as_str(), "undecided" | "held") {
+            // The author took it back before the app decided: settle it as
+            // dropped, so a later re-ask cannot accept an empty message.
+            conn.execute(
+                "UPDATE messages SET body = zeroblob(0), deleted_at = ?1, admission = 'dropped', \
+                 admission_reason = 'deleted-by-author', admission_changed_at = ?1 WHERE id = ?2",
+                params![now_ms, message_id],
+            )?;
         } else {
             conn.execute(
                 "UPDATE messages SET body = zeroblob(0), deleted_at = ?1 WHERE id = ?2",
                 params![now_ms, message_id],
             )?;
         }
+        Self::mark_scrub_needed(conn)?;
         Ok(true)
     }
 

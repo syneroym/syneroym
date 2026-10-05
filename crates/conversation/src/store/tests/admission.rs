@@ -364,3 +364,27 @@ fn pruning_never_touches_accepted_rows_or_group_conversations() {
         );
     }
 }
+
+#[test]
+fn the_prune_cuts_only_the_chat_over_its_cap() {
+    let (s, _dir) = store_with_config(ConversationConfig {
+        max_dropped_per_conversation: 2,
+        ..Default::default()
+    });
+    let busy = s.get_or_create_direct("did:key:zPeer", "conv:busy", 1_000).unwrap();
+    let quiet = s.get_or_create_direct("did:key:zOther", "conv:quiet", 1_000).unwrap();
+    for i in 0..5 {
+        drop_one(&s, &busy, &format!("b:{i}"), 1_000 + i);
+    }
+    for i in 0..2 {
+        drop_one(&s, &quiet, &format!("q:{i}"), 1_000 + i);
+    }
+
+    assert_eq!(s.prune_dropped().unwrap(), 3);
+
+    assert!(s.get_message("b:2").unwrap().is_none());
+    assert!(s.get_message("b:3").unwrap().is_some());
+    for i in 0..2 {
+        assert!(s.get_message(&format!("q:{i}")).unwrap().is_some(), "a chat at the cap keeps all");
+    }
+}

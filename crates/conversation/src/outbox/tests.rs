@@ -258,3 +258,58 @@ async fn a_second_scrub_inside_the_interval_waits_and_keeps_its_flag() {
 
     assert!(store.take_wal_checkpoint_flag(), "the second waits for its turn");
 }
+
+/// Answers every ask, but slowly.
+#[derive(Debug)]
+struct Slow {
+    asked: AtomicUsize,
+    delay: Duration,
+}
+
+#[async_trait]
+impl ConversationNotifier for Slow {
+    async fn notify_message(&self, _: &str, _: ConversationMessage) -> NotifyOutcome {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        time::sleep(self.delay).await;
+        NotifyOutcome::Answered(Admission::Accept)
+    }
+
+    async fn notify_delivery_state(&self, _: &str, _: String, _: ConversationDeliveryState) {}
+}
+
+async fn pass_with(ask_timeout_ms: u64, delay: Duration, rows: i64) -> (usize, Duration) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::ConversationConfig {
+        store: StoreConfig { admission_ask_timeout_ms: ask_timeout_ms, ..Default::default() },
+    };
+    let service = test_service_with(dir.path(), config).await;
+    let app = Arc::new(Slow { asked: AtomicUsize::new(0), delay });
+    service.register_service_notifier(
+        SVC.to_string(),
+        Arc::downgrade(&app) as Weak<dyn ConversationNotifier>,
+    );
+    let store = service.store_for(SVC).await.unwrap();
+    for i in 0..rows {
+        due_undecided(&store, &format!("m:{i}"), now_ms() + i);
+    }
+    let started = Instant::now();
+    service.renotify_undecided_once().await;
+    (app.asked.load(Ordering::SeqCst), started.elapsed())
+}
+
+#[tokio::test]
+async fn a_slow_app_that_answers_is_cut_off_at_the_pass_budget() {
+    // Each answer takes 40 ms, inside the 50 ms timeout; the pass may run
+    // for 4 timeouts (200 ms), so it stops after about 5 of the 20 rows.
+    let (asked, took) = pass_with(50, Duration::from_millis(40), 20).await;
+
+    assert!((2..20).contains(&asked), "asked {asked}");
+    assert!(took < Duration::from_millis(1_000), "took {took:?}");
+}
+
+#[tokio::test]
+async fn a_zero_ask_timeout_still_asks_one_row_per_tick() {
+    let (asked, _) = pass_with(0, Duration::ZERO, 3).await;
+
+    assert!(asked >= 1, "the pass must not stop before its first ask");
+}

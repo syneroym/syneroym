@@ -55,7 +55,7 @@ async fn a_held_incoming_message_cannot_be_deleted_by_the_app() {
 }
 
 #[tokio::test]
-async fn deleting_an_unsent_message_stops_its_delivery() {
+async fn deleting_an_unsent_message_stops_it_and_still_asks_the_peer() {
     let dir = tempfile::tempdir().unwrap();
     let service = test_service(dir.path()).await;
     let conv = service.open_direct(ME, PEER).await.unwrap();
@@ -68,9 +68,22 @@ async fn deleting_an_unsent_message_stops_its_delivery() {
     let row = store.get_message(&id).unwrap().unwrap();
     assert!(row.body.is_empty());
     assert_eq!(row.state, ConversationDeliveryState::Failed);
-    // The worker skips a queued item whose message is no longer pending,
-    // and no deletion request joined it.
-    assert_eq!(store.queue().all().unwrap().len(), 1);
+    // The worker skips the message's own queued item, since it is no longer
+    // pending. A deletion request is queued too: the send may already have
+    // reached the peer, with only the receipt lost.
+    assert_eq!(store.queue().all().unwrap().len(), 2);
+    let requests: i64 = store
+        .conn()
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND system = 1 AND \
+             content_type = ?2",
+            rusqlite::params![conv, DELETION_REQUEST_CONTENT_TYPE],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(requests, 1);
 }
 
 #[tokio::test]

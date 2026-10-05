@@ -327,16 +327,14 @@ impl ConversationHost for ConversationService {
             .get_conversation(&msg.conversation_id)
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
-        let was_pending = msg.outgoing && msg.state == ConversationDeliveryState::Pending;
         let now = store::now_ms();
         store.delete_message(&conv.id, message, now).map_err(internal)?;
 
-        // A 1:1 message that never left is taken back by cancelling its
-        // delivery, so there is nothing to ask. A group message is already in
-        // the group log, which members read on their own: the request goes
-        // out behind it so those who read the entry first then apply it.
-        let cancelled = was_pending && conv.kind == ConversationKind::Direct;
-        if ask_others && !cancelled {
+        // Ask even for a message still pending: a send may be in flight, or
+        // the peer may hold it with only the receipt lost. Deleting cancels
+        // further attempts; a peer that never got it ignores the request. A
+        // group member that gets the request first remembers it.
+        if ask_others {
             let body = deletion_request_body(message);
             if conv.kind == ConversationKind::Group {
                 let _ = self

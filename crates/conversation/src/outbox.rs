@@ -374,10 +374,11 @@ impl ConversationService {
             let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
             let started = Instant::now();
             for msg in msgs {
-                if started.elapsed() >= ask_timeout * ASK_PASS_BUDGET_FACTOR {
-                    break;
-                }
-                if self.ask_undecided_one(&svc, &store, &msg, now, ask_timeout).await {
+                // Checked after each ask, so at least one row is always asked,
+                // even with a zero timeout.
+                if self.ask_undecided_one(&svc, &store, &msg, now, ask_timeout).await
+                    || started.elapsed() >= ask_timeout * ASK_PASS_BUDGET_FACTOR
+                {
                     break;
                 }
             }

@@ -520,14 +520,13 @@ impl ConversationService {
         // `apply_pending_entries` runs, and the rest are not held hostage
         // to it in the meantime.
         let now = now_ms();
+        let mut for_app = Vec::new();
         for entry in &unapplied {
             let result = store
                 .queue()
                 .transaction(|tx, _| apply_entry(tx, svc, group_id, entry, store.config(), now));
             match result {
-                Ok((_, Some(msg))) => {
-                    self.notify_and_apply_admission(store, svc, &msg, now).await;
-                }
+                Ok((_, Some(msg))) => for_app.push(msg),
                 Ok((_, None)) => {}
                 Err(e) => {
                     tracing::warn!(
@@ -538,6 +537,16 @@ impl ConversationService {
                         "apply_pending_entries: entry did not apply"
                     );
                 }
+            }
+        }
+        // Ask the app only after the whole batch is in: a sync can bring a
+        // message and its author's deletion request together, and the app must
+        // never see the text of a message that was taken back.
+        for msg in for_app {
+            let withdrawn =
+                store.get_message(&msg.id).ok().flatten().is_none_or(|m| m.deleted_at.is_some());
+            if !withdrawn {
+                self.notify_and_apply_admission(store, svc, &msg, now).await;
             }
         }
     }

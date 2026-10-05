@@ -52,6 +52,7 @@ interface MessageRow {
   state: "pending" | "delivered" | "failed";
   last_error?: string;
   refused?: string | null;
+  restored?: boolean;
   deleted_at_secs?: number;
 }
 
@@ -482,8 +483,9 @@ function messageElement(
   const actions = document.createElement("div");
   actions.className = "message-actions";
 
-  // A deleted message is never offered for sending again.
-  if (m.state === "failed" && m.deleted_at_secs == null) {
+  // A deleted or restored message is never offered for sending again; the
+  // service refuses both.
+  if (m.state === "failed" && m.deleted_at_secs == null && !m.restored) {
     const retryBtn = text("button", "Retry", "button retry-message") as HTMLButtonElement;
     retryBtn.onclick = async () => {
       retryBtn.disabled = true;

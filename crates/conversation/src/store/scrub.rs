@@ -13,6 +13,25 @@ use rusqlite::{Connection, params};
 
 use super::ConversationStore;
 
+/// Deletes dropped rows past the cap in direct chats. Both reads are pinned
+/// to the partial index on dropped rows: without that SQLite picks the
+/// admission index and sorts every dropped row in the store. Only chats over
+/// the cap reach the sort.
+pub(super) const PRUNE_DROPPED_SQL: &str = "DELETE FROM messages WHERE rowid IN (
+     SELECT rowid FROM (
+         SELECT rowid, ROW_NUMBER() OVER (
+             PARTITION BY conversation_id ORDER BY received_at DESC, rowid DESC
+         ) AS n
+         FROM messages INDEXED BY idx_messages_dropped
+         WHERE admission = 'dropped' AND conversation_id IN (
+             SELECT d.conversation_id FROM messages d INDEXED BY idx_messages_dropped
+             JOIN conversations c ON c.id = d.conversation_id
+             WHERE d.admission = 'dropped' AND c.kind = 'direct'
+             GROUP BY d.conversation_id HAVING COUNT(*) > ?1
+         )
+     ) WHERE n > ?1
+ )";
+
 // Lock-poisoning from a panicking holder is a programming error; there is
 // no safe recovery path, matching `syneroym-async-queue`'s own precedent.
 #[allow(clippy::expect_used)]
@@ -41,25 +60,8 @@ impl ConversationStore {
     /// must keep the same rows for the transcript code to match.
     pub fn prune_dropped(&self) -> Result<usize> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        // Only chats over the cap are sorted; the count per chat comes from
-        // the partial index on dropped rows.
-        let removed = conn.execute(
-            "DELETE FROM messages WHERE rowid IN (
-                 SELECT rowid FROM (
-                     SELECT rowid, ROW_NUMBER() OVER (
-                         PARTITION BY conversation_id ORDER BY received_at DESC, rowid DESC
-                     ) AS n
-                     FROM messages
-                     WHERE admission = 'dropped' AND conversation_id IN (
-                         SELECT d.conversation_id FROM messages d
-                         JOIN conversations c ON c.id = d.conversation_id
-                         WHERE d.admission = 'dropped' AND c.kind = 'direct'
-                         GROUP BY d.conversation_id HAVING COUNT(*) > ?1
-                     )
-                 ) WHERE n > ?1
-             )",
-            params![self.config.max_dropped_per_conversation],
-        )?;
+        let removed =
+            conn.execute(PRUNE_DROPPED_SQL, params![self.config.max_dropped_per_conversation])?;
         Ok(removed)
     }
 
@@ -77,7 +79,26 @@ impl ConversationStore {
         retry
     }
 
+    /// Records, inside the caller's transaction, that a scrub is needed.
+    pub(crate) fn mark_scrub_needed(conn: &Connection) -> Result<()> {
+        conn.execute("UPDATE store_flags SET needs_scrub = 1 WHERE id = 1", [])?;
+        Ok(())
+    }
+
     fn scrub(conn: &Connection) -> bool {
+        // Cleared first, under the same lock: a delete cannot slip in between,
+        // and a pass that fails sets it again below.
+        if conn.execute("UPDATE store_flags SET needs_scrub = 0 WHERE id = 1", []).is_err() {
+            return true;
+        }
+        let retry = Self::merge_and_truncate(conn);
+        if retry {
+            let _ = Self::mark_scrub_needed(conn);
+        }
+        retry
+    }
+
+    fn merge_and_truncate(conn: &Connection) -> bool {
         if conn.execute_batch("INSERT INTO messages_fts(messages_fts) VALUES('optimize');").is_err()
         {
             return true;

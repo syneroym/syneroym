@@ -5,8 +5,8 @@ use std::{fs, path::Path};
 use rusqlite::Connection;
 use syneroym_rpc::{Admission, DropAnswer};
 
-use super::{store, store_in_dir, store_with_config};
-use crate::store::{ConversationConfig, ConversationStore};
+use super::{open_at, store, store_in_dir, store_with_config};
+use crate::store::{ConversationConfig, ConversationStore, scrub::PRUNE_DROPPED_SQL};
 
 /// Unique enough to appear nowhere else: the word and one of its trigrams.
 const WORD: &[u8] = b"zqxjvk";
@@ -148,11 +148,39 @@ fn a_zero_interval_never_delays_a_scrub() {
 }
 
 #[test]
-fn a_freshly_opened_store_asks_for_one_scrub() {
-    // A delete just before a restart left text in the index; the flag that
-    // would have scrubbed it lived only in memory.
-    let s = store();
+fn a_new_store_has_nothing_to_scrub() {
+    assert!(!store().take_wal_checkpoint_flag(), "no rewrite of the index on a clean start");
+}
 
-    assert!(s.take_wal_checkpoint_flag(), "the first tick after opening scrubs once");
-    assert!(!s.scrub_and_checkpoint(), "with nothing to merge the pass finishes");
+#[test]
+fn a_scrub_cut_short_by_a_restart_runs_after_reopening() {
+    let (s, dir) = store_in_dir();
+    let conv = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
+    accepted_message(&s, &conv, "m:keep", b"an ordinary message that stays");
+    accepted_message(&s, &conv, "m:gone", b"a note about zqxjvk to remove");
+    s.delete_message(&conv, "m:gone", 2_000).unwrap();
+    drop(s);
+
+    let reopened = open_at(&dir, ConversationConfig::default());
+
+    assert!(reopened.take_wal_checkpoint_flag(), "the needed scrub survives the restart");
+    assert!(!reopened.scrub_and_checkpoint());
+    assert!(!files_contain(&dir, WORD));
+    assert!(!files_contain(&dir, TRIGRAM));
+    drop(reopened);
+    assert!(!open_at(&dir, ConversationConfig::default()).take_wal_checkpoint_flag());
+}
+
+#[test]
+fn the_dropped_row_prune_reads_through_its_own_index() {
+    let s = store();
+    let conn = s.conn().lock().unwrap();
+    let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {PRUNE_DROPPED_SQL}")).unwrap();
+    let plan: Vec<String> =
+        stmt.query_map([10_000], |r| r.get::<_, String>(3)).unwrap().map(Result::unwrap).collect();
+    let plan = plan.join("\n");
+
+    assert!(plan.contains("idx_messages_dropped"), "{plan}");
+    assert!(!plan.contains("idx_messages_undecided"), "{plan}");
+    assert!(!plan.contains("TEMP B-TREE FOR GROUP BY"), "{plan}");
 }

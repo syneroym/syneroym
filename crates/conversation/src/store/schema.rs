@@ -26,16 +26,15 @@ impl ConversationStore {
         std::fs::create_dir_all(dir)?;
         let conn = open_connection(&dir.join("conversation.db"), dek)?;
         Self::init_schema(&conn)?;
+        let needs_scrub: bool =
+            conn.query_row("SELECT needs_scrub FROM store_flags WHERE id = 1", [], |r| r.get(0))?;
         let conn = Arc::new(Mutex::new(conn));
         let queue = Queue::from_connection(conn.clone(), queue_config)?;
         Ok(Self {
             conn,
             queue,
             config,
-            // The flag lives only in memory, so a delete just before a restart
-            // would otherwise never be scrubbed. One pass at startup is cheap
-            // when the index has nothing to merge.
-            needs_wal_checkpoint: AtomicBool::new(true),
+            needs_wal_checkpoint: AtomicBool::new(needs_scrub),
             needs_drop_prune: AtomicBool::new(false),
             last_scrub: Mutex::new(None),
         })
@@ -217,6 +216,16 @@ const TABLE_GROUP_DDL: &[&str] = &[
      -- that cheap while a blocked sender floods a chat.
      CREATE INDEX IF NOT EXISTS idx_messages_dropped
          ON messages(conversation_id, received_at) WHERE admission = 'dropped';
+
+     -- Whether deleted or dropped text may still sit in the search index or
+     -- the log. Set in the same transaction as the delete or drop, cleared
+     -- by a finished scrub, and read at open so a restart neither loses a
+     -- needed scrub nor runs one that is not needed.
+     CREATE TABLE IF NOT EXISTS store_flags (
+        id          INTEGER PRIMARY KEY CHECK (id = 1),
+        needs_scrub INTEGER NOT NULL
+     );
+     INSERT OR IGNORE INTO store_flags (id, needs_scrub) VALUES (1, 0);
 
      -- A group deletion request that named a message this node does not
      -- hold yet. Keyed by author too, so a request from someone who did not

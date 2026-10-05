@@ -22,7 +22,12 @@ pub(crate) fn store_with_config(config: ConversationConfig) -> (ConversationStor
     // Leak the tempdir so the file lives for the test's duration; each
     // test gets its own directory so this is bounded.
     let path = Box::leak(Box::new(dir)).path();
-    let store = ConversationStore::open_encrypted(
+    (open_at(path, config), path.to_path_buf())
+}
+
+/// Opens (or reopens, as after a restart) the store in `path`.
+pub(crate) fn open_at(path: &std::path::Path, config: ConversationConfig) -> ConversationStore {
+    ConversationStore::open_encrypted(
         path,
         None,
         QueueConfig {
@@ -38,8 +43,7 @@ pub(crate) fn store_with_config(config: ConversationConfig) -> (ConversationStor
         },
         config,
     )
-    .unwrap();
-    (store, path.to_path_buf())
+    .unwrap()
 }
 
 #[test]
