@@ -8,7 +8,8 @@ thinking, so we do not lose it.
 
 ## How to add one
 
-Create `docs/ideas/<kebab-case-name>.md`. Start with this front matter:
+Create `docs/ideas/<kebab-case-name>.md`. Start with this front matter. It is a
+convention for readers, and no tool checks it:
 
 ```text
 ---
@@ -24,7 +25,7 @@ status: seed
 | `exploring` | We are thinking about it, but have not decided to build it. |
 | `parked` | Good idea, wrong time. Say what would make it the right time. |
 | `rejected` | We decided not to do it. Keep the reason, so we do not repeat the debate. |
-| `promoted` | It became a real change doc. Add `promoted-to: docs/planning/changes/<name>/change.md`. |
+| `promoted` | It became a real change doc. Add `promoted-to:` with the path of the change doc. |
 
 Write whatever helps: the problem, why it matters, rough approach, doubts,
 links. No fixed sections.

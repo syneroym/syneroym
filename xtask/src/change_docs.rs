@@ -1,15 +1,10 @@
-//! Check the front matter of change docs (`docs/planning/changes/`) and ideas
-//! (`docs/ideas/`).
+//! Check the front matter of change docs under `docs/planning/changes/`.
 //!
 //! A change doc is the temporary workspace for one feature: spec, design and
 //! the list of places where the code differed from the plan. When the work is
 //! done, its result moves into the living docs. This check makes that move
 //! visible: a `done` change doc must name the living docs it updated (or say
 //! why none needed an update), and every named file must exist.
-//!
-//! An idea is a note that nobody has committed to build. It needs a `status`,
-//! and an idea marked `promoted` must point at the change doc it became with
-//! `promoted-to:`.
 //!
 //! Front matter format (a subset of YAML, parsed by hand to avoid a new
 //! dependency):
@@ -33,8 +28,6 @@ use anyhow::{Result, bail};
 const CHANGES_DIR: &str = "docs/planning/changes";
 const CHANGE_FILE: &str = "change.md";
 const DEVIATIONS_HEADING: &str = "## Deviations";
-const IDEAS_DIR: &str = "docs/ideas";
-const IDEA_STATUSES: &[&str] = &["seed", "exploring", "parked", "rejected", "promoted"];
 const STATUSES: &[&str] = &["draft", "approved", "in-progress", "done", "abandoned"];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -47,7 +40,6 @@ enum Touched {
 struct FrontMatter {
     status: Option<String>,
     touched: Vec<Touched>,
-    promoted_to: Option<String>,
 }
 
 /// Splits `text` into the front-matter lines and the remaining body.
@@ -68,9 +60,6 @@ fn parse_front_matter(lines: &[&str]) -> FrontMatter {
                 Some(reason) => Touched::None(reason.trim().to_string()),
                 None => Touched::Path(item.to_string()),
             });
-        } else if let Some(value) = line.strip_prefix("promoted-to:") {
-            fm.promoted_to = Some(value.trim().to_string());
-            in_touched = false;
         } else if let Some(value) = line.strip_prefix("status:") {
             fm.status = Some(value.trim().to_string());
             in_touched = false;
@@ -104,26 +93,6 @@ fn validate(text: &str, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
         problems.extend(validate_close_out(&fm.touched, exists));
     }
     problems
-}
-
-/// Returns the problems found in one idea note.
-fn validate_idea(text: &str, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
-    let Some((lines, _)) = split_front_matter(text) else {
-        return vec!["missing front matter block (`---` ... `---`)".to_string()];
-    };
-    let fm = parse_front_matter(&lines);
-    match fm.status.as_deref() {
-        None => vec!["front matter has no `status:`".to_string()],
-        Some(s) if !IDEA_STATUSES.contains(&s) => {
-            vec![format!("status `{s}` is not one of {}", IDEA_STATUSES.join(", "))]
-        }
-        Some("promoted") => match fm.promoted_to.as_deref() {
-            Some(path) if exists(path) => Vec::new(),
-            Some(path) => vec![format!("promoted-to names `{path}`, which does not exist")],
-            None => vec!["status is `promoted` but `promoted-to:` is missing".to_string()],
-        },
-        Some(_) => Vec::new(),
-    }
 }
 
 fn validate_close_out(touched: &[Touched], exists: &dyn Fn(&str) -> bool) -> Vec<String> {
@@ -164,55 +133,29 @@ fn change_doc_paths(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn idea_paths(root: &Path) -> Result<Vec<PathBuf>> {
-    let dir = root.join(IDEAS_DIR);
-    if !dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(&dir)? {
-        let path = entry?.path();
-        let is_note = path.extension().is_some_and(|e| e == "md")
-            && path.file_name().is_some_and(|n| n != "README.md");
-        if is_note {
-            paths.push(path);
-        }
-    }
-    paths.sort();
-    Ok(paths)
-}
-
-/// Prints each problem and returns how many there were.
-fn report(root: &Path, paths: &[PathBuf], check: impl Fn(&str) -> Vec<String>) -> usize {
+pub fn check_change_docs() -> Result<()> {
+    println!("Checking change doc front matter under {CHANGES_DIR}/...");
+    let root = crate::get_workspace_root();
+    let exists = |rel: &str| root.join(rel).is_file();
     let mut failures = 0;
-    for path in paths {
-        let shown = path.strip_prefix(root).unwrap_or(path).display();
+    let paths = change_doc_paths(&root)?;
+
+    for path in &paths {
+        let shown = path.strip_prefix(&root).unwrap_or(path).display();
         let problems = match fs::read_to_string(path) {
-            Ok(text) => check(&text),
-            Err(_) => vec![format!("each change doc folder needs a `{CHANGE_FILE}` file")],
+            Ok(text) => validate(&text, &exists),
+            Err(_) => vec![format!("each folder needs a `{CHANGE_FILE}` file")],
         };
         for p in &problems {
             eprintln!("  ERROR: {shown}: {p}");
         }
         failures += problems.len();
     }
-    failures
-}
-
-pub fn check_doc_front_matter() -> Result<()> {
-    println!("Checking front matter under {CHANGES_DIR}/ and {IDEAS_DIR}/...");
-    let root = crate::get_workspace_root();
-    let exists = |rel: &str| root.join(rel).is_file();
-    let changes = change_doc_paths(&root)?;
-    let ideas = idea_paths(&root)?;
-
-    let failures = report(&root, &changes, |t| validate(t, &exists))
-        + report(&root, &ideas, |t| validate_idea(t, &exists));
 
     if failures > 0 {
-        bail!("Doc front matter check failed with {failures} problem(s)");
+        bail!("Change doc check failed with {failures} problem(s)");
     }
-    println!("All {} change doc(s) and {} idea(s) are valid.", changes.len(), ideas.len());
+    println!("All {} change doc(s) are valid.", paths.len());
     Ok(())
 }
 
@@ -283,32 +226,5 @@ mod tests {
     fn none_without_reason_is_reported() {
         let front = "status: done\nliving-docs-touched:\n  - none:";
         assert!(validate(&doc(front), &never)[0].contains("reason"));
-    }
-
-    fn idea(front: &str) -> String {
-        format!("---\n{front}\n---\n# Idea\n")
-    }
-
-    #[test]
-    fn idea_with_known_status_passes() {
-        assert!(validate_idea(&idea("status: seed"), &never).is_empty());
-    }
-
-    #[test]
-    fn idea_without_front_matter_is_reported() {
-        assert_eq!(validate_idea("# Idea\n", &always).len(), 1);
-    }
-
-    #[test]
-    fn idea_with_unknown_status_is_reported() {
-        assert!(validate_idea(&idea("status: draft"), &always)[0].contains("not one of"));
-    }
-
-    #[test]
-    fn promoted_idea_needs_existing_target() {
-        assert!(validate_idea(&idea("status: promoted"), &always)[0].contains("missing"));
-        let front = "status: promoted\npromoted-to: docs/a.md";
-        assert!(validate_idea(&idea(front), &always).is_empty());
-        assert!(validate_idea(&idea(front), &never)[0].contains("does not exist"));
     }
 }
