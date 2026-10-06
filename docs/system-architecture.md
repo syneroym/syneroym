@@ -1,5 +1,8 @@
 # Syneroym Ecosystem — Architecture Document
 
+> **Status legend.** No marker means implemented. **Envisioned** means we want this and it is not built.
+> Anything that is not built must carry the Envisioned marker.
+
 > **Migration Note:** The architectural designs and roadmap have been significantly updated post-dd864a1. See the **Post-DD864A1 Target Designs (Addendum)** at the bottom of this document for the canonical Layer 1-4 definitions.
 
 > [!WARNING]
@@ -232,63 +235,120 @@ flowchart TD
 
 ## Layer 2 — Substrate Runtime
 
+*Reader: a developer who works on the substrate, or who deploys an app to it.*
+
+Layer 2 is the program that runs on each node. It accepts connections and checks who the caller is. It runs the services the caller asks for, and it stores their data. This layer has five parts: the internal architecture, packaging and backup, storage and write rules, multi-host deployment, and the API surface.
+
+Terms used here: a **service** is the unit a caller addresses. It is a native Rust service, a WASM component, or a TCP service. A **guest** is a WASM component that runs in the sandbox. A **SynApp** is a set of services that are deployed together from one manifest. See [TERMINOLOGY.md](TERMINOLOGY.md) for the other project terms.
+
 ### Substrate Internal Architecture
+
+The substrate is one binary, `syneroym-substrate` (crate `crates/substrate`). It runs on Tokio. The node config (`SubstrateConfig`) turns each **role** on or off. Cargo features decide which roles are compiled in. A node can run any subset of the roles.
 
 ```mermaid
 flowchart TD
     subgraph SUBSTRATE["SYN-SUBSTRATE (Rust / Tokio)"]
         direction TB
-        
-        subgraph INGRESS["Ingress / API Gateway"]
-            WS[JSON-RPC over WebSocket for edge of WASM, say Browsers, CLI]
-            wRPC[WASM component-component local or network calls]
+
+        subgraph INGRESS["Ingress"]
             QUIC_EP[Iroh QUIC Endpoint]
             WRT[WebRTC Data Channel]
+            GW[Client Gateway local HTTP proxy]
+        end
+
+        subgraph ROUTING["Connection Router"]
+            IDENT[Stream identity check]
+            PIPE[Route pipeline: encryption, transport, adaptation, service]
         end
 
         subgraph CORE["Core Services"]
-            KM[Key Manager Ed25519 + Delegation]
-            AC[Access Control Engine]
-            MSG[Message Router]
-            ORCH[Service Orchestrator Deploy / Lifecycle]
+            KM[Keys: identity + delegation, KEK/DEK key store, supervisor key vault]
+            ORCH[Control Plane: deploy and lifecycle]
+            SUP[App Supervisor: desired state and reconcile]
+            PROXY[Universal Proxy: service-to-service calls]
+            MQTT[Embedded MQTT broker]
         end
 
         subgraph SANDBOX["Sandbox Environments"]
             WASM[Wasmtime WASM Component Runtime]
-            OCI[Podman Rootless OCI Container Runtime]
+            OCI[Podman OCI Container Runtime]
         end
 
         subgraph STORAGE["Storage Layer"]
-            CRSQL[SQLite (encrypted) Store]
-            QUEUE[Offline Outbox Queue SQLite + Tokio channel]
+            SQLITE[Encrypted SQLite per service, one writer]
+            QUEUE[Durable outbox SQLite]
             BLOB[Content-addressed Blob Store]
-            LS[Litestream WAL Replication]
-        end
-
-        subgraph UTIL["Shared Utilities"]
-            DISC[Matching Fabric Client]
-            REP[Reputation Engine]
-            PAY[Payment Adapter]
         end
     end
 
-    INGRESS --> AC
-    AC --> CORE
-    CORE --> SANDBOX
+    QUIC_EP --> IDENT
+    WRT --> IDENT
+    IDENT --> PIPE
+    PIPE -->|"native service"| CORE
+    PIPE -->|"JSON-RPC to WASM"| WASM
+    PIPE -->|"TCP proxy"| OCI
     CORE --> STORAGE
-    CORE --> UTIL
-    STORAGE --> LS
-    LS -->|"stream WAL"| BACKUP[(Backup Store S3-compatible / peer)]
+    WASM -->|"host capabilities, row-level policy (FDAE)"| STORAGE
+    PROXY --> QUEUE
 
     style SUBSTRATE fill:#f0f4f8,stroke:#1F4E79
     style INGRESS fill:#D6E4F0,stroke:#2E75B6
+    style ROUTING fill:#D6E4F0,stroke:#2E75B6
     style CORE fill:#D6E4F0,stroke:#2E75B6
     style SANDBOX fill:#E2EFDA,stroke:#548235
     style STORAGE fill:#FFF2CC,stroke:#BF9000
-    style UTIL fill:#FCE4D6,stroke:#C55A11
 ```
 
+**Roles.** Set them in `SubstrateConfig.roles`.
+
+| Role | What it does |
+|---|---|
+| `app_sandbox` | Runs WASM components with Wasmtime (crate `syneroym-sandbox-wasm`). |
+| `podman_sandbox` | Runs OCI containers by calling the host's `podman` command (crate `syneroym-sandbox-podman`). |
+| `client_gateway` | A local HTTP proxy. It maps the `Host:` header to a service. It forwards the request to the node of that service as a stream. |
+| `community_registry` | Service discovery. It stores signed endpoint records. |
+| `coordinator` | Helps two peers find a channel to each other. It relays data when no direct path exists. It has an Iroh part and a WebRTC part. |
+| `auth` | Login and session tokens for the client gateway. |
+| `observability` | Metrics, health, logging and tracing. |
+| `supervisor` | The App Supervisor. It holds the desired state and the master keys of the app instances it manages. It reconciles those instances against their desired state. |
+| `roym` | Links the Roym services into the binary (Cargo feature `roym`). |
+
+Two more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`.
+
+**Ingress.** A node accepts streams on two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. Iroh is the peer-to-peer networking library from Layer 1. HTTP/1.1 requests travel inside these streams. The client gateway takes a local HTTP request and sends it to the target node as a stream. Browsers and the CLI send JSON-RPC 2.0 requests this way.
+
+WebSocket is an option for one app. The guest declares an HTTP route with `target = "websocket"`. The router upgrades the connection and hands each frame to the guest. The app defines the frames. They are not JSON-RPC.
+
+**Routing.** Every stream starts with a route preamble: `<scheme>://<interface>.<service_id>[?enc=...]`. The router reads the preamble and checks who the caller is. Then it plans a pipeline of four stages: encryption, transport, adaptation and service. The service stage is one of three things: a native Rust service, a WASM component, or a TCP proxy to a container or another TCP service. The preamble grammar is in `crates/router/src/preamble.rs`.
+
+**Access control.** There are three layers. No single component holds all of them.
+
+1. **Stream identity.** The caller's temporary key must carry a delegation certificate. The certificate is signed by the caller's master DID (the stable identity of a person or a service member). The router checks this when the stream opens. A caller can add a signed chain of capability tokens (ADR-0015) to gain more rights.
+2. **Per-service admission.** A native service rejects a caller without a verified identity. A service can also admit or refuse each method. A WASM guest may admit anonymous callers.
+3. **Row-level policy.** FDAE (Federated Data-Aware Authorization Engine, ADR-0017) compiles a policy into the data-layer query. A caller sees only the rows and fields it may see.
+
+**Keys.** Three parts hold keys. There is no single key manager.
+
+- `syneroym-identity` holds Ed25519 identities and delegation certificates.
+- `syneroym-data-keystore` holds the key encryption key (KEK) of the node and the data encryption key (DEK) of each service.
+- The App Supervisor key vault holds the master key of each managed app instance.
+
+**Deploy and lifecycle.** Three parts share this work.
+
+- The client side (`roymctl`, the SDK) compiles an app manifest into a deployment plan.
+- The Control Plane service on each node deploys and removes services.
+- The App Supervisor (ADR-0021) reconciles each managed app against its desired state.
+
+**Sandboxes.**
+
+- **Wasmtime** runs WASM components. Limits cover memory, fuel (CPU work) and wall-clock time. The fuel quota schema is in ADR-0005.
+- **Podman** runs containers. The substrate calls the host's `podman` command (`podman run -d --network bridge`). It does not check whether Podman runs rootless. Run Podman rootless on the host. This is advice to the operator. See the [developer guide](developer-guide.md#developing-podman-services-locally).
+
+**Not substrate components.** Discovery and matching, reputation and payments are app features. They are not parts of the substrate runtime. See [Layer 3](#layer-3--shared-substrate-utilities). Today Roym provides discovery (the `directory` service) and payment records and signed receipts (the `transaction` service).
+
 ### SynApp Packaging & API Pipeline
+
+A developer writes a WIT interface (WebAssembly Interface Types), generates Rust bindings, and builds a WASM component. A manifest names the components. `roymctl app deploy` sends the manifest to the substrate.
 
 **Packaging**
 
@@ -299,74 +359,108 @@ flowchart LR
     RS[Rust SynApp Source]
     WASM_C[WASM Component .wasm]
     APP_SPEC[App Spec .toml manifest]
-    SUB[Substrate Orchestrator]
-    JRPC[JSON-RPC 2.0 External API (wRPC planned)]
+    SUB[Substrate Control Plane]
+    JRPC[JSON-RPC 2.0 External API]
 
     WIT -->|generates bindings| WB
     WB --> RS
-    RS -->|"cargo component build"| WASM_C
+    RS -->|"cargo component build (wasm32-wasip2)"| WASM_C
     WASM_C --> APP_SPEC
-    APP_SPEC -->|deploy| SUB
+    APP_SPEC -->|"roymctl app deploy"| SUB
     SUB -->|derives automatically| JRPC
 
     style WIT fill:#1F4E79,color:#fff
     style JRPC fill:#2E75B6,color:#fff
 ```
 
-**Migration Protocol and Backup Substrate Mechanism**
-- `syneroym export --app <app-id>` produces a signed archive: SQLite snapshot + blob store + identity keypair (optional) + App Spec
-- Archive is portable to any substrate running a compatible substrate version
-- Import validates the archive signature and replays into a fresh SQLite instance
-- **Torrent-Style Backup Pool:** Litestream continuous replication can keep a live replica on a secondary node. This is formalised into a "Backup Substrate" mutual pool model. Nodes allocate storage to host symmetrically encrypted backups of others in exchange for participating in the network's backup pool.
-- **Active Failover:** In advanced configurations, a Backup Substrate can act as a hot standby, temporarily responding on a downed peer's behalf with cached state to ensure continuous discoverability.
+The substrate converts between JSON and WIT values at the component boundary. The WIT type of the target function directs the conversion. A developer does not write an API layer by hand.
+
+**Backup and Restore**
+
+Roym has an archive format. `roymctl roym backup create` writes one file. The file holds:
+
+- The master identity of the person, encrypted.
+- The data of five Roym services: `profile`, `catalog`, `conversation`, `transaction` and `directory`. Each service exports its own documents through its own interface.
+
+The command seals the data with AES-GCM under a random 32-byte recovery key. It shows the key once and never stores it. The archive header (version, subject DID, time) is authenticated. Each service bundle has a manifest that the person signs. Restore checks the signature.
+
+Restore has two commands. `restore-identity` writes the master key file. `restore-data` replays the bundles into the running Roym services through the gateway. It is safe to run again after an interrupted restore. Restore accepts only archive version 1.
+
+After a restore, the node has new addresses. The person can read old conversations, but they cannot continue. The test `a_provider_transaction_survives_an_encrypted_backup_and_restore` in `crates/substrate/tests/roym_restore_e2e.rs` covers backup and restore of a provider transaction.
+
+`roymctl identity export` and `roymctl identity import` move one local identity as an encrypted file. For the full steps, see [Moving a Substrate to a New Machine](developer-guide.md#moving-a-substrate-to-a-new-machine).
+
+> **Envisioned.** Not built yet. Only Roym has an archive format today. There is no `syneroym` binary and no generic app export.
+>
+> - **Generic app export.** One command exports any SynApp as a signed archive. The archive holds an SQLite snapshot, the blob store, the App Spec, and optionally the identity keypair. Import checks the signature and replays into a fresh SQLite instance. The archive moves to any substrate with a compatible version.
+> - **Replicated backups.** A live copy of a service database, and periodic backups to an S3-compatible store, follow the design in [PLT-RED](#plt-red-service-redundancy). That design ships WAL frames over Iroh and promotes a secondary by hand.
 
 ### Storage & Write Arbitration
 
-Structured data lives in one encrypted SQLite database per service (`rusqlite` + `sqlcipher`), single-writer / multi-reader. There is exactly one writer per service at a time — a replica stays read-only until an operator promotes it (`[PLT-RED]`). Two writers never touch the same database concurrently, so there is nothing to merge at the storage layer.
+Structured data lives in one SQLite database per service (`state.db`). The database uses `rusqlite` with SQLCipher (ADR-0006). Encryption is on by default. Set `storage.encryption` to turn it off. Each service has its own data encryption key. The node's KEK wraps it. The KEK must be injected before an encrypted database can open.
 
-What looks like a "conflict" is really two requests racing to reach the single writer. The writer serializes them and applies a business-level arbitration rule per entity:
+Each database has one writer task. It takes every write from a queue and applies the writes one at a time. Reads use a pool of reader connections. One task does all writes, so the storage layer has nothing to merge.
 
-| Entity | Arbitration Rule | Rationale |
+The blob store is content-addressed. The key of a blob is the SHA-256 hash of its plaintext, so the same bytes are stored once. Blobs are encrypted at rest with AES-256-GCM in 256 KiB segments. A key derived from the service key encrypts them. An S3-compatible backend is an optional Cargo feature (`aws`, ADR-0009).
+
+**Durable outbox.** A guest can queue a call to another service. The substrate saves the call in an SQLite outbox that belongs to the calling service. The outbox is a file next to the encrypted database of that service. A worker on the node retries the call with backoff. A call that can never succeed goes to a dead-letter table (ADR-0023). The receiver can fence a call that carries an idempotency key. The call then runs once, even if it is delivered more than once. The receiver refuses a call that has a key but no verified caller.
+
+**Write rules.** The data layer does not decide who wins a race. It only puts the writes in order. The rules below are in the Roym services. Bookings are written on the provider's node only, so a race is two requests that reach one writer.
+
+| Record | Rule | Rationale |
 |---|---|---|
-| Order state | Provider action beats a same-instant consumer action; otherwise first request wins | Provider has operational authority over their service |
-| Catalog item | Last write wins per field | Catalog is provider-owned; no concurrent consumer writes |
-| Message | Append-only log; no arbitration needed | Messages are immutable once sent |
-| Booking slot | First confirmed reservation wins; later requests for the same slot are rejected | Prevents double-booking |
-| Reputation record | Append-only; signed by issuer | Records are immutable attestations |
-| Access control policy | Provider's write wins; infrastructure provider cannot override | Data sovereignty |
+| Agreement decision | One decision per agreement. The first claim wins. A later attempt is answered `AlreadyDecided`. | The provider's node is the only writer. |
+| Booking slot | Seats are claimed in order with the create fence of the data layer. When no seat is free, the answer is `SlotTaken`. | Prevents double-booking. |
+| Listing (catalog) | The whole listing is saved with `put`, so the last write wins for the listing. Each version is also kept in a history collection. | The catalog is provider-owned. |
+| Message | Append-only log. An entry that is already stored is ignored. | Messages are immutable once sent. |
+| Access control policy (FDAE) | The policy is saved as one document per service. A new policy replaces the old one at once. | A tighter policy must take effect immediately (ADR-0017). |
 
-A disconnected client (secondary device, mobile app, offline peer) is not a second writer — it is a client whose requests queue locally and replay against the single writer on reconnect, via the standard offline outbox (`[PLT-ASY]`), guarded by idempotency keys. See [Multi-Device Sync](#multi-device-sync-and-sharded-deployment).
+> **Envisioned.** Not built yet. Roym has no order entity and no reputation record, so two rules are not in the code.
+>
+> - **Order state.** A provider action beats a same-instant consumer action. Otherwise the first request wins. The reason: the provider has operational authority over their service. Today the nearest rule is the agreement decision above.
+> - **Reputation record.** The log is append-only, and the issuer signs each record. Today Roym has signed receipts (payment acknowledgement, fulfilment receipt) but no reputation record.
+
+> **Envisioned.** Not built yet. Today there is one database per service and no replica role.
+>
+> A replica of a service database stays read-only until an operator promotes it ([PLT-RED](#plt-red-service-redundancy)). Then there is exactly one writer per service at a time. A disconnected client (secondary device, mobile app, offline peer) is not a second writer. Its requests queue locally. They replay against the single writer on reconnect, guarded by idempotency keys. See [Multi-Device Sync](#multi-device-sync-and-sharded-deployment).
 
 ### Multi-Device Sync and Sharded Deployment
 
-This section addresses two requirements: app sync across secondary provider devices and app sharding across multiple hosts.
+This section covers two needs. The first is apps that work across the devices of a provider. The second is one app that runs on several hosts.
 
 **A) Multi-device sync (primary + secondary provider devices)**
 
-- A secondary provider device is a client of the primary service, not a second writer to its database.
-- Requests made offline queue in the device's local outbox (`[PLT-ASY]`), each tagged with an idempotency key.
-- On reconnection, queued requests replay against the single writer, which applies the arbitration rules from [Storage & Write Arbitration](#storage--write-arbitration).
-- Operational ownership (for example, order lifecycle authority) stays deterministic because there is one writer, not because of a merge step.
+> **Envisioned.** Not built yet. No secondary-device feature exists. The SDK client does not set an idempotency key on its requests, and the durable outbox runs on the node, not on a device.
+>
+> - A secondary provider device is a client of the primary service. It is not a second writer to the database.
+> - Requests made offline queue in the local outbox of the device ([PLT-ASY](#plt-asy-asynchronous-operations--scheduling)). Each request has an idempotency key.
+> - On reconnection, the queued requests replay against the single writer.
+> - Operational ownership stays deterministic because there is one writer. A merge step is not needed.
 
-**B) Sharded SynApp deployment (single app across multiple hosts)**
+**B) One app on several hosts**
 
-- App Spec supports per-component placement constraints, allowing components to run on distinct nodes.
-- The substrate orchestrator schedules components based on declared resource class (`cpu`, `memory`, `gpu`, locality tags).
-- Inter-shard communication uses substrate-authenticated service identities over QUIC/WebSocket.
-- Failure of one shard does not halt unrelated shards; dependent workflows move to queued/retry mode until dependencies recover.
+The operator keeps a **substrate inventory**: a list of substrates, each with an alias. A manifest names a substrate with `[placement]`. A manifest can set a default, and each service can override it. A deploy resolves every alias and connects to each substrate. Then it sends one deploy call for each service and substrate. The steps are in [Deploying a Multi-Substrate App](developer-guide.md#deploying-a-multi-substrate-app-roymctl-app-deploy).
 
-Example placement:
+`replicas = N` on a service makes the compiler emit N members. The topology mode becomes `Redundant`. A call without a routing key goes to the members in turn. A call with a routing key goes to one member, chosen by rendezvous hashing. Each member is a separate service with its own database. The members do not share data.
 
-- `catalog-browser` + `space-manager` on low-cost edge node
-- `order-engine` + `payment-adapter` on higher-availability node
-- `drm-content-server` on storage-optimised node
+Calls between services on different substrates use Iroh QUIC with JSON-RPC. The receiving node checks the identity of the caller when the stream opens. A call to a service that is down fails after the retry policy. A guest can queue a call in the durable outbox, so the substrate retries it later. Other services keep working.
+
+Example placement: the Roym services (`crates/roym_core/app/roym.toml`) are `web`, `profile`, `conversation`, `catalog`, `transaction` and `directory`. Each one can name a substrate.
+
+> **Envisioned.** Not built yet. Today the operator chooses each placement by name. Nothing schedules services.
+>
+> - **Resource-class scheduling.** The orchestrator places each service by the resource class it declares (`cpu`, `memory`, `gpu`, locality tags). Today the only attribute in the inventory is the list of service types that a substrate can run.
+> - **Sharded mode.** The resolver can choose a member by routing key (`Sharded`, with hash or entity-tag sub-strategies). The compiler never emits `Sharded`, and no manifest field selects it.
+> - **Queued dependents.** A dependent workflow moves to queued and retry mode by itself while a dependency is down. Today a guest queues a call by choice.
 
 ### Substrate API Surfaces
 
-To support diverse caller types (WASM components, peer substrates, CLI, browsers, external integrations), the substrate exposes **two API surfaces, both derived from identical WIT definitions**:
+The substrate has one API surface: **JSON-RPC 2.0**. It serves WASM components (through the Universal Proxy), peer substrates (over Iroh QUIC), the CLI, browsers, the provider status UI and third-party integrations. The substrate derives the surface from the WIT definitions. It converts each JSON value to the WIT type of the target function.
 
-- **wRPC surface** — for WASM SynApp components (intra-substrate) and peer substrates (cross-node over Iroh QUIC), CLI. WIT types are preserved end-to-end; zero serialization overhead.
-- **JSON-RPC 2.0 surface** — for browsers and third-party integrations, the provider status UI, and third-party integrations. Derived automatically from WIT; documented as an OpenRPC schema.
+> **Envisioned.** Not built yet. Today every call converts between JSON and WIT values. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error.
+>
+> - **wRPC surface.** WASM components, peer substrates (over Iroh QUIC) and the CLI use wRPC, derived from the same WIT definitions. WIT types are kept end to end, with no JSON conversion.
+> - **OpenRPC schema.** The JSON-RPC surface is documented as an OpenRPC schema.
 
 ---
 
@@ -1000,9 +1094,10 @@ The substrate ships a **multi-node simulation harness** used during development 
 
 - Runs N substrate instances in a single test binary with a controllable fake network
 - Induces partitions, delays, and node restarts deterministically
-- Every arbitration rule in [Storage & Write Arbitration](#storage--write-arbitration) has a corresponding simulation scenario verifying the deterministic outcome
 - Property-based tests (`proptest`) verify outbox replay is idempotent for arbitrary request orderings and retries
 - Simulation output carries the same `trace_id` correlation used in production — failures are immediately diagnosable from the trace
+
+> **Envisioned.** Not built yet. The code has no simulation harness. When it exists, each write rule in [Storage & Write Arbitration](#storage--write-arbitration) gets a scenario that checks the outcome.
 
 The harness is built during the walking skeleton stage and extended with each new component. It is the primary validation tool for offline and reconnect behavior before it reaches a real provider's device.
 
@@ -1093,10 +1188,10 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 | # | TBD Item (from requirements spec) | Resolution | Section |
 |---|---|---|---|
-| 1 | Migration protocol | Signed `SynExport` archive; SQLite snapshot + blob store + App Spec; `syneroym export/import` CLI | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
-| 2 | Backup mechanism | Litestream WAL streaming to S3-compatible or peer node; continuous or on-demand | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
-| 3 | Storage conflict model | Single writer per service (SQLite); arbitration rules per entity type, not CRDT merge | [Storage & Write Arbitration](#storage--write-arbitration) |
-| 4 | Conflict resolution rules per entity type | Arbitration table per entity type; order conflicts favour provider authority | [Storage & Write Arbitration](#storage--write-arbitration) |
+| 1 | Migration protocol | Roym archive: encrypted under a recovery key, with person-signed service manifests (`roymctl roym backup`). A generic SynApp export (SQLite snapshot, blob store, App Spec) is Envisioned. | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
+| 2 | Backup mechanism | Roym archive on demand. Continuous replication and S3-compatible backups are Envisioned: [PLT-RED](#plt-red-service-redundancy) | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) |
+| 3 | Storage conflict model | Single writer task per service database (SQLite); write rules per record type in the Roym services, not CRDT merge | [Storage & Write Arbitration](#storage--write-arbitration) |
+| 4 | Conflict resolution rules per entity type | Write rules per record type (agreement decision, booking slot, listing, message, policy). The order-state rule that favours provider authority is Envisioned. | [Storage & Write Arbitration](#storage--write-arbitration) |
 | 5 | Vouching mechanics and weighting | Signed VouchRecord; weight = `base × 0.5^hops`; max depth 3; stake requirement for high-weight vouches | [Trust & Reputation](#trust--reputation) |
 | 6 | Credential format and verification | W3C VC Data Model 2.0; `didkit` for issuance/verification; consumer configures trusted issuers | [Trust & Reputation](#trust--reputation) |
 | 7 | Reputation portability mechanism | Both-party signed `ReputationRecord` anchored in DHT; portable by republishing under same identity key | [Trust & Reputation](#trust--reputation) |
