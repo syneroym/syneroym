@@ -7,8 +7,8 @@ This file tracks which batches of the architecture audit are done. A batch is `a
 | Batch | Headings covered | Status | Commit | Notes |
 | --- | --- | --- | --- | --- |
 | A | Executive Summary, Goals & Constraints, System Layers Overview, Layer 1 | accepted | 1ff6c004 | 97 claims; 5 spot checks passed |
-| B | Layer 3 — Shared Substrate Utilities (both copies) | accepted | PENDING | 94 claims; 5 spot checks passed; subagent says batch was large (Identity vs other four could split) |
-| C | Layer 4, Federation Architecture, Consumer Experience Architecture | not started | | |
+| B | Layer 3 — Shared Substrate Utilities (both copies) | accepted | 36f3fb96 | 94 claims; 5 spot checks passed; subagent says batch was large (Identity vs other four could split) |
+| C | Layer 4, Federation Architecture, Consumer Experience Architecture | accepted | PENDING | 72 claims; 5 spot checks passed (6 cited lines read) |
 | D | Observability, Security, Resolved Architecture TBD Items | not started | | |
 | E | Appendix: Multi-Hop Relay Walkthrough, Consolidated Technology Stack | not started | | |
 | F | Connectivity Substrate In Heteregenous networks | not started | | |
