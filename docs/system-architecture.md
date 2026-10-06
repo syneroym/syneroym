@@ -235,9 +235,15 @@ flowchart TD
 
 ## Layer 2 — Substrate Runtime
 
+*Reader: a developer who works on the substrate, or who deploys an app to it.*
+
+Layer 2 is the program that runs on each node. It accepts connections and checks who the caller is. It runs the services the caller asks for, and it stores their data. This layer has five parts: the internal architecture, packaging and backup, storage and write rules, multi-host deployment, and the API surface.
+
+Terms used here: a **service** is the unit a caller addresses. It is a native Rust service, a WASM component, or a TCP service. A **guest** is a WASM component that runs in the sandbox. A **SynApp** is a set of services that are deployed together from one manifest. See [TERMINOLOGY.md](TERMINOLOGY.md) for the other project terms.
+
 ### Substrate Internal Architecture
 
-One binary, `syneroym-substrate` (crate `crates/substrate`), hosts the substrate. It runs on Tokio. A node config (`SubstrateConfig`) turns each **role** on or off. Cargo features decide which roles are compiled in. A node can run any subset of roles.
+The substrate is one binary, `syneroym-substrate` (crate `crates/substrate`). It runs on Tokio. The node config (`SubstrateConfig`) turns each **role** on or off. Cargo features decide which roles are compiled in. A node can run any subset of the roles.
 
 ```mermaid
 flowchart TD
@@ -293,50 +299,56 @@ flowchart TD
     style STORAGE fill:#FFF2CC,stroke:#BF9000
 ```
 
-**Roles.** These roles are set in `SubstrateConfig.roles`.
+**Roles.** Set them in `SubstrateConfig.roles`.
 
 | Role | What it does |
 |---|---|
 | `app_sandbox` | Runs WASM components with Wasmtime (crate `syneroym-sandbox-wasm`). |
 | `podman_sandbox` | Runs OCI containers by calling the host's `podman` command (crate `syneroym-sandbox-podman`). |
-| `client_gateway` | Local HTTP proxy. It maps the `Host:` header to a service and forwards the request to that service's node as a stream. |
+| `client_gateway` | A local HTTP proxy. It maps the `Host:` header to a service. It forwards the request to the node of that service as a stream. |
 | `community_registry` | Service discovery. It stores signed endpoint records. |
-| `coordinator` | Helps peers find a channel to each other, and relays data when a direct path is not possible. It has an Iroh part and a WebRTC part. |
+| `coordinator` | Helps two peers find a channel to each other. It relays data when no direct path exists. It has an Iroh part and a WebRTC part. |
 | `auth` | Login and session tokens for the client gateway. |
 | `observability` | Metrics, health, logging and tracing. |
-| `supervisor` | The App Supervisor: it holds desired state and the master keys of the app instances it manages, and reconciles them. |
+| `supervisor` | The App Supervisor. It holds the desired state and the master keys of the app instances it manages. It reconciles those instances against their desired state. |
 | `roym` | Links the Roym services into the binary (Cargo feature `roym`). |
 
-The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`.
+Two more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`.
 
-**Ingress.** A node accepts streams from two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. HTTP/1.1 requests travel inside those streams. The client gateway turns a local HTTP request into such a stream and sends it to the target node. The JSON-RPC 2.0 requests from browsers and the CLI use this path.
+**Ingress.** A node accepts streams on two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. Iroh is the peer-to-peer networking library from Layer 1. HTTP/1.1 requests travel inside these streams. The client gateway takes a local HTTP request and sends it to the target node as a stream. Browsers and the CLI send JSON-RPC 2.0 requests this way.
 
-WebSocket is an option for one app. A guest declares an HTTP route with `target = "websocket"`. The router upgrades the connection and hands each frame to the guest. The frames are defined by the app. They are not JSON-RPC.
+WebSocket is an option for one app. The guest declares an HTTP route with `target = "websocket"`. The router upgrades the connection and hands each frame to the guest. The app defines the frames. They are not JSON-RPC.
 
-**Routing.** Every stream starts with a route preamble: `<scheme>://<interface>.<service_id>[?enc=...]`. The router reads it, checks who the caller is, and plans a pipeline of four stages: encryption, transport, adaptation and service. The service stage is a native Rust service, a WASM component, or a TCP proxy to a container or other TCP service. The preamble grammar is in `crates/router/src/preamble.rs`.
+**Routing.** Every stream starts with a route preamble: `<scheme>://<interface>.<service_id>[?enc=...]`. The router reads the preamble and checks who the caller is. Then it plans a pipeline of four stages: encryption, transport, adaptation and service. The service stage is one of three things: a native Rust service, a WASM component, or a TCP proxy to a container or another TCP service. The preamble grammar is in `crates/router/src/preamble.rs`.
 
-**Access control** has three layers. There is no single gate.
+**Access control.** There are three layers. No single component holds all of them.
 
-1. **Stream identity.** The caller's temporary key must carry a delegation certificate signed by its master DID. The router checks this when the stream opens. An optional signed capability token chain (ADR-0015) adds more rights.
-2. **Per-service admission.** Native services reject callers without a verified identity. A service can also admit or refuse each method. WASM guests may admit anonymous callers.
-3. **Row-level policy.** FDAE (ADR-0017) compiles a policy into the data-layer query, so a caller sees only the rows and fields it may see.
+1. **Stream identity.** The caller's temporary key must carry a delegation certificate. The certificate is signed by the caller's master DID (the stable identity of a person or a service member). The router checks this when the stream opens. A caller can add a signed chain of capability tokens (ADR-0015) to gain more rights.
+2. **Per-service admission.** A native service rejects a caller without a verified identity. A service can also admit or refuse each method. A WASM guest may admit anonymous callers.
+3. **Row-level policy.** FDAE (Federated Data-Aware Authorization Engine, ADR-0017) compiles a policy into the data-layer query. A caller sees only the rows and fields it may see.
 
 **Keys.** Three parts hold keys. There is no single key manager.
 
-- `syneroym-identity`: Ed25519 identities and delegation certificates.
-- `syneroym-data-keystore`: the key encryption key (KEK) and the per-service data encryption keys (DEK).
-- The App Supervisor key vault: the master key of each managed app instance.
+- `syneroym-identity` holds Ed25519 identities and delegation certificates.
+- `syneroym-data-keystore` holds the key encryption key (KEK) of the node and the data encryption key (DEK) of each service.
+- The App Supervisor key vault holds the master key of each managed app instance.
 
-**Deploy and lifecycle.** Three parts share this work. The client side (`roymctl`, the SDK) compiles an app manifest into a deployment plan. The control plane service on each node deploys and removes services. The App Supervisor (ADR-0021) reconciles the apps it manages against their desired state.
+**Deploy and lifecycle.** Three parts share this work.
+
+- The client side (`roymctl`, the SDK) compiles an app manifest into a deployment plan.
+- The Control Plane service on each node deploys and removes services.
+- The App Supervisor (ADR-0021) reconciles each managed app against its desired state.
 
 **Sandboxes.**
 
 - **Wasmtime** runs WASM components. Limits cover memory, fuel (CPU work) and wall-clock time. The fuel quota schema is in ADR-0005.
-- **Podman** runs containers. The substrate calls the host's `podman` command (`podman run -d --network bridge`). It does not check whether Podman runs rootless. Run Podman rootless on the host as operator advice. See the [developer guide](developer-guide.md#developing-podman-services-locally).
+- **Podman** runs containers. The substrate calls the host's `podman` command (`podman run -d --network bridge`). It does not check whether Podman runs rootless. Run Podman rootless on the host. This is advice to the operator. See the [developer guide](developer-guide.md#developing-podman-services-locally).
 
-**Not substrate components.** Discovery and matching, reputation and payments are app features. They are not parts of the substrate runtime. See [Layer 3](#layer-3--shared-substrate-utilities). Roym provides discovery (`directory` service), payment records and signed receipts (`transaction` service) today.
+**Not substrate components.** Discovery and matching, reputation and payments are app features. They are not parts of the substrate runtime. See [Layer 3](#layer-3--shared-substrate-utilities). Today Roym provides discovery (the `directory` service) and payment records and signed receipts (the `transaction` service).
 
 ### SynApp Packaging & API Pipeline
+
+A developer writes a WIT interface (WebAssembly Interface Types), generates Rust bindings, and builds a WASM component. A manifest names the components. `roymctl app deploy` sends the manifest to the substrate.
 
 **Packaging**
 
@@ -361,89 +373,91 @@ flowchart LR
     style JRPC fill:#2E75B6,color:#fff
 ```
 
-The substrate converts between JSON and WIT values at the component boundary. The conversion is directed by the WIT type. No hand-written API layer is needed.
+The substrate converts between JSON and WIT values at the component boundary. The WIT type of the target function directs the conversion. A developer does not write an API layer by hand.
 
 **Backup and Restore**
 
-Roym has an archive format. `roymctl roym backup create` writes one file:
+Roym has an archive format. `roymctl roym backup create` writes one file. The file holds:
 
-- The person's master identity, encrypted.
+- The master identity of the person, encrypted.
 - The data of five Roym services: `profile`, `catalog`, `conversation`, `transaction` and `directory`. Each service exports its own documents through its own interface.
-- Everything is sealed with AES-GCM under a random 32-byte recovery key. The key is shown once and is never stored. The archive header (version, subject DID, time) is authenticated.
-- Each service bundle has a manifest signed by the person. Restore checks the signature.
 
-`restore-identity` writes the master key file. `restore-data` replays the bundles into the running Roym services through the gateway. It is safe to run again after an interrupted restore. Restore accepts only archive version 1. After a restore the node has new addresses: old conversations can be read, but they cannot continue. The test `a_provider_transaction_survives_an_encrypted_backup_and_restore` in `crates/substrate/tests/roym_restore_e2e.rs` covers backup and restore of a provider transaction.
+The command seals the data with AES-GCM under a random 32-byte recovery key. It shows the key once and never stores it. The archive header (version, subject DID, time) is authenticated. Each service bundle has a manifest that the person signs. Restore checks the signature.
 
-`roymctl identity export` and `roymctl identity import` move one local identity as an encrypted file. See [Moving a Substrate to a New Machine](developer-guide.md#moving-a-substrate-to-a-new-machine) for the steps.
+Restore has two commands. `restore-identity` writes the master key file. `restore-data` replays the bundles into the running Roym services through the gateway. It is safe to run again after an interrupted restore. Restore accepts only archive version 1.
+
+After a restore, the node has new addresses. The person can read old conversations, but they cannot continue. The test `a_provider_transaction_survives_an_encrypted_backup_and_restore` in `crates/substrate/tests/roym_restore_e2e.rs` covers backup and restore of a provider transaction.
+
+`roymctl identity export` and `roymctl identity import` move one local identity as an encrypted file. For the full steps, see [Moving a Substrate to a New Machine](developer-guide.md#moving-a-substrate-to-a-new-machine).
 
 > **Envisioned.** Not built yet. Only Roym has an archive format today. There is no `syneroym` binary and no generic app export.
 >
-> - **Generic app export.** One command exports any SynApp as a signed archive: an SQLite snapshot, the blob store, the App Spec, and optionally the identity keypair. Import checks the signature and replays into a fresh SQLite instance. The archive moves to any substrate with a compatible version.
-> - **Replicated backups.** A live copy of a service database and periodic backups to an S3-compatible store follow the design in [PLT-RED](#plt-red-service-redundancy). That design ships WAL frames over Iroh and promotes a secondary by hand.
+> - **Generic app export.** One command exports any SynApp as a signed archive. The archive holds an SQLite snapshot, the blob store, the App Spec, and optionally the identity keypair. Import checks the signature and replays into a fresh SQLite instance. The archive moves to any substrate with a compatible version.
+> - **Replicated backups.** A live copy of a service database, and periodic backups to an S3-compatible store, follow the design in [PLT-RED](#plt-red-service-redundancy). That design ships WAL frames over Iroh and promotes a secondary by hand.
 
 ### Storage & Write Arbitration
 
-Structured data lives in one SQLite database per service (`state.db`), through `rusqlite` with SQLCipher (ADR-0006). Encryption is on by default and can be turned off with `storage.encryption`. Each service has its own data encryption key, wrapped by the node's KEK. The KEK must be injected before encrypted databases open.
+Structured data lives in one SQLite database per service (`state.db`). The database uses `rusqlite` with SQLCipher (ADR-0006). Encryption is on by default. Set `storage.encryption` to turn it off. Each service has its own data encryption key. The node's KEK wraps it. The KEK must be injected before an encrypted database can open.
 
-Each database has one writer task. It takes every write from a queue and applies the writes one at a time. Reads use a pool of reader connections. Because one task writes, there is nothing to merge at the storage layer.
+Each database has one writer task. It takes every write from a queue and applies the writes one at a time. Reads use a pool of reader connections. One task does all writes, so the storage layer has nothing to merge.
 
-The blob store is content-addressed. The key of a blob is the SHA-256 hash of its plaintext, so the same bytes are stored once. Blobs are encrypted at rest with AES-256-GCM in 256 KiB segments, with a key derived from the service key. An S3-compatible backend is an optional Cargo feature (`aws`, ADR-0009).
+The blob store is content-addressed. The key of a blob is the SHA-256 hash of its plaintext, so the same bytes are stored once. Blobs are encrypted at rest with AES-256-GCM in 256 KiB segments. A key derived from the service key encrypts them. An S3-compatible backend is an optional Cargo feature (`aws`, ADR-0009).
 
-**Durable outbox.** A guest can queue a call to another service. The call is saved in an SQLite outbox that belongs to the calling service. It sits in a file next to the service's encrypted database. A worker on the node retries the call with backoff. A call that can never succeed goes to a dead-letter table (ADR-0023). The receiver can fence a call that carries an idempotency key, so the call runs once even if it is delivered more than once. A call with a key but no verified caller is refused.
+**Durable outbox.** A guest can queue a call to another service. The substrate saves the call in an SQLite outbox that belongs to the calling service. The outbox is a file next to the encrypted database of that service. A worker on the node retries the call with backoff. A call that can never succeed goes to a dead-letter table (ADR-0023). The receiver can fence a call that carries an idempotency key. The call then runs once, even if it is delivered more than once. The receiver refuses a call that has a key but no verified caller.
 
 **Write rules.** The data layer does not decide who wins a race. It only puts the writes in order. The rules below are in the Roym services. Bookings are written on the provider's node only, so a race is two requests that reach one writer.
 
 | Record | Rule | Rationale |
 |---|---|---|
 | Agreement decision | One decision per agreement. The first claim wins. A later attempt is answered `AlreadyDecided`. | The provider's node is the only writer. |
-| Booking slot | Seats are claimed in order with the data layer's create fence. When no seat is free, the answer is `SlotTaken`. | Prevents double-booking. |
+| Booking slot | Seats are claimed in order with the create fence of the data layer. When no seat is free, the answer is `SlotTaken`. | Prevents double-booking. |
 | Listing (catalog) | The whole listing is saved with `put`, so the last write wins for the listing. Each version is also kept in a history collection. | The catalog is provider-owned. |
 | Message | Append-only log. An entry that is already stored is ignored. | Messages are immutable once sent. |
 | Access control policy (FDAE) | The policy is saved as one document per service. A new policy replaces the old one at once. | A tighter policy must take effect immediately (ADR-0017). |
 
-> **Envisioned.** Not built yet. Roym has no order entity and no reputation record, so two rules are not in the code:
+> **Envisioned.** Not built yet. Roym has no order entity and no reputation record, so two rules are not in the code.
 >
 > - **Order state.** A provider action beats a same-instant consumer action. Otherwise the first request wins. The reason: the provider has operational authority over their service. Today the nearest rule is the agreement decision above.
-> - **Reputation record.** The log is append-only, and the issuer signs each record. Today Roym has signed receipts (payment acknowledgement, fulfilment receipt), but no reputation record.
+> - **Reputation record.** The log is append-only, and the issuer signs each record. Today Roym has signed receipts (payment acknowledgement, fulfilment receipt) but no reputation record.
 
 > **Envisioned.** Not built yet. Today there is one database per service and no replica role.
 >
-> A replica of a service database stays read-only until an operator promotes it ([PLT-RED](#plt-red-service-redundancy)). There is then exactly one writer per service at a time. A disconnected client (secondary device, mobile app, offline peer) is not a second writer. Its requests queue locally and replay against the single writer on reconnect, guarded by idempotency keys. See [Multi-Device Sync](#multi-device-sync-and-sharded-deployment).
+> A replica of a service database stays read-only until an operator promotes it ([PLT-RED](#plt-red-service-redundancy)). Then there is exactly one writer per service at a time. A disconnected client (secondary device, mobile app, offline peer) is not a second writer. Its requests queue locally. They replay against the single writer on reconnect, guarded by idempotency keys. See [Multi-Device Sync](#multi-device-sync-and-sharded-deployment).
 
 ### Multi-Device Sync and Sharded Deployment
 
-This section covers two needs: apps that work across a provider's devices, and one app that runs on several hosts.
+This section covers two needs. The first is apps that work across the devices of a provider. The second is one app that runs on several hosts.
 
 **A) Multi-device sync (primary + secondary provider devices)**
 
 > **Envisioned.** Not built yet. No secondary-device feature exists. The SDK client does not set an idempotency key on its requests, and the durable outbox runs on the node, not on a device.
 >
-> - A secondary provider device is a client of the primary service, not a second writer to its database.
-> - Requests made offline queue in the device's local outbox ([PLT-ASY](#plt-asy-asynchronous-operations--scheduling)). Each request has an idempotency key.
+> - A secondary provider device is a client of the primary service. It is not a second writer to the database.
+> - Requests made offline queue in the local outbox of the device ([PLT-ASY](#plt-asy-asynchronous-operations--scheduling)). Each request has an idempotency key.
 > - On reconnection, the queued requests replay against the single writer.
-> - Operational ownership stays deterministic because there is one writer, not because of a merge step.
+> - Operational ownership stays deterministic because there is one writer. A merge step is not needed.
 
 **B) One app on several hosts**
 
-The operator keeps an inventory of substrates, each with an alias. A manifest names a substrate with `[placement]`. A manifest can set a default, and each service can override it. A deploy resolves every alias, connects to each substrate, and sends one deploy call per service and substrate. The steps are in [Deploying a Multi-Substrate App](developer-guide.md#deploying-a-multi-substrate-app-roymctl-app-deploy).
+The operator keeps a **substrate inventory**: a list of substrates, each with an alias. A manifest names a substrate with `[placement]`. A manifest can set a default, and each service can override it. A deploy resolves every alias and connects to each substrate. Then it sends one deploy call for each service and substrate. The steps are in [Deploying a Multi-Substrate App](developer-guide.md#deploying-a-multi-substrate-app-roymctl-app-deploy).
 
-`replicas = N` on a service makes the compiler emit N members. The topology mode becomes `Redundant`. A call without a routing key goes to the members in turn. A call with a routing key goes to one member chosen by rendezvous hashing. Each member is a separate service with its own database. The members do not share data.
+`replicas = N` on a service makes the compiler emit N members. The topology mode becomes `Redundant`. A call without a routing key goes to the members in turn. A call with a routing key goes to one member, chosen by rendezvous hashing. Each member is a separate service with its own database. The members do not share data.
 
-Calls between services on different substrates use Iroh QUIC with JSON-RPC. The receiving node checks the caller's identity when the stream opens. A call to a service that is down fails after the retry policy. A guest can queue a call in the durable outbox so it is retried later. Other services keep working.
+Calls between services on different substrates use Iroh QUIC with JSON-RPC. The receiving node checks the identity of the caller when the stream opens. A call to a service that is down fails after the retry policy. A guest can queue a call in the durable outbox, so the substrate retries it later. Other services keep working.
 
-Example placement (the Roym services, `crates/roym_core/app/roym.toml`): `web`, `profile`, `conversation`, `catalog`, `transaction` and `directory` can each name a substrate.
+Example placement: the Roym services (`crates/roym_core/app/roym.toml`) are `web`, `profile`, `conversation`, `catalog`, `transaction` and `directory`. Each one can name a substrate.
 
 > **Envisioned.** Not built yet. Today the operator chooses each placement by name. Nothing schedules services.
 >
-> - **Resource-class scheduling.** The orchestrator places each service by the resource class it declares (`cpu`, `memory`, `gpu`, locality tags). Today the only inventory attribute is the list of service types a substrate can run.
-> - **Sharded mode.** The resolver can choose a member by routing key (`Sharded`, hash or entity-tag sub-strategies), but the compiler never emits `Sharded`. No manifest field selects it.
+> - **Resource-class scheduling.** The orchestrator places each service by the resource class it declares (`cpu`, `memory`, `gpu`, locality tags). Today the only attribute in the inventory is the list of service types that a substrate can run.
+> - **Sharded mode.** The resolver can choose a member by routing key (`Sharded`, with hash or entity-tag sub-strategies). The compiler never emits `Sharded`, and no manifest field selects it.
 > - **Queued dependents.** A dependent workflow moves to queued and retry mode by itself while a dependency is down. Today a guest queues a call by choice.
 
 ### Substrate API Surfaces
 
 The substrate has one API surface: **JSON-RPC 2.0**. It serves WASM components (through the Universal Proxy), peer substrates (over Iroh QUIC), the CLI, browsers, the provider status UI and third-party integrations. The substrate derives the surface from the WIT definitions. It converts each JSON value to the WIT type of the target function.
 
-> **Envisioned.** Not built yet. Today every call converts between JSON and WIT values. The router reserves the `wrpc://` scheme, and it answers a typed *unsupported protocol* error.
+> **Envisioned.** Not built yet. Today every call converts between JSON and WIT values. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error.
 >
 > - **wRPC surface.** WASM components, peer substrates (over Iroh QUIC) and the CLI use wRPC, derived from the same WIT definitions. WIT types are kept end to end, with no JSON conversion.
 > - **OpenRPC schema.** The JSON-RPC surface is documented as an OpenRPC schema.
