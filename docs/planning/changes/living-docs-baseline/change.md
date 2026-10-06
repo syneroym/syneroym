@@ -91,12 +91,18 @@ Layer 2 fix (differences from the audit report and the plan):
 - **Headings.** All Layer 2 headings keep their names, so links and the table of contents still work.
 - **Mermaid.** Both diagrams in Layer 2 were checked with the Mermaid parser (version 11) and parse.
 
+Owner decisions after the Layer 2 fix (docs/architecture-redundancy-options):
+
+- **Replication design is open.** `[PLT-RED]` is one proposal and is not frozen. The design freezes when that work starts. This reverses the Q1 default. Litestream is back as a named option, always under an Envisioned marker. The Layer 2 text no longer calls `[PLT-RED]` "the design". The mutual backup pool and hot standby stay out of the text.
+- **Rootless Podman is preferred, not required.** The text and `docs/developer-guide.md` say Syneroym prefers rootless Podman and does not check it. No check was added, because nobody asked for one.
+- **Litestream outside Layer 2.** The four lines (layers diagram, security diagram, technology stack row, toolchain row) now carry an Envisioned marker. The two table rows were split out of their tables so the marker can sit under the table.
+- **Commit hash in the Migration Note.** Removed from the prose of the note. The link still points at the heading, so the hash stays in the anchor until the heading is renamed.
+- **Three technology rows.** The owner asked for these fixes after the audit. "External API" now says HTTP/1.1 and framed streams. "Inter-component calls" now says JSON-RPC 2.0 through the Universal Proxy, and wRPC is under an Envisioned marker split out of the table. The `syneroym` CLI row became `roymctl`.
+- **Simulation section.** The Envisioned marker now sits directly under the heading. "ships" became "gets". The sentence about a "walking skeleton stage" was removed because it named a plan stage.
+
 Found outside Layer 2 and not changed (they need a decision or a later pass):
 
-- Litestream appears at lines 89 (layers diagram), 1029 (security diagram), 1226 (technology stack) and 1260 (toolchain).
-- Line 3 still uses the commit hash `dd864a1`.
-- `docs/developer-guide.md` line 561 says Syneroym uses Podman in rootless mode by default. The code does not set or check this.
-- The Observability section ("Simulation Testing and Replay Validation") describes the simulation harness as existing.
+- The commit hash `dd864a1` is still in the heading "Post-DD864A1 Target Designs (Addendum)" (line 1839) and in `docs/ROADMAP.md`, `docs/STATUS.md`, `docs/system-requirements-spec.md` and `docs/planning/meta-implementation-plan.md`. Other documents link to the heading anchors, so renaming belongs to the structure change.
 
 ## Close-out
 

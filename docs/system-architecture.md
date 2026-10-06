@@ -3,7 +3,7 @@
 > **Status legend.** No marker means implemented. **Envisioned** means we want this and it is not built.
 > Anything that is not built must carry the Envisioned marker.
 
-> **Migration Note:** The architectural designs and roadmap have been significantly updated post-dd864a1. See the **Post-DD864A1 Target Designs (Addendum)** at the bottom of this document for the canonical Layer 1-4 definitions.
+> **Migration Note:** The architectural designs and roadmap changed a lot after the first version of this document. See the [Target Designs (Addendum)](#post-dd864a1-target-designs-addendum) at the bottom of this document for the canonical Layer 1-4 definitions.
 
 > [!WARNING]
 > **Implementation Note:** The **wRPC protocol layers/surface** is not yet implemented — the current inter-component and external API surface is JSON-RPC 2.0. Multi-hop relay routing (the Federated Coordinator model) is implemented in the coordinator crates; see [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator).
@@ -89,7 +89,7 @@ block-beta
     J["OCI Runtime (Podman)"]
     K["Key Management"]
     L["Access Control"]
-    M["Storage (SQLite + Litestream)"]
+    M["Storage (SQLite)"]
   end
   block:L1["Layer 1 — Infrastructure"]
     N["P2P / Relay (Iroh / QUIC)"]
@@ -98,6 +98,8 @@ block-beta
     Q["Hardware (PC, RPi, Phone)"]
   end
 ```
+
+> **Envisioned.** Not built yet. The storage layer has no replication or backup of service databases today. The design is open: see [PLT-RED](#plt-red-service-redundancy).
 
 ### Conceptual Entity Model
 
@@ -342,7 +344,7 @@ WebSocket is an option for one app. The guest declares an HTTP route with `targe
 **Sandboxes.**
 
 - **Wasmtime** runs WASM components. Limits cover memory, fuel (CPU work) and wall-clock time. The fuel quota schema is in ADR-0005.
-- **Podman** runs containers. The substrate calls the host's `podman` command (`podman run -d --network bridge`). It does not check whether Podman runs rootless. Run Podman rootless on the host. This is advice to the operator. See the [developer guide](developer-guide.md#developing-podman-services-locally).
+- **Podman** runs containers. The substrate calls the host's `podman` command (`podman run -d --network bridge`). Syneroym prefers rootless Podman. It does not check this. The substrate calls the host's `podman` command, so a container is rootless only when Podman on the host is set up that way. Run Podman rootless. See the [developer guide](developer-guide.md#developing-podman-services-locally).
 
 **Not substrate components.** Discovery and matching, reputation and payments are app features. They are not parts of the substrate runtime. See [Layer 3](#layer-3--shared-substrate-utilities). Today Roym provides discovery (the `directory` service) and payment records and signed receipts (the `transaction` service).
 
@@ -393,7 +395,7 @@ After a restore, the node has new addresses. The person can read old conversatio
 > **Envisioned.** Not built yet. Only Roym has an archive format today. There is no `syneroym` binary and no generic app export.
 >
 > - **Generic app export.** One command exports any SynApp as a signed archive. The archive holds an SQLite snapshot, the blob store, the App Spec, and optionally the identity keypair. Import checks the signature and replays into a fresh SQLite instance. The archive moves to any substrate with a compatible version.
-> - **Replicated backups.** A live copy of a service database, and periodic backups to an S3-compatible store, follow the design in [PLT-RED](#plt-red-service-redundancy). That design ships WAL frames over Iroh and promotes a secondary by hand.
+> - **Replicated backups.** A live copy of a service database, and periodic backups to an S3-compatible store, have no frozen design. [PLT-RED](#plt-red-service-redundancy) proposes shipping WAL frames over Iroh and promoting a secondary by hand. Litestream is another option.
 
 ### Storage & Write Arbitration
 
@@ -422,7 +424,7 @@ The blob store is content-addressed. The key of a blob is the SHA-256 hash of it
 
 > **Envisioned.** Not built yet. Today there is one database per service and no replica role.
 >
-> A replica of a service database stays read-only until an operator promotes it ([PLT-RED](#plt-red-service-redundancy)). Then there is exactly one writer per service at a time. A disconnected client (secondary device, mobile app, offline peer) is not a second writer. Its requests queue locally. They replay against the single writer on reconnect, guarded by idempotency keys. See [Multi-Device Sync](#multi-device-sync-and-sharded-deployment).
+> The replication design is open. The [PLT-RED](#plt-red-service-redundancy) proposal says a replica of a service database stays read-only until an operator promotes it. Then there is exactly one writer per service at a time. A disconnected client (secondary device, mobile app, offline peer) is not a second writer. Its requests queue locally. They replay against the single writer on reconnect, guarded by idempotency keys. See [Multi-Device Sync](#multi-device-sync-and-sharded-deployment).
 
 ### Multi-Device Sync and Sharded Deployment
 
@@ -1090,16 +1092,17 @@ flowchart TD
 
 ### Simulation Testing and Replay Validation
 
-The substrate ships a **multi-node simulation harness** used during development and CI:
+> **Envisioned.** Not built yet. The code has no multi-node simulation harness and no property-based tests. Multi-node behavior is tested today with substrate integration and end-to-end tests.
+
+The substrate gets a **multi-node simulation harness** for development and CI:
 
 - Runs N substrate instances in a single test binary with a controllable fake network
 - Induces partitions, delays, and node restarts deterministically
+- Each write rule in [Storage & Write Arbitration](#storage--write-arbitration) has a corresponding scenario that checks the outcome
 - Property-based tests (`proptest`) verify outbox replay is idempotent for arbitrary request orderings and retries
 - Simulation output carries the same `trace_id` correlation used in production — failures are immediately diagnosable from the trace
 
-> **Envisioned.** Not built yet. The code has no simulation harness. When it exists, each write rule in [Storage & Write Arbitration](#storage--write-arbitration) gets a scenario that checks the outcome.
-
-The harness is built during the walking skeleton stage and extended with each new component. It is the primary validation tool for offline and reconnect behavior before it reaches a real provider's device.
+The harness is the primary validation tool for offline and reconnect behavior before it reaches a real provider's device.
 
 ## Security Architecture
 
@@ -1121,10 +1124,12 @@ flowchart TD
 
     subgraph AT_REST["Data at Rest"]
         R1[Sensitive fields: AES-256-GCM key held by data owner]
-        R2[Litestream backups: encrypted with provider key before upload]
+        R2[Replicated backups: encrypted with provider key before upload]
         R3[Blob store: content-addressed optionally encrypted]
     end
 ```
+
+> **Envisioned.** Not built yet. Node R2 is a goal. No replication or backup of service databases exists today, and the design is open: Litestream and Iroh WAL shipping ([PLT-RED](#plt-red-service-redundancy)) are both options.
 
 ### Substrate Integrity & Remote Attestation
 
@@ -1315,14 +1320,17 @@ Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-fe
 | WASM runtime | **Wasmtime** (latest stable, WASI 0.2) | Bytecode Alliance; component model support |
 | Container runtime | **Podman** 4.x+ (rootless) | No daemon; rootless; Docker-compatible |
 | API IDL | **WIT** (Component Model 1.0) | Single source of truth for all interfaces |
-| External API | **JSON-RPC 2.0** over WebSocket | Derived automatically from WIT |
-| Inter-component calls | **wRPC** | High-performance streaming between components |
+| External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams | Derived automatically from WIT. WebSocket is an optional route for one app |
+| Inter-component calls | **JSON-RPC 2.0** through the Universal Proxy | Local, or over Iroh QUIC to another node |
 | Local storage | **SQLite** (`rusqlite` + `sqlcipher`) | Single writer per service; see Storage & Write Arbitration |
-| Backup / replication | **Litestream** | WAL streaming; S3-compatible or peer |
 | DHT / registry | **pkarr** + BEP 0044 DHT | SynApp registry + bootstrap fallback |
 | Local DNS | **Hickory DNS** (Rust) | Dynamic relay hostname resolution. Else, could use plain lookup cache |
 | Observability | **OpenTelemetry** (OTLP) | Traces + metrics + logs; Grafana/Prometheus exporters |
 | Configuration | **TOML** + JSON Schema | Human-readable; validated |
+
+> **Envisioned.** Not built yet. Calls between components use JSON-RPC 2.0 today. The goal is **wRPC**, for high-performance streaming between components.
+
+> **Envisioned.** Not built yet. Backup and replication of service databases do not exist today. The design is open. Option 1 is **Litestream**: WAL streaming to an S3-compatible store or a peer. Option 2 is Iroh WAL shipping ([PLT-RED](#plt-red-service-redundancy)).
 
 ### SynApp & Crypto Libraries
 
@@ -1352,9 +1360,10 @@ Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-fe
 | `wit-bindgen` CLI | Generate host/guest bindings from WIT |
 | `wasm-tools` | Component inspection, composition, adapter linking |
 | `podman-compose` | Local multi-service development |
-| `litestream` CLI | Backup/restore testing |
 | `otelcol` | Local observability stack |
-| `syneroym` CLI (custom) | Substrate management: deploy, remove, status, logs, export |
+| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK and secrets, the App Supervisor, registry entries and Roym backups |
+
+> **Envisioned.** Not built yet. If the replication design uses Litestream, the toolchain adds the `litestream` CLI for backup and restore testing.
 
 ---
 
