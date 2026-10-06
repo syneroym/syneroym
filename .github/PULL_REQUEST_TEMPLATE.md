@@ -15,3 +15,4 @@ By submitting this pull request, I confirm that my contribution is made under th
 - [ ] I have added tests that prove my fix is effective or that my feature works
 - [ ] New and existing tests pass locally with my changes
 - [ ] I updated the living docs this change affects (see `docs/README.md`), or no living doc is affected
+- [ ] Any docs, comments or PR text I wrote name their reader and use short sentences with exact technical terms (see "Writing for readers" in `AGENTS.md`)

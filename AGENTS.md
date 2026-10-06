@@ -24,6 +24,18 @@ Language level:
 - Avoid rare or fancy vocabulary even in English (e.g., prefer "use" over "utilize," "show" over "demonstrate").
 - Technical terms (in English) are fine and expected — the simplicity requirement is about general English, not technical vocabulary.
 
+## Writing for readers
+The communication style above also applies to everything written into the repository: specs, plans, ADRs, living docs, code comments, commit messages and PR text. It is not only for chat.
+
+- **Name the reader at the top of each doc**: end user, operator or developer. Match the detail to that reader. User-facing docs have no internals. They say what the reader can do and how.
+- **Start with what the system does or what the reader can do.** Then give the mechanism.
+- **Short sentences, one idea each, simple general English.** Keep exact technical terms, names, wire formats, error codes and limits.
+- **Define a project term the first time it appears in a doc**, or link [docs/TERMINOLOGY.md](docs/TERMINOLOGY.md).
+- **Never make a statement less precise to make it shorter or friendlier.** Simplify the sentences, not the facts. Test: could a new team member act correctly after reading it once?
+- **Do not rewrite an ADR to change its language.** ADRs are permanent records.
+
+*Checked by:* review and the PR template checkbox. No tool can check this well.
+
 ## Commands
 ```bash
 # Run the full completion checklist quietly: each gate's output goes to
