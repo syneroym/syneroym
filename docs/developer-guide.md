@@ -558,7 +558,7 @@ Three behaviors worth knowing:
 
 #### Developing Podman Services Locally
 When developing a Podman container service for Syneroym:
-1. **Rootless:** Ensure the container can run rootless. Syneroym uses Podman in rootless mode by default.
+1. **Rootless:** Syneroym prefers rootless Podman, so make sure the container can run rootless. The substrate calls the host's `podman` command and does not check the mode.
 2. **Build:** Build your image locally (`podman build -t my-app:latest .`).
 3. **Reference:** During the orchestrator `deploy` call, reference `localhost/my-app:latest` or `docker.io/library/nginx:alpine` in the `image` field.
 4. **Debug:** Use standard tools (`podman ps`, `podman logs <container-id>`) on your host to inspect the container if it fails to bind or start via the orchestrator.
