@@ -34,7 +34,7 @@ The communication style above also applies to everything written into the reposi
 - **Never make a statement less precise to make it shorter or friendlier.** Simplify the sentences, not the facts. Test: could a new team member act correctly after reading it once?
 - **Do not rewrite an ADR to change its language.** ADRs are permanent records.
 
-*Checked by:* review and the PR template checkbox. No tool can check this well.
+*Checked by:* review only. No tool can check this well.
 
 ## Commands
 ```bash
