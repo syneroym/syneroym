@@ -12,6 +12,7 @@ use serde_json::Value;
 use sysinfo::System;
 use walkdir::WalkDir;
 
+mod change_docs;
 mod duplication;
 mod file_lengths;
 mod lint_suppressions;
@@ -421,6 +422,7 @@ fn main() -> Result<()> {
         Some("check-file-lengths") => file_lengths::check_file_lengths(),
         Some("check-lint-suppressions") => lint_suppressions::check_lint_suppressions(),
         Some("check-module-layout") => module_layout::check_module_layout(),
+        Some("check-change-docs") => change_docs::check_change_docs(),
         Some("check-duplication") => duplication::check_duplication(),
         Some("verify") => verify::run(args),
         Some("perf-summary") | None => perf_summary(),
