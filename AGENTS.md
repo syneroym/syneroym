@@ -9,6 +9,7 @@
 - If new tools are needed in the build pipeline, add them to `mise.toml` too, so other dev environments easily get it.
 - Do not commit code changes, and also do not add code changes to git index, when the current branch is `main`. On any other (feature) branch, staging and committing is allowed.
 - Files with `scratch-notes` in the name, as well as the `docs/archive` folder, contain temporary or archived ideas and should be ignored by the agent. They might not contain reliable information.
+- Files in `docs/ideas/` are uncommitted ideas, not requirements or designs. Read them only when the user points you at one. Never implement them, and never cite them from code or living docs.
 
 ## Communication style
 Audience: a junior developer with solid CS fundamentals (data structures, algorithms, networking, databases) but only basic/simple English — not a native or fluent speaker.
@@ -56,8 +57,8 @@ cargo deny check licenses
 # Module layout check (enforce sibling-file convention under src/)
 cargo xtask check-module-layout
 
-# Change doc check (front matter and close-out of docs/planning/changes/*)
-cargo xtask check-change-docs
+# Doc front matter check (change docs in docs/planning/changes/*, ideas in docs/ideas/*)
+cargo xtask check-doc-front-matter
 
 # Full Rust test suite -- nextest runs every test binary in one parallel
 # pool (see .config/nextest.toml); it does not run doctests.
@@ -158,7 +159,7 @@ how the drift happened, so do not add one here without an enforcement path.**
 - **Mandatory Pre-Completion Verification**: Before concluding any coding task, you MUST run `mise run verify` (`cargo xtask verify` — see **Commands**) and confirm it ends with every gate passing. It runs fmt, clippy (confirming zero `clippy::too_many_lines` warnings and clean clippy with `-- -D warnings`), the xtask checks, nextest, doctests, `cargo audit`, `cargo deny check licenses`, and `mise run test:e2e`, in that order, and does not skip any of them. It takes ~20 minutes end to end, longer than a foreground tool call's timeout, so run it as a background job and read its summary when it finishes. The final completion-pass run must not use `--skip`; that flag is only for fast local iteration while still working. A checklist command is added to `xtask/src/verify.rs`'s `GATES` list, not to this document.
 - **Mandatory Import Cleanup**: Before finishing any coding task, you MUST perform a dedicated final pass over the files you edited to clean up imports. You must strictly enforce the import rules (Types via standard `use`, Functions qualified by parent module) and proactively remove inline fully-qualified paths (lines with multiple `::`). For conflicting types like `Result` or `Error`, import their parent module (e.g., `use std::fmt;`) and use `fmt::Result` to avoid multiple `::`.
 - **Mandatory Living-Docs Close-out**: Before finishing any task, ask: *is any statement in the living docs now false or incomplete because of this change?* Living docs are the requirements, architecture, developer guide and traceability matrix (see [docs/README.md](docs/README.md)). If yes, update them in the same change, so they describe the result. They must not cite change docs or milestone/slice IDs; link ADRs only. For a feature that has a change doc under `docs/planning/changes/`, record every code-vs-plan difference in its `## Deviations` section while you work, then set `status: done` and list the updated files in `living-docs-touched`.
-  *Checked by:* `cargo xtask check-change-docs` (front matter and close-out only), the PR template checkbox, and review.
+  *Checked by:* `cargo xtask check-doc-front-matter` (front matter and close-out only; it also checks idea status), the PR template checkbox, and review.
 - **Mandatory Ratchet Update**: The size and duplication gates fail in both
   directions. They fail when a number gets worse. They also fail when it gets
   better than the recorded baseline, until you record the new value in the

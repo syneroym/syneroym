@@ -1,6 +1,6 @@
 # Documentation map
 
-Syneroym docs have four kinds. Each kind has a different lifetime. Do not mix them.
+Syneroym docs have five kinds. Each kind has a different lifetime. Do not mix them.
 
 | Kind | Answers | Lifetime | Where |
 | --- | --- | --- | --- |
@@ -8,6 +8,7 @@ Syneroym docs have four kinds. Each kind has a different lifetime. Do not mix th
 | Change docs | What do we plan to change, and why? | Temporary, kept as history after the work | `docs/planning/changes/<name>/change.md`, `docs/planning/milestones/` |
 | ADRs | Why did we decide this? | Permanent, one decision each | `docs/decisions/` |
 | Backlog | What did we postpone? | Running list | `docs/planning/deferred-backlog.md` |
+| Ideas | What might we build one day? | Until promoted or rejected | `docs/ideas/` |
 
 ## Living docs
 
@@ -35,10 +36,13 @@ with a short index. Until that finishes, update the file in the table above.
    a line to `## Deviations` at that moment.
 4. **Close out before merge.** Update the living docs, then set
    `status: done` and list the files in `living-docs-touched`.
-   `cargo xtask check-change-docs` checks this.
+   `cargo xtask check-doc-front-matter` checks this.
 5. **Small changes skip the change doc.** A bug fix or a config option needs only
    the living-doc edit in the same PR.
 6. **Milestone folders keep their own format.** Files under
    `docs/planning/milestones/` use `task.md` and `status.md`, as described in
    [planning/session-strategy.md](planning/session-strategy.md). Only new
    features under `docs/planning/changes/` use the change doc format.
+7. **Ideas are not authoritative.** Notes in `docs/ideas/` are not requirements
+   or designs. Do not implement them or cite them from code or living docs. See
+   [ideas/README.md](ideas/README.md).
