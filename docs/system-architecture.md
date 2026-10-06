@@ -1320,13 +1320,15 @@ Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-fe
 | WASM runtime | **Wasmtime** (latest stable, WASI 0.2) | Bytecode Alliance; component model support |
 | Container runtime | **Podman** 4.x+ (rootless) | No daemon; rootless; Docker-compatible |
 | API IDL | **WIT** (Component Model 1.0) | Single source of truth for all interfaces |
-| External API | **JSON-RPC 2.0** over WebSocket | Derived automatically from WIT |
-| Inter-component calls | **wRPC** | High-performance streaming between components |
+| External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams | Derived automatically from WIT. WebSocket is an optional route for one app |
+| Inter-component calls | **JSON-RPC 2.0** through the Universal Proxy | Local, or over Iroh QUIC to another node |
 | Local storage | **SQLite** (`rusqlite` + `sqlcipher`) | Single writer per service; see Storage & Write Arbitration |
 | DHT / registry | **pkarr** + BEP 0044 DHT | SynApp registry + bootstrap fallback |
 | Local DNS | **Hickory DNS** (Rust) | Dynamic relay hostname resolution. Else, could use plain lookup cache |
 | Observability | **OpenTelemetry** (OTLP) | Traces + metrics + logs; Grafana/Prometheus exporters |
 | Configuration | **TOML** + JSON Schema | Human-readable; validated |
+
+> **Envisioned.** Not built yet. Calls between components use JSON-RPC 2.0 today. The goal is **wRPC**, for high-performance streaming between components.
 
 > **Envisioned.** Not built yet. Backup and replication of service databases do not exist today. The design is open. Option 1 is **Litestream**: WAL streaming to an S3-compatible store or a peer. Option 2 is Iroh WAL shipping ([PLT-RED](#plt-red-service-redundancy)).
 
@@ -1359,7 +1361,7 @@ Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-fe
 | `wasm-tools` | Component inspection, composition, adapter linking |
 | `podman-compose` | Local multi-service development |
 | `otelcol` | Local observability stack |
-| `syneroym` CLI (custom) | Substrate management: deploy, remove, status, logs, export |
+| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK and secrets, the App Supervisor, registry entries and Roym backups |
 
 > **Envisioned.** Not built yet. If the replication design uses Litestream, the toolchain adds the `litestream` CLI for backup and restore testing.
 

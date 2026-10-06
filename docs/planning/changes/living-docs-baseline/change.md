@@ -97,12 +97,12 @@ Owner decisions after the Layer 2 fix (docs/architecture-redundancy-options):
 - **Rootless Podman is preferred, not required.** The text and `docs/developer-guide.md` say Syneroym prefers rootless Podman and does not check it. No check was added, because nobody asked for one.
 - **Litestream outside Layer 2.** The four lines (layers diagram, security diagram, technology stack row, toolchain row) now carry an Envisioned marker. The two table rows were split out of their tables so the marker can sit under the table.
 - **Commit hash in the Migration Note.** Removed from the prose of the note. The link still points at the heading, so the hash stays in the anchor until the heading is renamed.
+- **Three technology rows.** The owner asked for these fixes after the audit. "External API" now says HTTP/1.1 and framed streams. "Inter-component calls" now says JSON-RPC 2.0 through the Universal Proxy, and wRPC is under an Envisioned marker split out of the table. The `syneroym` CLI row became `roymctl`.
 - **Simulation section.** The Envisioned marker now sits directly under the heading. "ships" became "gets". The sentence about a "walking skeleton stage" was removed because it named a plan stage.
 
 Found outside Layer 2 and not changed (they need a decision or a later pass):
 
 - The commit hash `dd864a1` is still in the heading "Post-DD864A1 Target Designs (Addendum)" (line 1839) and in `docs/ROADMAP.md`, `docs/STATUS.md`, `docs/system-requirements-spec.md` and `docs/planning/meta-implementation-plan.md`. Other documents link to the heading anchors, so renaming belongs to the structure change.
-- The technology stack table says the external API is JSON-RPC over WebSocket and that inter-component calls use wRPC. The toolchain table lists a custom `syneroym` CLI. None of these matches the code (Layer 2 audit: L2-02, L2-03, L2-28).
 
 ## Close-out
 
