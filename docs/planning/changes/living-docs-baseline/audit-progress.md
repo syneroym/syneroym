@@ -14,7 +14,7 @@ This file tracks which batches of the architecture audit are done. A batch is `a
 | F | Connectivity Substrate In Heteregenous networks | accepted | 80fa3093 | 60 claims (light audit; plus a per-subsection status table); 5 spot checks passed |
 | G1 | Addendum: Phase 0, Phase 1, Phase 2 | accepted | b748f698 | 164 claims; 5 spot checks passed (2 line cites loose, content right) |
 | G2 | Addendum: Phase 3 to Phase 7, Open Questions, Glossary | accepted | 6a591234 | 154 claims (Glossary rows use a different column layout; some verdicts carry a qualifier like "MATCHES (partial)"); 5 spot checks passed |
-| GAP | Whole doc and the code (gap analysis) | accepted | PENDING | 20 rows; evidence of rows 1-3 spot-checked |
-| OVERLAP | All accepted reports (overlap map) | not started | | |
+| GAP | Whole doc and the code (gap analysis) | accepted | 99136f67 | 20 rows; evidence of rows 1-3 spot-checked |
+| OVERLAP | All accepted reports (overlap map) | accepted | see git log | 67 overlap rows, 25 merged gaps, 24 fix commits proposed; structure checked, not spot-checked against code (report merges earlier reports) |
 
 Layer 2 (Substrate Runtime) was audited earlier: see `audit-architecture-layer2.md`.
