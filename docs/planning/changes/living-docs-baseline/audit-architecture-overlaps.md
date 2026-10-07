@@ -122,7 +122,7 @@ A star marks a question that needs a user decision before you edit. The default 
 
 ### 2.0 Decisions received (2026-10-07)
 
-The owner answered six of the ★ questions. These answers replace the defaults in 2.1 for the same questions. The other ★ questions are still open: their defaults stand but are not confirmed.
+The owner answered all the ★ questions except the last part of Q-B2. These answers replace the defaults in 2.1 for the same questions. One question (Q-B2, remaining parts) is still open: its default stands but is not confirmed.
 
 | Question | Decision | Effect on the fix commits |
 | --- | --- | --- |
@@ -132,6 +132,14 @@ The owner answered six of the ★ questions. These answers replace the defaults 
 | Q-C6 (gateway bind address) | A detail. The gateway binds `127.0.0.1` today. `0.0.0.0` is fine once access control is in place. The gateway may be used by all. | Do not state a fixed bind address as an architecture rule. Say that the bind address is configurable, and that access control decides who may call. The code (`0.0.0.0` at `crates/client_gateway/src/gateway.rs:184`) and the Roym spec (`127.0.0.1`) still differ: record this in the backlog, not in this doc. |
 | Q-B2 (router proof-of-possession and handshake gaps) | Fix the documentation. | Make the Identity and Security text say what the code does: the router checks the certificate chain, scope and revocation, and does not check that the caller holds the temporary key; the end-to-end handshake is one-sided and runs only when the caller sets `enc=ecdh-p256`. Mark the stronger behavior as Envisioned. Do not change code in this change. |
 | Q-F4 (SDK fallback to a second mechanism) | Maybe later. Envisioned. | Mark "try each path until one succeeds" as Envisioned. Add a row to the deferred backlog. No code change now. |
+| Q-A4 (aggregator) | An aggregator is like a SynOrg: a `directory` service (as in Roym `directory`). It aggregates provider data. It can federate with other aggregators and proxy queries to them. | Replace the "hosts-for" idea. Describe an aggregator as a directory-type SynOrg service. Say federation and query proxying between aggregators are Envisioned unless a report shows code. |
+| Q-B1 (government identity tier) | Envisioned. | Keep, marked Envisioned, as in the default. |
+| Q-B3 (reputation design) | Not frozen. It will be frozen later. Today there are only principles: decentralized, reliable, transparent, and under the owner's control of what is shared. | Do not choose between the Layer 3 design and `[P2P-REP]`. Write the principles. Mark both designs as candidates, Envisioned and not final. |
+| Q-B4 (discovery design) | Discovery is what Roym `directory` does today (see `docs/roym-integrated-experience-spec.md`). Clients, SynOrgs, directories and aggregators each choose what they query. | Describe this model as the main design. Leaf shards and tag routing become Envisioned options, not the plan. |
+| Q-D4 (Isolation diagram edge `APP1 <-> APP3`) | The edge shows that apps may talk to each other. | Keep the edge. Relabel it as cross-app communication through the platform, and say it is subject to access control. Still fix the shared `DB2`: databases are per service. |
+| Q-F2, Q-F3 (`listen/accept` and the transport interface) | A server-side `listen/accept` API is not a goal. But Iroh QUIC and WebRTC have an internal listen/accept equivalent. Use general wording. | Delete the `dial/listen/capabilities` interface text. Say: the node accepts inbound streams on each transport (Iroh QUIC, WebRTC) and hands them to the router. Say that callers connect, and services never accept connections themselves. |
+| Q-G1-1 (WAL mode) | Document what exists. Advanced tuning is Envisioned. | Remove "(and WAL)" claims. Say what the code does: one writer task per database, no WAL pragma set. Mark WAL and tuning as Envisioned. No code change. |
+| Q-B2, remaining parts | Not yet answered. | Default: document only what the code does. Add one backlog row for the three handshake points (see below). |
 
 ### 2.1 Questions that need a user decision first
 
@@ -242,7 +250,7 @@ Line numbers are the current heading lines, as hints only.
 | 3 | Phase 5 (2269): `[P2P-DSC]`, `[P2P-REP]` | Mark Envisioned. Fix "mutually signed". Change "the substrate" to "the app" (Q-B3, Q-B4). |
 | 4 | Phase 4 (2204): `[ADV-OBS]`, `[ADV-AI]`, `[ADV-DEV]` | Markers. Cross-link with Observability (O50, O52). Rename the "Observability Engine". Add dual build and saga to `[ADV-DEV]` (gap 20). |
 | 5 | Phase 3 (2159): `[LFC-MGT]`, `[LFC-VER]` | Fix "controller", `resolve`, key custody, `M7`, migration hooks (O63 to O66). Add supervisor verbs and topology documents (gaps 7, 8, 23). |
-| 6 | Phase 2 (1956): `[PLT-RED]`, `[PLT-ASY]`, `[PLT-DAT]` 5 to 1 | Fix O56 to O60 and Part 3 IDs. Add MQTT namespace and `call_dedup` (gap 17). Remove Litestream wording (Q-1). |
+| 6 | Phase 2 (1956): `[PLT-RED]`, `[PLT-ASY]`, `[PLT-DAT]` 5 to 1 | Fix O56 to O60 and Part 3 IDs. Add MQTT namespace and `call_dedup` (gap 17). Keep Litestream as an option (Q-1 decision); fix only wrong statements. |
 | 7 | Phase 1 (1905): `[FND-SEC]`, `[FND-CFG]`, `[FND-IAM]` | Part 3 IDs. Attestation wording (O30). Add stage-4 ABAC and FDAE masks (gap 18). |
 | 8 | Phase 0 (1852): `[TOP-PRM]`, `[TOP-ADR]`, `[TOP-REG]`, `[TOP-DSC]`, `[TOP-ROB]` | Master Anchor (O28). Sharded (O61). Connection reuse (O62). Two-tier discovery (gap 7). |
 | 9 | Addendum heading and intro (1841) | Remove "Post-DD864A1" and the dated status note (Part 3). Demote the second `#` title (O26). Keep one note that the phases are targets. |
