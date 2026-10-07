@@ -203,6 +203,16 @@ Architecture fix, commit 19 (Layer 3 merge, Identity):
 - **New subsection "Signed Records"** (anchor `#signed-records`) holds the signed record envelope and the `syneroym:signing` boundary. Existing headings keep their names.
 - **Master Key Compromise** keeps its design as an Envisioned block, reworded to follow `[FND-IDT]`. The text "Tier 1 is the compromise fallback" is deleted, as Q-B1 says.
 
+Architecture fix, commit 20 (Layer 2 leftovers and new subsections):
+
+- **Gateway bind address (Q-C6).** The decision says to write that the bind address is configurable. The code is not: the gateway binds `0.0.0.0:<port>` and only the port is a setting (`crates/client_gateway/src/gateway.rs:184`). So the doc states no bind address and does not say "configurable". It says the gateway sets no rule about which machine may connect, and that the identity mode and the checks at the target decide what a caller may do. The code and Roym spec difference still belongs in the backlog (commit 24).
+- **Replicas and database schema.** The Layer 2 text said each replica has its own database and did not mention that the manifest check refuses `replicas` above 1 for a service with a database schema (`manifest.rs:90-101`). I added that sentence, because `[PLT-RED]` already says it.
+- **`websocket` route target.** The Layer 2 Ingress text already named it, so I added nothing for it.
+- **`profile` setting.** The audit lists a `profile` setting under deployment profiles. The code only logs it and reads no `profiles` table, so the Deployment Profiles subsection says that.
+- **Expiry sweep not listed.** The `select!` has an arm for the certificate expiry sweep, but that loop never returns (`-> !`), so the "any component exit stops the substrate" list leaves it out.
+- **Supervisor verbs.** `[LFC-MGT]` already lists the 17 verbs and the `export-master` rule (commit 5). Layer 2 only points to it from the Keys list.
+- **Write rule names.** The two Layer 2 rows now name `AlreadyDecided` as the code's internal outcome (a later attempt gets the first result) and `slot-taken` as the wire form of `SlotTaken`, matching Layer 4.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
