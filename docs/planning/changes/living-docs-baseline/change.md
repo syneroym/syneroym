@@ -191,6 +191,9 @@ Architecture fix, commit 8 (Phase 0):
 - **`[TOP-DSC]` provider discovery bullet.** I added a short bullet, "Finding Providers and Listings", that says discovery is what the Roym `directory` service does (decision Q-B4). It links to `[P2P-DSC]`.
 - **Resolved Architecture TBD Items heading kept.** Audit row TBD-00 suggests renaming the section to "Design decisions index". I fixed the intro and the column header and kept the heading, because the Table of Contents link and the order of fix commits are not part of this step. Rename it with the Table of Contents fix if wanted.
 - **Ad boost cap in one place.** Rows 9 and 17 of that table point to row 15 for the cap value (0.3), so the value is written once in the table (overlap O43).
+- **Layer 4 headings.** "Order State Machine" is now "Booking State Machine", because Roym has no order entity (Q-C2). No link pointed at the old heading. The heading "SynApp 1: Business, Professional & Retail Spaces" is now "SynApp 1: Roym", because "Space" is a retired name. The Beckn sentence is gone (Q-C1). I replaced it with a short description of the Roym record chain, as the Layer 4 audit row proposes. I added a "Cards" subsection with the seven card types and who signs each, because the audit lists the card set as a gap (gap 21).
+- **Mesh heading.** The "Key differences from SynApp 1" paragraph moved under a new heading "Local Producer-Distributor Mesh" (default of Q-C5). It is marked Envisioned. I did not claim that the Mesh is "built thinner", because no code for it exists.
+- **Recommendation Algorithm.** The section starts with what search does today (newest first by `issued_at_secs`, merged one hit from each directory in turn). The formula is Envisioned, as Q-C4 asks.
 
 ## Close-out
 

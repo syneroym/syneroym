@@ -744,180 +744,215 @@ Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow
 
 ## Layer 4 — SynApp Specifications
 
-### SynApp 1: Business, Professional & Retail Spaces
-Domain processes, protocols, and workflows for this SynApp are adapted from the Beckn Protocol for a peer-to-peer topology. Reference the protocol specifications here.
+### SynApp 1: Roym
+Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain is `request` (the consumer asks), `quote` (the provider offers), `agreement-receipt` (each side signs one half) and then a booking on the provider's node, whose status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
 
 #### Component Architecture
 
+The manifest of Roym declares six services: `web`, `profile`, `conversation`, `catalog`, `transaction` and `directory`.
+
+| Service | What it does | Declared dependencies |
+|---|---|---|
+| `web` | Serves the Hub UI and `POST /rpc`. It forwards each method to the service that owns the method prefix. Every method that it forwards, except `profile.policy`, needs a session of the node owner. | `conversation`, `profile`, `catalog`, `transaction`, `directory` |
+| `profile` | The person's own profile, contacts, block list and reports. | none |
+| `conversation` | One-to-one messages and private groups. It uses the conversation interface of the substrate for encryption, the outbox and delivery. | `profile` |
+| `catalog` | The provider's listings and availability slots. | `profile` |
+| `transaction` | Requests, quotes, agreements, bookings, payments and fulfilments. Booking logic and payment records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
+| `directory` | A SynOrg's member list, published listings, search index and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
+
+A call that does not come from inside the installation is answered with error `-32013`, except for four `directory` methods. `directory.search`, `directory.info` and `directory.standing` accept any caller. `directory.publish` accepts a caller whose identity the router verified. So `transaction` and `catalog` cannot be called by another node. Two nodes talk through the conversation transport of the substrate, which carries the cards (the `prekey-bundle` and `deliver` calls), and through `directory.search` and `directory.publish`. Inside the installation, `web` checks the session before it forwards a call.
+
 ```mermaid
 flowchart TD
-    subgraph CONSUMER_SIDE["Consumer Side"]
-        PWA[Tauri Frontend or PWA]
+    subgraph BROWSER["Browser"]
+        HUB[Hub web UI]
     end
 
-    subgraph PROVIDER_SUBSTRATE["Provider Substrate"]
-        GW[JSON-RPC Gateway (wRPC planned)]
-        
-        subgraph WASM_COMPONENTS["WASM Components"]
-            SM[space-manager]
-            CB[catalog-browser]
-            OE[order-engine]
-            BS2[booking-scheduler]
-            PA[payment-adapter]
-            ND[notification-dispatcher]
-            RE[review-engine]
-        end
+    subgraph OWN_NODE["Person's own substrate: the Roym SynApp"]
+        GW[Client gateway]
+        WEB[web]
+        PROFILE[profile]
+        CONV[conversation]
+        CATALOG[catalog]
+        TXN[transaction]
+        DIR[directory]
 
-        subgraph OCI_SERVICES["OCI Services"]
-            DRM[drm-content-server Shaka Player backend]
-        end
-
-        subgraph SHARED["Shared Substrate Services"]
-            DISC2[Discovery]
-            MSG2[Messaging]
-            AC2[Access Control]
-            STORE[SQLite Store]
+        subgraph SUBSTRATE["Substrate"]
+            MSG[Conversation host: encryption, outbox, delivery]
+            AC[Access control]
+            STORE[SQLite database per service]
         end
     end
 
-    PWA -->|"JSON-RPC / WebSocket"| GW
-    GW --> SM & CB & OE & ND & RE
-    OE --> BS2 & PA
-    OE --> STORE
-    SM --> DISC2
-    CB --> DISC2
-    RE --> SHARED
-    DRM -->|"content delivery"| PWA
+    PEER["Other person's substrate: the same six services"]
+    SYNORG["SynOrg's substrate: directory service"]
 
-    style CONSUMER_SIDE fill:#D6E4F0,stroke:#2E75B6
-    style PROVIDER_SUBSTRATE fill:#E2EFDA,stroke:#548235
+    HUB -->|"JSON-RPC 2.0, HTTP POST /rpc"| GW
+    GW --> WEB
+    WEB -->|"forwards by method prefix"| PROFILE & CONV & CATALOG & TXN & DIR
+    CONV -->|"depends on"| PROFILE
+    CATALOG -->|"depends on"| PROFILE
+    TXN -->|"depends on"| CONV
+    TXN -->|"depends on"| CATALOG
+    DIR -->|"depends on"| CATALOG
+    CONV --> MSG
+    MSG -->|"end-to-end encrypted messages that carry cards"| PEER
+    DIR -->|"directory.search, directory.publish"| SYNORG
+
+    style BROWSER fill:#D6E4F0,stroke:#2E75B6
+    style OWN_NODE fill:#E2EFDA,stroke:#548235
 ```
 
-#### Order State Machine
+The Hub calls its own node only. It never calls the provider's node.
 
-**Order conflict resolution rules**
+> **Envisioned.** Not built yet. A DRM content server (an OCI service for protected media), push notifications, payment adapters for external gateways and a review service. Roym declares no OCI service. Today a card reaches the other person as a message in the conversation, and Roym has no push code, no payment gateway code and no review record. Also Envisioned: wRPC and WebSocket links from the Hub, which uses HTTP today. See [Payments](#payments) and [Trust & Reputation](#trust--reputation).
+
+#### Cards
+
+A card is a signed record sent as a message with content type `application/vnd.roym.card+json`. A card carries the signed envelope and nothing derived from it. The receiving node verifies the envelope and works out what to show. The Hub calls `transaction.sync` when a person opens a conversation. `transaction.sync` reads the conversation and files the cards in it.
+
+| Card | Signed by | Meaning |
+|---|---|---|
+| `request` | the consumer | The consumer asks for a service. It has a description, and it may name a listing, categories, an area and a time window. |
+| `quote` | the provider | An offer. It carries the agreed terms: scope, currency and amount, payment methods, payee, when payment is due, schedule, location, cancellation terms, refund terms and a dispute path as text. It may name one slot of the listing. It has an expiry. |
+| `agreement-receipt` | each party signs one half | Each side signs the quote terms. A deal exists when both halves exist. |
+| `booking-progress` | the provider's service | A snapshot of the booking. The consumer's node accepts it only when the signer is the one that signed the quote. |
+| `payment-request` | the provider | The provider asks to be paid. It carries currency, amount and an optional note. It is optional. |
+| `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method and reference as text. |
+| `fulfilment-receipt` | either party | A statement that the work is done. |
+
+The expiry of a quote is set by the provider. It must be from 5 minutes to 90 days. A request has no expiry. The consumer can mark a quote as declined with `quote.decline`. This mark stays on the consumer's own node and sends nothing. It is refused after either half of the agreement is signed. Roym has no method for a provider to reject a request.
+
+#### Booking State Machine
+
+Roym has no single order record. A deal is the record chain above, and the booking that follows it. The provider's node is the only writer of the booking. Every other node reads the signed snapshots of that writer. Each snapshot has a number `seq` that counts up from 1. A snapshot is written with the create fence of the data layer, so two writers of the same `seq` cannot both win. The writer retries a lost write up to three times.
+
+The booking opens on the provider's node once the consumer has accepted. When the consumer's `agreement-receipt` card is filed there and the quote has not expired, the node claims a seat or a decision (see below), opens the booking and countersigns the agreement on its own. The provider can also accept by hand with `agreement.accept`. A quote that names a slot is booked by the acceptance of the consumer. The provider cannot accept such a quote before the consumer.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> DRAFT : consumer initiates
+    state "in-progress" as InProgress
+    state "ended-unconfirmed" as EndedUnconfirmed
 
-    DRAFT --> PENDING_CONFIRM : consumer submits
-    DRAFT --> CANCELLED : consumer abandons
+    [*] --> scheduled : seat or decision claimed
+    [*] --> conflict : no seat free
 
-    PENDING_CONFIRM --> CONFIRMED : provider accepts
-    PENDING_CONFIRM --> REJECTED : provider rejects
-    PENDING_CONFIRM --> EXPIRED : timeout (24h default)
+    scheduled --> InProgress : booking.start, or the first payment or fulfilment half
+    scheduled --> cancelled : provider cancels, both tracks none
+    scheduled --> EndedUnconfirmed : track window closes, nothing acknowledged
+    InProgress --> cancelled : provider cancels, both tracks none
+    InProgress --> completed : payment and fulfilment both acknowledged
+    InProgress --> EndedUnconfirmed : track window closes, not both acknowledged
 
-    CONFIRMED --> PAYMENT_PENDING : payment intent created
-    CONFIRMED --> CANCELLED_BY_CONSUMER : consumer cancels (per Space policy)
-    CONFIRMED --> CANCELLED_BY_PROVIDER : provider cancels
-
-    PAYMENT_PENDING --> PAID : payment confirmed
-    PAYMENT_PENDING --> PAYMENT_FAILED : payment fails
-    PAYMENT_PENDING --> CANCELLED_BY_CONSUMER : consumer abandons
-
-    PAID --> IN_PROGRESS : service started or delivery initiated
-    PAID --> CANCELLED_WITH_REFUND : within cancellation window
-
-    IN_PROGRESS --> COMPLETE : service delivered & accepted
-    IN_PROGRESS --> DISPUTE : either party raises dispute
-
-    COMPLETE --> REVIEWED : consumer leaves review
-    COMPLETE --> [*] : no review (timeout)
-
-    DISPUTE --> RESOLVED : dispute settled
-    DISPUTE --> REFUNDED : refund issued
-
-    RESOLVED --> [*]
-    REFUNDED --> [*]
-    REVIEWED --> [*]
-    REJECTED --> [*]
-    EXPIRED --> [*]
-    CANCELLED_BY_CONSUMER --> [*]
-    CANCELLED_BY_PROVIDER --> [*]
-    PAYMENT_FAILED --> [*]
-    CANCELLED_WITH_REFUND --> [*]
+    completed --> [*]
+    cancelled --> [*]
+    conflict --> [*]
+    EndedUnconfirmed --> [*]
 ```
 
-**Order state conflict rules (single writer arbitrates):**
-- Provider cancel and consumer cancel both pending for the same order → **Provider takes precedence** (provider has operational authority), regardless of arrival order; refund triggered
-- Provider confirm and consumer cancel both pending → **Consumer wins** (consumer initiated the cancellation workflow first); no charge
-- Both parties record progress on the same in-progress order → the writer applies each update as it arrives; independent sub-steps naturally accumulate. Steps that genuinely conflict require manual resolution
+The six states are `scheduled`, `in-progress`, `completed`, `cancelled`, `conflict` and `ended-unconfirmed`. The last four are final. A booking opens as `scheduled`, or as `conflict` when no seat is free. A `conflict` booking carries the reason `slot-taken` or `slot-unavailable`. In that case the provider's node does not countersign the agreement.
+
+**Two tracks.** Payment and fulfilment are two separate tracks. They are not states of the booking. Each track is `none`, `claimed`, `acknowledged` or `unconfirmed`. Both parties can write to both tracks.
+
+| Track | Who makes the claim | Who acknowledges |
+|---|---|---|
+| Payment | The consumer says they paid (`payment-acknowledgement`). | The provider confirms they received the payment (`payment-acknowledgement`). |
+| Fulfilment | The provider says the work is done (`fulfilment-receipt`). | The consumer confirms the work is done (`fulfilment-receipt`). |
+
+Money moves outside Roym. Roym records what each side says and cannot confirm that a payment happened. The quote says whether payment is due before or after the work. That term only decides what the Hub suggests next. It never blocks a step.
+
+The rules of the booking:
+
+- **Against interest.** A statement that goes against the interest of the person who signs it moves the track to `acknowledged` at once: the provider's payment half, and the consumer's fulfilment half. A statement in favour of the signer only makes the track `claimed`. A track that is `acknowledged` or `unconfirmed` does not change again. A repeated statement changes nothing.
+- **First half.** The first payment or fulfilment half moves `scheduled` to `in-progress`. The provider can also move it with `booking.start`.
+- **Completed.** The booking is `completed` only when both tracks are `acknowledged`.
+- **Track window.** Each track stays open for 30 days after the end of the quote's schedule. With no schedule, it is 30 days after the booking opens. After that, a track that is `none` or `claimed` becomes `unconfirmed`. When both tracks are final and not both are `acknowledged`, the booking is `ended-unconfirmed`. It holds whatever claims exist.
+- **Cancel.** Only the provider can cancel, with `booking.cancel` and a reason. It is possible only while both tracks are `none`. A consumer asks in the conversation. A cancel frees the claimed seat.
+
+**Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The provider's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the booking is `conflict` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result.
+
+> **Envisioned.** Not built yet. A dispute workflow, a refund, a review of a completed booking and a cancel by the consumer. Today the cancellation terms, the refund terms and the dispute path are text in the agreed terms, and the Roym `directory` settings carry a dispute path as text. A rule that the provider wins a same-instant cancel from the consumer needs a consumer cancel first, see [Storage & Write Arbitration](#storage--write-arbitration).
 
 #### Consumer Transaction Flow
+
+The consumer's node does the search. It talks to the SynOrg directories that the person chose, and to the provider's node only through cards.
 
 ```mermaid
 sequenceDiagram
     actor Consumer
-    participant PWA as Consumer PWA
-    participant GW as Substrate Gateway
-    participant CB as catalog-browser
-    participant OE as order-engine
-    participant BS as booking-scheduler
-    participant PA as payment-adapter
-    participant ND as notification-dispatcher
+    participant CN as Consumer's node
+    participant DIR as SynOrg directory
+    participant PN as Provider's node
     actor Provider
 
-    Consumer->>PWA: search for service
-    PWA->>GW: JSON-RPC: discovery.search(query)
-    GW->>CB: resolve results from DHT index
-    CB-->>PWA: ranked Space list
+    Consumer->>CN: search for a service
+    CN->>DIR: directory.search
+    DIR-->>CN: hits with signed listings
+    CN->>CN: verify each listing, merge hits
+    CN-->>Consumer: verified hits, each with its signed listing
 
-    Consumer->>PWA: browse Space, select item
-    PWA->>GW: catalog.getItem(space_id, item_id)
-    GW->>CB: fetch item details
-    CB-->>PWA: item + pricing + availability
+    Consumer->>CN: request.set
+    CN->>PN: request card over the conversation
+    Provider->>PN: quote.set with terms, expiry and optional slot
+    PN->>CN: quote card
+    Consumer->>CN: agreement.accept
+    CN->>PN: agreement-receipt card, consumer half
+    PN->>PN: claim seat or decision, open booking
+    PN->>CN: booking-progress card, scheduled
+    PN->>PN: countersign
+    PN->>CN: agreement-receipt card, provider half
 
-    Consumer->>PWA: select slot / submit order
-    PWA->>GW: order.create(space_id, item_id, params)
-    GW->>OE: create order (→ DRAFT → PENDING_CONFIRM)
-    OE->>ND: notify provider
-    ND->>Provider: push notification
+    Note over CN,PN: Payment happens outside Roym
+    Provider->>PN: payment.request, optional
+    PN->>CN: payment-request card
+    Consumer->>CN: payment.acknowledge, the consumer's claim
+    CN->>PN: payment-acknowledgement card
+    Provider->>PN: payment.acknowledge, receipt confirmed
+    PN->>CN: payment-acknowledgement card and booking-progress card
 
-    Provider->>GW: order.confirm(order_id)
-    GW->>OE: transition → CONFIRMED
-    OE->>ND: notify consumer
-    ND-->>Consumer: confirmation
-
-    Consumer->>PWA: proceed to payment
-    PWA->>GW: payment.createIntent(order_id)
-    GW->>PA: create Stripe PaymentIntent
-    PA-->>PWA: client secret
-    Consumer->>PWA: enter card details
-    PWA->>PA: Stripe SDK confirm payment
-    PA->>OE: webhook: payment confirmed → PAID
-
-    Note over OE,Provider: Service fulfillment proceeds...
-
-    Provider->>GW: order.markComplete(order_id)
-    GW->>OE: transition → COMPLETE
-    OE->>ND: notify consumer
-    ND-->>Consumer: completion + review prompt
-
-    Consumer->>PWA: submit review
-    PWA->>GW: review.submit(order_id, rating, text)
-    GW->>OE: transition → REVIEWED
+    Provider->>PN: fulfilment.sign, the provider's claim
+    PN->>CN: fulfilment-receipt card
+    Consumer->>CN: fulfilment.sign, work confirmed
+    CN->>PN: fulfilment-receipt card
+    PN->>CN: booking-progress card, completed
 ```
+
+Notes on the flow:
+
+- **Search.** The hit carries the signed listing, so the consumer needs no call to the provider's catalog. `catalog` refuses a caller from another node. The consumer's node verifies the listing itself. See [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow).
+- **Request and quote.** `request.set` signs the request and sends it in one step. The provider's node files the card when it runs `transaction.sync`, and the provider answers with `quote.set`.
+- **Agreement.** The consumer accepts the quote with `agreement.accept`. The provider's node decides the booking and countersigns. If the slot is full, it does not countersign, and the booking is `conflict`.
+- **Notices.** Each node shows the card in the conversation. No push notification is sent.
+- **Payment.** The provider may send a `payment-request`. The consumer pays outside Roym. Either party then records a `payment-acknowledgement`. The Hub shows a notice that Roym does not see the money move.
+- **Fulfilment.** The booking is complete only when the provider's claim and the consumer's confirmation both exist, and the payment track is acknowledged too.
+
+> **Envisioned.** Not built yet. A payment through an external gateway: a Stripe `PaymentIntent`, a client secret, a card confirmed with the Stripe SDK and a webhook that marks the booking as paid. Also a review that the consumer submits after the booking. Roym has no gateway code and no review record. See [Payments](#payments) and [Flexible Payment Integration](#3-flexible-payment-integration).
 
 #### Recommendation Algorithm
 
-**Recommendation algorithm**
+**Built today.** Roym has no recommendation feature. It has search. A search sends its query to each directory that the person chose. The query can hold text, categories, an area and filters. Each directory sorts its matching listings by the `issued_at_secs` of the signed record, newest first. Ties go by `listing_id`. The consumer's node then takes hits from the directories in turn, newest first inside each directory. It takes at most 10 hits per directory and 50 per page. No score is computed. Search runs are kept for one hour as working state. Beyond those runs, the consumer's node keeps no query history and no list of viewed items. Search ranking is the ordering of the answer to one query. A recommendation would suggest items with no query.
 
-Catalog recommendations are **client-side only** — no consumer query data is sent to third parties.
+> **Envisioned.** Not built yet. No recommendation, scoring or collaborative-signal code exists. This is the design.
+>
+> Catalog recommendations are **client-side only**. No consumer query data is sent to third parties by the recommender. A search still sends its query to the directories that the person chose.
+>
+> ```
+> score(item, consumer_context) =
+>     0.4 × collaborative_signal     // items frequently co-viewed/co-ordered by similar consumers (local cluster only)
+>   + 0.3 × semantic_similarity      // embedding distance between item description and consumer's session query history
+>   + 0.2 × provider_reputation      // normalised reputation score of the provider
+>   + 0.1 × recency                  // freshness of catalog entry
+> ```
+>
+> Consumer session context (query history, viewed items) is kept **only in local app storage**, never transmitted. Collaborative signals are computed from **aggregate anonymised counts** published by the provider substrate. No individual consumer data leaves their device. The reputation design is not frozen, see [Trust & Reputation](#trust--reputation).
 
-```
-score(item, consumer_context) =
-    0.4 × collaborative_signal     // items frequently co-viewed/co-ordered by similar consumers (local cluster only)
-  + 0.3 × semantic_similarity      // embedding distance between item description and consumer's session query history
-  + 0.2 × provider_reputation      // normalised reputation score of Space
-  + 0.1 × recency                  // freshness of catalog entry
-```
+### Local Producer-Distributor Mesh
 
-Consumer session context (query history, viewed items) is kept **only in local app storage**, never transmitted. Collaborative signals are computed from **aggregate anonymised counts** published by the provider substrate — no individual consumer data leaves their device.
-
-**Key differences from SynApp 1:**
-- Adds `delivery-engine` and `tracking-service` components
-- Order state machine includes `PREPARING`, `OUT_FOR_DELIVERY`, `DELIVERED` sub-states within `IN_PROGRESS`
+> **Envisioned.** Not built yet. This is the second Roym vertical, for food and small retail. Roym has no delivery component, no tracking component and no delivery state today.
+>
+> The design differs from the Professional Services Guild in two ways:
+> - It adds `delivery-engine` and `tracking-service` components.
+> - The `in-progress` state of the booking has sub-states `PREPARING`, `OUT_FOR_DELIVERY` and `DELIVERED`.
 
 ---
 
