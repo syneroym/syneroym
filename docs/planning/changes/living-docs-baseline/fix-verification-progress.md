@@ -14,4 +14,4 @@ Stage 2 checks every row of [fix-new-claims.md](fix-new-claims.md) against the c
 | S6 | 16, 17 | 63 | accepted | 0b6ace90 | 63 rows: 57 CONFIRMED, 1 CITE-OFF, 5 PARTLY; RECORD_TYPES table not used to verify (16.14); outbound node-to-node is Iroh only (16.21); 1 finding spot-checked |
 | S7 | 18, 19 | 52 | accepted | 17f5c541 | 52 rows: 46 CONFIRMED, 6 PARTLY; 18.3: consumer never checks revocation (with_revocations only in tests); 19.21: no command revokes a person's delegated key; finding spot-checked |
 | S8 | 20 | 50 | accepted | 437f3193 | 50 rows: 45 CONFIRMED, 1 CITE-OFF, 4 PARTLY; all negative claims held; 20.21 gateway does not sign streams with node key as doc says; 20.45 cron accepts 6/7 fields; cron finding spot-checked |
-| S9 | 21, 22, 23, 24 | 57 | running | | |
+| S9 | 21, 22, 23, 24 | 57 | accepted | 410d2445 | 57 rows: 46 CONFIRMED, 2 CITE-OFF, 9 PARTLY; relay TLS and probe share one bind address (21.7); multi-hop claims 21.12-21.14 overstated; JSON-RPC everywhere (23.1) and relay-only-as-fallback (22.1) too broad; relay finding spot-checked |
