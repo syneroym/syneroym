@@ -3,7 +3,7 @@
 > **Status legend.** No marker means implemented. **Envisioned** means we want this and it is not built.
 > Anything that is not built must carry the Envisioned marker.
 
-> **Migration Note:** The architectural designs and roadmap changed a lot after the first version of this document. See the [Target Designs (Addendum)](#post-dd864a1-target-designs-addendum) at the bottom of this document for the canonical Layer 1-4 definitions.
+> **Migration Note:** The architectural designs and roadmap changed a lot after the first version of this document. See the [Target Designs (Addendum)](#target-designs-addendum) at the bottom of this document for the canonical Layer 1-4 definitions.
 
 > [!WARNING]
 > **Implementation Note:** The **wRPC protocol layers/surface** is not yet implemented — the current inter-component and external API surface is JSON-RPC 2.0. Multi-hop relay routing (the Federated Coordinator model) is implemented in the coordinator crates; see [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator).
@@ -1838,14 +1838,15 @@ Additional transports, gateways, and protocol adapters can be added later withou
 
 ---
 
-## Post-DD864A1 Target Designs (Addendum)
-# Syneroym: Substrate Feature Implementation Design
+## Target Designs (Addendum)
 
-This document details the "How"—the concrete engineering designs and implementation strategies—that map to the features defined in the [Feature Specification](system-requirements-spec.md#post-dd864a1-target-specifications-addendum).
+### Syneroym: Substrate Feature Implementation Design
+
+This part gives the design detail for the features in the [Feature Specification](system-requirements-spec.md#post-dd864a1-target-specifications-addendum). The Layer 1 to 4 sections above are the canonical definition of the layers. Each Phase section below adds the detail for one group of topics.
 
 > **Note:** Only sections with complex architectural considerations are expanded here. Trivial mappings are omitted.
 >
-> **Implementation Status (updated 2026-07-12, M0–M3B/M3C complete):** This document describes target implementation; sections are progressively realized as milestones close, and this note is not re-verified line-by-line on every edit — the [traceability matrix](planning/traceability-matrix.md) is the authoritative source for current per-requirement status. As of M3B/M3C, the codebase contains: DID-key identities and handshake delegation (M2), local endpoint registration and the community registry client, JSON-RPC routing, Iroh/WebRTC coordinators, Wasmtime execution and Podman lifecycle support (M1/M2), the encrypted per-service SQLite data layer, vault, and app-config (M3A), blob storage with signed URLs (M3B Slice 5), the embedded MQTT pub/sub broker and bidirectional QUIC streaming (M3B/M3C Slices 6A/6B), and the HTTP passthrough bridge (M3C Slice 7). It does not yet contain: the full wRPC surface (JSON-RPC remains the only implemented cross-node/external bridge), multi-substrate deployment or the App Supervisor, or any replication system (database/pub-sub-log/blob) — all M4+ per the [meta-implementation-plan](planning/meta-implementation-plan.md). (FDAE/UCAN access control was on this list and landed in M4A/M4B. The rest of this note has not been re-verified since 2026-07-12 — the matrix is authoritative.)
+> **The phases are targets.** A phase is a planned group of work, not a record that the work is done. Each Phase section has built parts and Envisioned parts. Text with no marker is built. Text under the Envisioned marker is not built. The [traceability matrix](planning/traceability-matrix.md) gives the status of each requirement.
 
 ---
 
