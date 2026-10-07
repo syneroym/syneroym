@@ -28,5 +28,5 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 20 | Layer 2 leftovers | done | 7aab087d | 50 new claims; 7 deviations; code binds gateway to 0.0.0.0 (doc says access control decides, no fixed bind rule); negative claims (no SIGTERM handler, profiles table unread) for stage 2; some cites 1-10 lines off |
 | 21 | Layer 1 | done | f6e81dbc | 38 new claims; 1 deviation block (third-party relay default is narrower than the audit said); 'keeps one connection to parent relay' is inferred from Iroh behaviour (stage 2 may downgrade); deferred-backlog.md:257 uses the old Heteregenous anchor (commit 24) |
 | 22 | System Layers Overview, Goals & Constraints, Executive Summary | done | ddc87e61 | 15 new claims; 1 deviation block; Mermaid not rendered (check at end); Glossary 'SYN-SUBSTRATE ... discovery' and Layer 2 diagram label outside this commit |
-| 23 | Top matter and Table of Contents | running | | |
-| 24 | Outside the doc (TERMINOLOGY, requirements spec, backlog) | not started | | |
+| 23 | Top matter and Table of Contents | done | fe79a305 | 2 new claims; 0 deviations; TOC rebuilt; my own link check: 226 in-doc links, 0 broken |
+| 24 | Outside the doc (TERMINOLOGY, requirements spec, backlog) | running | | |
