@@ -14,8 +14,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 6 | Phase 2 | done | 13dc269b, 79172637 | 31 new claims; 9 deviations; follow-up restored substrate.db name; [ADV-OBS] line still says "state databases" (commit 4 wording); owner call: drop [PLT-DAP-nn] ids? |
 | 7 | Phase 1 | done | 3dc2706a | 18 new claims; 7 deviations (audit G1-050 was wrong: custom_config schema is validated) |
 | 8 | Phase 0 | done | 7bfd95f4 | 17 new claims; 7 deviations; Layer 2 "no manifest field selects it" (Sharded) is slightly loose, for commit 20 |
-| 9 | Addendum heading and intro | not started | | |
-| 10 | Connectivity Substrate | not started | | |
+| 9 | Addendum heading and intro | done | ee81eaed | 0 new claims; spec link anchor post-dd864a1-... kept (valid explicit anchor in the spec) |
+| 10 | Connectivity Substrate | running | | |
 | 11 | Consolidated Technology Stack | not started | | |
 | 12 | Appendix: Multi-Hop Relay Walkthrough | not started | | |
 | 13 | Resolved Architecture TBD Items | not started | | |
