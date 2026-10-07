@@ -7,8 +7,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | Commit | Scope | Status | Hash | Notes |
 | --- | --- | --- | --- | --- |
 | 1 | Glossary; Open Questions & Recommendations | done | 45b8967a | 9 new claims; 3 deviations; Beckn row deleted but Layer 4 still cites it until commit 17 |
-| 2 | Phase 7; Phase 6 | running | | |
-| 3 | Phase 5 | not started | | |
+| 2 | Phase 7; Phase 6 | done | ceda65ff | 15 new claims; 6 deviations (markers per item) |
+| 3 | Phase 5 | running | | |
 | 4 | Phase 4 | not started | | |
 | 5 | Phase 3 | not started | | |
 | 6 | Phase 2 | not started | | |
