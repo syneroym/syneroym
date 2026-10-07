@@ -195,6 +195,14 @@ Architecture fix, commit 8 (Phase 0):
 - **Mesh heading.** The "Key differences from SynApp 1" paragraph moved under a new heading "Local Producer-Distributor Mesh" (default of Q-C5). It is marked Envisioned. I did not claim that the Mesh is "built thinner", because no code for it exists.
 - **Recommendation Algorithm.** The section starts with what search does today (newest first by `issued_at_secs`, merged one hit from each directory in turn). The formula is Envisioned, as Q-C4 asks.
 
+Architecture fix, commit 19 (Layer 3 merge, Identity):
+
+- **Messaging is not only a Roym feature.** The decision says Discovery, Messaging, Trust & Reputation and Payments are Roym features. The code has a substrate host capability for conversation (`syneroym:conversation`, `crates/conversation`), and the Messaging section already says so. The note under the merged heading says Messaging combines both: the substrate owns history and delivery, Roym decides which messages to accept. Relay discovery inside Discovery & Matching is also a substrate part.
+- **Method A step numbers.** Only the certificate check and the revocation check are built, so they are steps 1 and 2. The "Temporary Key signed the request" check and the government-identity check are in one Envisioned block under the list.
+- **Diagrams redrawn.** The tier diagram, the resolution diagram, the revocation diagram and the delegation diagram showed an allow list, a temporary-key DHT record and a UCAN issued by a temporary key. They now match the code. The government-identity tier is out of the diagram and only in the Envisioned text.
+- **New subsection "Signed Records"** (anchor `#signed-records`) holds the signed record envelope and the `syneroym:signing` boundary. Existing headings keep their names.
+- **Master Key Compromise** keeps its design as an Envisioned block, reworded to follow `[FND-IDT]`. The text "Tier 1 is the compromise fallback" is deleted, as Q-B1 says.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

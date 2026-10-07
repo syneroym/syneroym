@@ -468,112 +468,143 @@ The substrate has one API surface: **JSON-RPC 2.0**. It serves WASM components (
 
 ## Layer 3 — Shared Substrate Utilities
 
+Identity is a substrate utility. Discovery & Matching, Trust & Reputation and Payments describe Roym features built on substrate primitives. Messaging combines the two: the substrate owns the conversation history and its delivery, and Roym decides which messages to accept.
+
 ### Identity
 
-The system implements a **Three-Tier Identity Architecture** to decouple the persistent, high-trust root identity from ephemeral day-to-day operations.
+The system separates a persistent root identity from the short-lived keys that act every day. Two kinds of key are built:
 
-1. **Government Identity (Optional):** Pure physical data with a state signature, verified via a Zero-Knowledge Proof (Method B).
-2. **Master Key (DID):** A persistent `did:key` (Ed25519) stored securely (encrypted local file or OS enclave). Used strictly to issue `Verifiable Credential Bonds` tying the Master Key to the National ID (or acting as a self-sovereign root) and issuing delegation/revocation certificates.
-3. **Temporary Key (DID):** A short-lived (e.g., 3-month) `did:key` (Ed25519). **This Temporary Key acts as the primary `NodeId` routing index in the DHT (pkarr).**
+1. **Master Key (DID):** A persistent `did:key` (Ed25519). It is the identity of a person or of a member service. A person's master key is a key file. The App Supervisor keeps the master keys of the members it manages in its encrypted service vault. An exported identity is encrypted under a recovery key. [Keys: Location, Use, Loss](#keys-location-use-loss) has the details. The master key signs delegation certificates, its master anchor, the endpoint records of its member services and the capability tokens (UCAN) that it grants.
+2. **Temporary Key (DID):** A short-lived `did:key` (Ed25519) that a master authorizes with a delegation certificate. The issuer chooses the lifetime. The default is 24 hours for `roymctl session delegate` and `roymctl identity certify-instance`, and 4 hours for an instance certificate that the App Supervisor mints. A temporary key is not the routing index in the DHT and publishes no DHT record. The record of a substrate is signed by the node key, which is also its Iroh key. The record of a member service is signed by the member's master key.
 
 ```mermaid
 flowchart TD
-    subgraph TIER1["Tier 1: Government Identity (Black Box)"]
-        direction LR
-        ID_DATA["Attestation Claims + Uniqueness Anchor + Root Signature"]
-    end
-
-    subgraph TIER2["Tier 2: Master Identity"]
+    subgraph TIER_MASTER["Master Identity"]
         direction LR
         MASTER["Master Key (did:key)"]
-        VC_BOND["Verifiable Credential: Master Key signs Uniqueness Anchor"]
-        MASTER -->|Signs| VC_BOND
+        ANCHOR["Master Anchor (revoked_keys deny list)"]
+        MASTER -->|Signs| ANCHOR
     end
-    
-    subgraph TIER3["Tier 3: Temporary Routing Identity"]
+
+    subgraph TIER_TEMP["Temporary Identity"]
         direction LR
         TEMP["Temporary Key (did:key)"]
-        DEL_CERT["Delegation Certificate (Valid e.g., 3 months)"]
+        DEL_CERT["Delegation Certificate (scope + validity window)"]
         MASTER -->|Issues| DEL_CERT
         DEL_CERT -.->|Authorizes| TEMP
     end
-    
-    TIER1 -.->|"Verified via ZK Plugin (Method B)"| VC_BOND
 ```
 
+> **Envisioned.** Not built yet. The master key is a plain key file or a vault entry. No code stores a key in an OS enclave, and no code handles a government identity or a zero-knowledge proof. See Method B below.
+
 #### Cryptographic Delegation (Method A)
-For standard operations, the Master Key issues a "Delegation Certificate" to a generated Temporary Key. Handshakes (e.g., `verifyAndDeriveSharedSecret`) validate this chain:
-1. Did the Temporary Key sign the active request?
-2. Did the Master Key authorize this Temporary Key?
-3. (Optional) Is the Master Key bound to a verified National ID?
+For standard operations, the Master Key issues a "Delegation Certificate" to a generated Temporary Key. The certificate holds the master DID, the temporary DID, an issue time, an expiry time and one scope. The master signs these five fields (Ed25519, over canonical JSON). The scope says what the temporary key may do as the master:
+
+- `routing`: route a stream under the master's identity, for example a device key.
+- `service-instance`: a key that a substrate derives for a service instance. The member master certifies it, so the instance speaks as that member.
+- `session-auth`: log in at the node auth service. The router does not accept it on a stream.
+- `record-signing`: sign records under the master's DID (see [Signed Records](#signed-records)). The router does not accept it on a stream.
+
+A verifier names the scopes that it accepts, so a certificate made for one purpose cannot be replayed for another.
+
+When a stream opens, the router (`HandshakeVerifier::verify_preamble`) validates this chain:
+1. Did the Master Key authorize this Temporary Key? The router checks the signature, the validity window and the scope (`routing` or `service-instance`) of the certificate, and that the temporary DID in the certificate is the DID of the key in the preamble.
+2. Has the Master Key revoked this Temporary Key? The router resolves the master anchor (see below). It refuses the stream if the key is on the `revoked_keys` list, or if the anchor cannot be resolved within 5 seconds.
+
+When the preamble carries no certificate, the router accepts the key in the preamble as the caller's own master key. The optional end-to-end handshake (`enc=ecdh-p256`) is a separate step. It does not use the certificate. See [Encryption at Every Layer](#encryption-at-every-layer).
+
+> **Envisioned.** Not built yet. The router does not check that the caller holds the private part of the temporary key. The preamble carries only the public key, so the key is asserted and not proved. Only the login at the node auth service checks a signature over a nonce. Two more checks are not built:
+>
+> - **Signed request.** The handshake checks that the Temporary Key signed the active request.
+> - **Assurance credential.** The handshake optionally checks that the Master Key is bound to a verified government identity (Method B).
 
 #### Zero-Knowledge Architecture (Method B)
-To prove National ID bindings without revealing the DID or Uniqueness Anchor, the substrate uses an **Optional ZK Runtime Plugin** (WASM-based). 
-- It accepts the National ID file, root signature, Master Key, and Temporary Key (as Public Input) into a dynamic proving scheme (e.g., `anon-aadhaar` downloaded on demand).
-- Verifiers check the output proof string against public parameters.
+
+> **Envisioned.** Not built yet. No code handles a government identity, a uniqueness anchor or a zero-knowledge proof.
+
+A person may later attach an optional assurance credential to a master key, for example a government identity. No such credential is required, and none is the root of trust (`[FND-IDT]` in the [requirements](system-requirements-spec.md)). To prove the binding without revealing the DID or the uniqueness anchor, the substrate would use an **Optional ZK Runtime Plugin** (WASM-based). The plugin is an extension point and not a release requirement.
+- It would accept the ID file, root signature, Master Key, and Temporary Key (as Public Input) into a proving scheme (e.g., `anon-aadhaar`).
+- Verifiers would check the output proof string against public parameters.
+
+#### Signed Records
+A signed record is a statement that one identity makes and that any node can check without asking the issuer. The substrate defines one envelope. It holds `envelope_version`, `version`, `record_type`, `issuer`, `subject`, `issued_at_secs`, an optional `expires_at_secs`, an optional `supersedes`, the `payload` (a JSON object), an optional `delegation` (a certificate, as JSON) and the `signature`. The record id is `rec_` followed by the z-base-32 SHA-256 digest of the canonical signed envelope. A correction is a new record that names the id of the record it corrects in `supersedes`. Nothing is edited.
+
+Limits on a record: the `payload` is at most 64 KiB when canonicalized, nests at most 32 deep, and holds integers only (a price is in minor units). The `record_type` is 1 to 64 bytes of lowercase ASCII letters, digits and `-`. The `subject` is at most 256 bytes. The substrate checks the shape of the record type and not its vocabulary. Roym fixes the table of the twelve record types that it produces.
+
+**Signing.** A guest component calls `sign-record` of the `syneroym:signing` interface with a draft. The host builds the envelope and signs it. The component cannot state its own issuer or its own times. No function of the interface returns key material, and no function signs bytes that the caller supplies. The key is the signing key that the node derives for the service. The component picks one of two principals:
+
+- `service`: the issuer is the `did:key` of the signing key.
+- `delegated`: the issuer is a master DID. The component supplies a `record-signing` certificate that this master made over the signing key of the service. The host checks the certificate on every call: it must certify the exact key about to sign, carry the scope `record-signing` and be valid now. When the caller arrived as a verified identity, the master of the certificate must be that caller. The envelope then carries the certificate.
+
+An instance that may not sign, such as a read-only after-step instance, gets `permission-denied`.
+
+**Verifying.** The host and the guest run the same code (`syneroym-signed-record`, which also builds for `wasm32-wasip2`). A guest can verify a record and can never sign one. The verifier checks that the envelope version is understood, that the record follows the rules above, that the issuer is the expected one when the caller names one, that the issue time is not more than 300 seconds ahead of the clock, that the record has not expired, and that the signature is valid. When the record carries a certificate, the verifier also checks that the master of the certificate is the issuer, that its scope is accepted (`record-signing` by default), and that the issue time of the record lies inside the validity window of the certificate. It then checks the revocation source that the caller passes for the signing key, the issuer and the record id. The result carries a revocation status. It is `Unknown` when the source has no answer for the signing key, the issuer or the record id.
 
 #### Identity Resolution & Revocation (The Master Anchor)
-To maintain strict security without modifying standard DHT signature mechanics (BEP 44), the **Master Key acts as the persistent anchor**. Both keys use standard `pkarr` DHT records signed by their respective private keys.
+The **Master Key acts as the persistent anchor**. It publishes one signed record, the master anchor, as a standard `pkarr` record, so the BEP 44 signature mechanics stay unchanged. The anchor is a **deny list**: it names the temporary keys that the master has revoked. It does not list the active keys of the master. Records that give a route to a node or a service are separate endpoint records (see [Service Record](#service-record) and [Node Record](#node-record)). The key that a record's `service_id` names signs it: the node key for a substrate, and the member's master key for a member service.
 
 **Master Anchor Payload Schema:**
-The Master Key DHT payload is stored in the `pkarr` TXT record as a JSON-encoded string:
+The Master Key payload is stored in the `pkarr` TXT record as a JSON-encoded string:
 ```json
 {
   "schema": "master_anchor_v1",
-  "temporary_keys": [
-    "did:key:z6Mkt...",
-    "did:key:z6Mku..."
+  "revoked_keys": [
+    "did:key:h...",
+    "did:key:h..."
   ],
-  "timestamp": 1690000000
+  "timestamp": 1690000000000000
 }
 ```
+The `timestamp` is the time of the signed `pkarr` packet in microseconds. The payload may also carry an optional `revoke_list_registry` string. The code carries it forward on each republish and does not read it. The community registry keeps the anchor with the newest timestamp for each master. It refuses an older anchor.
 
 **Secure Resolution Flow:**
-1. **Registry Lookup:** A client queries the Community/App Registry for a Logical Service Name. The registry returns the **Master Key DID** that owns the service.
-2. **Authorization Check (DHT):** The client looks up `pkarr:<Master Key DID>`. The client parses the JSON payload and validates the schema, extracting the array of authorized, active **Temporary Key DIDs** (representing the user's active devices/servers).
-3. **Routing Lookup (DHT):** The client finds the matching Temporary Key in the array, looks up `pkarr:<Temporary Key DID>`, and retrieves the actual IP/Relay endpoints.
+1. **Registry Lookup:** A client asks the community registry first, and the DHT second, for a signed endpoint record by DID or alias (see [Registry first, DHT second](#registry-first-dht-second)). A service record names the substrate in `substrate_id`. A logical service name inside an app is resolved by the App Supervisor, not by the registry.
+2. **Routing Lookup:** The client looks up the substrate record of that `substrate_id`. The record holds the mechanisms for reaching the node: an Iroh address and relay URL, or a WebRTC peer.
+3. **Revocation Check (at the receiver):** The node that receives a stream with a certificate resolves the anchor of the certificate's master. It asks the registry first and the DHT second. An anchor that the registry returns must carry the master's signature and be less than 24 hours old.
 
 **Passive Revocation:**
-If a Temporary Key is compromised (e.g., a stolen laptop), the Master Key updates its own DHT record array to omit the compromised key. 
-- The compromised key's individual `pkarr` record might technically still exist in the DHT, but **clients will instantly reject it** because it is no longer authorized by the Master Anchor.
-- Dependent clients with cached routes perform a "Refresh-on-Failure" lookup: they query the Master Key again, see the new authorized Temporary Key, and securely reconnect.
+If a Temporary Key is compromised (e.g., a stolen laptop), the Master Key adds the DID of that key to `revoked_keys` and publishes a new anchor. Entries stay in the list, and revoking a key twice does not add a second entry.
+- The compromised key's certificate stays valid until it expires, but a receiver refuses it as soon as that receiver sees the new anchor.
+- The check runs when a stream opens. Each new stream resolves the anchor again at the receiver.
 
-**Master Key Compromise (Tier 1 Fallback):**
-If the Master Key itself is compromised, the true user falls back to **Tier 1 (The Physical Identity)**. 
-- Because an attacker possesses the digital `did:key` but not the physical identity card (e.g., the NFC chip on an e-passport or Aadhaar biometrics), the attacker cannot generate a fresh ZK Proof.
-- The user generates a *new* Master Key and binds it to the same Uniqueness Anchor by creating a new Verifiable Credential Bond (or ZK Proof) that includes a modern timestamp/epoch. 
-- The Community Registry and network resolve conflicts by always trusting the Master Key that provides the most recent, cryptographically valid ZK Proof tied to the physical Uniqueness Anchor. 
-- **Orphaned DHT Records:** The attacker's compromised Master Key will technically still maintain its `pkarr` DHT record. However, this record becomes entirely orphaned and irrelevant because the higher-level routing layers (e.g., the Community Registry, peer contact lists) update their internal pointers to resolve the Logical Service/Identity exclusively to the *new* Master Key. This effectively severs the attacker's access and re-establishes the new Master Key as the anchor without needing to "delete" the old DHT entry.
+**The anchor is a duty.** An anchor stops verifying 24 hours after it was signed. A master must republish it before then. The App Supervisor republishes the anchor of each master it manages every 12 hours by default. A person's anchor is published with `roymctl identity publish-anchor`. A master with no valid anchor cannot use its certificates on a stream: the router refuses them. See [Keys: Location, Use, Loss](#keys-location-use-loss).
+
+**Capability tokens.** A caller can also present a chain of UCAN capability tokens in the preamble ([ADR-0015](decisions/0015-ucan-capability-model.md)). The router verifies the chain, and for each edge it checks the anchor of the issuer for the audience key. An anchor that cannot be resolved counts as not revoked on this path.
+
+**Master Key Compromise:**
+
+> **Envisioned.** Not built yet. Today a master key is restored from an encrypted identity backup, and the registry compares only the timestamps of the anchors of one master. No flow replaces a compromised master key.
+
+If the Master Key itself is compromised, the user would recover as `[FND-IDT]` describes: rotate the compromised delegates, publish a revocation and keep an auditable chain from the old master to the new one.
+- A user who holds an optional assurance credential (Method B) could bind a *new* Master Key to the same credential with a modern timestamp/epoch. Because an attacker holds the digital `did:key` and not the physical identity, the attacker cannot produce a fresh proof.
+- The Community Registry and network would then trust the Master Key that provides the most recent valid proof.
+- **Orphaned DHT Records:** The attacker's compromised Master Key would still maintain its `pkarr` DHT record. This record becomes orphaned and irrelevant because the higher-level routing layers (e.g., the Community Registry, peer contact lists) update their internal pointers to resolve the Logical Service/Identity to the *new* Master Key. The old DHT entry does not need to be deleted.
 
 ```mermaid
 flowchart TD
     subgraph RESOLUTION["Secure Connection Resolution"]
         direction TB
-        REG[Registry: Logical Name -> Master Key]
-        MAST_DHT[DHT pkarr:MasterKey -> Array of Authorized TempKeys]
-        TEMP_DHT[DHT pkarr:TempKey -> IP/Relay Endpoints]
-        
-        REG --> MAST_DHT
-        MAST_DHT -->|Validates| TEMP_DHT
+        REG["Registry, then DHT: lookup by DID or alias"]
+        SVC_REC["Service record: names substrate_id"]
+        SUB_REC["Substrate record: Iroh address and relay URL, or WebRTC peer"]
+
+        REG --> SVC_REC --> SUB_REC
     end
 
     subgraph REVOCATION["Passive Revocation"]
         direction TB
         COMP{TempKey Compromised?}
-        COMP -->|Yes| UPD[Master Key updates its DHT payload array to drop TempKey]
-        UPD --> FAIL[Clients re-query Master Key and drop connections to old TempKey]
+        COMP -->|Yes| UPD[Master Key adds the TempKey to revoked_keys and publishes a new anchor]
+        UPD --> FAIL[Receiver resolves the anchor and refuses the next stream with that TempKey]
     end
 
     subgraph DELEGATION["Capability Delegation"]
-        ROOT[Temporary Key] -->|"issue UCAN"| APP[SynApp component scoped token]
-        ROOT -->|"issue UCAN"| CONSUMER_TOK[Consumer time-limited token]
+        ROOT["Root identity: substrate owner, service owner or person"] -->|"issue UCAN"| APP[Scoped capability token]
+        AUTH["Node auth service"] -->|"issue after a delegated-key login"| CONSUMER_TOK[Short-lived session token]
         APP --> INVOKE[Invoke substrate APIs within granted scope]
+        CONSUMER_TOK --> INVOKE
     end
 ```
-
----
-
-## Layer 3 — Shared Substrate Utilities
 
 ### Discovery & Matching
 
