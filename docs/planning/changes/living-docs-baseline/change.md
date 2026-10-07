@@ -148,6 +148,16 @@ Architecture fix, commit 4 (Phase 4):
 - **Renamed design name.** The planned background task is now `Metrics Pipeline`, so it does not clash with the built `ObservabilityEngine` (the audit left the new name open).
 - **`substrate.db` and `authorization-engine`.** I used the defaults from the audit: "the node's state databases" and "FDAE" with a link to ADR-0017. The messaging section still says `substrate.db`: it belongs to a later commit.
 
+Architecture fix, commit 5 (Phase 3):
+
+- **Facts fixed beyond the commit row.** The audit rows G2-004 (WebRTC path), G2-018 ("how the supervisor itself is stood up"), G2-021 (`roymctl reconcile` is `roymctl app reconcile`), G2-023 (what the supervisor database holds) and G2-032 ("topology_epoch" is the per-dependent binding epoch) were wrong in the text, so I fixed them in the same commit.
+- **"No background monitoring" kept, with a limit.** The audit marked it MATCHES. The code has `roymctl app health --watch`, which repeats in the foreground. The text says so.
+- **`[LFC-VER]` order.** Steps 2 and 3 are built and steps 1 and 4 are not. To keep the built text free of a marker, the built steps come first and the Envisioned block holds steps 1 and 4, named by position ("before the hook", "after the hook"). The step numbers are gone.
+- **`[LFC-VER]` part 2.** One Envisioned marker covers the whole design, including the case-by-case deprecation policy, which has no code to check. A short built paragraph comes first.
+- **New subsection.** I added "4. Logical Discovery for Callers Outside the App" to `[LFC-MGT]` for gap 7. The text does not say ADR-0022 is still Proposed.
+- **Not done here.** The `TODO(M5)` in `crates/sandbox_wasm/src/engine/lifecycle.rs` stays for commit 24. The `websocket` route target of gap 23 belongs to Layer 2 (commit 20). The "Upgrade and versioning" paragraph for Layer 2 (gap 5) is also left to commit 20: `[LFC-VER]` now has the built facts.
+- **Replication wording.** "(Iroh WAL shipping) ... M7" became "replication is not built (see [PLT-RED])". Per the Litestream decision, no design is named as chosen.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
