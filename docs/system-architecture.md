@@ -925,44 +925,53 @@ Consumer session context (query history, viewed items) is kept **only in local a
 
 ### Cross-Substrate Discovery Flow
 
+**Built today.** Discovery is what the Roym `directory` service does. Each substrate decides for itself what it asks and whom it asks. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose (`directory.publish`, or `directory.publish-to-source` from the provider's own node). A SynOrg runs the `directory` service on its own substrate. The directory holds a member list, the listings published to it and a search index, and it answers from those. It does not forward a query to another directory. `directory.search` accepts any caller, including a stranger. `directory.publish` accepts only a caller whose identity the router has verified.
+
+A consumer's own node runs the search. It keeps a list of up to 8 directories that the person added. For each directory it sends `directory.search`, with at most 3 requests in flight. It verifies the signed envelope of every listing itself. A directory's own answer never counts as verification. It keeps hits that fail verification apart from the others. It merges the verified hits by taking one from each directory in turn, with at most 10 hits per directory and 50 per page. It keeps each search run for one hour as working state, and keeps no index cache.
+
 ```mermaid
 flowchart TD
-    subgraph CLUSTER_A["Cluster A (e.g. Mumbai)"]
-        SA1[Substrate A1 Home Services]
-        SA2[Substrate A2 Food Retailer]
+    subgraph REGION_A["Region A (e.g. Mumbai)"]
+        SA1[Provider substrate A1]
+        SA2[Provider substrate A2]
     end
 
-    subgraph CLUSTER_B["Cluster B (e.g. Pune)"]
-        SB1[Substrate B1 Home Services]
+    subgraph REGION_B["Region B (e.g. Pune)"]
+        SB1[Provider substrate B1]
     end
 
-    subgraph LEAVES["Leaf Index Shards (rendezvous-hashed by routing descriptor)"]
-        SHARD1[Shard: Mumbai + Home Services]
-        SHARD2[Shard: Mumbai + Retail]
-        SHARD3[Shard: Pune + Home Services]
-    end
+    DIR_A[SynOrg directory chosen by A1 and A2]
+    DIR_B[SynOrg directory chosen by B1]
+    CONSUMER3[Consumer's own node]
 
-    CONSUMER3[Consumer-anywhere] --> LOCAL_CACHE[Local Index Cache]
-    LOCAL_CACHE -->|"miss: resolve routing descriptor"| LEAVES
-    LEAVES -->|"verified Publications"| LOCAL_CACHE
-    LOCAL_CACHE --> CONSUMER3
+    SA1 -->|"publish signed listing"| DIR_A
+    SA2 -->|"publish signed listing"| DIR_A
+    SB1 -->|"publish signed listing"| DIR_B
 
-    SA1 -->|"publish signed Publication"| SHARD1
-    SA2 -->|"publish signed Publication"| SHARD2
-    SB1 -->|"publish signed Publication"| SHARD3
+    CONSUMER3 -->|"directory.search"| DIR_A
+    CONSUMER3 -->|"directory.search"| DIR_B
+    DIR_A -->|"signed listings"| CONSUMER3
+    DIR_B -->|"signed listings"| CONSUMER3
+    CONSUMER3 --> VERIFY[Verify each listing, then merge]
 ```
+
+An aggregator is a SynOrg `directory` service that gathers the listings of many providers. The `directory` service has a client half on every installation, so any node, whether a consumer's node or a SynOrg's, keeps its own list of directories and chooses which of them to query.
+
+> **Envisioned.** Not built yet. Today a directory does not query other directories. Envisioned: federation between aggregators, and an aggregator that proxies a query to other aggregators. Also Envisioned, as options and not the plan: leaf index shards, where a protocol Routing Schema and rendezvous hashing place each signed Publication and the consumer keeps a local index cache (see [Discovery & Matching](#discovery--matching)), and tag-routed discovery ([P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics)).
 
 ### Minimum Federation Contract
 
 A third-party SynApp is federation-compatible if it implements:
 
-1. **Identity:** Ed25519 keypair; identity doc in DHT
-2. **Discovery:** Publishes signed Publications conforming to the shared Publication schema, placed per the protocol Routing Schema
-3. **Messaging:** Accepts structured substrate messages typed with shared WIT interfaces
-4. **Reputation:** Generates `ReputationRecord` conforming to the shared schema on transaction completion
-5. **Portability:** Exports data in the documented `SynExport` archive format
+1. **Identity:** Ed25519 keypair and a `did:key` identity. Roym persons are `did:key` identities with Ed25519 keys. The DHT holds a signed endpoint record for each hosted service and the Master Anchor revocation record.
+2. **Discovery:** Publishes signed records that conform to a shared schema. Roym publishes the signed `listing` record, which has a version and a fixed record-type table.
+3. **Messaging:** Exchanges structured messages with its peers. Roym peers exchange end-to-end encrypted conversation messages over JSON-RPC, after a `prekey-bundle` handshake. Structured payloads are signed records sent as cards with content type `application/vnd.roym.card+json`. WIT interfaces are the boundary between a guest and its host, not between peers.
+4. **Reputation:** Generates a `ReputationRecord` that conforms to a shared schema on transaction completion. See the Envisioned note below.
+5. **Portability:** Exports data as a Roym archive.
 
-No central coordinator is required — these are convention-based contracts enforced by schema validation.
+> **Envisioned.** Not built yet. Today Roym has no `ReputationRecord`, and the reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). Also Envisioned: an identity document in the DHT, a shared Routing Schema that places each signed record (see the Envisioned note above), and a generic archive format for third-party SynApps.
+
+No central coordinator is required — these are convention-based contracts enforced by schema validation. A Roym node verifies every record against a fixed table of record types and versions, and refuses a record of an unlisted type or version.
 
 
 ---
@@ -971,28 +980,50 @@ No central coordinator is required — these are convention-based contracts enfo
 
 ### Consumer App Architecture
 
+**Built today.** The consumer app is the Roym Hub, a web UI written in TypeScript and built with Vite. The `web` service serves it from the person's own substrate, so the person opens it in a browser. Each consumer runs their own substrate ("Option A" below). The Hub has no native shell, no Tauri project and no mobile project.
+
+The Hub holds little state. It keeps the session token in `sessionStorage` and a delegated key in IndexedDB, as a non-extractable WebCrypto key. It has no local database. All data is in the person's own node, in its SQLite databases. The node encrypts them when encryption is enabled. The master key never enters the browser. The Hub logs in with a delegated key: it signs a challenge from the node's auth service, which has its own origin ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). A short-lived delegation certificate for that key comes from `roymctl session delegate`.
+
+The Hub does no message crypto. Message encryption and the key ratchet run in the `conversation` service of the substrate, with `vodozemac` ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). There is no `libsignal`.
+
+The Hub talks to its own node only. It sends JSON-RPC 2.0 over HTTP `POST /rpc` with the session token as a Bearer header. The node talks to the provider's node with the route preamble on an Iroh or WebRTC stream. Separately, a browser can reach a node through the WebRTC bootstrap page. That page registers a service worker and carries the page's HTTP requests over a WebRTC data channel. This path is tested with a sample web app, not with the Hub.
+
 ```mermaid
 flowchart TD
-    subgraph CLIENT["Consumer App (Tauri Desktop / Native Mobile / PWA)"]
-        UI[Native Shell + WebView for dynamic SynApp UIs]
-        STATE[Local State Management]
-        CRYPTO_CLIENT[Client-side Crypto libsignal / native bindings]
-        STORAGE_CLIENT[Local Storage / SQLite / CoreData]
-        CONN[Connection Manager FFI / WebSocket / WebRTC]
+    subgraph BROWSER["Browser: Roym Hub (web UI)"]
+        UI[Roym screens in one TypeScript bundle]
+        SESSION[Session token in sessionStorage and delegated key in IndexedDB]
     end
 
-    subgraph IDENTITY_OPT["Consumer Identity Options"]
-        OPT_A[Option A: Self-hosted Lightweight substrate on phone / PC]
-        OPT_B[Option B: Hosted by trusted aggregator migratable]
-        OPT_C[Option C: Guest browse-only no history]
+    subgraph OWN_NODE["Person's own substrate (Option A)"]
+        GW[Client gateway]
+        WEB[web service: serves the UI and POST /rpc]
+        SERVICES[profile, conversation, catalog, transaction, directory]
+        CRYPTO[Message crypto in conversation: vodozemac]
+        DATA[SQLite database per service]
     end
 
-    CLIENT <-->|"JSON-RPC / wRPC via FFI, WebSocket, or WebRTC"| PROVIDER_GW[Provider Substrate Gateway]
-    CLIENT -->|"identity ops"| IDENTITY_OPT
+    AUTH[Node auth service, own origin]
+    PROVIDER_NODE[Provider's substrate]
 
-    style CLIENT fill:#D6E4F0,stroke:#2E75B6
-    style IDENTITY_OPT fill:#E2EFDA,stroke:#548235
+    UI -->|"JSON-RPC 2.0, HTTP POST /rpc, Bearer token"| GW
+    UI -->|"login: signed challenge"| AUTH
+    GW --> WEB --> SERVICES
+    SERVICES --> CRYPTO
+    SERVICES --> DATA
+    SERVICES -->|"route preamble over Iroh or WebRTC"| PROVIDER_NODE
+
+    style BROWSER fill:#D6E4F0,stroke:#2E75B6
+    style OWN_NODE fill:#E2EFDA,stroke:#548235
 ```
+
+**Consumer identity options.** Option A is built. Options B and C are Envisioned.
+
+- **Option A: self-hosted substrate on the person's own machine.** Every Roym participant runs a substrate. The consumer's own node holds the consumer's data and runs the search.
+
+> **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the consumer, and the consumer can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned. Today a substrate can hold a delegated instance key for a member it hosts, and Roym has export and import. Every Hub method except `profile.policy` needs an owner session.
+
+> **Envisioned.** Not built yet. The Hub runs in a browser today. Envisioned: a Tauri desktop app and a native mobile app. Also Envisioned: a native shell with a WebView that loads the UIs of other SynApps, native crypto bindings, an FFI connection manager, a client-side SQLite or CoreData store and a WebSocket link from the client. Today the Hub is Roym's own fixed screens. The `web` service declares a `/ws` route, but its handlers do nothing. The mobile case is in [Phase 7](#phase-7-edge-expansion).
 
 ---
 
