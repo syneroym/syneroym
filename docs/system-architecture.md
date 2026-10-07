@@ -1217,17 +1217,19 @@ This section is an index of every `[TBD]` marker in the requirements spec, that 
 
 Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator), kept here for implementers working on the coordinator; the summary there is enough for everyone else.
 
+Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/route_handler/io.rs`. A coordinator runs it with no local services. A substrate runs the same code: when a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream.
+
 #### Scenario Entities
 
 *   **Public Infrastructure (Internet)**
-    *   **C**: Global Coordinator (acting as public DERP/TURN relay, and public `hop-relay`).
-    *   **R**: Global Registry (community registry, future DHT).
+    *   **C**: Global Coordinator (an Iroh relay server, and next-hop forwarding in the connection router).
+    *   **R**: Global Registry (community registry). A node also publishes its public records to the BEP 0044 DHT when `enable_bep0044_dht` is on.
 *   **Public/External Edge**
     *   **Sx**: Substrate with outbound internet access.
     *   **Ax**: Synapp deployed on **Sx**.
 *   **Private Subnetwork Infrastructure**
-    *   **Cp**: Private Coordinator (local relay). Acts as the `hop-relay` for the private network.
-    *   **Rp**: Private Registry (community registry). Connects outbound to **R** to gossip records.
+    *   **Cp**: Private Coordinator (local relay). Runs next-hop forwarding for callers that dial it.
+    *   **Rp**: Private Registry (community registry). Connects outbound to **R** to forward the public records it accepts.
     *   **Sz**: Hidden Substrate. Resides purely in the private network with no external internet access.
     *   **Az**: Synapp deployed on **Sz**.
 
@@ -1237,73 +1239,92 @@ Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-fe
 2.  **Private Infrastructure Starts**: 
     *   Coordinator **Cp** and Registry **Rp** are brought online within the private subnetwork.
     *   **Cp** exposes a lightweight HTTP discovery endpoint (e.g., `/v1/info`) that serves its Iroh Node ID and relay configuration.
-    *   **Cp** also registers itself in the global Registry **R** as an available coordinator (controlled by a configuration switch to share its record).
-    *   **Cp** does *not* maintain a permanent connection to **C**. It connects outbound to the public Coordinator **C** on-demand only when data transfer is needed.
-    *   **Rp** is configured with **R** as its parent registry so it can query and publish records upward.
+    *   **Cp** connects outbound to its parent coordinator. When it has one (`parent_coordinator.iroh.url`), its Iroh endpoint uses the parent's relay as its home relay and, at startup, waits up to 30 seconds for the endpoint to come online. The code opens this connection at startup, not on demand.
+    *   **Rp** is configured with **R** as its parent registry (`parent_registry_url`) so it can forward the public records it accepts upward.
 3.  **External Substrate (Sx) Starts**: 
     *   **Sx** connects outbound to Coordinator **C** and Registry **R**. 
 4.  **Hidden Substrate (Sz) Starts**: 
-    *   **Sz** starts in the private network and connects to its local Registry (**Rp**).
-    *   To find a local coordinator, **Sz** first checks its config for a direct `discovery_url` (fetching the Iroh connection details via HTTP). If not provided, it queries its local Registry **Rp** (which forwards the lookup to **R**) to discover available coordinators. It dynamically selects one (e.g., **Cp**) and caches its Iroh details.
+    *   **Sz** starts in the private network and connects to its local Registry (**Rp**, set by `substrate.registry_url`).
+    *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting.
+
+> **Envisioned.** Not built yet. Today a substrate is given its relay by the fixed setting `parent_coordinator.iroh.url`. The key `coordinator_discovery_url` is declared in the config and no code reads it, and no code lists, selects or caches coordinators.
+
+*   To find a local coordinator, **Sz** first checks its config for a direct `discovery_url` (fetching the Iroh connection details via HTTP). If not provided, it queries its local Registry **Rp** (which forwards the lookup to **R**) to discover available coordinators. It dynamically selects one (e.g., **Cp**) and caches its Iroh details.
 
 #### 2. Registry Entries at Deployment
 
 1.  **Ax Deployment**: 
     *   Synapp **Ax** is deployed on **Sx**. 
-    *   The deployer of **Ax** (using `SyneroymClient::deploy_wasm`) generates a signed service record and publishes it directly to the global Registry **R**.
+    *   The deployer of **Ax** (using `SyneroymClient::deploy_svc_wasm_with_options`, with a public `Publication` in the options) signs a service record and passes it to **Sx** in the deploy call. **Sx** stores the record and publishes it to its configured registry (**R** in this scenario), at deploy time and on every heartbeat.
 2.  **Az and Sz Deployment**: 
     *   Synapp **Az** is deployed on the hidden substrate **Sz**.
-    *   The substrate **Sz** registers itself and its services (**Az**) with the local Registry **Rp**.
+    *   The substrate **Sz** registers itself with the local Registry **Rp**. It also replays the stored record of each service that was deployed with one (**Az**). A service deployed without a record is not registered.
 3.  **Cp Registration**: 
-    *   The private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) into the global Registry (**R**), assuming its configuration switch is set to share its record. This makes its Iroh endpoint dynamically discoverable for substrates relying on registry lookups.
-4.  **Upward Gossip**: 
-    *   **Rp** gossips the registration of both **Az** and **Sz** upward to the global Registry **R**.
+    *   When its configuration switch (`share_in_registry`) is set and a `community_registry_url` is given, the private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) into the global Registry (**R**). It does this once at startup, with retries if the call fails.
+4.  **Upward Forwarding**: 
+    *   **Rp** forwards the registration of each public record it accepts, here both **Az** and **Sz**, upward to the global Registry **R**. One HTTP request goes to its single parent registry for each record. Records deployed as `Internal` (private) stay on **Rp**.
 5.  **Global Record State**: 
     *   The global Registry **R** now holds public records for **Az** and **Sz**. 
-    *   Because **Az** is deployed on **Sz**, the record primarily obscures **Sz** (and indirectly **Az** via **Sz**). It states that to reach **Sz**, a caller must route to the entry point **Cp**.
-    *   The record also copies over the private topology, allowing **Cp** to use a registry lookup to find the specific connection details for **Sz** when transferring data.
+    *   The record of **Az** names **Sz** as its hosting substrate (`substrate_id`). The record of **Sz** is its own signed endpoint record. It carries **Sz**'s Iroh endpoint id and the relay URL **Sz** is bound to. A caller dials **Sz** through that relay.
+
+> **Envisioned.** Not built yet. Today the record of **Cp** is an ordinary substrate-type record with the nickname `coordinator-<first 8 characters of its node id>`, and a record has no entry-point field and no topology data.
+
+*   A coordinator registration that makes the Iroh endpoint of **Cp** dynamically discoverable for substrates relying on registry lookups.
+*   A record that states that to reach **Sz**, a caller must route to the entry point **Cp**. The record also copies over the private topology, allowing **Cp** to use a registry lookup to find the specific connection details for **Sz** when transferring data.
 
 #### 3. Communication Flow: Ax connecting to Az (Inbound to Private)
 
-1.  **Packet Transmission**: Synapp **Ax** uses the `SyneroymClient` to send a packet to **Az**. The client initiates a connection to the next hop.
-2.  **Global Resolution**: The client queries the global Registry **R** for **Az**.
-3.  **Discovery**: Registry **R** responds with the routing information: target entry point is **Cp** (whose public connection details are also provided).
-4.  **Connection to Cp**: 
-    *   The client establishes a connection to the private Coordinator **Cp** (transparently using the Iroh SDK, which leverages public relay **C** internally).
-    *   The client opens a stream and directly sends a connection preamble to **Cp**, containing the target service DID (**Sz** / **Az**) and the calling substrate's public identity (**Sx**'s public key or an ephemeral key).
-5.  **Routing (Cp to Sz)**: 
-    *   **Cp** receives the stream and reads the preamble.
-    *   **Cp** performs a registry lookup to find the connection details for **Sz** (no in-memory routing table caches are used).
-    *   It determines the final hop is the hidden substrate **Sz**. **Cp** establishes an Iroh connection and forwards the stream to **Sz**.
-6.  **Target Dispatch and Handshake (Sz)**: 
+1.  **Packet Transmission**: Synapp **Ax** calls **Az** through the Universal Proxy on **Sx**. A caller outside a substrate uses the `SyneroymClient`. The caller connects to the next hop.
+2.  **Global Resolution**: The caller queries its configured registry for **Az**. In this scenario that is the global Registry **R**.
+3.  **Discovery**: Registry **R** responds with the record of **Az**. It names **Sz** as the hosting substrate. The lookup follows it to the record of **Sz**, which gives the Iroh endpoint id of **Sz** and the relay URL **Sz** is bound to.
+4.  **Connection to Sz**: 
+    *   The caller dials **Sz** through that relay (transparently using the Iroh SDK).
+    *   The caller opens a stream and directly sends a connection preamble to **Sz**, containing the target service id (**Az**) and the caller's public key (`pubkey`). The preamble may also carry a delegation certificate (`delegation`) or a capability token (`ucan`).
+5.  **Target Dispatch (Sz)**: 
     *   **Sz** receives the stream and reads the preamble to recognize the target is its local Synapp **Az**.
-    *   **Sz** and **Sx** complete an explicit End-to-End Diffie-Hellman handshake inside the stream.
-    *   Once the secure channel is established, **Sz** dispatches the application payload to **Az**.
+    *   If the preamble asks for `enc=ecdh-p256`, **Sz** and the caller complete an End-to-End Diffie-Hellman handshake inside the stream (see [5. Data Transfer Characteristics](#5-data-transfer-characteristics)).
+    *   **Sz** dispatches the application payload to **Az**.
+
+A caller that is given the address of a coordinator (for example **C** or **Cp**) dials that coordinator instead of **Sz**. It sends the same preamble. Then:
+
+6.  **Routing (coordinator to Sz)**: 
+    *   The coordinator receives the stream and reads the preamble.
+    *   Its own endpoint registry holds no local services, so the local lookup misses. The coordinator then performs a registry lookup to find the connection details for the target service (no in-memory routing table caches are used).
+    *   The next hop is the target substrate **Sz**, not another coordinator. The coordinator establishes an Iroh connection to **Sz** (with retries), forwards the preamble, and copies bytes both ways (`relay_to_next_hop`).
+    *   **Sz** then handles the stream as in step 5.
+
+> **Envisioned.** Not built yet. Today a caller reaches a coordinator only when it is given the coordinator's address. The record of a service has no entry-point field.
+
+*   Registry **R** responds with the routing information: target entry point is **Cp** (whose public connection details are also provided). The client then connects to **Cp** first.
 
 #### 4. Communication Flow: Az connecting to Ax (Outbound to Public)
 
 1.  **Packet Transmission**: Synapp **Az** asks its host substrate **Sz** to send a packet to **Ax**.
-2.  **Resolution**: The client on **Sz** queries the local Registry **Rp**.
-    *   **Rp** does not have a local record for **Ax**, so it queries its parent, the global Registry **R**.
-    *   **R** returns **Ax**'s location (reachable directly via **Sx** on the public internet).
-3.  **Outbound Routing**: Because **Sz** has no outbound internet access, it cannot connect to **Sx** directly. It uses the **Cp** Iroh connection details it retrieved at startup (either via HTTP discovery or via the **Rp** -> **R** registry lookup), and prepares to route the connection request through **Cp**.
-4.  **Stream Setup**: 
-    *   **Sz** connects to **Cp** and sends the preamble for **Ax** (including **Sz**'s public key or an ephemeral public key).
-    *   **Cp** reads the preamble, realizes the target is on the public network, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**).
-5.  **Data Transfer**: The bidirectional stream is established. Because **Cp** initiated an *outbound* connection on-demand, it natively bypasses the inbound reachability limitations (NATs/Firewalls) that constrain the Ax -> Az flow.
+2.  **Resolution**: The client on **Sz** queries the local Registry **Rp**. **Rp** answers from its own records. It returns a not-found answer for a service it has no record of. It does not ask its parent, the global Registry **R**.
+3.  **Outbound Call**: When the lookup returns a record for **Ax**, **Sz** dials the Iroh address in that record with its own Iroh endpoint (the Universal Proxy). It does not send the stream to a coordinator first. If the lookup finds no record, the call fails with a service-not-found error.
+4.  **Forwarding by a Coordinator**: A client in the private network that is given the address of **Cp** sends the preamble for **Ax** (including its public key) to **Cp**. **Cp** reads the preamble, resolves the target through the registry, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**). Because **Cp** opens a new *outbound* Iroh connection for each forwarded stream, it natively bypasses the inbound reachability limitations (NATs/Firewalls) that constrain the Ax -> Az flow.
+
+> **Envisioned.** Not built yet. Today a substrate dials its target itself, and nothing sends a substrate's own outbound call through a coordinator. A registry does not forward a lookup to its parent.
+
+*   **Rp** does not have a local record for **Ax**, so it queries its parent, the global Registry **R**. **R** returns **Ax**'s location (reachable directly via **Sx** on the public internet).
+*   Because **Sz** has no outbound internet access, it cannot connect to **Sx** directly. It uses the **Cp** Iroh connection details it retrieved at startup (either via HTTP discovery or via the **Rp** -> **R** registry lookup), and routes the connection request through **Cp**.
+*   **Sz** connects to **Cp** and sends the preamble for **Ax** (including **Sz**'s public key or an ephemeral public key). **Cp** reads the preamble, realizes the target is on the public network, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**).
 
 #### 5. Data Transfer Characteristics
 
-1.  **End-to-End (E2E) Encryption Handshake**:
-    *   While intermediate transport legs are protected by Iroh, the Coordinators must route via preambles.
-    *   To ensure true privacy, once the multi-hop stream is connected, the endpoints (**Sx** and **Sz**) perform an explicit E2E encryption handshake inside the established stream.
-    *   This handshake utilizes the exact mechanism currently implemented in the frontend (`peer-proxy.html` / `verifyAndDeriveSharedSecret`): an explicit ECDH key exchange where the ephemeral keys are signed by the permanent Ed25519 identity keys. This provides mutual authentication and establishes an AES-GCM symmetric cipher state.
+1.  **End-to-End (E2E) Encryption Handshake (optional)**:
+    *   Each Iroh leg is protected by the transport (QUIC, ALPN `syneroym/0.1`). A coordinator reads the preamble in clear to route the stream.
+    *   The handshake runs only when the caller asks for it with `enc=ecdh-p256` in the preamble. The Rust client (`SyneroymClient`) never sets it. The browser does (`crates/coordinator_webrtc/templates/peer-proxy.js`).
+    *   When it is set, the endpoint that serves the service (**Sz**) and the caller perform an ECDH P-256 key exchange inside the established stream. The caller sends its ephemeral P-256 key in the preamble field `pubkey`. **Sz** replies with its own ephemeral key and an Ed25519 signature, made with its permanent identity key, over both ephemeral keys. The caller checks that signature. Both sides then use AES-256-GCM. The server side is in `crates/router/src/route_handler/encryption.rs`. The browser side is `verifyAndDeriveSharedSecret` in `peer-proxy.js`.
+    *   Only the server is authenticated by this step. The caller's ephemeral key is not signed.
 2.  **Opaque Forwarding**: 
-    *   Following the E2E handshake, the application payload (e.g., wRPC frames) is encrypted at **Sx** and decrypted only at **Sz** (or vice versa).
-    *   The Coordinator **Cp** acts purely as a blind Level 7 pipe. It copies the E2E-encrypted bytes back and forth between streams and cannot read the application payload.
+    *   When the handshake ran, the application payload (JSON-RPC 2.0 frames) is encrypted at the caller and decrypted only at **Sz** (or vice versa).
+    *   The Coordinator **Cp** copies the bytes back and forth between streams (`copy_bidirectional`) and does not parse them after the preamble. It cannot read an encrypted payload. When the caller did not ask for `enc=ecdh-p256`, only the Iroh legs are encrypted, and **Cp** holds the bytes in clear.
 3.  **Teardown**: 
     *   Once the communication finishes, either endpoint closes the stream. 
     *   Each hop independently closes its respective stream segment.
+
+> **Envisioned.** Not built yet. Today only the server signs its ephemeral key. The planned behavior is mutual authentication: both endpoints sign their ephemeral keys with their permanent Ed25519 identity keys, so the handshake itself authenticates both ends.
 
 ---
 
