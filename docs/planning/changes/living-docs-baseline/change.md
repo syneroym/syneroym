@@ -213,6 +213,13 @@ Architecture fix, commit 20 (Layer 2 leftovers and new subsections):
 - **Supervisor verbs.** `[LFC-MGT]` already lists the 17 verbs and the `export-master` rule (commit 5). Layer 2 only points to it from the Keys list.
 - **Write rule names.** The two Layer 2 rows now name `AlreadyDecided` as the code's internal outcome (a later attempt gets the first result) and `slot-taken` as the wire form of `SlotTaken`, matching Layer 4.
 
+Architecture fix, commit 21 (Layer 1):
+
+- **Third-party relay default.** The audit (gap 15) says an Iroh endpoint with no relay URL uses the n0 preset. The code is narrower. A substrate with no `[parent_coordinator.iroh]` section builds no Iroh endpoint. The preset applies only to a coordinator that has no relay URL (no parent and no relay of its own), to the WebRTC coordinator without a parent relay, and to a URL that does not parse. The SDK client never uses the preset. The text says this.
+- **New subsections.** I added "Browser Path (WebRTC and WebSocket Tunnel)" and "Relay and Registry Configuration" to Layer 1 (gaps 14 and 15). Registry-first discovery and freshness (gap 6) stay in the Connectivity Substrate section, and Layer 1 links to them.
+- **Original diagrams.** The built diagram under "P2P Networking: Iroh" replaces the first diagram. The bootstrap, home relay and TURN edges of the old diagram are now in the Envisioned diagram under "Relay Node Architecture" and in the Envisioned text under "Bootstrap Server & DHT Fallback". "DERP" became "Iroh relay".
+- **Outside this commit.** The Requirements spec still has the relay and bootstrap design (O10), and the backlog still links the old heading anchor `#connectivity-substrate-in-heteregenous-networks` (`docs/planning/deferred-backlog.md:257`). Both are for commit 24. The warning at the top of the doc still says "implemented in the coordinator crates" (commit 23).
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

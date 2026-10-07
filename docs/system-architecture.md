@@ -140,46 +140,49 @@ erDiagram
 
 ## Layer 1 — Infrastructure
 
+*Reader: a developer or operator who works on how substrates, browsers and relays reach each other.*
+
 ### P2P Networking: Iroh
 
-*Note: MVP focuses on connecting peers over IP. Future enhancements for heterogeneous networks (BLE, LoRa) are detailed in the [Connectivity Substrate](#connectivity-substrate-in-heterogeneous-networks) section.*
+*Note: connectivity works over IP networks: Iroh QUIC between nodes, and WebRTC for browsers. No BLE or LoRa transport exists. See the [Connectivity Substrate](#connectivity-substrate-in-heterogeneous-networks) section.*
 
-Direct QUIC (UDP) connections are attempted first. NAT/firewall fallback uses relay-mediated connections.
+A caller dials a node over Iroh QUIC (UDP). Iroh tries a direct path first and uses a relay when it needs one. A substrate has one configured relay. It publishes the relay URL in its signed record, so a caller knows which relay to use.
 
 ```mermaid
 flowchart TD
-    A([Provider Substrate]) 
-    B([Consumer / Peer Substrate])
-    R([DERP Relay Node])
-    BS([Bootstrap Server])
+    A([Provider substrate])
+    B([Caller: SDK client or substrate])
+    R([Iroh relay on a coordinator])
+    REG([Community registry])
+    DHT([BEP 0044 DHT])
 
-    A -->|"1. Register on startup"| BS
-    B -->|"1. Register on startup"| BS
-    BS -->|"2. Assign home relay + relay list"| A
-    BS -->|"2. Assign home relay + relay list"| B
+    A -->|"1. Publish record: Iroh id and relay URL"| REG
+    A -.->|"1. Same record, when the DHT is enabled"| DHT
+    B -->|"2. Look up the record: registry first, DHT second"| REG
 
-    A <-->|"3a. Direct QUIC UDP (preferred)"| B
-    A <-->|"3b. Hole punch via relay coord"| B
-    A <-->|"3c. DERP relay (fallback)"| R
-    R <-->|"3c. DERP relay (fallback)"| B
-
-    A <-->|"3d. WebRTC TURN (browser clients)"| R
-
-    style A fill:#1F4E79,color:#fff
-    style B fill:#1F4E79,color:#fff
-    style R fill:#2E75B6,color:#fff
-    style BS fill:#C55A11,color:#fff
+    B <-->|"3a. Direct QUIC UDP (preferred)"| A
+    B <-->|"3b. Hole punch, helped by the relay"| A
+    A <-->|"3c. Relay (fallback)"| R
+    R <-->|"3c. Relay (fallback)"| B
 ```
 
-**Technology:** `iroh` (Rust crate) — provides QUIC transport, NAT hole punching, DERP relay, and peer discovery in a single library. `webrtc-rs` for browser clients via WebRTC Data Channels.
+**Technology:** `iroh` 0.97 (Rust crate) provides QUIC transport, NAT hole punching and relay. Peer discovery is the community registry and the `pkarr` records on the BEP 0044 DHT, not the address lookup of Iroh. See [Discovery](#discovery) and [Registry first, DHT second](#registry-first-dht-second). `webrtc-rs` serves browser clients through WebRTC data channels. See [Browser Path](#browser-path-webrtc-and-websocket-tunnel).
 
 ### Relay Node Architecture
+
+A coordinator runs an Iroh relay server when `[roles.coordinator.iroh]` sets `enable_relay = true`. The relay is the `iroh-relay` crate with its `server` feature. It helps two peers hole punch and carries their traffic when no direct path exists. It is open to every Iroh endpoint by default. `[roles.coordinator] access` can list the Iroh endpoint ids that are allowed instead. With `[roles.coordinator.tls]` set, the relay uses that certificate and key, and it also runs QUIC address discovery on `quic_bind_address`. Without that setting it does not run QUIC address discovery.
+
+The relay carries QUIC traffic that is already encrypted between the two peers. It does not read it. It still sees which endpoints talk, and the size and timing of the traffic.
+
+The same coordinator can also run the Syneroym endpoint that forwards streams ([Multi-Hop Relay](#multi-hop-relay-federated-coordinator)) and the HTTP `/v1/info` endpoint. The relay server and the Syneroym endpoint are separate: a coordinator can run either one or both.
+
+> **Envisioned.** Not built yet. Today a relay is a URL that an operator writes into the config of each substrate, and no code gives a relay a `*.syneroym.net` name. Nothing runs a TURN server, nothing registers relays at a bootstrap server, and no substrate caches relay names. The design below is the target.
 
 ```mermaid
 flowchart LR
     subgraph Relay["Relay Node (*.syneroym.net)"]
         HP[UDP Hole Punch Coordinator]
-        DR[DERP Encrypted TCP Relay]
+        DR[Iroh relay, encrypted, over TCP]
         TR[TURN Server for WebRTC]
     end
 
@@ -191,17 +194,83 @@ flowchart LR
     Browser <-->|"WebRTC TURN"| TR
 ```
 
-**Local DNS:** Each substrate caches relay hostname resolutions. This avoids hammering Bootstrap server for the large number of dynamically rotating relay nodes.
+**Local DNS (Envisioned):** Each substrate caches relay hostname resolutions. This avoids hammering the Bootstrap server for the large number of dynamically rotating relay nodes.
 
 ### Multi-Hop Relay (Federated Coordinator)
 
-Implemented in the coordinator crates (`crates/coordinator_iroh`), not the substrate. Substrates are endpoints only; they never bridge network segments themselves. The `hop-relay` subsystem lives in the Coordinator and unifies Layer 7 preamble forwarding for Iroh with the existing WebRTC fallback relay.
+Next-hop forwarding is done by the connection router (`crates/router`), in the function `relay_to_next_hop` in `route_handler/io.rs`. It is not in `crates/coordinator_iroh`. That crate builds the Iroh endpoint and a router handler in coordinator mode, which has no local services. A substrate runs the same code. When a stream names a service the substrate does not host and the registry resolves that service, the substrate forwards the stream. Coordinators are the intended forwarders.
 
-A private, internet-unreachable substrate registers with a local Coordinator, which itself talks to the public Coordinator/Registry only on demand (outbound-only, no permanent tunnel). A caller resolves the target through the registry, opens a stream to the entry-point Coordinator carrying a preamble naming the real target, and the Coordinator forwards the stream to that target's local Coordinator over its own outbound connection — which is what lets a fully inbound-blocked substrate stay reachable. Endpoints then run their own end-to-end handshake inside the forwarded stream; the Coordinator relays encrypted bytes and cannot read them.
+A substrate on a private network sets `parent_coordinator.iroh.url` to the relay of a coordinator on that network. Its Iroh endpoint uses that relay, and it publishes the Iroh id and the relay URL in its signed record. A caller looks the record up in the registry and dials the substrate through that relay. This is the normal path. It is what lets a fully inbound-blocked substrate stay reachable.
 
-Full entities and step-by-step message flow: [Appendix: Multi-Hop Relay Walkthrough](#appendix-multi-hop-relay-walkthrough).
+A coordinator is the entry point only when a record or an SDK call names it. The coordinator reads the route preamble, resolves the target service in the registry and dials the next hop. The next hop is the target substrate, not another coordinator. The coordinator then copies bytes in both directions. A coordinator that has a parent is outbound-only. It keeps one connection to the relay of that parent, and it does not connect to the parent on demand.
+
+> **Envisioned.** Not built yet. A record that names a coordinator as the entry point of a private substrate, so that the registry sends callers there on its own. A record has no entry-point field today.
+
+A stream is end-to-end encrypted between the caller and the serving substrate only when the preamble asks for `enc=ecdh-p256`. The browser asks for it. The Rust client (`SyneroymClient`) does not yet. Without it, each Iroh leg is encrypted and a forwarding coordinator holds the bytes in clear. A coordinator always reads the preamble in clear. It sees the target service id and the caller's public key. A relay or coordinator also sees that two endpoints exchanged traffic, and the size and timing of it.
+
+The entities and the step-by-step message flow are in [Appendix: Multi-Hop Relay Walkthrough](#appendix-multi-hop-relay-walkthrough). The handshake is in [Appendix > 5. Data Transfer Characteristics](#5-data-transfer-characteristics).
+
+### Browser Path (WebRTC and WebSocket Tunnel)
+
+A browser cannot open an Iroh connection. The WebRTC coordinator (`crates/coordinator_webrtc`) gives it two paths to a service. The two paths share no code with the Iroh forwarding above.
+
+```mermaid
+flowchart LR
+    BR([Browser page: bootstrap page, service worker, peer-proxy.js])
+    CW([WebRTC coordinator])
+    S([Substrate that hosts the service])
+    REG([Community registry])
+
+    BR <-->|"1. Signalling over WebSocket"| CW
+    CW <-->|"1. Signalling over WebSocket"| S
+    BR <-->|"2. WebRTC data channel, DTLS (preferred)"| S
+    BR <-->|"3. WebSocket blind tunnel (fallback)"| CW
+    CW -->|"3. Look up the service"| REG
+    CW <-->|"3. Iroh stream"| S
+```
+
+- **Bootstrap page.** The coordinator serves a bootstrap page, a service worker (`sw.js`) and `peer-proxy.js` on its bootstrap port (`bootstrap_page_bind_address`). The service worker sends the page's requests to `peer-proxy.js`, which sends them to the service as streams.
+- **WebRTC data channel (preferred).** `peer-proxy.js` registers at the signalling server (`/ws`, `signalling_bind_address`) and sends an SDP offer to the target substrate. The substrate registers there under its own id when `parent_coordinator.webrtc` is set. The signalling server only passes each message to the peer named in its `target` field. ICE uses STUN. Each request then gets its own data channel, which DTLS protects. On this path the page removes the `enc=ecdh-p256` option from the preamble.
+- **WebSocket blind tunnel (fallback).** When no WebRTC connection is up or a data channel cannot be made, the page opens a WebSocket to `/__syneroym/tunnel` on the coordinator and sends the preamble. The coordinator looks the service up in the registry, dials the hosting substrate over Iroh with its own endpoint, forwards the preamble and copies bytes in both directions. It does not parse them. The tunnel needs a configured registry: without `substrate.registry_url` it closes. On this path the page runs the `enc=ecdh-p256` handshake, so the coordinator cannot read the payload.
+
+> **Envisioned.** Not built yet. A TURN relay for WebRTC. Only STUN is built (a default STUN server is set, see [Relay and Registry Configuration](#relay-and-registry-configuration)). The blind tunnel is the fallback when a direct WebRTC connection fails.
+
+### Relay and Registry Configuration
+
+A substrate is given its relay by a fixed setting. Nothing chooses a relay for it.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `[parent_coordinator.iroh] url` | The section is absent by default. When the section is present without `url`: `http://localhost:7964`. | The relay of this substrate. A substrate builds an Iroh endpoint only when this section exists and `communication_interfaces` has `iroh`. `run --iroh-relay-url` sets it. |
+| `[parent_coordinator.webrtc] signaling_url` | `ws://localhost:7963/ws` | The signalling server where the substrate registers. |
+| `[parent_coordinator.webrtc] stun_servers` | `["stun:stun.l.google.com:19302"]` | The STUN servers for WebRTC. The browser page has the same server written in `peer-proxy.js`. |
+| `[substrate] communication_interfaces` | `["iroh", "webrtc"]` | The transports the router starts. |
+| `[substrate] registry_url` | None. | The community registry of this node. |
+| `[substrate] enable_bep0044_dht` | On | Also publish to and look up the Mainline DHT. |
+| `[roles.coordinator.iroh] enable_relay` | `false` | Run an Iroh relay server. |
+| `[roles.coordinator.iroh] http_bind_address` | `0.0.0.0:7964` | The relay address. |
+| `[roles.coordinator.iroh] quic_bind_address` | `0.0.0.0:7965` | QUIC address discovery. It runs only when relay TLS is set. |
+| `[roles.coordinator.iroh] info_http_bind_address` | None. The port of `http_bind_address` plus 10. | The `/v1/info` endpoint. |
+| `[roles.coordinator.iroh] max_connections` | None (no cap) | A new Syneroym connection above the cap gets `ServiceUnavailable` and is closed. |
+| `[roles.coordinator.iroh] community_registry_url`, `share_in_registry` | None, `false` | When both are set, the coordinator registers itself in that registry once at startup. |
+| `[roles.coordinator.webrtc] signalling_bind_address` | `0.0.0.0:7963` | The signalling server. |
+| `[roles.coordinator.webrtc] bootstrap_page_bind_address` | `0.0.0.0:7962` | The bootstrap page and the blind tunnel. |
+| `[roles.coordinator] access`, `tls` | `"everyone"`, none | Who may use the Iroh relay. The certificate and key of the relay. |
+| `[roles.community_registry] http_bind_address` | `0.0.0.0:7961` | The HTTP community registry. |
+
+`GET /v1/info` on a coordinator returns its Iroh address and id, its relay URL and parent URL, a status (`healthy` or `at_capacity`), the active connections and the cap, the days until its TLS certificate expires, and whether its relay is on. That TLS information is about `[tls]`. The relay certificate is the separate setting `[roles.coordinator.tls]`. The port plan is in the [developer guide](developer-guide.md#3-port-reference-normalized-796x).
+
+**Default relay.** The router builds an Iroh endpoint from the Iroh `N0` preset: the public relay servers of n0 (the maker of Iroh) and the DNS address lookup of n0, which publishes to and resolves from the DNS server of n0. When a relay URL is given and it parses, the endpoint instead has only that relay and no address lookup. The `N0` preset stays in use when no relay URL is passed, or when the URL does not parse (the code then logs a warning). Two cases pass no URL. A coordinator with no `parent_coordinator.iroh` and `enable_relay = false` has no relay of its own. The WebRTC coordinator with no `parent_coordinator.iroh` builds its Iroh endpoint without one. A substrate with no `[parent_coordinator.iroh]` section builds no Iroh endpoint. The SDK client does not use the preset. It uses the relay URL of the record it dials, if that URL parses. With no relay URL in the record, it sets no relay.
+
+> **Envisioned.** Not built yet. These settings are parsed and no code reads them: `coordinator_discovery_url`, `parent_coordinator.webrtc.bootstrap_url`, `enable_signalling` (Iroh and WebRTC), the WebRTC `enable_relay`, `[roles.coordinator.transport_bridge]`, and `parent_coordinator.ble` and `parent_coordinator.lora`. The WebRTC signalling server and the bootstrap page start when `[roles.coordinator.webrtc]` exists, whatever `enable_signalling` says.
+
+The discovery side of this configuration is in [Registry first, DHT second](#registry-first-dht-second) and [Record freshness](#record-freshness).
 
 ### Bootstrap Server & DHT Fallback
+
+Today a substrate finds its relay in its config, and a caller finds a node through the community registry first and the DHT second. A node publishes one `pkarr` signed packet under its own key, with its signed endpoint record: its Iroh id and its relay URL. A lookup asks the HTTP registry first. It asks the DHT when the registry has no answer, and then writes the DHT answer back to the registry. The records are republished every hour. See [Registry first, DHT second](#registry-first-dht-second).
+
+> **Envisioned.** Not built yet. The design below has no code. Today no substrate is assigned a relay, no list of relays exists, and no substrate caches one. No `syneroym-relays` record exists, and no community governance key exists.
 
 **Decentralised Bootstrap Fallback**
 
@@ -211,6 +280,8 @@ The bootstrap server is an operational dependency. To survive its unavailability
 2. Substrates **cache** the last-known relay list locally (TTL: 24 hours)
 3. On bootstrap unavailability, substrates use the cached list, then fall back to DHT lookup via `pkarr`
 4. A community governance key signs the DHT namespace — any sufficiently trusted community member can republish in an emergency
+
+At startup a substrate registers at the bootstrap server. The server assigns it a home relay and a relay list. This replaces the fixed `parent_coordinator.iroh.url` setting.
 
 ```mermaid
 flowchart TD
