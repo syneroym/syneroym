@@ -23,8 +23,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 15 | Observability Architecture | done | e143e4cd | 20 new claims; 0 deviations; two claims rest on doc comments (Prometheus text format; supervisor unretained publish): stage 2 should look; MemoryRecorder backlog row already exists |
 | 16 | Consumer Experience; Federation Architecture | done | 739ba9c8 | 25 new claims; 0 deviations |
 | 17 | Layer 4 | done | caa8868e | 38 new claims; 3 deviation entries (heading renames, Cards subsection, Mesh heading); Spaces remains in Exec Summary and Layers diagram (commit 22); Layer 2 SlotTaken vs wire slot-taken (commit 20); negative claims (no push, no review record) for stage 2 to repeat |
-| 18 | Layer 3 (second heading) | running | | |
-| 19 | Layer 3 (first heading), merge headings | not started | | |
+| 18 | Layer 3 (second heading) | done | 5631a56f | 27 new claims; 0 deviations; rerun after rate limit (first attempt left no edits); other stores (conversation, queues, supervisor) do set WAL, the doc scopes 'no WAL pragma' to state.db; undeploy data lifecycle left unsaid (unverified) |
+| 19 | Layer 3 (first heading), merge headings | running | | |
 | 20 | Layer 2 leftovers | not started | | |
 | 21 | Layer 1 | not started | | |
 | 22 | System Layers Overview, Goals & Constraints, Executive Summary | not started | | |
