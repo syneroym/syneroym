@@ -1112,31 +1112,74 @@ The harness is the primary validation tool for offline and reconnect behavior be
 flowchart TD
     subgraph TRANSPORT["Transport Encryption"]
         T1[Node-to-node: QUIC TLS 1.3 via Iroh]
-        T2[DERP relay: additional AES-256-GCM envelope]
-        T3[Browser-to-service: WebRTC DTLS-SRTP or TLS over WebSocket]
+        T2[Optional end-to-end stream layer: enc=ecdh-p256, ECDH-P256 + AES-256-GCM, any transport]
+        T3[Browser-to-service: WebRTC data channel, DTLS. Signaling over WebSocket]
     end
 
     subgraph MESSAGING_ENC["Messaging Encryption"]
-        M1[1-to-1 chat: X3DH + Double Ratchet libsignal-protocol-rust]
-        M2[Group chat: MLS RFC 9420 openmls]
-        M3[Structured service msgs: signed envelope Ed25519 + payload encryption]
+        M1[1-to-1 chat: X3DH + Double Ratchet via vodozemac]
+        M2[Group chat: owner-distributed AES-256-GCM epoch key]
+        M3[Messages carried by the conversation service: signed with Ed25519, then encrypted]
     end
 
     subgraph AT_REST["Data at Rest"]
-        R1[Sensitive fields: AES-256-GCM key held by data owner]
-        R2[Replicated backups: encrypted with provider key before upload]
+        R1[Service database: SQLCipher under a per-service key. Secrets: AES-256-GCM vault rows]
+        R2[Replicated backups: encrypted with provider key before upload. Envisioned]
         R3[Blob store: content-addressed optionally encrypted]
     end
 ```
 
-> **Envisioned.** Not built yet. Node R2 is a goal. No replication or backup of service databases exists today, and the design is open: Litestream and Iroh WAL shipping ([PLT-RED](#plt-red-service-redundancy)) are both options.
+> **Envisioned.** Not built yet. Box R2 (replicated backups) only: no replication or backup of service databases exists today, and the design is open: Litestream and Iroh WAL shipping ([PLT-RED](#plt-red-service-redundancy)) are both options. The built backup is the Roym archive, which is encrypted with AES-256-GCM under a random recovery key.
+
+**Messaging encryption (boxes M1 to M3).** The conversation service holds the keys for each service. See [Layer 3 > Messaging](#messaging) for the feature.
+
+- **1-to-1 chat** uses X3DH key agreement and a Double Ratchet. The `vodozemac` crate implements both. A service has a `vodozemac` account for the ratchet and a separate Ed25519 key for signing.
+- **Group chat** uses one AES-256-GCM key for each epoch. The group owner makes the key and distributes it, and starts a rekey on a schedule. Each group entry is signed by its author, and its body is sealed with the epoch key. The owner is a single point of trust for key distribution ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1).
+- **Signed messages.** A 1-to-1 message is a `DeliveryPayload`. The sender signs it with its Ed25519 conversation key, and then the ratchet session encrypts it.
+- The code uses neither `libsignal` nor MLS (`openmls`). ADR-0013 Amendment 1 replaced MLS with the owner-distributed key.
+
+**Optional end-to-end stream layer (box T2).** A caller turns it on with `enc=ecdh-p256` in the route preamble. The router then runs the handshake on any transport. The handshake is described in [Appendix > 5. Data Transfer Characteristics](#5-data-transfer-characteristics).
+
+- **Who uses it.** The browser bootstrap page (`peer-proxy.js`) sets it. The Rust client (`SyneroymClient`) does not. Nothing else in the SDK or the gateway sets it.
+- **Only the node is authenticated.** The node signs both ephemeral keys with its identity key. The caller's ephemeral key is not signed.
+- **No key derivation step.** The ECDH shared secret is used as the AES-256-GCM key as it is. There is no KDF.
+- **One field, two uses.** The preamble field `pubkey` is the caller's P-256 key for this handshake. The identity check reads the same field as an Ed25519 key. A stream that sets `enc=ecdh-p256` therefore cannot carry a delegation certificate, because the router rejects it. Without a certificate the caller has no verified identity.
+
+> **Envisioned.** Not built yet. Today the handshake authenticates the node only and the shared secret is the key itself. A handshake that signs the caller's key too, a key derivation step, and separate fields for the identity key and the encryption key are not built.
+
+### Keys: Location, Use, Loss
+
+This table lists each key, where it lives, what it is for, and what happens when it is lost. Three parts hold keys (see Layer 2 [Substrate Internal Architecture](#substrate-internal-architecture)).
+
+| Key | Where it lives | What it does | If it is lost |
+| --- | --- | --- | --- |
+| Node identity key (Ed25519) | The file `substrate.key` in the app data directory, or the path in `[identity].key`. | Gives the node its `did:key`. Signs the node's side of the `enc=ecdh-p256` handshake. | The substrate makes a new key at the next start. The node then has a new DID. |
+| Person master key (Ed25519) | The file `identities/<name>.key` in the `roymctl` directory. | Is the identity of a person. Signs delegation certificates and the master anchor. | Restore it from an identity backup with `roymctl identity import` and the recovery key. |
+| Temporary key and delegation certificate | Made by the caller. `roymctl session delegate` makes a key pair and a certificate. The Hub keeps its private key in the browser as a non-extractable WebCrypto key in IndexedDB. | Lets a device or a session act under the master's identity until the certificate expires. | Make a new pair with the master key. The master revokes a stolen key by listing its DID in its master anchor. |
+| Node key encryption key (KEK, 32 bytes) | In node memory only. The node owner injects it with `roymctl kek inject`. | Is the root of the data keys. `roymctl kek rotate` re-wraps every DEK under a new KEK. | After a restart, no encrypted service database opens until the owner injects the KEK again. If the owner no longer has the KEK value, the wrapped DEKs cannot be opened. |
+| Per-instance KEK | Not stored. HKDF-SHA256 of the node KEK with the info `syneroym:kek:v1:<service_id>` derives it when needed. | Wraps the DEK of one service. | Derived again from the node KEK. |
+| Per-service data encryption key (DEK, 32 bytes) | The table `dek_store` in `substrate.db`, wrapped with AES-256-GCM under the per-instance KEK. Never in plaintext on disk. | Is the SQLCipher key of the service database. Encrypts the `_vault` rows of the service. HKDF-SHA256 derives from it the keys for the service's blobs. | Without its `dek_store` row, or without the KEK that wraps it, the service data cannot be opened. |
+| Master keys of managed app instances | The App Supervisor's own encrypted service vault. The entries are named `member-<instance>-<service>-<index>` and `app-<app_instance_id>`. | Are the master of each member service and of the app instance. No key leaves the supervisor in a response. | Restore them with `import-master` from the `export-master` backup. Without the backup, a new supervisor mints new master keys. |
+| Recovery key (32 bytes) | Shown to the person once. Never stored. | Encrypts the identity backup and the Roym archive (HKDF-SHA256, then AES-256-GCM). | The backup cannot be opened. |
+
+**Certificate scopes.** A delegation certificate has one scope: `routing`, `session-auth`, `service-instance` or `record-signing`. The router accepts only `routing` and `service-instance` on a stream. A `record-signing` certificate is never accepted as a connection identity.
+
+**The master anchor is a duty.** A master anchor is a signed record. It lists the temporary keys that the master revoked. An anchor stops verifying 24 hours after its signing time. The router rejects a stream that carries a delegation certificate when it cannot resolve a valid anchor of the master. The App Supervisor republishes the anchor of each master it manages every 12 hours by default. A person's master anchor is published with `roymctl identity publish-anchor`.
+
+**What the router checks about a caller.** When the preamble carries a delegation certificate, the router checks the signature, the validity window and the scope of the certificate, that its temporary key is the key in the preamble, and that the master has not revoked that key. It does not check that the caller holds the private part of the temporary key: the preamble carries only the public key. [FND-IAM](#fnd-iam-access-control) has the details.
+
+> **Envisioned.** Not built yet. Today the key in the preamble is asserted and is not proved. The router could check that the caller holds the temporary key, for example with a signed challenge. Only the login of the auth service checks a signature over a nonce today.
 
 ### Substrate Integrity & Remote Attestation
+
+> **Envisioned.** Not built yet. Today the node owner injects the key encryption key by hand with `roymctl kek inject`, and the substrate makes no hardware check.
+
+The word "attestation" in this subsection means hardware proof that a substrate runs the expected binary. It does not mean the signed attestation records of Roym, where each party signs the terms it accepted (see the [Roym spec](roym-integrated-experience-spec.md)).
 
 In the "uncontrolled cloud" model, ensuring that a substrate is running the expected, uncompromised binary is achieved using **Remote Attestation**. Because the ecosystem spans different hardware tiers, the substrate abstracts hardware differences via a unified native RPC endpoint.
 
 #### The Universal Attestation Endpoint
-The Substrate exposes a core native endpoint (e.g., `substrate.attest(nonce)`) over its wRPC/JSON-RPC interface. Depending on the physical hardware, it returns a polymorphic **Attestation Quote**:
+The Substrate exposes a core native endpoint (e.g., `substrate.attest(nonce)`) over its JSON-RPC interface. Depending on the physical hardware, it returns a polymorphic **Attestation Quote**:
 - **`Tpm20`**: For Linux/Windows PCs and Raspberry Pis equipped with a TPM 2.0 module. Contains a hardware-signed quote of the OS Measurement Log (e.g., Linux IMA).
 - **`AndroidKeyAttestation`**: For Android phones. Uses ARM TrustZone or Titan M chips to provide a Google-signed certificate chain that includes the hardware-verified hash of the Syneroym APK.
 - **`AppleAppAttest`**: For iOS/Mac devices. Uses the Secure Enclave to cryptographically prove it is a genuine Apple device running an untampered version of the Syneroym App.
@@ -1154,28 +1197,27 @@ flowchart TD
     subgraph NODE2["NODE (physical machine)"]
         subgraph APP1["SynApp 1 (WASM sandbox)"]
             W1[WASM Component WASI capability-limited]
-            DB1[(SQLite App 1 only)]
+            DB1[(SQLite: one database per service)]
         end
 
         subgraph APP2["SynApp 2 (Podman container)"]
-            P1[OCI Container rootless, non-root user]
-            DB2[(SQLite App 2 only)]
+            P1[OCI Container run by the host's Podman]
         end
 
         subgraph APP3["SynApp 2 (WASM sandbox)"]
             W2[WASM Component WASI capability-limited]
-            DB2[(SQLite App 2 only)]
+            DB2[(SQLite: one database per service)]
         end
 
         subgraph SUBSTRATE_CORE["Substrate Core"]
-            AC3[Access Control Engine enforces all cross-app access]
-            MSG4[Message Router no cross-app ambient access]
+            AC3[Access control in three layers: stream identity, per-service admission, row policy]
+            MSG4[Proxy router: refuses a guest call to another service's native capabilities]
         end
     end
 
-    APP1 <-->|"direct access after substrate-vetted initialization"| APP3
+    APP1 <-->|"cross-app calls through the substrate proxy, subject to access control"| APP3
     APP1 <-->|"explicit substrate-mediated API calls only"| SUBSTRATE_CORE
-    APP2 <-->|"explicit substrate-mediated API calls only"| SUBSTRATE_CORE
+    APP2 <-->|"deployed and managed by the substrate, isolation is Podman's"| SUBSTRATE_CORE
     APP1 -. "no direct access" .-> APP2
     APP2 -. "no direct access" .-> APP1
 
@@ -1184,6 +1226,21 @@ flowchart TD
     style APP3 fill:#E2EFDA,stroke:#548235
     style SUBSTRATE_CORE fill:#D6E4F0,stroke:#2E75B6
 ```
+
+**How a service is confined today.**
+
+- **WASM guest.**
+    - Instances come from a Wasmtime pooling allocator, and the store caps the memory of one guest.
+    - A guest runs under an epoch deadline (wall-clock time). It also runs under a fuel limit when the service has an instruction quota.
+    - The guest's `WasiCtx` is empty: no preopened directories, no environment variables and no sockets.
+    - The linker holds only WASI and the Syneroym host interfaces. A guest reaches the world through these.
+- **Calls between services.** A guest's outbound call goes through the Universal Proxy.
+    - A guest may call a declared interface of another service. The callee decides whether to admit the caller (see Layer 2 [access control](#substrate-internal-architecture)).
+    - A guest may call a native capability (`data-layer`, `vault`, `app-config`, `blob-store`, `messaging`, `http-native`, `conversation`, `signing`) only on its own service. The proxy refuses the same call on another service.
+    - A guest may never reach the node-level interfaces `orchestrator` and `security` through the proxy.
+- **Row policy.** FDAE filters the rows a caller may see, and can remove fields and run a per-row check. See [FND-IAM](#fnd-iam-access-control).
+- **Databases.** Each service has its own database, never one shared with another service.
+- **Container.** The substrate calls the host's `podman` command with the bridge network and the volumes and ports of the manifest. The substrate does not check whether Podman is rootless. Run the substrate as a non-root user so that Podman is rootless (operator advice).
 
 ---
 
