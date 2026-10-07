@@ -2352,18 +2352,20 @@ Aggregators are fundamentally just Providers offering a horizontal service. They
 
 ## Open Questions & Recommendations
 
+> **Envisioned.** Not built yet. This table lists open questions and the direction we prefer for each. Where a row says "Built today", that part exists in the code. OQ-1 is settled.
+
 | # | Question | Priority | Recommendation / Direction |
 |---|---|---|---|
-| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs custom BEP 0044. | High | **Custom BEP 0044 aligned with `pkarr`.** Keep DHT transport compatible with BEP 0044/mainline expectations; keep Iroh for peer transport and relay. Avoid mixed-stack coupling that breaks protocol compatibility. |
-| OQ-2 | **Consumer identity for non-self-hosters:** SLA and migration. | High | **Device-Bound Keys + Encrypted Cloud Backup.** Generate Ed25519 locally in browser. Encrypt state/keys symmetrically for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
+| OQ-1 | **DHT implementation choice:** libp2p Kademlia vs BEP 0044. | High | **Resolved: `pkarr` over BEP 0044.** The DHT records are signed `pkarr` packets published to the mainline DHT. There is no libp2p dependency. Iroh stays the peer transport and relay. |
+| OQ-2 | **Consumer identity for non-self-hosters:** SLA and migration. | High | **Delegated device key.** Built today: the person's master key never enters the browser. `roymctl session delegate` makes a temporary key pair and a delegation certificate. The Hub imports them once and keeps the private key in IndexedDB as a non-extractable WebCrypto key ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). Envisioned: encrypted state and keys for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
 | OQ-3 | **Bootstrap governance:** operations and funding. | High | **Consortium Model.** Major aggregators (e.g., Guilds, Meshes) form a non-profit consortium to share hosting costs of distributed bootstrap nodes, with DHT fallback ensuring network survival. |
 | OQ-4 | **Minimum federation contract:** WIT versioning. | Medium | **RFC Process for WIT Interfaces.** Establish `syneroym/core-interfaces`. Use Wasmtime adapter components to translate between versions (e.g., `v1` to `v2`) during deprecation periods. |
-| OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** Aggregators issue Verifiable Credentials (VCs). If malicious, providers migrate via `SynExport`, drop bad VC, and acquire a new one from a trusted aggregator. |
-| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider Apps. If SLA drops (e.g., < 99%), UI prompts provider to migrate Space using `SynExport`. |
-| OQ-7 | **Consumer UX ownership:** Consumer App governance. | Medium | **Reference Open-Source Apps.** Syneroym builds and open-sources reference apps (Native mobile, Tauri desktop). Aggregators fork and brand it, hardcoding their bootstrap nodes and tuning local discovery weights. |
+| OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** An aggregator is a SynOrg (Syneroym Organization) `directory` service. Built today: a SynOrg issues signed membership credentials and withdraws them with signed revocation and moderation records. These are Roym records, not W3C Verifiable Credentials. Envisioned: if a SynOrg is malicious, providers move with the Roym archive, drop the bad credential, and get a new one from a trusted SynOrg. |
+| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider Apps. If SLA drops (e.g., < 99%), UI prompts provider to move to another node using the Roym archive. Built today: a substrate republishes its endpoint records every hour. This is not an uptime proof. |
+| OQ-7 | **Consumer UX ownership:** Consumer App governance. | Medium | **Reference Open-Source Apps.** Built today: the Hub, a web UI, is the one reference client. Envisioned: Syneroym builds and open-sources native mobile and Tauri desktop reference apps. Aggregators fork and brand them, hardcoding their bootstrap nodes and tuning local discovery weights. |
 | OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Sequenced after core payments; evaluate based on initial adoption metrics. |
 | OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Required before either ships; needs legal counsel engagement. |
-| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Sequenced after Phase 1; workflows stay manual until then. |
+| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Sequenced after the core platform; workflows stay manual until then. |
 
 ---
 
@@ -2371,22 +2373,17 @@ Aggregators are fundamentally just Providers offering a horizontal service. They
 
 | Term | Definition |
 |---|---|
-| **SynApp** | A composed set of SYN-SVCs that together implement a business application |
-| **SYN-SVC** | A running instance of a SYN-MOD; executes within a SVC-SANDBOX on a NODE |
-| **SYN-MOD** | A reusable, independently deployable unit of business logic (WASM component or OCI image) |
+| **SynApp** | A composed set of services that together implement a business application |
 | **SYN-SUBSTRATE** | The core runtime layer on a NODE; manages deployment, messaging, discovery, and access control |
 | **NODE** | A physical or virtual machine running one SUBSTRATE instance |
-| **HOME_RELAY** | A relay server providing connectivity for SUBSTRATEs behind NAT or firewall |
-| **Space** | A named, provider-configured business context within a SynApp (e.g. a plumber's booking page) |
 | **WIT** | WebAssembly Interface Types — the IDL used for all component interfaces |
-| **CRDT** | Conflict-free Replicated Data Type — data structure that merges deterministically without coordination |
-| **DERP** | Designated Encrypted Relay Protocol — Iroh's relay transport when QUIC direct connection fails |
-| **ABAC** | Attribute-Based Access Control — one stage of the substrate's access-control pipeline (see `[FND-IAM]`) |
+| **ABAC** | Attribute-Based Access Control — stage 4 of the data-access pipeline: a guest-exported `authorize-rows` function that checks candidate rows (see [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md) §7) |
 | **pkarr** | Public-Key Addressable Resource Records — DHT records signed by an Ed25519 key |
 | **UCAN** | User Controlled Authorization Networks — capability token standard used for delegation |
-| **wRPC** | WIT-native RPC — high-performance inter-component streaming calls within a node |
-| **LWW** | Last-Write-Wins — the most recent write to a field persists; trivial with one writer per service, no merge algorithm needed |
-| **MLS** | Messaging Layer Security (RFC 9420) — end-to-end encrypted group messaging protocol |
-| **Beckn** | Beckn Protocols — open protocol for value exchange between people and businesses using digital infrastructure. |
+| **LWW** | Last-Write-Wins — the most recent write to a record persists (`put` replaces the whole payload); trivial with one writer per service, no merge algorithm needed |
+
+> **Envisioned.** Not built yet. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error. JSON-RPC 2.0 is the only wire protocol today.
+>
+> - **wRPC.** WIT-native RPC for streaming calls between WASM components, and between peer substrates over Iroh QUIC.
 
 ---

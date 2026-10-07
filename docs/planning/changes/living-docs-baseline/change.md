@@ -126,6 +126,12 @@ Found outside Layer 2 and not changed (they need a decision or a later pass):
 
 - The commit hash `dd864a1` is still in the heading "Post-DD864A1 Target Designs (Addendum)" (line 1839) and in `docs/ROADMAP.md`, `docs/STATUS.md`, `docs/system-requirements-spec.md` and `docs/planning/meta-implementation-plan.md`. Other documents link to the heading anchors, so renaming belongs to the structure change.
 
+Architecture fix, commit 1 (Glossary and Open Questions):
+
+- **One marker for the Open Questions table.** The table cannot hold a blockquote marker per row. One Envisioned marker sits above it, and rows say "Built today" for the parts that exist. OQ-1 is marked resolved inside its row.
+- **Beckn row deleted.** The overlaps report does not list it. Its default (Q-C1) removes the only body mention, in Layer 4, so the Glossary row leaves with it. Layer 4 still names Beckn until its own fix commit.
+- **wRPC row moved out of the table.** A table row cannot carry the Envisioned marker, so the term now sits under the table, as the Litestream rows did.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
