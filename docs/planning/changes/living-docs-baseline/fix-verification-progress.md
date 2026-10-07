@@ -11,7 +11,7 @@ Stage 2 checks every row of [fix-new-claims.md](fix-new-claims.md) against the c
 | S3 | 8, 9, 10 | 59 | accepted | c5fb4685 | 59 rows: 47 CONFIRMED, 2 CITE-OFF, 9 PARTLY, 1 WRONG (10.28: request_raw is a JSON-RPC call, not a raw byte stream); WRONG finding spot-checked in code |
 | S4 | 11, 12 | 63 | accepted | c0bd83a8 | 63 rows: 58 CONFIRMED, 5 PARTLY; browser enc= only on WebSocket tunnel, not WebRTC data channel (11.21, 12.27); 2 findings spot-checked |
 | S5 | 13, 14, 15 | 63 | running | | |
-| S6 | 16, 17 | 63 | not started | | |
+| S6 | 16, 17 | 63 | running | | |
 | S7 | 18, 19 | 52 | not started | | |
 | S8 | 20 | 50 | not started | | |
 | S9 | 21, 22, 23, 24 | 57 | not started | | |
