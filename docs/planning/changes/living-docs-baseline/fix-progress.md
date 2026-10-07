@@ -9,8 +9,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 1 | Glossary; Open Questions & Recommendations | done | 45b8967a | 9 new claims; 3 deviations; Beckn row deleted but Layer 4 still cites it until commit 17 |
 | 2 | Phase 7; Phase 6 | done | ceda65ff | 15 new claims; 6 deviations (markers per item) |
 | 3 | Phase 5 | done | 1bd7c14f | 8 new claims; no deviations; Layer 3 reputation wording to match in commit 18 |
-| 4 | Phase 4 | running | | |
-| 5 | Phase 3 | not started | | |
+| 4 | Phase 4 | done | 61297192 | 12 new claims; 4 deviations; Messaging section still has substrate.db and M3B/M7 (commit 6) |
+| 5 | Phase 3 | running | | |
 | 6 | Phase 2 | not started | | |
 | 7 | Phase 1 | not started | | |
 | 8 | Phase 0 | not started | | |
