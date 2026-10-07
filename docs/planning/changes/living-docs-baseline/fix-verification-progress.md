@@ -15,3 +15,20 @@ Stage 2 checks every row of [fix-new-claims.md](fix-new-claims.md) against the c
 | S7 | 18, 19 | 52 | accepted | 17f5c541 | 52 rows: 46 CONFIRMED, 6 PARTLY; 18.3: consumer never checks revocation (with_revocations only in tests); 19.21: no command revokes a person's delegated key; finding spot-checked |
 | S8 | 20 | 50 | accepted | 437f3193 | 50 rows: 45 CONFIRMED, 1 CITE-OFF, 4 PARTLY; all negative claims held; 20.21 gateway does not sign streams with node key as doc says; 20.45 cron accepts 6/7 fields; cron finding spot-checked |
 | S9 | 21, 22, 23, 24 | 57 | accepted | 410d2445 | 57 rows: 46 CONFIRMED, 2 CITE-OFF, 9 PARTLY; relay TLS and probe share one bind address (21.7); multi-hop claims 21.12-21.14 overstated; JSON-RPC everywhere (23.1) and relay-only-as-fallback (22.1) too broad; relay finding spot-checked |
+
+## Result
+
+Stage 2 is complete: all 518 rows were checked by an independent reader.
+
+| Verdict | Rows |
+| --- | --- |
+| CONFIRMED | 443 |
+| CITE-OFF (claim true, cite wrong) | 8 |
+| PARTLY (doc says more than the code supports) | 64 |
+| WRONG | 3 |
+| UNVERIFIABLE | 0 |
+| **Total** | **518** |
+
+The three WRONG rows: 6.24 (messaging and stream targets have no caller check), 10.28 (`request_raw` is a JSON-RPC call, not a raw byte stream), 14.28 (the vault entry name format). Each report (`fix-verification-S1.md` to `S9.md`) has a "Findings" section with exact replacement wording for every row that is not CONFIRMED, and a section for doc statements that no row covers.
+
+The doc text has not been changed because of these findings yet. That is a separate fix pass.
