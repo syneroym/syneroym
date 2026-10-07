@@ -2285,27 +2285,45 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 
 ## Phase 6: High-Level Applications (SynApps)
 
+Roym is the one SynApp built so far. It has six services: `web`, `profile`, `conversation`, `catalog`, `transaction` and `directory`. The product is described in the [Roym spec](roym-integrated-experience-spec.md). Each item below says what is built today and marks the rest as Envisioned.
+
 ### 0. Core Client Architecture (The Syneroym Hub)
 *Addresses the architecture of the universal UI shell.*
+
+**Built today.** The Hub is a thin web UI, written in TypeScript with standard web technologies. The `web` service of Roym serves it, so deploying Roym gives the UI. The master key never enters the browser: the Hub logs in with a delegated key ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). The Hub does not own authoritative database state. It reads and writes state through JSON-RPC 2.0 over HTTP (`POST /rpc`) and sends a session token as a Bearer header. See the [Client contract](roym-integrated-experience-spec.md#client-contract).
+
+> **Envisioned.** Not built yet. The Hub runs in a browser. No desktop shell, mobile shell or local agent exists.
+
 **Design Approach:**
-To achieve the "Hybrid Headless Substrate" vision, the Syneroym Hub is designed as a "dumb" cross-platform frontend using standard web technologies (HTML/CSS/JS). Because the UI acts purely as a renderer for JSON Action Cards, this stack ensures rapid, unified development across all multi-surface views.
+To achieve the "Hybrid Headless Substrate" vision, the Syneroym Hub is designed as a "dumb" cross-platform frontend using standard web technologies (HTML/CSS/JS). Because the UI is a thin client that renders signed records as cards, this stack ensures rapid, unified development across all multi-surface views.
 - **Desktop (Tauri):** We use Tauri because its native Rust backend can embed the substrate runtime library or supervise a local substrate daemon, while using the OS's native webview for an incredibly lightweight footprint. `roymctl` remains the CLI/control surface rather than the long-running daemon itself.
 - **Mobile (Native WebView Wrapper):** We use a thin native shell (Swift/Kotlin or Capacitor) wrapping a WebView. This allows HTML/CSS/JS to handle the dynamic UI, while the native layer handles heavy background tasks like P2P networking, cryptography, and SQLite replication.
-- **Data Isolation:** The UI shell does not execute complex business rules and does not own authoritative database state. It may cache presentation data and outbox state for responsiveness. It maintains a persistent, authenticated WebSocket/gRPC connection to the local substrate API to serve views dynamically.
+- **Data Isolation:** The UI shell may cache presentation data and outbox state for responsiveness.
 - **Surface Rendering & Intent Translation:** When a user interacts with a Trusted Room or the Agentic Concierge, the UI simply renders the Action Cards or relays raw text/audio to the Substrate's local Rig-core agent, which handles translation into API calls.
 
 ### 1. Service Bundling & Sub-Workflow Composition
 *Addresses the Consumer activity of combining multiple services (e.g., Food + Delivery).*
+
+> **Envisioned.** Not built yet. No Roym service composes services of several providers. The building block exists: a guest service can open a saga, and the substrate walks the compensations backwards if the workflow fails ([ADR-0023](decisions/0023-durable-async-primitives.md)).
+
 **Design Approach:** 
 Syneroym has no central coordinator. To execute distributed sagas across independent providers, we employ a loosely coupled "State-Channel" approach. The consumer's local node acts as the orchestrator. It holds a composite intent state machine. When sub-task A (Food prep) signals completion via the messaging layer, the consumer's local node automatically triggers the next state transition, issuing an event to Provider B (Delivery). If a sub-task fails, the consumer's node executes compensating logic (e.g., requesting a refund via Escrow).
 
 ### 2. Action Card Architecture
-*Addresses the interactive widgets (Quotes, Invoices, Forms) dropped into Trusted Rooms.*
+*Addresses the interactive widgets (Quotes, Payment Requests, Receipts) dropped into Trusted Rooms.*
+
 **Design Approach:** 
-Action Cards are strictly defined as standardized JSON schemas, similar to Microsoft's Adaptive Cards, rather than arbitrary portable WASM components. This prevents malicious UI execution on the client device. A provider sends a JSON payload representing the UI layout and an array of `actions`. When a user taps a button, the local substrate translates that action into a predefined Substrate Capability request (e.g., `grant_fdae_access` or `sign_mutual_credit_transaction`).
+Action Cards are typed JSON documents, rather than arbitrary portable WASM components. This prevents malicious UI execution on the client device. A card carries a signed record and nothing derived from it. The client template for the card type and version decides the layout and the buttons. When a user taps a button, the Hub calls a Roym JSON-RPC method, for example `agreement.accept` on a quote.
+
+Roym has seven card types: `request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. The list is fixed. A card of an unlisted type or version shows as a neutral "unknown" block. See [Cards](roym-integrated-experience-spec.md#cards).
 
 ### 3. Flexible Payment Integration
 *Addresses integrating external gateways (Stripe/UPI) alongside the internal Mutual Credit ledger.*
+
+**Built today.** Roym does not process payments, hold money or check a payment. It records what each side says. The agreed terms in a quote list the accepted payment methods, the amount and the currency. The provider sends a `payment-request` card (currency, amount and an optional note). Either party can send a `payment-acknowledgement` card that says a payment happened, with an optional method and a reference as text. The Hub shows a notice that Roym does not see the money move.
+
+> **Envisioned.** Not built yet. No `PaymentIntent` interface, no payment gateway code and no Dynamic Ledger Network (DLN, the mutual credit ledger) exists.
+
 **Design Approach:** 
 The substrate defines an abstract `PaymentIntent` interface for Invoice Cards. An Invoice Card payload contains an array of acceptable settlement methods.
 - **Native Mutual Credit:** Payload contains the exact DLN multi-sig hash to be counter-signed.
@@ -2313,11 +2331,21 @@ The substrate defines an abstract `PaymentIntent` interface for Invoice Cards. A
 
 ### 4. Portable Data & Reputation Envelopes
 *Addresses taking service history and reputation across hosting platforms.*
+
+**Built today.** The Roym backup archive moves a person and their Roym data to a new node (see Backup and Restore in [Layer 2](#layer-2--substrate-runtime)). A signed Roym record carries its issuer, its signature and its delegation certificate. Any node verifies it with the same code, without contacting the issuer.
+
+> **Envisioned.** Not built yet. No Verifiable Credential, JSON-LD or IPFS code exists. The import of a service history into a new data homebase, and the proof of reputation to a new Aggregator, are not built.
+
 **Design Approach:**
 Data portability is achieved via standardized Export/Import Envelopes. A provider compiles a user's service history into an archive of Verifiable Credentials (signed JSON-LD) or pkarr-signed IPFS blobs. The user imports this envelope into their new data homebase. When interacting with a new Aggregator, the user cryptographically proves their past reputation by submitting these pre-signed blobs, which the new node verifies against the original provider's public key without needing to contact the original provider.
 
 ### 5. Staked Messaging & Spam Deterrence (Digital Stamps)
 *Addresses the Provider activity of paying a refundable stamp to send promotional offers.*
+
+**Built today.** The spam control is a limit on first contact. A recipient sets how many first-contact attempts one sender may make in a time window. The default is 3 in 24 hours. A recipient can also block a sender. See [Safety and operations](roym-integrated-experience-spec.md#safety-and-operations).
+
+> **Envisioned.** Not built yet. No stamp, lock or slash code exists.
+
 **Design Approach:**
 Without a public blockchain, staking relies on the mutual-credit DLN. A provider initiates a "locked" multi-sig transaction representing the micro-credit stamp. This intent is attached to the cold-message payload. 
 - If the consumer accepts the message, they counter-sign the intent, claiming the credit.
@@ -2325,6 +2353,9 @@ Without a public blockchain, staking relies on the mutual-credit DLN. A provider
 
 ### 6. Decentralized Escrow & Dispute Resolution
 *Addresses the Facilitator activity of holding funds or arbitrating.*
+
+> **Envisioned.** Not built yet. Roym holds no money and runs no escrow. It has no dispute workflow. The agreed terms of a quote carry a dispute path as free text only.
+
 **Design Approach:**
 The designated Facilitator's own single-writer ledger service is the custodian holding the pending funds/credits — not a jointly-written shared ledger. A 2-of-3 Multi-Signature scheme gates release: an Invoice Intent requires signatures from any two of the three parties (Consumer, Provider, Facilitator) before the custodian's single writer executes the release.
 - **Happy Path:** Consumer and Provider both sign the completion state; the custodian releases funds on receiving both.
@@ -2332,13 +2363,21 @@ The designated Facilitator's own single-writer ledger service is the custodian h
 
 ### 7. Aggregator Fuel Quotas
 *Addresses how Aggregators prevent spam when indexing catalogs.*
+
+**Built today.** An aggregator is a SynOrg (Syneroym Organization) `directory` service. It aggregates provider data. The `directory` service limits how often one publisher can call `directory.publish`. The default is 20 in 24 hours, and the limit is a setting of the directory.
+
+> **Envisioned.** Not built yet. No fuel quota table exists. Federation between aggregators and the proxying of queries to other aggregators are not built.
+
 **Design Approach:**
-Aggregators are fundamentally just Providers offering a horizontal service. They use the same internal SQLite ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Every incoming `publish_listing` or `search` API request is processed by middleware that atomically decrements the fuel quota in the local SQLite DB, rejecting requests when the balance hits zero. Providers top up fuel via standard Flexible Payment integrations.
+An aggregator is a SynOrg `directory` service, and can federate with other aggregators and proxy queries to them. It uses the same internal SQLite ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Every incoming `directory.publish` or `directory.search` API request is processed by middleware that atomically decrements the fuel quota in the local SQLite DB, rejecting requests when the balance hits zero. Providers top up fuel via standard Flexible Payment integrations.
 
 ## Phase 7: Edge Expansion
 
 ### 1. Mobile Operation Limitations (EDG-MOB)
 *Addresses how to maintain true P2P functionality under strict mobile OS resource constraints.*
+
+> **Envisioned.** Not built yet. There is no mobile build, no push wake-up and no OS key-store bridge. Two parts exist on the node: the durable outbox with retries ([PLT-ASY](#plt-asy-asynchronous-operations--scheduling)), and the `syneroym:signing` interface, which signs records and returns no key material.
+
 **Design Approach:**
 - **Network Throttling Strategies**: 
   - Avoid persistent background services (aggressively killed by iOS).

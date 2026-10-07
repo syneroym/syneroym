@@ -132,6 +132,15 @@ Architecture fix, commit 1 (Glossary and Open Questions):
 - **Beckn row deleted.** The overlaps report does not list it. Its default (Q-C1) removes the only body mention, in Layer 4, so the Glossary row leaves with it. Layer 4 still names Beckn until its own fix commit.
 - **wRPC row moved out of the table.** A table row cannot carry the Envisioned marker, so the term now sits under the table, as the Litestream rows did.
 
+Architecture fix, commit 2 (Phase 7 and Phase 6):
+
+- **Markers per item, not per phase.** The default (Q-G2-1) says one marker per phase. Phase 6 items 0, 3, 4, 5 and 7 mix built and unbuilt text, so each has a "Built today" paragraph without a marker and its own Envisioned marker above the design text. Items 1 and 6 have a marker only. Item 2 is built, so it has no marker. Phase 7 has one marker.
+- **Phase 6 intro paragraph.** I added one unmarked paragraph under the Phase 6 heading that says Roym is the one SynApp built so far.
+- **Aggregator text.** Item 7 follows the owner decision for Q-A4: an aggregator is a SynOrg `directory` service. The federation and query proxying part sits in the Envisioned design text. The `publish_listing` and `search` names became `directory.publish` and `directory.search`, the real method names.
+- **DLN.** The doc never defined DLN. Item 3 now expands it as Dynamic Ledger Network, the name used in the requirements spec.
+- **Wording kept.** The design text of items 1, 3, 4, 5 and 6 is unchanged, including "central coordinator", "Invoice Card" and "Aggregator". The language pass decides those. The "Adaptive Cards" comparison and the "Forms" widget were removed, because the code has neither.
+- **Phase headings.** "Phase 6" and "Phase 7" keep their names. The Part 3 decision on phase headings belongs to commit 9.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
