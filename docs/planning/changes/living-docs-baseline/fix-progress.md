@@ -15,8 +15,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 7 | Phase 1 | done | 3dc2706a | 18 new claims; 7 deviations (audit G1-050 was wrong: custom_config schema is validated) |
 | 8 | Phase 0 | done | 7bfd95f4 | 17 new claims; 7 deviations; Layer 2 "no manifest field selects it" (Sharded) is slightly loose, for commit 20 |
 | 9 | Addendum heading and intro | done | ee81eaed | 0 new claims; spec link anchor post-dd864a1-... kept (valid explicit anchor in the spec) |
-| 10 | Connectivity Substrate | running | | |
-| 11 | Consolidated Technology Stack | not started | | |
+| 10 | Connectivity Substrate | done | a9623271 | 42 new claims; 0 deviations; code differs from audit CN-40 (two lookups) and CN-18 (addresses pruned) |
+| 11 | Consolidated Technology Stack | running | | |
 | 12 | Appendix: Multi-Hop Relay Walkthrough | not started | | |
 | 13 | Resolved Architecture TBD Items | not started | | |
 | 14 | Security Architecture | not started | | |
