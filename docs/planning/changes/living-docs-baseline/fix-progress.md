@@ -21,8 +21,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 13 | Resolved Architecture TBD Items | done | e627ac9a | 11 new claims; 2 deviations; table rows describe target wording that Layer 3 (commit 18) and Layer 1 (commit 21) must match; heading rename left to commit 23 |
 | 14 | Security Architecture | done | 0863cf74 | 32 new claims; 0 deviations; handshake backlog row already exists (added in the audit PR), commit 24 must not duplicate it |
 | 15 | Observability Architecture | done | e143e4cd | 20 new claims; 0 deviations; two claims rest on doc comments (Prometheus text format; supervisor unretained publish): stage 2 should look; MemoryRecorder backlog row already exists |
-| 16 | Consumer Experience; Federation Architecture | running | | |
-| 17 | Layer 4 | not started | | |
+| 16 | Consumer Experience; Federation Architecture | done | 739ba9c8 | 25 new claims; 0 deviations |
+| 17 | Layer 4 | running | | |
 | 18 | Layer 3 (second heading) | not started | | |
 | 19 | Layer 3 (first heading), merge headings | not started | | |
 | 20 | Layer 2 leftovers | not started | | |
