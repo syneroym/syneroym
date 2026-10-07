@@ -26,7 +26,7 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 18 | Layer 3 (second heading) | done | 5631a56f | 27 new claims; 0 deviations; rerun after rate limit (first attempt left no edits); other stores (conversation, queues, supervisor) do set WAL, the doc scopes 'no WAL pragma' to state.db; undeploy data lifecycle left unsaid (unverified) |
 | 19 | Layer 3 (first heading), merge headings | done | e8e8b8d1 | 25 new claims; 1 deviation block; Layer 3 headings merged; revoke_list_registry is read nowhere (negative search for stage 2); Layer 2 'Stream identity' text for commit 20 |
 | 20 | Layer 2 leftovers | done | 7aab087d | 50 new claims; 7 deviations; code binds gateway to 0.0.0.0 (doc says access control decides, no fixed bind rule); negative claims (no SIGTERM handler, profiles table unread) for stage 2; some cites 1-10 lines off |
-| 21 | Layer 1 | running | | |
-| 22 | System Layers Overview, Goals & Constraints, Executive Summary | not started | | |
+| 21 | Layer 1 | done | f6e81dbc | 38 new claims; 1 deviation block (third-party relay default is narrower than the audit said); 'keeps one connection to parent relay' is inferred from Iroh behaviour (stage 2 may downgrade); deferred-backlog.md:257 uses the old Heteregenous anchor (commit 24) |
+| 22 | System Layers Overview, Goals & Constraints, Executive Summary | running | | |
 | 23 | Top matter and Table of Contents | not started | | |
 | 24 | Outside the doc (TERMINOLOGY, requirements spec, backlog) | not started | | |
