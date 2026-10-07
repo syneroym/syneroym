@@ -189,6 +189,8 @@ Architecture fix, commit 8 (Phase 0):
 - **Rollback in `[TOP-DSC]`.** The text promised a rollback. ADR-0021 §5 decides against rollback of a stateful service, so I did not mark it Envisioned. I wrote that no code rolls back, and that the journal states `ROLLING_BACK` and `ROLLED_BACK` exist and are never written.
 - **Layer 2 wording not touched.** The Envisioned note under "One app on several hosts" says "no manifest field selects it". The manifest has a `sharding_strategy` field that nothing reads. The note is still right in meaning. It belongs to the Layer 2 commit.
 - **`[TOP-DSC]` provider discovery bullet.** I added a short bullet, "Finding Providers and Listings", that says discovery is what the Roym `directory` service does (decision Q-B4). It links to `[P2P-DSC]`.
+- **Resolved Architecture TBD Items heading kept.** Audit row TBD-00 suggests renaming the section to "Design decisions index". I fixed the intro and the column header and kept the heading, because the Table of Contents link and the order of fix commits are not part of this step. Rename it with the Table of Contents fix if wanted.
+- **Ad boost cap in one place.** Rows 9 and 17 of that table point to row 15 for the cap value (0.3), so the value is written once in the table (overlap O43).
 
 ## Close-out
 
