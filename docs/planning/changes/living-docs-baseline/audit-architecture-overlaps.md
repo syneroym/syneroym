@@ -122,7 +122,7 @@ A star marks a question that needs a user decision before you edit. The default 
 
 ### 2.0 Decisions received (2026-10-07)
 
-The owner answered all the ★ questions except the last part of Q-B2. These answers replace the defaults in 2.1 for the same questions. One question (Q-B2, remaining parts) is still open: its default stands but is not confirmed.
+The owner answered all the ★ questions. These answers replace the defaults in 2.1 for the same questions. 
 
 | Question | Decision | Effect on the fix commits |
 | --- | --- | --- |
@@ -139,7 +139,7 @@ The owner answered all the ★ questions except the last part of Q-B2. These ans
 | Q-D4 (Isolation diagram edge `APP1 <-> APP3`) | The edge shows that apps may talk to each other. | Keep the edge. Relabel it as cross-app communication through the platform, and say it is subject to access control. Still fix the shared `DB2`: databases are per service. |
 | Q-F2, Q-F3 (`listen/accept` and the transport interface) | A server-side `listen/accept` API is not a goal. But Iroh QUIC and WebRTC have an internal listen/accept equivalent. Use general wording. | Delete the `dial/listen/capabilities` interface text. Say: the node accepts inbound streams on each transport (Iroh QUIC, WebRTC) and hands them to the router. Say that callers connect, and services never accept connections themselves. |
 | Q-G1-1 (WAL mode) | Document what exists. Advanced tuning is Envisioned. | Remove "(and WAL)" claims. Say what the code does: one writer task per database, no WAL pragma set. Mark WAL and tuning as Envisioned. No code change. |
-| Q-B2, remaining parts | Not yet answered. | Default: document only what the code does. Add one backlog row for the three handshake points (see below). |
+| Q-B2, remaining parts | Keep the default. | Document only what the code does. Add one backlog row for the three handshake points (see below). |
 
 ### 2.1 Questions that need a user decision first
 
