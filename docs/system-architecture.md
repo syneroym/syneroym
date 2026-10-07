@@ -34,12 +34,16 @@
 
 ## Executive Summary
 
-Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. Clusters interoperate through federation — cooperation between independently owned peer clusters over shared protocols, not server federation; no server sits between participants. The [thesis](../THESIS.md) states the core bet. The system replicates the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while eliminating their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
+Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. Clusters interoperate through federation — cooperation between independently owned peer clusters over shared protocols, not server federation. A direct connection between two participants needs no server in the data path. Relays and coordinators carry traffic only as a fallback, and registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to replicate the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while avoiding their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
+
+> **Envisioned.** Not built yet. Reputation. Today Roym has no reputation record. Trust comes from the signed membership credentials of a SynOrg.
 
 This document defines the architecture, technology stack, component design for:
 
 - **The Syneroym Substrate** — the common technology layer all SynApps run on
-- **SynApp 1: Business, Professional & Retail Spaces** — Home Services Guild + Food & Small Retailer Mesh, the first verticals of **Roym**, our flagship combined experience
+- **SynApp 1: Roym** — our flagship combined experience for business, professional and retail services. It is the one SynApp built so far.
+
+> **Envisioned.** Not built yet. The two planned verticals of Roym: the Professional Services Guild (home services first) and the Local Producer-Distributor Mesh (food and small retail). Today Roym is one generic app, and a local group is a SynOrg. See [Local Producer-Distributor Mesh](#local-producer-distributor-mesh).
 
 ---
 
@@ -51,55 +55,65 @@ This document defines the architecture, technology stack, component design for:
 |---|---|
 | **Locality-first** | Optimised for geographically proximate providers and consumers; global scale is secondary |
 | **Progressive decentralisation** | Single device is fully useful; federation is additive |
-| **Data sovereignty** | All provider data lives on provider-controlled infrastructure |
+| **Data sovereignty** | All provider data lives on infrastructure the provider chooses |
 | **Transparency over opaqueness** | Ranking, discovery, and reputation algorithms are open-source or auditable |
 | **Interoperability by convention** | SynApps cooperate via shared primitives; no central coordinator needed |
-| **Offline-first** | Graceful degradation under partition; queued and async workflows |
+| **Offline-first** | Graceful degradation under partition; queued and async delivery between nodes |
 
 ### Key Hardware Constraints
 
-| Profile | Hardware | Typical Use |
+The RAM figures are sizing hints, not tested requirements.
+
+| Hardware tier | Hardware | Typical Use |
 |---|---|---|
-| Tier 1 — Minimal | Raspberry Pi 4, Android phone (2 GB RAM) | Single provider self-host, light load |
+| Tier 1 — Minimal | Raspberry Pi 4 (2 GB RAM) | Single provider self-host, light load |
 | Tier 2 — Standard | Old PC / mini PC (4–8 GB RAM, SSD) | Provider or small aggregator |
 | Tier 3 — Distributed | Multiple VMs, PCs, Servers (8–32 GB RAM) | Infrastructure provider, large aggregator |
+
+The release workflow builds the substrate for Linux (x86_64 and aarch64), Windows and macOS.
+
+> **Envisioned.** Not built yet. A substrate on an Android phone. No Android target exists in the release workflow, the build tools or the Cargo files.
 
 ---
 
 ## System Layers Overview
 
-The architecture is composed of four layers, each building on the one below.
+The architecture is composed of four layers, each building on the one below. The layers are a teaching model. They are not crate boundaries.
 
 ```mermaid
 block-beta
   columns 1
   block:L4["Layer 4 — SynApp Layer"]
-    A["SynApp 1: Service and Retail Spaces"]
+    block:ROYM["SynApp 1: Roym"]
+      R1["Discovery (directory)"]
+      R2["Trust (SynOrg membership credentials)"]
+      R3["Transactions and payment records"]
+    end
     C["Future SynApps..."]
   end
   block:L3["Layer 3 — Shared Substrate Utilities"]
     D["Identity"]
-    E["Discovery / DHT"]
     F["Messaging"]
-    G["Reputation & Trust"]
-    H["Payments"]
   end
   block:L2["Layer 2 — Substrate Runtime"]
     I["WASM Runtime (Wasmtime)"]
     J["OCI Runtime (Podman)"]
-    K["Key Management"]
+    RT["Connection Router"]
+    K["Key Stores (KEK, DEK, vault)"]
     L["Access Control"]
     M["Storage (SQLite)"]
   end
   block:L1["Layer 1 — Infrastructure"]
     N["P2P / Relay (Iroh / QUIC)"]
-    O["Bootstrap Server"]
-    P["Relay Nodes"]
-    Q["Hardware (PC, RPi, Phone)"]
+    W["Browser Path (WebRTC)"]
+    O["Community Registry and DHT"]
+    Q["Hardware (PC, Raspberry Pi)"]
   end
 ```
 
-> **Envisioned.** Not built yet. The storage layer has no replication or backup of service databases today. The design is open: see [PLT-RED](#plt-red-service-redundancy).
+Layer 3 holds two substrate utilities: identity and messaging. Discovery and matching, trust and reputation, and payments are Roym features. They are not substrate components, so the diagram shows them in Roym. The [Layer 3](#layer-3--shared-substrate-utilities) section describes them too.
+
+> **Envisioned.** Not built yet. Replication of service databases, a bootstrap server, a substrate on an Android phone, and a reputation record. Today the built backup is the Roym archive, a relay is a URL in the config of each substrate, and trust is the signed membership credentials of a SynOrg. The replication design is open: see [PLT-RED](#plt-red-service-redundancy).
 
 ### Conceptual Entity Model
 
@@ -112,29 +126,30 @@ config:
 erDiagram
     NODE-OWNER ||--o{ SUBSTRATE : owns
     SUBSTRATE ||--|| NODE : runs-on
-    SUBSTRATE ||--o{ SYN-SVC : manages-and-proxies
-    SUBSTRATE }o--|{ HOME-RELAY : registers-at
-    SYN-APP ||--|{ SYN-SVC : comprises-of
-    SYN-APP }o--|| SUBSTRATE : registers-at
-    SYN-SVC }|--|| SVC-SANDBOX : runs-in
+    SUBSTRATE ||--o{ SERVICE : manages-and-proxies
+    SUBSTRATE }o--o| RELAY : uses
+    SYN-APP ||--|{ SERVICE : comprises-of
+    SYN-APP }o--|{ SUBSTRATE : placed-on
+    SERVICE }o--o| SVC-SANDBOX : runs-in
     NODE ||--o{ SVC-SANDBOX : hosts
-    SYN-MOD ||--|{ SYN-SVC : instantiates
-    SYN-APP }o--|{ HOME-RELAY : reachable-via
-    PROVIDER ||--o{ SYN-APP : owns-or-uses
-    AGGREGATOR ||--o{ PROVIDER : hosts-for
-    CONSUMER ||--o{ SYN-APP : accesses
+    SERVICE-ARTIFACT |o--o{ SERVICE : instantiates
+    PERSON ||--o{ SYN-APP : accesses
 
     NODE { string id }
-    SUBSTRATE { string public_key string version }
-    SYN-SVC { string id string status }
+    SUBSTRATE { string public_key }
+    SERVICE { string id string status }
     SYN-APP { string id string manifest_version }
-    SYN-MOD { string id string package_type }
+    SERVICE-ARTIFACT { string source }
     SVC-SANDBOX { string type capabilities resources }
-    HOME-RELAY { string url }
-    PROVIDER { string identity_key }
-    CONSUMER { string identity_key }
-    AGGREGATOR { string identity_key }
+    RELAY { string url }
+    PERSON { string master_did }
 ```
+
+A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one configured relay URL. It does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. A WASM or container service is built from an artifact: a WASM component or an OCI image, named in the `source` field of its service spec.
+
+Provider and Consumer are not substrate entities. They are the two roles of a person in one Roym transaction. An aggregator is a SynOrg (Syneroym Organization) `directory` service. It aggregates the listings of the providers who publish to it. See [Federation Architecture](#federation-architecture).
+
+> **Envisioned.** Not built yet. Federation between aggregators, and an aggregator that proxies a query to other aggregators. Today a directory answers from its own listings and does not forward a query to another directory.
 
 ---
 

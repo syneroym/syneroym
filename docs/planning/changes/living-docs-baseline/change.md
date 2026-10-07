@@ -220,6 +220,13 @@ Architecture fix, commit 21 (Layer 1):
 - **Original diagrams.** The built diagram under "P2P Networking: Iroh" replaces the first diagram. The bootstrap, home relay and TURN edges of the old diagram are now in the Envisioned diagram under "Relay Node Architecture" and in the Envisioned text under "Bootstrap Server & DHT Fallback". "DERP" became "Iroh relay".
 - **Outside this commit.** The Requirements spec still has the relay and bootstrap design (O10), and the backlog still links the old heading anchor `#connectivity-substrate-in-heteregenous-networks` (`docs/planning/deferred-backlog.md:257`). Both are for commit 24. The warning at the top of the doc still says "implemented in the coordinator crates" (commit 23).
 
+Architecture fix, commit 22 (System Layers Overview, Conceptual Entity Model, Goals & Constraints, Executive Summary):
+
+- **"Tier" kept for hardware.** The overlaps report (O23) says to rename two of the three uses of "Tier". The Layer 3 identity use is already gone. Observability uses "Tier 1/2/3" for the same hardware tiers as the Key Hardware Constraints table, so I kept the name there and made the table header say "Hardware tier". The two-step discovery in the Phase 0 text ("Tier 1: app DID", "Tier 2: topology document") is a second meaning that this commit did not touch.
+- **Entity Model: Provider, Consumer and Aggregator left the diagram.** Provider and Consumer are Roym transaction roles and an aggregator is a SynOrg `directory` service (Q-A4, Q-2), so none is a substrate entity. They are described in the text under the diagram. A `PERSON` entity (a master DID that accesses a SynApp) replaces the `CONSUMER accesses` edge. The `PROVIDER owns-or-uses` edge is dropped: the code shows no ownership link between a person and an app instance.
+- **Layers diagram: Layer 2 and Layer 1 boxes.** "Key Management" became "Key Stores (KEK, DEK, vault)" because Layer 2 says there is no single key manager. I added the Connection Router (Layer 2) and the Browser Path (Layer 1). "Bootstrap Server" left the diagram and is named in the Envisioned note.
+- **Vertical names.** The Executive Summary uses "Professional Services Guild (home services first)" and "Local Producer-Distributor Mesh", the names in `docs/TERMINOLOGY.md` and in Layer 4, in place of "Home Services Guild" and "Food & Small Retailer Mesh".
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
