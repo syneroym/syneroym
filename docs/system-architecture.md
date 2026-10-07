@@ -1313,22 +1313,23 @@ Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-fe
 
 | Layer / Concern | Technology | Notes |
 |---|---|---|
-| Substrate language | **Rust** (2021 edition, stable) | Memory safety; WASM compilation target; strong async ecosystem |
+| Substrate language | **Rust** (2024 edition, stable) | Memory safety; WASM compilation target; strong async ecosystem |
 | Async runtime | **Tokio** 1.x | Industry standard; required by Iroh |
-| P2P / relay | **Iroh** (iroh + iroh-net) | QUIC, NAT hole punching, DERP relay |
-| WebRTC (browser) | **webrtc-rs** | Browser-to-service via Data Channels |
-| WASM runtime | **Wasmtime** (latest stable, WASI 0.2) | Bytecode Alliance; component model support |
-| Container runtime | **Podman** 4.x+ (rootless) | No daemon; rootless; Docker-compatible |
-| API IDL | **WIT** (Component Model 1.0) | Single source of truth for all interfaces |
-| External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams | Derived automatically from WIT. WebSocket is an optional route for one app |
+| P2P / relay | **Iroh** 0.97 (`iroh`, `iroh-base`, `iroh-relay`) | QUIC, NAT hole punching, Iroh relay |
+| WebRTC (browser) | **webrtc-rs** (`webrtc` 0.17) | Browser-to-service via Data Channels |
+| WASM runtime | **Wasmtime** 46.x (WASI 0.2) | Bytecode Alliance; component model support |
+| Container runtime | **Podman** (the host's `podman` command) | No daemon; Docker-compatible CLI. Rootless use is operator advice: the engine checks neither the Podman version nor the rootless mode |
+| API IDL | **WIT** (Component Model, WASI 0.2) | Single source for the host and guest component interfaces. The wire surface is separate: the route preamble and the Roym JSON envelope |
+| External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams | Types come from WIT. Method dispatch is written by hand. WebSocket is an optional route for one app |
 | Inter-component calls | **JSON-RPC 2.0** through the Universal Proxy | Local, or over Iroh QUIC to another node |
 | Local storage | **SQLite** (`rusqlite` + `sqlcipher`) | Single writer per service; see Storage & Write Arbitration |
-| DHT / registry | **pkarr** + BEP 0044 DHT | SynApp registry + bootstrap fallback |
-| Local DNS | **Hickory DNS** (Rust) | Dynamic relay hostname resolution. Else, could use plain lookup cache |
-| Observability | **OpenTelemetry** (OTLP) | Traces + metrics + logs; Grafana/Prometheus exporters |
-| Configuration | **TOML** + JSON Schema | Human-readable; validated |
+| DHT / registry | **pkarr** 6.0 + BEP 0044 DHT | Community registry first, DHT second. The bootstrap server is Envisioned: see Layer 1 |
+| Observability | **`tracing`** (logs), **`metrics`** (in-process `MemoryRecorder`) | The recorder is served as a JSON snapshot on a configured endpoint |
+| Configuration | **TOML** (`toml` 1.0) | Parsed into typed Rust structs and checked at startup |
 
 > **Envisioned.** Not built yet. Calls between components use JSON-RPC 2.0 today. The goal is **wRPC**, for high-performance streaming between components.
+
+> **Envisioned.** Not built yet. Export of traces, metrics and logs with **OpenTelemetry** (OTLP), and Grafana/Prometheus exporters. Today the configuration has `OtlpConfig` types, and the observability engine sets up logging, the recorder and a sampler.
 
 > **Envisioned.** Not built yet. Backup and replication of service databases do not exist today. The design is open. Option 1 is **Litestream**: WAL streaming to an S3-compatible store or a peer. Option 2 is Iroh WAL shipping ([PLT-RED](#plt-red-service-redundancy)).
 
@@ -1336,32 +1337,50 @@ Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-fe
 
 | Concern | Technology | Notes |
 |---|---|---|
-| SynApp component language | **Rust → WASM** (wit-bindgen) | Primary path |
-| OCI services | **Rust or Go** in Alpine container | For services that can't target WASM |
-| 1-to-1 messaging crypto | **libsignal-protocol-rust** | X3DH + Double Ratchet |
-| Group messaging crypto | **openmls** (Rust) | MLS RFC 9420 |
-| Verifiable Credentials | **ssi** (Rust) | W3C VC Data Model 2.0 |
-| DRM video | **Shaka Player** | Digital content delivery |
-| Payment (MVP) | **Stripe Connect SDK** + UPI deep links | Pluggable adapter |
+| SynApp component language | **Rust → WASM** (wit-bindgen 0.57) | Primary path. The Roym services are built with `cargo component build --target wasm32-wasip2` |
+| OCI services | **Any OCI image** | For services that can't target WASM. The Podman engine runs the image that the manifest names |
+| 1-to-1 messaging crypto | **vodozemac** 0.10 | X3DH + Double Ratchet (Olm) |
+| Group messaging crypto | Owner-distributed **AES-256-GCM** group key, one key per epoch | The group owner distributes the key. There is no MLS ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1) |
+| Signed records | **Signed Roym records** (`signed_record` envelope) | Built: for example the membership credentials that a SynOrg issues |
+| Payment records | **Signed Roym payment records** | Built: `payment-request` and `payment-acknowledgement`. Roym records a payment that happens outside the system and does not process it |
+| Verifiable Credentials | **ssi** (Rust) | **Envisioned.** W3C VC Data Model 2.0. Not built yet |
+| DRM video | **Shaka Player** | **Envisioned.** Digital content delivery. Not built yet |
+| Payment processing | **Stripe Connect SDK** + UPI deep links | **Envisioned.** Pluggable adapter. Not built yet |
+
+> **Envisioned.** Not built yet. The rows marked Envisioned name libraries that are in no `Cargo.toml` or `package.json` today.
 
 ### Consumer Frontend
 
 | Concern | Technology |
 |---|---|
-| Shell / Core | **Native (SwiftUI / Jetpack Compose / Tauri)** — embedding the substrate for robust background execution |
-| Mini-App UI | **HTML/CSS/JS (Web App)** — loaded dynamically inside a native **WebView** |
-| Client-side crypto | Native bindings for `libsignal` (mobile) / WASM bindings (desktop) |
+| Hub UI | **HTML/CSS/TypeScript web app** (Vite), served by the `web` service from its asset bundle and opened in a browser |
+| Shell / Core | **Envisioned.** **Native (SwiftUI / Jetpack Compose / Tauri)** — embedding the substrate for robust background execution |
+| Mini-App UI | **HTML/CSS/JS (Web App)**. **Envisioned.** Loaded dynamically inside a native **WebView** |
+| Client-side crypto | Built: browser WebCrypto (P-256 ECDH, Ed25519 verify) for the WebRTC end-to-end handshake. **Envisioned.** Native bindings (mobile) / WASM bindings (desktop) |
+
+> **Envisioned.** Not built yet. The native shell and the WebView host do not exist. `apps/` has only `roymctl`. The Hub is a web app that the browser opens today. Messaging crypto runs on the substrate.
 
 ### Developer Toolchain
 
 | Tool | Purpose |
 |---|---|
-| `cargo` + `cargo-component` | Build Rust → WASM components |
-| `wit-bindgen` CLI | Generate host/guest bindings from WIT |
-| `wasm-tools` | Component inspection, composition, adapter linking |
-| `podman-compose` | Local multi-service development |
-| `otelcol` | Local observability stack |
-| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK and secrets, the App Supervisor, registry entries and Roym backups |
+| Rust `stable` and `nightly-2026-04-06` | `stable` builds and tests. The pinned nightly runs `rustfmt` |
+| `cargo` + `cargo-component` 0.21 | Build Rust → WASM components |
+| `wit-bindgen` crate (0.57) | The macro generates host/guest bindings from WIT at build time. No `wit-bindgen` CLI is installed. The `test-components` guests pin 0.55.0 |
+| `wasm-tools` | Installed by `mise`. Optional, for inspecting components |
+| `deploy/docker-compose.community.yml` | Deploys the substrate image for a community node. It is not a local multi-service development stack |
+| `cargo-nextest` | Test runner for the workspace suite |
+| `cargo-audit`, `cargo-deny` | Known-vulnerability and licence checks |
+| `cargo-llvm-cov` | Coverage |
+| `cargo-dupes` 0.2.1 | Duplicate-code detector behind the duplication check |
+| `cargo-sweep` | Prune stale `target/` artifacts |
+| Node 20 | Builds and tests the Hub UI and the end-to-end tests |
+| Playwright 1.60.0 (TypeScript 5.9.3) | WebRTC end-to-end tests in `crates/substrate/tests/e2e` |
+| Vite, Vitest | Build and test the Hub UI (`crates/roym_web/ui`) |
+| `mise run verify` (`cargo xtask verify`) | The completion gate: fmt, clippy, the xtask checks, nextest, doctests, audit, license check and the end-to-end tests |
+| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK and secrets, the App Supervisor, registry entries, sessions, aliases and short hashes, the substrate (`substrate`, alias `node`) and Roym backups |
+
+> **Envisioned.** Not built yet. `otelcol`, a local OpenTelemetry collector for a local observability stack. No tool list or collector configuration names it today.
 
 > **Envisioned.** Not built yet. If the replication design uses Litestream, the toolchain adds the `litestream` CLI for backup and restore testing.
 
