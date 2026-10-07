@@ -91,6 +91,8 @@ reports are archived. They win over the defaults in the audit reports.
 | Q-F2, Q-F3 (`listen/accept` and the transport interface) | A server-side `listen/accept` API is not a goal. But Iroh QUIC and WebRTC have an internal listen/accept equivalent. Use general wording. | Delete the `dial/listen/capabilities` interface text. Say: the node accepts inbound streams on each transport (Iroh QUIC, WebRTC) and hands them to the router. Say that callers connect, and services never accept connections themselves. |
 | Q-G1-1 (WAL mode) | Document what exists. Advanced tuning is Envisioned. | Remove "(and WAL)" claims. Say what the code does: one writer task per database, no WAL pragma set. Mark WAL and tuning as Envisioned. No code change. |
 | Q-B2, remaining parts | Keep the default. | Document only what the code does. Add one backlog row for the three handshake points (see below). |
+| `[PLT-DAP-nn]` ids in headings (2026-10-07) | Keep them. They are the mapping from requirements to architecture. Code does not cite them; the link is kept in the doc and in PRs. | No change to the ids in headings or bullet names. |
+| Requirements spec relay and bootstrap text (O10) | Not changed in the architecture round. The requirements spec is changed in a following round. | The deferred-backlog row stays open. No edit to `system-requirements-spec.md` in this change. |
 
 ## Deviations
 
