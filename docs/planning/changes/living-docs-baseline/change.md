@@ -70,6 +70,28 @@ See section 4 of [audit-architecture-layer2.md](audit-architecture-layer2.md).
 - [ ] Fix the wrong statements found by the audits in the other sections.
 - [ ] Write the end user guide.
 
+## Decisions
+
+Owner decisions from the architecture audit, kept here so they stay after the audit
+reports are archived. They win over the defaults in the audit reports.
+
+| Question | Decision | Effect on the fix commits |
+| --- | --- | --- |
+| Q-1 (Litestream) | Litestream stays an option we can consider. Do not remove it. | Do not collapse the "both options" text to Iroh WAL shipping. Keep both options open, as #291 left them. Fix only wrong statements (for example, a text that says Litestream is the chosen design when `[PLT-RED]` says otherwise). |
+| Q-2 (matching, reputation, payments) | These are Roym features. | Apply the default: Roym wording, keep Envisioned, drop from substrate diagrams. |
+| Q-C2, Q-C3 (order machine, component diagram) | Redraw and fix. | Apply the defaults: the real booking machine and the six Roym services. |
+| Q-C6 (gateway bind address) | A detail. The gateway binds `127.0.0.1` today. `0.0.0.0` is fine once access control is in place. The gateway may be used by all. | Do not state a fixed bind address as an architecture rule. Say that the bind address is configurable, and that access control decides who may call. The code (`0.0.0.0` at `crates/client_gateway/src/gateway.rs:184`) and the Roym spec (`127.0.0.1`) still differ: record this in the backlog, not in this doc. |
+| Q-B2 (router proof-of-possession and handshake gaps) | Fix the documentation. | Make the Identity and Security text say what the code does: the router checks the certificate chain, scope and revocation, and does not check that the caller holds the temporary key; the end-to-end handshake is one-sided and runs only when the caller sets `enc=ecdh-p256`. Mark the stronger behavior as Envisioned. Do not change code in this change. |
+| Q-F4 (SDK fallback to a second mechanism) | Maybe later. Envisioned. | Mark "try each path until one succeeds" as Envisioned. Add a row to the deferred backlog. No code change now. |
+| Q-A4 (aggregator) | An aggregator is like a SynOrg: a `directory` service (as in Roym `directory`). It aggregates provider data. It can federate with other aggregators and proxy queries to them. | Replace the "hosts-for" idea. Describe an aggregator as a directory-type SynOrg service. Say federation and query proxying between aggregators are Envisioned unless a report shows code. |
+| Q-B1 (government identity tier) | Envisioned. | Keep, marked Envisioned, as in the default. |
+| Q-B3 (reputation design) | Not frozen. It will be frozen later. Today there are only principles: decentralized, reliable, transparent, and under the owner's control of what is shared. | Do not choose between the Layer 3 design and `[P2P-REP]`. Write the principles. Mark both designs as candidates, Envisioned and not final. |
+| Q-B4 (discovery design) | Discovery is what Roym `directory` does today (see `docs/roym-integrated-experience-spec.md`). Clients, SynOrgs, directories and aggregators each choose what they query. | Describe this model as the main design. Leaf shards and tag routing become Envisioned options, not the plan. |
+| Q-D4 (Isolation diagram edge `APP1 <-> APP3`) | The edge shows that apps may talk to each other. | Keep the edge. Relabel it as cross-app communication through the platform, and say it is subject to access control. Still fix the shared `DB2`: databases are per service. |
+| Q-F2, Q-F3 (`listen/accept` and the transport interface) | A server-side `listen/accept` API is not a goal. But Iroh QUIC and WebRTC have an internal listen/accept equivalent. Use general wording. | Delete the `dial/listen/capabilities` interface text. Say: the node accepts inbound streams on each transport (Iroh QUIC, WebRTC) and hands them to the router. Say that callers connect, and services never accept connections themselves. |
+| Q-G1-1 (WAL mode) | Document what exists. Advanced tuning is Envisioned. | Remove "(and WAL)" claims. Say what the code does: one writer task per database, no WAL pragma set. Mark WAL and tuning as Envisioned. No code change. |
+| Q-B2, remaining parts | Keep the default. | Document only what the code does. Add one backlog row for the three handshake points (see below). |
+
 ## Deviations
 
 - The pilot report carries 61 claims for about 140 doc lines, which is more than the

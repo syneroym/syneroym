@@ -143,6 +143,8 @@ The owner answered all the ★ questions. These answers replace the defaults in 
 
 ### 2.1 Questions that need a user decision first
 
+Where section 2.0 has a decision for the same question, 2.0 wins.
+
 | # | Question | Default | Sources |
 | --- | --- | --- | --- |
 | Q-1 ★ | Remove Litestream from the four "both options" places and make Iroh WAL shipping the one planned design? Commit #291 marked the redundancy options as open, so this may reverse a choice. | Yes. Keep `[PLT-RED]` (O33). | L2-Q1, D-1, E-Q5, G1-Q3 |
