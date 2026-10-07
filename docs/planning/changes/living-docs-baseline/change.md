@@ -180,6 +180,16 @@ Architecture fix, commit 7 (Phase 1):
 - **Podman secret injection.** One copy only, in the Envisioned note of `[FND-SEC]`. `[FND-CFG]` points to it.
 - **Intro sentence of `[FND-SEC]`.** "Hardware-level" became "operating-system-level", because the code uses no hardware feature.
 
+Architecture fix, commit 8 (Phase 0):
+
+- **`[TOP-ROB]` rationale removed.** The text said "we do not build a connection cache because Iroh pools connections". The code does not support the reason: a proxied call and a forwarded stream each open a new QUIC connection, and the WebRTC bootstrap has its own locked cache. The "Discarded Alternative" bullet for the cache is gone. Connection reuse is now one Envisioned item with the choice left open. The heartbeat rationale stays, because the code has no heartbeat.
+- **`[TOP-ROB]` first bullet renamed.** "Idiomatic Iroh Connection Pooling" became "Connection Handling". No link points at the old name.
+- **`[TOP-ADR]` Sharded split.** The resolver code for sharding is built, but nothing can reach it from a manifest. So the sharded strategies sit in one Envisioned block with one line on what the resolver does. Rendezvous hashing, which keyed `Redundant` calls use, stays outside the block with the four-field formula.
+- **`[TOP-ADR]` and `[TOP-REG]` deletions.** The route cache, the connection-failure cache trigger, and the health, eligibility and lease fields were deleted. The code has none of them and no vision text asks for them (ADR-0021 removes the live registry).
+- **Rollback in `[TOP-DSC]`.** The text promised a rollback. ADR-0021 §5 decides against rollback of a stateful service, so I did not mark it Envisioned. I wrote that no code rolls back, and that the journal states `ROLLING_BACK` and `ROLLED_BACK` exist and are never written.
+- **Layer 2 wording not touched.** The Envisioned note under "One app on several hosts" says "no manifest field selects it". The manifest has a `sharding_strategy` field that nothing reads. The note is still right in meaning. It belongs to the Layer 2 commit.
+- **`[TOP-DSC]` provider discovery bullet.** I added a short bullet, "Finding Providers and Listings", that says discovery is what the Roym `directory` service does (decision Q-B4). It links to `[P2P-DSC]`.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
