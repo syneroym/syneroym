@@ -12,6 +12,6 @@ Stage 2 checks every row of [fix-new-claims.md](fix-new-claims.md) against the c
 | S4 | 11, 12 | 63 | accepted | c0bd83a8 | 63 rows: 58 CONFIRMED, 5 PARTLY; browser enc= only on WebSocket tunnel, not WebRTC data channel (11.21, 12.27); 2 findings spot-checked |
 | S5 | 13, 14, 15 | 63 | accepted | 58d399ce | 63 rows: 54 CONFIRMED, 8 PARTLY, 1 WRONG (14.28: vault entry name is member-APP_INSTANCE_ID#SERVICE-INDEX); 2 findings spot-checked |
 | S6 | 16, 17 | 63 | accepted | 0b6ace90 | 63 rows: 57 CONFIRMED, 1 CITE-OFF, 5 PARTLY; RECORD_TYPES table not used to verify (16.14); outbound node-to-node is Iroh only (16.21); 1 finding spot-checked |
-| S7 | 18, 19 | 52 | running | | |
-| S8 | 20 | 50 | not started | | |
+| S7 | 18, 19 | 52 | accepted | 17f5c541 | 52 rows: 46 CONFIRMED, 6 PARTLY; 18.3: consumer never checks revocation (with_revocations only in tests); 19.21: no command revokes a person's delegated key; finding spot-checked |
+| S8 | 20 | 50 | running | | |
 | S9 | 21, 22, 23, 24 | 57 | not started | | |
