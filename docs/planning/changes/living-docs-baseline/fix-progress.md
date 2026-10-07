@@ -30,3 +30,5 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 22 | System Layers Overview, Goals & Constraints, Executive Summary | done | ddc87e61 | 15 new claims; 1 deviation block; Mermaid not rendered (check at end); Glossary 'SYN-SUBSTRATE ... discovery' and Layer 2 diagram label outside this commit |
 | 23 | Top matter and Table of Contents | done | fe79a305 | 2 new claims; 0 deviations; TOC rebuilt; my own link check: 226 in-doc links, 0 broken |
 | 24 | Outside the doc (TERMINOLOGY, requirements spec, backlog) | running | | |
+
+Code `TODO(M5)` in crates/sandbox_wasm/src/engine/lifecycle.rs and the stale `webrtc` comment at Cargo.toml:110 need a separate small code PR.

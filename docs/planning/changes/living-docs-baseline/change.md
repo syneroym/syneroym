@@ -227,6 +227,13 @@ Architecture fix, commit 22 (System Layers Overview, Conceptual Entity Model, Go
 - **Layers diagram: Layer 2 and Layer 1 boxes.** "Key Management" became "Key Stores (KEK, DEK, vault)" because Layer 2 says there is no single key manager. I added the Connection Router (Layer 2) and the Browser Path (Layer 1). "Bootstrap Server" left the diagram and is named in the Envisioned note.
 - **Vertical names.** The Executive Summary uses "Professional Services Guild (home services first)" and "Local Producer-Distributor Mesh", the names in `docs/TERMINOLOGY.md` and in Layer 4, in place of "Home Services Guild" and "Food & Small Retailer Mesh".
 
+Architecture fix, commit 24 (outside the architecture doc):
+
+- **Requirements spec relay and bootstrap (O10): not changed.** The overlaps report only says "fix both together" and "record it as a follow-up". It does not say which words to change. The spec's Relay, Bootstrap and Bootstrap Server text (`docs/system-requirements-spec.md` lines 171, 177, 192, 589-603, 632-648, and the HOME_RELAY entity diagram) describes a design that is not built. Open question for the owner: should the spec mark that text Envisioned, or should it stay as the target requirement? I added a backlog row (section 7) and made no spec edit.
+- **TERMINOLOGY.md "Controller" entry (O64): kept.** The entry is correct. A Controller is the owning principal, and the architecture doc now uses the word the same way (node ownership). The part that was wrong was the App Supervisor entry: it said the supervisor has no service-facing directory interface. It has a `resolve` verb. I fixed that entry only.
+- **Backlog rows that already existed.** Q-D8 (`MemoryRecorder`), Q-B2 (proof of possession, handshake), Q-F4 (SDK mechanism fallback) and Q-C6 (gateway bind address) already had rows. I added none for them. The `TODO(M5)` marker already had a row in "Open in-code markers"; I only corrected its line number (116 to 122).
+- **Links.** The only broken link was the old `heteregenous` anchor in the backlog (fixed). The links to `#layer-3--shared-substrate-utilities` and `system-requirements-spec.md#post-dd864a1-target-specifications-addendum` resolve (the second is an explicit anchor in the spec).
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
