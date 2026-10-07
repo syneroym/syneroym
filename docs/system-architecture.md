@@ -2269,19 +2269,33 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 ## Phase 5: Peer-to-Peer Community Primitives
 
 ### [P2P-DSC] Tag-Routed Discovery Routing Mechanics
+
+**Built today.** Discovery is what the Roym `directory` service does. A SynOrg runs a `directory` service. Providers publish listings to it. Any caller can ask it to search by category, area, text and filters, because `directory.search` is open on the wire. A consumer's node keeps a list of directories that the person chose, at most 8. It sends the query to each of them directly. It runs at most 3 calls at once, gives each call 2 seconds, and merges the answers round-robin, so no one directory fills the page. The consumer's node verifies every listing itself and does not trust the directory's word. Each client, SynOrg, directory or aggregator chooses which directories it queries. No node forwards a query for another node. See [Search](roym-integrated-experience-spec.md#search) in the Roym spec.
+
+> **Envisioned.** Not built yet. No query carries tags or a hop limit (TTL), and no node forwards a query to its peers. The tag routing below is one option for later. It is not the plan. The leaf index shards in [Discovery & Matching](#discovery--matching) are another option.
+
+**Design Approach (one option):**
 *   **Routing Execution:** Discovery intents are formatted as standard RPC messages containing a payload and a set of `Hierarchical Tags` (e.g., `["community", "tech", "rust-devs"]`). When a node receives an intent, it checks its local registries. If a match is found, it returns the explicit ID.
 *   **Query Forwarding & Hop-Limits:** If no local match exists, the node evaluates its active connections for peers that match the requested hierarchical tags. It forwards the intent to those peers. To prevent infinite loops and network flooding, every intent includes a strict `Time-To-Live (TTL)` counter that decrements on each hop.
 *   **Aggregator Integration:** If a node configures a known Aggregator as a "super-peer", it simply maps a broad hierarchical tag (like `["global"]`) to that Aggregator's explicit ID, naturally routing unmatched queries to the heavy index without requiring custom substrate logic.
 
 ### [P2P-REP] Satisfaction Signal Mechanics
+
+**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today. Reputation is decentralized, reliable and transparent. The owner controls what is shared.
+
+**Built today.** Roym computes no rating or score. It keeps two kinds of signed receipt for a booking: the agreement receipt and the fulfilment receipt. Each party signs its own copy. Neither copy refers to the other, and no signature depends on the other one. A receipt is complete when a copy from each party exists. The record id of each receipt is a content digest.
+
+> **Envisioned.** Not built yet. No satisfaction signal, score, moving average or reputation log exists. The design below is a candidate. The one record signed by both parties, with vouching, in [Trust & Reputation](#trust--reputation) is another candidate. Neither is final.
+
+**Design Approach (candidate, not final):**
 *   **Signal Payload Structure:** A valid satisfaction signal consists of:
-    *   `interaction_receipt`: A cryptographic hash pointing to a mutually signed entry in the local Dynamic Ledger.
+    *   `interaction_receipt`: A cryptographic hash pointing to a receipt that both parties signed, each in its own copy (see Independent, Owned Attestation below).
     *   `score`: An integer strictly bounded to `0`, `1`, or `2`.
     *   `note`: An optional, short text description.
-*   **Time-Decay Algorithm:** The substrate maintains a rolling Exponential Moving Average (EMA). The formula anchors to `1.0`. As signals age past defined thresholds (e.g., 30 days, 90 days), their weight in the EMA computation approaches 0, pulling the provider's overall score back to `1.0`.
-*   **Incremental Rolling Summaries:** Instead of recalculating summaries from scratch, the substrate triggers a background task upon receiving a new signal. It updates simple counters (e.g., `total_ratings`, `moving_average`) and maintains 3 small text fields (e.g., `summary_last_30_days`, `summary_all_time`). This bounded approach guarantees O(1) performance for reputation queries.
-*   **Independent, Owned Attestation:** Each party signs and stores its own copy of the `interaction_receipt` in its own single-writer ledger — never a jointly-written shared record. A signature reads as "I confirm this occurred, provided the other party's matching signature also exists." Validity is a read-time check that both independently-created, matching signatures exist — not a live signing ceremony or a merge.
-*   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's substrate serves its own single-writer reputation log — an append-only log of received signals, same as any other append-only entity — directly to A. Consumer A's substrate mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
+*   **Time-Decay Algorithm:** The app maintains a rolling Exponential Moving Average (EMA). The formula anchors to `1.0`. As signals age past defined thresholds (e.g., 30 days, 90 days), their weight in the EMA computation approaches 0, pulling the provider's overall score back to `1.0`.
+*   **Incremental Rolling Summaries:** Instead of recalculating summaries from scratch, the app triggers a background task upon receiving a new signal. It updates simple counters (e.g., `total_ratings`, `moving_average`) and maintains 3 small text fields (e.g., `summary_last_30_days`, `summary_all_time`). This bounded approach guarantees O(1) performance for reputation queries.
+*   **Independent, Owned Attestation:** Each party signs and stores its own copy of the `interaction_receipt` in its own single-writer ledger — never a jointly-written shared record. Each signature stands alone. A record is complete when both signatures exist. Validity is a read-time check that both independently-created, matching signatures exist — not a live signing ceremony or a merge.
+*   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's app serves its own single-writer reputation log — an append-only log of received signals, same as any other append-only entity — directly to A. Consumer A's app mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
 
 ## Phase 6: High-Level Applications (SynApps)
 
