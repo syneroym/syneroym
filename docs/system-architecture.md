@@ -577,9 +577,17 @@ flowchart TD
 
 ### Discovery & Matching
 
-**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves node/relay endpoints only — identity-to-route lookups, not catalog search.
+**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves node/relay endpoints only — identity-to-route lookups, not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
 
-**Catalog Matching:** Adapted from the [Distributed Matching Fabric](https://github.com/syneroym/foundation/blob/main/ideas/multi-surface-matching-fabric-ux.md#syneroym-distributed-matching-fabric). Providers publish signed Publications (listings, intents, capabilities). Indexes are distributed caches, never authoritative. Clients verify every result — signature, timestamp, expiry — before trusting it.
+**Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text and filters. Its answer is a list of candidates and is never a verified answer. Today a provider publishes only the `listing` record to a directory.
+
+The consumer's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry, the delegation window and the revocation status. A hit that fails the check is kept apart from the others. Each client, SynOrg, directory and aggregator chooses what it queries. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
+
+**Ranking today:** each directory sorts its matching listings by the time of issue of the signed record, newest first. Ties go by `listing_id`. The consumer's node merges the answers of the directories in turn, so no one directory fills the page. No score is computed.
+
+> **Envisioned.** Not built yet. Today a consumer asks the directories that it was given. No routing schema places a listing, no index has shards, and no hit carries a score or an ad boost. The design below is one option for later. It is not the plan. Tag-routed discovery ([P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics)) is another option.
+
+**Distributed matching (one option):** providers publish signed Publications (listings, intents, capabilities). Today only the `listing` record exists. Indexes are caches and are never authoritative. Clients verify every result — signature, timestamp, expiry — before trusting it.
 
 ```mermaid
 flowchart TD
@@ -604,28 +612,30 @@ flowchart TD
 
 **Placement:** a protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication deterministically onto leaf index shards. Providers compute their own placement; no coordinator needed.
 
-**Ranking:** transparent weighted formula (keyword relevance, geo proximity, reputation, ad-boost, recency). Weights are published open-source; ad-boost is capped at 0.3.
+**Ranking:** transparent weighted formula (keyword relevance, geo proximity, reputation, ad-boost, recency). The weights are published open source. The ad-boost has a cap, and row 15 of the [Resolved Architecture TBD Items](#resolved-architecture-tbd-items) gives its value. There is no auction at first (row 17). The reputation signal depends on the reputation design, which is not frozen: see [Trust & Reputation](#trust--reputation). This formula orders the answer to one query. Suggesting items with no query is a separate design: see [Recommendation Algorithm](#recommendation-algorithm).
 
-**M8 ships:** Publications, one or two routing dimensions (spatial + category), flat leaf-shard lookup, client-side verification — enough for real cross-cluster federation.
+**Smallest version of this option:** Publications, one or two routing dimensions (spatial + category), flat leaf-shard lookup, client-side verification — enough for cross-cluster federation.
 
-**Additive, later:** a hierarchical synopsis tree and query planner (worth it only once leaf-shard count makes fan-out expensive), composite routing descriptors, cross-shard ranking, adaptive fan-out. None of these require reworking the Publication format or placement contract once M8 ships it.
+**Additive, later:** a hierarchical synopsis tree and query planner (worth it only once leaf-shard count makes fan-out expensive), composite routing descriptors, cross-shard ranking, adaptive fan-out. None of these require reworking the Publication format or placement contract once the smallest version exists.
 
 ### Messaging
+
+Messaging is a substrate capability (`syneroym:conversation`, host crate `syneroym-conversation`). The host owns the history of each conversation: the encrypted log, the outbox, delivery, ordering, search, deletion and export ([ADR-0025](decisions/0025-conversation-capability-owns-history.md)). For each incoming message, the host asks the Roym `conversation` service to accept, hold or drop it.
 
 ```mermaid
 flowchart TD
     subgraph MSG_TYPES["Message Types"]
         direction LR
         M1[1-to-1 Chat X3DH + Double Ratchet]
-        M2[Group Chat / Threads MLS RFC 9420]
-        M3[Structured Service Msgs e.g. booking request]
-        M4[Collaborative Editing (optional, later)]
+        M2[Group Chat owner-distributed epoch key]
+        M3["Cards: signed records, e.g. a booking request"]
+        M4["Collaborative editing (Envisioned)"]
     end
 
     subgraph E2E["1-to-1 E2E Encryption"]
         direction LR
-        S[Sender] -->|"1. fetch receiver prekey bundle"| DHT2[DHT / Identity Doc]
-        DHT2 -->|"2. X3DH key agreement"| X3DH[Shared Secret]
+        S[Sender] -->|"1. fetch receiver prekey bundle"| PEERSVC[Peer's conversation service]
+        PEERSVC -->|"2. X3DH key agreement"| X3DH[Shared Secret]
         X3DH -->|"3. init Double Ratchet"| DR[Ratchet State]
         DR -->|"4. encrypt message"| ENV[Signed Envelope]
         ENV -->|"5. route via Iroh"| R_NODE[Relay / Direct]
@@ -633,15 +643,51 @@ flowchart TD
     end
 
     subgraph STORAGE_MSG["Message Storage"]
-        CR[SQLite append-only message log]
+        CR["SQLite store: group entries append-only"]
         CR -->|"offline: outbox queue locally"| Q2[Offline Outbox Queue]
         Q2 -->|"on reconnect: replay & retry"| PEER[Peer substrate]
     end
 ```
 
-**Libraries:** `libsignal-protocol-rust` for X3DH + Double Ratchet; `openmls` (Rust) for MLS group messaging.
+> **Envisioned.** Not built yet. Message threads and collaborative editing (box M4). The conversation code has neither.
+
+**Libraries:** `vodozemac` for X3DH + Double Ratchet in 1-to-1 chat. Group chat uses one AES-256-GCM key for each epoch, which the group owner makes and distributes, and Ed25519 signatures on every entry. No `libsignal-protocol-rust` and no `openmls` is used. ADR-0013 Amendment 1 replaced MLS with the owner-distributed key ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). The key agreement sits behind one interface, so the DAG, the ordering and the storage do not depend on it.
+
+The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` until the peer is reachable. Delivery has three states: `pending`, `delivered` and `failed`.
+
+**Group chat controls:**
+- Only the owner of a group changes its members, and it can hold at most 256 members by default.
+- Each join and each removal starts a new epoch with a new random key. The owner sends the key to each member in a message of content type `application/vnd.syneroym.group-key+json`, inside the 1-to-1 encrypted session.
+- A membership change is also a signed entry of kind `membership` in the group log. It carries the new epoch and a hash of the member list, so every member sees it.
+- The owner also rekeys on a schedule. The default interval is 604 800 seconds (7 days), set by `conversation_group_rekey_secs`.
+- The owner makes the key, so the owner can read the group. A removed member cannot read entries of later epochs.
+
+**Safety rules (for messages):**
+- First contact is answered per message. The Roym `conversation` service asks the `profile` service, which applies the limit of the recipient on first contacts from one sender. The default is 3 in 24 hours. The recipient can change the window (60 seconds to 30 days) and the count (0 to 1000), and 0 means no first contact at all.
+- A message that is over the limit is dropped, and so is a message from a blocked sender. A message of a group that the person has not shown is held.
+- The block list and the reports are kept by the `profile` service.
+- The limit on listings that one publisher may send to a directory has the same form. The default is 20 in 24 hours.
+
+**Data lifecycle:**
+- Deleting a message empties its body, keeps the row with a deletion time and removes it from the search index. The store sets `secure_delete`, and a later scrub step removes the deleted text from the database files.
+- Deleting asks the other side to delete too. The request is a message of content type `application/vnd.roym.deletion-request+json`. A receiving store deletes its copy only when the request comes from the author of that message, in the same conversation. This is not cryptographic erasure. In a group, every member already holds the epoch key.
+- A group keeps its encrypted log entries and its keys on the node.
+- Search is full-text (SQLite FTS5) over accepted text messages that are not deleted.
+- The history is exported and imported in pages, and the Roym backup archive carries it (see Backup and Restore in [Layer 2](#layer-2--substrate-runtime)).
 
 ### Trust & Reputation
+
+**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today. Reputation is decentralized, reliable and transparent. The owner controls what is shared. Reputation is a Roym feature, not a substrate component.
+
+**Built today.** Roym computes no rating, score or vouch. These parts exist:
+
+- **Signed receipts.** A booking has two receipts, the agreement receipt and the fulfilment receipt. Each party signs its own copy, and the two copies are separate records. [P2P-REP](#p2p-rep-satisfaction-signal-mechanics) says more.
+- **SynOrg standing.** The owner of a SynOrg signs three kinds of record about a member: a `membership-credential` (it names the categories and the areas that it covers, and lasts at most two years), a `revocation` that withdraws a credential, and a `moderation-decision` (`member.suspend` and `member.lift`). These are Roym records, not W3C Verifiable Credentials. A directory returns a listing only when its publisher has a valid membership. A consumer's node judges the same evidence itself, against the group that it pinned for that directory. The pin is set when the node first learns which group the directory speaks for, and a later reply does not change it. A decision of the group reaches copies that other people hold only when they next check, and the Hub says so. The verbs that issue a credential or a revocation, or suspend or lift a member, are local only. `directory.standing` answers any caller.
+- **Rate limits.** The limits on first contact and on publication are described in [Messaging](#messaging).
+- **Block list.** A person keeps a local block list in the `profile` service.
+- **Moving history.** The nearest to portable history is the Roym backup archive, with a signed manifest.
+
+> **Envisioned.** Not built yet. No vouch, `ReputationRecord`, rating or score exists. The design below is a candidate. The independent halves and the moving average in [P2P-REP](#p2p-rep-satisfaction-signal-mechanics) are another candidate. Neither is final. Of the five layers below, only layer 1 is built, and layers 3 and 5 are built in part (see SynOrg standing above).
 
 **Reputation:** Replaces global average ratings with network-gated trust signals and transactional proofs.
 
@@ -703,7 +749,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 4. **Community moderation override:** Aggregator block lists can zero out reputation from known Sybil clusters
 
 **Anti-gaming (discovery ranking):**
-- Ad boost is capped at `w4_max = 0.3` of total score — organic signals always dominate
+- Ad boost is capped, so organic signals always dominate (row 15 of the [Resolved Architecture TBD Items](#resolved-architecture-tbd-items) gives the cap)
 - Keyword stuffing is mitigated by TF-IDF scoring on index entries (raw keyword count is not used)
 - Review bombing detection: reputation score uses a Bayesian average with a prior of 3.5/5.0 and minimum 5 reviews before score is published
 
@@ -711,7 +757,11 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 ### Payments
 
-**Payment Strategy (MVP):** MVP focuses on redirection to external payment flows (e.g., UPI deep links) or out-of-band settlement. Verification is offline-delayed. Fully integrated payment gateways are sequenced in later, to minimize centralized dependencies initially.
+Payment handling is a Roym feature, not a substrate component. See [Flexible Payment Integration](#3-flexible-payment-integration) in Phase 6.
+
+**Built today.** Payment is out of band by design. Roym does not process a payment, hold money or check a payment. It records what each side says. The provider signs a `payment-request` record. Either party signs a `payment-acknowledgement` record that says a payment happened. The acknowledgement is the word of its issuer, and Roym does not see the money move. The Hub shows a notice that says so. The payee text of a card is a link only when it uses `http` or `https`. Any other scheme, such as a UPI link, shows as plain text.
+
+> **Envisioned.** Not built yet. No payment gateway, `PaymentIntent` interface, adapter, mutual credit or coin code exists. The design below is the direction: redirection to external payment flows (for example UPI deep links), and later fully integrated gateways, to keep central dependencies few at the start. Today nothing verifies a payment.
 
 **Payment rails and credit/coin direction**
 
@@ -734,9 +784,9 @@ flowchart TD
     PAY_ABSTRACT --> ADAPTERS
 ```
 
-Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow & Dispute Resolution](#6-decentralized-escrow--dispute-resolution) in Phase 6.
+Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow & Dispute Resolution](#6-decentralized-escrow--dispute-resolution).
 
-**Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency is required. Each credit line is a signed ledger between two parties; the substrate mediates settlement. Regulatory classification varies by jurisdiction.
+**Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency is required. Each credit line is a signed ledger between two parties; Roym mediates settlement. Regulatory classification varies by jurisdiction.
 
 **Syneroym Coin (layers onto the same abstraction; legal review required before launch):** Internal ledger token (not a cryptocurrency or blockchain-based token) managed by a community governance multi-sig. Used for ecosystem incentives and cross-aggregator settlement.
 
