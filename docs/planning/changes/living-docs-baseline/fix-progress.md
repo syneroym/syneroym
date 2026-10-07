@@ -11,8 +11,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 3 | Phase 5 | done | 1bd7c14f | 8 new claims; no deviations; Layer 3 reputation wording to match in commit 18 |
 | 4 | Phase 4 | done | 61297192 | 12 new claims; 4 deviations; Messaging section still has substrate.db and M3B/M7 (commit 6) |
 | 5 | Phase 3 | done | 9409143d | 19 new claims; 7 deviations (also fixed G2-004,018,021,023,032); TODO(M5) left for commit 24 |
-| 6 | Phase 2 | running | | |
-| 7 | Phase 1 | not started | | |
+| 6 | Phase 2 | done | 13dc269b, 79172637 | 31 new claims; 9 deviations; follow-up restored substrate.db name; [ADV-OBS] line still says "state databases" (commit 4 wording); owner call: drop [PLT-DAP-nn] ids? |
+| 7 | Phase 1 | running | | |
 | 8 | Phase 0 | not started | | |
 | 9 | Addendum heading and intro | not started | | |
 | 10 | Connectivity Substrate | not started | | |
