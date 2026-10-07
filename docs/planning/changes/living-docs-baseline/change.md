@@ -170,6 +170,16 @@ Architecture fix, commit 6 (Phase 2):
 - **WAL (Q-G1-1).** No code change. The text says the data layer sets no WAL pragma on `state.db`. WAL mode and tuning are in the Envisioned block.
 - **Aggregation over views (G1-090).** The WIT file says aggregation targets physical collections only and views are deferred, so the text says that.
 
+Architecture fix, commit 7 (Phase 1):
+
+- **Schema validation of configuration (audit G1-050 was wrong).** The audit says no schema validation exists. The code validates `custom_config` against a manifest `schema` when one is declared (`crates/control_plane/src/service/orchestration/deploy/manifest.rs:36-65`), and the deploy fails on a violation. The text now says this. "Fully resolved" became the real step: flattening to text keys.
+- **Optimizations moved, not deleted.** "Lookahead Optimization" (Join Tree Collapse) and "Global Logic Short-Circuiting" are not built, and the audit proposes to delete the second. They are optimization ideas, so I kept both under one Envisioned marker at the end of `[FND-IAM]`. I replaced the "SQL Generation" text with the real emit rule.
+- **Q-B2.** A new "Caller Identity at the Router" bullet says what the router checks and that it does not check that the caller holds the temporary key. Proof of possession is Envisioned. The three other handshake points (unsigned client key in the end-to-end handshake, no key derivation step, two meanings of `pubkey`) belong to Security Architecture and are not in this section.
+- **Key scope wording.** "Per-SynApp-Instance KEK" is kept. The code derives the key per `service_id`, and ADR-0006 says `service_id` is the app-instance id.
+- **Config rule moved.** "Long-running tasks follow the `[PLT-ASY]` restart or compensation rules" now sits in the Envisioned note of `[FND-CFG]`, because the restart rules are Envisioned in `[PLT-ASY]`.
+- **Podman secret injection.** One copy only, in the Envisioned note of `[FND-SEC]`. `[FND-CFG]` points to it.
+- **Intro sentence of `[FND-SEC]`.** "Hardware-level" became "operating-system-level", because the code uses no hardware feature.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
