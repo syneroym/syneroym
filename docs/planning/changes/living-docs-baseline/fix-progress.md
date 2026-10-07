@@ -24,8 +24,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 16 | Consumer Experience; Federation Architecture | done | 739ba9c8 | 25 new claims; 0 deviations |
 | 17 | Layer 4 | done | caa8868e | 38 new claims; 3 deviation entries (heading renames, Cards subsection, Mesh heading); Spaces remains in Exec Summary and Layers diagram (commit 22); Layer 2 SlotTaken vs wire slot-taken (commit 20); negative claims (no push, no review record) for stage 2 to repeat |
 | 18 | Layer 3 (second heading) | done | 5631a56f | 27 new claims; 0 deviations; rerun after rate limit (first attempt left no edits); other stores (conversation, queues, supervisor) do set WAL, the doc scopes 'no WAL pragma' to state.db; undeploy data lifecycle left unsaid (unverified) |
-| 19 | Layer 3 (first heading), merge headings | running | | |
-| 20 | Layer 2 leftovers | not started | | |
+| 19 | Layer 3 (first heading), merge headings | done | e8e8b8d1 | 25 new claims; 1 deviation block; Layer 3 headings merged; revoke_list_registry is read nowhere (negative search for stage 2); Layer 2 'Stream identity' text for commit 20 |
+| 20 | Layer 2 leftovers | running | | |
 | 21 | Layer 1 | not started | | |
 | 22 | System Layers Overview, Goals & Constraints, Executive Summary | not started | | |
 | 23 | Top matter and Table of Contents | not started | | |
