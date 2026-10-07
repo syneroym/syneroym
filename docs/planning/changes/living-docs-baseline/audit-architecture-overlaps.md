@@ -120,6 +120,19 @@ Notes that apply to everything:
 
 A star marks a question that needs a user decision before you edit. The default changes the product, deletes a vision item, or needs a code change. The rest are plain doc fixes: apply the default. "(backlog)" means the default also adds a row to `docs/planning/deferred-backlog.md`.
 
+### 2.0 Decisions received (2026-10-07)
+
+The owner answered six of the ★ questions. These answers replace the defaults in 2.1 for the same questions. The other ★ questions are still open: their defaults stand but are not confirmed.
+
+| Question | Decision | Effect on the fix commits |
+| --- | --- | --- |
+| Q-1 (Litestream) | Litestream stays an option we can consider. Do not remove it. | Do not collapse the "both options" text to Iroh WAL shipping. Keep both options open, as #291 left them. Fix only wrong statements (for example, a text that says Litestream is the chosen design when `[PLT-RED]` says otherwise). |
+| Q-2 (matching, reputation, payments) | These are Roym features. | Apply the default: Roym wording, keep Envisioned, drop from substrate diagrams. |
+| Q-C2, Q-C3 (order machine, component diagram) | Redraw and fix. | Apply the defaults: the real booking machine and the six Roym services. |
+| Q-C6 (gateway bind address) | A detail. The gateway binds `127.0.0.1` today. `0.0.0.0` is fine once access control is in place. The gateway may be used by all. | Do not state a fixed bind address as an architecture rule. Say that the bind address is configurable, and that access control decides who may call. The code (`0.0.0.0` at `crates/client_gateway/src/gateway.rs:184`) and the Roym spec (`127.0.0.1`) still differ: record this in the backlog, not in this doc. |
+| Q-B2 (router proof-of-possession and handshake gaps) | Fix the documentation. | Make the Identity and Security text say what the code does: the router checks the certificate chain, scope and revocation, and does not check that the caller holds the temporary key; the end-to-end handshake is one-sided and runs only when the caller sets `enc=ecdh-p256`. Mark the stronger behavior as Envisioned. Do not change code in this change. |
+| Q-F4 (SDK fallback to a second mechanism) | Maybe later. Envisioned. | Mark "try each path until one succeeds" as Envisioned. Add a row to the deferred backlog. No code change now. |
+
 ### 2.1 Questions that need a user decision first
 
 | # | Question | Default | Sources |
