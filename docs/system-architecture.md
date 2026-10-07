@@ -2205,14 +2205,18 @@ To avoid rigid (and brittle) version matching across a decentralized network, Su
 
 ### [ADV-OBS] Observability enhancements
 
+**Built today.** Components count requests and errors through the `metrics` facade. A lock-based in-memory recorder holds the counters, gauges and histograms. The substrate can serve a JSON snapshot of the recorder over HTTP when the metrics endpoint is enabled. The `ObservabilityEngine` sets up logging, installs the recorder and samples system use once a second. See [Observability Architecture](#observability-architecture) for the other design, which also keeps metrics in memory by default.
+
+> **Envisioned.** Not built yet. No `metrics.db`, no channel pipeline, no byte counters per stream and no metrics RPC exist. This design and the Observability Architecture section disagree on where metrics are kept (a SQLite file here, memory there). Neither is built. The design below calls its background task the `Metrics Pipeline` so it does not clash with the built `ObservabilityEngine`.
+
 #### 1. Observability Pipeline & Non-Blocking Emission
 To prevent observability from adding latency to the hot paths (WASM execution and Iroh/WebRTC network routing), the metrics pipeline relies on an asynchronous, decoupled architecture:
-*   **Event Emitters**: The core components (Router, WASM runtime, and Gateway) emit raw metrics as lightweight data structs.
-*   **MPSC Channels**: These structs are sent over non-blocking `tokio::sync::mpsc` channels to a dedicated, low-priority `Observability Engine` background task running within the Substrate.
+*   **Event Emitters**: The core components (Router, WASM runtime, and Gateway) emit raw metrics as lightweight data structs. Today the Router and the WASM runtime emit counters and gauges through the `metrics` facade, and the Gateway emits none.
+*   **MPSC Channels**: These structs are sent over non-blocking `tokio::sync::mpsc` channels to a dedicated, low-priority `Metrics Pipeline` background task running within the Substrate.
 *   **Buffering**: The channel buffers smooth out high-throughput spikes, preventing hot-path execution delays even during heavy load.
 
 #### 2. Dedicated Time-Series Storage (metrics.db)
-Observability data is high-volume and append-heavy. To prevent these operations from contending with the critical operational state of the network (`substrate.db`), metrics are directed to a dedicated embedded database:
+Observability data is high-volume and append-heavy. To prevent these operations from contending with the critical operational state of the node (its state databases), metrics are directed to a dedicated embedded database:
 *   **File Isolation**: A separate `metrics.db` SQLite database is maintained.
 *   **Rollup Engine (Cron Task)**: A background Tokio cron task wakes up periodically (e.g., every 5 minutes) to perform aggregations. It selects raw events older than a certain threshold, aggregates them into 1-hour buckets, inserts the buckets into a `metrics_1h` table, and prunes the raw events to reclaim space.
 *   **Extensible Schema**: The tables (`metrics_raw`, `metrics_1h`) feature an extensible JSON or BLOB column (`metadata`) to dynamically accommodate new attributes like AI/LLM token usage, GPU execution metrics, and future billing parameters ("agreed rates") without requiring strict schema migrations.
@@ -2221,15 +2225,17 @@ Observability data is high-volume and append-heavy. To prevent these operations 
 For multi-hop scenarios and standard data routing, measuring data transfer is crucial:
 *   **Stream Counting**: The routing proxy layer maintains byte counters (`bytes_tx`, `bytes_rx`) for every active stream.
 *   **Identity Tagging**: These counters are strongly associated with the authenticated Peer IDs (DIDs) of the connection.
-*   **Periodic Flush**: Counts are flushed to the `Observability Engine` when a stream closes or at set intervals for long-lived streams. Cryptographic receipts are intentionally excluded in this phase to maintain simplicity; logging the attested counts provides sufficient baseline trust for standard metering.
+*   **Periodic Flush**: Counts are flushed to the `Metrics Pipeline` when a stream closes or at set intervals for long-lived streams. Cryptographic receipts are intentionally excluded in this phase to maintain simplicity; logging the attested counts provides sufficient baseline trust for standard metering.
 
 #### 4. Authorized Access
-Accessing the `metrics.db` is securely gatekept by the unified `authorization-engine` via standard RPC endpoints:
+Accessing the `metrics.db` is securely gatekept by the unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md)) via standard RPC endpoints:
 *   **Root Capabilities**: The Substrate owner uses an administrative UCAN, resulting in queries running without restrictions against `metrics.db`.
 *   **Scoped Capabilities**: SynApp/SynSvc owners invoking the metrics RPC present a UCAN bound to their identity. The engine transparently injects a `WHERE service_owner_did = ?` clause into the underlying SQL query.
-*   **Data Consumption**: The Substrate does not host its own visualizations. Instead, the metric data is consumed by standalone SynApps or dedicated BI tools acting as external clients.
+*   **Data Consumption**: The Metrics Pipeline does not host its own visualizations. (The small provider status page in [Observability Architecture](#observability-architecture) is a separate design.) Instead, the metric data is consumed by standalone SynApps or dedicated BI tools acting as external clients.
 
 ### [ADV-AI] Advanced AI & Agentic Workflows
+
+> **Envisioned.** Not built yet. No inference wrapper, agent service, `rig-core` dependency or vector store exists. The Universal Proxy that the design relies on does exist ([Universal Proxy](#3-universal-proxy-inter-component-rpc)). The Roym product has no AI assistant.
 
 *   **Local Inference Engine Wrapper (Ollama / Candle):**
     *   **Design:** The substrate provides a lightweight wrapper service that orchestrates the underlying AI engine (e.g., **Ollama** as a managed process). This wrapper is responsible for ordering the AI engine to download/install base models (strictly gated by a node-operator-defined allow-list to prevent bandwidth/storage exhaustion) and transparently proxying inference calls from agents to the correct model combination. Alternatively, for tighter integration without external daemons, HuggingFace's **Candle** framework could be embedded directly into a Rust host extension for in-process inference of GGUF models.
@@ -2260,9 +2266,16 @@ Accessing the `metrics.db` is securely gatekept by the unified `authorization-en
 ### [ADV-DEV] SynApp Developer Tooling & SDKs
 
 *   **Transparent Developer Experience Design:**
-    *   **Architecture:** Avoid introducing custom opaque CLI wrappers for compilation. Instead, the ecosystem relies on `cargo-component` and standard `build.rs` to compile `wasm32-wasip2` targets. This design guarantees that `rust-analyzer` and AI IDEs continue to work perfectly, as they understand standard `Cargo.toml` dependencies and macros. We provide boilerplate generators like `cargo generate --git syneroym/synapp-template`.
+    *   **Architecture:** Avoid introducing custom opaque CLI wrappers for compilation. Instead, the ecosystem relies on `cargo-component` to compile `wasm32-wasip2` targets. This design guarantees that `rust-analyzer` and AI IDEs continue to work perfectly, as they understand standard `Cargo.toml` dependencies and macros.
 *   **Local Substrate Integration:**
-    *   **Architecture:** The core design philosophy is to use the actual Syneroym Substrate node for local development and end-to-end testing, rather than building a redundant "Dev Host" environment. Because SynApps are strictly decoupled from the Substrate via WASM WIT imports, no compile-time host integration is necessary. Developers simply deploy their compiled `.wasm` to a local `roymctl` instance for execution.
+    *   **Architecture:** The core design philosophy is to use the actual Syneroym Substrate node for local development and end-to-end testing, rather than building a redundant "Dev Host" environment. Because SynApps are decoupled from the Substrate via WASM WIT imports, the WASM build needs no compile-time host integration. Developers simply deploy their compiled `.wasm` to a local substrate with `roymctl app deploy`. WASM is the general path. Roym also has a second, native build: the same source tree links into the substrate behind the `roym` Cargo feature, through the `syneroym-app-host` traits and the in-process `syneroym-app-host-native` implementation.
+*   **Saga Primitive for Guests:**
+    *   **Architecture:** A guest service that drives a workflow across several services can record each step as a saga step. If the workflow fails, the substrate walks the steps backwards and calls the matching compensation ([ADR-0023](decisions/0023-durable-async-primitives.md)).
+
+> **Envisioned.** Not built yet. No `cargo generate` template repository and no `syneroym-dev-sdk` crate exist. Today the `test-components/` folder holds minimal example guests, and tests start the real substrate.
+
+*   **Project Template:**
+    *   **Architecture:** We provide boilerplate generators like `cargo generate --git syneroym/synapp-template`.
 *   **Pure Unit Testing Mocks (`syneroym-dev-sdk`):**
     *   **Architecture:** For fast, isolated unit testing, we provide a lightweight mock SDK. This library contains pure, in-memory implementations of the WIT interfaces (e.g., a `HashMap`-backed key-value store instead of real SQLite). It does not embed any complex host execution logic. Developers link these mocks in their test configuration, allowing them to verify their core WASM application logic instantly without spinning up a node.
 

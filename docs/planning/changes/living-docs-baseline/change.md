@@ -141,6 +141,13 @@ Architecture fix, commit 2 (Phase 7 and Phase 6):
 - **Wording kept.** The design text of items 1, 3, 4, 5 and 6 is unchanged, including "central coordinator", "Invoice Card" and "Aggregator". The language pass decides those. The "Adaptive Cards" comparison and the "Forms" widget were removed, because the code has neither.
 - **Phase headings.** "Phase 6" and "Phase 7" keep their names. The Part 3 decision on phase headings belongs to commit 9.
 
+Architecture fix, commit 4 (Phase 4):
+
+- **Where visuals live (O52, "Pick one").** Both designs are unbuilt. I kept both and removed the clash in wording: the `[ADV-OBS]` line now says the Metrics Pipeline hosts no dashboards, and points to the provider status page in Observability Architecture as a separate design. Commit 15 decides the final text of that page.
+- **Marker split in `[ADV-OBS]` and `[ADV-DEV]`.** Both blocks mix built and unbuilt text, so each has an unmarked "built" part and a separate Envisioned marker. `[ADV-AI]` has one marker under its heading (Q-G2-1).
+- **Renamed design name.** The planned background task is now `Metrics Pipeline`, so it does not clash with the built `ObservabilityEngine` (the audit left the new name open).
+- **`substrate.db` and `authorization-engine`.** I used the defaults from the audit: "the node's state databases" and "FDAE" with a link to ADR-0017. The messaging section still says `substrate.db`: it belongs to a later commit.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
