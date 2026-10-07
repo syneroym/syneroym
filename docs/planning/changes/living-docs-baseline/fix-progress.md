@@ -19,8 +19,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 11 | Consolidated Technology Stack | done | c2c04fbd | 31 new claims; 0 deviations; stale webrtc comment at Cargo.toml:110 is code (commit 24 note); libsignal/openmls remain in Layer 3 Messaging and Security diagram (commits 14, 18) |
 | 12 | Appendix: Multi-Hop Relay Walkthrough | done | f940e5e5 | 32 new claims; 0 deviations; Layer 1 Multi-Hop wording still for commit 21 |
 | 13 | Resolved Architecture TBD Items | done | e627ac9a | 11 new claims; 2 deviations; table rows describe target wording that Layer 3 (commit 18) and Layer 1 (commit 21) must match; heading rename left to commit 23 |
-| 14 | Security Architecture | running | | |
-| 15 | Observability Architecture | not started | | |
+| 14 | Security Architecture | done | 0863cf74 | 32 new claims; 0 deviations; handshake backlog row already exists (added in the audit PR), commit 24 must not duplicate it |
+| 15 | Observability Architecture | running | | |
 | 16 | Consumer Experience; Federation Architecture | not started | | |
 | 17 | Layer 4 | not started | | |
 | 18 | Layer 3 (second heading) | not started | | |
