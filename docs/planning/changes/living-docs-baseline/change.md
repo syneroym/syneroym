@@ -158,6 +158,18 @@ Architecture fix, commit 5 (Phase 3):
 - **Not done here.** The `TODO(M5)` in `crates/sandbox_wasm/src/engine/lifecycle.rs` stays for commit 24. The `websocket` route target of gap 23 belongs to Layer 2 (commit 20). The "Upgrade and versioning" paragraph for Layer 2 (gap 5) is also left to commit 20: `[LFC-VER]` now has the built facts.
 - **Replication wording.** "(Iroh WAL shipping) ... M7" became "replication is not built (see [PLT-RED])". Per the Litestream decision, no design is named as chosen.
 
+Architecture fix, commit 6 (Phase 2):
+
+- **Requirement ids kept.** `[PLT-DAP-01]` to `[PLT-DAP-06]` stay in the headings and the bullet names of `[PLT-DAT]` and `[PLT-RED]`. They are requirement ids of the requirements spec, like `[PLT-RED]`, and one heading link uses them. Part 3 of the overlaps report lists them as a rule break but also says "decide". The owner can still remove them.
+- **`substrate.db`.** The file exists (`crates/data_db/src/sqlite/provider.rs:71`) and holds `messaging_subscriptions`, so the old text was not wrong. I wrote "the node's state databases" as asked, to match commit 4.
+- **Lease-based scheduling deleted, not marked.** ADR-0023 section 6 replaced it, so it is not part of the vision. The text now describes the App Supervisor scheduler. The same holds for the "P2P Overlay over QUIC" paragraph: the code has one local broker with no overlay, and the log replication idea is kept in an Envisioned block.
+- **Moved text.** `[PLT-DAT]` part 1 has one Envisioned block at its end (logical data services, DuckDB, WAL mode and tuning, aggregation over views, structured data model, peer-to-peer blob replication). The original sentences moved there unchanged, so the built text above has no marker.
+- **Removed bullets in the Universal Proxy.** "Instance Routing" is now in the built paragraph (the host resolves a dependency name per call). "JSON-RPC Adapter" is deleted: JSON-RPC 2.0 is the one call surface, not an adapter.
+- **Interim security paragraph deleted.** The paragraph "does not currently require a delegation certificate" was wrong. The self-asserted public key caveat is left for Layer 2 "Access control" (commit 20). The `public` flag text stays in the HTTP bridge bullet.
+- **`[PLT-RED]` shape.** The built paragraph and the Control Plane vs Data Plane bullet come first. The rest is under one Envisioned marker. "Registry Service" became "App Supervisor" in the node states, fencing and promotion bullets (overlaps O59). The Iroh WAL shipping text is called one proposal, and Litestream stays an option (Q-1). No design is named as chosen.
+- **WAL (Q-G1-1).** No code change. The text says the data layer sets no WAL pragma on `state.db`. WAL mode and tuning are in the Envisioned block.
+- **Aggregation over views (G1-090).** The WIT file says aggregation targets physical collections only and views are deferred, so the text says that.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
