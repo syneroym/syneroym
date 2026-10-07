@@ -18,8 +18,8 @@ One row per fix commit. The order and scope come from section 4 of [audit-archit
 | 10 | Connectivity Substrate | done | a9623271 | 42 new claims; 0 deviations; code differs from audit CN-40 (two lookups) and CN-18 (addresses pruned) |
 | 11 | Consolidated Technology Stack | done | c2c04fbd | 31 new claims; 0 deviations; stale webrtc comment at Cargo.toml:110 is code (commit 24 note); libsignal/openmls remain in Layer 3 Messaging and Security diagram (commits 14, 18) |
 | 12 | Appendix: Multi-Hop Relay Walkthrough | done | f940e5e5 | 32 new claims; 0 deviations; Layer 1 Multi-Hop wording still for commit 21 |
-| 13 | Resolved Architecture TBD Items | running | | |
-| 14 | Security Architecture | not started | | |
+| 13 | Resolved Architecture TBD Items | done | e627ac9a | 11 new claims; 2 deviations; table rows describe target wording that Layer 3 (commit 18) and Layer 1 (commit 21) must match; heading rename left to commit 23 |
+| 14 | Security Architecture | running | | |
 | 15 | Observability Architecture | not started | | |
 | 16 | Consumer Experience; Federation Architecture | not started | | |
 | 17 | Layer 4 | not started | | |
