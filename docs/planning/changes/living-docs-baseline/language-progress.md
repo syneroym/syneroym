@@ -18,8 +18,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Layer 4 — SynApp Specifications | done | bb4994b9 | - |
 | Federation Architecture | done | 25c577b4 | - |
 | Consumer Experience Architecture | done | 496ba53c | - |
-| Observability Architecture | done | pending | - |
-| Security Architecture | not started | - | - |
+| Observability Architecture | done | 5a0aa221 | - |
+| Security Architecture | done | pending | - |
 | Resolved Architecture TBD Items | not started | - | - |
 | Appendix: Multi-Hop Relay Walkthrough | not started | - | - |
 | Consolidated Technology Stack | not started | - | - |

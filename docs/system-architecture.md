@@ -1571,7 +1571,7 @@ flowchart TD
 **Messaging encryption (boxes M1 to M3).** The conversation service holds the keys for each service. See [Layer 3 > Messaging](#messaging) for the feature.
 
 - **1-to-1 chat** uses the Olm protocol: a Double Ratchet with a triple Diffie-Hellman (3DH) key exchange. The `vodozemac` crate implements it. A service has a `vodozemac` account for the ratchet and a separate Ed25519 key for signing.
-- **Group chat** uses one AES-256-GCM key for each epoch. The group owner makes the key and distributes it, and starts a rekey on a schedule. Each group entry is signed by its author, and its body is sealed with the epoch key. The owner is a single point of trust for key distribution ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1).
+- **Group chat** uses one AES-256-GCM key for each epoch. The group owner makes the key, distributes it, and starts a rekey on a schedule. Each group entry is signed by its author, and its body is sealed with the epoch key. The owner is a single point of trust for key distribution ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1).
 - **Signed messages.** A 1-to-1 message is a `DeliveryPayload`. The sender signs it with its Ed25519 conversation key, and then the ratchet session encrypts it.
 - The code uses neither `libsignal` nor MLS (`openmls`). ADR-0013 Amendment 1 replaced MLS with the owner-distributed key.
 
@@ -1599,11 +1599,11 @@ This table lists each key, where it lives, what it is for, and what happens when
 | Master keys of managed app instances | The App Supervisor's own encrypted service vault. The entries are named `member-<app_instance_id>#<service_name>-<index>` and `app-<app_instance_id>`. | Are the master of each member service and of the app instance. No key leaves the supervisor in a response. | Restore them with `import-master` from the `export-master` backup. Import a member key before the first `submit`, and the app instance key before `adopt`. Without the backup, a new supervisor mints new master keys. |
 | Recovery key (32 bytes) | Shown to the person once. Syneroym never keeps a copy. The option `--recovery-key-out` of `roymctl identity export` and `roymctl roym backup create` writes it to a file that the person chooses. | Encrypts the identity backup and the Roym archive (HKDF-SHA256, then AES-256-GCM). | The backup cannot be opened. |
 
-**Certificate scopes.** A delegation certificate has one scope: `routing`, `session-auth`, `service-instance` or `record-signing`. The router accepts only `routing` and `service-instance` on a stream. A `record-signing` certificate is never accepted as a connection identity.
+**Certificate scopes.** A delegation certificate has one scope: `routing`, `session-auth`, `service-instance`, or `record-signing`. The router accepts only `routing` and `service-instance` on a stream. A `record-signing` certificate is never accepted as a connection identity.
 
 **The master anchor is a duty.** A master anchor is a signed record. It lists the temporary keys that the master revoked. A client that gets an anchor from the HTTP registry rejects it when it is older than 24 hours after its signing time. An anchor that comes from the DHT fallback is not checked for age today. The router rejects a stream that carries a delegation certificate when it cannot resolve a valid anchor of the master. When a registry URL is configured and the vault is unlocked, the App Supervisor republishes the anchor of each master it manages. The default interval is 12 hours. A person's master anchor is published with `roymctl identity publish-anchor`.
 
-**What the router checks about a caller.** When the preamble carries a delegation certificate, the router checks the signature, the validity window and the scope of the certificate, that its temporary key is the key in the preamble, and that the master has not revoked that key. It does not check that the caller holds the private part of the temporary key: the preamble carries only the public key. [FND-IAM](#fnd-iam-access-control) has the details.
+**What the router checks about a caller.** When the preamble carries a delegation certificate, the router checks the signature, the validity window, and the scope of the certificate, that its temporary key is the key in the preamble, and that the master has not revoked that key. It does not check that the caller holds the private part of the temporary key: the preamble carries only the public key. [FND-IAM](#fnd-iam-access-control) has the details.
 
 > **Envisioned.** Not built yet. Today the key in the preamble is asserted and is not proved. The router could check that the caller holds the temporary key, for example with a signed challenge. Only the login of the auth service checks a signature over a nonce today.
 
@@ -1669,7 +1669,7 @@ flowchart TD
 - **WASM guest.**
     - Instances come from a Wasmtime pooling allocator, and the store caps the memory of one guest.
     - A guest runs under an epoch deadline (wall-clock time). It also runs under a fuel limit when the service has an instruction quota.
-    - The guest's `WasiCtx` is empty: no preopened directories, no environment variables and no sockets.
+    - The guest's `WasiCtx` is empty: no preopened directories, no environment variables, and no sockets.
     - The linker holds only WASI and the Syneroym host interfaces. A guest reaches the world through these.
 - **Calls between services.** A guest's outbound call goes through the Universal Proxy.
     - A guest may call a declared interface of another service. The callee decides whether to admit the caller (see Layer 2 [access control](#substrate-internal-architecture)).
@@ -1677,7 +1677,7 @@ flowchart TD
     - A guest may never reach the node-level interfaces `orchestrator` and `security` through the proxy.
 - **Row policy.** FDAE filters the rows a caller may see, and can remove fields and run a per-row check. See [FND-IAM](#fnd-iam-access-control).
 - **Databases.** Each service has its own database, never one shared with another service.
-- **Container.** A container service still gets the native endpoints `data-layer`, `vault`, `app-config` and `blob-store`. The substrate keeps its `state.db` outside the container, and the `podman run` arguments carry no database path. The substrate calls the host's `podman` command with the bridge network and the volumes and ports of the manifest. The substrate does not check whether Podman is rootless. Run the substrate as a non-root user so that Podman is rootless (operator advice).
+- **Container.** A container service still gets the native endpoints `data-layer`, `vault`, `app-config`, and `blob-store`. The substrate keeps its `state.db` outside the container, and the `podman run` arguments carry no database path. The substrate calls the host's `podman` command with the bridge network and the volumes and ports of the manifest. The substrate does not check whether Podman is rootless. Run the substrate as a non-root user so that Podman is rootless (operator advice).
 
 ---
 
