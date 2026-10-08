@@ -9,8 +9,8 @@ The first language pass (`language-progress.md`) changed little: most edits were
 | L1 | Top matter, Executive Summary, Goals & Constraints, System Layers Overview | done | 15b63e87 | reviewed diff; 10 lines changed; range was already simple (0 sentences over 28 words) |
 | L2 | Layer 1 | done | ca529d86 | reviewed diff; 12 blocks; committed with -n (hooks skipped), rule added to brief afterwards |
 | L3 | Layer 2 | done | 7ac87aa5 | reviewed 19 blocks; 4 long sentences fixed |
-| L4 | Layer 3 | running | | |
-| L5 | Layer 4, Federation, Consumer Experience, Observability | not started | | |
+| L4 | Layer 3 | done | 66abfa72 | reviewed; 8 long sentences fixed (1 field list left); verifier checks rewritten as 'must be' with the same three checks |
+| L5 | Layer 4, Federation, Consumer Experience, Observability | running | | |
 | L6 | Security, Resolved TBD Items, Appendix, Technology Stack | not started | | |
 | L7 | Connectivity Substrate | not started | | |
 | L8 | Addendum intro, Phase 0, Phase 1, Phase 2 | not started | | |
