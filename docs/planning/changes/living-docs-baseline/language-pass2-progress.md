@@ -1,0 +1,17 @@
+# Stage 3, second language pass: progress
+
+Reader: the coordinator of the language pass, and any developer who resumes it.
+
+The first language pass (`language-progress.md`) changed little: most edits were commas. This second pass splits long sentences and replaces hard words. One commit per group. A group is `done` only after its commit is checked with the token check (code spans, numbers, links, ids, headings, markers, qualifier and modal words) and a read of the diff.
+
+| Group | Parts | Status | Hash | Notes |
+| --- | --- | --- | --- | --- |
+| L1 | Top matter, Executive Summary, Goals & Constraints, System Layers Overview | running | | |
+| L2 | Layer 1 | not started | | |
+| L3 | Layer 2 | not started | | |
+| L4 | Layer 3 | not started | | |
+| L5 | Layer 4, Federation, Consumer Experience, Observability | not started | | |
+| L6 | Security, Resolved TBD Items, Appendix, Technology Stack | not started | | |
+| L7 | Connectivity Substrate | not started | | |
+| L8 | Addendum intro, Phase 0, Phase 1, Phase 2 | not started | | |
+| L9 | Phase 3 to Phase 7, Open Questions, Glossary | not started | | |
