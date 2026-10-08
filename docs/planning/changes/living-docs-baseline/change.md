@@ -264,6 +264,15 @@ Stage 2 fix, S4:
 - **`wasm-tools`.** No task uses it. The doc says it is installed and available by hand. It is not described as "optional" any more.
 - **Browser handshake path.** The same words ("the browser asks for it") were also in the Multi-Hop Relay summary and in Encryption at Every Layer. All three places now name the WebSocket tunnel path.
 
+Stage 2 fix, S5:
+
+- **X3DH wording, all places.** `vodozemac` implements Olm (3DH plus Double Ratchet). The code comment in `crates/conversation/src/crypto.rs` says X3DH, but the library does not. I fixed six places in `docs/system-architecture.md`: the Layer 3 Messaging diagram box M1, its key agreement step (the node id `X3DH` became `KA`), its Libraries line, the Security diagram box M1, the Security 1-to-1 chat bullet, and the Technology Stack row. The Glossary and `docs/TERMINOLOGY.md` had no X3DH text. ADR-0013 was not edited.
+- **14.16 (who sets `enc=ecdh-p256`).** Already fixed by the stage 2 fix in S4 (the text names the WebSocket tunnel path). No new edit.
+- **Revoking a person's key (14.24).** The doc now says what the code does: `roymctl` has no command that adds a person's key to `revoked_keys`. Backlog row added. The built behavior (router rejects a listed key) stays.
+- **DHT fallback and anchor age (14.31).** The doc says only the registry path checks the 24-hour age. Backlog row added.
+- **Not-covered item 6 and 7.** `crates/substrate/config.sample.toml`, `config.dev.toml` and `AGENTS.md` say "Prometheus" for the metrics endpoint. They are outside the files this pass may edit. The architecture doc is correct (JSON snapshot, no Prometheus export). Someone should fix those three files.
+- **Not-covered item 3 (zero key with encryption off).** The doc states the fact. I added no backlog row, because `storage.encryption = false` is an explicit option that is on by default, and a related row already exists for this setting.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

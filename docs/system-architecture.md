@@ -903,7 +903,7 @@ Messaging is a substrate capability (`syneroym:conversation`, host crate `synero
 flowchart TD
     subgraph MSG_TYPES["Message Types"]
         direction LR
-        M1[1-to-1 Chat X3DH + Double Ratchet]
+        M1[1-to-1 Chat Olm: 3DH + Double Ratchet]
         M2[Group Chat owner-distributed epoch key]
         M3["Cards: signed records, e.g. a booking request"]
         M4["Collaborative editing (Envisioned)"]
@@ -912,8 +912,8 @@ flowchart TD
     subgraph E2E["1-to-1 E2E Encryption"]
         direction LR
         S[Sender] -->|"1. fetch receiver prekey bundle"| PEERSVC[Peer's conversation service]
-        PEERSVC -->|"2. X3DH key agreement"| X3DH[Shared Secret]
-        X3DH -->|"3. init Double Ratchet"| DR[Ratchet State]
+        PEERSVC -->|"2. 3DH key agreement"| KA[Shared Secret]
+        KA -->|"3. init Double Ratchet"| DR[Ratchet State]
         DR -->|"4. encrypt message"| ENV[Signed Envelope]
         ENV -->|"5. route via Iroh"| R_NODE[Relay / Direct]
         R_NODE -->|"6. deliver + decrypt"| REC[Receiver]
@@ -928,7 +928,7 @@ flowchart TD
 
 > **Envisioned.** Not built yet. Message threads and collaborative editing (box M4). The conversation code has neither.
 
-**Libraries:** `vodozemac` for X3DH + Double Ratchet in 1-to-1 chat. Group chat uses one AES-256-GCM key for each epoch, which the group owner makes and distributes, and Ed25519 signatures on every entry. No `libsignal-protocol-rust` and no `openmls` is used. ADR-0013 Amendment 1 replaced MLS with the owner-distributed key ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). The key agreement sits behind one interface, so the DAG, the ordering and the storage do not depend on it.
+**Libraries:** `vodozemac` for the Olm protocol (a triple Diffie-Hellman key exchange, 3DH, and a Double Ratchet) in 1-to-1 chat. Group chat uses one AES-256-GCM key for each epoch, which the group owner makes and distributes, and Ed25519 signatures on every entry. No `libsignal-protocol-rust` and no `openmls` is used. ADR-0013 Amendment 1 replaced MLS with the owner-distributed key ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). The key agreement sits behind one interface, so the DAG, the ordering and the storage do not depend on it.
 
 The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` until the peer is reachable. Delivery has three states: `pending`, `delivered` and `failed`.
 
@@ -1411,6 +1411,7 @@ All instrumentation is in-process and based on open facades:
     - `substrate.wasm.*` for active instances, component cache size, instantiation and execution time.
     - `substrate.fdae.*` for row-level authorization (`abac_ms`, `abac_rows_denied`).
     - `substrate.conversation.outbox.dead_lettered` for messages the conversation outbox gave up on.
+    - `substrate.conversation.admission.stuck` for a message that is still undecided after many re-asks (every 20th failed re-ask).
     - `substrate.system.rss_bytes`, `substrate.system.cpu_percent`, `substrate.system.open_fds` and `substrate.tokio.active_tasks`. A sampler task updates these once a second.
 
   Backend: an in-memory recorder (`MemoryRecorder`). A counter or gauge keeps one value. A histogram keeps every sample in a list that is never trimmed, so memory grows with the number of samples. A snapshot lists the counters, the gauges and, for each histogram, its count, sum, minimum, maximum, p50, p95 and p99.
@@ -1421,7 +1422,7 @@ All instrumentation is in-process and based on open facades:
 
 This is the built way to see that a managed app has failed. `roymctl app health <instance-id>` polls every substrate that hosts a service of the app instance and asks each one for the status of those services. It polls once, or repeats every N seconds with `--watch`. It records alerts unless `--no-record` is passed. It exits non-zero when a service reports a fault. A service the substrate could not decide about is not fatal unless `--strict` is passed. `roymctl app alerts <instance-id>` shows the alerts, and `--all` includes the cleared ones.
 
-Alerts live in an alert store, the SQLite table `alerts`. `roymctl` keeps it in `alerts.db` beside the deployment journal by default. The App Supervisor keeps the same store in its own database (`supervisor.db` by default), runs the same health check in its resident loop, and serves the alerts through its `alerts` verb. It also publishes each newly opened alert, unretained, to the topic `<alert_topic>/<app_instance_id>` (`supervisor/alerts` by default) of its messaging broker. The store holds one active row for each instance, service, substrate and kind. A repeated signal refreshes the row. A cleared signal that comes back opens a new row.
+Alerts live in an alert store, the SQLite table `alerts`. `roymctl` keeps it in `alerts.db` beside the deployment journal by default. The App Supervisor keeps the same store in its own database (`supervisor.db` by default), runs the same health check in its resident loop, and serves the alerts through its `alerts` verb. It also publishes each newly opened alert, unretained, to the topic `<alert_topic>/<app_instance_id>` (`supervisor/alerts` by default) of its messaging broker. The broker keeps the topic as `svc/supervisor/<alert_topic>/<app_instance_id>`. A subscriber to the `supervisor` service gives the short form. A subscriber from any other service must give the full name that starts with `svc/`. The store holds one active row for each instance, service, substrate and kind. A repeated signal refreshes the row. A cleared signal that comes back opens a new row.
 
 The alert kinds are `SubstrateUnreachable`, `InstanceNotRunning`, `ProbeFailing`, `CertificateNearExpiry`, `CertificateExpired`, `SupervisorSuperseded`, `RemediationExhausted`, `BindingConflict`, `PlacementChangeRefused`, `OrphanedService`, `VaultLocked`, `InstanceRevoked`, `RotationRestartPending`, `DeliveryExhausted`, `ScheduledRunFailed` and `AppIdentityMismatch`. See [LFC-MGT](#lfc-mgt-synapp-lifecycle-management-design).
 
@@ -1528,7 +1529,7 @@ The substrate gets a **multi-node simulation harness** for development and CI:
 
 - Runs N substrate instances in a single test binary with a controllable fake network
 - Induces partitions, delays, and node restarts deterministically
-- Each write rule in [Storage & Write Arbitration](#storage--write-arbitration) gets a scenario that checks the outcome. No such scenario exists today
+- Each write rule in [Storage & Write Arbitration](#storage--write-arbitration) gets a scenario that checks the outcome. No such simulation scenario exists today. Ordinary tests check some write rules, for example the booking slot conflict in `crates/roym_web/tests/dual_build_parity/booking.rs`.
 - Property-based tests (`proptest`) verify outbox replay is idempotent for arbitrary request orderings and retries
 - Simulation output carries the same `trace_id` correlation used in production — failures are immediately diagnosable from the trace
 
@@ -1547,13 +1548,13 @@ flowchart TD
     end
 
     subgraph MESSAGING_ENC["Messaging Encryption"]
-        M1[1-to-1 chat: X3DH + Double Ratchet via vodozemac]
+        M1["1-to-1 chat: Olm (3DH + Double Ratchet) via vodozemac"]
         M2[Group chat: owner-distributed AES-256-GCM epoch key]
         M3[Messages carried by the conversation service: signed with Ed25519, then encrypted]
     end
 
     subgraph AT_REST["Data at Rest"]
-        R1[Service database: SQLCipher under a per-service key. Secrets: AES-256-GCM vault rows]
+        R1[Service database: SQLCipher under a per-service key when storage.encryption is on. Secrets: AES-256-GCM vault rows]
         R2[Replicated backups: encrypted with provider key before upload. Envisioned]
         R3[Blob store: content-addressed optionally encrypted]
     end
@@ -1563,7 +1564,7 @@ flowchart TD
 
 **Messaging encryption (boxes M1 to M3).** The conversation service holds the keys for each service. See [Layer 3 > Messaging](#messaging) for the feature.
 
-- **1-to-1 chat** uses X3DH key agreement and a Double Ratchet. The `vodozemac` crate implements both. A service has a `vodozemac` account for the ratchet and a separate Ed25519 key for signing.
+- **1-to-1 chat** uses the Olm protocol: a Double Ratchet with a triple Diffie-Hellman (3DH) key exchange. The `vodozemac` crate implements it. A service has a `vodozemac` account for the ratchet and a separate Ed25519 key for signing.
 - **Group chat** uses one AES-256-GCM key for each epoch. The group owner makes the key and distributes it, and starts a rekey on a schedule. Each group entry is signed by its author, and its body is sealed with the epoch key. The owner is a single point of trust for key distribution ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1).
 - **Signed messages.** A 1-to-1 message is a `DeliveryPayload`. The sender signs it with its Ed25519 conversation key, and then the ratchet session encrypts it.
 - The code uses neither `libsignal` nor MLS (`openmls`). ADR-0013 Amendment 1 replaced MLS with the owner-distributed key.
@@ -1585,16 +1586,16 @@ This table lists each key, where it lives, what it is for, and what happens when
 | --- | --- | --- | --- |
 | Node identity key (Ed25519) | The file `substrate.key` in the app data directory, or the path in `[identity].key`. | Gives the node its `did:key`. Signs the node's side of the `enc=ecdh-p256` handshake. | The substrate makes a new key at the next start. The node then has a new DID. |
 | Person master key (Ed25519) | The file `identities/<name>.key` in the `roymctl` directory. | Is the identity of a person. Signs delegation certificates and the master anchor. | Restore it from an identity backup with `roymctl identity import` and the recovery key. |
-| Temporary key and delegation certificate | Made by the caller. `roymctl session delegate` makes a key pair and a certificate. The Hub keeps its private key in the browser as a non-extractable WebCrypto key in IndexedDB. | Lets a device or a session act under the master's identity until the certificate expires. | Make a new pair with the master key. The master revokes a stolen key by listing its DID in its master anchor. |
+| Temporary key and delegation certificate | Made by the caller. `roymctl session delegate` makes a key pair and a `session-auth` certificate for the Hub login. `roymctl identity delegate --scope routing` makes a `routing` certificate for a temporary DID that the caller already has. The Hub keeps its private key in the browser as a non-extractable WebCrypto key in IndexedDB. | Lets a device or a session act under the master's identity until the certificate expires. The router accepts only a `routing` or `service-instance` certificate on a stream. A `session-auth` certificate is for the login of the auth service. | Make a new pair with the master key. The router rejects a key that the master lists in `revoked_keys` of its master anchor. `roymctl` has no command that adds a person's key to that list: `roymctl identity publish-anchor` publishes an empty list. The App Supervisor can revoke the instance keys it manages. A stolen session key stops working when its certificate expires (24 hours by default for `roymctl session delegate`). |
 | Node key encryption key (KEK, 32 bytes) | In node memory only. The node owner injects it with `roymctl kek inject`. | Is the root of the data keys. `roymctl kek rotate` re-wraps every DEK under a new KEK. | After a restart, no encrypted service database opens until the owner injects the KEK again. If the owner no longer has the KEK value, the wrapped DEKs cannot be opened. |
 | Per-instance KEK | Not stored. HKDF-SHA256 of the node KEK with the info `syneroym:kek:v1:<service_id>` derives it when needed. | Wraps the DEK of one service. | Derived again from the node KEK. |
-| Per-service data encryption key (DEK, 32 bytes) | The table `dek_store` in `substrate.db`, wrapped with AES-256-GCM under the per-instance KEK. Never in plaintext on disk. | Is the SQLCipher key of the service database. Encrypts the `_vault` rows of the service. HKDF-SHA256 derives from it the keys for the service's blobs. | Without its `dek_store` row, or without the KEK that wraps it, the service data cannot be opened. |
-| Master keys of managed app instances | The App Supervisor's own encrypted service vault. The entries are named `member-<instance>-<service>-<index>` and `app-<app_instance_id>`. | Are the master of each member service and of the app instance. No key leaves the supervisor in a response. | Restore them with `import-master` from the `export-master` backup. Import a member key before the first `submit`, and the app instance key before `adopt`. Without the backup, a new supervisor mints new master keys. |
-| Recovery key (32 bytes) | Shown to the person once. Never stored. | Encrypts the identity backup and the Roym archive (HKDF-SHA256, then AES-256-GCM). | The backup cannot be opened. |
+| Per-service data encryption key (DEK, 32 bytes) | The table `dek_store` in `substrate.db`, wrapped with AES-256-GCM under the per-instance KEK. Never in plaintext on disk. | Is the SQLCipher key of the service database. Encrypts the `_vault` rows of the service. When `storage.encryption` is off, no SQLCipher key is set and the vault rows are sealed with an all-zero key, so secrets are not protected. HKDF-SHA256 derives from it the keys for the service's blobs. | Without its `dek_store` row, or without the KEK that wraps it, the service data cannot be opened. |
+| Master keys of managed app instances | The App Supervisor's own encrypted service vault. The entries are named `member-<app_instance_id>#<service_name>-<index>` and `app-<app_instance_id>`. | Are the master of each member service and of the app instance. No key leaves the supervisor in a response. | Restore them with `import-master` from the `export-master` backup. Import a member key before the first `submit`, and the app instance key before `adopt`. Without the backup, a new supervisor mints new master keys. |
+| Recovery key (32 bytes) | Shown to the person once. Syneroym never keeps a copy. The option `--recovery-key-out` of `roymctl identity export` and `roymctl roym backup create` writes it to a file that the person chooses. | Encrypts the identity backup and the Roym archive (HKDF-SHA256, then AES-256-GCM). | The backup cannot be opened. |
 
 **Certificate scopes.** A delegation certificate has one scope: `routing`, `session-auth`, `service-instance` or `record-signing`. The router accepts only `routing` and `service-instance` on a stream. A `record-signing` certificate is never accepted as a connection identity.
 
-**The master anchor is a duty.** A master anchor is a signed record. It lists the temporary keys that the master revoked. An anchor stops verifying 24 hours after its signing time. The router rejects a stream that carries a delegation certificate when it cannot resolve a valid anchor of the master. The App Supervisor republishes the anchor of each master it manages every 12 hours by default. A person's master anchor is published with `roymctl identity publish-anchor`.
+**The master anchor is a duty.** A master anchor is a signed record. It lists the temporary keys that the master revoked. A client that gets an anchor from the HTTP registry rejects it when it is older than 24 hours after its signing time. An anchor that comes from the DHT fallback is not checked for age today. The router rejects a stream that carries a delegation certificate when it cannot resolve a valid anchor of the master. The App Supervisor republishes the anchor of each master it manages every 12 hours by default. A person's master anchor is published with `roymctl identity publish-anchor`.
 
 **What the router checks about a caller.** When the preamble carries a delegation certificate, the router checks the signature, the validity window and the scope of the certificate, that its temporary key is the key in the preamble, and that the master has not revoked that key. It does not check that the caller holds the private part of the temporary key: the preamble carries only the public key. [FND-IAM](#fnd-iam-access-control) has the details.
 
@@ -1631,7 +1632,7 @@ flowchart TD
         end
 
         subgraph APP2["SynApp 2 (Podman container)"]
-            P1[OCI Container run by the host's Podman]
+            P1[OCI Container run by the host's Podman. The substrate can keep its state.db outside the container]
         end
 
         subgraph APP3["SynApp 2 (WASM sandbox)"]
@@ -1670,7 +1671,7 @@ flowchart TD
     - A guest may never reach the node-level interfaces `orchestrator` and `security` through the proxy.
 - **Row policy.** FDAE filters the rows a caller may see, and can remove fields and run a per-row check. See [FND-IAM](#fnd-iam-access-control).
 - **Databases.** Each service has its own database, never one shared with another service.
-- **Container.** The substrate calls the host's `podman` command with the bridge network and the volumes and ports of the manifest. The substrate does not check whether Podman is rootless. Run the substrate as a non-root user so that Podman is rootless (operator advice).
+- **Container.** A container service still gets the native endpoints `data-layer`, `vault`, `app-config` and `blob-store`. The substrate keeps its `state.db` outside the container, and the `podman run` arguments carry no database path. The substrate calls the host's `podman` command with the bridge network and the volumes and ports of the manifest. The substrate does not check whether Podman is rootless. Run the substrate as a non-root user so that Podman is rootless (operator advice).
 
 ---
 
@@ -1847,7 +1848,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 |---|---|---|
 | SynApp component language | **Rust → WASM** (wit-bindgen 0.57) | Primary path. The Roym services are built with `cargo component build --target wasm32-wasip2` |
 | OCI services | **Any OCI image** | For services that can't target WASM. The Podman engine runs the image that the manifest names |
-| 1-to-1 messaging crypto | **vodozemac** 0.10 | X3DH + Double Ratchet (Olm) |
+| 1-to-1 messaging crypto | **vodozemac** 0.10 | Olm: 3DH key exchange + Double Ratchet |
 | Group messaging crypto | Owner-distributed **AES-256-GCM** group key, one key per epoch | The group owner distributes the key. There is no MLS ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1) |
 | Signed records | **Signed Roym records** (`signed_record` envelope) | Built: for example the membership credentials that a SynOrg issues |
 | Payment records | **Signed Roym payment records** | Built: `payment-request` and `payment-acknowledgement`. Roym records a payment that happens outside the system and does not process it |
