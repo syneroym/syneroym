@@ -243,6 +243,14 @@ Stage 2 fix, S1:
 - **Federation of directories.** The doc said a SynOrg, directory or aggregator chooses which directories it queries. Only the client half queries. The sentence now says "client", the Envisioned note says directories and aggregators do not query others, and the backlog has a row.
 - **Same payment sentence twice.** It also stood in the Roym integrated experience text, so I fixed both places.
 
+Stage 2 fix, S2:
+
+- **Outbox budget role.** The report says the outbox attempt budget comes from the supervisor role. The guest outbox reads `roles.app_sandbox` (`crates/router/src/route_handler.rs:254`). The supervisor role feeds only the supervisor's own outbox. The doc names `roles.app_sandbox`.
+- **Cron wording.** The proposal added "once per reconcile pass". I left it out because it adds no fact about the field count. The doc says five fields, plus the leading seconds and trailing year that the parser accepts. `docs/developer-guide.md` still says "standard five-field"; it is correct for the standard form, so I did not change it.
+- **Config-schema marker.** The `replicas` refusal tests the config `schema`, not a database schema. The doc says so. The residual case (data layer use without a `schema`) already has a backlog row. `docs/developer-guide.md` calls `schema` the marker of structured data; I did not edit that guide here.
+- **Identical redeploy.** The no-op needs a full deploy of the service by the running process (`full_deploy_completed`), so the first redeploy after a restart is not a no-op. The doc says so.
+- **Backlog.** One new row: the declared index type is accepted and never used.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
