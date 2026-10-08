@@ -2,6 +2,8 @@
 
 Reader: developers working on the architecture documentation pass.
 
+> **Status (corrected).** This first pass mostly added commas and changed little. A review found it shallow, and two changes that altered meaning were fixed. The real pass is tracked in [language-pass2-progress.md](language-pass2-progress.md). The "done" marks below mean only that the section was visited.
+
 This file tracks the stage 3 language pass on `docs/system-architecture.md`.
 The pass simplifies sentences for a developer with basic English skills.
 Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay identical.
