@@ -34,7 +34,7 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Phase 6: High-Level Applications (SynApps) | done | c86139a1 | - |
 | Phase 7: Edge Expansion | done | c9c0787f | - |
 | Open Questions & Recommendations | done | f5df6e30 | - |
-| Glossary | done | pending | - |
+| Glossary | done | 04d29505 | - |
 
 ## Needs author
 
