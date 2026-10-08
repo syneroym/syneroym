@@ -236,6 +236,13 @@ Architecture fix, commit 24 (outside the architecture doc):
 - **Backlog rows that already existed.** Q-D8 (`MemoryRecorder`), Q-B2 (proof of possession, handshake), Q-F4 (SDK mechanism fallback) and Q-C6 (gateway bind address) already had rows. I added none for them. The `TODO(M5)` marker already had a row in "Open in-code markers"; I only corrected its line number (116 to 122).
 - **Links.** The only broken link was the old `heteregenous` anchor in the backlog (fixed). The links to `#layer-3--shared-substrate-utilities` and `system-requirements-spec.md#post-dd864a1-target-specifications-addendum` resolve (the second is an explicit anchor in the spec).
 
+Stage 2 fix, S1:
+
+- **Supervisor rebuild sweep.** The doc said a rebuild uses "a sweep of the target substrates". No such code exists: `adopt` reads only the held generation. The text now describes the manual rebuild (`submit`, then `adopt`). The sweep is under an Envisioned marker and has a backlog row.
+- **`import-master` order.** Member keys are minted at `submit`, so they must be imported before the first `submit`. Only the app instance key is minted at `adopt`. The text and the Keys table row say so.
+- **Federation of directories.** The doc said a SynOrg, directory or aggregator chooses which directories it queries. Only the client half queries. The sentence now says "client", the Envisioned note says directories and aggregators do not query others, and the backlog has a row.
+- **Same payment sentence twice.** It also stood in the Roym integrated experience text, so I fixed both places.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
