@@ -170,7 +170,7 @@ The release workflow builds the substrate for Linux (x86_64 and aarch64), Window
 
 ## System Layers Overview
 
-The architecture is composed of four layers, each building on the one below. The layers are a teaching model. They are not crate boundaries.
+The architecture has four layers. Each layer builds on the one below it. The layers are a conceptual model, not crate boundaries.
 
 ```mermaid
 block-beta
