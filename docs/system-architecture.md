@@ -5,7 +5,7 @@
 > **Migration Note:** The architectural designs and roadmap changed a lot after the first version of this document. The Layer 1 to 4 sections are the canonical definition of the layers. The [Target Designs (Addendum)](#target-designs-addendum) at the end of this document adds design detail for features, grouped by phase.
 
 > [!WARNING]
-> **Implementation Note:** The **wRPC protocol layers/surface** (the native component protocol) is not implemented. JSON-RPC 2.0 is the wire protocol everywhere today, between components and on the external API surface. The router reserves the `wrpc://` scheme and answers it with an unsupported-protocol error.
+> **Implementation Note:** The **wRPC protocol layers/surface** (the native component protocol) is not implemented. JSON-RPC 2.0 is the only RPC wire protocol today, between components and on the external API surface. The router reserves the `wrpc://` scheme and answers it with an unsupported-protocol error.
 
 ---
 
@@ -495,7 +495,7 @@ flowchart TD
 
 Two more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`.
 
-**Ingress.** A node accepts streams on two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. Each transport hands every stream it accepts to the connection router. A caller connects to a node. A service never accepts connections itself, because the router dispatches each stream to it. Iroh is the peer-to-peer networking library from Layer 1. HTTP/1.1 requests travel inside these streams. The client gateway takes a local HTTP request and sends it to the target node as a stream. Browsers and the CLI send JSON-RPC 2.0 requests this way.
+**Ingress.** A node accepts streams on two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. Each transport hands every stream it accepts to the connection router. A caller connects to a node. A WASM service never accepts connections itself, because the router dispatches each stream to it. Iroh is the peer-to-peer networking library from Layer 1. HTTP/1.1 requests travel inside these streams. The client gateway takes a local HTTP request and sends it to the target node as a stream. Browsers and the CLI send JSON-RPC 2.0 requests this way.
 
 WebSocket is an option for one app. The guest declares an HTTP route with `target = "websocket"`. The router upgrades the connection and hands each frame to the guest. The app defines the frames. They are not JSON-RPC.
 
@@ -858,7 +858,7 @@ flowchart TD
 
 **Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text and filters. Its answer is a list of candidates and is never a verified answer. Today a provider publishes only the `listing` record to a directory.
 
-The consumer's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry, the delegation window and the revocation status. A hit that fails the check is kept apart from the others. Each client, SynOrg, directory and aggregator chooses what it queries. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
+The consumer's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry, the delegation window and the revocation status. A hit that fails the check is kept apart from the others. Each node that runs the `directory` service keeps its own list of directories and chooses which of them to query. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
 
 **Ranking today:** each directory sorts its matching listings by the time of issue of the signed record, newest first. Ties go by `listing_id`. The consumer's node merges the answers of the directories in turn, so no one directory fills the page. No score is computed.
 
@@ -1899,7 +1899,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 ## Connectivity Substrate In Heterogeneous networks
 
-**Built today.** Connectivity works over IP networks. A caller finds a service in the community registry first and in the Mainline DHT second. It then dials the hosting node over Iroh, which does direct QUIC, hole punching and relay. Each stream starts with a route preamble that names the protocol. The node's router accepts inbound streams from Iroh and from WebRTC and hands them to the service. The rest of this section is a general design that is not built: attachment points, BLE and LoRa gateways, ranked connection strategies, trying the next mechanism after a failed dial, protocol negotiation and the wRPC adapter. Each of these sits in a block marked Envisioned. Text without a marker is built.
+**Built today.** Connectivity works over IP networks. A caller finds a service in the community registry first and in the Mainline DHT second. The SDK client needs a registry URL for this, or the mechanisms of a record that it was given. It then dials the hosting node over Iroh, which does direct QUIC, hole punching and relay. Each stream starts with a route preamble that names the protocol. The node's router accepts inbound streams from Iroh and from WebRTC and hands them to the service. The rest of this section is a general design that is not built: attachment points, BLE and LoRa gateways, ranked connection strategies, trying the next mechanism after a failed dial, protocol negotiation and the wRPC adapter. Each of these sits in a block marked Envisioned. Text without a marker is built.
 
 ---
 
@@ -1921,7 +1921,7 @@ The design intentionally avoids creating a global overlay routing protocol. A no
 
 ### Identity Model
 
-Two decentralized identifiers (DIDs) are used. Both are `did:key` identifiers: `did:key:h` followed by the z-base-32 encoding of an Ed25519 public key.
+Two decentralized identifiers (DIDs) are used. Both are `did:key` identifiers: `did:key:h` followed by the z-base-32 encoding of the two bytes `0xed 0x01` and then the 32 bytes of an Ed25519 public key.
 
 #### Node DID
 
@@ -2045,7 +2045,9 @@ Mechanism types (`EndpointMechanism`):
 | `Iroh`   | Reachable over Iroh. It holds the Iroh address of the node and an optional relay URL.    |
 | `WebRtc` | Reachable over a WebRTC peer (`peer_id`). The Rust SDK client does not dial this mechanism. |
 
-Direct QUIC is part of the `Iroh` mechanism. Iroh finds a direct path itself.
+No node publishes a `WebRtc` mechanism today. The variant is only defined.
+
+Direct QUIC is part of the `Iroh` mechanism. The record keeps only the node id, not direct addresses, together with the optional relay URL. Iroh finds a direct path itself.
 
 > **Envisioned.** Not built yet. Records have no typed attachment points and no gateway mechanism.
 >
@@ -2086,7 +2088,7 @@ A lookup checks every record it gets:
 
 The community registry may have a parent registry (`parent_registry_url`). A registry passes each public record on to its parent.
 
-A coordinator that sets `share_in_registry` registers itself once at startup, with retries. It has no republish loop.
+A coordinator that sets `share_in_registry` and `community_registry_url` registers itself once at startup, with retries. It has no republish loop.
 
 ---
 
@@ -2110,7 +2112,7 @@ A service is deployed with one of three visibility values (`Private`, `Internal`
 | `Internal` | `is_private` is `true`.                                 | The local registry only. It is not sent to a parent registry or to the DHT. |
 | `Public`   | `is_private` is `false`.                                | The local registry, then the parent registry and the DHT.                   |
 
-A caller reaches a `Private` service through a signed record file that the deployer gives out. `SyneroymClient::new_with_record` checks the record. If the record has no `mechanisms`, `connect()` looks up the hosting node under `substrate_id`, because the node always publishes its own record. See [ADR-0018](decisions/0018-service-record-visibility.md).
+A caller reaches a `Private` service through a signed record file that the deployer gives out. `SyneroymClient::new_with_record` checks the record. If the record has no `mechanisms`, `connect()` looks up the hosting node under `substrate_id`, because a node publishes its own record to its registry, or to the DHT when the DHT is on. See [ADR-0018](decisions/0018-service-record-visibility.md).
 
 ---
 
@@ -2132,13 +2134,13 @@ Nodes may host multiple services.
 
 ### Application Interface
 
-Callers connect with the SDK client. `SyneroymClient::connect` looks the service up and dials the hosting node. `request` sends a JSON-RPC call. `request_raw` and `passthrough` give a raw byte stream.
+Callers connect with the SDK client. `SyneroymClient::connect` looks the service up and dials the hosting node. `request` sends a JSON-RPC call built from a method name and parameters. `request_raw` sends a JSON-RPC request that the caller built and returns the JSON-RPC response. `passthrough` copies bytes both ways between a local TCP stream and a stream to the service.
 
-A service does not accept connections. The node accepts inbound streams on each transport (Iroh QUIC and WebRTC) and hands every stream to the router. The router reads the route preamble and passes the stream to the service. A server-side `listen` and `accept` interface is not part of the design.
+A WASM service has no listen or accept call. The node accepts inbound streams on each transport (Iroh QUIC and WebRTC) and hands every stream to the router. The router reads the route preamble and passes the stream to the service. A TCP or container service runs its own TCP listener, and the `TcpProxy` stage connects to it. A server-side `listen` and `accept` interface is not part of the design.
 
 Connections are byte streams. `IrohStream` and `WebRTCStream` implement `AsyncRead` and `AsyncWrite`.
 
-On a `raw://` stream, the substrate does not interpret or modify the data. On a `json-rpc://` or `http://` route, the router parses the JSON-RPC itself and applies the adaptation stage for the target.
+On a `raw://` stream to a TCP service, the node copies bytes both ways and does not interpret or modify them. On a `raw://` stream to a WASM component, the node reads one framed first message and the `dir` parameter, then hands the stream to the guest. A `json-rpc://` route is parsed as JSON-RPC and gets the adaptation stage of its target. An `http://` route to a WASM or native service is parsed as HTTP: the node serves blobs, assets and declared routes, and treats the rest as JSON-RPC. An `http://` route to a TCP service is copied as bytes.
 
 ---
 
@@ -2151,7 +2153,7 @@ Transport adapters provide network connectivity. Two are built:
 
 TCP is not a transport here. `TcpProxy` is a service stage that forwards a stream to a TCP host and port, for container services.
 
-Each transport accepts inbound streams and hands them to the router. A caller connects out. A service never accepts connections itself.
+Each transport accepts inbound streams and hands them to the router. A caller connects out. A WASM service never accepts connections itself. A TCP or container service runs its own TCP listener, and the `TcpProxy` stage connects to it.
 
 The SDK client goes through the `mechanisms` of a record in order. It dials only `Iroh` mechanisms. It skips a `WebRtc` mechanism.
 
@@ -2164,7 +2166,7 @@ The SDK client goes through the `mechanisms` of a record in order. It dials only
 
 ### Path Construction
 
-Today the SDK client does not build connection strategies. It takes the `mechanisms` of the record and dials the first `Iroh` one. Iroh itself chooses between a direct path and the relay.
+Today the SDK client does not build connection strategies. It takes the `mechanisms` of the record and dials the first `Iroh` one. The SDK builds its Iroh endpoint with no relay and no address lookup. It uses a relay only when the record carries a `relay_url`. The record holds the node id and that relay URL, so without a `relay_url` the SDK has no address to dial. Iroh itself chooses between a direct path and the relay.
 
 > **Envisioned.** Not built yet. No code builds or ranks strategies.
 >
@@ -2247,7 +2249,7 @@ Today the SDK client does not build connection strategies. It takes the `mechani
 
 ### Connection Establishment
 
-Connection establishment proceeds as follows. The SDK client (`SyneroymClient::connect`) runs these steps. The router uses the same lookup when it forwards a stream.
+Connection establishment proceeds as follows. The SDK client (`SyneroymClient::connect`) runs these steps. The router uses the same lookup when it forwards a stream. The client needs a registry URL or a list of mechanisms that it was given. With neither, `connect` fails at once. The DHT is only a second step after a registry that is set.
 
 Resolve service:
 
@@ -2263,7 +2265,7 @@ Resolve node:
 node_record = lookup(service_record.substrate_id)
 ```
 
-The client asks for this second lookup (`resolve = true`). The lookup copies the `mechanisms` of the node record into the result.
+The client asks for this second lookup (`resolve = true`). The lookup runs only when the first record is a service record (`endpoint_type` `Service`). It copies the `mechanisms` of the node record into the result. A call to a node DID makes one lookup.
 
 Attempt connection. The client goes through `mechanisms` in order:
 
@@ -2314,7 +2316,7 @@ Protocol adapters allow interoperability between different application protocols
 
 - `None`: the payload already matches what the service expects.
 - `JsonRpcToWasm`: JSON-RPC is turned into a typed call to a function of a WASM component, and the result goes back as JSON-RPC.
-- `JsonRpcToWrpc`: reserved for wRPC. It answers "not implemented yet".
+- `JsonRpcToWrpc`: reserved for wRPC. The router never picks it today. A `wrpc://` stream to a WASM or native service gets the unsupported-protocol error (`-32091`).
 
 Connection pipeline:
 
@@ -2336,7 +2338,7 @@ Adapters operate at the application protocol level and do not interact with tran
 
 Adapters are deployed on the **server side** to keep clients simple.
 
-> **Envisioned.** Not built yet. The wRPC protocol is not implemented. JSON-RPC is the wire protocol everywhere.
+> **Envisioned.** Not built yet. The wRPC protocol is not implemented. JSON-RPC is the only RPC wire protocol.
 >
 > - **JSON-RPC to wRPC adapter.** A JSON-RPC client calls a wRPC service.
 >
@@ -2402,7 +2404,7 @@ Responsibilities are separated as follows:
 
 Discovery only exposes **network entry points**, not complete network paths.
 
-> **Envisioned.** Not built yet. No gateway role exists.
+> **Envisioned.** Not built yet. No node role routes inside a BLE or LoRa network. (The `client_gateway` role is a different thing: a local HTTP proxy.)
 >
 > | Component    | Responsibility                |
 > | ------------ | ----------------------------- |
@@ -2492,23 +2494,23 @@ This part gives the design detail for the features in the [Feature Specification
 
 *   **Journaled Standalone Orchestration (`roymctl`):**
     *   **Design:** `roymctl` manages static inventory deployments with a Crash Consistency Deployment Journal. A deployment record has one of these states: `PLANNED`, `APPLYING`, `ACTIVE`, `DEGRADED`, `ROLLING_BACK` and `ROLLED_BACK`. A deploy writes `PLANNED`, then `APPLYING`, then `ACTIVE`, or `DEGRADED` when some services were not applied.
-    *   **Crash Consistency:** If a deployment fails midway, the journal record stays `APPLYING` or `DEGRADED`. `roymctl app reconcile` computes and prints the actions that are still to do. When the app is `ACTIVE` and the caller gives a manifest, it prints the difference between the manifest and the active deployment. Running `roymctl app deploy` again with the same plan resumes the record and retries only the services that are not yet applied. Nothing rolls a deployment back, because rolling back a stateful service is itself destructive ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md) §5): no code writes `ROLLING_BACK` or `ROLLED_BACK`. The manifest check refuses `replicas > 1` on a service that has a `schema` (each member has its own database, so the data would split), a `sharding_strategy` on a service with one member, and `range_sharding`.
+    *   **Crash Consistency:** If a deployment fails midway, the journal record stays `APPLYING` or `DEGRADED`. `roymctl app reconcile` computes and prints the actions that are still to do. When the app is `ACTIVE` and the caller gives a manifest, it prints the difference between the manifest and the active deployment. Running `roymctl app deploy` again with the same plan resumes the record and retries only the services that are not yet applied. Nothing rolls a deployment back, because rolling back a stateful service is itself destructive ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md) §5): no code writes `ROLLING_BACK` or `ROLLED_BACK`. The manifest check refuses `replicas > 1` on a service that declares a config `schema`. It treats that field as a sign of a service that holds state, because each member has its own database and the data would split. It cannot see a service that uses the data layer without a `schema`. The check also refuses a `sharding_strategy` on a service with one member, and `range_sharding`.
 *   **Master Anchor Resolution:**
     *   **Design:** The router tells the Master Key from the Temporary Key. When a connection carries a delegation certificate, the router resolves the Master Anchor of the certificate's master: a signed record that lists the temporary keys the master has revoked (`revoked_keys`). It asks the community registry first and the Mainline DHT second. The router refuses the connection if the temporary key is on that list, or if the anchor lookup fails or takes more than 5 seconds. The Master Anchor is a deny list, not a list of allowed keys. An anchor that the registry returns must carry the master's signature and be less than 24 hours old. See [Identity Resolution & Revocation](#identity-resolution--revocation-the-master-anchor).
 *   **Finding Providers and Listings:**
-    *   **Design:** Discovery is what the Roym `directory` service does today. Clients, SynOrgs, directories and aggregators each choose what they query. See [P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics) for what is built and what is not.
+    *   **Design:** Discovery is what the Roym `directory` service does today. A node keeps its own list of directories (at most 8) and queries those. See [P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics) for what is built and what is not.
 
 ### [TOP-ROB] Network & Connection Robustness
 
 *   **Connection Handling:**
     *   **Design:** The Iroh coordinator crate keeps no connection cache of its own. A node that dials another node over Iroh calls `endpoint.connect()` and opens a new QUIC connection for each call. This holds for a proxied call (`IrohHop`) and for the router forwarding a stream to the next hop. The WebRTC bootstrap keeps a `connection_cache` of Iroh connections to peers, behind a lock, because concurrent `connect()` calls to the same peer failed without it.
 *   **Retry Logic Integration:** 
-    *   **Design:** Connection establishment can be wrapped in a standard asynchronous retry loop. If `endpoint.connect()` fails, it enters a backoff loop. One node-wide `retry` policy sets the limits: `max_attempts` (default 3), a first backoff of 100 ms, a multiplier of 2, a maximum backoff of 30 s, and a jitter of 10% either way. The router uses this loop when it forwards a stream to the next hop, and the coordinator uses it when it registers itself in the registry. The Universal Proxy allows one connect attempt for each try and retries the whole call, but only when the call is idempotent or carries an idempotency key. The WebRTC bootstrap tunnel connects once and does not retry. This handles scenarios where the Iroh relay or direct peer is momentarily unreachable.
+    *   **Design:** Connection establishment can be wrapped in a standard asynchronous retry loop. If `endpoint.connect()` fails, it enters a backoff loop. One node-wide `retry` policy sets the limits: `max_attempts` (default 3), a first backoff of 100 ms, a multiplier of 2, a maximum backoff of 30 s, and a jitter of 10% either way. The router uses this loop when it forwards a stream to the next hop, and the coordinator uses it when it registers itself in the registry. The Universal Proxy works differently: it allows one connect attempt for each try and retries the whole call, but only when the call is idempotent or carries an idempotency key. The WebRTC bootstrap tunnel connects once and does not retry. This handles scenarios where the Iroh relay or direct peer is momentarily unreachable.
 *   **Reactive Eviction & Fault Tolerance:**
-    *   **Design:** Connections are not proactively monitored. When an operation (e.g., `accept_bi()` or `write()`) returns a `ConnectionClosed` or timeout error, the system traps the error, reactively evicts any localized references, and optionally triggers a retry of the workflow depending on idempotency. Stream-level errors (like an abruptly closed stream) will fail that specific stream without tearing down the underlying Iroh `Connection`, allowing subsequent multiplexed streams to succeed.
+    *   **Design:** Connections are not proactively monitored. The only connection cache is in the WebRTC bootstrap. It drops a cached connection that has a close reason before it reuses it, and removes the entry when `open_bi()` fails. No other component keeps connection references to evict. A failed proxied call is retried only when the call is idempotent or carries an idempotency key. Stream-level errors (like an abruptly closed stream) will fail that specific stream without tearing down the underlying Iroh `Connection`, allowing subsequent multiplexed streams to succeed.
     *   **Rationale (Discarded Alternative):** We deliberately *do not* implement application-level ping/pong heartbeats to validate connection health. Standard transport-level timeouts (QUIC idle timeouts, WebRTC SCTP timeouts) are sufficient. "Evict when found out" (reactive eviction) saves bandwidth, reduces battery drain on mobile devices, and avoids the complexity of managing parallel heartbeat tasks.
 
-> **Envisioned.** Not built yet. Today a proxied call and a forwarded stream each open a new QUIC connection, and only the WebRTC bootstrap reuses connections.
+> **Envisioned.** Not built yet. Today a node opens a new QUIC connection for each proxied call and each forwarded stream. Only the WebRTC bootstrap reuses connections between nodes. The SDK client keeps one connection and opens a new stream for each call.
 >
 > - **Connection reuse for outbound calls:** A node reuses an open connection to a peer, so a call does not pay for a new handshake. How to do this is not decided.
 
@@ -3070,7 +3072,7 @@ An aggregator is a SynOrg `directory` service, and can federate with other aggre
 | **UCAN** | User Controlled Authorization Networks — capability token standard used for delegation |
 | **LWW** | Last-Write-Wins — the most recent write to a record persists (`put` replaces the whole payload); trivial with one writer per service, no merge algorithm needed |
 
-> **Envisioned.** Not built yet. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error. JSON-RPC 2.0 is the only wire protocol today.
+> **Envisioned.** Not built yet. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error. JSON-RPC 2.0 is the only RPC wire protocol today.
 >
 > - **wRPC.** WIT-native RPC for streaming calls between WASM components, and between peer substrates over Iroh QUIC.
 

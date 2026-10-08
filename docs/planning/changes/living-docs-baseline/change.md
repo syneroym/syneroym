@@ -251,6 +251,13 @@ Stage 2 fix, S2:
 - **Identical redeploy.** The no-op needs a full deploy of the service by the running process (`full_deploy_completed`), so the first redeploy after a restart is not a no-op. The doc says so.
 - **Backlog.** One new row: the declared index type is accepted and never used.
 
+Stage 2 fix, S3:
+
+- **Discovery choice (Q-B4).** The decision says clients, SynOrgs, directories and aggregators each choose what they query. The code has only the client half of the `directory` service, which a node keeps for itself (at most 8 sources). The doc now says a node keeps its own list of directories. A SynOrg or an aggregator choosing sources has no code, and the federation text already marks that Envisioned.
+- **Wire protocol wording.** "JSON-RPC is the wire protocol everywhere" was also in the Implementation Note at the top and in the Glossary wRPC text. HTTP routes, raw streams and TCP copies are not JSON-RPC, so all three places now say "the only RPC wire protocol".
+- **Relay and DHT-only use of the SDK.** The SDK builds its Iroh endpoint with no address lookup and uses a relay only from the record's `relay_url`. The doc says what the code does. One backlog row records the gap.
+- **Reactive eviction.** The doc named a general eviction mechanism. Only the WebRTC bootstrap has a connection cache, so the doc now describes that cache and the proxy retry rule.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
