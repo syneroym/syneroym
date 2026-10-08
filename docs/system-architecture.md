@@ -1906,7 +1906,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 ## Connectivity Substrate In Heterogeneous networks
 
-**Built today.** Connectivity works over IP networks. A caller finds a service in the community registry first and in the Mainline DHT second. The SDK client needs a registry URL for this, or the mechanisms of a record that it was given. It then dials the hosting node over Iroh, which does direct QUIC, hole punching and relay. Each stream starts with a route preamble that names the protocol. The node's router accepts inbound streams from Iroh and from WebRTC and hands them to the service. The rest of this section is a general design that is not built: attachment points, BLE and LoRa gateways, ranked connection strategies, trying the next mechanism after a failed dial, protocol negotiation and the wRPC adapter. Each of these sits in a block marked Envisioned. Text without a marker is built.
+**Built today.** Connectivity works over IP networks. A caller finds a service in the community registry first and in the Mainline DHT second. The SDK client needs a registry URL for this, or the mechanisms of a record that it was given. It then dials the hosting node over Iroh, which does direct QUIC, hole punching, and relay. Each stream starts with a route preamble that names the protocol. The node's router accepts inbound streams from Iroh and from WebRTC and hands them to the service. The rest of this section is a general design that is not built: attachment points, BLE and LoRa gateways, ranked connection strategies, trying the next mechanism after a failed dial, protocol negotiation, and the wRPC adapter. Each of these sits in a block marked Envisioned. Text without a marker is built.
 
 ---
 
@@ -1918,7 +1918,7 @@ A caller uses the SDK client (`SyneroymClient`) to connect to a service. The cli
 
 The design intentionally avoids creating a global overlay routing protocol. A node that receives a stream for a service it does not host looks the service up in the registry and forwards the stream over Iroh. See [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator).
 
-> **Envisioned.** Not built yet. A record lists `mechanisms` (Iroh or WebRTC) and not attachment points. No BLE or LoRa transport exists. The config types `parent_coordinator.ble`, `parent_coordinator.lora` and `[roles.coordinator.transport_bridge]` are parsed, and no code reads them.
+> **Envisioned.** Not built yet. A record lists `mechanisms` (Iroh or WebRTC) and not attachment points. No BLE or LoRa transport exists. The config types `parent_coordinator.ble`, `parent_coordinator.lora`, and `[roles.coordinator.transport_bridge]` are parsed, and no code reads them.
 >
 > - **Attachment points.** Nodes expose attachment points that indicate how they can be reached.
 > - **Constrained networks.** Routing inside constrained networks (e.g., BLE or LoRa meshes) is handled by gateway nodes responsible for those network domains.
@@ -2117,7 +2117,7 @@ A service is deployed with one of three visibility values (`Private`, `Internal`
 | ---------- | ------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `Private`  | None in a registry. `roymctl svc deploy --record-out` can write a signed record file with `is_private` set to `true`. | Nowhere. The deployer gives the record file to the callers. |
 | `Internal` | `is_private` is `true`.                                 | The local registry only. It is not sent to a parent registry or to the DHT. |
-| `Public`   | `is_private` is `false`.                                | The local registry, then the parent registry and the DHT.                   |
+| `Public`   | `is_private` is `false`.                                | The local registry, then the parent registry, and the DHT.                   |
 
 A caller reaches a `Private` service through a signed record file that the deployer gives out. `SyneroymClient::new_with_record` checks the record. If the record has no `mechanisms`, `connect()` looks up the hosting node under `substrate_id`, because a node publishes its own record to its registry and, when the DHT is on, also to the DHT. See [ADR-0018](decisions/0018-service-record-visibility.md).
 
@@ -2147,7 +2147,7 @@ A WASM service has no listen or accept call. The node accepts inbound streams on
 
 Connections are byte streams. `IrohStream` and `WebRTCStream` implement `AsyncRead` and `AsyncWrite`.
 
-On a `raw://` stream to a TCP service, the node copies bytes both ways and does not interpret or modify them. On a `raw://` stream to a WASM component, the node reads one framed first message and the `dir` parameter, then hands the stream to the guest. A `json-rpc://` route is parsed as JSON-RPC and gets the adaptation stage of its target. An `http://` route to a WASM or native service is parsed as HTTP: the node serves blobs, assets and declared routes, and treats the rest as JSON-RPC. An `http://` route to a TCP service is copied as bytes.
+On a `raw://` stream to a TCP service, the node copies bytes both ways and does not interpret or modify them. On a `raw://` stream to a WASM component, the node reads one framed first message and the `dir` parameter, then hands the stream to the guest. A `json-rpc://` route is parsed as JSON-RPC and gets the adaptation stage of its target. An `http://` route to a WASM or native service is parsed as HTTP: the node serves blobs, assets, and declared routes, and treats the rest as JSON-RPC. An `http://` route to a TCP service is copied as bytes.
 
 ---
 
@@ -2307,7 +2307,7 @@ The first line of every stream is the route preamble:
 <scheme>://<interface>.<service_id>[?enc=...]
 ```
 
-The scheme names the protocol: `json-rpc://`, `http://` and `raw://`. The scheme `wrpc://` is reserved. The node's router checks the scheme against a fixed table. It answers an unsupported protocol with a typed error.
+The scheme names the protocol: `json-rpc://`, `http://`, and `raw://`. The scheme `wrpc://` is reserved. The node's router checks the scheme against a fixed table. It answers an unsupported protocol with a typed error.
 
 The router picks an adaptation stage from the scheme and the kind of target service. See [Protocol Adaptation](#protocol-adaptation).
 

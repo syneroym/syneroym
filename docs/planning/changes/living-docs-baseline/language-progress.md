@@ -22,8 +22,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Security Architecture | done | 1f909a92 | - |
 | Resolved Architecture TBD Items | done | 9e6c4c61 | - |
 | Appendix: Multi-Hop Relay Walkthrough | done | 6949c708 | - |
-| Consolidated Technology Stack | done | pending | - |
-| Connectivity Substrate In Heterogeneous networks | not started | - | - |
+| Consolidated Technology Stack | done | 990b0df1 | - |
+| Connectivity Substrate In Heterogeneous networks | done | pending | - |
 | Target Designs (Addendum) | not started | - | - |
 | Phase 0: Core Architecture Implementation | not started | - | - |
 | Phase 1: Foundation & Core Infrastructure | not started | - | - |
