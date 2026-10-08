@@ -2256,7 +2256,7 @@ Today the SDK client does not build connection strategies. It takes the `mechani
 
 ### Connection Establishment
 
-Connection establishment proceeds as follows. The SDK client (`SyneroymClient::connect`) runs these steps. The router uses the same lookup when it forwards a stream. The client needs a registry URL or a list of mechanisms that it was given. With neither, `connect` fails immediately. The DHT is only a second step after a registry that is set.
+Connection establishment proceeds as follows. The SDK client (`SyneroymClient::connect`) runs these steps. The router uses the same lookup when it forwards a stream. The client needs a registry URL or a list of mechanisms that it was given. With neither, `connect` fails immediately. The lookup asks the registry first. It asks the DHT only when the registry gives no record, or when no registry URL is set. It asks the DHT only if the DHT is on.
 
 Resolve service:
 
