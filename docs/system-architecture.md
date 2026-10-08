@@ -2452,9 +2452,9 @@ Additional transports, gateways, and protocol adapters can be added later withou
 
 ### Syneroym: Substrate Feature Implementation Design
 
-This part gives the design detail for the features in the [Feature Specification](system-requirements-spec.md#post-dd864a1-target-specifications-addendum). The Layer 1 to 4 sections above are the canonical definition of the layers. Each Phase section below adds the detail for one group of topics.
+This part gives design details for the features in the [Feature Specification](system-requirements-spec.md#post-dd864a1-target-specifications-addendum). The Layer 1 to 4 sections above give the official definitions of the layers. Each Phase section below adds details for one group of topics.
 
-> **Note:** Only sections with complex architectural considerations are expanded here. Trivial mappings are omitted.
+> **Note:** Only sections with complex architectural questions are expanded here. Simple mappings are omitted.
 >
 > **The phases are targets.** A phase is a planned group of work, not a record that the work is done. Each Phase section has built parts and Envisioned parts. Text with no marker is built. Text under the Envisioned marker is not built. The [traceability matrix](planning/traceability-matrix.md) gives the status of each requirement.
 
