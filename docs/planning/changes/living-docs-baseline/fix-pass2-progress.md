@@ -7,8 +7,8 @@ This pass applies the findings of the stage 2 verification reports (`fix-verific
 | Batch | Covers (doc areas) | Status | Hash | Notes |
 | --- | --- | --- | --- | --- |
 | S1 | Glossary, Open Questions, Phase 7 to Phase 3 | done | ef695524 | 15 new S1 rows; 2 backlog rows (rebuild sweep, directory federation); cites in new rows may be a few lines off (recheck) |
-| S2 | Phase 2, Phase 1 | running | | |
-| S3 | Phase 0, Addendum intro, Connectivity Substrate | not started | | |
+| S2 | Phase 2, Phase 1 | done | 5ae482f3 | 21 new S2 rows; 1 backlog row (index type unused); verifier report had one wrong fact (outbox budget comes from roles.app_sandbox); developer-guide.md lines 1149-1153 noted, not changed |
+| S3 | Phase 0, Addendum intro, Connectivity Substrate | running | | |
 | S4 | Technology Stack, Multi-Hop Relay appendix | not started | | |
 | S5 | Resolved TBD items, Security, Observability | not started | | |
 | S6 | Federation, Consumer Experience, Layer 4 | not started | | |
