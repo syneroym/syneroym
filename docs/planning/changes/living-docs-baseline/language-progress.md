@@ -8,8 +8,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 
 | Section | Status | Hash | Notes |
 | --- | --- | --- | --- |
-| Top matter & Table of Contents | done | pending | TOC links kept identical |
-| Executive Summary | not started | - | - |
+| Top matter & Table of Contents | done | 81416e87 | TOC links kept identical |
+| Executive Summary | done | pending | - |
 | Architecture Goals & Constraints | not started | - | - |
 | System Layers Overview | not started | - | - |
 | Layer 1 — Infrastructure | not started | - | - |

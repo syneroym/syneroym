@@ -126,11 +126,11 @@
 
 ## Executive Summary
 
-Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. Clusters interoperate through federation — cooperation between independently owned peer clusters over shared protocols, not server federation. A direct connection between two participants needs no server in the data path. An Iroh relay helps two peers connect. It carries their traffic until a direct path is found, or for as long as none exists. A coordinator forwards traffic only when a caller names it as the entry point, or when a browser falls back to the tunnel. Registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to replicate the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while avoiding their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
+Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**). These mini-apps run on commodity hardware controlled by providers. Clusters cooperate through federation: independently owned peer clusters cooperate over shared protocols, not server federation. A direct connection between two participants needs no server in the data path. An Iroh relay helps two peers connect. It carries their traffic until a direct path is found, or for as long as none exists. A coordinator forwards traffic only when a caller names it as the entry point, or when a browser falls back to the tunnel. Registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to provide the benefits of large consumer platforms — discovery, reputation, standardized transaction flows, institutional trust — while avoiding their drawbacks: vendor lock-in, loss of data ownership, unequal governance, and opaque algorithms.
 
 > **Envisioned.** Not built yet. Reputation. Today Roym has no reputation record. Trust comes from the signed membership credentials of a SynOrg.
 
-This document defines the architecture, technology stack, component design for:
+This document defines the architecture, technology stack, and component design for:
 
 - **The Syneroym Substrate** — the common technology layer all SynApps run on
 - **SynApp 1: Roym** — our flagship combined experience for business, professional and retail services. It is the one SynApp built so far.
