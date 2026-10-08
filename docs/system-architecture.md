@@ -126,14 +126,14 @@
 
 ## Executive Summary
 
-Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**). These mini-apps run on commodity hardware controlled by providers. Clusters interoperate through federation. Federation here means cooperation between independently owned peer clusters over shared protocols, not server federation. A direct connection between two participants needs no server in the data path. An Iroh relay helps two peers connect. It carries their traffic until a direct path is found, or for as long as none exists. A coordinator forwards traffic only when a caller names it as the entry point, or when a browser falls back to the tunnel. Registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to provide the benefits of large consumer platforms — discovery, reputation, standardized transaction flows, institutional trust — while avoiding their drawbacks: vendor lock-in, loss of data ownership, unequal governance, and opaque algorithms.
+Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**). These mini-apps run on ordinary hardware that providers control. Clusters work together through federation. Federation here means that independently owned peer clusters cooperate over shared protocols. It is not server federation. A direct connection between two participants needs no server in the data path. An Iroh relay helps two peers connect. The relay carries their traffic until a direct path is found, or for as long as no direct path exists. A coordinator forwards traffic only in two cases. One case is when a caller names it as the entry point. The other case is when a browser falls back to the tunnel. Registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to give the benefits of large consumer platforms. These benefits are discovery, reputation, standard transaction flows and institutional trust. The system also aims to avoid their drawbacks. These drawbacks are vendor lock-in, loss of data ownership, unequal governance and opaque algorithms.
 
 > **Envisioned.** Not built yet. Reputation. Today Roym has no reputation record. Trust comes from the signed membership credentials of a SynOrg.
 
 This document defines the architecture, technology stack, and component design for:
 
-- **The Syneroym Substrate** — the common technology layer all SynApps run on
-- **SynApp 1: Roym** — our flagship combined experience for business, professional and retail services. It is the one SynApp built so far.
+- **The Syneroym Substrate** — the common technology layer that all SynApps run on
+- **SynApp 1: Roym** — our main product, which combines business, professional and retail services. It is the one SynApp built so far.
 
 > **Envisioned.** Not built yet. The two planned verticals of Roym: the Professional Services Guild (home services first) and the Local Producer-Distributor Mesh (food and small retail). Today Roym is one generic app, and a local group is a SynOrg. See [Local Producer-Distributor Mesh](#local-producer-distributor-mesh).
 
@@ -145,12 +145,12 @@ This document defines the architecture, technology stack, and component design f
 
 | Principle | Implication |
 |---|---|
-| **Locality-first** | Optimized for nearby providers and consumers; global scale is secondary |
+| **Locality-first** | The design serves nearby providers and consumers first; global scale is secondary |
 | **Progressive decentralization** | A single device is fully useful; federation is additive |
 | **Data sovereignty** | All provider data lives on infrastructure the provider chooses |
-| **Transparency over opaqueness** | Ranking, discovery, and reputation algorithms are open-source or auditable |
+| **Transparency over opacity** | Ranking, discovery, and reputation algorithms are open-source or can be audited |
 | **Interoperability by convention** | SynApps cooperate through shared primitives; no central coordinator is needed |
-| **Offline-first** | Graceful degradation during network partitions; queued and async delivery between nodes |
+| **Offline-first** | The system keeps working in a reduced way during network partitions; delivery between nodes is queued and asynchronous |
 
 ### Key Hardware Constraints
 
@@ -205,7 +205,7 @@ block-beta
 
 Layer 3 holds two substrate utilities: identity and messaging. Discovery and matching, trust and reputation, and payments are Roym features. They are not substrate components, so the diagram shows them in Roym. The [Layer 3](#layer-3--shared-substrate-utilities) section describes them too.
 
-> **Envisioned.** Not built yet. Replication of service databases, a bootstrap server, a substrate on an Android phone, and a reputation record. Today the built data backup is the Roym archive. Keys have their own backups: `roymctl identity export` and `roymctl supervisor export-master`. A relay is a URL in the config of each substrate, and trust is the signed membership credentials of a SynOrg. The replication design is open: see [PLT-RED](#plt-red-service-redundancy).
+> **Envisioned.** Not built yet. Replication of service databases, a bootstrap server, a substrate on an Android phone, and a reputation record. Today the built data backup is the Roym archive. Keys have their own backups: `roymctl identity export` and `roymctl supervisor export-master`. A relay is a URL in the config of each substrate. Trust is the signed membership credentials of a SynOrg. The replication design is open: see [PLT-RED](#plt-red-service-redundancy).
 
 ### Conceptual Entity Model
 
@@ -237,11 +237,11 @@ erDiagram
     PERSON { string master_did }
 ```
 
-A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one configured relay URL. It does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. The process of a TCP service runs outside the substrate. A native-host service cannot be named in a deployment plan. A WASM or container service is built from an artifact: a WASM component or an OCI image, named in the `source` field of its service spec. For a container, `image` in `custom_config` replaces `source` when it is set.
+A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one configured relay URL. The substrate does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. The process of a TCP service runs outside the substrate. A native-host service cannot be named in a deployment plan. A WASM or container service is built from an artifact. The artifact is a WASM component or an OCI image. The `source` field of the service spec names it. For a container, `image` in `custom_config` replaces `source` when it is set.
 
-Provider and Consumer are not substrate entities. They are the two roles of a person in one Roym transaction. An aggregator is a SynOrg (Syneroym Organization) `directory` service. It aggregates the listings of the providers who publish to it. See [Federation Architecture](#federation-architecture).
+Provider and Consumer are not substrate entities. They are the two roles of a person in one Roym transaction. An aggregator is a `directory` service of a SynOrg (Syneroym Organization). It collects the listings of the providers who publish to it. See [Federation Architecture](#federation-architecture).
 
-> **Envisioned.** Not built yet. Federation between aggregators, and an aggregator that proxies a query to other aggregators. Today a directory answers from its own listings and does not forward a query to another directory.
+> **Envisioned.** Not built yet. Federation between aggregators, and an aggregator that passes a query on to other aggregators. Today a directory answers from its own listings and does not forward a query to another directory.
 
 ---
 
