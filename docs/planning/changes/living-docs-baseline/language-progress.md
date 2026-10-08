@@ -30,8 +30,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Phase 2: Core Platform Capabilities | done | 2a96752c | - |
 | Phase 3: Substrate & Application Lifecycle | done | 44f01b03 | - |
 | Phase 4: Advanced Services & Tooling | done | 5e725528 | - |
-| Phase 5: Peer-to-Peer Community Primitives | done | pending | - |
-| Phase 6: High-Level Applications (SynApps) | not started | - | - |
+| Phase 5: Peer-to-Peer Community Primitives | done | c41eb044 | - |
+| Phase 6: High-Level Applications (SynApps) | done | pending | - |
 | Phase 7: Edge Expansion | not started | - | - |
 | Open Questions & Recommendations | not started | - | - |
 | Glossary | not started | - | - |

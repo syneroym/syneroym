@@ -2943,7 +2943,7 @@ Access to `metrics.db` is securely governed by the unified authorization engine 
 
 ## Phase 6: High-Level Applications (SynApps)
 
-Roym is the one SynApp built so far. It has six services: `web`, `profile`, `conversation`, `catalog`, `transaction` and `directory`. The product is described in the [Roym spec](roym-integrated-experience-spec.md). Each item below says what is built today and marks the rest as Envisioned.
+Roym is the one SynApp built so far. It has six services: `web`, `profile`, `conversation`, `catalog`, `transaction`, and `directory`. The product is described in the [Roym spec](roym-integrated-experience-spec.md). Each item below says what is built today and marks the rest as Envisioned.
 
 ### 0. Core Client Architecture (The Syneroym Hub)
 *Addresses the architecture of the universal UI shell.*
@@ -2973,12 +2973,12 @@ Syneroym has no central coordinator. To execute distributed sagas across indepen
 **Design Approach:** 
 Action Cards are typed JSON documents, rather than arbitrary portable WASM components. This prevents malicious UI execution on the client device. A card carries a signed record and nothing derived from it. The client template for the card type and version decides the layout and the buttons. When a user taps a button, the Hub calls a Roym JSON-RPC method, for example `agreement.accept` on a quote.
 
-Roym has seven card types: `request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. The list is fixed. A card of an unlisted type or version shows as a neutral "unknown" block. See [Cards](roym-integrated-experience-spec.md#cards).
+Roym has seven card types: `request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The list is fixed. A card of an unlisted type or version shows as a neutral "unknown" block. See [Cards](roym-integrated-experience-spec.md#cards).
 
 ### 3. Flexible Payment Integration
 *Addresses integrating external gateways (Stripe/UPI) alongside the internal Mutual Credit ledger.*
 
-**Built today.** Roym does not process payments or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency and method, and it refuses a record that does not. The agreed terms in a quote list the accepted payment methods, the amount and the currency. The provider sends a `payment-request` card (currency, amount and an optional note). Either party can send a `payment-acknowledgement` card that says a payment happened, with an optional method and a reference as text. The Hub shows a notice that Roym does not see the money move.
+**Built today.** Roym does not process payments or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency and method, and it refuses a record that does not. The agreed terms in a quote list the accepted payment methods, the amount, and the currency. The provider sends a `payment-request` card (currency, amount, and an optional note). Either party can send a `payment-acknowledgement` card that says a payment happened, with an optional method and a reference as text. The Hub shows a notice that Roym does not see the money move.
 
 > **Envisioned.** Not built yet. No `PaymentIntent` interface, no payment gateway code and no Dynamic Ledger Network (DLN, the mutual credit ledger) exists.
 
