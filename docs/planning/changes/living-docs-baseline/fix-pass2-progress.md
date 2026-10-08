@@ -11,8 +11,8 @@ This pass applies the findings of the stage 2 verification reports (`fix-verific
 | S3 | Phase 0, Addendum intro, Connectivity Substrate | done | b242930d | 15 new S3 rows; 1 backlog row (SDK relay URL/registry URL limits); 2 CITE-OFF cells corrected |
 | S4 | Technology Stack, Multi-Hop Relay appendix | done | a19345df | 12 new S4 rows; 1 backlog row (Cp record expires ~2h after start) |
 | S5 | Resolved TBD items, Security, Observability | done | 717eb6ca | 12 new S5 rows; 2 backlog rows (revoking a person's key; anchor age check on DHT path); X3DH fixed in all 6 places (so S7 need not repeat); Prometheus label in config.sample.toml, config.dev.toml, AGENTS.md left (outside scope) |
-| S6 | Federation, Consumer Experience, Layer 4 | running | | |
-| S7 | Layer 3 (discovery, messaging, trust, payments, identity) | not started | | |
+| S6 | Federation, Consumer Experience, Layer 4 | done | 8cb8c5d1 | 12 new S6 rows + 1 corrected cell; 2 backlog rows (central record-type check unused; outbound node-to-node Iroh only) |
+| S7 | Layer 3 (discovery, messaging, trust, payments, identity) | running | | |
 | S8 | Layer 2 | not started | | |
 | S9 | Layer 1, overview and entity model, top matter, TERMINOLOGY.md | not started | | |
 | RECHECK | New rows labelled S1 to S9 | not started | | |
