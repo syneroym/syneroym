@@ -6,8 +6,8 @@ This pass applies the findings of the stage 2 verification reports (`fix-verific
 
 | Batch | Covers (doc areas) | Status | Hash | Notes |
 | --- | --- | --- | --- | --- |
-| S1 | Glossary, Open Questions, Phase 7 to Phase 3 | running | | |
-| S2 | Phase 2, Phase 1 | not started | | |
+| S1 | Glossary, Open Questions, Phase 7 to Phase 3 | done | ef695524 | 15 new S1 rows; 2 backlog rows (rebuild sweep, directory federation); cites in new rows may be a few lines off (recheck) |
+| S2 | Phase 2, Phase 1 | running | | |
 | S3 | Phase 0, Addendum intro, Connectivity Substrate | not started | | |
 | S4 | Technology Stack, Multi-Hop Relay appendix | not started | | |
 | S5 | Resolved TBD items, Security, Observability | not started | | |
