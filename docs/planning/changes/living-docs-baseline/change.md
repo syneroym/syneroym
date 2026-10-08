@@ -315,6 +315,14 @@ Stage 2 recheck fix, RC:
 - **Backlog row on anonymous routes.** The row said `messaging` admits anonymous requests. Only `subscribe-sse` does. `publish` answers 401. The row is corrected.
 - **Not edited (not a doc fault).** `crates/conversation/src/crypto.rs:5` ("X3DH"), `crates/app_supervisor/src/keys.rs:3` (key name format), `crates/sandbox_wasm/src/engine/lifecycle.rs:116-125` (planning ids in a comment) and the AGENTS.md "local HTTP proxy" wording. Code and AGENTS.md are out of scope for this pass.
 
+### Stage 3 follow-up: Roym write rules moved to Layer 4
+
+- The audit item L2-39 asked to state that arbitration is an app rule and to move the table to the Roym docs. The first part was done earlier. The move was not planned in any fix commit. It is done now.
+- The table of Roym write rules left Layer 2 (Storage & Write Arbitration). Layer 2 now names only substrate primitives: one writer task, `put`, `create` (the fence), and the FDAE policy rule.
+- The agreement decision and the booking slot are in Layer 4 (Booking State Machine, Slot claiming). The listing and message rules are in a new paragraph "Listing and message rules" below it. The order-state rule (provider wins a same-instant cancel) is in the Envisioned block of that subsection.
+- The Layer 2 bullet about a reputation record was dropped. Layer 3 (Trust & Reputation) and Phase 5 already say that no reputation record exists.
+- The roym spec was not touched. Where Roym content finally lives (this doc or the requirements) stays open.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

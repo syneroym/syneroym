@@ -589,20 +589,9 @@ The blob store is content-addressed. The key of a blob is the SHA-256 hash of it
 
 **Durable outbox.** A guest can queue a call to another service. The substrate saves the call in an SQLite outbox that belongs to the calling service. The outbox is a file next to the encrypted database of that service. A worker on the node retries the call with backoff. A call that can never succeed goes to a dead-letter table (ADR-0023). The receiver can fence a call that carries an idempotency key. The call then runs once, even if it is delivered more than once. The receiver refuses a call that has a key but no verified caller.
 
-**Write rules.** The data layer does not decide who wins a race. It only puts the writes in order. The rules below are in the Roym services. Bookings are written on the provider's node only, so a race is two requests that reach one writer.
+**Write rules.** The data layer does not decide who wins a race. It only puts the writes in order. It gives a service two ways to write. `put` replaces the whole payload of a record, so the last write wins. `create` writes rows only if none of their ids exists yet. It is the one write that is not last-write-wins, so a service uses it as a fence when two concurrent calls must not both succeed.
 
-| Record | Rule | Rationale |
-|---|---|---|
-| Agreement decision | One decision per agreement. The first claim wins. A later attempt gets the first result back (the code calls this outcome `AlreadyDecided`). | The provider's node is the only writer. |
-| Booking slot | Seats are claimed in order with the create fence of the data layer. When no seat is free, the booking opens as `conflict` with the reason `slot-taken`. This is the wire form in the signed `booking-progress` snapshot. The Rust name is `SlotTaken`. | Prevents double-booking. |
-| Listing (catalog) | The whole listing is saved with `put`, so the last write wins for the listing. Each version is also kept in a history collection. | The catalog is provider-owned. |
-| Message | Append-only log. An entry that is already stored is ignored. | Messages are immutable once sent. |
-| Access control policy (FDAE) | The policy is saved as one document per service. A new policy replaces the old one at once. | A tighter policy must take effect immediately (ADR-0017). |
-
-> **Envisioned.** Not built yet. Roym has no order entity and no reputation record, so two rules are not in the code.
->
-> - **Order state.** A provider action beats a same-instant consumer action. Otherwise the first request wins. The reason: the provider has operational authority over their service. Today the nearest rule is the agreement decision above.
-> - **Reputation record.** The log is append-only, and the issuer signs each record. Today Roym has signed receipts (payment acknowledgement, fulfilment receipt) but no reputation record.
+The rules that decide a winner belong to the services. The Roym services keep their rules in Layer 4: see [Booking State Machine](#booking-state-machine) for the agreement decision and the booking slot, and the paragraph "Listing and message rules" below it. The access control policy (FDAE) is a substrate rule. The policy is saved as one document per service. A new policy replaces the old one at once. A tighter policy must take effect immediately (ADR-0017).
 
 > **Envisioned.** Not built yet. Today there is one database per service and no replica role.
 >
@@ -1202,9 +1191,11 @@ The rules of the booking:
 - **Track window.** Each track stays open for 30 days after the end of the quote's schedule. With no schedule, it is 30 days after the booking opens. After that, a track that is `none` or `claimed` becomes `unconfirmed`. When both tracks are final and not both are `acknowledged`, the booking is `ended-unconfirmed`. It holds whatever claims exist.
 - **Cancel.** Only the provider can cancel, with `booking.cancel` and a reason. It is possible only while both tracks are `none`. A consumer asks in the conversation. A cancel frees the claimed seat.
 
-**Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The provider's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the booking is `conflict` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result.
+**Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The provider's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the booking is `conflict` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result. The provider's node is the only writer of a booking, so a race is two requests that reach one writer. The code names the two outcomes `AlreadyDecided` and `SlotTaken`. The signed `booking-progress` snapshot writes the second one as `slot-taken`.
 
-> **Envisioned.** Not built yet. A dispute workflow, a refund, a review of a completed booking and a cancel by the consumer. Today the cancellation terms, the refund terms, and the dispute path are text in the agreed terms, and the Roym `directory` settings carry a dispute path as text. A rule that the provider wins a cancel from the consumer at the same instant needs a consumer cancel first. See [Storage & Write Arbitration](#storage--write-arbitration).
+**Listing and message rules.** The catalog saves the whole listing with `put`, so the last write wins for the listing. Each version is also kept in a history collection. The catalog is provider-owned. A message log is append-only. An entry that is already stored is ignored. Messages are immutable once sent.
+
+> **Envisioned.** Not built yet. A dispute workflow, a refund, a review of a completed booking and a cancel by the consumer. Today the cancellation terms, the refund terms, and the dispute path are text in the agreed terms, and the Roym `directory` settings carry a dispute path as text. A rule that the provider wins a cancel from the consumer at the same instant needs a consumer cancel first. That rule would say: a provider action beats a same-instant consumer action, and otherwise the first request wins, because the provider has operational authority over their service. Today the nearest rule is the agreement decision.
 
 #### Consumer Transaction Flow
 
@@ -1535,7 +1526,7 @@ The substrate gets a **multi-node simulation harness** for development and CI:
 
 - Runs N substrate instances in a single test binary with a controllable fake network
 - Induces partitions, delays, and node restarts deterministically
-- Each write rule in [Storage & Write Arbitration](#storage--write-arbitration) gets a scenario that checks the outcome. No such simulation scenario exists today. Ordinary tests check some write rules, for example the booking slot conflict in `crates/roym_web/tests/dual_build_parity/booking.rs`.
+- Each Roym write rule in [Booking State Machine](#booking-state-machine) gets a scenario that checks the outcome. No such simulation scenario exists today. Ordinary tests check some write rules, for example the booking slot conflict in `crates/roym_web/tests/dual_build_parity/booking.rs`.
 - Property-based tests (`proptest`) verify outbox replay is idempotent for arbitrary request orderings and retries
 - Simulation output carries the same `trace_id` correlation used in production, so failures are immediately diagnosable from the trace
 
@@ -1690,7 +1681,7 @@ This section lists the design decisions for the open items of the architecture, 
 | 1 | Migration protocol | Roym archive: encrypted under a recovery key, with person-signed service manifests (`roymctl roym backup`). A generic SynApp export (SQLite snapshot, blob store, App Spec) is Envisioned. | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) | Built. The generic export is Envisioned. |
 | 2 | Backup mechanism | Roym archive on demand. Continuous replication and S3-compatible backups are Envisioned: [PLT-RED](#plt-red-service-redundancy) | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) | Built. Replication and S3-compatible backups are Envisioned. |
 | 3 | Storage conflict model | Single writer task per service database (SQLite); write rules per record type in the Roym services, not CRDT merge | [Storage & Write Arbitration](#storage--write-arbitration) | Built |
-| 4 | Conflict resolution rules per entity type | Write rules per record type (agreement decision, booking slot, listing, message, policy). The order-state rule that favors provider authority is Envisioned. | [Storage & Write Arbitration](#storage--write-arbitration) | Built. The order-state rule is Envisioned. |
+| 4 | Conflict resolution rules per entity type | Write rules per record type (agreement decision, booking slot, listing, message, policy). The order-state rule that favors provider authority is Envisioned. | [Booking State Machine](#booking-state-machine) (Roym rules) and [Storage & Write Arbitration](#storage--write-arbitration) (substrate primitives and the policy rule) | Built. The order-state rule is Envisioned. |
 | 5 | Vouching mechanics and weighting | Candidate design, not final: signed VouchRecord; weight = `base × 0.5^hops`; max depth 3; stake requirement for high-weight vouches. The reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). | [Trust & Reputation](#trust--reputation) | Envisioned |
 | 6 | Credential format and verification | Built: a SynOrg issues a signed Roym `membership-credential` record and withdraws it with a signed revocation. Envisioned: W3C VC Data Model 2.0; the `ssi` library for issuance/verification; consumer configures trusted issuers. | [Trust & Reputation](#trust--reputation) | Built in part. W3C VC Data Model 2.0 with `ssi` is Envisioned. |
 | 7 | Reputation portability mechanism | Candidate design, not final: both-party signed `ReputationRecord` anchored in DHT; portable by republishing under same identity key. The reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). | [Trust & Reputation](#trust--reputation) | Envisioned |
