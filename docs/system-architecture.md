@@ -716,13 +716,13 @@ A schedule is a cron expression with five fields. The parser also accepts a lead
 
 ## Layer 3 — Shared Substrate Utilities
 
-Identity is a substrate utility. Discovery & Matching, Trust & Reputation and Payments describe Roym features built on substrate primitives. Messaging combines the two: the substrate owns the conversation history and its delivery, and Roym decides which messages to accept.
+Identity is a substrate utility. Discovery & Matching, Trust & Reputation, and Payments describe Roym features built on substrate primitives. Messaging combines the two: the substrate owns the conversation history and its delivery, and Roym decides which messages to accept.
 
 ### Identity
 
 The system separates a persistent root identity from the short-lived keys that act every day. Two kinds of key are built:
 
-1. **Master Key (DID):** A persistent `did:key` (Ed25519). It is the identity of a person or of a member service. A person's master key is a key file. The App Supervisor keeps the master keys of the members it manages in its encrypted service vault. An exported identity is encrypted under a recovery key. [Keys: Location, Use, Loss](#keys-location-use-loss) has the details. The master key signs delegation certificates, its master anchor, the endpoint records of its member services and the capability tokens (UCAN) that it grants.
+1. **Master Key (DID):** A persistent `did:key` (Ed25519). It is the identity of a person or of a member service. A person's master key is a key file. The App Supervisor keeps the master keys of the members it manages in its encrypted service vault. An exported identity is encrypted under a recovery key. [Keys: Location, Use, Loss](#keys-location-use-loss) has the details. The master key signs delegation certificates, its master anchor, the endpoint records of its member services, and the capability tokens (UCAN) that it grants.
 2. **Temporary Key (DID):** A short-lived `did:key` (Ed25519) that a master authorizes with a delegation certificate. The issuer chooses the lifetime. The default is 24 hours for `roymctl session delegate` and `roymctl identity certify-instance`, and 4 hours for an instance certificate that the App Supervisor mints. A temporary key is not the routing index in the DHT and publishes no DHT record. The record of a substrate is signed by the node key, which is also its Iroh key. The record of a member service is signed by the member's master key.
 
 ```mermaid
@@ -746,7 +746,7 @@ flowchart TD
 > **Envisioned.** Not built yet. The master key is a plain key file or a vault entry. No code stores a key in an OS enclave, and no code handles a government identity or a zero-knowledge proof. See Method B below.
 
 #### Cryptographic Delegation (Method A)
-For standard operations, the Master Key issues a "Delegation Certificate" to a generated Temporary Key. The certificate holds the master DID, the temporary DID, an issue time, an expiry time and one scope. The master signs these five fields (Ed25519, over canonical JSON). The scope says what the temporary key may do as the master:
+For standard operations, the Master Key issues a "Delegation Certificate" to a generated Temporary Key. The certificate holds the master DID, the temporary DID, an issue time, an expiry time, and one scope. The master signs these five fields (Ed25519, over canonical JSON). The scope says what the temporary key may do as the master:
 
 - `routing`: route a stream under the master's identity, for example a device key.
 - `service-instance`: a key that a substrate derives for a service instance. The member master certifies it, so the instance speaks as that member.
@@ -756,7 +756,7 @@ For standard operations, the Master Key issues a "Delegation Certificate" to a g
 A verifier names the scopes that it accepts, so a certificate made for one purpose cannot be replayed for another.
 
 When a stream opens, the router (`HandshakeVerifier::verify_preamble`) validates this chain:
-1. Did the Master Key authorize this Temporary Key? The router checks the signature, the validity window and the scope (`routing` or `service-instance`) of the certificate, and that the temporary DID in the certificate is the DID of the key in the preamble.
+1. Did the Master Key authorize this Temporary Key? The router checks the signature, the validity window, and the scope (`routing` or `service-instance`) of the certificate, and that the temporary DID in the certificate is the DID of the key in the preamble.
 2. Has the Master Key revoked this Temporary Key? The router resolves the master anchor (see below). It refuses the stream if the key is on the `revoked_keys` list, or if the anchor cannot be resolved within 5 seconds.
 
 When the preamble carries no certificate, the router accepts the key in the preamble as the caller's own master key. The optional end-to-end handshake (`enc=ecdh-p256`) is a separate step. It does not use the certificate. See [Encryption at Every Layer](#encryption-at-every-layer).
@@ -777,7 +777,7 @@ A person may later attach an optional assurance credential to a master key, for 
 #### Signed Records
 A signed record is a statement that one identity makes and that any node can check without asking the issuer. The substrate defines one envelope. It holds `envelope_version`, `version`, `record_type`, `issuer`, `subject`, `issued_at_secs`, an optional `expires_at_secs`, an optional `supersedes`, the `payload` (a JSON object), an optional `delegation` (a certificate, as JSON) and the `signature`. The record id is `rec_` followed by the z-base-32 SHA-256 digest of the canonical signed envelope. A correction is a new record that names the id of the record it corrects in `supersedes`. Nothing is edited.
 
-Limits on a record: the `payload` is at most 64 KiB when canonicalized, nests at most 32 deep, and holds integers only (a price is in minor units). The `record_type` is 1 to 64 bytes of lowercase ASCII letters, digits and `-`. The `subject` is at most 256 bytes. The substrate checks the shape of the record type and not its vocabulary. Roym fixes the table of the twelve record types that it produces.
+Limits on a record: the `payload` is at most 64 KiB when canonicalized, nests at most 32 deep, and holds integers only (a price is in minor units). The `record_type` is 1 to 64 bytes of lowercase ASCII letters, digits, and `-`. The `subject` is at most 256 bytes. The substrate checks the shape of the record type and not its vocabulary. Roym fixes the table of the twelve record types that it produces.
 
 **Signing.** A guest component calls `sign-record` of the `syneroym:signing` interface with a draft. The host builds the envelope and signs it. The component cannot state its own issuer or its own times. No function of the interface returns key material, and no function signs bytes that the caller supplies. The key is the signing key that the node derives for the service. The component picks one of two principals:
 
@@ -860,7 +860,7 @@ flowchart TD
 
 **Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves endpoint records and master anchors — identity-to-route lookups, not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
 
-**Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text and filters. Its answer is a list of candidates and is never a verified answer. Today a provider publishes only the `listing` record to a directory.
+**Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text, and filters. Its answer is a list of candidates and is never a verified answer. Today a provider publishes only the `listing` record to a directory.
 
 The consumer's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry and the delegation window. Each hit also carries a revocation status. Today this status is always `unknown`, because no revocation source is given to the check. A hit that fails the check is kept apart from the others. A withdrawn membership is judged apart, by the standing check (see [Trust & Reputation](#trust--reputation)). Each node that runs the `directory` service keeps its own list of directories and chooses which of them to query. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
 
@@ -903,7 +903,7 @@ flowchart TD
 
 ### Messaging
 
-Messaging is a substrate capability (`syneroym:conversation`, host crate `syneroym-conversation`). The host owns the history of each conversation: the encrypted log, the outbox, delivery, ordering, search, deletion and export ([ADR-0025](decisions/0025-conversation-capability-owns-history.md)). For each incoming message, the host asks the Roym `conversation` service to accept, hold or drop it.
+Messaging is a substrate capability (`syneroym:conversation`, host crate `syneroym-conversation`). The host owns the history of each conversation: the encrypted log, the outbox, delivery, ordering, search, deletion, and export ([ADR-0025](decisions/0025-conversation-capability-owns-history.md)). For each incoming message, the host asks the Roym `conversation` service to accept, hold or drop it.
 
 ```mermaid
 flowchart TD
@@ -936,7 +936,7 @@ flowchart TD
 
 **Libraries:** `vodozemac` for the Olm protocol (a triple Diffie-Hellman key exchange, 3DH, and a Double Ratchet) in 1-to-1 chat. Group chat uses one AES-256-GCM key for each epoch, which the group owner makes and distributes, and Ed25519 signatures on every entry. No `libsignal-protocol-rust` and no `openmls` is used. ADR-0013 Amendment 1 replaced MLS with the owner-distributed key ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). The key agreement sits behind one interface, so the DAG, the ordering and the storage do not depend on it.
 
-The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` while the peer is not reachable. It becomes `failed` when delivery is refused for good (for example, the peer refuses it, or the sending service has no valid instance certificate), when the delivery attempts run out, or after 30 days (`conversation_max_pending_age_secs`). Delivery has three states: `pending`, `delivered` and `failed`.
+The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` while the peer is not reachable. It becomes `failed` when delivery is refused for good (for example, the peer refuses it, or the sending service has no valid instance certificate), when the delivery attempts run out, or after 30 days (`conversation_max_pending_age_secs`). Delivery has three states: `pending`, `delivered`, and `failed`.
 
 **Group chat controls:**
 - Only the owner of a group changes its members, and it can hold at most 256 members by default.
@@ -960,7 +960,7 @@ The sender gets the prekey bundle of the receiver with the `prekey-bundle` call 
 
 ### Trust & Reputation
 
-**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today. Reputation is decentralized, reliable and transparent. The owner controls what is shared. Reputation is a Roym feature, not a substrate component.
+**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today. Reputation is decentralized, reliable, and transparent. The owner controls what is shared. Reputation is a Roym feature, not a substrate component.
 
 **Built today.** Roym computes no rating, score or vouch. These parts exist:
 
@@ -1042,7 +1042,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 Payment handling is a Roym feature, not a substrate component. See [Flexible Payment Integration](#3-flexible-payment-integration) in Phase 6.
 
-**Built today.** Payment is out of band by design. Roym does not process a payment or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency and method, and it refuses a record that does not. The provider signs a `payment-request` record. Either party signs a `payment-acknowledgement` record that says a payment happened. The acknowledgement is the word of its issuer, and Roym does not see the money move. The Hub shows a notice that says so. The payee text of a card is a link only when it uses `http` or `https`. Any other scheme, such as a UPI link, shows as plain text.
+**Built today.** Payment is out of band by design. Roym does not process a payment or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency, and method, and it refuses a record that does not. The provider signs a `payment-request` record. Either party signs a `payment-acknowledgement` record that says a payment happened. The acknowledgement is the word of its issuer, and Roym does not see the money move. The Hub shows a notice that says so. The payee text of a card is a link only when it uses `http` or `https`. Any other scheme, such as a UPI link, shows as plain text.
 
 > **Envisioned.** Not built yet. No payment gateway, `PaymentIntent` interface, adapter, mutual credit or coin code exists. The design below is the direction: redirection to external payment flows (for example UPI deep links), and later fully integrated gateways, to keep central dependencies few at the start. Today nothing verifies a payment.
 

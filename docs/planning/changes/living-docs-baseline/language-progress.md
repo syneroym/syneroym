@@ -13,8 +13,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Architecture Goals & Constraints | done | 6b5d3f84 | - |
 | System Layers Overview | done | 64f44fde | - |
 | Layer 1 — Infrastructure | done | 8e55c52c | - |
-| Layer 2 — Substrate Runtime | done | pending | - |
-| Layer 3 — Shared Substrate Utilities | not started | - | - |
+| Layer 2 — Substrate Runtime | done | 00cbf805 | - |
+| Layer 3 — Shared Substrate Utilities | done | pending | - |
 | Layer 4 — SynApp Specifications | not started | - | - |
 | Federation Architecture | not started | - | - |
 | Consumer Experience Architecture | not started | - | - |
