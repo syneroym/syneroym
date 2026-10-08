@@ -891,12 +891,12 @@ This defines the baseline resilience required for underlying node-to-node and cl
 ## Phase 1: Foundation & Core Infrastructure
 
 ### [FND-DEP] Deployment/Operations
-- **Cloud-Agnostic Bare-Metal Deployment:** Single Rust binary deployed to a standard Linux instance (e.g., AWS Lightsail) using native `systemd` to minimize virtualization overhead.
-- **In-Repo Provisioning & Deployment:** `scripts/deploy/setup_linux.sh` handles initial machine setup (certbot, limits, systemd), while `scripts/deploy/deploy.sh` handles local compilation and rsync transfer. GitHub Actions (`.github/workflows/deploy.yml`) acts merely as a trigger to run the local deploy script.
-- **Native TLS:** Direct or systemd-socket-activated binding to port 443 within the Syneroym substrate using `rustls`. Certificates are fetched/renewed via an OS-level `certbot` timer. The substrate restarts or reloads configuration to pick up renewed certificates.
+- **Cloud-Agnostic Bare-Metal Deployment:** Single Rust binary deployed to a standard Linux instance (e.g., AWS Lightsail) to minimize virtualization overhead.
+- **Packaging & Deployment:** Provisioning and deployment rely on multi-stage container images (`Dockerfile`), pre-configured community compose definitions (`deploy/docker-compose.community.yml`), and automated GitHub Actions release pipelines (`.github/workflows/release.yml`) compiling and publishing multi-architecture binaries and Docker images.
+- **Native TLS:** Direct binding to port 443 within the Syneroym substrate using `rustls`. Certificates are fetched and renewed via `certbot`, and reloaded from disk via `SIGUSR1` signal handling without restarting the process.
 - **Resource Protection:** Configuration parameters for connection caps and cache limits ensure the node gracefully refuses excess traffic instead of crashing (OOM).
-- **Operator Experience:** SSH, `journalctl`, and local health endpoints remain
-  expert diagnostic tools. Production operation additionally requires guided install, plain-language health, backup/restore, update/rollback, and actionable incident notifications through a local or securely delegated admin surface.
+- **Operator Experience:** SSH, `journalctl`, and local health endpoints (`/v1/info`) remain expert diagnostic tools. Encrypted backup and restore is managed via `roymctl`, and the App Supervisor reports active health alerts.
+  > **Envisioned.** Not built yet. Interactive guided install and automated update/rollback CLI workflows. Today operations rely on standard CLI verbs and container lifecycle management.
 - **Cross-Platform Distribution:** Automated build pipelines to compile and release Syneroym binaries for different architectures (Linux, macOS, Windows).
 - **Dockerized Substrate:** Provide official Docker images of the Syneroym substrate for the community, pre-configured to point their local registries and coordinators to the public `syneroym.xyz` node.
 - **Smoke Testing:** Automated integration/smoke tests that run against release candidates (binaries and Docker images) to verify they can successfully connect to and interact with the deployed coordinator and registry at `syneroym.xyz`.
@@ -904,16 +904,17 @@ This defines the baseline resilience required for underlying node-to-node and cl
 ### [FND-SEC] Substrate Security
 - **Data at Rest Encryption (Envelope Encryption):** 
   - To prevent catastrophic re-encryption of gigabytes of data during key rotation, the substrate uses Envelope Encryption. Unique Data Encryption Keys (DEKs) are generated to encrypt the actual blobs and SQLite databases (via SQLCipher — see [ADR-0006](decisions/0006-sqlite-encryption-sqlcipher.md)).
-  - The service owner negotiates and injects a Master Key (Key Encryption Key or KEK) securely into substrate RAM at startup. The KEK only encrypts the tiny DEKs stored on disk. Key rotation is instantaneous as only the DEKs are re-encrypted with the new KEK. KEK scope narrows progressively: substrate-global first (M3), then a per-SynApp-Instance KEK *derived* from that master (M4, M04A Slice B6 — defense-in-depth, not tenant isolation), with IAM-gated per-instance/per-service *provisioning* (a distinct, separately-injected KEK per instance, gating production multi-tenant-at-rest security per ADR-0006) as the still-outstanding eventual target; DEKs are per-service from day one.
+  - The service owner negotiates and injects a Master Key (Key Encryption Key or KEK) securely into substrate RAM at startup. The KEK only encrypts the tiny DEKs stored on disk. Key rotation is instantaneous as only the DEKs are re-encrypted with the new KEK. KEK scope narrows progressively: a per-SynApp-Instance KEK *derived* from the master KEK (defense-in-depth, not tenant isolation), with IAM-gated per-instance/per-service *provisioning* (a distinct, separately-injected KEK per instance, gating production multi-tenant-at-rest security per [ADR-0006](decisions/0006-sqlite-encryption-sqlcipher.md)) as the still-outstanding eventual target; DEKs are per-service from day one.
   - **Secret Vault:** Application secrets (API keys, credentials) are stored securely inside a dedicated Vault table within the encrypted per-service SQLite database, rather than as vulnerable flat files on disk. Non-secret configuration may share the same encrypted store for convenience, but it is not treated as a secret unless marked as such.
   - Production profiles default local databases and all remote backups to
     encryption. Opt-out is limited to explicitly marked non-sensitive
     development profiles and produces a persistent insecure-state warning.
-  - Remote backups (e.g., WAL frames or object snapshots) are streamed to S3-compatible stores or peer backup substrates and are encrypted locally before transit when configured.
+  - **Remote Backups:** Local backup archives are encrypted locally before storage or transit (see `[IDT-BAK]`).
+    > **Envisioned.** Not built yet. Streaming live WAL frames or object snapshots to S3-compatible stores or peer backup substrates. Today backups are created as sealed encrypted archive files.
 - **Hardware Attestation (optional; layers on without changing the security model):**
-  - The substrate exposes a `substrate.attest(nonce)` API to the network.
-  - The App Deployer/Owner externally challenges the node (at deployment or periodically) and mathematically verifies the hardware quote (TPM, KeyAttestation, AppAttest).
-  - The deployer alone decides whether to deploy the service in a degraded trust environment or halt execution if attestation fails. 
+  > **Envisioned.** Not built yet. Substrate integrity relies on software signature validation.
+  >
+  > The substrate exposes a `substrate.attest(nonce)` API to the network. The App Deployer/Owner externally challenges the node (at deployment or periodically) and mathematically verifies the hardware quote (TPM, KeyAttestation, AppAttest). The deployer alone decides whether to deploy the service in a degraded trust environment or halt execution if attestation fails.
 - **Memory Protection & Key Splitting:**
   - OS-level memory locking (e.g., `mlock`) prevents injected cryptographic keys from being swapped to disk.
   - The `zeroize` crate is used to explicitly wipe sensitive variables from RAM when dropped.
@@ -925,12 +926,29 @@ This defines the baseline resilience required for underlying node-to-node and cl
   - Network edge protection: Strict connection and payload limits at the Iroh/QUIC boundary.
   - Runtime execution limits: The substrate enforces the physical capabilities of the host alongside strict quotas defined in the `SynApp` manifest (e.g., `max_memory`, `max_instructions`). Wasmtime's fuel metering deterministically traps components exceeding their gas limits without stalling the node.
 - **Supply Chain Integrity:**
-  - Released binaries and SynApp packages are signed and verifiable offline.
-    Trust-root rotation, compromise recovery, publisher identity, provenance,
-    and rollback protection are documented; one permanently hardcoded project
-    key must not be the ecosystem's unrecoverable trust root.
+  Binary releases produce verifiable SHA-256 checksums, and SynApp packages use SHA-256 content hashes.
+  > **Envisioned.** Not built yet. Offline cryptographic signing of binaries and SynApp packages, trust-root rotation, and verifiable publisher provenance. Today integrity verification relies on release SHA-256 checksums and content-addressed hashes.
+  >
+  > Released binaries and SynApp packages are signed and verifiable offline. Trust-root rotation, compromise recovery, publisher identity, provenance, and rollback protection are documented; one permanently hardcoded project key must not be the ecosystem's unrecoverable trust root.
 
 > **Implementation Design:** For technical details covering Envelope Encryption and Memory Protection, see [Feature Design: FND-SEC](system-architecture.md#fnd-sec-substrate-security).
+
+### [SEC-SGN] Host-Only Signing Isolation
+Private cryptographic signing keys stay in substrate host memory. Guest WebAssembly components never access raw private keys, preventing key exfiltration.
+
+- **Host Signing Boundary (`syneroym:signing`):** Guest components sign records only through the host WIT interface (`syneroym:signing`). The host provides no general "sign these bytes" interface and returns no private keys.
+- **Envelope Creation & Draft Validation:** The host builds the canonical JSON signed record envelope (`ENVELOPE_VERSION = 1`) around the guest's record draft (`record-draft`). The host validates the draft structure, supplies the issuance timestamp, and sets the verified issuer DID. Guests cannot create timestamps or fake record issuers.
+- **Principal Modes:** Signing supports two principal modes:
+  - `service`: Signs with the service's derived signing key, using that key's `did:key` as the issuer.
+  - `delegated`: Signs on behalf of another master DID (such as an organization or person) proven by a signed `DelegationCertificate` scoped for `record-signing`. The host checks the certificate on every call and rejects certificates that do not certify the service's signing key.
+
+### [SEC-ISO] Wasmtime Sandbox Isolation & Resource Limits
+Substrates run guest WebAssembly components inside Wasmtime sandboxes with strict resource boundaries and capability limits.
+
+- **Pooling Allocator:** The Wasmtime engine uses a pre-allocated instance pooling allocator (`InstanceAllocationStrategy::Pooling`) with copy-on-write memory initialization (`memory_init_cow`). Total component instances, core instances, memories, and tables are bounded at substrate initialization to prevent memory exhaustion.
+- **Deterministic Fuel Metering:** Wasmtime consumes fuel (`consume_fuel(true)`) on each executed instruction. Component invocations receive an instruction limit from the service manifest (`max_instructions`) or substrate default. If a component uses all its fuel, the host halts execution without blocking the runtime.
+- **Epoch-Based Interruption:** An engine epoch ticker advances a periodic clock. Invocations bind epoch deadlines for request dispatch, lifecycle hooks, and ABAC evaluation (`dispatch_epoch_ticks`, `lifecycle_hook_epoch_ticks`, `abac_epoch_ticks`). Passing the deadline interrupts execution.
+- **Empty WASI Context:** Sandboxes initialize with an empty `WasiCtx` (`WasiCtx::builder().build()`). Components have no access to host filesystems, environment variables, network sockets, or system clocks. All platform operations occur through explicit `syneroym:*` WIT host capability imports.
 
 ### [FND-IDT] Cryptographic Identity Primitives
 - **Issuer-Neutral Key Hierarchy:** Implement stable owner-controlled identity
@@ -943,9 +961,10 @@ This defines the baseline resilience required for underlying node-to-node and cl
   chain, and tells the user when continuity cannot be proven.
 - **Lightweight Consumer Identity:** Support device-bound consumer keys and an
   encrypted backup/import path without requiring a personal substrate.
-- **Privacy-Preserving Credential Plugins:** A sandboxed extension point may load
-  proof schemes such as `anon-aadhaar` when a vertical and jurisdiction justify
-  them. This is not release-blocking and must not enlarge the default trust base.
+- **Privacy-Preserving Credential Plugins:**
+  > **Envisioned.** Not built yet. Sandboxed extension points for zero-knowledge or external credential proof schemes.
+  >
+  > A sandboxed extension point may load proof schemes such as `anon-aadhaar` when a vertical and jurisdiction justify them. This is not release-blocking and must not enlarge the default trust base.
 
 
 ### [FND-CFG] Service Configuration
@@ -964,7 +983,7 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
   - **Bind**: If the parent depends on an *already running* app instance, the parent manifest references it. The target's Explicit Service IDs are resolved at deploy time and injected into the parent's configuration, rather than spawning new instances. A bound dependency's identity survives relocation and restart ([ADR-0020](decisions/0020-stable-logical-service-identity.md)), so it breaks only if that service is genuinely replaced — at which point the parent's owner owns the consequence. The parent's App Supervisor health-probes bound external dependencies on its normal poll loop so such a break surfaces as an alert rather than as user-visible failure.
 - **Schema Validation & Defaults**: To prevent runtime crashes, `SynSvc` manifests can define a schema (e.g., JSON Schema) for their expected configuration. `roymctl` and the Orchestrator validate the user-provided configuration against this schema at deploy-time, catching missing keys or type mismatches early.
 - **Out-of-Band Secret Rotation**: While regular configuration changes happen via explicit manifest deployments (which naturally trigger a restart), secrets live independently in the Vault. If a secret is rotated *out-of-band* by an admin, the manifest's `rotation_policy` dictates whether the orchestrator automatically restarts the affected service or waits for the next manual deployment.
-- **Anti-Goal: "Helm-ification"**: The `SynApp` manifest is strictly a "dumb", fully-resolved document. Syneroym rejects complex in-manifest templating (like Helm). If developers need environment-specific overrides, they should use external tools (like `cue`, `ytt`, or simple scripts) to generate a static manifest *before* passing it to `roymctl deploy`. The only dynamic variables supported are standard host parameters (e.g., `SYNEROYM_NODE_IP`) that the orchestrator inherently injects at runtime.
+- **Anti-Goal: "Helm-ification"**: The `SynApp` manifest is strictly a "dumb", fully-resolved document. Syneroym rejects complex in-manifest templating (like Helm). If developers need environment-specific overrides, they should use external tools (like `cue`, `ytt`, or simple scripts) to generate a static manifest *before* passing it to `roymctl deploy`. Manifests are strictly static and fully resolved before deployment.
 
 > **Implementation Design:** For technical details regarding the dual-target configuration delivery and cold restart behavior, see [Feature Design: FND-CFG](system-architecture.md#fnd-cfg-service-configuration).
 
@@ -983,6 +1002,14 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
   4. **After-Step (ABAC & Override Filter):** An optional custom WASM function performs fine-grained, non-relational ABAC checks on the candidate rows.
 
 > **Implementation Design:** For technical details regarding the FDAE architecture and the 4-stage hybrid pipeline, see [Feature Design: FND-IAM](system-architecture.md#fnd-iam-access-control).
+
+### [SEC-ABAC] Row-Level Authorization via ABAC Evaluation
+The substrate data layer enforces row-level attribute-based access control (ABAC) on candidate data rows through a stage-4 post-filter evaluation.
+
+- **Post-Filter Evaluation Hook (`authorize-rows`):** When an FDAE security policy declares ABAC permissions on a data collection, candidate rows that pass the relational SQL sieve pass to a stage-4 post-filter before reaching the caller. The host invokes the guest's exported `syneroym:data-layer/authorizer#authorize-rows` function.
+- **Context Injection & Candidate Rows:** The host supplies an `auth-context` containing the verified caller DID, session attributes, tenant parameters, and operation metadata alongside candidate rows. The hook returns row-level decisions (`allow`, `deny`, or field redaction masks).
+- **Fail-Closed Verification:** If a policy requires stage-4 ABAC evaluation but the target component does not export the `authorize-rows` interface, the substrate denies all read access to the protected collection.
+- **Epoch Limits:** Stage-4 evaluation runs under dedicated epoch limits (`abac_epoch_ticks`) to prevent slow guest authorization logic from stalling queries.
 
 ## Phase 2: Core Platform Capabilities
 
