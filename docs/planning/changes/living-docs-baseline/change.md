@@ -280,6 +280,16 @@ Stage 2 fix, S6:
 - **WebRTC between nodes (16.21).** The doc says node-to-node calls use Iroh only. Backlog row added in section 7.
 - **Other places with the same words.** The search-run retention sentence in Recommendation Algorithm was fixed with the Discovery Flow one. The `directory.info` and `directory.standing` calls were added to the Component Architecture text and diagram edge.
 
+Stage 2 fix, S7:
+
+- **Revocation on listing hits (18.3).** The code gives every verified listing hit the status `unknown`, because no revocation source is passed. The doc says this and marks a real check Envisioned. Backlog row added in section 11.
+- **X3DH (18.6).** Already fixed in S5 in all six places. Checked against the vodozemac 0.10.0 source (3DH, Olm). No new edit.
+- **Revoking a person's key (19.21).** The first Passive Revocation paragraph now names the App Supervisor path and the empty list that `roymctl identity publish-anchor` writes. The stolen-laptop case is under an Envisioned marker. The backlog row from S5 covers it.
+- **Registry keeps anchors in memory (not-covered item 4).** True in the code. The doc says it and a backlog row records it. After a restart a node may still resolve the anchor from the DHT, so the doc does not say that every stream is refused.
+- **Not-covered item 3 (one stream with `enc` and a certificate).** Not settled by a test. The doc already calls the handshake a separate step, and the backlog row on handshake hardening records the two readings of `pubkey`. No edit.
+- **Not-covered item 7 (aggregator chooses what it queries).** The S4 wording already says only the client half exists. No edit.
+- **Not-covered item 5 (`certify-signing` default).** Optional. Not added.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

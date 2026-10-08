@@ -784,7 +784,7 @@ Limits on a record: the `payload` is at most 64 KiB when canonicalized, nests at
 
 An instance that may not sign, such as a read-only after-step instance, gets `permission-denied`.
 
-**Verifying.** The host and the guest run the same code (`syneroym-signed-record`, which also builds for `wasm32-wasip2`). A guest can verify a record and can never sign one. The verifier checks that the envelope version is understood, that the record follows the rules above, that the issuer is the expected one when the caller names one, that the issue time is not more than 300 seconds ahead of the clock, that the record has not expired, and that the signature is valid. When the record carries a certificate, the verifier also checks that the master of the certificate is the issuer, that its scope is accepted (`record-signing` by default), and that the issue time of the record lies inside the validity window of the certificate. It then checks the revocation source that the caller passes for the signing key, the issuer and the record id. The result carries a revocation status. It is `Unknown` when the source has no answer for the signing key, the issuer or the record id.
+**Verifying.** The host and the guest run the same code (`syneroym-signed-record`, which also builds for `wasm32-wasip2`). A guest can verify a record. It cannot sign with a key that the node holds. The verifier checks that the envelope version is understood, that the record follows the rules above, that the issuer is the expected one when the caller names one, that the issue time is not more than 300 seconds ahead of the clock, that the record has not expired, and that the signature is valid. When the record carries a certificate, the verifier also checks that the master of the certificate is the issuer, that its scope is accepted (`record-signing` by default), and that the issue time of the record lies inside the validity window of the certificate. It then checks the revocation source that the caller passes for the signing key, the issuer and the record id. The result carries a revocation status. It is `Unknown` when the source has no answer for the signing key, the issuer or the record id. No Roym service passes a revocation source today, so the status is `Unknown`.
 
 #### Identity Resolution & Revocation (The Master Anchor)
 The **Master Key acts as the persistent anchor**. It publishes one signed record, the master anchor, as a standard `pkarr` record, so the BEP 44 signature mechanics stay unchanged. The anchor is a **deny list**: it names the temporary keys that the master has revoked. It does not list the active keys of the master. Records that give a route to a node or a service are separate endpoint records (see [Service Record](#service-record) and [Node Record](#node-record)). The key that a record's `service_id` names signs it: the node key for a substrate, and the member's master key for a member service.
@@ -804,16 +804,18 @@ The Master Key payload is stored in the `pkarr` TXT record as a JSON-encoded str
 The `timestamp` is the time of the signed `pkarr` packet in microseconds. The payload may also carry an optional `revoke_list_registry` string. The code carries it forward on each republish and does not read it. The community registry keeps the anchor with the newest timestamp for each master. It refuses an older anchor.
 
 **Secure Resolution Flow:**
-1. **Registry Lookup:** A client asks the community registry first, and the DHT second, for a signed endpoint record by DID or alias (see [Registry first, DHT second](#registry-first-dht-second)). A service record names the substrate in `substrate_id`. A logical service name inside an app is resolved by the App Supervisor, not by the registry.
+1. **Registry Lookup:** A client asks the community registry first, and the DHT second, for a signed endpoint record by DID (see [Registry first, DHT second](#registry-first-dht-second)). An alias works only at the registry, because the DHT needs the full DID. A service record names the substrate in `substrate_id`. A logical service name inside an app is resolved by the App Supervisor, not by the registry.
 2. **Routing Lookup:** The client looks up the substrate record of that `substrate_id`. The record holds the mechanisms for reaching the node: an Iroh address and relay URL, or a WebRTC peer.
 3. **Revocation Check (at the receiver):** The node that receives a stream with a certificate resolves the anchor of the certificate's master. It asks the registry first and the DHT second. An anchor that the registry returns must carry the master's signature and be less than 24 hours old.
 
 **Passive Revocation:**
-If a Temporary Key is compromised (e.g., a stolen laptop), the Master Key adds the DID of that key to `revoked_keys` and publishes a new anchor. Entries stay in the list, and revoking a key twice does not add a second entry.
+The master adds the DID of a temporary key to `revoked_keys` and publishes a new anchor. Today the App Supervisor does this for the instance key of a member service that it manages (`roymctl supervisor revoke-instance`). No `roymctl` command revokes the delegated key of a person. `roymctl identity publish-anchor` writes an anchor with an empty list, so it removes earlier entries. Entries stay in the list, and revoking a key twice does not add a second entry.
 - The compromised key's certificate stays valid until it expires, but a receiver refuses it as soon as that receiver sees the new anchor.
 - The check runs when a stream opens. Each new stream resolves the anchor again at the receiver.
 
-**The anchor is a duty.** An anchor stops verifying 24 hours after it was signed. A master must republish it before then. The App Supervisor republishes the anchor of each master it manages every 12 hours by default. A person's anchor is published with `roymctl identity publish-anchor`. A master with no valid anchor cannot use its certificates on a stream: the router refuses them. See [Keys: Location, Use, Loss](#keys-location-use-loss).
+> **Envisioned.** Not built yet. A way for a person to revoke a temporary key that was compromised, for example a stolen laptop. The router already refuses a listed key. Only the App Supervisor adds keys to the list today, and only for instance keys.
+
+**The anchor is a duty.** An anchor stops verifying 24 hours after it was signed. A master must republish it before then. When a registry URL is configured and the vault is unlocked, the App Supervisor republishes the anchor of each master it manages. The default interval is 12 hours. A person's anchor is published with `roymctl identity publish-anchor`. The community registry keeps anchors in memory only, so after a registry restart it holds no anchor until the master publishes again. A master with no valid anchor cannot use its certificates on a stream: the router refuses them. See [Keys: Location, Use, Loss](#keys-location-use-loss).
 
 **Capability tokens.** A caller can also present a chain of UCAN capability tokens in the preamble ([ADR-0015](decisions/0015-ucan-capability-model.md)). The router verifies the chain, and for each edge it checks the anchor of the issuer for the audience key. An anchor that cannot be resolved counts as not revoked on this path.
 
@@ -830,7 +832,7 @@ If the Master Key itself is compromised, the user would recover as `[FND-IDT]` d
 flowchart TD
     subgraph RESOLUTION["Secure Connection Resolution"]
         direction TB
-        REG["Registry, then DHT: lookup by DID or alias"]
+        REG["Registry, then DHT: lookup by DID (an alias only at the registry)"]
         SVC_REC["Service record: names substrate_id"]
         SUB_REC["Substrate record: Iroh address and relay URL, or WebRTC peer"]
 
@@ -840,7 +842,7 @@ flowchart TD
     subgraph REVOCATION["Passive Revocation"]
         direction TB
         COMP{TempKey Compromised?}
-        COMP -->|Yes| UPD[Master Key adds the TempKey to revoked_keys and publishes a new anchor]
+        COMP -->|Yes| UPD["Master adds the TempKey to revoked_keys and publishes a new anchor (built for instance keys)"]
         UPD --> FAIL[Receiver resolves the anchor and refuses the next stream with that TempKey]
     end
 
@@ -854,11 +856,13 @@ flowchart TD
 
 ### Discovery & Matching
 
-**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves node/relay endpoints only — identity-to-route lookups, not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
+**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves endpoint records and master anchors — identity-to-route lookups, not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
 
 **Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text and filters. Its answer is a list of candidates and is never a verified answer. Today a provider publishes only the `listing` record to a directory.
 
-The consumer's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry, the delegation window and the revocation status. A hit that fails the check is kept apart from the others. Each node that runs the `directory` service keeps its own list of directories and chooses which of them to query. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
+The consumer's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry and the delegation window. Each hit also carries a revocation status. Today this status is always `unknown`, because no revocation source is given to the check. A hit that fails the check is kept apart from the others. A withdrawn membership is judged apart, by the standing check (see [Trust & Reputation](#trust--reputation)). Each node that runs the `directory` service keeps its own list of directories and chooses which of them to query. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
+
+> **Envisioned.** Not built yet. A real revocation check on each listing hit. The verifier accepts a revocation source, but the node gives it none, so no hit is checked against a revocation list today.
 
 **Ranking today:** each directory sorts its matching listings by the time of issue of the signed record, newest first. Ties go by `listing_id`. The consumer's node merges the answers of the directories in turn, so no one directory fills the page. No score is computed.
 
@@ -930,7 +934,7 @@ flowchart TD
 
 **Libraries:** `vodozemac` for the Olm protocol (a triple Diffie-Hellman key exchange, 3DH, and a Double Ratchet) in 1-to-1 chat. Group chat uses one AES-256-GCM key for each epoch, which the group owner makes and distributes, and Ed25519 signatures on every entry. No `libsignal-protocol-rust` and no `openmls` is used. ADR-0013 Amendment 1 replaced MLS with the owner-distributed key ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). The key agreement sits behind one interface, so the DAG, the ordering and the storage do not depend on it.
 
-The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` until the peer is reachable. Delivery has three states: `pending`, `delivered` and `failed`.
+The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` while the peer is not reachable. It becomes `failed` when delivery is refused for good (for example, the peer refuses it, or the sending service has no valid instance certificate), when the delivery attempts run out, or after 30 days (`conversation_max_pending_age_secs`). Delivery has three states: `pending`, `delivered` and `failed`.
 
 **Group chat controls:**
 - Only the owner of a group changes its members, and it can hold at most 256 members by default.
@@ -1595,7 +1599,7 @@ This table lists each key, where it lives, what it is for, and what happens when
 
 **Certificate scopes.** A delegation certificate has one scope: `routing`, `session-auth`, `service-instance` or `record-signing`. The router accepts only `routing` and `service-instance` on a stream. A `record-signing` certificate is never accepted as a connection identity.
 
-**The master anchor is a duty.** A master anchor is a signed record. It lists the temporary keys that the master revoked. A client that gets an anchor from the HTTP registry rejects it when it is older than 24 hours after its signing time. An anchor that comes from the DHT fallback is not checked for age today. The router rejects a stream that carries a delegation certificate when it cannot resolve a valid anchor of the master. The App Supervisor republishes the anchor of each master it manages every 12 hours by default. A person's master anchor is published with `roymctl identity publish-anchor`.
+**The master anchor is a duty.** A master anchor is a signed record. It lists the temporary keys that the master revoked. A client that gets an anchor from the HTTP registry rejects it when it is older than 24 hours after its signing time. An anchor that comes from the DHT fallback is not checked for age today. The router rejects a stream that carries a delegation certificate when it cannot resolve a valid anchor of the master. When a registry URL is configured and the vault is unlocked, the App Supervisor republishes the anchor of each master it manages. The default interval is 12 hours. A person's master anchor is published with `roymctl identity publish-anchor`.
 
 **What the router checks about a caller.** When the preamble carries a delegation certificate, the router checks the signature, the validity window and the scope of the certificate, that its temporary key is the key in the preamble, and that the master has not revoked that key. It does not check that the caller holds the private part of the temporary key: the preamble carries only the public key. [FND-IAM](#fnd-iam-access-control) has the details.
 
