@@ -1208,72 +1208,95 @@ Because Syneroym can be utilized as a general open cloud, this dedicated phase s
   complete.
 
 ## Phase 6: High-Level Applications (SynApps)
-*In this phase, individual mini-apps (Chat, Ledger, Marketplace, Aggregator) are unified into seamless, actor-centric activities executing across a multi-surface UX.*
-
+Roym is the one SynApp built so far. It unites directory discovery, catalog listings, bookings, encrypted messaging, professional guilds, and trust verification into actor-centric workflows. Separate standalone mini-apps (such as independent Ledger or Marketplace applications) are not built.
 
 ### The Syneroym Hub (Core Client Application)
-*The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.* Details in [Multi-Surface Matching Fabric UX](https://github.com/syneroym/foundation/blob/main/ideas/multi-surface-matching-fabric-ux.md)
-- **The Personal Data Homebase:** A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
+*The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.* The Hub is implemented as a browser web application and progressive web application (`crates/roym_web/ui`), served by the client gateway over HTTP and JSON-RPC (`POST /rpc`).
+
+- **The Personal Data Homebase:** An interface managing the user's digital identity session, transaction history, and encrypted backups.
+  > **Envisioned.** Not built yet. Active FDAE access grant management interface. Today identity sessions and backups are managed via the web UI and roymctl.
+  >
+  > A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
 - **The Trusted Room Inbox:** A unified messaging view combining human-to-human social chats, professional guild groups, and interactive business-to-consumer service threads.
-- **The Agentic Concierge (optional):** A text/voice interface powered by a local
-  or user-chosen AI service. It remains subordinate to deterministic workflows,
-  explicit consent, and a fully usable non-AI path.
-- **The Opportunity & Discovery Radar:** A visual, map-based interface to browse local mesh networks, assess neighborhood trust proximity, and consume localized opportunity streams.
-- **The Headless Native Shell:** A cross-platform UI containing zero core business logic, acting purely as a thin renderer for JSON Action Cards securely pushed by the underlying local Substrate node.
+- **The Agentic Concierge (optional):**
+  > **Envisioned.** Not built yet. Text or voice AI concierge. Today all Hub interactions use deterministic UI workflows without AI models.
+  >
+  > A text/voice interface powered by a local or user-chosen AI service. It remains subordinate to deterministic workflows, explicit consent, and a fully usable non-AI path.
+- **The Opportunity & Discovery Radar:** Directory search supports geographic radius filtering (`--near`) to discover local providers and listings.
+  > **Envisioned.** Not built yet. Visual map-based radar, mesh network browsing, and real-time opportunity streams. Today discovery uses directory search with text and radius parameters.
+  >
+  > A visual, map-based interface to browse local mesh networks, assess neighborhood trust proximity, and consume localized opportunity streams.
+- **The Web Client and Action Card Renderer (`[HUB-APP]`):** A lightweight client running in a browser that contains zero business logic or private keys, acting as a renderer for versioned JSON Action Cards and communicating with the substrate over JSON-RPC.
+  > **Envisioned.** Not built yet. Desktop native shells (e.g. Tauri) and native mobile shells. Today the Hub runs as a web application served by the substrate client gateway.
+  >
+  > A cross-platform native shell containing zero core business logic, acting purely as a thin renderer for JSON Action Cards securely pushed by the underlying local Substrate node.
 
 ### Everyday Users (Consumers)
 *Activities focused on social connection, discovering services, secure negotiation, and seamless payment.*
-- **Social & Group Messaging:** Chat with friends, family, or local community groups using a simple, WhatsApp-style interface to share messages, media, and provider recommendations.
-- **AI-Assisted Discovery:** Ask a personal AI assistant to find local services (like a plumber or doctor) by automatically searching community directories and understanding what each provider offers.
-- **Service Bundling:** Combine multiple services into a single request (e.g., ordering food from a restaurant and requesting a separate delivery driver to pick it up).
-- **Interactive Negotiation:** Chat directly with service providers in secure rooms to discuss details, negotiate prices, and instantly approve interactive "Quote Cards" dropped into the chat.
-- **Flexible Payments:** Finalize services by approving a versioned Invoice Card.
-  External or out-of-band rails remain the default until a separately validated
-  ledger product is approved; every method identifies the responsible payment
-  or settlement provider.
-- **Portable Data & Privacy:** Securely share personal information (like medical records or delivery addresses) with a provider for a limited time, and seamlessly take your service history with you if you switch providers.
-- **Trust Context:** Inspect sourced credentials, referrals, receipts, feedback,
-  and community context without exposing private social graphs or implying a
-  universal objective score.
+- **Social & Group Messaging:** Chat with friends, family, or local community groups using an encrypted messaging interface to share messages, media, and recommendations.
+- **AI-Assisted Discovery:**
+  > **Envisioned.** Not built yet. AI assistant searching community directories. Today consumers search directories directly through text queries and location radius filters.
+  >
+  > Ask a personal AI assistant to find local services (like a plumber or doctor) by automatically searching community directories and understanding what each provider offers.
+- **Service Bundling:**
+  > **Envisioned.** Not built yet. Multi-service bundling into a single coordinated request. Today each service request is created and agreed independently.
+  >
+  > Combine multiple services into a single request (e.g., ordering food from a restaurant and requesting a separate delivery driver to pick it up).
+- **Interactive Negotiation:** Chat directly with service providers in secure rooms to discuss details, negotiate prices, and instantly approve interactive Quote Cards dropped into chat.
+- **Flexible Payments:** Finalize services by approving versioned payment request and acknowledgement cards. External or out-of-band rails remain the default until a separately validated ledger product is approved; every method identifies the responsible payment or settlement provider.
+- **Portable Data & Privacy:** Export and import encrypted identity and service history archives when switching devices or providers.
+  > **Envisioned.** Not built yet. Time-limited selective record sharing through consumer FDAE interfaces. Today full encrypted backups can be exported and restored.
+  >
+  > Securely share personal information (like medical records or delivery addresses) with a provider for a limited time, and seamlessly take your service history with you if you switch providers.
+- **Trust Context:** Inspect sourced credentials, referrals, receipts, and community context without exposing private social graphs or implying a universal objective score.
 
 ### Service Creators (Primary Providers)
 *Activities focused on setting up shop, generating leads, and delivering services.*
-- **Digital Storefront Setup:** Create a business profile and publish menus, service catalogs, and availability calendars to local discovery directories.
-- **Advertising & Outreach (evidence-gated):** Any cold outreach or paid placement
-  requires recipient controls, rate limits, disclosure, and community policy.
-  Digital stamps are one later hypothesis, not the default solution.
-- **Lead Engagement:** Browse a live feed of local customer requests and respond by dropping interactive forms, booking widgets, or quotes directly into the customer's chat.
-- **Service Delivery & Billing:** Execute the contracted service and instantly push an invoice into the chat. The invoice can feed directly into the network's automated debt-clearing ledger or route through traditional payment gateways depending on your business configuration.
-- **Professional Guilds:** Join private group chats with other professionals in your industry to share excess work, refer clients, and team up on large projects.
-- **Reputation Building:** Collect portable, receipt-linked feedback and other
-  signed trust evidence that preserves provenance when hosting changes.
+- **Digital Storefront Setup:** Create a business profile and publish service listings and catalogs to discovery directories.
+- **Advertising & Outreach (evidence-gated):** Any cold outreach or paid placement requires recipient controls, rate limits, disclosure, and community policy. Digital stamps are one later hypothesis, not the default solution.
+- **Lead Engagement:** Receive customer requests and respond by dropping interactive quote Action Cards directly into customer chat.
+  > **Envisioned.** Not built yet. Network-wide live feed of public customer requests. Today providers receive requests sent directly to them by consumers.
+  >
+  > Browse a live feed of local customer requests and respond by dropping interactive forms, booking widgets, or quotes directly into the customer's chat.
+- **Service Delivery & Billing:** Deliver services and push payment request cards into chat.
+  > **Envisioned.** Not built yet. Automated debt-clearing ledgers and integrated external payment gateways. Today payment requests identify accepted settlement methods, and payments settle out-of-band.
+  >
+  > The invoice can feed directly into the network's automated debt-clearing ledger or route through traditional payment gateways depending on business configuration.
+- **Professional Guilds:** Join private group chats with other professionals in your industry to share work, refer clients, and coordinate projects.
+- **Reputation Building:** Collect portable signed agreement receipts, fulfilment receipts, and SynOrg membership credentials that preserve provenance.
+  > **Envisioned.** Not built yet. Public feedback collection and review systems. Today trust evidence consists of cryptographic receipts and membership credentials.
+  >
+  > Collect portable, receipt-linked feedback and other signed trust evidence that preserves provenance when hosting changes.
 
 ### Network Enablers (Aggregators & Facilitators)
-*Activities focused on making the market run smoothly, providing infrastructure, and resolving disputes.*
-- **Discovery Directories (Aggregator):** Run high-performance search engines and community noticeboards that collect user requests and provider listings, making it easy for everyone to find each other.
-- **Spam Prevention (Aggregator):** Enforce disclosed publication and contact
-  limits. Fuel quotas or economic costs are optional mechanisms and do not
-  replace blocking, abuse response, or anti-collusion controls.
-- **Trust Summaries (Aggregator):** Publish explainable, sourced summaries under a
-  declared community policy. An aggregator's output is an opinion or computation,
-  not a guaranteed reliable truth score.
+*Activities focused on making the market run smoothly, providing infrastructure, and resolving disputes.* An Aggregator is a directory-type SynOrg service (`syneroym-roym-directory`) that aggregates provider listings and credentials. It is not a hosting provider.
 
-- **Financial Gateways (Facilitator):** Provide specialized financial services, like converting digital network credits into traditional fiat currency (bank money), or automating tax and accounting records by plugging directly into a provider's local ledger.
+- **Discovery Directories (Aggregator):** Run search services and community directories that collect and index provider listings, making it easy for users to find services.
+- **Spam Prevention (Aggregator):** Enforce disclosed publication rate limits, recipient block controls, and abuse response policies. Fuel quotas and economic costs remain optional mechanisms.
+- **Trust Summaries (Aggregator):** Serve sourced membership credentials and verify trust records under a declared community policy.
+  > **Envisioned.** Not built yet. Computed opinion scores and automated trust summary ratings. Today directory services return verified membership credentials and revocations without computing numerical scores.
+  >
+  > An aggregator's output is an opinion or computation, not a guaranteed reliable truth score.
+- **Financial Gateways (Facilitator):**
+  > **Envisioned.** Not built yet. Specialized financial services converting digital credits to fiat currency or integrating automated tax and accounting ledgers. Today payments are recorded out-of-band between parties.
+  >
+  > Provide specialized financial services, like converting digital network credits into traditional fiat currency (bank money), or automating tax and accounting records by plugging directly into a provider's local ledger.
 
 ## Phase 7: Edge Expansion
 
 ### [EDG-MOB] Mobile operation 
-- **Platform Support**: Mobile-friendly consumer and provider clients are
-  release-blocking. Native Syneroym Substrate execution on Android and iOS is a
-  separate, later hosting profile and must first prove acceptable reliability,
-  battery use, background behaviour, and key recovery on supported OS versions.
-- **Background Execution & Throttling**:
-  - Baseline communication relies on `[PLT-ASY]` outbox and retry semantics where remote clients continuously retry connecting to the mobile node.
-  - For urgent requests, clients can optionally send an out-of-band push notification (APN/FCM) to silently wake the suspended mobile app.
-  - The woken app processes requests locally but defers outbound network responses until the mobile OS schedules a background task window.
-- **Hardware Security (TPM 2.0 Equivalent)**:
-  - Unified `SecureStorage` and `KeyManagement` WIT abstractions for SynApps.
-  - Host implementations map these to Android StrongBox, iOS Secure Enclave, and Linux TPM 2.0.
+- **Platform Support:** Consumer and provider interfaces provide responsive web access for mobile viewports. Substrate binaries target Linux, macOS, and Windows.
+  > **Envisioned.** Not built yet. Native Syneroym Substrate execution on Android and iOS. Today mobile devices access substrate services through the web client in a browser.
+  >
+  > Native substrate execution on Android and iOS must prove acceptable reliability, battery use, background behaviour, and key recovery on supported OS versions.
+- **Background Execution & Throttling:** Substrate communication uses durable outbox queuing and retry mechanisms to handle intermittent connectivity.
+  > **Envisioned.** Not built yet. Silent push wake-ups (APN/FCM) and mobile OS background window scheduling. Today the client gateway and substrate communicate over active HTTP/WebSocket sessions.
+  >
+  > For urgent requests, clients can optionally send an out-of-band push notification (APN/FCM) to silently wake the suspended mobile app. The woken app processes requests locally but defers outbound network responses until the mobile OS schedules a background task window.
+- **Hardware Security (TPM 2.0 Equivalent):** Substrate cryptographic keys are stored in encrypted software keystores with memory protection. Guest components access signing only through host WIT calls (`syneroym:signing`).
+  > **Envisioned.** Not built yet. Unified `SecureStorage` and `KeyManagement` WIT abstractions and host bridges to Android StrongBox, iOS Secure Enclave, and Linux TPM 2.0. Today cryptographic operations use software Ed25519 keys managed by the substrate host.
+  >
+  > Unified `SecureStorage` and `KeyManagement` WIT abstractions for SynApps, mapped by host implementations to Android StrongBox, iOS Secure Enclave, and Linux TPM 2.0.
 
 ---
 
