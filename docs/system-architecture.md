@@ -253,7 +253,7 @@ Provider and Consumer are not substrate entities. They are the two roles of a pe
 
 *Note: connectivity works over IP networks: Iroh QUIC between nodes, and WebRTC for browsers. No BLE or LoRa transport exists. See the [Connectivity Substrate](#connectivity-substrate-in-heterogeneous-networks) section.*
 
-A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the relay and moves to a direct path when hole punching finds one. A substrate has one configured relay. It publishes the relay URL in its signed record, so a caller knows which relay to use.
+A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the relay and moves to a direct path when hole punching finds one. A substrate has one configured relay. It publishes the relay URL in its signed record so callers know which relay to use.
 
 ```mermaid
 flowchart TD
@@ -301,11 +301,11 @@ flowchart LR
     Browser <-->|"WebRTC TURN"| TR
 ```
 
-**Local DNS (Envisioned):** Each substrate caches relay hostname resolutions. This avoids hammering the Bootstrap server for the large number of dynamically rotating relay nodes.
+**Local DNS (Envisioned):** Each substrate caches relay hostname resolutions. This avoids overloading the Bootstrap server with requests for rotating relay nodes.
 
 ### Multi-Hop Relay (Federated Coordinator)
 
-Next-hop forwarding is done by the connection router (`crates/router`), in the function `relay_to_next_hop` in `route_handler/io.rs`. It is not in `crates/coordinator_iroh`. That crate builds the Iroh endpoint and a router handler in coordinator mode, which has no local services. A substrate runs the same code. When a stream names a service the substrate does not host and the registry resolves that service, the substrate forwards the stream. Coordinators are the intended forwarders.
+The connection router (`crates/router`) handles next-hop forwarding in the function `relay_to_next_hop` in `route_handler/io.rs`. It is not in `crates/coordinator_iroh`. That crate builds the Iroh endpoint and a router handler in coordinator mode, which has no local services. A substrate runs the same code. When a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream. Coordinators are the intended forwarders.
 
 A substrate on a private network sets `parent_coordinator.iroh.url` to the relay of a coordinator on that network. Its Iroh endpoint uses that relay, and it publishes the Iroh id and the relay URL in its signed record. A caller that looks the record up in the registry dials the substrate through that relay. An Iroh relay is made so that a peer that accepts no inbound connection can still be reached. No test in this repository blocks inbound traffic.
 
