@@ -32,8 +32,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Phase 4: Advanced Services & Tooling | done | 5e725528 | - |
 | Phase 5: Peer-to-Peer Community Primitives | done | c41eb044 | - |
 | Phase 6: High-Level Applications (SynApps) | done | c86139a1 | - |
-| Phase 7: Edge Expansion | done | pending | - |
-| Open Questions & Recommendations | not started | - | - |
+| Phase 7: Edge Expansion | done | c9c0787f | - |
+| Open Questions & Recommendations | done | pending | - |
 | Glossary | not started | - | - |
 
 ## Needs author

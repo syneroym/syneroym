@@ -3060,9 +3060,9 @@ In the design, an aggregator is a SynOrg `directory` service, and can federate w
 | OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** An aggregator is a SynOrg (Syneroym Organization) `directory` service. Built today: a SynOrg issues signed membership credentials and withdraws them with signed revocation and moderation records. These are Roym records, not W3C Verifiable Credentials. Envisioned: if a SynOrg is malicious, providers move with the Roym archive, drop the bad credential, and get a new one from a trusted SynOrg. |
 | OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider Apps. If SLA drops (e.g., < 99%), UI prompts provider to move to another node using the Roym archive. Built today: a substrate republishes its endpoint records every hour. This is not an uptime proof. |
 | OQ-7 | **Consumer UX ownership:** Consumer App governance. | Medium | **Reference Open-Source Apps.** Built today: the Hub, a web UI, is the one reference client. Envisioned: Syneroym builds and open-sources native mobile and Tauri desktop reference apps. Aggregators fork and brand them, hardcoding their bootstrap nodes and tuning local discovery weights. |
-| OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | Sequenced after core payments; evaluate based on initial adoption metrics. |
-| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Required before either ships; needs legal counsel engagement. |
-| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | Sequenced after the core platform; workflows stay manual until then. |
+| OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | This follows core payments. Evaluate based on initial adoption metrics. |
+| OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Required before either ships. Needs engagement with legal counsel. |
+| OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | This follows the core platform. Workflows stay manual until then. |
 
 ---
 
