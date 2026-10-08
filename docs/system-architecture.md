@@ -3071,13 +3071,13 @@ In the design, an aggregator is a SynOrg `directory` service, and can federate w
 | Term | Definition |
 |---|---|
 | **SynApp** | A composed set of services that together implement a business application |
-| **SYN-SUBSTRATE** | The core runtime layer on a NODE; manages deployment, messaging, discovery, and access control |
+| **SYN-SUBSTRATE** | The core runtime layer on a NODE. It manages deployment, messaging, discovery, and access control |
 | **NODE** | A physical or virtual machine running one SUBSTRATE instance |
 | **WIT** | WebAssembly Interface Types — the IDL used for all component interfaces |
 | **ABAC** | Attribute-Based Access Control — stage 4 of the data-access pipeline: a guest-exported `authorize-rows` function that checks candidate rows (see [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md) §7) |
 | **pkarr** | Public-Key Addressable Resource Records — DHT records signed by an Ed25519 key |
 | **UCAN** | User Controlled Authorization Networks — capability token standard used for delegation |
-| **LWW** | Last-Write-Wins — the most recent write to a record persists (`put` replaces the whole payload); trivial with one writer per service, no merge algorithm needed |
+| **LWW** | Last-Write-Wins — the most recent write to a record persists (`put` replaces the whole payload). This is simple with one writer per service; no merge algorithm is needed |
 
 > **Envisioned.** Not built yet. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error. JSON-RPC 2.0 is the only RPC wire protocol today.
 >
