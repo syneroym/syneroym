@@ -24,8 +24,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Appendix: Multi-Hop Relay Walkthrough | done | 6949c708 | - |
 | Consolidated Technology Stack | done | 990b0df1 | - |
 | Connectivity Substrate In Heterogeneous networks | done | 9539349a | - |
-| Target Designs (Addendum) | done | pending | - |
-| Phase 0: Core Architecture Implementation | not started | - | - |
+| Target Designs (Addendum) | done | 13b4e3f1 | - |
+| Phase 0: Core Architecture Implementation | done | pending | - |
 | Phase 1: Foundation & Core Infrastructure | not started | - | - |
 | Phase 2: Core Platform Capabilities | not started | - | - |
 | Phase 3: Substrate & Application Lifecycle | not started | - | - |
