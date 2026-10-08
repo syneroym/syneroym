@@ -297,6 +297,16 @@ Stage 2 fix, S8:
 - **Gateway "local" (not-covered item 1).** The word "local" is removed in the four places that used it. The doc states no bind address, as decided in Q-C6. The backlog row on the bind address stays open.
 - **WAL wording (not-covered item 10).** The text already names `state.db` only. No edit.
 
+Stage 2 fix, S9:
+
+- **Relay TLS (21.7).** The code gives the relay's HTTPS listener and its HTTP probe listener one address. I read this from the `iroh-relay` 0.97 source and did not run it. The doc says what the code configures, and that no test covers relay TLS. Backlog row added in section 7.
+- **Coordinator with a parent (21.14).** "Outbound-only" was wrong. The coordinator accepts inbound Iroh streams. The parent URL only sets its own relay, and `_parent_relay_url` in the router is never read. The Appendix text (fixed in S4) already agreed, so only Layer 1 changed.
+- **Entry point (21.13).** A record cannot name a coordinator as the entry point. The doc now says only an SDK call, or a dial of the coordinator's own record.
+- **Wire protocol (23.1).** The top note already said "the only RPC wire protocol". I added that `raw://` streams and TCP proxies carry bytes without RPC framing, and that a guest uses typed WIT imports. I did not add MQTT, because the broker is in-process and is not an RPC wire.
+- **Direct path first (not-covered item 1).** Iroh makes first contact through the relay. The P2P diagram edge labels and the Executive Summary now say this.
+- **Browser Path "share no code" (not-covered item 2).** The tunnel uses the router's Iroh stream and endpoint code. Only `relay_to_next_hop` is not shared. The sentence now says this.
+- **Commit 24 (TERMINOLOGY.md).** Both rows were CONFIRMED. No edit.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

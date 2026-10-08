@@ -5,7 +5,7 @@
 > **Migration Note:** The architectural designs and roadmap changed a lot after the first version of this document. The Layer 1 to 4 sections are the canonical definition of the layers. The [Target Designs (Addendum)](#target-designs-addendum) at the end of this document adds design detail for features, grouped by phase.
 
 > [!WARNING]
-> **Implementation Note:** The **wRPC protocol layers/surface** (the native component protocol) is not implemented. JSON-RPC 2.0 is the only RPC wire protocol today, between components and on the external API surface. The router reserves the `wrpc://` scheme and answers it with an unsupported-protocol error.
+> **Implementation Note:** The **wRPC protocol layers/surface** (the native component protocol) is not implemented. JSON-RPC 2.0 is the only RPC wire protocol today, between components and on the external API surface. The router reserves the `wrpc://` scheme and answers it with an unsupported-protocol error. Raw byte streams (`raw://`) and TCP proxies carry bytes with no RPC framing. A guest calls its host through typed WIT imports, not JSON-RPC.
 
 ---
 
@@ -126,7 +126,7 @@
 
 ## Executive Summary
 
-Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. Clusters interoperate through federation — cooperation between independently owned peer clusters over shared protocols, not server federation. A direct connection between two participants needs no server in the data path. Relays and coordinators carry traffic only as a fallback, and registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to replicate the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while avoiding their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
+Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**) that run on provider-controlled commodity hardware. Clusters interoperate through federation — cooperation between independently owned peer clusters over shared protocols, not server federation. A direct connection between two participants needs no server in the data path. An Iroh relay helps two peers connect. It carries their traffic until a direct path is found, or for as long as none exists. A coordinator forwards traffic only when a caller names it as the entry point, or when a browser falls back to the tunnel. Registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to replicate the benefits of large consumer platforms — discovery, reputation, standardised transaction flows, institutional trust — while avoiding their drawbacks: vendor lock-in, data ownership loss, governance asymmetry, and opaque algorithms.
 
 > **Envisioned.** Not built yet. Reputation. Today Roym has no reputation record. Trust comes from the signed membership credentials of a SynOrg.
 
@@ -191,7 +191,7 @@ block-beta
     I["WASM Runtime (Wasmtime)"]
     J["OCI Runtime (Podman)"]
     RT["Connection Router"]
-    K["Key Stores (KEK, DEK, vault)"]
+    K["Key Stores (KEK and DEK, supervisor key vault)"]
     L["Access Control"]
     M["Storage (SQLite)"]
   end
@@ -205,7 +205,7 @@ block-beta
 
 Layer 3 holds two substrate utilities: identity and messaging. Discovery and matching, trust and reputation, and payments are Roym features. They are not substrate components, so the diagram shows them in Roym. The [Layer 3](#layer-3--shared-substrate-utilities) section describes them too.
 
-> **Envisioned.** Not built yet. Replication of service databases, a bootstrap server, a substrate on an Android phone, and a reputation record. Today the built backup is the Roym archive, a relay is a URL in the config of each substrate, and trust is the signed membership credentials of a SynOrg. The replication design is open: see [PLT-RED](#plt-red-service-redundancy).
+> **Envisioned.** Not built yet. Replication of service databases, a bootstrap server, a substrate on an Android phone, and a reputation record. Today the built data backup is the Roym archive. Keys have their own backups: `roymctl identity export` and `roymctl supervisor export-master`. A relay is a URL in the config of each substrate, and trust is the signed membership credentials of a SynOrg. The replication design is open: see [PLT-RED](#plt-red-service-redundancy).
 
 ### Conceptual Entity Model
 
@@ -237,7 +237,7 @@ erDiagram
     PERSON { string master_did }
 ```
 
-A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one configured relay URL. It does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. A WASM or container service is built from an artifact: a WASM component or an OCI image, named in the `source` field of its service spec.
+A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one configured relay URL. It does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. The process of a TCP service runs outside the substrate. A native-host service cannot be named in a deployment plan. A WASM or container service is built from an artifact: a WASM component or an OCI image, named in the `source` field of its service spec. For a container, `image` in `custom_config` replaces `source` when it is set.
 
 Provider and Consumer are not substrate entities. They are the two roles of a person in one Roym transaction. An aggregator is a SynOrg (Syneroym Organization) `directory` service. It aggregates the listings of the providers who publish to it. See [Federation Architecture](#federation-architecture).
 
@@ -253,7 +253,7 @@ Provider and Consumer are not substrate entities. They are the two roles of a pe
 
 *Note: connectivity works over IP networks: Iroh QUIC between nodes, and WebRTC for browsers. No BLE or LoRa transport exists. See the [Connectivity Substrate](#connectivity-substrate-in-heterogeneous-networks) section.*
 
-A caller dials a node over Iroh QUIC (UDP). Iroh tries a direct path first and uses a relay when it needs one. A substrate has one configured relay. It publishes the relay URL in its signed record, so a caller knows which relay to use.
+A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the relay and moves to a direct path when hole punching finds one. A substrate has one configured relay. It publishes the relay URL in its signed record, so a caller knows which relay to use.
 
 ```mermaid
 flowchart TD
@@ -267,21 +267,21 @@ flowchart TD
     A -.->|"1. Same record, when the DHT is enabled"| DHT
     B -->|"2. Look up the record: registry first, DHT second"| REG
 
-    B <-->|"3a. Direct QUIC UDP (preferred)"| A
+    B <-->|"3a. Direct QUIC UDP (once a path is found)"| A
     B <-->|"3b. Hole punch, helped by the relay"| A
-    A <-->|"3c. Relay (fallback)"| R
-    R <-->|"3c. Relay (fallback)"| B
+    A <-->|"3c. Relay (first contact, and while no direct path exists)"| R
+    R <-->|"3c. Relay (first contact, and while no direct path exists)"| B
 ```
 
 **Technology:** `iroh` 0.97 (Rust crate) provides QUIC transport, NAT hole punching and relay. Peer discovery is the community registry and the `pkarr` records on the BEP 0044 DHT, not the address lookup of Iroh. See [Discovery](#discovery) and [Registry first, DHT second](#registry-first-dht-second). `webrtc-rs` serves browser clients through WebRTC data channels. See [Browser Path](#browser-path-webrtc-and-websocket-tunnel).
 
 ### Relay Node Architecture
 
-A coordinator runs an Iroh relay server when `[roles.coordinator.iroh]` sets `enable_relay = true`. The relay is the `iroh-relay` crate with its `server` feature. It helps two peers hole punch and carries their traffic when no direct path exists. It is open to every Iroh endpoint by default. `[roles.coordinator] access` can list the Iroh endpoint ids that are allowed instead. With `[roles.coordinator.tls]` set, the relay uses that certificate and key, and it also runs QUIC address discovery on `quic_bind_address`. Without that setting it does not run QUIC address discovery.
+A coordinator runs an Iroh relay server when `[roles.coordinator.iroh]` sets `enable_relay = true`. The relay is the `iroh-relay` crate with its `server` feature. It helps two peers hole punch and carries their traffic when no direct path exists. It is open to every Iroh endpoint by default. `[roles.coordinator] access` can list the Iroh endpoint ids that are allowed instead. With `[roles.coordinator.tls]` set, the relay uses that certificate and key, and it also runs QUIC address discovery on `quic_bind_address`. Without that setting it does not run QUIC address discovery. The code gives the HTTPS listener of the relay and its plain HTTP probe listener the same `http_bind_address`. The relay library says these need different ports, so a fixed port may fail with address in use. No test covers relay TLS.
 
 The relay carries QUIC traffic that is already encrypted between the two peers. It does not read it. It still sees which endpoints talk, and the size and timing of the traffic.
 
-The same coordinator can also run the Syneroym endpoint that forwards streams ([Multi-Hop Relay](#multi-hop-relay-federated-coordinator)) and the HTTP `/v1/info` endpoint. The relay server and the Syneroym endpoint are separate: a coordinator can run either one or both.
+A coordinator with `[roles.coordinator.iroh]` always runs the Syneroym endpoint that forwards streams ([Multi-Hop Relay](#multi-hop-relay-federated-coordinator)) and the HTTP `/v1/info` endpoint. The relay server and the Syneroym endpoint are separate parts. The relay server runs too only when `enable_relay = true`.
 
 > **Envisioned.** Not built yet. Today a relay is a URL that an operator writes into the config of each substrate, and no code gives a relay a `*.syneroym.net` name. Nothing runs a TURN server, nothing registers relays at a bootstrap server, and no substrate caches relay names. The design below is the target.
 
@@ -307,19 +307,19 @@ flowchart LR
 
 Next-hop forwarding is done by the connection router (`crates/router`), in the function `relay_to_next_hop` in `route_handler/io.rs`. It is not in `crates/coordinator_iroh`. That crate builds the Iroh endpoint and a router handler in coordinator mode, which has no local services. A substrate runs the same code. When a stream names a service the substrate does not host and the registry resolves that service, the substrate forwards the stream. Coordinators are the intended forwarders.
 
-A substrate on a private network sets `parent_coordinator.iroh.url` to the relay of a coordinator on that network. Its Iroh endpoint uses that relay, and it publishes the Iroh id and the relay URL in its signed record. A caller looks the record up in the registry and dials the substrate through that relay. This is the normal path. It is what lets a fully inbound-blocked substrate stay reachable.
+A substrate on a private network sets `parent_coordinator.iroh.url` to the relay of a coordinator on that network. Its Iroh endpoint uses that relay, and it publishes the Iroh id and the relay URL in its signed record. A caller that looks the record up in the registry dials the substrate through that relay. An Iroh relay is made so that a peer that accepts no inbound connection can still be reached. No test in this repository blocks inbound traffic.
 
-A coordinator is the entry point only when a record or an SDK call names it. The coordinator reads the route preamble, resolves the target service in the registry and dials the next hop. The next hop is the target substrate, not another coordinator. The coordinator then copies bytes in both directions. A coordinator that has a parent is outbound-only. It keeps one connection to the relay of that parent, and it does not connect to the parent on demand.
+A coordinator is the entry point only when an SDK call names it, or when a caller dials the record of the coordinator itself. The coordinator reads the route preamble, resolves the target service in the registry and dials the next hop. The next hop is the target substrate, not another coordinator. The coordinator then copies bytes in both directions. A coordinator that has a parent uses the relay of that parent as its own relay. No code dials the parent on demand. The coordinator still accepts inbound streams, and it opens a new connection to each target substrate.
 
 > **Envisioned.** Not built yet. A record that names a coordinator as the entry point of a private substrate, so that the registry sends callers there on its own. A record has no entry-point field today.
 
-A stream is end-to-end encrypted between the caller and the serving substrate only when the preamble asks for `enc=ecdh-p256`. The browser page asks for it on the WebSocket tunnel path. On a WebRTC data channel it removes the option, because DTLS already protects that channel. The Rust client (`SyneroymClient`) does not yet. Without it, each Iroh leg is encrypted and a forwarding coordinator holds the bytes in clear. A coordinator always reads the preamble in clear. It sees the target service id and the caller's public key. A relay or coordinator also sees that two endpoints exchanged traffic, and the size and timing of it.
+A stream is end-to-end encrypted between the caller and the serving substrate only when the preamble asks for `enc=ecdh-p256`. The browser page asks for it on the WebSocket tunnel path. On a WebRTC data channel it removes the option, because DTLS already protects that channel. The Rust client (`SyneroymClient`) does not yet. Without it, each Iroh leg is encrypted and a forwarding coordinator holds the bytes in clear. A coordinator always reads the preamble in clear. It sees the target service id. It also sees the `pubkey` field, the delegation certificate and the capability token, when the caller sets them. A relay or coordinator also sees that two endpoints exchanged traffic, and the size and timing of it.
 
 The entities and the step-by-step message flow are in [Appendix: Multi-Hop Relay Walkthrough](#appendix-multi-hop-relay-walkthrough). The handshake is in [Appendix > 5. Data Transfer Characteristics](#5-data-transfer-characteristics).
 
 ### Browser Path (WebRTC and WebSocket Tunnel)
 
-A browser cannot open an Iroh connection. The WebRTC coordinator (`crates/coordinator_webrtc`) gives it two paths to a service. The two paths share no code with the Iroh forwarding above.
+A browser cannot open an Iroh connection. The WebRTC coordinator (`crates/coordinator_webrtc`) gives it two paths to a service. The tunnel dials the substrate with the Iroh stream and endpoint code of the router. The data channel path ends in the router of the substrate. Neither path calls `relay_to_next_hop`, the forwarding function above.
 
 ```mermaid
 flowchart LR
@@ -362,8 +362,10 @@ A substrate is given its relay by a fixed setting. Nothing chooses a relay for i
 | `[roles.coordinator.iroh] community_registry_url`, `share_in_registry` | None, `false` | When both are set, the coordinator registers itself in that registry once at startup. |
 | `[roles.coordinator.webrtc] signalling_bind_address` | `0.0.0.0:7963` | The signalling server. |
 | `[roles.coordinator.webrtc] bootstrap_page_bind_address` | `0.0.0.0:7962` | The bootstrap page and the blind tunnel. |
-| `[roles.coordinator] access`, `tls` | `"everyone"`, none | Who may use the Iroh relay. The certificate and key of the relay. |
+| `[roles.coordinator] access`, `tls` | `"everyone"`, none | Who may use the Iroh relay: `"everyone"`, or a list of Iroh endpoint ids. Any other string also means everyone. The certificate and key of the relay. |
 | `[roles.community_registry] http_bind_address` | `0.0.0.0:7961` | The HTTP community registry. |
+
+The defaults in the table are the defaults of the config types. With no `--config`, `run` starts a development setup instead. In it `parent_coordinator.iroh` and `parent_coordinator.webrtc` are present, `registry_url` is `http://localhost:7961`, and the Iroh and WebRTC coordinator roles are on, with `enable_relay = true`.
 
 `GET /v1/info` on a coordinator returns its Iroh address and id, its relay URL and parent URL, a status (`healthy` or `at_capacity`), the active connections and the cap, the days until its TLS certificate expires, and whether its relay is on. That TLS information is about `[tls]`. The relay certificate is the separate setting `[roles.coordinator.tls]`. The port plan is in the [developer guide](developer-guide.md#3-port-reference-normalized-796x).
 
@@ -375,7 +377,7 @@ The discovery side of this configuration is in [Registry first, DHT second](#reg
 
 ### Bootstrap Server & DHT Fallback
 
-Today a substrate finds its relay in its config, and a caller finds a node through the community registry first and the DHT second. A node publishes one `pkarr` signed packet under its own key, with its signed endpoint record: its Iroh id and its relay URL. A lookup asks the HTTP registry first. It asks the DHT when the registry has no answer, and then writes the DHT answer back to the registry. The records are republished every hour. See [Registry first, DHT second](#registry-first-dht-second).
+Today a substrate finds its relay in its config, and a caller finds a node through the community registry first and the DHT second. A node publishes one `pkarr` signed packet under its own key, with its signed endpoint record: its Iroh id and its relay URL. A record with `is_private` set is not published to the DHT. A lookup asks the HTTP registry first. It asks the DHT when the registry has no answer, and then writes the DHT answer back to the registry. A registry answer that fails verification ends the lookup with no DHT fallback. A DHT lookup needs the full DID. The records are republished every hour. See [Registry first, DHT second](#registry-first-dht-second).
 
 > **Envisioned.** Not built yet. The design below has no code. Today no substrate is assigned a relay, no list of relays exists, and no substrate caches one. No `syneroym-relays` record exists, and no community governance key exists.
 
