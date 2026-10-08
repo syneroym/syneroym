@@ -307,6 +307,14 @@ Stage 2 fix, S9:
 - **Browser Path "share no code" (not-covered item 2).** The tunnel uses the router's Iroh stream and endpoint code. Only `relay_to_next_hop` is not shared. The sentence now says this.
 - **Commit 24 (TERMINOLOGY.md).** Both rows were CONFIRMED. No edit.
 
+Stage 2 recheck fix, RC:
+
+- **Client gateway connection cache.** The recheck found that the gateway keeps one SDK client per service and never evicts it. The doc now names both caches (WebRTC bootstrap and gateway). A backlog row records the missing eviction.
+- **Metrics format.** The doc said in two places that `/metrics` answers in the Prometheus format. The code answers JSON. Both places now say JSON. The three out-of-doc "Prometheus" labels (`config.sample.toml`, `config.dev.toml`, `AGENTS.md`) are not edited. One backlog row records them, with `developer-guide.md` and `performance-and-robustness-spec.md`, which use the same label.
+- **Anchor age.** The 24-hour rule applies to an anchor from the HTTP registry only. The DHT fallback does not check age. The doc says so at every place, and what the router does when no valid anchor exists.
+- **Backlog row on anonymous routes.** The row said `messaging` admits anonymous requests. Only `subscribe-sse` does. `publish` answers 401. The row is corrected.
+- **Not edited (not a doc fault).** `crates/conversation/src/crypto.rs:5` ("X3DH"), `crates/app_supervisor/src/keys.rs:3` (key name format), `crates/sandbox_wasm/src/engine/lifecycle.rs:116-125` (planning ids in a comment) and the AGENTS.md "local HTTP proxy" wording. Code and AGENTS.md are out of scope for this pass.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
