@@ -30,17 +30,21 @@ The whole docs round has four steps. This change doc tracks all of them.
 4. **User guide.** Write a guide for end users. It says what a person can do and
    how, with no internals.
 
-- In scope now: the pilot audit of the "Layer 2 — Substrate Runtime" section.
-  The report is [audit-architecture-layer2.md](audit-architecture-layer2.md).
-- Not in scope now: editing the architecture doc, editing any code, and the
-  later steps above.
+- Done: the audit of every section of the architecture doc, the fixes (24 fix
+  commits, a second fix pass from an independent check, and a coverage check
+  of the audit decisions), and a language pass. The audit reports and working
+  files were removed after the work. They stay in the history of the two pull
+  requests that carried them.
+- Not done: splitting the architecture doc, the audit of the requirements,
+  developer guide and traceability matrix, and the end user guide. No code was
+  changed.
 
 ## Acceptance criteria
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| AC-1 | Every claim in the pilot section has one verdict. Every MATCHES verdict has a `file:line` citation. | Review of the report |
-| AC-2 | The report lists structural problems of the whole file and the questions that need the user. | Review of the report |
+| AC-1 | Every statement that the architecture doc makes about what the system does was checked against the code, and every finding was fixed or recorded in the deferred backlog. | Review of the pull request history |
+| AC-2 | The owner decisions from the audit are recorded in this doc. | The "Decisions" section below |
 | AC-3 | This change doc passes the change-doc check. | `cargo xtask check-change-docs` |
 
 ## Design
@@ -58,22 +62,30 @@ intent is unclear.
 
 ## Open questions
 
-See section 4 of [audit-architecture-layer2.md](audit-architecture-layer2.md).
+None open for the architecture doc. Open owner choices:
+
+- Whether the requirements spec text about relay and bootstrap is marked
+  Envisioned (the requirements round decides).
+- Whether to rename the "Layer 3 — Shared Substrate Utilities" heading. Only
+  Identity and Messaging are substrate utilities now. Other docs link to it.
+- Whether the observability status page or the metrics pipeline replaces the
+  other design. Both are kept for now.
 
 ## Tasks
 
 - [x] Audit "Layer 2 — Substrate Runtime" (pilot).
-- [ ] Audit the other sections of the architecture doc.
+- [x] Audit the other sections of the architecture doc.
 - [ ] Audit the requirements, developer guide and traceability matrix.
 - [ ] Split the architecture doc into capability files.
 - [x] Fix and mark the wrong statements in "Layer 2 — Substrate Runtime" (pilot).
-- [ ] Fix the wrong statements found by the audits in the other sections.
+- [x] Fix the wrong statements found by the audits in the other sections.
+- [x] Language pass on the architecture doc (simple English, short sentences).
 - [ ] Write the end user guide.
 
 ## Decisions
 
 Owner decisions from the architecture audit, kept here so they stay after the audit
-reports are archived. They win over the defaults in the audit reports.
+working files were removed. They win over the defaults in the audit reports.
 
 | Question | Decision | Effect on the fix commits |
 | --- | --- | --- |
@@ -325,7 +337,7 @@ Stage 2 recheck fix, RC:
 
 ### Coverage check follow-up
 
-A second check compared every audit decision and proposed fix with the doc (`fix-coverage-D1.md`, `D2`, `D3`). Misses applied: the ADR-0019 deploy-call paragraph; what undeploy does to service data; coordinator mode; the lookup names ("First lookup", "Second lookup", to avoid a third meaning of "Tier"); the Data Consumption sentence in the Phase 4 observability text; the unbuilt "provider status UI" in the API surface sentence; built facts moved out of an Envisioned block in Consumer App Architecture; the repeated Podman sentence; the unused LWW glossary row; "WebRTC relay" in the minimal implementation list; "heartbeat"; a duplicate SynApp title in the Isolation diagram; the "Offline Outbox Queue" label.
+A second check compared every audit decision and proposed fix with the doc (the working reports were removed after use). Misses applied: the ADR-0019 deploy-call paragraph; what undeploy does to service data; coordinator mode; the lookup names ("First lookup", "Second lookup", to avoid a third meaning of "Tier"); the Data Consumption sentence in the Phase 4 observability text; the unbuilt "provider status UI" in the API surface sentence; built facts moved out of an Envisioned block in Consumer App Architecture; the repeated Podman sentence; the unused LWW glossary row; "WebRTC relay" in the minimal implementation list; "heartbeat"; a duplicate SynApp title in the Isolation diagram; the "Offline Outbox Queue" label.
 - Not applied on purpose: the dual-build paragraph in Layer 2 Sandboxes (the content is in the developer tooling text); renaming the Layer 3 heading (owner choice, links depend on it); whether one observability visualization design replaces the other (owner choice, both kept).
 - The `TODO(M5)` comment in `crates/sandbox_wasm/src/engine/lifecycle.rs` and the requirements spec text ("peer backup pools are optional") are outside this change.
 
