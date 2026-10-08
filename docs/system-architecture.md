@@ -756,12 +756,12 @@ For standard operations, the Master Key issues a "Delegation Certificate" to a g
 A verifier names the scopes that it accepts, so a certificate made for one purpose cannot be replayed for another.
 
 When a stream opens, the router (`HandshakeVerifier::verify_preamble`) validates this chain:
-1. Did the Master Key authorize this Temporary Key? The router checks the signature, the validity window, and the scope (`routing` or `service-instance`) of the certificate, and that the temporary DID in the certificate is the DID of the key in the preamble.
+1. Did the Master Key authorize this Temporary Key? The router checks the signature, the validity window, and the scope (`routing` or `service-instance`) of the certificate. It also checks that the temporary DID in the certificate is the DID of the key in the preamble.
 2. Has the Master Key revoked this Temporary Key? The router resolves the master anchor (see below). It refuses the stream if the key is on the `revoked_keys` list, or if the anchor cannot be resolved within 5 seconds.
 
 When the preamble carries no certificate, the router accepts the key in the preamble as the caller's own master key. The optional end-to-end handshake (`enc=ecdh-p256`) is a separate step. It does not use the certificate. See [Encryption at Every Layer](#encryption-at-every-layer).
 
-> **Envisioned.** Not built yet. The router does not check that the caller holds the private part of the temporary key. The preamble carries only the public key, so the key is asserted and not proved. Only the login at the node auth service checks a signature over a nonce. Two more checks are not built:
+> **Envisioned.** Not built yet. The router does not check that the caller holds the private part of the temporary key. The preamble carries only the public key, so the key is stated and not proved. Only the login at the node auth service checks a signature over a nonce. Two more checks are not built:
 >
 > - **Signed request.** The handshake checks that the Temporary Key signed the active request.
 > - **Assurance credential.** The handshake optionally checks that the Master Key is bound to a verified government identity (Method B).
@@ -771,7 +771,7 @@ When the preamble carries no certificate, the router accepts the key in the prea
 > **Envisioned.** Not built yet. No code handles a government identity, a uniqueness anchor or a zero-knowledge proof.
 
 A person may later attach an optional assurance credential to a master key, for example a government identity. No such credential is required, and none is the root of trust (`[FND-IDT]` in the [requirements](system-requirements-spec.md)). To prove the binding without revealing the DID or the uniqueness anchor, the substrate would use an **Optional ZK Runtime Plugin** (WASM-based). The plugin is an extension point and not a release requirement.
-- It would accept the ID file, root signature, Master Key, and Temporary Key (as Public Input) into a proving scheme (e.g., `anon-aadhaar`).
+- It would accept the ID file, root signature, Master Key, and Temporary Key (as Public Input) into a proving scheme (for example, `anon-aadhaar`).
 - Verifiers would check the output proof string against public parameters.
 
 #### Signed Records
@@ -786,7 +786,7 @@ Limits on a record: the `payload` is at most 64 KiB when canonicalized, nests at
 
 An instance that may not sign, such as a read-only after-step instance, gets `permission-denied`.
 
-**Verifying.** The host and the guest run the same code (`syneroym-signed-record`, which also builds for `wasm32-wasip2`). A guest can verify a record. It cannot sign with a key that the node holds. The verifier checks that the envelope version is understood, that the record follows the rules above, that the issuer is the expected one when the caller names one, that the issue time is not more than 300 seconds ahead of the clock, that the record has not expired, and that the signature is valid. When the record carries a certificate, the verifier also checks that the master of the certificate is the issuer, that its scope is accepted (`record-signing` by default), and that the issue time of the record lies inside the validity window of the certificate. It then checks the revocation source that the caller passes for the signing key, the issuer and the record id. The result carries a revocation status. It is `Unknown` when the source has no answer for the signing key, the issuer or the record id. No Roym service passes a revocation source today, so the status is `Unknown`.
+**Verifying.** The host and the guest run the same code (`syneroym-signed-record`, which also builds for `wasm32-wasip2`). A guest can verify a record. It cannot sign with a key that the node holds. The verifier checks that the envelope version is understood and that the record follows the rules above. It checks that the issuer is the expected one, when the caller names one. It checks that the issue time is not more than 300 seconds ahead of the clock, that the record has not expired, and that the signature is valid. When the record carries a certificate, the verifier also checks three things. The master of the certificate must be the issuer. The scope of the certificate must be accepted (`record-signing` by default). The issue time of the record must lie inside the validity window of the certificate. It then checks the revocation source that the caller passes for the signing key, the issuer and the record id. The result carries a revocation status. It is `Unknown` when the source has no answer for the signing key, the issuer or the record id. No Roym service passes a revocation source today, so the status is `Unknown`.
 
 #### Identity Resolution & Revocation (The Master Anchor)
 The **Master Key acts as the persistent anchor**. It publishes one signed record, the master anchor, as a standard `pkarr` record, so the BEP 44 signature mechanics stay unchanged. The anchor is a **deny list**: it names the temporary keys that the master has revoked. It does not list the active keys of the master. Records that give a route to a node or a service are separate endpoint records (see [Service Record](#service-record) and [Node Record](#node-record)). The key that a record's `service_id` names signs it: the node key for a substrate, and the member's master key for a member service.
@@ -817,7 +817,7 @@ The master adds the DID of a temporary key to `revoked_keys` and publishes a new
 
 > **Envisioned.** Not built yet. A way for a person to revoke a temporary key that was compromised, for example a stolen laptop. The router already refuses a listed key. Only the App Supervisor adds keys to the list today, and only for instance keys.
 
-**The anchor is a duty.** An anchor from the HTTP registry stops verifying 24 hours after it was signed. A master must republish it before then. The DHT fallback does not check the age of an anchor today. When a registry URL is configured and the vault is unlocked, the App Supervisor republishes the anchor of each master it manages. The default interval is 12 hours. A person's anchor is published with `roymctl identity publish-anchor`. The community registry keeps anchors in memory only, so after a registry restart it holds no anchor until the master publishes again. If the registry returns an anchor that fails verification, or neither the registry nor the DHT returns an anchor, the router refuses a stream that carries a certificate of that master. See [Keys: Location, Use, Loss](#keys-location-use-loss).
+**The anchor is a duty.** An anchor from the HTTP registry stops verifying 24 hours after it was signed. A master must republish it before then. The DHT fallback does not check the age of an anchor today. When a registry URL is configured and the vault is unlocked, the App Supervisor republishes the anchor of each master it manages. The default interval is 12 hours. A person's anchor is published with `roymctl identity publish-anchor`. The community registry keeps anchors in memory only, so after a registry restart it holds no anchor until the master publishes again. The router refuses a stream that carries a certificate of that master in two cases. In the first case, the registry returns an anchor that fails verification. In the second case, neither the registry nor the DHT returns an anchor. See [Keys: Location, Use, Loss](#keys-location-use-loss).
 
 **Capability tokens.** A caller can also present a chain of UCAN capability tokens in the preamble ([ADR-0015](decisions/0015-ucan-capability-model.md)). The router verifies the chain, and for each edge it checks the anchor of the issuer for the audience key. An anchor that cannot be resolved counts as not revoked on this path.
 
@@ -828,7 +828,7 @@ The master adds the DID of a temporary key to `revoked_keys` and publishes a new
 If the Master Key itself is compromised, the user would recover as `[FND-IDT]` describes: rotate the compromised delegates, publish a revocation and keep an auditable chain from the old master to the new one.
 - A user who holds an optional assurance credential (Method B) could bind a *new* Master Key to the same credential with a modern timestamp/epoch. Because an attacker holds the digital `did:key` and not the physical identity, the attacker cannot produce a fresh proof.
 - The Community Registry and network would then trust the Master Key that provides the most recent valid proof.
-- **Orphaned DHT Records:** The attacker's compromised Master Key would still maintain its `pkarr` DHT record. This record becomes orphaned and irrelevant because the higher-level routing layers (e.g., the Community Registry, peer contact lists) update their internal pointers to resolve the Logical Service/Identity to the *new* Master Key. The old DHT entry does not need to be deleted.
+- **Orphaned DHT Records:** The attacker's compromised Master Key would still maintain its `pkarr` DHT record. This record becomes orphaned and irrelevant for this reason: the higher-level routing layers (for example, the Community Registry and peer contact lists) update their internal pointers. They then resolve the Logical Service/Identity to the *new* Master Key. The old DHT entry does not need to be deleted.
 
 ```mermaid
 flowchart TD
@@ -858,7 +858,7 @@ flowchart TD
 
 ### Discovery & Matching
 
-**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves endpoint records and master anchors — identity-to-route lookups, not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
+**Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves endpoint records and master anchors. These are identity-to-route lookups and not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
 
 **Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text, and filters. Its answer is a list of candidates and is never a verified answer. Today a provider publishes only the `listing` record to a directory.
 
@@ -870,7 +870,7 @@ The consumer's node asks each directory that the person chose. It then checks ev
 
 > **Envisioned.** Not built yet. Today a consumer asks the directories that it was given. No routing schema places a listing, no index has shards, and no hit carries a score or an ad boost. The design below is one option for later. It is not the plan. Tag-routed discovery ([P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics)) is another option.
 
-**Distributed matching (one option):** providers publish signed Publications (listings, intents, capabilities). Today only the `listing` record exists. Indexes are caches and are never authoritative. Clients verify every result — signature, timestamp, expiry — before trusting it.
+**Distributed matching (one option):** providers publish signed Publications (listings, intents, capabilities). Today only the `listing` record exists. Indexes are caches and are never the source of truth. Clients verify every result before trusting it. They check the signature, the timestamp and the expiry.
 
 ```mermaid
 flowchart TD
@@ -893,13 +893,13 @@ flowchart TD
     PLACE --> L1
 ```
 
-**Placement:** a protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication deterministically onto leaf index shards. Providers compute their own placement; no coordinator needed.
+**Placement:** a protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication deterministically onto leaf index shards. Providers compute their own placement, so no coordinator is needed.
 
 **Ranking:** transparent weighted formula (keyword relevance, geo proximity, reputation, ad-boost, recency). The weights are published open source. The ad-boost has a cap, and row 15 of the [Resolved Architecture TBD Items](#resolved-architecture-tbd-items) gives its value. There is no auction at first (row 17). The reputation signal depends on the reputation design, which is not frozen: see [Trust & Reputation](#trust--reputation). This formula orders the answer to one query. Suggesting items with no query is a separate design: see [Recommendation Algorithm](#recommendation-algorithm).
 
-**Smallest version of this option:** Publications, one or two routing dimensions (spatial + category), flat leaf-shard lookup, client-side verification — enough for cross-cluster federation.
+**Smallest version of this option:** Publications, one or two routing dimensions (spatial + category), flat leaf-shard lookup, and client-side verification. This is enough for cross-cluster federation.
 
-**Additive, later:** a hierarchical synopsis tree and query planner (worth it only once leaf-shard count makes fan-out expensive), composite routing descriptors, cross-shard ranking, adaptive fan-out. None of these require reworking the Publication format or placement contract once the smallest version exists.
+**Additive, later:** a hierarchical synopsis tree and query planner, composite routing descriptors, cross-shard ranking, and adaptive fan-out. The tree and the planner make sense only once the leaf-shard count makes fan-out expensive. None of these require reworking the Publication format or placement contract once the smallest version exists.
 
 ### Messaging
 
@@ -936,7 +936,7 @@ flowchart TD
 
 **Libraries:** `vodozemac` for the Olm protocol (a triple Diffie-Hellman key exchange, 3DH, and a Double Ratchet) in 1-to-1 chat. Group chat uses one AES-256-GCM key for each epoch, which the group owner makes and distributes, and Ed25519 signatures on every entry. No `libsignal-protocol-rust` and no `openmls` is used. ADR-0013 Amendment 1 replaced MLS with the owner-distributed key ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). The key agreement sits behind one interface, so the DAG, the ordering and the storage do not depend on it.
 
-The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` while the peer is not reachable. It becomes `failed` when delivery is refused for good (for example, the peer refuses it, or the sending service has no valid instance certificate), when the delivery attempts run out, or after 30 days (`conversation_max_pending_age_secs`). Delivery has three states: `pending`, `delivered`, and `failed`.
+The sender gets the prekey bundle of the receiver with the `prekey-bundle` call to the conversation service of the peer. The peer limits each caller; the default is 20 requests per hour for one peer. A message that cannot be delivered stays in the outbox of the sender and shows `pending` while the peer is not reachable. It becomes `failed` when delivery is refused for good. An example is a peer that refuses it, or a sending service that has no valid instance certificate. The same happens when the delivery attempts run out, or after 30 days (`conversation_max_pending_age_secs`). Delivery has three states: `pending`, `delivered`, and `failed`.
 
 **Group chat controls:**
 - Only the owner of a group changes its members, and it can hold at most 256 members by default.
@@ -965,7 +965,7 @@ The sender gets the prekey bundle of the receiver with the `prekey-bundle` call 
 **Built today.** Roym computes no rating, score or vouch. These parts exist:
 
 - **Signed receipts.** A booking has two receipts, the agreement receipt and the fulfilment receipt. Each party signs its own copy, and the two copies are separate records. [P2P-REP](#p2p-rep-satisfaction-signal-mechanics) says more.
-- **SynOrg standing.** The owner of a SynOrg signs three kinds of record about a member: a `membership-credential` (it names the categories and the areas that it covers, and lasts at most two years), a `revocation` that withdraws a credential, and a `moderation-decision` (`member.suspend` and `member.lift`). These are Roym records, not W3C Verifiable Credentials. A directory returns a listing only when its publisher has a valid membership. A consumer's node judges the same evidence itself, against the group that it pinned for that directory. The pin is set when the node first learns which group the directory speaks for, and a later reply does not change it. A decision of the group reaches copies that other people hold only when they next check, and the Hub says so. The verbs that issue a credential or a revocation, or suspend or lift a member, are local only. `directory.standing` answers any caller.
+- **SynOrg standing.** The owner of a SynOrg signs three kinds of record about a member: a `membership-credential`, a `revocation` that withdraws a credential, and a `moderation-decision` (`member.suspend` and `member.lift`). The credential names the categories and the areas that it covers. It lasts at most two years. These are Roym records, not W3C Verifiable Credentials. A directory returns a listing only when its publisher has a valid membership. A consumer's node judges the same evidence itself, against the group that it pinned for that directory. The pin is set when the node first learns which group the directory speaks for, and a later reply does not change it. A decision of the group reaches copies that other people hold only when they next check, and the Hub says so. The verbs that issue a credential or a revocation, or suspend or lift a member, are local only. `directory.standing` answers any caller.
 - **Rate limits.** The limits on first contact and on publication are described in [Messaging](#messaging).
 - **Block list.** A person keeps a local block list in the `profile` service.
 - **Moving history.** The nearest to portable history is the Roym backup archive, with a signed manifest.
@@ -974,7 +974,7 @@ The sender gets the prekey bundle of the receiver with the `prekey-bundle` call 
 
 **Reputation:** Replaces global average ratings with network-gated trust signals and transactional proofs.
 
-- **Network-Gated Ratings:** A provider's rating is only visible to consumers sharing a trust path in the vouch graph. This prevents rating inflation and fake reviews from strangers, reflecting real-world community trust. (Note: May present a cold-start challenge for consumers with thin networks).
+- **Network-Gated Ratings:** A provider's rating is only visible to consumers sharing a trust path in the vouch graph. This prevents rating inflation and fake reviews from strangers, reflecting real-world community trust. (Note: May present a cold-start challenge for consumers with small networks).
 - **Transactional Proof:** Displays verified transaction counts and repeat customer rates instead of subjective ratings. Both parties must sign the transaction record, providing a strong, verifiable signal.
 
 **Trust, vouching, credentials, reputation portability, and anti-gaming**
@@ -1033,7 +1033,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 
 **Anti-gaming (discovery ranking):**
 - Ad boost is capped, so organic signals always dominate (row 15 of the [Resolved Architecture TBD Items](#resolved-architecture-tbd-items) gives the cap)
-- Keyword stuffing is mitigated by TF-IDF scoring on index entries (raw keyword count is not used)
+- Keyword stuffing is reduced by TF-IDF scoring on index entries (raw keyword count is not used)
 - Review bombing detection: reputation score uses a Bayesian average with a prior of 3.5/5.0 and minimum 5 reviews before score is published
 
 **Reputation portability:** A provider migrating substrates republishes their `ReputationRecord` collection (each record is independently signed by both parties) to the DHT under their existing identity key. No loss of history.
@@ -1044,7 +1044,7 @@ Payment handling is a Roym feature, not a substrate component. See [Flexible Pay
 
 **Built today.** Payment is out of band by design. Roym does not process a payment or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency, and method, and it refuses a record that does not. The provider signs a `payment-request` record. Either party signs a `payment-acknowledgement` record that says a payment happened. The acknowledgement is the word of its issuer, and Roym does not see the money move. The Hub shows a notice that says so. The payee text of a card is a link only when it uses `http` or `https`. Any other scheme, such as a UPI link, shows as plain text.
 
-> **Envisioned.** Not built yet. No payment gateway, `PaymentIntent` interface, adapter, mutual credit or coin code exists. The design below is the direction: redirection to external payment flows (for example UPI deep links), and later fully integrated gateways, to keep central dependencies few at the start. Today nothing verifies a payment.
+> **Envisioned.** Not built yet. No payment gateway, `PaymentIntent` interface, adapter, mutual credit or coin code exists. The direction of the design below is to redirect to external payment flows (for example UPI deep links) and later to add fully integrated gateways. The aim is to keep central dependencies few at the start. Today nothing verifies a payment.
 
 **Payment rails and credit/coin direction**
 
@@ -1069,7 +1069,7 @@ flowchart TD
 
 Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow & Dispute Resolution](#6-decentralized-escrow--dispute-resolution).
 
-**Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where providers and consumers issue credits to each other denominated in a local unit. No external currency is required. Each credit line is a signed ledger between two parties; Roym mediates settlement. Regulatory classification varies by jurisdiction.
+**Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where providers and consumers issue credits to each other, counted in a local unit. No external currency is required. Each credit line is a signed ledger between two parties. Roym mediates settlement. Regulatory classification varies by jurisdiction.
 
 **Syneroym Coin (layers onto the same abstraction; legal review required before launch):** Internal ledger token (not a cryptocurrency or blockchain-based token) managed by a community governance multi-sig. Used for ecosystem incentives and cross-aggregator settlement.
 
