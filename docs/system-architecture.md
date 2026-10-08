@@ -1080,14 +1080,14 @@ The manifest of Roym declares six services: `web`, `profile`, `conversation`, `c
 
 | Service | What it does | Declared dependencies |
 |---|---|---|
-| `web` | Serves the Hub UI and `POST /rpc`. It forwards each method to the service that owns the method prefix. Every method that it forwards, except `profile.policy`, needs a session of the node owner. | `conversation`, `profile`, `catalog`, `transaction`, `directory` |
+| `web` | Serves the Hub UI and `POST /rpc`. It forwards each method to the service that owns the method prefix. Every method that it forwards, except `profile.policy`, needs a session of the node owner. `session.whoami` is answered without a session. | `conversation`, `profile`, `catalog`, `transaction`, `directory` |
 | `profile` | The person's own profile, contacts, block list and reports. | none |
 | `conversation` | One-to-one messages and private groups. It uses the conversation interface of the substrate for encryption, the outbox and delivery. | `profile` |
 | `catalog` | The provider's listings and availability slots. | `profile` |
 | `transaction` | Requests, quotes, agreements, bookings, payments and fulfilments. Booking logic and payment records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
 | `directory` | A SynOrg's member list, published listings, search index and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
 
-A call that does not come from inside the installation is answered with error `-32013`, except for four `directory` methods. `directory.search`, `directory.info` and `directory.standing` accept any caller. `directory.publish` accepts a caller whose identity the router verified. So `transaction` and `catalog` cannot be called by another node. Two nodes talk through the conversation transport of the substrate, which carries the cards (the `prekey-bundle` and `deliver` calls), and through `directory.search` and `directory.publish`. Inside the installation, `web` checks the session before it forwards a call.
+A call to the `invoke` export of a service that does not come from inside the installation is answered with error `-32013`, except for four `directory` methods. `directory.search`, `directory.info` and `directory.standing` accept any caller. `directory.publish` accepts a caller whose identity the router verified. So `transaction` and `catalog` cannot be called by another node. The `status` export stays open on every service, so health checks work. Two nodes talk through the conversation transport of the substrate, which carries the cards (the `prekey-bundle` and `deliver` calls), and through the four `directory` methods. Inside the installation, `web` checks the session before it forwards a call.
 
 ```mermaid
 flowchart TD
@@ -1124,7 +1124,7 @@ flowchart TD
     DIR -->|"depends on"| CATALOG
     CONV --> MSG
     MSG -->|"end-to-end encrypted messages that carry cards"| PEER
-    DIR -->|"directory.search, directory.publish"| SYNORG
+    DIR -->|"directory.search, directory.info, directory.publish, directory.standing"| SYNORG
 
     style BROWSER fill:#D6E4F0,stroke:#2E75B6
     style OWN_NODE fill:#E2EFDA,stroke:#548235
@@ -1154,7 +1154,7 @@ The expiry of a quote is set by the provider. It must be from 5 minutes to 90 da
 
 Roym has no single order record. A deal is the record chain above, and the booking that follows it. The provider's node is the only writer of the booking. Every other node reads the signed snapshots of that writer. Each snapshot has a number `seq` that counts up from 1. A snapshot is written with the create fence of the data layer, so two writers of the same `seq` cannot both win. The writer retries a lost write up to three times.
 
-The booking opens on the provider's node once the consumer has accepted. When the consumer's `agreement-receipt` card is filed there and the quote has not expired, the node claims a seat or a decision (see below), opens the booking and countersigns the agreement on its own. The provider can also accept by hand with `agreement.accept`. A quote that names a slot is booked by the acceptance of the consumer. The provider cannot accept such a quote before the consumer.
+The booking opens on the provider's node once the consumer has accepted. When the consumer's `agreement-receipt` card is filed there and the quote has not expired, the node claims a seat or a decision (see below), opens the booking and countersigns the agreement on its own. This happens when `transaction.sync` runs on the provider's node, for example when the provider opens the conversation in the Hub. The provider can also accept by hand with `agreement.accept`. A quote that names a slot is booked by the acceptance of the consumer. The provider cannot accept such a quote before the consumer.
 
 ```mermaid
 stateDiagram-v2
@@ -1202,7 +1202,7 @@ The rules of the booking:
 
 #### Consumer Transaction Flow
 
-The consumer's node does the search. It talks to the SynOrg directories that the person chose, and to the provider's node only through cards.
+The consumer's node does the search. It talks to the SynOrg directories that the person chose, and to the provider's node only through the conversation, which carries the cards.
 
 ```mermaid
 sequenceDiagram
@@ -1251,13 +1251,13 @@ Notes on the flow:
 - **Agreement.** The consumer accepts the quote with `agreement.accept`. The provider's node decides the booking and countersigns. If the slot is full, it does not countersign, and the booking is `conflict`.
 - **Notices.** Each node shows the card in the conversation. No push notification is sent.
 - **Payment.** The provider may send a `payment-request`. The consumer pays outside Roym. Either party then records a `payment-acknowledgement`. The Hub shows a notice that Roym does not see the money move.
-- **Fulfilment.** The booking is complete only when the provider's claim and the consumer's confirmation both exist, and the payment track is acknowledged too.
+- **Fulfilment.** The booking is complete when the payment track and the fulfilment track are both acknowledged. The consumer's confirmation acknowledges the fulfilment track at once, even if the provider has not claimed the work. It takes effect on the provider's node when the card is filed there.
 
 > **Envisioned.** Not built yet. A payment through an external gateway: a Stripe `PaymentIntent`, a client secret, a card confirmed with the Stripe SDK and a webhook that marks the booking as paid. Also a review that the consumer submits after the booking. Roym has no gateway code and no review record. See [Payments](#payments) and [Flexible Payment Integration](#3-flexible-payment-integration).
 
 #### Recommendation Algorithm
 
-**Built today.** Roym has no recommendation feature. It has search. A search sends its query to each directory that the person chose. The query can hold text, categories, an area and filters. Each directory sorts its matching listings by the `issued_at_secs` of the signed record, newest first. Ties go by `listing_id`. The consumer's node then takes hits from the directories in turn, newest first inside each directory. It takes at most 10 hits per directory and 50 per page. No score is computed. Search runs are kept for one hour as working state. Beyond those runs, the consumer's node keeps no query history and no list of viewed items. Search ranking is the ordering of the answer to one query. A recommendation would suggest items with no query.
+**Built today.** Roym has no recommendation feature. It has search. A search sends its query to each directory that the person chose. The query can hold text, categories, an area and filters. Each directory sorts its matching listings by the `issued_at_secs` of the signed record, newest first. Ties go by `listing_id`. The consumer's node then takes hits from the directories in turn, newest first inside each directory. It takes at most 10 hits per directory and 50 per page. No score is computed. A search run is working state. The node deletes runs older than one hour when the next search starts. Beyond those runs, the consumer's node keeps no query history and no list of viewed items. Search ranking is the ordering of the answer to one query. A recommendation would suggest items with no query.
 
 > **Envisioned.** Not built yet. No recommendation, scoring or collaborative-signal code exists. This is the design.
 >
@@ -1289,7 +1289,7 @@ Notes on the flow:
 
 **Built today.** Discovery is what the Roym `directory` service does. Each substrate decides for itself what it asks and whom it asks. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose (`directory.publish`, or `directory.publish-to-source` from the provider's own node). A SynOrg runs the `directory` service on its own substrate. The directory holds a member list, the listings published to it and a search index, and it answers from those. It does not forward a query to another directory. `directory.search` accepts any caller, including a stranger. `directory.publish` accepts only a caller whose identity the router has verified.
 
-A consumer's own node runs the search. It keeps a list of up to 8 directories that the person added. For each directory it sends `directory.search`, with at most 3 requests in flight. It verifies the signed envelope of every listing itself. A directory's own answer never counts as verification. It keeps hits that fail verification apart from the others. It merges the verified hits by taking one from each directory in turn, with at most 10 hits per directory and 50 per page. It keeps each search run for one hour as working state, and keeps no index cache.
+A consumer's own node runs the search. It keeps a list of up to 8 directories that the person added. The Hub starts a search run on its own node. For each directory the Hub asks the node to send `directory.search`. The node reports a limit of 3 requests in flight, and the Hub keeps to it. The node does not enforce the limit. If the node is busy, it refuses to start a request, and the Hub retries that directory once. The node verifies the signed envelope of every listing itself. A directory's own answer never counts as verification. It keeps hits that fail verification apart from the others. It merges the verified hits by taking one from each directory in turn, with at most 10 hits per directory and 50 per page. It deletes search runs older than one hour when the next search starts, and keeps no index cache.
 
 ```mermaid
 flowchart TD
@@ -1331,9 +1331,9 @@ A third-party SynApp is federation-compatible if it implements:
 4. **Reputation:** Generates a `ReputationRecord` that conforms to a shared schema on transaction completion. See the Envisioned note below.
 5. **Portability:** Exports data as a Roym archive.
 
-> **Envisioned.** Not built yet. Today Roym has no `ReputationRecord`, and the reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). Also Envisioned: an identity document in the DHT, a shared Routing Schema that places each signed record (see the Envisioned note above), and a generic archive format for third-party SynApps.
+> **Envisioned.** Not built yet. Today Roym has no `ReputationRecord`, and the reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). Also Envisioned: an identity document in the DHT, a shared Routing Schema that places each signed record (see the Envisioned note above), a generic archive format for third-party SynApps, and one check of every record against `RECORD_TYPES` before the verifiers run.
 
-No central coordinator is required — these are convention-based contracts enforced by schema validation. A Roym node verifies every record against a fixed table of record types and versions, and refuses a record of an unlisted type or version.
+No central coordinator is required — these are convention-based contracts enforced by schema validation. Each Roym verifier checks that a record has the type and version it expects, and refuses any other. The table `RECORD_TYPES` lists the twelve record types and their versions. The code does not read this table when it verifies. The `booking-progress` record is signed by the provider's service and is not in the table.
 
 
 ---
@@ -1348,7 +1348,7 @@ The Hub holds little state. It keeps the session token in `sessionStorage` and a
 
 The Hub does no message crypto. Message encryption and the key ratchet run in the `conversation` service of the substrate, with `vodozemac` ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). There is no `libsignal`.
 
-The Hub talks to its own node only. It sends JSON-RPC 2.0 over HTTP `POST /rpc` with the session token as a Bearer header. The node talks to the provider's node with the route preamble on an Iroh or WebRTC stream. Separately, a browser can reach a node through the WebRTC bootstrap page. That page registers a service worker and carries the page's HTTP requests over a WebRTC data channel. This path is tested with a sample web app, not with the Hub.
+The Hub talks to its own node only. It sends JSON-RPC 2.0 over HTTP `POST /rpc` with the session token as a Bearer header. The node talks to the provider's node with the route preamble on an Iroh stream. Node-to-node calls do not use WebRTC today. Separately, a browser can reach a node through the WebRTC bootstrap page. That page registers a service worker and carries the page's HTTP requests over a WebRTC data channel. This path is tested with a sample web app, not with the Hub.
 
 ```mermaid
 flowchart TD
@@ -1373,7 +1373,7 @@ flowchart TD
     GW --> WEB --> SERVICES
     SERVICES --> CRYPTO
     SERVICES --> DATA
-    SERVICES -->|"route preamble over Iroh or WebRTC"| PROVIDER_NODE
+    SERVICES -->|"route preamble over Iroh"| PROVIDER_NODE
 
     style BROWSER fill:#D6E4F0,stroke:#2E75B6
     style OWN_NODE fill:#E2EFDA,stroke:#548235
@@ -1383,7 +1383,7 @@ flowchart TD
 
 - **Option A: self-hosted substrate on the person's own machine.** Every Roym participant runs a substrate. The consumer's own node holds the consumer's data and runs the search.
 
-> **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the consumer, and the consumer can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned. Today a substrate can hold a delegated instance key for a member it hosts, and Roym has export and import. Every Hub method except `profile.policy` needs an owner session.
+> **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the consumer, and the consumer can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned. Today a substrate can hold a delegated instance key for a member it hosts, and Roym has export and import. Every Hub method that `web` forwards, except `profile.policy`, needs an owner session. `session.whoami` is answered without a session.
 
 > **Envisioned.** Not built yet. The Hub runs in a browser today. Envisioned: a Tauri desktop app and a native mobile app. Also Envisioned: a native shell with a WebView that loads the UIs of other SynApps, native crypto bindings, an FFI connection manager, a client-side SQLite or CoreData store and a WebSocket link from the client. Today the Hub is Roym's own fixed screens. The `web` service declares a `/ws` route, but its handlers do nothing. The mobile case is in [Phase 7](#phase-7-edge-expansion).
 

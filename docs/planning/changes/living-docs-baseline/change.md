@@ -273,6 +273,13 @@ Stage 2 fix, S5:
 - **Not-covered item 6 and 7.** `crates/substrate/config.sample.toml`, `config.dev.toml` and `AGENTS.md` say "Prometheus" for the metrics endpoint. They are outside the files this pass may edit. The architecture doc is correct (JSON snapshot, no Prometheus export). Someone should fix those three files.
 - **Not-covered item 3 (zero key with encryption off).** The doc states the fact. I added no backlog row, because `storage.encryption = false` is an explicit option that is on by default, and a related row already exists for this setting.
 
+Stage 2 fix, S6:
+
+- **3 requests in flight (16.4).** The node reports the limit of 3 in the answer of `directory.start-run`. The Hub keeps to it in its fan-out loop (`search.ts`). The node does not enforce it, but its own guest-HTTP admission refuses a request when it is busy. The doc says which side does what. No backlog row, because the node-side admission already protects the node.
+- **`RECORD_TYPES` (16.14).** No verifier reads the table. The doc now says each verifier checks its own type and version. The central check is Envisioned. Backlog row added in section 12.
+- **WebRTC between nodes (16.21).** The doc says node-to-node calls use Iroh only. Backlog row added in section 7.
+- **Other places with the same words.** The search-run retention sentence in Recommendation Algorithm was fixed with the Discovery Flow one. The `directory.info` and `directory.standing` calls were added to the Component Architecture text and diagram edge.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
