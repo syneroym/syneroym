@@ -2836,7 +2836,7 @@ To avoid rigid (and brittle) version matching across a decentralized network, Su
 
 ### [ADV-OBS] Observability enhancements
 
-**Built today.** Components count requests and errors through the `metrics` facade. A lock-based in-memory recorder holds the counters, gauges and histograms. The substrate can serve a JSON snapshot of the recorder over HTTP when the metrics endpoint is enabled. The `ObservabilityEngine` sets up logging, installs the recorder and samples system use once a second. See [Observability Architecture](#observability-architecture) for the signals that exist and for the provider-facing design.
+**Built today.** Components count requests and errors through the `metrics` facade. A lock-based in-memory recorder holds the counters, gauges, and histograms. The substrate can serve a JSON snapshot of the recorder over HTTP when the metrics endpoint is enabled. The `ObservabilityEngine` sets up logging, installs the recorder, and samples system use once a second. See [Observability Architecture](#observability-architecture) for the signals that exist and for the provider-facing design.
 
 > **Envisioned.** Not built yet. No `metrics.db`, no channel pipeline, no byte counters per stream and no metrics RPC exist. This design keeps metrics in a SQLite file. The Envisioned design in [Provider-Facing Observability](#provider-facing-observability) keeps recent spans and metric snapshots in memory. The two disagree on where metrics are kept. Neither is built. Today metrics live only in the in-memory recorder. The design below calls its background task the `Metrics Pipeline` so it does not clash with the built `ObservabilityEngine`.
 
@@ -2859,7 +2859,7 @@ For multi-hop scenarios and standard data routing, measuring data transfer is cr
 *   **Periodic Flush**: Counts are flushed to the `Metrics Pipeline` when a stream closes or at set intervals for long-lived streams. Cryptographic receipts are intentionally excluded in this phase to maintain simplicity; logging the attested counts provides sufficient baseline trust for standard metering.
 
 #### 4. Authorized Access
-Accessing the `metrics.db` is securely gatekept by the unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md)) via standard RPC endpoints:
+Access to `metrics.db` is securely governed by the unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md)) via standard RPC endpoints:
 *   **Root Capabilities**: The Substrate owner uses an administrative UCAN, resulting in queries running without restrictions against `metrics.db`.
 *   **Scoped Capabilities**: SynApp/SynSvc owners invoking the metrics RPC present a UCAN bound to their identity. The engine transparently injects a `WHERE service_owner_did = ?` clause into the underlying SQL query.
 *   **Data Consumption**: The Metrics Pipeline does not host its own visualizations. (The small provider status page in [Provider-Facing Observability](#provider-facing-observability) is a separate design.) Instead, the metric data is consumed by standalone SynApps or dedicated BI tools acting as external clients.

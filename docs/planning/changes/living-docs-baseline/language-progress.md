@@ -28,8 +28,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Phase 0: Core Architecture Implementation | done | dc462344 | - |
 | Phase 1: Foundation & Core Infrastructure | done | df4d79bf | - |
 | Phase 2: Core Platform Capabilities | done | 2a96752c | - |
-| Phase 3: Substrate & Application Lifecycle | done | pending | - |
-| Phase 4: Advanced Services & Tooling | not started | - | - |
+| Phase 3: Substrate & Application Lifecycle | done | 44f01b03 | - |
+| Phase 4: Advanced Services & Tooling | done | pending | - |
 | Phase 5: Peer-to-Peer Community Primitives | not started | - | - |
 | Phase 6: High-Level Applications (SynApps) | not started | - | - |
 | Phase 7: Edge Expansion | not started | - | - |
