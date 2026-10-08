@@ -10,8 +10,8 @@ The first language pass (`language-progress.md`) changed little: most edits were
 | L2 | Layer 1 | done | ca529d86 | reviewed diff; 12 blocks; committed with -n (hooks skipped), rule added to brief afterwards |
 | L3 | Layer 2 | done | 7ac87aa5 | reviewed 19 blocks; 4 long sentences fixed |
 | L4 | Layer 3 | done | 66abfa72 | reviewed; 8 long sentences fixed (1 field list left); verifier checks rewritten as 'must be' with the same three checks |
-| L5 | Layer 4, Federation, Consumer Experience, Observability | running | | |
-| L6 | Security, Resolved TBD Items, Appendix, Technology Stack | not started | | |
+| L5 | Layer 4, Federation, Consumer Experience, Observability | done | 8283a1da | reviewed; 8 long sentences fixed; 'Local Producer-Distributor Mesh' subsection not covered: add to a later group |
+| L6 | Security, Resolved TBD Items, Appendix, Technology Stack | running | | |
 | L7 | Connectivity Substrate | not started | | |
 | L8 | Addendum intro, Phase 0, Phase 1, Phase 2 | not started | | |
 | L9 | Phase 3 to Phase 7, Open Questions, Glossary | not started | | |
