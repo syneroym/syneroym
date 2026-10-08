@@ -1151,32 +1151,111 @@ the primary.
 ## Phase 4: Advanced Services & Tooling
 
 ### [ADV-OBS] Observability enhancements
-- **Comprehensive Metric Types**: Beyond system-level resources, track Application Metrics (SynSvc call counts, error rates, response times) and Network Metering (bytes transferred, connection durations, relayed byte amounts for multi-hop routing). The metric pipeline is extensible to support future infrastructure additions like GPU usage, LLM token counts, or specific AI service utilization.
-- **Granularity & Retention**: Implement automatic data rollups to balance storage costs. The system defaults to storing raw events for 24 hours, which then roll up directly into 1-hour buckets retained for 30 days (skipping minute-level granularity for simplicity and storage efficiency).
-- **Data Mashups & Flexible Metadata**: Metrics are tagged with Substrate ID, Service Owner ID (DID), and Datetime. The underlying format incorporates extensible JSON properties to support dynamic metadata, allowing for future additions such as applying "agreed rates" for billing without rigid schema coupling.
-- **Access Control Enforcement**: 
-  - Substrate owners have root access to all metrics on their node.
-  - Service owners are restricted to viewing metrics exclusively for their deployed SynApps/SynSvcs.
-  - Relay providers have access to routing byte counts to log charges against source/destination nodes.
-- **External API Strategy**: Substrates do not render internal dashboards. Instead, metric data is exposed securely via an access-controlled RPC endpoint, designed to be consumed by external visualization SynApps or dedicated metering applications.
+
+The substrate captures in-memory counters, gauges, and latency histograms via a thread-safe `MemoryRecorder` (`syneroym-observability`) and exposes a JSON snapshot over HTTP `GET /metrics`. Dedicated SQLite metric storage, automated data rollups, and multi-tenant access control are envisioned.
+
+- **Comprehensive Metric Types:** Beyond system-level resources, track application metrics (service call counts, error rates, response times) in an in-memory metrics recorder.
+  > **Envisioned.** Not built yet. Network byte metering, connection duration tracking, relayed byte accounting, and GPU or LLM token counters. Today the substrate tracks in-memory counters, gauges, and latency histograms without per-stream byte counters or external token metering.
+  >
+  > Track Network Metering (bytes transferred, connection durations, relayed byte amounts for multi-hop routing). The metric pipeline is extensible to support future infrastructure additions like GPU usage, LLM token counts, or specific AI service utilization.
+- **Granularity & Retention:**
+  > **Envisioned.** Not built yet. Persistent SQLite `metrics.db`, raw event logging, and automatic data rollups. Today metrics are stored strictly in memory and reset upon process restart.
+  >
+  > Implement automatic data rollups to balance storage costs. The system defaults to storing raw events for 24 hours, which then roll up directly into 1-hour buckets retained for 30 days (skipping minute-level granularity for simplicity and storage efficiency).
+- **Data Mashups & Flexible Metadata:**
+  > **Envisioned.** Not built yet. Structured metadata tagging with Substrate ID, Service Owner DID, and dynamic JSON billing metadata. Today in-memory metric keys use plain metric names without DID tagging or dynamic billing schemas.
+  >
+  > Metrics are tagged with Substrate ID, Service Owner ID (DID), and Datetime. The underlying format incorporates extensible JSON properties to support dynamic metadata, allowing for future additions such as applying "agreed rates" for billing without rigid schema coupling.
+- **Access Control Enforcement:**
+  > **Envisioned.** Not built yet. Role-based metrics access control, per-service owner scoping, and relay billing logs. Today the metrics HTTP endpoint is unauthenticated and serves all recorded metrics.
+  >
+  > Substrate owners have root access to all metrics on their node. Service owners are restricted to viewing metrics exclusively for their deployed SynApps/SynSvcs. Relay providers have access to routing byte counts to log charges against source/destination nodes.
+- **External API Strategy:** Substrates do not render internal dashboards. Instead, metric data is exposed as a JSON snapshot via HTTP `GET /metrics`.
+  > **Envisioned.** Not built yet. Access-controlled RPC metric endpoints and dedicated metering visualization applications. Today the substrate exposes an unauthenticated local HTTP endpoint returning JSON metrics snapshots.
+  >
+  > Metric data is exposed securely via an access-controlled RPC endpoint, designed to be consumed by external visualization SynApps or dedicated metering applications.
+
+### [OBS-ALT] Control-Plane Health Sweep & Alert Store
+
+The substrate App Supervisor and operator tools maintain an isolated SQLite `AlertStore` (`alerts.db`) tracking discrete health failure modes (`AlertKind`).
+
+- **Failure Mode Classification (`AlertKind`):** The store tracks distinct failure signals without collapsing them into generic errors:
+  - `SubstrateUnreachable`: Target substrate failed to respond to the health poll.
+  - `InstanceNotRunning`: Target substrate answered, but the service instance is down or absent.
+  - `ProbeFailing`: The declared readiness probe for the service fails.
+  - `CertificateNearExpiry`: Instance certificate is within 25% of its expiration window.
+  - `CertificateExpired`: Instance certificate validity window has expired.
+  - `SupervisorSuperseded`: A managed substrate reports a generation higher than this supervisor holds.
+  - `RemediationExhausted`: Bounded restart-in-place exhausted maximum restart attempts without becoming healthy.
+  - `BindingConflict`: A binding write arrived at the current epoch with conflicting content.
+  - `PlacementChangeRefused`: A plan update attempted to relocate an existing service to a different substrate.
+  - `OrphanedService`: A service continues running despite removal from the stored plan.
+  - `VaultLocked`: Supervisor vault lacks the Key Encryption Key (KEK) needed to reissue instance certificates.
+  - `InstanceRevoked`: An operator revoked the placement's instance key.
+  - `RotationRestartPending`: Certificate renewal succeeded but the subsequent instance restart failed.
+  - `DeliveryExhausted`: A queued binding write exhausted its delivery attempt budget.
+  - `ScheduledRunFailed`: A scheduled cron tick failed or timed out.
+  - `AppIdentityMismatch`: Vault app master key does not derive the expected application DID.
+- **Lifecycle Tracking:** Alert records persist `first_seen_at`, `last_seen_at`, and `cleared_at` timestamps. Alerts remain active while failure conditions persist, and transition to cleared once the underlying fault resolves.
+
+### [OBS-PRB] Diagnostic Health Probes & Operator Health CLI
+
+The SDK and operator CLI provide read-only multi-substrate status polling and alert reporting without modifying deployment state.
+
+- **Status Queries (`StatusQuery`):** The substrate client implements the `StatusQuery` trait (`crates/sdk/src/health.rs`) to query service statuses across target substrates, reporting instance phases, probe results, and node facts.
+- **Operator Health CLI (`roymctl app health`):** Operators audit application instance health via `roymctl app health --instance-id <id>`. The command polls target nodes, evaluates readiness probes and certificate lifetimes, records active alerts in `alerts.db`, and exits non-zero if any service reports a fault. The `--watch <secs>` option enables periodic polling, and `--no-record` allows read-only inspection without persisting alert rows.
+- **Alert Inspection (`roymctl app alerts`):** Operators inspect recorded alerts for an application instance via `roymctl app alerts --instance-id <id>`. The command displays active alerts and can include cleared alerts with `--all`.
 
 ### [ADV-AI] Advanced AI & Agentic Workflows
-- **Local Model Inference Service:** A lightweight wrapper service within the substrate that manages the underlying AI engine (e.g., Ollama). It orders the engine to install/download specific base models from a strict allow-list defined by the node operator, and proxies inference calls to the desired agent/model combination. Supports dynamic model loading within the permitted list and is accessible by other `SynApp` services via the Universal Proxy.
-- **Hardware-Gated Capabilities & Decoupling:** Local model installation and inference are strictly gated by automatic hardware detection (e.g., GPU/NPU availability, RAM capacity) and explicit owner configuration overrides. Crucially, the Agent logic (lightweight WASM) and the LLM inference (heavy compute) are fully decoupled. If the local node lacks hardware for LLMs, it can still run the Concierge Agent locally while routing just the LLM inference requests to capable remote substrates. Alternatively, it can outsource both the Agent and the LLM entirely. The proxy agent service explicitly configures these upstream/remote endpoints to avoid any inverted dependency on application-layer aggregators.
-- **The Concierge Agent (Rig-core):** The core agentic `SynSvc` running natively on the substrate. Frontend clients (like Trusted Rooms) send natural language intent directly to this agent.
-- **Dynamic Tool Retrieval Loop:** The agent uses a dynamic "Retrieval Augmented Tool" approach to avoid context bloat:
-  1. The loop starts by giving the LLM exactly **one** meta-tool: `search_ecosystem_tools`.
-  2. The LLM calls `search_ecosystem_tools(query)`.
-  3. The Concierge Agent executes a semantic search against its local Ecosystem Vector Directory.
-  4. The agent dynamically injects matching tool schemas into the LLM's context.
-  5. The LLM selects the best tool and generates the execution command.
-  6. The agent invokes the target service via the Universal Proxy, returning **Action Cards**.
-- **Human-in-the-Loop (HITL) Consent:** For high-stakes tool calls, the Concierge Agent pauses execution and yields a "Proposal Card" to the Trusted Room. The user must cryptographically sign (consent) before the loop resumes. This is configured natively via tool arguments.
-- **Agent Observability (Progress Streaming):** Configurable progress streaming where the Concierge Agent broadcasts structured status, tool calls, citations, and validation events back to the UI. Raw private model reasoning is not exposed as an application contract.
-- **MCP Gateway:** A headless gateway layer that exposes the substrate's local capabilities to *external* desktop clients using the Model Context Protocol (MCP).
-- **Agent-to-Agent Delegation:** The capability for a user's Concierge Agent to autonomously negotiate with external provider agents across the Syneroym substrate.
-- **Ecosystem Vector Directory & Memory:** A specialized local data store (`sqlite-vec`) indexing available tools and storing episodic memory.
-- **Orchestrated Loopcraft (Nested Agentic Loops):** To ensure high reliability on complex tasks, the Concierge Agent employs the "Loopcraft" methodology. Rather than executing a single, flat ReAct loop, the agent network utilizes pre-defined, specialized loops (e.g., a "Data Gathering Loop," a "Synthesis Loop," or a "Verification Loop"). These specialized loops are compiled and deployed as independent native WASM components (`SynSvcs`). The core Concierge Agent conditionally routes tasks through these stacked loops via the Universal Proxy based on the problem state. For instance, drafting an Action Card for a financial transaction will strictly route through a Verification Loop (a Critic sub-agent) before presenting it to the user. This orchestrated nesting allows for deep, self-correcting reasoning while maintaining strict zero-trust isolation between loops.
+
+All advanced AI capabilities and concierge agent workflows are deferred and tracked in `docs/planning/deferred-backlog.md`. No AI engine, local inference service, MCP gateway, or vector database exists in the codebase today.
+
+- **Local Model Inference Service:**
+  > **Envisioned.** Not built yet. Local model inference service and Ollama runtime management. Today the substrate runs WASM services and native services without AI engine wrappers.
+  >
+  > A lightweight wrapper service within the substrate that manages the underlying AI engine (e.g., Ollama). It orders the engine to install/download specific base models from a strict allow-list defined by the node operator, and proxies inference calls to the desired agent/model combination. Supports dynamic model loading within the permitted list and is accessible by other `SynApp` services via the Universal Proxy.
+- **Hardware-Gated Capabilities & Decoupling:**
+  > **Envisioned.** Not built yet. GPU/NPU hardware detection gating and decoupled remote LLM inference routing. Today the substrate samples basic host CPU and RAM in `crates/observability/src/engine.rs`.
+  >
+  > Local model installation and inference are strictly gated by automatic hardware detection (e.g., GPU/NPU availability, RAM capacity) and explicit owner configuration overrides. Crucially, the Agent logic (lightweight WASM) and the LLM inference (heavy compute) are fully decoupled. If the local node lacks hardware for LLMs, it can still run the Concierge Agent locally while routing just the LLM inference requests to capable remote substrates. Alternatively, it can outsource both the Agent and the LLM entirely. The proxy agent service explicitly configures these upstream/remote endpoints to avoid any inverted dependency on application-layer aggregators.
+- **The Concierge Agent (Rig-core):**
+  > **Envisioned.** Not built yet. Native concierge agent and natural language intent pipeline. Today user interaction uses structured UI screens and Action Cards.
+  >
+  > The core agentic `SynSvc` running natively on the substrate. Frontend clients (like Trusted Rooms) send natural language intent directly to this agent.
+- **Dynamic Tool Retrieval Loop:**
+  > **Envisioned.** Not built yet. Dynamic tool retrieval loop with `search_ecosystem_tools` and semantic vector search. Today services are discovered via directory listings and explicit RPC method calls.
+  >
+  > The agent uses a dynamic "Retrieval Augmented Tool" approach to avoid context bloat:
+  > 1. The loop starts by giving the LLM exactly **one** meta-tool: `search_ecosystem_tools`.
+  > 2. The LLM calls `search_ecosystem_tools(query)`.
+  > 3. The Concierge Agent executes a semantic search against its local Ecosystem Vector Directory.
+  > 4. The agent dynamically injects matching tool schemas into the LLM's context.
+  > 5. The LLM selects the best tool and generates the execution command.
+  > 6. The agent invokes the target service via the Universal Proxy, returning **Action Cards**.
+- **Human-in-the-Loop (HITL) Consent:**
+  > **Envisioned.** Not built yet. Proposal Cards and agent execution pause-and-yield loops. Today user consent occurs via interactive UI screens and form submissions.
+  >
+  > For high-stakes tool calls, the Concierge Agent pauses execution and yields a "Proposal Card" to the Trusted Room. The user must cryptographically sign (consent) before the loop resumes. This is configured natively via tool arguments.
+- **Agent Observability (Progress Streaming):**
+  > **Envisioned.** Not built yet. Agent progress streaming and citation broadcasting. Today observability captures operational metrics and control-plane alerts.
+  >
+  > Configurable progress streaming where the Concierge Agent broadcasts structured status, tool calls, citations, and validation events back to the UI. Raw private model reasoning is not exposed as an application contract.
+- **MCP Gateway:**
+  > **Envisioned.** Not built yet. Model Context Protocol (MCP) server or gateway. Today external clients interact through JSON-RPC and HTTP endpoints.
+  >
+  > A headless gateway layer that exposes the substrate's local capabilities to *external* desktop clients using the Model Context Protocol (MCP).
+- **Agent-to-Agent Delegation:**
+  > **Envisioned.** Not built yet. Autonomous agent-to-agent negotiation protocol. Today inter-service communication uses typed WIT interfaces and RPC routing.
+  >
+  > The capability for a user's Concierge Agent to autonomously negotiate with external provider agents across the Syneroym substrate.
+- **Ecosystem Vector Directory & Memory:**
+  > **Envisioned.** Not built yet. Local `sqlite-vec` vector database and episodic agent memory. Today SQLite stores relational service records and deployment metadata.
+  >
+  > A specialized local data store (`sqlite-vec`) indexing available tools and storing episodic memory.
+- **Orchestrated Loopcraft (Nested Agentic Loops):**
+  > **Envisioned.** Not built yet. Nested Loopcraft agent methodology and specialized WASM critic sub-agents. Today WASM services execute single-invocation request/response and event workflows.
+  >
+  > To ensure high reliability on complex tasks, the Concierge Agent employs the "Loopcraft" methodology. Rather than executing a single, flat ReAct loop, the agent network utilizes pre-defined, specialized loops (e.g., a "Data Gathering Loop," a "Synthesis Loop," or a "Verification Loop"). These specialized loops are compiled and deployed as independent native WASM components (`SynSvcs`). The core Concierge Agent conditionally routes tasks through these stacked loops via the Universal Proxy based on the problem state. For instance, drafting an Action Card for a financial transaction will strictly route through a Verification Loop (a Critic sub-agent) before presenting it to the user. This orchestrated nesting allows for deep, self-correcting reasoning while maintaining strict zero-trust isolation between loops.
 
 ### [ADV-DEV] SynApp Developer Tooling & SDKs
 - **Transparent Developer Experience**: Rather than providing a rigid CLI wrapper, Syneroym development embraces transparent, standard Rust tooling. Project templates (via `cargo generate`) are provided to set up standard `Cargo.toml` files and build scripts. This ensures compatibility with existing IDEs, Language Servers (LSP/rust-analyzer), and agentic coding tools.
