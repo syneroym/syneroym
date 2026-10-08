@@ -10,7 +10,7 @@ This file tracks progress applying the requirements audit fixes to `docs/system-
 | 2 | Phase 7: Edge and Mobile Substrate & Phase 6: Ecosystem Applications and Hub | done | fb1e022b | O56, O29, Q-A4, Tauri shell |
 | 3 | Phase 5: P2P Discovery and Reputation Engine | done | d050c462 | O30, O31, Q-B3 |
 | 4 | Phase 4: Advanced Substrate Capabilities | done | 498d0bcc | O42, O43, O44, O45 |
-| 5 | Phase 3: SynApp Lifecycle and Versioning | not started | - | O20, O22, O25, O26 |
+| 5 | Phase 3: SynApp Lifecycle and Versioning | done | 15ee6f20 | O20, O22, O25, O26 |
 | 6 | Phase 2: Platform Services | not started | - | O39, O40, O41, O47, Q-1 |
 | 7 | Phase 1: Security, Identity, and Configuration | not started | - | O13, O16, O17, O24, O27, Q-D3 |
 | 8 | Phase 0: Topology and Addressing | not started | - | O5, O6, O48, Sharded routing |
