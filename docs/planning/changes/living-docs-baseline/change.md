@@ -323,6 +323,12 @@ Stage 2 recheck fix, RC:
 - The Layer 2 bullet about a reputation record was dropped. Layer 3 (Trust & Reputation) and Phase 5 already say that no reputation record exists.
 - The roym spec was not touched. Where Roym content finally lives (this doc or the requirements) stays open.
 
+### Coverage check follow-up
+
+A second check compared every audit decision and proposed fix with the doc (`fix-coverage-D1.md`, `D2`, `D3`). Misses applied: the ADR-0019 deploy-call paragraph; what undeploy does to service data; coordinator mode; the lookup names ("First lookup", "Second lookup", to avoid a third meaning of "Tier"); the Data Consumption sentence in the Phase 4 observability text; the unbuilt "provider status UI" in the API surface sentence; built facts moved out of an Envisioned block in Consumer App Architecture; the repeated Podman sentence; the unused LWW glossary row; "WebRTC relay" in the minimal implementation list; "heartbeat"; a duplicate SynApp title in the Isolation diagram; the "Offline Outbox Queue" label.
+- Not applied on purpose: the dual-build paragraph in Layer 2 Sandboxes (the content is in the developer tooling text); renaming the Layer 3 heading (owner choice, links depend on it); whether one observability visualization design replaces the other (owner choice, both kept).
+- The `TODO(M5)` comment in `crates/sandbox_wasm/src/engine/lifecycle.rs` and the requirements spec text ("peer backup pools are optional") are outside this change.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

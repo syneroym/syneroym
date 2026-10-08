@@ -305,7 +305,7 @@ flowchart LR
 
 ### Multi-Hop Relay (Federated Coordinator)
 
-The connection router (`crates/router`) handles next-hop forwarding in the function `relay_to_next_hop` in `route_handler/io.rs`. It is not in `crates/coordinator_iroh`. That crate builds the Iroh endpoint and a router handler in coordinator mode, which has no local services. A substrate runs the same code. When a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream. Coordinators are the intended forwarders.
+The connection router (`crates/router`) handles next-hop forwarding in the function `relay_to_next_hop` in `route_handler/io.rs`. It is not in `crates/coordinator_iroh`. That crate builds the Iroh endpoint and a router handler in coordinator mode, which has no local services. In this mode the handler has an empty mock endpoint registry, no sandbox, a freshly generated identity and its own embedded MQTT broker. A substrate runs the same code. When a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream. Coordinators are the intended forwarders.
 
 A substrate on a private network sets `parent_coordinator.iroh.url` to the relay of a coordinator on that network. Its Iroh endpoint uses that relay, and it publishes the Iroh id and the relay URL in its signed record. A caller that looks the record up in the registry dials the substrate through that relay. An Iroh relay exists so that callers can still reach a peer that accepts no inbound connection. No test in this repository blocks inbound traffic.
 
@@ -526,7 +526,7 @@ WebSocket is an option for one app. The guest declares an HTTP route with `targe
 **Sandboxes.**
 
 - **Wasmtime** runs WASM components. Limits cover memory, fuel (CPU work) and wall-clock time. The fuel quota schema is in ADR-0005.
-- **Podman** runs containers. The substrate calls the host's `podman` command (`podman run -d --network bridge`). Syneroym prefers rootless Podman, but the substrate does not check this. The substrate calls the host's `podman` command. So a container is rootless only when Podman on the host is set up that way. Run Podman rootless. See the [developer guide](developer-guide.md#developing-podman-services-locally).
+- **Podman** runs containers. The substrate calls the host's `podman` command (`podman run -d --network bridge`). Syneroym prefers rootless Podman, but the substrate does not check this. A container is rootless only when Podman on the host is set up that way. Run Podman rootless. See the [developer guide](developer-guide.md#developing-podman-services-locally).
 
 **Not substrate components.** Discovery and matching, reputation and payments are app features. They are not parts of the substrate runtime. See [Layer 3](#layer-3--shared-substrate-utilities). Today Roym provides discovery (the `directory` service) and payment records and signed receipts (the `transaction` service).
 
@@ -559,6 +559,8 @@ flowchart LR
 
 The substrate converts between JSON and WIT values at the component boundary. The conversion follows the WIT type of the target function. A developer does not write an API layer by hand.
 
+**What a deploy call carries.** A deploy call can carry all that a service needs, so a client can deploy to a substrate that has nothing staged on its disk. The WASM bytes travel in the call. So do `custom_config`, the config `schema`, the FDAE policy and the files of a container volume. A document (`schema`, FDAE policy) is a `document-source`. It is either `inline` text in the call, or a `path` on the substrate host. In a manifest, a bare path is read by the client and sent inline. `{ remote_path = "..." }` names a file that the substrate host already holds. A container volume file must be `inline`. The Podman engine refuses a host `path` there, because the container could then read any file that the substrate can read. The engine mounts a volume that has files read-only ([ADR-0019](decisions/0019-deploy-time-artifact-delivery.md)).
+
 **Backup and Restore**
 
 Roym has an archive format. `roymctl roym backup create` writes one file. The file holds:
@@ -588,6 +590,8 @@ Each database has one writer task. It takes every write from a queue and applies
 The blob store is content-addressed. The key of a blob is the SHA-256 hash of its plaintext, so the same bytes are stored once. Blobs are encrypted at rest with AES-256-GCM in 256 KiB segments. A key derived from the service key encrypts them. An S3-compatible backend is an optional Cargo feature (`aws`, ADR-0009).
 
 **Durable outbox.** A guest can queue a call to another service. The substrate saves the call in an SQLite outbox that belongs to the calling service. The outbox is a file next to the encrypted database of that service. A worker on the node retries the call with backoff. A call that can never succeed goes to a dead-letter table (ADR-0023). The receiver can fence a call that carries an idempotency key. The call then runs once, even if it is delivered more than once. The receiver refuses a call that has a key but no verified caller.
+
+**Removing a service.** Undeploy stops the service. It removes the component file, the endpoints, the messaging subscriptions, the asset blobs, the certificate file and the deploy records of the service. No code deletes the service database (`state.db`), its `dek_store` row or its `async.db` outbox. These stay on disk.
 
 **Write rules.** The data layer does not decide who wins a race. It only puts the writes in order. It gives a service two ways to write. `put` replaces the whole payload of a record, so the last write wins. `create` writes rows only if none of their ids exists yet. It is the one write that is not last-write-wins, so a service uses it as a fence when two concurrent calls must not both succeed.
 
@@ -628,7 +632,7 @@ Example placement: the Roym services (`crates/roym_core/app/roym.toml`) are `web
 
 ### Substrate API Surfaces
 
-The substrate has one API surface: **JSON-RPC 2.0**. It serves WASM components (through the Universal Proxy), peer substrates (over Iroh QUIC), the CLI, browsers, the provider status UI and third-party integrations. The substrate derives the surface from the WIT definitions. It converts each JSON value to the WIT type of the target function.
+The substrate has one API surface: **JSON-RPC 2.0**. It serves WASM components (through the Universal Proxy), peer substrates (over Iroh QUIC), the CLI, browsers and third-party integrations. The substrate derives the surface from the WIT definitions. It converts each JSON value to the WIT type of the target function.
 
 > **Envisioned.** Not built yet. Today every call converts between JSON and WIT values. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error.
 >
@@ -916,7 +920,7 @@ flowchart TD
 
     subgraph STORAGE_MSG["Message Storage"]
         CR["SQLite store: group entries append-only"]
-        CR -->|"offline: outbox queue locally"| Q2[Offline Outbox Queue]
+        CR -->|"offline: outbox queue locally"| Q2[Durable outbox on the sender's node]
         Q2 -->|"on reconnect: replay & retry"| PEER[Peer substrate]
     end
 ```
@@ -1380,7 +1384,9 @@ flowchart TD
 
 - **Option A: self-hosted substrate on the person's own machine.** Every Roym participant runs a substrate. The consumer's own node holds the consumer's data and runs the search.
 
-> **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the consumer, and the consumer can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned. Today a substrate can hold a delegated instance key for a member it hosts, and Roym has export and import. Every Hub method that `web` forwards, except `profile.policy`, needs an owner session. `session.whoami` is answered without a session.
+Today a substrate can hold a delegated instance key for a member it hosts, and Roym has export and import. Every Hub method that `web` forwards, except `profile.policy`, needs an owner session. `session.whoami` is answered without a session.
+
+> **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the consumer, and the consumer can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned.
 
 > **Envisioned.** Not built yet. The Hub runs in a browser today. Envisioned: a Tauri desktop app and a native mobile app. Also Envisioned: a native shell with a WebView that loads the UIs of other SynApps, and native crypto bindings. Also Envisioned: an FFI connection manager, a client-side SQLite or CoreData store, and a WebSocket link from the client. Today the Hub is Roym's own fixed screens. The `web` service declares a `/ws` route, but its handlers do nothing. The mobile case is in [Phase 7](#phase-7-edge-expansion).
 
@@ -1632,7 +1638,7 @@ flowchart TD
             P1[OCI Container run by the host's Podman. The substrate can keep its state.db outside the container]
         end
 
-        subgraph APP3["SynApp 2 (WASM sandbox)"]
+        subgraph APP3["SynApp 3 (WASM sandbox)"]
             W2[WASM Component WASI capability-limited]
             DB2[(SQLite: one database per service)]
         end
@@ -1740,7 +1746,7 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
 
 1.  **Ax Deployment**: 
     *   Synapp **Ax** is deployed on **Sx**. 
-    *   The deployer of **Ax** (using `SyneroymClient::deploy_svc_wasm_with_options`, with a public `Publication` in the options) signs a service record and passes it to **Sx** in the deploy call. **Sx** stores the record and publishes it to its configured registry (**R** in this scenario), at deploy time and on every heartbeat.
+    *   The deployer of **Ax** (using `SyneroymClient::deploy_svc_wasm_with_options`, with a public `Publication` in the options) signs a service record and passes it to **Sx** in the deploy call. **Sx** stores the record and publishes it to its configured registry (**R** in this scenario), at deploy time and every hour (see Record freshness).
 2.  **Az and Sz Deployment**: 
     *   Synapp **Az** is deployed on the hidden substrate **Sz**.
     *   The substrate **Sz** registers itself with the local Registry **Rp**. It also sends again the stored record of each service that was deployed with a record (**Az**). A service deployed without a record is not registered.
@@ -2422,7 +2428,7 @@ Transports:
 
 * direct QUIC, through Iroh
 * Iroh NAT traversal
-* Iroh relay and WebRTC relay
+* Iroh relay, WebRTC data channels with STUN, and the WebSocket tunnel
 
 Protocol adaptation:
 
@@ -2471,7 +2477,7 @@ This part gives design details for the features in the [Feature Specification](s
     *   **Rendezvous Determinism:** Keyed `Redundant` calls, and the hash and entity-tag strategies of `Sharded`, use strict deterministic rendezvous hashing (the consistent-hashing strategy) with BLAKE3. The input is strictly length-prefixed to prevent collisions between different inputs: `hash(len(domain_separator)||domain_separator || len(service_name)||service_name || len(routing_key)||routing_key || len(service_id)||service_id)`, where lengths are encoded as `u64` big-endian. The `domain_separator` is the `AppInstanceId` for a `Local` app and the `AppDid` for a `Foreign` app. The engine compares the 32-byte digests as unsigned values in lexicographic order. The highest digest wins. If two digests collide, the tie-breaker is the canonical `ServiceId` bytes: a lexical sort selects the highest value.
     *   **Scatter-Gather (Execution Pattern):** The routing layer does not support global, cross-entity multi-range queries natively. Suppose a service requires a global range query that spans multiple chunks. Then the Substrate Resolver provides a `resolve_all()` method that returns `{ topology_epoch, members: [ServiceId] }`. This gives the calling application an epoch-consistent snapshot. The caller must broadcast the query, gather the results, handle partial failures, manage timeouts, and order and paginate the combined results.
     *   **Caching and Invalidation:** The resolver caches the `ResolvedTopology` (the full member set and epoch, not the selected member), keyed by `TopologyKey`. An entry is dropped in three cases. First, its `cache_ttl` has passed. Second, its `not_after` time has passed. The entry then fails to resolve and is not served stale. Third, a caller calls `register` or `invalidate`. A cache hit does not compare epochs against the registry. There is no second, route-level cache: the proxy resolves again on each call.
-    *   **Callers Outside the App:** A caller that is not part of the app instance names the app by its `AppDid`. The resolver then uses `AppScope::Foreign`. The entry comes from a verified, signed topology document. It is not an entry that the supervisor pushed. The two-tier lookup is in [Logical Discovery for Callers Outside the App](#4-logical-discovery-for-callers-outside-the-app) ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)).
+    *   **Callers Outside the App:** A caller that is not part of the app instance names the app by its `AppDid`. The resolver then uses `AppScope::Foreign`. The entry comes from a verified, signed topology document. It is not an entry that the supervisor pushed. The two lookups are in [Logical Discovery for Callers Outside the App](#4-logical-discovery-for-callers-outside-the-app) ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)).
 
 > **Envisioned.** Not built yet. The resolver can already select a member in `Sharded` mode, but the compiler never emits `Sharded`, so nothing chooses it.
 >
@@ -2787,12 +2793,12 @@ Resolution happens in two independent steps. Treating them as one step previousl
 So there is no runtime registry query on the data path, and no dynamic-pull mode. The cost is push failure. Suppose a dependent is unreachable when its dependency changes. It then holds a stale binding until the supervisor's retry reaches it. A pull model would have healed itself on the next fetch. Binding writes are guarded by a per-dependent binding epoch, so an out-of-order retry cannot roll a mapping back. Delivery is tracked ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)). The substrate compares the incoming epoch with the one it holds. It gives one of four answers. A higher epoch is applied. The same epoch with the same membership is a no-op. The same epoch with a different membership is a conflict, because two writers disagree. A lower epoch is stale, and the mapping does not change. Dynamic load balancing and auto-discovery of newly scaled instances still work, because the pushed value is the full member set and the caller selects a member locally. None of this implies automatic primary failover for stateful services. `[PLT-RED]` still requires manual promotion.
 
 #### 4. Logical Discovery for Callers Outside the App
-A service inside an app instance reads its pushed bindings (step 3). A caller outside the app instance finds a logical service through two tiers of lookup, and then the registry lookup of step 3 ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)). The resolver tells the two cases apart by scope: `AppScope::Local` for an app instance's own services, `AppScope::Foreign` for an app known only by its DID.
-*   **Tier 1: app DID → supervisor.** The app instance has its own master DID, minted at `adopt`. The key delegates nothing. It signs a community registry record that maps the app DID to the substrate that runs the supervisor.
-*   **Tier 2: topology document.** The caller asks that supervisor to `resolve` an app DID and a logical service name. The supervisor answers with a topology document signed by the app instance's master key. The document holds the service name and the mode (`singleton`, `redundant` or `sharded`). It also holds the member master DIDs (never addresses), the epoch, the generation, a validity time and a suggested cache time. A reader checks the signature against the app DID, not against the connection it arrived on, so any party may relay the document. The supervisor answers with the full member set or refuses. It never returns a part of the set. An unknown app, a retired instance and a caller without the `supervisor/resolve` grant on the app get the same refusal, so a caller cannot probe which apps exist. A service that the app declares with `topology_visibility = "open"` needs no grant. The Roym `directory` service is declared this way. A paused instance still answers. A retired one is refused.
+A service inside an app instance reads its pushed bindings (step 3). A caller outside the app instance finds a logical service through two lookups, and then the registry lookup of step 3 ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)). The resolver tells the two cases apart by scope: `AppScope::Local` for an app instance's own services, `AppScope::Foreign` for an app known only by its DID.
+*   **First lookup: app DID → supervisor.** The app instance has its own master DID, minted at `adopt`. The key delegates nothing. It signs a community registry record that maps the app DID to the substrate that runs the supervisor.
+*   **Second lookup: topology document.** The caller asks that supervisor to `resolve` an app DID and a logical service name. The supervisor answers with a topology document signed by the app instance's master key. The document holds the service name and the mode (`singleton`, `redundant` or `sharded`). It also holds the member master DIDs (never addresses), the epoch, the generation, a validity time and a suggested cache time. A reader checks the signature against the app DID, not against the connection it arrived on, so any party may relay the document. The supervisor answers with the full member set or refuses. It never returns a part of the set. An unknown app, a retired instance and a caller without the `supervisor/resolve` grant on the app get the same refusal, so a caller cannot probe which apps exist. A service that the app declares with `topology_visibility = "open"` needs no grant. The Roym `directory` service is declared this way. A paused instance still answers. A retired one is refused.
 *   **Master DID → endpoint.** This is the per-call registry lookup described in step 3. It is unchanged.
 
-`roymctl app resolve <app-did> <service-name>` runs Tier 1 and Tier 2, verifies the document against the app DID, and prints the members.
+`roymctl app resolve <app-did> <service-name>` runs both lookups, verifies the document against the app DID, and prints the members.
 
 ### [LFC-VER] Versioning & Migration Flow
 
@@ -2853,7 +2859,7 @@ For multi-hop scenarios and standard data routing, measuring data transfer is im
 The unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md)) controls access to `metrics.db` through standard RPC endpoints:
 *   **Root Capabilities**: The Substrate owner uses an administrative UCAN. Queries then run against `metrics.db` without restrictions.
 *   **Scoped Capabilities**: SynApp/SynSvc owners who call the metrics RPC present a UCAN bound to their identity. The engine automatically adds a `WHERE service_owner_did = ?` clause to the SQL query.
-*   **Data Consumption**: The Metrics Pipeline does not host its own visualizations. The small provider status page in [Provider-Facing Observability](#provider-facing-observability) is a separate design. Instead, standalone SynApps or dedicated BI tools, acting as external clients, use the metric data.
+*   **Data Consumption**: The Metrics Pipeline does not host its own visualizations. Standalone SynApps or dedicated BI tools, acting as external clients, use the metric data. The small provider status page in [Provider-Facing Observability](#provider-facing-observability) is a separate design. It reads the `health-narrator` state, not `metrics.db`.
 
 ### [ADV-AI] Advanced AI & Agentic Workflows
 
@@ -3068,7 +3074,6 @@ In the design, an aggregator is a SynOrg `directory` service. It can federate wi
 | **ABAC** | Attribute-Based Access Control — stage 4 of the data-access pipeline: a guest-exported `authorize-rows` function that checks candidate rows (see [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md) §7) |
 | **pkarr** | Public-Key Addressable Resource Records — DHT records signed by an Ed25519 key |
 | **UCAN** | User Controlled Authorization Networks — capability token standard used for delegation |
-| **LWW** | Last-Write-Wins — the most recent write to a record persists (`put` replaces the whole payload). This is simple with one writer per service; no merge algorithm is needed |
 
 > **Envisioned.** Not built yet. The router reserves the `wrpc://` scheme and answers it with a typed *unsupported protocol* error. JSON-RPC 2.0 is the only RPC wire protocol today.
 >
