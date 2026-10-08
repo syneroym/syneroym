@@ -1906,22 +1906,22 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 ## Connectivity Substrate In Heterogeneous networks
 
-**Built today.** Connectivity works over IP networks. A caller finds a service in the community registry first and in the Mainline DHT second. The SDK client needs a registry URL for this, or the mechanisms of a record that it was given. It then dials the hosting node over Iroh, which does direct QUIC, hole punching, and relay. Each stream starts with a route preamble that names the protocol. The node's router accepts inbound streams from Iroh and from WebRTC and hands them to the service. The rest of this section is a general design that is not built: attachment points, BLE and LoRa gateways, ranked connection strategies, trying the next mechanism after a failed dial, protocol negotiation, and the wRPC adapter. Each of these sits in a block marked Envisioned. Text without a marker is built.
+**Built today.** Connectivity works over IP networks. A caller finds a service in the community registry first and in the Mainline DHT second. The SDK client needs a registry URL for this, or the mechanisms of a record that it was given. It then dials the hosting node over Iroh, which does direct QUIC, hole punching, and relay. Each stream starts with a route preamble that names the protocol. The node's router accepts inbound streams from Iroh and from WebRTC and hands them to the service. The rest of this section is a general design that is not built. It includes attachment points, BLE and LoRa gateways, ranked connection strategies, trying the next mechanism after a failed dial, protocol negotiation, and the wRPC adapter. Each of these is in a block marked Envisioned. Text without a marker is built.
 
 ---
 
 ### Overview
 
-The system provides a **connectivity substrate** that enables application services to communicate across IP networks as if they were directly connected. The substrate hides network complexity such as NAT traversal and relays.
+The system provides a **connectivity substrate** that lets application services talk to each other across IP networks as if they were directly connected. The substrate hides network complexity such as NAT traversal and relays.
 
 A caller uses the SDK client (`SyneroymClient`) to connect to a service. The client does discovery and dials the node. The node's router accepts the stream, and the node handles transport establishment and protocol adaptation. See [Application Interface](#application-interface).
 
-The design intentionally avoids creating a global overlay routing protocol. A node that receives a stream for a service it does not host looks the service up in the registry and forwards the stream over Iroh. See [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator).
+The design intentionally has no global overlay routing protocol. If a node receives a stream for a service it does not host, the node looks up the service in the registry. Then it forwards the stream over Iroh. See [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator).
 
 > **Envisioned.** Not built yet. A record lists `mechanisms` (Iroh or WebRTC) and not attachment points. No BLE or LoRa transport exists. The config types `parent_coordinator.ble`, `parent_coordinator.lora`, and `[roles.coordinator.transport_bridge]` are parsed, and no code reads them.
 >
-> - **Attachment points.** Nodes expose attachment points that indicate how they can be reached.
-> - **Constrained networks.** Routing inside constrained networks (e.g., BLE or LoRa meshes) is handled by gateway nodes responsible for those network domains.
+> - **Attachment points.** Nodes expose attachment points. These show how a node can be reached.
+> - **Constrained networks.** Gateway nodes handle routing inside constrained networks (for example BLE or LoRa meshes). Each gateway node is responsible for its own network domain.
 > - **Transport differences.** The substrate hides the differences between these transports from the application.
 
 ---
@@ -1984,7 +1984,7 @@ The node's router routes incoming connections to the correct service.
 
 Discovery uses a community registry and **BEP-0044 mutable records** stored in a distributed hash table (DHT). A caller asks the registry first and the DHT second.
 
-BEP-0044 records have a **1000-byte value limit**, so records contain only minimal reachability information. The `pkarr` library rejects a signed packet that is larger. A record is one JSON text record inside a `pkarr` signed packet. The node publishes only its own node id in the Iroh address, and leaves out its direct addresses, to stay under the limit.
+BEP-0044 records have a **1000-byte value limit**, so records contain only minimal reachability information. The `pkarr` library rejects a signed packet that is larger. A record is one JSON text record inside a `pkarr` signed packet. To stay under the limit, the node publishes only its own node id in the Iroh address. It leaves out its direct addresses.
 
 There is one record format, `EndpointInfo`. Its `endpoint_type` field gives two record types:
 
@@ -2027,7 +2027,7 @@ The record of a deployed service has an empty `mechanisms` list. A lookup that f
 
 Key: the Ed25519 public key that the node's `service_id` names. For a node record, `substrate_id` is the same as `service_id`.
 
-Node records advertise the **mechanisms** by which the node can be reached.
+Node records advertise the **mechanisms** that can be used to reach the node.
 
 Example:
 
@@ -2054,7 +2054,7 @@ Mechanism types (`EndpointMechanism`):
 
 No node publishes a `WebRtc` mechanism today. The variant is only defined.
 
-Direct QUIC is part of the `Iroh` mechanism. The record keeps only the node id, not direct addresses, together with the optional relay URL. Iroh finds a direct path itself.
+Direct QUIC is part of the `Iroh` mechanism. The record keeps only the node id and the optional relay URL. It does not keep direct addresses. Iroh finds a direct path itself.
 
 > **Envisioned.** Not built yet. Records have no typed attachment points and no gateway mechanism.
 >
@@ -2101,17 +2101,17 @@ A coordinator that sets `share_in_registry` and `community_registry_url` registe
 
 #### Record freshness
 
-- **Republish.** A substrate republishes its own record and the stored record of every service it hosts every hour. It replays the stored records as they are, because it holds no key that could sign them again. An operator can force a republish.
+- **Republish.** A substrate republishes its own record and the stored record of every service it hosts every hour. It sends the stored records again as they are, because it holds no key that could sign them again. An operator can force a republish.
 - **Registry expiry.** The registry removes an entry after the record's `ttl`, or after 2 hours when the record has none. A sweep runs every 15 minutes.
 - **Record lifetime.** The `not_after` field is a Unix time. A node record is signed with a `not_after` 30 days ahead. A reader treats a record whose `not_after` has passed as absent. A substrate warns when a stored service record is within 7 days of its `not_after`.
-- **Last writer wins.** A newer record from the same signer replaces an older one. The registry compares the `pkarr` timestamp of the signed packet and refuses an older record. It accepts a record with the same timestamp only if the bytes are identical, and then it treats the record as a refresh. The DHT applies its own sequence-number rule.
-- **Generation.** The `generation` field is a counter that a reader uses to tell two records for one service apart. The registry does not enforce it.
+- **Last writer wins.** A newer record from the same signer replaces an older one. The registry compares the `pkarr` timestamp of the signed packet. It refuses an older record. It accepts a record with the same timestamp only if the bytes are identical. It then treats that record as a refresh. The DHT applies its own sequence-number rule.
+- **Generation.** The `generation` field is a counter that a reader uses to tell one record of a service from another. The registry does not enforce it.
 
 ---
 
 #### Record visibility
 
-A service is deployed with one of three visibility values (`Private`, `Internal`, `Public`). It decides who can learn that the service exists. `Private` is the default.
+A service is deployed with one of three visibility values (`Private`, `Internal`, `Public`). The visibility value decides who can learn that the service exists. `Private` is the default.
 
 | Visibility | Record                                                  | Where it goes                                                               |
 | ---------- | ------------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -2119,7 +2119,7 @@ A service is deployed with one of three visibility values (`Private`, `Internal`
 | `Internal` | `is_private` is `true`.                                 | The local registry only. It is not sent to a parent registry or to the DHT. |
 | `Public`   | `is_private` is `false`.                                | The local registry, then the parent registry, and the DHT.                   |
 
-A caller reaches a `Private` service through a signed record file that the deployer gives out. `SyneroymClient::new_with_record` checks the record. If the record has no `mechanisms`, `connect()` looks up the hosting node under `substrate_id`, because a node publishes its own record to its registry and, when the DHT is on, also to the DHT. See [ADR-0018](decisions/0018-service-record-visibility.md).
+A caller reaches a `Private` service through a signed record file that the deployer gives to the callers. `SyneroymClient::new_with_record` checks the record. If the record has no `mechanisms`, `connect()` looks up the hosting node under `substrate_id`. This works because a node publishes its own record to its registry. When the DHT is on, the node also publishes its record to the DHT. See [ADR-0018](decisions/0018-service-record-visibility.md).
 
 ---
 
@@ -2147,7 +2147,7 @@ A WASM service has no listen or accept call. The node accepts inbound streams on
 
 Connections are byte streams. `IrohStream` and `WebRTCStream` implement `AsyncRead` and `AsyncWrite`.
 
-On a `raw://` stream to a TCP service, the node copies bytes both ways and does not interpret or modify them. On a `raw://` stream to a WASM component, the node reads one framed first message and the `dir` parameter, then hands the stream to the guest. A `json-rpc://` route is parsed as JSON-RPC and gets the adaptation stage of its target. An `http://` route to a WASM or native service is parsed as HTTP: the node serves blobs, assets, and declared routes, and treats the rest as JSON-RPC. An `http://` route to a TCP service is copied as bytes.
+On a `raw://` stream to a TCP service, the node copies bytes both ways and does not interpret or modify them. On a `raw://` stream to a WASM component, the node reads one framed first message and the `dir` parameter. Then it hands the stream to the guest. The node parses a `json-rpc://` route as JSON-RPC, and the route gets the adaptation stage of its target. The node parses an `http://` route to a WASM or native service as HTTP. It serves blobs, assets, and declared routes, and treats the rest as JSON-RPC. An `http://` route to a TCP service is copied as bytes.
 
 ---
 
@@ -2166,7 +2166,7 @@ The SDK client goes through the `mechanisms` of a record in order. It dials only
 
 > **Envisioned.** Not built yet. The SDK client has no choice logic beyond the record order, and no third transport exists.
 >
-> - Transports are selected dynamically based on node reachability information.
+> - Transports are chosen at run time from information about how a node can be reached.
 > - Additional transports (for example BLE and LoRa) are added with no change to the core.
 
 ---
@@ -2177,7 +2177,7 @@ Today the SDK client does not build connection strategies. It takes the `mechani
 
 > **Envisioned.** Not built yet. No code builds or ranks strategies.
 >
-> The **caller node runtime** constructs connection strategies after discovery.
+> The **caller node runtime** builds connection strategies after discovery.
 >
 > Inputs:
 >
@@ -2212,7 +2212,7 @@ Today the SDK client does not build connection strategies. It takes the `mechani
 > direct > hole punching > relay > gateway
 > ```
 >
-> Today Iroh orders the first three inside its library. A path represents a **connection strategy**, not a full hop list.
+> Today Iroh orders the first three inside its library. A path is a **connection strategy**, not a full list of hops.
 
 ---
 
@@ -2250,13 +2250,13 @@ Today the SDK client does not build connection strategies. It takes the `mechani
 > CONNECT nodeA service svc123
 > ```
 >
-> Routing inside the constrained network is handled entirely by the gateway.
+> The gateway handles all routing inside the constrained network.
 
 ---
 
 ### Connection Establishment
 
-Connection establishment proceeds as follows. The SDK client (`SyneroymClient::connect`) runs these steps. The router uses the same lookup when it forwards a stream. The client needs a registry URL or a list of mechanisms that it was given. With neither, `connect` fails at once. The DHT is only a second step after a registry that is set.
+Connection establishment proceeds as follows. The SDK client (`SyneroymClient::connect`) runs these steps. The router uses the same lookup when it forwards a stream. The client needs a registry URL or a list of mechanisms that it was given. With neither, `connect` fails immediately. The DHT is only a second step after a registry that is set.
 
 Resolve service:
 
@@ -2319,10 +2319,10 @@ The router picks an adaptation stage from the scheme and the kind of target serv
 
 ### Protocol Adaptation
 
-Protocol adapters allow interoperability between different application protocols. The router has three adaptation stages (`AdaptationStage`):
+Protocol adapters let different application protocols work together. The router has three adaptation stages (`AdaptationStage`):
 
 - `None`: the payload already matches what the service expects.
-- `JsonRpcToWasm`: JSON-RPC is turned into a typed call to a function of a WASM component, and the result goes back as JSON-RPC.
+- `JsonRpcToWasm`: the stage turns JSON-RPC into a typed call to a function of a WASM component. The result goes back as JSON-RPC.
 - `JsonRpcToWrpc`: reserved for wRPC. The router never picks it today. A `wrpc://` stream to a WASM or native service gets the unsupported-protocol error (`-32091`).
 
 Connection pipeline:
