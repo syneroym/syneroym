@@ -313,7 +313,7 @@ A coordinator is the entry point only when a record or an SDK call names it. The
 
 > **Envisioned.** Not built yet. A record that names a coordinator as the entry point of a private substrate, so that the registry sends callers there on its own. A record has no entry-point field today.
 
-A stream is end-to-end encrypted between the caller and the serving substrate only when the preamble asks for `enc=ecdh-p256`. The browser asks for it. The Rust client (`SyneroymClient`) does not yet. Without it, each Iroh leg is encrypted and a forwarding coordinator holds the bytes in clear. A coordinator always reads the preamble in clear. It sees the target service id and the caller's public key. A relay or coordinator also sees that two endpoints exchanged traffic, and the size and timing of it.
+A stream is end-to-end encrypted between the caller and the serving substrate only when the preamble asks for `enc=ecdh-p256`. The browser page asks for it on the WebSocket tunnel path. On a WebRTC data channel it removes the option, because DTLS already protects that channel. The Rust client (`SyneroymClient`) does not yet. Without it, each Iroh leg is encrypted and a forwarding coordinator holds the bytes in clear. A coordinator always reads the preamble in clear. It sees the target service id and the caller's public key. A relay or coordinator also sees that two endpoints exchanged traffic, and the size and timing of it.
 
 The entities and the step-by-step message flow are in [Appendix: Multi-Hop Relay Walkthrough](#appendix-multi-hop-relay-walkthrough). The handshake is in [Appendix > 5. Data Transfer Characteristics](#5-data-transfer-characteristics).
 
@@ -1570,7 +1570,7 @@ flowchart TD
 
 **Optional end-to-end stream layer (box T2).** A caller turns it on with `enc=ecdh-p256` in the route preamble. The router then runs the handshake on any transport. The handshake is described in [Appendix > 5. Data Transfer Characteristics](#5-data-transfer-characteristics).
 
-- **Who uses it.** The browser bootstrap page (`peer-proxy.js`) sets it. The Rust client (`SyneroymClient`) does not. Nothing else in the SDK or the gateway sets it.
+- **Who uses it.** The browser bootstrap page (`peer-proxy.js`) sets it on the WebSocket tunnel path. On a WebRTC data channel the page removes it, because DTLS already protects that channel. The Rust client (`SyneroymClient`) does not. Nothing else in the SDK or the gateway sets it.
 - **Only the node is authenticated.** The node signs both ephemeral keys with its identity key. The caller's ephemeral key is not signed.
 - **No key derivation step.** The ECDH shared secret is used as the AES-256-GCM key as it is. There is no KDF.
 - **One field, two uses.** The preamble field `pubkey` is the caller's P-256 key for this handshake. The identity check reads the same field as an Ed25519 key. A stream that sets `enc=ecdh-p256` therefore cannot carry a delegation certificate, because the router rejects it. Without a certificate the caller has no verified identity.
@@ -1704,13 +1704,13 @@ This section lists the design decisions for the open items of the architecture, 
 
 Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator), kept here for implementers working on the coordinator; the summary there is enough for everyone else.
 
-Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/route_handler/io.rs`. A coordinator runs it with no local services. A substrate runs the same code: when a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream.
+Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/route_handler/io.rs`. A coordinator runs it with no local services. A substrate runs the same code: when a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream. This needs an Iroh endpoint. A substrate with none returns the error "No Iroh endpoint configured for relay forwarding".
 
 #### Scenario Entities
 
 *   **Public Infrastructure (Internet)**
     *   **C**: Global Coordinator (an Iroh relay server, and next-hop forwarding in the connection router).
-    *   **R**: Global Registry (community registry). A node also publishes its public records to the BEP 0044 DHT when `enable_bep0044_dht` is on.
+    *   **R**: Global Registry (community registry). A node also publishes its public records to the BEP 0044 DHT when `enable_bep0044_dht` is on. When a registry is configured, the DHT publish runs only after the registry accepted the record.
 *   **Public/External Edge**
     *   **Sx**: Substrate with outbound internet access.
     *   **Ax**: Synapp deployed on **Sx**.
@@ -1726,13 +1726,13 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
 2.  **Private Infrastructure Starts**: 
     *   Coordinator **Cp** and Registry **Rp** are brought online within the private subnetwork.
     *   **Cp** exposes a lightweight HTTP discovery endpoint (e.g., `/v1/info`) that serves its Iroh Node ID and relay configuration.
-    *   **Cp** connects outbound to its parent coordinator. When it has one (`parent_coordinator.iroh.url`), its Iroh endpoint uses the parent's relay as its home relay and, at startup, waits up to 30 seconds for the endpoint to come online. The code opens this connection at startup, not on demand.
+    *   **Cp** makes no call to its parent coordinator. When it has a parent (`parent_coordinator.iroh.url`), its Iroh endpoint uses the parent's relay as its home relay. With or without a parent, **Cp** waits up to 30 seconds at startup for the endpoint to come online. If the wait ends, it logs a warning and continues. The code builds the endpoint at startup, not on demand.
     *   **Rp** is configured with **R** as its parent registry (`parent_registry_url`) so it can forward the public records it accepts upward.
 3.  **External Substrate (Sx) Starts**: 
     *   **Sx** connects outbound to Coordinator **C** and Registry **R**. 
 4.  **Hidden Substrate (Sz) Starts**: 
     *   **Sz** starts in the private network and connects to its local Registry (**Rp**, set by `substrate.registry_url`).
-    *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting.
+    *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting. A substrate has an Iroh endpoint, and so can forward a stream, only when `communication_interfaces` has `iroh` and `parent_coordinator.iroh` is set.
 
 > **Envisioned.** Not built yet. Today a substrate is given its relay by the fixed setting `parent_coordinator.iroh.url`. The key `coordinator_discovery_url` is declared in the config and no code reads it, and no code lists, selects or caches coordinators.
 
@@ -1747,7 +1747,7 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
     *   Synapp **Az** is deployed on the hidden substrate **Sz**.
     *   The substrate **Sz** registers itself with the local Registry **Rp**. It also replays the stored record of each service that was deployed with one (**Az**). A service deployed without a record is not registered.
 3.  **Cp Registration**: 
-    *   When its configuration switch (`share_in_registry`) is set and a `community_registry_url` is given, the private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) into the global Registry (**R**). It does this once at startup, with retries if the call fails.
+    *   When its configuration switch (`share_in_registry`) is set and a `community_registry_url` is given, the private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) into the global Registry (**R**). It does this once at startup, with retries if the call fails. **Cp** does not register again. The registry deletes an entry that is not refreshed within 2 hours, and the record of **Cp** has no `ttl` of its own, so this record is gone from the registry about 2 hours after **Cp** starts.
 4.  **Upward Forwarding**: 
     *   **Rp** forwards the registration of each public record it accepts, here both **Az** and **Sz**, upward to the global Registry **R**. One HTTP request goes to its single parent registry for each record. Records deployed as `Internal` (private) stay on **Rp**.
 5.  **Global Record State**: 
@@ -1788,7 +1788,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 1.  **Packet Transmission**: Synapp **Az** asks its host substrate **Sz** to send a packet to **Ax**.
 2.  **Resolution**: The client on **Sz** queries the local Registry **Rp**. **Rp** answers from its own records. It returns a not-found answer for a service it has no record of. It does not ask its parent, the global Registry **R**.
-3.  **Outbound Call**: When the lookup returns a record for **Ax**, **Sz** dials the Iroh address in that record with its own Iroh endpoint (the Universal Proxy). It does not send the stream to a coordinator first. If the lookup finds no record, the call fails with a service-not-found error.
+3.  **Outbound Call**: When the lookup returns a record for **Ax**, **Sz** dials the Iroh address in that record with its own Iroh endpoint (the Universal Proxy). It does not send the stream to a coordinator first. If the lookup finds no record in the registry or in the DHT, the call fails with a service-not-found error. The DHT is asked only when `enable_bep0044_dht` is on, which is the default.
 4.  **Forwarding by a Coordinator**: A client in the private network that is given the address of **Cp** sends the preamble for **Ax** (including its public key) to **Cp**. **Cp** reads the preamble, resolves the target through the registry, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**). Because **Cp** opens a new *outbound* Iroh connection for each forwarded stream, it natively bypasses the inbound reachability limitations (NATs/Firewalls) that constrain the Ax -> Az flow.
 
 > **Envisioned.** Not built yet. Today a substrate dials its target itself, and nothing sends a substrate's own outbound call through a coordinator. A registry does not forward a lookup to its parent.
@@ -1801,11 +1801,11 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 1.  **End-to-End (E2E) Encryption Handshake (optional)**:
     *   Each Iroh leg is protected by the transport (QUIC, ALPN `syneroym/0.1`). A coordinator reads the preamble in clear to route the stream.
-    *   The handshake runs only when the caller asks for it with `enc=ecdh-p256` in the preamble. The Rust client (`SyneroymClient`) never sets it. The browser does (`crates/coordinator_webrtc/templates/peer-proxy.js`).
+    *   The handshake runs only when the caller asks for it with `enc=ecdh-p256` in the preamble. The Rust client (`SyneroymClient`) never sets it. The browser page sets it on the WebSocket tunnel path (`crates/coordinator_webrtc/templates/peer-proxy.js`). On a WebRTC data channel the page removes it before it sends the preamble, because DTLS already protects that channel.
     *   When it is set, the endpoint that serves the service (**Sz**) and the caller perform an ECDH P-256 key exchange inside the established stream. The caller sends its ephemeral P-256 key in the preamble field `pubkey`. **Sz** replies with its own ephemeral key and an Ed25519 signature, made with its permanent identity key, over both ephemeral keys. The caller checks that signature. Both sides then use AES-256-GCM. The server side is in `crates/router/src/route_handler/encryption.rs`. The browser side is `verifyAndDeriveSharedSecret` in `peer-proxy.js`.
     *   Only the server is authenticated by this step. The caller's ephemeral key is not signed.
 2.  **Opaque Forwarding**: 
-    *   When the handshake ran, the application payload (JSON-RPC 2.0 frames) is encrypted at the caller and decrypted only at **Sz** (or vice versa).
+    *   When the handshake ran, the application payload is encrypted at the caller and decrypted only at **Sz** (or vice versa). For a JSON-RPC route the payload is JSON-RPC 2.0 frames. wRPC is not implemented.
     *   The Coordinator **Cp** copies the bytes back and forth between streams (`copy_bidirectional`) and does not parse them after the preamble. It cannot read an encrypted payload. When the caller did not ask for `enc=ecdh-p256`, only the Iroh legs are encrypted, and **Cp** holds the bytes in clear.
 3.  **Teardown**: 
     *   Once the communication finishes, either endpoint closes the stream. 
@@ -1864,7 +1864,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 | Hub UI | **HTML/CSS/TypeScript web app** (Vite), served by the `web` service from its asset bundle and opened in a browser |
 | Shell / Core | **Envisioned.** **Native (SwiftUI / Jetpack Compose / Tauri)** — embedding the substrate for robust background execution |
 | Mini-App UI | **HTML/CSS/JS (Web App)**. **Envisioned.** Loaded dynamically inside a native **WebView** |
-| Client-side crypto | Built: browser WebCrypto (P-256 ECDH, Ed25519 verify) for the WebRTC end-to-end handshake. **Envisioned.** Native bindings (mobile) / WASM bindings (desktop) |
+| Client-side crypto | Built: browser WebCrypto (P-256 ECDH, Ed25519 verify) for the end-to-end handshake on the WebSocket tunnel path. A WebRTC data channel does not run it. **Envisioned.** Native bindings (mobile) / WASM bindings (desktop) |
 
 > **Envisioned.** Not built yet. The native shell and the WebView host do not exist. `apps/` has only `roymctl`. The Hub is a web app that the browser opens today. Messaging crypto runs on the substrate.
 
@@ -1874,8 +1874,8 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 |---|---|
 | Rust `stable` and `nightly-2026-04-06` | `stable` builds and tests. The pinned nightly runs `rustfmt` |
 | `cargo` + `cargo-component` 0.21 | Build Rust → WASM components |
-| `wit-bindgen` crate (0.57) | The macro generates host/guest bindings from WIT at build time. No `wit-bindgen` CLI is installed. The `test-components` guests pin 0.55.0 |
-| `wasm-tools` | Installed by `mise`. Optional, for inspecting components |
+| `wit-bindgen` crate (0.57) | The macro generates host/guest bindings from WIT at build time. No `wit-bindgen` CLI is installed. Most `test-components` guests pin 0.55.0. `dual-build-fixture` uses the workspace version |
+| `wasm-tools` | Installed by `mise`. No task calls it. It is available for inspecting components by hand |
 | `deploy/docker-compose.community.yml` | Deploys the substrate image for a community node. It is not a local multi-service development stack |
 | `cargo-nextest` | Test runner for the workspace suite |
 | `cargo-audit`, `cargo-deny` | Known-vulnerability and licence checks |
@@ -1885,8 +1885,8 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 | Node 20 | Builds and tests the Hub UI and the end-to-end tests |
 | Playwright 1.60.0 (TypeScript 5.9.3) | WebRTC end-to-end tests in `crates/substrate/tests/e2e` |
 | Vite, Vitest | Build and test the Hub UI (`crates/roym_web/ui`) |
-| `mise run verify` (`cargo xtask verify`) | The completion gate: fmt, clippy, the xtask checks, nextest, doctests, audit, license check and the end-to-end tests |
-| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK and secrets, the App Supervisor, registry entries, sessions, aliases and short hashes, the substrate (`substrate`, alias `node`) and Roym backups |
+| `mise run verify` (`cargo xtask verify`) | The completion gate: fmt, clippy, six xtask checks (file lengths, lint suppressions, module layout, change docs, duplication, Roym service crate dependencies), the Python planning-refs script, nextest, doctests, audit, license check and the end-to-end tests. When only docs change, it skips nextest, doctests and the end-to-end tests |
+| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK and secrets, the App Supervisor, registry entries, sessions, aliases and short hashes, the substrate (`substrate`, alias `node`) and the Roym product commands (`roym`: record-signing enrolment and status, the service address, `directory`, `transaction`, `group` and backups) |
 
 > **Envisioned.** Not built yet. `otelcol`, a local OpenTelemetry collector for a local observability stack. No tool list or collector configuration names it today.
 

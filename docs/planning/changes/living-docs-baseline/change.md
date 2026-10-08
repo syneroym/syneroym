@@ -258,6 +258,12 @@ Stage 2 fix, S3:
 - **Relay and DHT-only use of the SDK.** The SDK builds its Iroh endpoint with no address lookup and uses a relay only from the record's `relay_url`. The doc says what the code does. One backlog row records the gap.
 - **Reactive eviction.** The doc named a general eviction mechanism. Only the WebRTC bootstrap has a connection cache, so the doc now describes that cache and the proxy retry rule.
 
+Stage 2 fix, S4:
+
+- **Cp record expiry.** The registry deletes an entry after 2 hours without a refresh, and `Cp` registers only once with no `ttl`. The doc says so and states what the code does. A fix (re-register on a timer) is a code change, so it is in the backlog and not built.
+- **`wasm-tools`.** No task uses it. The doc says it is installed and available by hand. It is not described as "optional" any more.
+- **Browser handshake path.** The same words ("the browser asks for it") were also in the Multi-Hop Relay summary and in Encryption at Every Layer. All three places now name the WebSocket tunnel path.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
