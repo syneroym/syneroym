@@ -106,6 +106,25 @@ working files were removed. They win over the defaults in the audit reports.
 | `[PLT-DAP-nn]` ids in headings (2026-10-07) | Keep them. They are the mapping from requirements to architecture. Code does not cite them; the link is kept in the doc and in PRs. | No change to the ids in headings or bullet names. |
 | Requirements spec relay and bootstrap text (O10) | Not changed in the architecture round. The requirements spec is changed in a following round. | The deferred-backlog row stays open. No edit to `system-requirements-spec.md` in this change. |
 
+### Requirements audit decisions
+
+Owner decisions from the requirements audit (section 2.0 of `audit-requirements-OVERLAP.md`, plus D-R9-3 and D1).
+
+| Question / ID | Decision | Effect on the fix commits |
+| --- | --- | --- |
+| Q-1 (Litestream) | Litestream stays an option we can consider. Do not remove it. | Do not remove Litestream from `[PLT-RED]`. Keep both Litestream and Iroh WAL shipping open as Envisioned options. Fix only wrong statements asserting Litestream is fully built or excluded. |
+| Q-2 (payments & escrow) | These are Roym features. Out-of-band records only for MVP. | Replace Stripe SDK requirements with signed out-of-band payment records (`crates/roym_core/src/payment.rs`). Mark escrow and external payment gateways Envisioned. |
+| Q-A1 (relay fallback) | Relays carry traffic as a fallback. | Clarify that direct connections need no intermediary, but relays and coordinators provide fallback connectivity. |
+| Q-A4 (aggregator) | An aggregator is like a SynOrg: a `directory` service (as in Roym `directory`). It aggregates provider data. | Delete hosting intermediary descriptions. Define an aggregator as a directory-type SynOrg aggregating provider listings and credentials. |
+| Q-A8 (bootstrap server) | Keep as Envisioned; document what runs today. | Keep centralized Bootstrap Server as an Envisioned design block. Document static parent coordinator and community registry. |
+| Q-B1 (government identity) | Envisioned optional assurance credential. | Remove claims that Tier 1 government identity is the universal compromise fallback. Mark government ID as an Envisioned optional credential. |
+| Q-B3 (reputation) | Not frozen. Principles only. | Mark joint DHT reputation records and EMA formulas Envisioned. Document built bilateral independent agreement receipts. |
+| Q-C2 (order state machine) | Replace with real booking machine. | Replace Draft/Paid/Dispute with Roym booking state tracks (`Scheduled`, `InProgress`, `Completed`, `Cancelled`, `Conflict`). |
+| Q-D3 (attestation) | Envisioned. Reword wRPC to JSON-RPC. | Mark hardware attestation Envisioned. Replace wRPC with JSON-RPC. |
+| Q-G1-1 (WAL mode) | Document what exists. | Remove claims that per-service SQLite databases enable WAL mode. Mark WAL tuning Envisioned. |
+| D-R9-3 | Accessibility audit and task test deferred. | The accessibility audit (WCAG 2.1 AA) and the moderated task-success test are not part of the M6 closure. In the matrix, set the target of `[PRD-CUX]` to TBD, set its status to Envisioned, and delete "Blocks M6 closure" and the dated audit note. In the spec, mark `[APP-A11Y]` Envisioned. Add a row to `docs/planning/deferred-backlog.md` for the two missing pieces of evidence, with target TBD. |
+| D1 (Matrix status model) | Matrix status simplified. | The matrix uses two status values, Implemented and Envisioned. Replace the long "Shipped / Open" narratives with one or two plain sentences and a short list of evidence links. Do not lose a fact that is not recorded elsewhere: move it to the spec, or to the deferred backlog. |
+
 ## Deviations
 
 - The pilot report carries 61 claims for about 140 doc lines, which is more than the
