@@ -501,7 +501,7 @@ Two more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, AD
 
 WebSocket is an option for one app. The guest declares an HTTP route with `target = "websocket"`. The router upgrades the connection and hands each frame to the guest. The app defines the frames. They are not JSON-RPC.
 
-**Routing.** Every stream starts with a route preamble: `<scheme>://<interface>.<service_id>[?enc=...]`. The router reads the preamble and checks who the caller is. Then it plans a pipeline of four stages: encryption, transport, adaptation and service. The service stage is one of three things: a native Rust service, a WASM component, or a TCP proxy to a container or another TCP service. The preamble grammar is in `crates/router/src/preamble.rs`.
+**Routing.** Every stream starts with a route preamble: `<scheme>://<interface>.<service_id>[?enc=...]`. The router reads the preamble and checks who the caller is. Then it plans a pipeline of four stages: encryption, transport, adaptation, and service. The service stage is one of three things: a native Rust service, a WASM component, or a TCP proxy to a container or another TCP service. The preamble grammar is in `crates/router/src/preamble.rs`.
 
 **Access control.** There are three layers. No single component holds all of them.
 
@@ -671,7 +671,7 @@ In the `open` and `login` modes the gateway passes the session cookie on unchang
 
 ### Failure and Shutdown
 
-`RuntimeServices` races all components in one `tokio::select!`. These are the connection router, the community registry, the coordinator, the client gateway, the health and metrics servers, the supervisor loop, the supervisor queue worker, the proxy outbox worker, the conversation outbox worker and the loop that warns about instance certificates near expiry. When any one of them finishes, with success or with an error, the whole substrate shuts down. A component that is not configured never finishes. The health and metrics servers log a bind error and then wait forever, so a failed bind does not stop the substrate.
+`RuntimeServices` races all components in one `tokio::select!`. These are the connection router, the community registry, the coordinator, the client gateway, the health and metrics servers, the supervisor loop, the supervisor queue worker, the proxy outbox worker, the conversation outbox worker, and the loop that warns about instance certificates near expiry. When any one of them finishes, with success or with an error, the whole substrate shuts down. A component that is not configured never finishes. The health and metrics servers log a bind error and then wait forever, so a failed bind does not stop the substrate.
 
 The shutdown signal is Ctrl-C. The code installs no handler for SIGTERM.
 
@@ -684,7 +684,7 @@ Shutdown runs in this order:
 
 ### Upgrade and Versioning
 
-A deploy of a WASM service calls the guest's `init()` when the service has no database yet. It calls `migrate()` when the service already has one. A hook runs only if the guest exports it, and a hook that fails makes the deploy fail. A deploy that is identical to the installed, running service (same caller) does nothing, so no hook runs. This holds only after the node has run a full deploy of that service since it started. The substrate takes no snapshot and does not roll back after a failed `migrate()`. A connection uses one fixed protocol identifier, the ALPN `syneroym/0.1`. Persisted and signed formats carry their own version and refuse a version they do not know: the signed record envelope (`ENVELOPE_VERSION`), the identity backup (`IDENTITY_BACKUP_VERSION`), the Master Anchor payload (`master_anchor_v1`) and the Roym archive. The Envisioned snapshot, rollback and protocol negotiation are in [LFC-VER](#lfc-ver-versioning--migration-flow).
+A deploy of a WASM service calls the guest's `init()` when the service has no database yet. It calls `migrate()` when the service already has one. A hook runs only if the guest exports it, and a hook that fails makes the deploy fail. A deploy that is identical to the installed, running service (same caller) does nothing, so no hook runs. This holds only after the node has run a full deploy of that service since it started. The substrate takes no snapshot and does not roll back after a failed `migrate()`. A connection uses one fixed protocol identifier, the ALPN `syneroym/0.1`. Persisted and signed formats carry their own version and refuse a version they do not know: the signed record envelope (`ENVELOPE_VERSION`), the identity backup (`IDENTITY_BACKUP_VERSION`), the Master Anchor payload (`master_anchor_v1`), and the Roym archive. The Envisioned snapshot, rollback and protocol negotiation are in [LFC-VER](#lfc-ver-versioning--migration-flow).
 
 ### Limits and Budgets
 
