@@ -16,4 +16,4 @@ This file tracks which batches of the requirements audit are done. A batch is `a
 | R8 | Appendix: Later-Phase Additions, Appendix: Substrate Feature Coverage Matrix | accepted | 03638aa7 | 26 claims; 5 spot checks passed |
 | R9 | Traceability matrix (docs/planning/traceability-matrix.md) against the spec and the code | accepted | 986c2669 | 46 claims; 5 spot checks passed |
 | GAP | Whole spec and the code: capabilities that exist but have no requirement | accepted | 47ef4ea0 | 24 claims; 5 spot checks passed |
-| OVERLAP | All accepted reports | accepted | PENDING | Merged 581 items from R1–R9 and GAP |
+| OVERLAP | All accepted reports | accepted | 3d854322 | Merged 581 items from R1–R9 and GAP |
