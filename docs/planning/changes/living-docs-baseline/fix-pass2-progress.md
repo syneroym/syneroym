@@ -13,6 +13,6 @@ This pass applies the findings of the stage 2 verification reports (`fix-verific
 | S5 | Resolved TBD items, Security, Observability | done | 717eb6ca | 12 new S5 rows; 2 backlog rows (revoking a person's key; anchor age check on DHT path); X3DH fixed in all 6 places (so S7 need not repeat); Prometheus label in config.sample.toml, config.dev.toml, AGENTS.md left (outside scope) |
 | S6 | Federation, Consumer Experience, Layer 4 | done | 8cb8c5d1 | 12 new S6 rows + 1 corrected cell; 2 backlog rows (central record-type check unused; outbound node-to-node Iroh only) |
 | S7 | Layer 3 (discovery, messaging, trust, payments, identity) | done | edbfa5f1 | 7 new S7 rows; 2 backlog rows (revocation source for hits; anchors in registry memory only); open: can one stream carry enc=ecdh-p256 and a certificate (S5 says router rejects; a test would settle it) |
-| S8 | Layer 2 | running | | |
-| S9 | Layer 1, overview and entity model, top matter, TERMINOLOGY.md | not started | | |
+| S8 | Layer 2 | done | 938c3ce5 | 11 new S8 rows + 1 corrected cell; 3 backlog rows (local login no proof; no SIGTERM handler; profiles table unread); gateway text no longer says local, no bind address stated |
+| S9 | Layer 1, overview and entity model, top matter, TERMINOLOGY.md | running | | |
 | RECHECK | New rows labelled S1 to S9 | not started | | |
