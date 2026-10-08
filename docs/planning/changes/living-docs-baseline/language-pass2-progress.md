@@ -6,8 +6,8 @@ The first language pass (`language-progress.md`) changed little: most edits were
 
 | Group | Parts | Status | Hash | Notes |
 | --- | --- | --- | --- | --- |
-| L1 | Top matter, Executive Summary, Goals & Constraints, System Layers Overview | running | | |
-| L2 | Layer 1 | not started | | |
+| L1 | Top matter, Executive Summary, Goals & Constraints, System Layers Overview | done | 15b63e87 | reviewed diff; 10 lines changed; range was already simple (0 sentences over 28 words) |
+| L2 | Layer 1 | running | | |
 | L3 | Layer 2 | not started | | |
 | L4 | Layer 3 | not started | | |
 | L5 | Layer 4, Federation, Consumer Experience, Observability | not started | | |
