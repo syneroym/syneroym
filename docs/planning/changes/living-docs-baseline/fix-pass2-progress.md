@@ -15,4 +15,4 @@ This pass applies the findings of the stage 2 verification reports (`fix-verific
 | S7 | Layer 3 (discovery, messaging, trust, payments, identity) | done | edbfa5f1 | 7 new S7 rows; 2 backlog rows (revocation source for hits; anchors in registry memory only); open: can one stream carry enc=ecdh-p256 and a certificate (S5 says router rejects; a test would settle it) |
 | S8 | Layer 2 | done | 938c3ce5 | 11 new S8 rows + 1 corrected cell; 3 backlog rows (local login no proof; no SIGTERM handler; profiles table unread); gateway text no longer says local, no bind address stated |
 | S9 | Layer 1, overview and entity model, top matter, TERMINOLOGY.md | done | b84c193f | 18 new S9 rows + 2 corrected cells; 1 backlog row (relay TLS and HTTP probe share bind address); TERMINOLOGY.md unchanged (24.1, 24.2 confirmed) |
-| RECHECK | New rows labelled S1 to S9 | running | | |
+| RECHECK | New rows labelled S1 to S9 | done | 64d0f26d | two independent rechecks (fix-recheck-R1.md, R2.md): 124 new rows, 55+55 CONFIRMED, 11 PARTLY/WRONG/CITE-OFF; fixed in commit 64d0f26d with 14 RC rows; remaining outside-doc items are in the backlog |
