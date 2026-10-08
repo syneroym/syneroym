@@ -1844,7 +1844,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 > **Envisioned.** Not built yet. Calls between components use JSON-RPC 2.0 today. The goal is **wRPC**, for high-performance streaming between components.
 
-> **Envisioned.** Not built yet. Export of traces, metrics and logs with **OpenTelemetry** (OTLP), and Grafana/Prometheus exporters. Today the configuration has `OtlpConfig` types, and the observability engine sets up logging, the recorder and a sampler.
+> **Envisioned.** Not built yet. Export of traces, metrics, and logs with **OpenTelemetry** (OTLP), and Grafana/Prometheus exporters. Today the configuration has `OtlpConfig` types, and the observability engine sets up logging, the recorder, and a sampler.
 
 > **Envisioned.** Not built yet. Backup and replication of service databases do not exist today. The design is open. Option 1 is **Litestream**: WAL streaming to an S3-compatible store or a peer. Option 2 is Iroh WAL shipping ([PLT-RED](#plt-red-service-redundancy)).
 
@@ -1892,8 +1892,8 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 | Node 20 | Builds and tests the Hub UI and the end-to-end tests |
 | Playwright 1.60.0 (TypeScript 5.9.3) | WebRTC end-to-end tests in `crates/substrate/tests/e2e` |
 | Vite, Vitest | Build and test the Hub UI (`crates/roym_web/ui`) |
-| `mise run verify` (`cargo xtask verify`) | The completion gate: fmt, clippy, six xtask checks (file lengths, lint suppressions, module layout, change docs, duplication, Roym service crate dependencies), the Python planning-refs script, nextest, doctests, audit, license check and the end-to-end tests. When only docs change, it skips nextest, doctests and the end-to-end tests |
-| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK and secrets, the App Supervisor, registry entries, sessions, aliases and short hashes, the substrate (`substrate`, alias `node`) and the Roym product commands (`roym`: record-signing enrolment and status, the service address, `directory`, `transaction`, `group` and backups) |
+| `mise run verify` (`cargo xtask verify`) | The completion gate: fmt, clippy, six xtask checks (file lengths, lint suppressions, module layout, change docs, duplication, Roym service crate dependencies), the Python planning-refs script, nextest, doctests, audit, license check, and the end-to-end tests. When only docs change, it skips nextest, doctests, and the end-to-end tests |
+| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK, and secrets, the App Supervisor, registry entries, sessions, aliases and short hashes, the substrate (`substrate`, alias `node`) and the Roym product commands (`roym`: record-signing enrolment and status, the service address, `directory`, `transaction`, `group`, and backups) |
 
 > **Envisioned.** Not built yet. `otelcol`, a local OpenTelemetry collector for a local observability stack. No tool list or collector configuration names it today.
 
