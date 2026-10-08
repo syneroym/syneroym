@@ -145,12 +145,12 @@ This document defines the architecture, technology stack, and component design f
 
 | Principle | Implication |
 |---|---|
-| **Locality-first** | Optimised for geographically proximate providers and consumers; global scale is secondary |
-| **Progressive decentralisation** | Single device is fully useful; federation is additive |
+| **Locality-first** | Optimized for nearby providers and consumers; global scale is secondary |
+| **Progressive decentralisation** | A single device is fully useful; federation is additive |
 | **Data sovereignty** | All provider data lives on infrastructure the provider chooses |
 | **Transparency over opaqueness** | Ranking, discovery, and reputation algorithms are open-source or auditable |
-| **Interoperability by convention** | SynApps cooperate via shared primitives; no central coordinator needed |
-| **Offline-first** | Graceful degradation under partition; queued and async delivery between nodes |
+| **Interoperability by convention** | SynApps cooperate through shared primitives; no central coordinator is needed |
+| **Offline-first** | Graceful degradation during network partitions; queued and async delivery between nodes |
 
 ### Key Hardware Constraints
 
@@ -162,9 +162,9 @@ The RAM figures are sizing hints, not tested requirements.
 | Tier 2 — Standard | Old PC / mini PC (4–8 GB RAM, SSD) | Provider or small aggregator |
 | Tier 3 — Distributed | Multiple VMs, PCs, Servers (8–32 GB RAM) | Infrastructure provider, large aggregator |
 
-The release workflow builds the substrate for Linux (x86_64 and aarch64), Windows and macOS.
+The release workflow builds the substrate for Linux (x86_64 and aarch64), Windows, and macOS.
 
-> **Envisioned.** Not built yet. A substrate on an Android phone. No Android target exists in the release workflow, the build tools or the Cargo files.
+> **Envisioned.** Not built yet. A substrate on an Android phone. No Android target exists in the release workflow, the build tools, or the Cargo files.
 
 ---
 
