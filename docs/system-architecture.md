@@ -1571,7 +1571,7 @@ flowchart TD
 **Messaging encryption (boxes M1 to M3).** The conversation service holds the keys for each service. See [Layer 3 > Messaging](#messaging) for the feature.
 
 - **1-to-1 chat** uses the Olm protocol: a Double Ratchet with a triple Diffie-Hellman (3DH) key exchange. The `vodozemac` crate implements it. A service has a `vodozemac` account for the ratchet and a separate Ed25519 key for signing.
-- **Group chat** uses one AES-256-GCM key for each epoch. The group owner makes the key, distributes it, and starts a rekey on a schedule. Each group entry is signed by its author, and its body is sealed with the epoch key. The owner is a single point of trust for key distribution ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1).
+- **Group chat** uses one AES-256-GCM key for each epoch. The group owner makes the key, distributes it, and starts a rekey on a schedule. Each group entry is signed by its author. Its body is encrypted with the epoch key. The owner is a single point of trust for key distribution ([ADR-0013](decisions/0013-p2p-messaging-architecture.md), Amendment 1).
 - **Signed messages.** A 1-to-1 message is a `DeliveryPayload`. The sender signs it with its Ed25519 conversation key, and then the ratchet session encrypts it.
 - The code uses neither `libsignal` nor MLS (`openmls`). ADR-0013 Amendment 1 replaced MLS with the owner-distributed key.
 
@@ -1594,8 +1594,8 @@ This table lists each key, where it lives, what it is for, and what happens when
 | Person master key (Ed25519) | The file `identities/<name>.key` in the `roymctl` directory. | Is the identity of a person. Signs delegation certificates and the master anchor. | Restore it from an identity backup with `roymctl identity import` and the recovery key. |
 | Temporary key and delegation certificate | Made by the caller. `roymctl session delegate` makes a key pair and a `session-auth` certificate for the Hub login. `roymctl identity delegate --scope routing` makes a `routing` certificate for a temporary DID that the caller already has. The Hub keeps its private key in the browser as a non-extractable WebCrypto key in IndexedDB. | Lets a device or a session act under the master's identity until the certificate expires. The router accepts only a `routing` or `service-instance` certificate on a stream. A `session-auth` certificate is for the login of the auth service. | Make a new pair with the master key. The router rejects a key that the master lists in `revoked_keys` of its master anchor. `roymctl` has no command that adds a person's key to that list: `roymctl identity publish-anchor` publishes an empty list. The App Supervisor can revoke the instance keys it manages. A stolen session key stops working when its certificate expires (24 hours by default for `roymctl session delegate`). |
 | Node key encryption key (KEK, 32 bytes) | In node memory only. The node owner injects it with `roymctl kek inject`. | Is the root of the data keys. `roymctl kek rotate` re-wraps every DEK under a new KEK. | After a restart, no encrypted service database opens until the owner injects the KEK again. If the owner no longer has the KEK value, the wrapped DEKs cannot be opened. |
-| Per-instance KEK | Not stored. HKDF-SHA256 of the node KEK with the info `syneroym:kek:v1:<service_id>` derives it when needed. | Wraps the DEK of one service. | Derived again from the node KEK. |
-| Per-service data encryption key (DEK, 32 bytes) | The table `dek_store` in `substrate.db`, wrapped with AES-256-GCM under the per-instance KEK. Never in plaintext on disk. | Is the SQLCipher key of the service database. Encrypts the `_vault` rows of the service. When `storage.encryption` is off, no SQLCipher key is set and the vault rows are sealed with an all-zero key, so secrets are not protected. HKDF-SHA256 derives from it the keys for the service's blobs. | Without its `dek_store` row, or without the KEK that wraps it, the service data cannot be opened. |
+| Per-instance KEK | Not stored. The node derives it when needed: HKDF-SHA256 of the node KEK with the info `syneroym:kek:v1:<service_id>`. | Wraps the DEK of one service. | Derived again from the node KEK. |
+| Per-service data encryption key (DEK, 32 bytes) | The table `dek_store` in `substrate.db`, wrapped with AES-256-GCM under the per-instance KEK. Never in plaintext on disk. | Is the SQLCipher key of the service database. Encrypts the `_vault` rows of the service. When `storage.encryption` is off, no SQLCipher key is set and the vault rows are sealed with an all-zero key, so secrets are not protected. The node derives the keys for the service's blobs from it with HKDF-SHA256. | Without its `dek_store` row, or without the KEK that wraps it, the service data cannot be opened. |
 | Master keys of managed app instances | The App Supervisor's own encrypted service vault. The entries are named `member-<app_instance_id>#<service_name>-<index>` and `app-<app_instance_id>`. | Are the master of each member service and of the app instance. No key leaves the supervisor in a response. | Restore them with `import-master` from the `export-master` backup. Import a member key before the first `submit`, and the app instance key before `adopt`. Without the backup, a new supervisor mints new master keys. |
 | Recovery key (32 bytes) | Shown to the person once. Syneroym never keeps a copy. The option `--recovery-key-out` of `roymctl identity export` and `roymctl roym backup create` writes it to a file that the person chooses. | Encrypts the identity backup and the Roym archive (HKDF-SHA256, then AES-256-GCM). | The backup cannot be opened. |
 
@@ -1603,9 +1603,9 @@ This table lists each key, where it lives, what it is for, and what happens when
 
 **The master anchor is a duty.** A master anchor is a signed record. It lists the temporary keys that the master revoked. A client that gets an anchor from the HTTP registry rejects it when it is older than 24 hours after its signing time. An anchor that comes from the DHT fallback is not checked for age today. The router rejects a stream that carries a delegation certificate when it cannot resolve a valid anchor of the master. When a registry URL is configured and the vault is unlocked, the App Supervisor republishes the anchor of each master it manages. The default interval is 12 hours. A person's master anchor is published with `roymctl identity publish-anchor`.
 
-**What the router checks about a caller.** When the preamble carries a delegation certificate, the router checks the signature, the validity window, and the scope of the certificate, that its temporary key is the key in the preamble, and that the master has not revoked that key. It does not check that the caller holds the private part of the temporary key: the preamble carries only the public key. [FND-IAM](#fnd-iam-access-control) has the details.
+**What the router checks about a caller.** When the preamble carries a delegation certificate, the router checks the signature, the validity window, and the scope of the certificate. It checks that the temporary key of the certificate is the key in the preamble. It also checks that the master has not revoked that key. It does not check that the caller holds the private part of the temporary key, because the preamble carries only the public key. [FND-IAM](#fnd-iam-access-control) has the details.
 
-> **Envisioned.** Not built yet. Today the key in the preamble is asserted and is not proved. The router could check that the caller holds the temporary key, for example with a signed challenge. Only the login of the auth service checks a signature over a nonce today.
+> **Envisioned.** Not built yet. Today the router takes the key in the preamble as given and does not prove it. The router could check that the caller holds the temporary key, for example with a signed challenge. Only the login of the auth service checks a signature over a nonce today.
 
 ### Substrate Integrity & Remote Attestation
 
@@ -1613,19 +1613,19 @@ This table lists each key, where it lives, what it is for, and what happens when
 
 The word "attestation" in this subsection means hardware proof that a substrate runs the expected binary. It does not mean the signed attestation records of Roym, where each party signs the terms it accepted (see the [Roym spec](roym-integrated-experience-spec.md)).
 
-In the "uncontrolled cloud" model, ensuring that a substrate is running the expected, uncompromised binary is achieved using **Remote Attestation**. Because the ecosystem spans different hardware tiers, the substrate abstracts hardware differences via a unified native RPC endpoint.
+In the "uncontrolled cloud" model, **Remote Attestation** shows that a substrate runs the expected, uncompromised binary. The ecosystem has different hardware tiers. The substrate hides the differences behind one native RPC endpoint.
 
 #### The Universal Attestation Endpoint
-The Substrate exposes a core native endpoint (e.g., `substrate.attest(nonce)`) over its JSON-RPC interface. Depending on the physical hardware, it returns a polymorphic **Attestation Quote**:
-- **`Tpm20`**: For Linux/Windows PCs and Raspberry Pis equipped with a TPM 2.0 module. Contains a hardware-signed quote of the OS Measurement Log (e.g., Linux IMA).
+The Substrate exposes a core native endpoint over its JSON-RPC interface, for example `substrate.attest(nonce)`. It returns an **Attestation Quote**. The type of the quote depends on the physical hardware:
+- **`Tpm20`**: For Linux/Windows PCs and Raspberry Pis that have a TPM 2.0 module. Contains a quote of the OS Measurement Log (for example, Linux IMA), signed by the hardware.
 - **`AndroidKeyAttestation`**: For Android phones. Uses ARM TrustZone or Titan M chips to provide a Google-signed certificate chain that includes the hardware-verified hash of the Syneroym APK.
-- **`AppleAppAttest`**: For iOS/Mac devices. Uses the Secure Enclave to cryptographically prove it is a genuine Apple device running an untampered version of the Syneroym App.
+- **`AppleAppAttest`**: For iOS/Mac devices. Uses the Secure Enclave to cryptographically prove it is a genuine Apple device running an unchanged version of the Syneroym App.
 
 #### Verification Flow
-1. **The Challenge**: When the Service Deployer (or Service Owner) deploys a service or is asked to unlock the database upon a node restart, they send a cryptographically secure random `nonce` to the `substrate.attest` endpoint.
+1. **The Challenge**: The Service Deployer (or Service Owner) sends a cryptographically secure random `nonce` to the `substrate.attest` endpoint. They do this when they deploy a service, or when they are asked to unlock the database after a node restart.
 2. **The Quote**: The substrate determines its hardware type, asks the local security chip to sign the `nonce` and the current software state, and returns the appropriate Quote type.
-3. **Verification & Key Release**: The deployer receives the Quote, checks the type, and runs the corresponding verification logic (verifying the TPM PCRs, or the Google/Apple certificate chains). Only if the hardware mathematically proves the correct, unmodified Syneroym binary is running does the deployer release the encryption key over the network.
-4. **Periodic Auditing**: The deployer can periodically re-challenge the substrate with a new `nonce` to continuously verify the node has not been tampered with while running.
+3. **Verification & Key Release**: The deployer receives the Quote and checks its type. Then it runs the matching verification: it verifies the TPM PCRs, or the Google/Apple certificate chains. The deployer releases the encryption key over the network only if the hardware mathematically proves that the correct, unmodified Syneroym binary is running.
+4. **Periodic Auditing**: The deployer can repeat the challenge with a new `nonce` at regular times. This checks that nobody has changed the node while it runs.
 
 ### Isolation Guarantees
 
@@ -1711,7 +1711,7 @@ This section lists the design decisions for the open items of the architecture, 
 
 Full detail behind [Multi-Hop Relay (Federated Coordinator)](#multi-hop-relay-federated-coordinator), kept here for implementers working on the coordinator; the summary there is enough for everyone else.
 
-Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/route_handler/io.rs`. A coordinator runs it with no local services. A substrate runs the same code: when a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream. This needs an Iroh endpoint. A substrate with none returns the error "No Iroh endpoint configured for relay forwarding".
+Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/route_handler/io.rs`. A coordinator runs it with no local services. A substrate runs the same code. It forwards a stream when the stream names a service that the substrate does not host and the registry resolves that service. This needs an Iroh endpoint. A substrate with none returns the error "No Iroh endpoint configured for relay forwarding".
 
 #### Scenario Entities
 
@@ -1724,7 +1724,7 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
 *   **Private Subnetwork Infrastructure**
     *   **Cp**: Private Coordinator (local relay). Runs next-hop forwarding for callers that dial it.
     *   **Rp**: Private Registry (community registry). Connects outbound to **R** to forward the public records it accepts.
-    *   **Sz**: Hidden Substrate. Resides purely in the private network with no external internet access.
+    *   **Sz**: Hidden Substrate. Lives only in the private network. It has no external internet access.
     *   **Az**: Synapp deployed on **Sz**.
 
 #### 1. Startup and Configuration
@@ -1732,7 +1732,7 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
 1.  **Public Infrastructure Starts**: Coordinator **C** and Registry **R** are brought online on the public internet.
 2.  **Private Infrastructure Starts**: 
     *   Coordinator **Cp** and Registry **Rp** are brought online within the private subnetwork.
-    *   **Cp** exposes a lightweight HTTP discovery endpoint (e.g., `/v1/info`) that serves its Iroh Node ID and relay configuration.
+    *   **Cp** exposes a small HTTP discovery endpoint, for example `/v1/info`. The endpoint serves its Iroh Node ID and relay configuration.
     *   **Cp** makes no call to its parent coordinator. When it has a parent (`parent_coordinator.iroh.url`), its Iroh endpoint uses the parent's relay as its home relay. With or without a parent, **Cp** waits up to 30 seconds at startup for the endpoint to come online. If the wait ends, it logs a warning and continues. The code builds the endpoint at startup, not on demand.
     *   **Rp** is configured with **R** as its parent registry (`parent_registry_url`) so it can forward the public records it accepts upward.
 3.  **External Substrate (Sx) Starts**: 
@@ -1743,7 +1743,7 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
 
 > **Envisioned.** Not built yet. Today a substrate is given its relay by the fixed setting `parent_coordinator.iroh.url`. The key `coordinator_discovery_url` is declared in the config and no code reads it, and no code lists, selects, or caches coordinators.
 
-*   To find a local coordinator, **Sz** first checks its config for a direct `discovery_url` (fetching the Iroh connection details via HTTP). If not provided, it queries its local Registry **Rp** (which forwards the lookup to **R**) to discover available coordinators. It dynamically selects one (e.g., **Cp**) and caches its Iroh details.
+*   To find a local coordinator, **Sz** first checks its config for a direct `discovery_url`, and fetches the Iroh connection details by HTTP. If it has no direct URL, **Sz** asks its local Registry **Rp** for the available coordinators, and **Rp** forwards the lookup to **R**. **Sz** then selects one at run time (for example **Cp**) and caches its Iroh details.
 
 #### 2. Registry Entries at Deployment
 
@@ -1752,19 +1752,19 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
     *   The deployer of **Ax** (using `SyneroymClient::deploy_svc_wasm_with_options`, with a public `Publication` in the options) signs a service record and passes it to **Sx** in the deploy call. **Sx** stores the record and publishes it to its configured registry (**R** in this scenario), at deploy time and on every heartbeat.
 2.  **Az and Sz Deployment**: 
     *   Synapp **Az** is deployed on the hidden substrate **Sz**.
-    *   The substrate **Sz** registers itself with the local Registry **Rp**. It also replays the stored record of each service that was deployed with one (**Az**). A service deployed without a record is not registered.
+    *   The substrate **Sz** registers itself with the local Registry **Rp**. It also sends again the stored record of each service that was deployed with a record (**Az**). A service deployed without a record is not registered.
 3.  **Cp Registration**: 
-    *   When its configuration switch (`share_in_registry`) is set and a `community_registry_url` is given, the private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) into the global Registry (**R**). It does this once at startup, with retries if the call fails. **Cp** does not register again. The registry deletes an entry that is not refreshed within 2 hours, and the record of **Cp** has no `ttl` of its own, so this record is gone from the registry about 2 hours after **Cp** starts.
+    *   The private Coordinator **Cp** registers its Iroh key and connection details (like relay endpoints) in the global Registry (**R**). It does this when its configuration switch (`share_in_registry`) is set and a `community_registry_url` is given. **Cp** registers once at startup, with retries if the call fails. It does not register again. The registry deletes an entry that is not refreshed within 2 hours. The record of **Cp** has no `ttl` of its own. So this record is gone from the registry about 2 hours after **Cp** starts.
 4.  **Upward Forwarding**: 
     *   **Rp** forwards the registration of each public record it accepts, here both **Az** and **Sz**, upward to the global Registry **R**. One HTTP request goes to its single parent registry for each record. Records deployed as `Internal` (private) stay on **Rp**.
 5.  **Global Record State**: 
     *   The global Registry **R** now holds public records for **Az** and **Sz**. 
     *   The record of **Az** names **Sz** as its hosting substrate (`substrate_id`). The record of **Sz** is its own signed endpoint record. It carries **Sz**'s Iroh endpoint id and the relay URL **Sz** is bound to. A caller dials **Sz** through that relay.
 
-> **Envisioned.** Not built yet. Today the record of **Cp** is an ordinary substrate-type record with the nickname `coordinator-<first 8 characters of its node id>`, and a record has no entry-point field and no topology data.
+> **Envisioned.** Not built yet. Today the record of **Cp** is an ordinary substrate-type record with the nickname `coordinator-<first 8 characters of its node id>`. A record has no entry-point field and no topology data.
 
-*   A coordinator registration that makes the Iroh endpoint of **Cp** dynamically discoverable for substrates relying on registry lookups.
-*   A record that states that to reach **Sz**, a caller must route to the entry point **Cp**. The record also copies over the private topology, allowing **Cp** to use a registry lookup to find the specific connection details for **Sz** when transferring data.
+*   A coordinator registration that lets a substrate that uses registry lookups discover the Iroh endpoint of **Cp** at run time.
+*   A record that states that a caller must route to the entry point **Cp** to reach **Sz**. The record also copies the private topology. This allows **Cp** to use a registry lookup to find the connection details for **Sz** when it transfers data.
 
 #### 3. Communication Flow: Ax connecting to Az (Inbound to Private)
 
@@ -1772,10 +1772,10 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
 2.  **Global Resolution**: The caller queries its configured registry for **Az**. In this scenario that is the global Registry **R**.
 3.  **Discovery**: Registry **R** responds with the record of **Az**. It names **Sz** as the hosting substrate. The lookup follows it to the record of **Sz**, which gives the Iroh endpoint id of **Sz** and the relay URL **Sz** is bound to.
 4.  **Connection to Sz**: 
-    *   The caller dials **Sz** through that relay (transparently using the Iroh SDK).
-    *   The caller opens a stream and directly sends a connection preamble to **Sz**, containing the target service id (**Az**) and the caller's public key (`pubkey`). The preamble may also carry a delegation certificate (`delegation`) or a capability token (`ucan`).
+    *   The caller dials **Sz** through that relay. The Iroh SDK does this in the background.
+    *   The caller opens a stream and sends a connection preamble directly to **Sz**. The preamble contains the target service id (**Az**) and the caller's public key (`pubkey`). The preamble may also carry a delegation certificate (`delegation`) or a capability token (`ucan`).
 5.  **Target Dispatch (Sz)**: 
-    *   **Sz** receives the stream and reads the preamble to recognize the target is its local Synapp **Az**.
+    *   **Sz** receives the stream and reads the preamble to see that the target is its local Synapp **Az**.
     *   If the preamble asks for `enc=ecdh-p256`, **Sz** and the caller complete an End-to-End Diffie-Hellman handshake inside the stream (see [5. Data Transfer Characteristics](#5-data-transfer-characteristics)).
     *   **Sz** dispatches the application payload to **Az**.
 
@@ -1783,37 +1783,37 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 6.  **Routing (coordinator to Sz)**: 
     *   The coordinator receives the stream and reads the preamble.
-    *   Its own endpoint registry holds no local services, so the local lookup misses. The coordinator then performs a registry lookup to find the connection details for the target service (no in-memory routing table caches are used).
-    *   The next hop is the target substrate **Sz**, not another coordinator. The coordinator establishes an Iroh connection to **Sz** (with retries), forwards the preamble, and copies bytes both ways (`relay_to_next_hop`).
+    *   Its own endpoint registry holds no local services, so the local lookup finds nothing. The coordinator then makes a registry lookup to find the connection details for the target service (no in-memory routing table caches are used).
+    *   The next hop is the target substrate **Sz**, not another coordinator. The coordinator opens an Iroh connection to **Sz** (with retries), forwards the preamble, and copies bytes both ways (`relay_to_next_hop`).
     *   **Sz** then handles the stream as in step 5.
 
 > **Envisioned.** Not built yet. Today a caller reaches a coordinator only when it is given the coordinator's address. The record of a service has no entry-point field.
 
-*   Registry **R** responds with the routing information: target entry point is **Cp** (whose public connection details are also provided). The client then connects to **Cp** first.
+*   Registry **R** answers with the routing information. The target entry point is **Cp**, and **R** also gives the public connection details of **Cp**. The client then connects to **Cp** first.
 
 #### 4. Communication Flow: Az connecting to Ax (Outbound to Public)
 
 1.  **Packet Transmission**: Synapp **Az** asks its host substrate **Sz** to send a packet to **Ax**.
 2.  **Resolution**: The client on **Sz** queries the local Registry **Rp**. **Rp** answers from its own records. It returns a not-found answer for a service it has no record of. It does not ask its parent, the global Registry **R**.
 3.  **Outbound Call**: When the lookup returns a record for **Ax**, **Sz** dials the Iroh address in that record with its own Iroh endpoint (the Universal Proxy). It does not send the stream to a coordinator first. If the lookup finds no record in the registry or in the DHT, the call fails with a service-not-found error. The DHT is asked only when `enable_bep0044_dht` is on, which is the default.
-4.  **Forwarding by a Coordinator**: A client in the private network that is given the address of **Cp** sends the preamble for **Ax** (including its public key) to **Cp**. **Cp** reads the preamble, resolves the target through the registry, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**). Because **Cp** opens a new *outbound* Iroh connection for each forwarded stream, it natively bypasses the inbound reachability limitations (NATs/Firewalls) that constrain the Ax -> Az flow.
+4.  **Forwarding by a Coordinator**: A client in the private network that is given the address of **Cp** sends the preamble for **Ax** (including its public key) to **Cp**. **Cp** reads the preamble, resolves the target through the registry, and connects outbound to deliver the stream to **Sx** (possibly through relay **C**). Because **Cp** opens a new *outbound* Iroh connection for each forwarded stream, it avoids the inbound reachability limits (NATs and firewalls) that constrain the Ax -> Az flow.
 
 > **Envisioned.** Not built yet. Today a substrate dials its target itself, and nothing sends a substrate's own outbound call through a coordinator. A registry does not forward a lookup to its parent.
 
 *   **Rp** does not have a local record for **Ax**, so it queries its parent, the global Registry **R**. **R** returns **Ax**'s location (reachable directly via **Sx** on the public internet).
-*   Because **Sz** has no outbound internet access, it cannot connect to **Sx** directly. It uses the **Cp** Iroh connection details it retrieved at startup (either via HTTP discovery or via the **Rp** -> **R** registry lookup), and routes the connection request through **Cp**.
-*   **Sz** connects to **Cp** and sends the preamble for **Ax** (including **Sz**'s public key or an ephemeral public key). **Cp** reads the preamble, realizes the target is on the public network, and connects outbound to deliver the stream to **Sx** (potentially via relay **C**).
+*   Because **Sz** has no outbound internet access, it cannot connect to **Sx** directly. It uses the Iroh connection details of **Cp** that it got at startup. It got them by HTTP discovery or by the **Rp** -> **R** registry lookup. Then it routes the connection request through **Cp**.
+*   **Sz** connects to **Cp** and sends the preamble for **Ax** (including **Sz**'s public key or an ephemeral public key). **Cp** reads the preamble, sees that the target is on the public network, and connects outbound to deliver the stream to **Sx** (possibly through relay **C**).
 
 #### 5. Data Transfer Characteristics
 
 1.  **End-to-End (E2E) Encryption Handshake (optional)**:
-    *   Each Iroh leg is protected by the transport (QUIC, ALPN `syneroym/0.1`). A coordinator reads the preamble in clear to route the stream.
+    *   Each Iroh leg is protected by the transport (QUIC, ALPN `syneroym/0.1`). A coordinator reads the preamble in plain text to route the stream.
     *   The handshake runs only when the caller asks for it with `enc=ecdh-p256` in the preamble. The Rust client (`SyneroymClient`) never sets it. The browser page sets it on the WebSocket tunnel path (`crates/coordinator_webrtc/templates/peer-proxy.js`). On a WebRTC data channel the page removes it before it sends the preamble, because DTLS already protects that channel.
-    *   When it is set, the endpoint that serves the service (**Sz**) and the caller perform an ECDH P-256 key exchange inside the established stream. The caller sends its ephemeral P-256 key in the preamble field `pubkey`. **Sz** replies with its own ephemeral key and an Ed25519 signature, made with its permanent identity key, over both ephemeral keys. The caller checks that signature. Both sides then use AES-256-GCM. The server side is in `crates/router/src/route_handler/encryption.rs`. The browser side is `verifyAndDeriveSharedSecret` in `peer-proxy.js`.
+    *   When it is set, the endpoint that serves the service (**Sz**) and the caller perform an ECDH P-256 key exchange inside the established stream. The caller sends its ephemeral P-256 key in the preamble field `pubkey`. **Sz** replies with its own ephemeral key and an Ed25519 signature over both ephemeral keys. **Sz** makes the signature with its permanent identity key. The caller checks that signature. Both sides then use AES-256-GCM. The server side is in `crates/router/src/route_handler/encryption.rs`. The browser side is `verifyAndDeriveSharedSecret` in `peer-proxy.js`.
     *   Only the server is authenticated by this step. The caller's ephemeral key is not signed.
 2.  **Opaque Forwarding**: 
-    *   When the handshake ran, the application payload is encrypted at the caller and decrypted only at **Sz** (or vice versa). For a JSON-RPC route the payload is JSON-RPC 2.0 frames. wRPC is not implemented.
-    *   The Coordinator **Cp** copies the bytes back and forth between streams (`copy_bidirectional`) and does not parse them after the preamble. It cannot read an encrypted payload. When the caller did not ask for `enc=ecdh-p256`, only the Iroh legs are encrypted, and **Cp** holds the bytes in clear.
+    *   When the handshake ran, the application payload is encrypted at the caller and decrypted only at **Sz** (or in the other direction). For a JSON-RPC route the payload is JSON-RPC 2.0 frames. wRPC is not implemented.
+    *   The Coordinator **Cp** copies the bytes back and forth between streams (`copy_bidirectional`) and does not parse them after the preamble. It cannot read an encrypted payload. When the caller did not ask for `enc=ecdh-p256`, only the Iroh legs are encrypted, and **Cp** has the bytes in plain text.
 3.  **Teardown**: 
     *   Once the communication finishes, either endpoint closes the stream. 
     *   Each hop independently closes its respective stream segment.
@@ -1892,8 +1892,8 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 | Node 20 | Builds and tests the Hub UI and the end-to-end tests |
 | Playwright 1.60.0 (TypeScript 5.9.3) | WebRTC end-to-end tests in `crates/substrate/tests/e2e` |
 | Vite, Vitest | Build and test the Hub UI (`crates/roym_web/ui`) |
-| `mise run verify` (`cargo xtask verify`) | The completion gate: fmt, clippy, six xtask checks (file lengths, lint suppressions, module layout, change docs, duplication, Roym service crate dependencies), the Python planning-refs script, nextest, doctests, audit, license check, and the end-to-end tests. When only docs change, it skips nextest, doctests, and the end-to-end tests |
-| `roymctl` CLI | Deploy and manage apps (`app`) and services (`svc`), local identities, the KEK, and secrets, the App Supervisor, registry entries, sessions, aliases and short hashes, the substrate (`substrate`, alias `node`) and the Roym product commands (`roym`: record-signing enrollment and status, the service address, `directory`, `transaction`, `group`, and backups) |
+| `mise run verify` (`cargo xtask verify`) | The completion gate: fmt, clippy, and six xtask checks. The checks are file lengths, lint suppressions, module layout, change docs, duplication, and Roym service crate dependencies. It also runs the Python planning-refs script, nextest, doctests, audit, license check, and the end-to-end tests. When only docs change, it skips nextest, doctests, and the end-to-end tests |
+| `roymctl` CLI | Deploy and manage apps (`app`), services (`svc`), local identities, the KEK, secrets, the App Supervisor, registry entries, sessions, aliases and short hashes, and the substrate (`substrate`, alias `node`). Also the Roym product commands (`roym`: record-signing enrollment and status, the service address, `directory`, `transaction`, `group`, and backups) |
 
 > **Envisioned.** Not built yet. `otelcol`, a local OpenTelemetry collector for a local observability stack. No tool list or collector configuration names it today.
 
