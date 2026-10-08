@@ -14,8 +14,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | System Layers Overview | done | 64f44fde | - |
 | Layer 1 — Infrastructure | done | 8e55c52c | - |
 | Layer 2 — Substrate Runtime | done | 00cbf805 | - |
-| Layer 3 — Shared Substrate Utilities | done | pending | - |
-| Layer 4 — SynApp Specifications | not started | - | - |
+| Layer 3 — Shared Substrate Utilities | done | 380cc9e7 | - |
+| Layer 4 — SynApp Specifications | done | pending | - |
 | Federation Architecture | not started | - | - |
 | Consumer Experience Architecture | not started | - | - |
 | Observability Architecture | not started | - | - |

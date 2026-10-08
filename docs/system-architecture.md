@@ -1078,20 +1078,20 @@ Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow
 ## Layer 4 — SynApp Specifications
 
 ### SynApp 1: Roym
-Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain is `request` (the consumer asks), `quote` (the provider offers), `agreement-receipt` (each side signs one half) and then a booking on the provider's node, whose status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
+Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain is `request` (the consumer asks), `quote` (the provider offers), `agreement-receipt` (each side signs one half) and then a booking on the provider's node, whose status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
 
 #### Component Architecture
 
-The manifest of Roym declares six services: `web`, `profile`, `conversation`, `catalog`, `transaction` and `directory`.
+The manifest of Roym declares six services: `web`, `profile`, `conversation`, `catalog`, `transaction`, and `directory`.
 
 | Service | What it does | Declared dependencies |
 |---|---|---|
 | `web` | Serves the Hub UI and `POST /rpc`. It forwards each method to the service that owns the method prefix. Every method that it forwards, except `profile.policy`, needs a session of the node owner. `session.whoami` is answered without a session. | `conversation`, `profile`, `catalog`, `transaction`, `directory` |
-| `profile` | The person's own profile, contacts, block list and reports. | none |
+| `profile` | The person's own profile, contacts, block list, and reports. | none |
 | `conversation` | One-to-one messages and private groups. It uses the conversation interface of the substrate for encryption, the outbox and delivery. | `profile` |
 | `catalog` | The provider's listings and availability slots. | `profile` |
-| `transaction` | Requests, quotes, agreements, bookings, payments and fulfilments. Booking logic and payment records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
-| `directory` | A SynOrg's member list, published listings, search index and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
+| `transaction` | Requests, quotes, agreements, bookings, payments, and fulfilments. Booking logic and payment records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
+| `directory` | A SynOrg's member list, published listings, search index, and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
 
 A call to the `invoke` export of a service that does not come from inside the installation is answered with error `-32013`, except for four `directory` methods. `directory.search`, `directory.info` and `directory.standing` accept any caller. `directory.publish` accepts a caller whose identity the router verified. So `transaction` and `catalog` cannot be called by another node. The `status` export stays open on every service, so health checks work. Two nodes talk through the conversation transport of the substrate, which carries the cards (the `prekey-bundle` and `deliver` calls), and through the four `directory` methods. Inside the installation, `web` checks the session before it forwards a call.
 
@@ -1138,7 +1138,7 @@ flowchart TD
 
 The Hub calls its own node only. It never calls the provider's node.
 
-> **Envisioned.** Not built yet. A DRM content server (an OCI service for protected media), push notifications, payment adapters for external gateways and a review service. Roym declares no OCI service. Today a card reaches the other person as a message in the conversation, and Roym has no push code, no payment gateway code and no review record. Also Envisioned: wRPC and WebSocket links from the Hub, which uses HTTP today. See [Payments](#payments) and [Trust & Reputation](#trust--reputation).
+> **Envisioned.** Not built yet. A DRM content server (an OCI service for protected media), push notifications, payment adapters for external gateways, and a review service. Roym declares no OCI service. Today a card reaches the other person as a message in the conversation, and Roym has no push code, no payment gateway code, and no review record. Also Envisioned: wRPC and WebSocket links from the Hub, which uses HTTP today. See [Payments](#payments) and [Trust & Reputation](#trust--reputation).
 
 #### Cards
 
@@ -1146,11 +1146,11 @@ A card is a signed record sent as a message with content type `application/vnd.r
 
 | Card | Signed by | Meaning |
 |---|---|---|
-| `request` | the consumer | The consumer asks for a service. It has a description, and it may name a listing, categories, an area and a time window. |
-| `quote` | the provider | An offer. It carries the agreed terms: scope, currency and amount, payment methods, payee, when payment is due, schedule, location, cancellation terms, refund terms and a dispute path as text. It may name one slot of the listing. It has an expiry. |
+| `request` | the consumer | The consumer asks for a service. It has a description, and it may name a listing, categories, an area, and a time window. |
+| `quote` | the provider | An offer. It carries the agreed terms: scope, currency, and amount, payment methods, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
 | `agreement-receipt` | each party signs one half | Each side signs the quote terms. A deal exists when both halves exist. |
 | `booking-progress` | the provider's service | A snapshot of the booking. The consumer's node accepts it only when the signer is the one that signed the quote. |
-| `payment-request` | the provider | The provider asks to be paid. It carries currency, amount and an optional note. It is optional. |
+| `payment-request` | the provider | The provider asks to be paid. It carries currency, amount, and an optional note. It is optional. |
 | `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method and reference as text. |
 | `fulfilment-receipt` | either party | A statement that the work is done. |
 
@@ -1183,9 +1183,9 @@ stateDiagram-v2
     EndedUnconfirmed --> [*]
 ```
 
-The six states are `scheduled`, `in-progress`, `completed`, `cancelled`, `conflict` and `ended-unconfirmed`. The last four are final. A booking opens as `scheduled`, or as `conflict` when no seat is free. A `conflict` booking carries the reason `slot-taken` or `slot-unavailable`. In that case the provider's node does not countersign the agreement.
+The six states are `scheduled`, `in-progress`, `completed`, `cancelled`, `conflict`, and `ended-unconfirmed`. The last four are final. A booking opens as `scheduled`, or as `conflict` when no seat is free. A `conflict` booking carries the reason `slot-taken` or `slot-unavailable`. In that case the provider's node does not countersign the agreement.
 
-**Two tracks.** Payment and fulfilment are two separate tracks. They are not states of the booking. Each track is `none`, `claimed`, `acknowledged` or `unconfirmed`. Both parties can write to both tracks.
+**Two tracks.** Payment and fulfilment are two separate tracks. They are not states of the booking. Each track is `none`, `claimed`, `acknowledged`, or `unconfirmed`. Both parties can write to both tracks.
 
 | Track | Who makes the claim | Who acknowledges |
 |---|---|---|
@@ -1204,7 +1204,7 @@ The rules of the booking:
 
 **Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The provider's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the booking is `conflict` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result.
 
-> **Envisioned.** Not built yet. A dispute workflow, a refund, a review of a completed booking and a cancel by the consumer. Today the cancellation terms, the refund terms and the dispute path are text in the agreed terms, and the Roym `directory` settings carry a dispute path as text. A rule that the provider wins a same-instant cancel from the consumer needs a consumer cancel first, see [Storage & Write Arbitration](#storage--write-arbitration).
+> **Envisioned.** Not built yet. A dispute workflow, a refund, a review of a completed booking and a cancel by the consumer. Today the cancellation terms, the refund terms, and the dispute path are text in the agreed terms, and the Roym `directory` settings carry a dispute path as text. A rule that the provider wins a same-instant cancel from the consumer needs a consumer cancel first, see [Storage & Write Arbitration](#storage--write-arbitration).
 
 #### Consumer Transaction Flow
 
@@ -1263,7 +1263,7 @@ Notes on the flow:
 
 #### Recommendation Algorithm
 
-**Built today.** Roym has no recommendation feature. It has search. A search sends its query to each directory that the person chose. The query can hold text, categories, an area and filters. Each directory sorts its matching listings by the `issued_at_secs` of the signed record, newest first. Ties go by `listing_id`. The consumer's node then takes hits from the directories in turn, newest first inside each directory. It takes at most 10 hits per directory and 50 per page. No score is computed. A search run is working state. The node deletes runs older than one hour when the next search starts. Beyond those runs, the consumer's node keeps no query history and no list of viewed items. Search ranking is the ordering of the answer to one query. A recommendation would suggest items with no query.
+**Built today.** Roym has no recommendation feature. It has search. A search sends its query to each directory that the person chose. The query can hold text, categories, an area, and filters. Each directory sorts its matching listings by the `issued_at_secs` of the signed record, newest first. Ties go by `listing_id`. The consumer's node then takes hits from the directories in turn, newest first inside each directory. It takes at most 10 hits per directory and 50 per page. No score is computed. A search run is working state. The node deletes runs older than one hour when the next search starts. Beyond those runs, the consumer's node keeps no query history and no list of viewed items. Search ranking is the ordering of the answer to one query. A recommendation would suggest items with no query.
 
 > **Envisioned.** Not built yet. No recommendation, scoring or collaborative-signal code exists. This is the design.
 >
@@ -1281,11 +1281,11 @@ Notes on the flow:
 
 ### Local Producer-Distributor Mesh
 
-> **Envisioned.** Not built yet. This is the second Roym vertical, for food and small retail. Roym has no delivery component, no tracking component and no delivery state today.
+> **Envisioned.** Not built yet. This is the second Roym vertical, for food and small retail. Roym has no delivery component, no tracking component, and no delivery state today.
 >
 > The design differs from the Professional Services Guild in two ways:
 > - It adds `delivery-engine` and `tracking-service` components.
-> - The `in-progress` state of the booking has sub-states `PREPARING`, `OUT_FOR_DELIVERY` and `DELIVERED`.
+> - The `in-progress` state of the booking has sub-states `PREPARING`, `OUT_FOR_DELIVERY`, and `DELIVERED`.
 
 ---
 
