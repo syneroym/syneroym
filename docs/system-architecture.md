@@ -2526,14 +2526,14 @@ This part gives design details for the features in the [Feature Specification](s
 ## Phase 1: Foundation & Core Infrastructure
 
 ### [FND-SEC] Substrate Security
-The Substrate relies on multiple cryptographic and operating-system-level techniques to guarantee a zero-trust environment.
+The Substrate uses cryptographic and operating-system techniques to provide a zero-trust environment.
 
 *   **Data at Rest & Envelope Encryption:** 
-    *   **Design:** Per-service SQLite database files and blob objects are encrypted using Data Encryption Keys (DEKs). A Master Key (KEK) is injected into RAM after the substrate starts, by the node owner (`roymctl kek inject`), to unlock the DEKs, ensuring instant key rotation without massive re-encryption.
+    *   **Design:** Per-service SQLite database files and blob objects are encrypted using Data Encryption Keys (DEKs). The node owner injects a Master Key (KEK) into RAM after the substrate starts (`roymctl kek inject`) to unlock the DEKs. This provides instant key rotation without massive re-encryption.
     *   **The "Unlock" Model:** DEKs are scoped to individual services. The KEK is substrate-global ([ADR-0006](decisions/0006-sqlite-encryption-sqlcipher.md)). A per-SynApp-Instance KEK is *derived* from the injected master (HKDF-SHA256, scoped by `service_id`) and wraps that service's DEK. A leaked derived key exposes neither the master nor a sibling instance's key, but the master itself still derives every instance's key, so this is defense-in-depth, not tenant isolation. Keys are *never* stored on the substrate's disk in plaintext: each DEK is stored encrypted (AES-256-GCM) in the `dek_store` table of `substrate.db`, and the KEK lives only in RAM. After a node restart, no encrypted service database opens until the node owner injects the KEK again.
     *   **Secret Vault:** Service secrets are stored as encrypted vault rows in the `_vault` table of the service's own database (`state.db`), encrypted with the service's DEK. The `reveal` host function returns the value to the calling guest. The native `vault` interface also answers `reveal`, but only for the service itself and for the owner recorded for that service. The vault never writes secret values to files or environment variables.
 *   **Memory Protection & RAM Dumping Mitigations:** 
-    *   **Design:** Perfectly securing a key in RAM from a determined root-level attacker is theoretically impossible without hardware enclaves, but the substrate raises the bar significantly. On Unix systems the Substrate uses OS-level memory locking (`mlock`) to prevent swapping to disk, and on Linux `madvise(MADV_DONTDUMP)` to exclude the key from core dumps. This covers identity signing keys and the KEK. If a call fails, the substrate logs a warning and continues.
+    *   **Design:** Securing a key in RAM against an attacker with root access is impossible without hardware enclaves, but the substrate raises protection significantly. On Unix systems, the Substrate uses memory locking (`mlock`) to prevent swapping to disk. On Linux, it uses `madvise(MADV_DONTDUMP)` to exclude the key from core dumps. This covers identity signing keys and the KEK. If a call fails, the substrate logs a warning and continues.
 
 > **Envisioned.** Not built yet. Today one master KEK, injected by the node owner, unlocks every service by derivation. The Podman engine passes configuration values only, and the KEK is held in memory as one value.
 >

@@ -25,8 +25,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Consolidated Technology Stack | done | 990b0df1 | - |
 | Connectivity Substrate In Heterogeneous networks | done | 9539349a | - |
 | Target Designs (Addendum) | done | 13b4e3f1 | - |
-| Phase 0: Core Architecture Implementation | done | pending | - |
-| Phase 1: Foundation & Core Infrastructure | not started | - | - |
+| Phase 0: Core Architecture Implementation | done | dc462344 | - |
+| Phase 1: Foundation & Core Infrastructure | done | pending | - |
 | Phase 2: Core Platform Capabilities | not started | - | - |
 | Phase 3: Substrate & Application Lifecycle | not started | - | - |
 | Phase 4: Advanced Services & Tooling | not started | - | - |
