@@ -988,25 +988,44 @@ Given that Syneroym supports both native WASM components and legacy Podman conta
 
 ### [PLT-DAP] Distributed Data Topology
 The substrate models data as a distributed, programmable topology rather than isolated object state.
-- **[PLT-DAP-01] Logical Data Services:** The system MUST support logical data wrappers that abstract physical sharding across multiple substrates, allowing a single dataset definition to span nodes transparently.
-- **[PLT-DAP-02] Active Storage Pushdown:** The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer. This enables controlled ETL/ELT logic execution directly where the data lives. *(Sequenced as a bounded spike after M5's core data layer ships, so it adds on rather than reworking the data layer.)*
-- **[PLT-DAP-03] Declarative Replication:** The `DeploymentPlan` MUST support a declarative topology mechanism to define replication states (e.g., Primary, Read-Replica, Cold Backup).
-- **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-like API for decoupled event routing. Cross-node access to `publish`/`subscribe` works the same way any cross-node host-function call does — routed to whichever node hosts the target service via the standard RPC/native-dispatch path (JSON-RPC bridge today; wRPC once `[PLT-DAT]` Universal Proxy ships in M4) — no different from a cross-node `data-layer` call. Separately, the broker's own topic-log state is made redundant via peer nodes synchronising it through pull-based log replication over QUIC, purely for durability/failover if the hosting node is lost; this ships in M7 alongside database and blob replication, as they share the same replication primitive (see `[PLT-RED]`).
-- **[PLT-DAP-05] Data Pipeline Streams:** The system MUST provide a distinct `syneroym:data/stream` interface for direct, high-throughput, point-to-point QUIC streams with native credit-based flow control (backpressure) for heavy data shuffling.
-- **[PLT-DAP-06] Generic Bidirectional Streaming:** The system MUST provide a `syneroym:messaging` host boundary allowing a WASM guest to register interest in a stream protocol namespace and handle both directions of a peer-initiated stream: as source, hand the host a stateful iterator (`stream-cursor`) resource that the host pulls from asynchronously (e.g., file download); as sink, hand the host a stateful sink (`stream-sink`) resource that the host pushes chunks into asynchronously (e.g., file upload). Distinct from `[PLT-DAP-05]`, which is Arrow/Substrait-specific and reserved for the DataFusion pushdown pipeline.
+
+- **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-compatible API for decoupled event routing. Cross-node access to `publish` and `subscribe` routes to whichever node hosts the target service via standard JSON-RPC dispatch, matching cross-node data-layer calls.
+  > **Envisioned.** Not built yet. Broker topic-log pull-based replication over QUIC. Today event routing runs through a single-node in-process MQTT broker without multi-node log synchronization (see `[PLT-RED]`).
+- **[PLT-DAP-06] Generic Bidirectional Streaming:** The system MUST provide a `syneroym:messaging` host boundary allowing a WASM guest to register interest in a stream protocol namespace and handle both directions of a peer-initiated stream: as source, handing the host a stateful iterator (`stream-cursor`) resource that the host pulls from asynchronously (e.g., file download); as sink, handing the host a stateful sink (`stream-sink`) resource that the host pushes chunks into asynchronously (e.g., file upload). Distinct from `[PLT-DAP-05]`, which is Arrow/Substrait-specific and reserved for the DataFusion pushdown pipeline.
+
+- **[PLT-DAP-01] Logical Data Services:**
+  > **Envisioned.** Not built yet. Logical data wrappers that abstract physical sharding across multiple substrates. Today each stateful service connects to an isolated, single-node SQLite database.
+  >
+  > The system MUST support logical data wrappers that abstract physical sharding across multiple substrates, allowing a single dataset definition to span nodes transparently.
+- **[PLT-DAP-02] Active Storage Pushdown:**
+  > **Envisioned.** Not built yet. WIT interfaces for deploying WASM modules directly to the data layer. Today data access occurs through host functions in `syneroym:data-layer`.
+  >
+  > The system SHOULD provide WIT interfaces (e.g., `syneroym:data/transform`) for deploying WASM modules directly to the data layer to enable controlled ETL/ELT logic execution directly where the data lives.
+- **[PLT-DAP-03] Declarative Replication:**
+  > **Envisioned.** Not built yet. Declarative replication states in deployment plans. Today manifests reject replica counts greater than one for stateful services (see `[PLT-RED]`).
+  >
+  > The `DeploymentPlan` MUST support a declarative topology mechanism to define replication states (e.g., Primary, Read-Replica, Cold Backup).
+- **[PLT-DAP-05] Data Pipeline Streams:**
+  > **Envisioned.** Not built yet. Point-to-point QUIC data pipeline streams with credit-based flow control. Today bulk data transfers use chunk transfers over stream resources or HTTP endpoints.
+  >
+  > The system MUST provide a distinct `syneroym:data/stream` interface for direct, high-throughput, point-to-point QUIC streams with native credit-based flow control (backpressure) for heavy data shuffling.
 
 ### [PLT-DAT] Data Layer
 The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions or APIs without exposing raw database engines to the applications.
 
 - **Structured Data Service (Document Database):**
   - **Single Source of Truth (SQLite):** To prevent stale-data consistency issues, the underlying physical data layer is *always* SQLite. We do not maintain separate duplicate copies of databases (e.g., one for OLTP and one for OLAP).
-  - **Build-Time Profiles (OLTP vs OLAP):** The system provides Cargo feature gates to compile nodes with tailored weight. Currently, both `syneroym-oltp` and `syneroym-olap` profiles utilize standard SQLite for operations and querying. (Note: Embedding heavier analytical engines like DuckDB via SQLite-scanner for the OLAP profile is explicitly deferred to the Future Backlog).
-  - **Database Isolation (One DB per Service):** The canonical primitive for structured state (backed by SQLite). Instead of a monolithic combined database, every stateful `SynSvc` gets a fully isolated, separate SQLite database file (and WAL). The substrate also maintains its own separate database. This guarantees true concurrent write scaling across services, allows selective WAL replication, and isolates failure domains.
-  - **Concurrency Model:** Designed for high throughput using a Single-Writer Thread / Multiple-Reader Pool architecture per database. This perfectly aligns with SQLite's WAL mode, eliminating `SQLITE_BUSY` lock contention and maximizing performance in asynchronous Rust.
+  - **Build-Time Profiles (OLTP vs OLAP):** The system provides Cargo feature gates to compile nodes with tailored weight. Currently, both `syneroym-oltp` and `syneroym-olap` profiles utilize standard SQLite for operations and querying.
+    > **Envisioned.** Not built yet. Embedding analytical query engines like DuckDB via SQLite-scanner for analytical profiles. Today both `syneroym-oltp` and `syneroym-olap` execute on standard SQLite.
+  - **Database Isolation (One DB per Service):** The canonical primitive for structured state (backed by SQLite). Instead of a monolithic combined database, every stateful `SynSvc` gets a fully isolated, separate SQLite database file (`<service_id>.db`). The substrate also maintains its own separate database (`substrate.db`). This guarantees true concurrent write scaling across services, isolates failure domains, and allows per-service data lifecycles.
+  - **Concurrency Model:** Designed for high throughput using a Single-Writer Thread / Multiple-Reader Pool architecture per database. A dedicated background writer task processes mutations sequentially from an in-memory queue, while concurrent readers execute in parallel across a connection pool.
+    > **Envisioned.** Not built yet. SQLite WAL mode and advanced pragma tuning for per-service databases. Today per-service SQLite connections operate with a single background writer task without setting `PRAGMA journal_mode = WAL`.
   - **Resource Model:** Collections with lightweight schemas (loose enforcement of types, explicit indexed fields) containing JSON records. The data layer automatically injects a spoof-proof `creator_id` into every record.
-  - **Schema Initialization (DDL):** Stateful `SynSvcs` export `init()` (first deploy) and `migrate()` (re-deploy) lifecycle hooks; within these hooks the guest runs plain SQL DDL (e.g., `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`) through the gated `execute-ddl` host function — see [ADR-0007](decisions/0007-data-layer-wit-interface.md). A structured data-model alternative is reserved for the future, when untrusted third-party developers must be restricted from arbitrary DDL. Starting with plain SQL is safe for trusted services because each service owns an isolated database, and access is gated by IAM. Views defined during init are instantaneous (no write-lock penalty, unlike index creation) and can be targeted by the `AggregationPipeline` at runtime.
-  - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). It also supports `batch_mutate` for atomic transactions across multiple records. The query engine translates a MongoDB-style JSON filter document (equality, `$gt`/`$gte`/`$lt`/`$lte`/`$ne`, `$in`/`$nin`, `$regex`, `$and`/`$or`/`$not`, dot-notation paths — see [ADR-0007](decisions/0007-data-layer-wit-interface.md)) and an `AggregationPipeline` (for projections, `$group`, `$having`) into parameterized SQL queries with cursor-based pagination. Aggregations can target both physical collections and logical views. Full-text search operators are future backlog.
-  - **WASM Serialization & WIT Boundary:** Expand the `syneroym:data-layer/store` WIT boundary to support robust nested record serialization/deserialization. Currently, only basic types are supported; this enables seamless passing of complex JSON object graphs between WASM components and the host.
+  - **Schema Initialization (DDL):** Stateful `SynSvcs` export `init()` (first deploy) and `migrate()` (re-deploy) lifecycle hooks; within these hooks the guest runs plain SQL DDL (e.g., `CREATE TABLE`, `CREATE VIEW`, `CREATE INDEX`) through the gated `execute-ddl` host function — see [ADR-0007](decisions/0007-data-layer-wit-interface.md). Starting with plain SQL is safe for trusted services because each service owns an isolated database, and access is gated by IAM. Views defined during init are instantaneous (no write-lock penalty, unlike index creation).
+    > **Envisioned.** Not built yet. Structured declarative data-model alternative restricting arbitrary DDL for untrusted third parties. Today services execute plain SQL DDL via the `execute-ddl` host function.
+  - **Operations & Queries:** Full CRUD operations (`create_collection`, `put`, `patch`, `get`, `delete`, `delete_many`). It also supports `batch_mutate` for atomic transactions across multiple records. The query engine translates a MongoDB-style JSON filter document (equality, `$gt`/`$gte`/`$lt`/`$lte`/`$ne`, `$in`/`$nin`, `$regex`, `$and`/`$or`/`$not`, dot-notation paths — see [ADR-0007](decisions/0007-data-layer-wit-interface.md)) and an `AggregationPipeline` (for projections, `$group`, `$having`) into parameterized SQL queries with cursor-based pagination.
+    > **Envisioned.** Not built yet. Native full-text search operators and aggregation pipelines over logical views. Today queries support structured JSON filters, and aggregation targets physical collections only.
+  - **WASM Serialization & WIT Boundary:** The `syneroym:data-layer/store` WIT boundary supports nested record serialization and deserialization, passing complex JSON object graphs between WASM components and the host.
 
 - **Object Service (Content-Addressed Blobs):**
   - **S3-Compatible Storage:** Dedicated blob storage for large media and software artifacts, natively content-addressed (keyed by SHA-256).
@@ -1014,120 +1033,78 @@ The Data Layer provides a complete foundation for distributed application state 
   - **HTTP File Serving:** Built-in HTTP serving of public/private objects (with signed URLs), supporting static website hosting and CDN-friendly delivery directly from the blob store.
 
 - **MQTT Event Service (Asynchronous Coordination):**
-  - **Decentralized P2P Log:** Handles asynchronous communication, state propagation, and device workflows without a central broker.
-  - **Features:** Supports MQTT semantics (wildcard topics, retained messages) and real-time change notifications mapped over decentralized log replication to trigger workflows or invalidate caches.
+  - **Embedded Event Broker:** The substrate embeds an in-process MQTT broker (`rumqttd`) supporting standard MQTT semantics (wildcard topics `+` and `#`, retained messages) for asynchronous communication and device workflows.
+    > **Envisioned.** Not built yet. Decentralized peer-to-peer MQTT topic-log replication and change notifications across nodes. Today event dispatch runs through the local in-process broker without multi-node log synchronization.
 
 - **Universal Proxy (Inter-Component RPC):**
   - **Typed Interactions:** Developers use strongly typed WIT imports (`import acme:booking/service;`) rather than generic untyped APIs.
-  - **Interception & Instance Mapping:** The Substrate injects a proxy host function during component instantiation to satisfy the WIT import. It resolves the generic import to a specific running `service_id` by consulting the application manifest and Orchestrator Registry.
-  - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it to the specific instance. The target design serializes native WASM-to-WASM calls into fast, binary **wRPC** over Iroh QUIC. Until the wRPC surface is implemented, JSON-RPC remains the available external bridge. Legacy Podman containers and external clients use universal **JSON-RPC** over HTTP/WebSocket unless an adapter provides a richer interface.
-  - **Static Composition Bypass:** Dependencies can be statically composed (e.g., via `wasm-tools compose`) into a single binary before deployment. In this case, imports are satisfied internally, the Substrate is completely bypassed, and execution occurs with zero overhead within the sandbox.
+  - **Interception & Instance Mapping:** The Substrate injects a proxy host function during component instantiation to satisfy the WIT import. It resolves the generic import to a specific running `service_id` using dependency bindings pushed into service configuration by the App Supervisor ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)).
+  - **Protocol Translation:** The substrate traps the WASM call and dynamically proxies it to the target instance using JSON-RPC 2.0 over HTTP or WebSockets.
+    > **Envisioned.** Not built yet. Binary wRPC serialization over Iroh QUIC streams. Today inter-service and external calls use JSON-RPC 2.0.
+  - **Static Composition Bypass:**
+    > **Envisioned.** Not built yet. Automatic static component composition bypassing substrate proxy interception. Today dependencies route through the Universal Proxy.
 
-> **Implementation Design:** For technical details regarding the embedded MQTT broker and the wRPC Universal Proxy architecture, see [Feature Design: PLT-DAT](system-architecture.md#plt-dat-data-layer).
+> **Implementation Design:** For technical details regarding the embedded MQTT broker and the Universal Proxy architecture, see [Feature Design: PLT-DAT](system-architecture.md#plt-dat-data-layer).
+
+### [MSG-TOP] Scoped MQTT Pub/Sub Topic Namespace
+The embedded MQTT broker strictly isolates topic namespaces by prefixing topics with the calling service's identifier (`svc/<service_id>/`).
+
+- **Publish Isolation:** Outbound publish requests unconditionally prefix the calling service identity (`svc/<service_id>/<topic>`), blocking any service from publishing into another service's namespace or spoofing topic origins.
+- **Subscription Scoping:** Inbound subscribe requests default to the calling service's namespace (`svc/<service_id>/<topic>`). Subscriptions support explicit cross-service opt-in only when the caller specifies a fully-qualified topic (`svc/<other_service>/<topic>`), preventing unintended message snooping.
 
 ### [PLT-ASY] Asynchronous Operations & Scheduling
 
 The Asynchronous Operations component ensures reliable execution of offline interactions, long-running workflows, and periodic tasks, even in the presence of network partitions or transient service failures.
-
-> **Implementation status (M05B, 2026-08-07, [ADR-0023](decisions/0023-durable-async-primitives.md)).**
-> Resilient RPC/retries, the outbox, and scheduled tasks shipped; long-running
-> tasks are deferred (target: M5's final phase). Six corrections to the text
-> below, matching [system-architecture.md](system-architecture.md#plt-asy-asynchronous-operations--scheduling)'s
-> own note: the outbox is substrate-side, not client-side; scheduling has no
-> lease and no Registry dependency (target selection plus a local overlap
-> guard on the App Supervisor's own pass); the saga marker is
-> `saga-undo-<operation>`, not `undo_<operation>` (kebab-case, *and* a
-> reserved fuller prefix — a bare `undo-` is an ordinary business verb); a
-> compensation's arguments are the forward call's own parameters plus its
-> own return value, not a "generated resource ID" (no such concept exists
-> in this tree); an undo may be called for an operation that never
-> happened, since the step log is written before the forward call runs;
-> and compensations fire only from a guest's own request or an expired
-> saga deadline, never from a queued task (a queued call's own outcome is
-> unknown to its caller by construction, so it cannot be a saga step).
 
 - **Resilient RPC & Retries:**
   - **Configurable Policies:** Retry policies (e.g., exponential backoff, maximum attempts) are defined at the service level by default, but can be overridden per-request.
   - **Dead Letter Queue (DLQ):** When the maximum retry limit is reached, retryable or outbox-backed messages are routed to a Dead Letter Queue for auditing, manual intervention, or later replay, preventing silent data loss. Non-idempotent synchronous calls fail directly unless the caller supplied an idempotency key and opted into queuing.
 
 - **Offline Message Semantics & Outbox:**
-  - **Optimistic Local Execution (Fire-and-Forget):** Clients can trigger operations using a fire-and-forget flag (or wrapper API) indicating it is "ok to send later". The client UI treats the request as optimistically successful. 
+  - **Substrate Durable Outbox Queue:** Offline requests are durably stored in an owner-local SQLite outbox queue on the substrate and periodically flushed when connectivity is restored ([ADR-0023](decisions/0023-durable-async-primitives.md)).
   - **Return Value Constraints:** Offline-capable calls cannot synchronously return data (e.g., a server-generated ID). Applications must rely on client-generated identifiers (e.g., UUIDs) or design the interaction to not require immediate server responses.
-  - **Outbox Queue:** Offline requests are durably stored in an outbox queue and periodically synced when connectivity is restored.
+  - **Optimistic Local Execution (Fire-and-Forget):**
+    > **Envisioned.** Not built yet. Client-side outbox queue and optimistic offline UI execution in browser clients. Today the durable outbox is substrate-side, and client calls execute synchronously over HTTP or WebSocket sessions.
+    >
+    > Clients can trigger operations using a fire-and-forget flag (or wrapper API) indicating it is "ok to send later". The client UI treats the request as optimistically successful.
 
 - **Long-Running Tasks:**
-  - **Uniform Execution:** Long-running tasks composed of multiple compute and service calls are supported uniformly (e.g., executed as standard Wasm functions).
-  - **In-Memory State Management:** The request to start the task is durably recorded, but the active execution state resides in the asynchronous engine's memory. If the process is interrupted, the task restarts from the beginning only when the task is idempotent or explicitly restartable; otherwise it fails and runs compensations rather than resuming from a mid-execution disk snapshot.
+  > **Envisioned.** Not built yet. Uniform execution and in-memory state management for long-running workflows composed of multi-stage compute tasks. Today Wasm guest functions run within bounded dispatch timeouts, and long-running task restart or compensation rules are not implemented.
+  >
+  > - **Uniform Execution:** Long-running tasks composed of multiple compute and service calls are supported uniformly (e.g., executed as standard Wasm functions).
+  > - **In-Memory State Management:** The request to start the task is durably recorded, but the active execution state resides in the asynchronous engine's memory. If the process is interrupted, the task restarts from the beginning only when the task is idempotent or explicitly restartable; otherwise it fails and runs compensations rather than resuming from a mid-execution disk snapshot.
 
 - **Periodic & Scheduled Tasks:**
-  - **Lease-Based Scheduler:** To prevent load skew and overlapping executions in a clustered environment, cron/periodic triggers use an execution lease mechanism backed by the Registry.
-  - **Delegated Execution:** The node that wins the lease acts only as the "Orchestrator" for that tick. It selects a target worker node (e.g., randomly or via load metrics) and dispatches the actual execution command to it.
-  - **Overlap Prevention:** The lease is held in the Registry until the executing node completes the work. If the task exceeds its cron interval, subsequent timer ticks across the cluster will fail to acquire the lease and safely skip the run.
-  - **Registry Availability:** Cluster-wide lease acquisition is a control-plane dependency. If the Registry is unavailable, new clustered schedule ticks pause or skip safely; single-node schedules may continue using local leases if the manifest permits.
+  - **Supervisor Local Overlap Guards:** Cron and periodic triggers execute through the App Supervisor on its resident reconciliation pass ([ADR-0023](decisions/0023-durable-async-primitives.md) §6). The supervisor selects runnable target member instances based on health sweep reports and enforces local execution overlap guards without distributed leases or Registry calls.
+  - **Delegated Task Dispatch:** When a schedule is due, the supervisor dispatches the execution command to the selected healthy member on its host substrate.
 
 - **Compensating Transactions (Saga Pattern):**
-  - **Undo Interfaces:** To handle permanent failures in distributed scenarios without leaving the system in an inconsistent state, services can expose `undo_<operation>()` endpoints in their WIT interfaces.
-  - **Automated Rollback:** If a step in a multi-stage workflow fails permanently, the orchestrator executes the corresponding compensating functions for the previously completed steps to rollback changes.
+  - **Saga Compensation Interfaces:** To handle permanent failures in distributed scenarios without leaving the system in an inconsistent state, services expose compensating functions prefixed with `saga-undo-<operation>` in their WIT interfaces ([ADR-0023](decisions/0023-durable-async-primitives.md) §7). Compensating functions take the forward call's original parameters plus its return value. Because step logs are written before forward calls execute, an undo may run for an operation that never completed.
+  - **Automated Rollback & Triggers:** If a step in a multi-stage workflow fails permanently or exceeds its deadline, the orchestrator executes the corresponding compensating functions in reverse order for previously completed steps. Compensations fire only from an explicit guest request or an expired saga deadline, never from a queued task.
 
 > **Design Rationale:** 
 > - **Offline vs Pessimistic:** Not all operations make sense offline. Pessimistic locking (synchronous execution waiting for connection) remains the standard path. The fire-and-forget outbox is strictly an opt-in pattern for offline-capable operations.
-> - **In-Memory vs Durable Execution:** While "Durable Execution" (saving the exact intermediate execution state to a DB, like Temporal) assists with idempotency, it is highly complex to implement within the Wasm host and still fails if there are strict time constraints between I/O steps. We instead trade platform complexity for explicit workflow definition—our in-memory approach requires that if a process crashes mid-task, the task is fully aborted and compensated (via `undo`) rather than resumed.
-> - **Saga Arguments:** The compensating `undo` functions generally accept the identical arguments as the original forward operation (along with the generated resource ID) to precisely reverse the specific action.
+> - **In-Memory vs Durable Execution:** While "Durable Execution" (saving the exact intermediate execution state to a DB, like Temporal) assists with idempotency, it is highly complex to implement within the Wasm host and still fails if there are strict time constraints between I/O steps. We instead trade platform complexity for explicit workflow definition—our in-memory approach requires that if a process crashes mid-task, the task is fully aborted and compensated (via `saga-undo-<operation>`) rather than resumed.
+> - **Saga Arguments:** The compensating `saga-undo-<operation>` functions accept the identical arguments as the original forward operation along with the forward call's return value to precisely reverse the specific action.
 
 ### [PLT-RED] Service Redundancy
-This feature guarantees data durability, service continuity, and split-brain prevention for the Syneroym network, strictly prioritizing Consistency over Availability (CP) during network partitions.
+Service redundancy guarantees data durability, service continuity, and split-brain prevention for the Syneroym network, strictly prioritizing Consistency over Availability (CP) during network partitions.
 
-This is a **P1 hardening track**, not a production Release 1 prerequisite beyond
-encrypted backup/restore and an operator-run node replacement drill. Before a
-replicated profile is offered, it declares measured RPO, RTO, quorum/control-plane
-dependencies, promotion authority, and the user-visible behaviour during loss of
-the primary.
+Today a service runs on a single substrate with an isolated database. Stateless services support redundant replica placement, while application manifests reject replica configurations greater than one for stateful services. The system provides manual encrypted backup and restore, local in-process MQTT messaging, and S3-compatible blob storage.
 
-**Database Redundancy**
-- **Configurable Stateful Replication:** The replication factor (e.g., N=1, N=2, N=3) is configurable at service deployment time via the application manifest. For replicated setups (N>=2), there is exactly one Primary accepting write operations, while the Secondaries maintain an identical read-only state. The Registry reflects the topology defined by the manifest.
-- **Low-Latency Streaming:** Replication must be near-instantaneous. Changes committed to the Primary must be streamed directly to the Secondary without relying on high-latency batching or third-party storage intermediaries for the live replication path.
-- **SQLite-Safe Application:** The replication layer must respect SQLite WAL and shared-memory invariants. It must not depend on ad hoc mutation of another live SQLite process's `-wal` or `-shm` files.
-- **Disaster Recovery:** In addition to live node-to-node replication, the system must support periodic asynchronous backups to external object storage (S3-compatible) to enable cold starts and disaster recovery.
+- **Control Plane vs Data Plane Isolation:** The Data Plane must be fully decoupled from the availability of the Control Plane for already-known healthy routes. This is satisfied structurally rather than by cache-staleness rules: services hold their dependency bindings in their own configuration and resolve endpoints through the community registry, so no data-plane call consults the App Supervisor at all ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)). While the supervisor is unavailable, existing data-plane routing, MQTT message flows, and HTTP access are unaffected; new deployments, promotions, quarantine decisions, and the propagation of binding changes pause or fail closed until it returns.
 
-**Pub/Sub Log Redundancy**
-- The `syneroym:messaging` pub/sub broker's topic log is replicated to peer
-  nodes using the same pull-based log-replication primitive as Database
-  Redundancy above (ordered, checksummed frame streaming over an Iroh
-  multiplexed stream; payload is MQTT topic-log entries rather than SQLite
-  WAL frames). This is purely a durability/failover feature — if the node
-  hosting the broker for a topic namespace is lost, a replica has an
-  up-to-date copy of the topic log and retained messages. It is not what
-  makes cross-node pub/sub *access* possible in the first place; that
-  already works via the standard RPC/native-dispatch routing to whichever
-  node hosts the target service, exactly like cross-node `data-layer`
-  access — see `[PLT-DAP-04]`. M3B ships a single-node in-process broker;
-  this redundancy requirement is met in M7.
+> **Envisioned.** Not built yet. Multi-node database replication, broker topic-log replication, peer-to-peer blob replication, and quorum-based failover are not built. Today stateful services run as single instances with manual backup and restore, and manifests reject replica counts above one for stateful services. Both Litestream and Iroh WAL shipping remain open options for stateful replication.
 
-**Blob Storage Redundancy**
-- When a deployment configures an external, configurable S3-compatible
-  storage backend, that backend is responsible for the redundancy of its
-  blobs — Syneroym does not re-replicate blob content it already delegated
-  to S3-compatible storage.
-- When no S3-compatible backend is configured (a pure peer-to-peer
-  deployment), the platform performs its own peer-to-peer blob replication
-  across Substrate nodes, controlled by the same declarative `DeploymentPlan`
-  topology as Database Redundancy. Content-addressing (SHA-256) simplifies
-  this relative to WAL/log replication: there is no ordering or sequence
-  invariant to preserve, only ensuring a verified copy of each blob hash
-  exists on the configured number of peer nodes.
+- **Configurable Stateful Replication:** The replication factor (e.g., N=1, N=2, N=3) is configurable at service deployment time via the application manifest. For replicated setups (N>=2), there is exactly one Primary accepting write operations, while Secondaries maintain an identical read-only state.
+- **Low-Latency Streaming Replication:** Replication streams committed database changes directly from the Primary to Secondaries without relying on high-latency batching or third-party storage intermediaries for the live replication path. Both Iroh multiplexed stream WAL shipping and Litestream remain open replication architecture options. The replication layer must respect SQLite file and shared-memory invariants without mutating live `-wal` or `-shm` files out of band.
+- **Automated Disaster Recovery Backups:** In addition to live node-to-node replication, the system periodically streams asynchronous backups to external S3-compatible object storage to enable cold starts and disaster recovery.
+- **Pub/Sub Log Redundancy:** The `syneroym:messaging` pub/sub broker's topic log replicates to peer nodes using pull-based log replication over multiplexed streams. A replica maintains an up-to-date copy of the topic log and retained messages for durability and failover. Cross-node pub/sub access operates independently through standard RPC and native-dispatch routing to whichever node hosts the target service.
+- **Peer-to-Peer Blob Storage Redundancy:** When an external S3-compatible backend is configured, the backend manages blob redundancy. In pure peer-to-peer deployments without external storage, the substrate replicates content-addressed blobs across peer substrate nodes according to manifest topology.
+- **App Supervisor Topology Management & Manual Promotion:** The App Supervisor acts as the authoritative control plane for cluster membership and application topology. To prevent split-brain scenarios, the system avoids automatic failover: if a Primary fails, an operator manually deposes the primary and promotes an active Secondary via the App Supervisor.
+- **Strict Quarantining & Routing-Level Fencing:** When a failed node is deposed, the App Supervisor marks its Node ID as `QUARANTINED` for the current topology epoch. Quarantined nodes cannot rejoin data-plane service under the same identity until an explicit operator recovery clears the condition. Ingress routing drops requests to quarantined nodes, and egress routing rejects outbound requests originating from quarantined nodes.
 
-**Registry & Topology Management**
-- **Single Source of Truth:** The Registry Service is the authoritative control plane for all cluster membership and routing topology.
-- **Manual Promotion (CP Focus):** To prevent split-brain scenarios, there is strictly no automatic failover. If a Primary fails, the system deliberately drops its redundancy level (Availability impact) to preserve data Consistency. Promoting a Secondary to Primary requires explicit operator intervention via the Registry.
-- **Strict Quarantining:** When a failed node is deposed, the Registry must mark its Node ID as `QUARANTINED` for the current topology epoch. It cannot rejoin data-plane service under the same identity until an explicit operator re-provisioning or retirement workflow clears the condition.
-- **Routing-Level Fencing:** The system must enforce split-brain prevention at the routing layer. `QUARANTINED` nodes must be completely isolated:
-    - *Ingress:* All other nodes and clients must clear their routing caches and immediately cease sending requests to the quarantined node.
-    - *Egress:* Any outbound requests originating from a quarantined node (e.g., if it is merely network-partitioned) must be strictly rejected by all receiving services.
-
-**Control Plane vs Data Plane Isolation**
-- The Data Plane must be fully decoupled from the availability of the Control Plane for already-known healthy routes. This is satisfied **structurally** rather than by cache-staleness rules: services hold their dependency bindings in their own configuration and resolve endpoints through the community registry, so no data-plane call consults the App Supervisor at all ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)). While the supervisor is unavailable, existing data-plane routing, MQTT message flows, and HTTP access are unaffected; new deployments, promotions, quarantine decisions, clustered scheduler leases, and the propagation of any binding change pause or fail closed until it returns.
-
-> **Implementation Design:** For technical details regarding the Iroh-based WAL replication and routing-level fencing, see [Feature Design: PLT-RED](system-architecture.md#plt-red-service-redundancy).
+> **Implementation Design:** For technical details regarding the redundancy architecture and routing-level fencing, see [Feature Design: PLT-RED](system-architecture.md#plt-red-service-redundancy).
 
 ## Phase 3: Substrate & Application Lifecycle
 
