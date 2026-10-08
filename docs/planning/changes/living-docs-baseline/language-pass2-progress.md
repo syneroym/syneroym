@@ -12,6 +12,6 @@ The first language pass (`language-progress.md`) changed little: most edits were
 | L4 | Layer 3 | done | 66abfa72 | reviewed; 8 long sentences fixed (1 field list left); verifier checks rewritten as 'must be' with the same three checks |
 | L5 | Layer 4, Federation, Consumer Experience, Observability | done | 8283a1da | reviewed; 8 long sentences fixed; 'Local Producer-Distributor Mesh' subsection not covered: add to a later group |
 | L6 | Security, Resolved TBD Items, Appendix, Technology Stack | done | ccd3c0ec | reviewed; 7 long sentences fixed (1 CLI list cell left); TBD table cells already short |
-| L7 | Connectivity Substrate | running | | |
-| L8 | Addendum intro, Phase 0, Phase 1, Phase 2 | not started | | |
+| L7 | Connectivity Substrate | done | 8a8f44fb | reviewed 19 blocks; 1 long sentence split; unclear DHT sentence fixed from code by coordinator (commit 8a8f44fb, row LP) |
+| L8 | Addendum intro, Phase 0, Phase 1, Phase 2 | running | | |
 | L9 | Phase 3 to Phase 7, Open Questions, Glossary | not started | | |
