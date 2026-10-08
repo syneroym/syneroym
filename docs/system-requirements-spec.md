@@ -1185,27 +1185,54 @@ the primary.
 
 ## Phase 5: Peer-to-Peer Community Primitives
 
-Because Syneroym can be utilized as a general open cloud, this dedicated phase separates purely foundational low-level network connectivity (`[TOP]`) from higher-level community-driven peer networking primitives.
+Because Syneroym can be used as a general open cloud, this section separates foundational low-level network connectivity (`[TOP]`) from higher-level community-driven peer networking primitives.
 
 ### [P2P-DSC] Distributed Matching Fabric
-- **Publications, not a global index:** Providers, consumers, and services publish signed Publications (listings, intents, capabilities). Indexes are distributed caches, never authoritative; every result is client-verified (signature, timestamp, expiry) before use.
-- **Deterministic placement:** A protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication onto leaf index shards. Providers compute their own placement; no coordinator required.
-- **Aggregators as index nodes:** Directory applications ("Aggregators") can opt in as leaf index shards, but from the substrate's perspective they present the identical standard interface as any other peer. No aggregator is a required or privileged intermediary.
-- **Additive, sequenced later:** a hierarchical synopsis tree and query planner (once leaf-shard count makes flat lookup expensive), composite routing descriptors, and cross-shard ranking layer on top without reworking the Publication or placement contract.
+Discovery uses directory services (`syneroym-roym-directory`) where clients, SynOrgs, and directories each choose what they query and publish. Providers publish signed publication records (listings and profiles) to chosen directories, and clients fan out queries across designated directory sources, deterministically merging and verifying results locally.
+
+- **Publications, not a global index:** Providers, consumers, and services publish signed publication records (`SignedRecord` envelopes carrying listings, profiles, and intents). Client applications query designated directory services with bounded fan-out, deterministically merge results, and verify cryptographic signatures, timestamps, and validity windows before use.
+  > **Envisioned.** Not built yet. Fully decentralized P2P index caches across arbitrary peer nodes. Today discovery uses client queries fanned out across designated directory SynOrgs, with client-side verification and merging.
+  >
+  > Distributed matching index caches across peer substrates, where indexes are distributed non-authoritative caches and every result is client-verified before use.
+- **Deterministic placement:**
+  > **Envisioned.** Not built yet. Deterministic routing schema and rendezvous hashing onto leaf index shards. Today providers publish directly to chosen directory SynOrg services.
+  >
+  > A protocol-defined Routing Schema (spatial cell, category, and attributes) plus rendezvous hashing maps each publication onto leaf index shards. Providers compute their own placement without coordinators.
+- **Aggregators as directory services:** Directory applications ("Aggregators") operate as directory-type SynOrgs (`syneroym-roym-directory`) indexing provider listings and credentials without privileged substrate status. No aggregator is a required or privileged intermediary.
+  > **Envisioned.** Not built yet. Leaf index shard opt-in and federation protocol. Today directory services run as standard SynApps, and clients configure which directory sources they query.
+  >
+  > Directory applications can opt in as leaf index shards in a decentralized matching fabric, presenting the identical standard interface as any other peer.
+- **Hierarchical synopsis trees and query planning:**
+  > **Envisioned.** Not built yet. Hierarchical synopsis trees, query planners, and cross-shard ranking. Today directories execute local SQL searches and clients merge results.
+  >
+  > A hierarchical synopsis tree and query planner (when leaf-shard count makes flat lookup expensive), composite routing descriptors, and cross-shard ranking layer on top without reworking the publication or placement contract.
 
 ### [P2P-REP] Peer Reputation & Trust
-- **Coarse-Grained Satisfaction Signal:** Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
-- **Cryptographic Tying:** To reduce unsolicited review spam, a verified-
-  interaction satisfaction signal references a mutually signed interaction
-  receipt. Other feedback is labelled separately. Receipt tying does not prevent
-  collusion, coercion, selective disclosure, or identity farming.
-- **Time-Decay:** A peer's reputation naturally decays to the center ("decent") over time, prioritizing recent interactions over historical legacy.
-- **Incremental Rolling Summaries:** The substrate runs continuous, compute-light incremental aggregations (e.g., updating total user counts, moving averages, and maintaining a small, tiered summary paragraph based on timeframes). This avoids the need to process heavy LLM summarization on massive blocks of raw text.
-- **Portable Reputation Evidence:** Signals are not pushed to one global public
-  DHT. Providers may serve signed evidence, but clients preserve provenance,
-  detect gaps where possible, and may compare guild, consumer-held, or other
-  authorised sources. Provider hosting must not imply that the presented set is
-  complete.
+
+**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today: reputation is decentralized, reliable, transparent, and under the owner's control of what is shared.
+
+**Built today.** Trust evidence relies on portable signed records and bilateral independent interaction receipts, rather than public ratings or reputation scores. Commercial transactions generate signed agreement receipts and fulfilment receipts, where each party signs its own independent attestation without requiring a joint multi-party transaction.
+
+- **Coarse-Grained Satisfaction Signal:**
+  > **Envisioned.** Not built yet. Coarse-grained numerical satisfaction scoring (0=Poor, 1=Decent, 2=Great). Today Roym produces no public numerical ratings or scores.
+  >
+  > Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
+- **Cryptographic Tying & Bilateral Receipts:** Interaction agreements produce bilateral receipts (`AgreementReceiptPayload` and `FulfilmentReceiptPayload`), where each party signs and stores its own attestation in its own ledger without joint multi-party ceremonies.
+  > **Envisioned.** Not built yet. Satisfaction signals referencing interaction receipts. Today bilateral receipts record completed agreements and fulfilments without attached review signals.
+  >
+  > To reduce unsolicited review spam, a verified-interaction satisfaction signal references a mutually signed interaction receipt. Other feedback is labelled separately. Receipt tying does not prevent collusion, coercion, selective disclosure, or identity farming.
+- **Time-Decay:**
+  > **Envisioned.** Not built yet. Time-decay algorithms and Exponential Moving Average (EMA) scoring formulas. Today no score calculations or decay mechanisms exist.
+  >
+  > A peer's reputation naturally decays to the center ("decent") over time, prioritizing recent interactions over historical legacy.
+- **Incremental Rolling Summaries:**
+  > **Envisioned.** Not built yet. Substrate-side rolling summary aggregations and moving averages. Today client nodes inspect individual signed records and credentials directly.
+  >
+  > The substrate runs continuous, compute-light incremental aggregations (e.g., updating total user counts, moving averages, and maintaining a small, tiered summary paragraph based on timeframes). This avoids the need to process heavy LLM summarization on massive blocks of raw text.
+- **Portable Trust Evidence:** Trust evidence is not pushed to a global public DHT. Providers and SynOrgs serve portable signed records (membership credentials, revocations, and bilateral receipts), and client applications preserve provenance and verify signatures against pinned group sources. Provider hosting does not imply that the presented set is complete.
+  > **Envisioned.** Not built yet. Joint DHT reputation records and public reputation score distribution. Today trust evidence consists of individual signed records and receipts verified by the recipient.
+  >
+  > Reputation signals and evidence are shared without a global public DHT, allowing clients to compare guild, consumer-held, or other authorised sources.
 
 ## Phase 6: High-Level Applications (SynApps)
 Roym is the one SynApp built so far. It unites directory discovery, catalog listings, bookings, encrypted messaging, professional guilds, and trust verification into actor-centric workflows. Separate standalone mini-apps (such as independent Ledger or Marketplace applications) are not built.
