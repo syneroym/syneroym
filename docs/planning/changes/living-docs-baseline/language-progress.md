@@ -19,8 +19,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Federation Architecture | done | 25c577b4 | - |
 | Consumer Experience Architecture | done | 496ba53c | - |
 | Observability Architecture | done | 5a0aa221 | - |
-| Security Architecture | done | pending | - |
-| Resolved Architecture TBD Items | not started | - | - |
+| Security Architecture | done | 1f909a92 | - |
+| Resolved Architecture TBD Items | done | pending | - |
 | Appendix: Multi-Hop Relay Walkthrough | not started | - | - |
 | Consolidated Technology Stack | not started | - | - |
 | Connectivity Substrate In Heterogeneous networks | not started | - | - |
