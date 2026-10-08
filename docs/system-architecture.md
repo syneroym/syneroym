@@ -1348,7 +1348,7 @@ No central coordinator is required — these are convention-based contracts enfo
 
 ### Consumer App Architecture
 
-**Built today.** The consumer app is the Roym Hub, a web UI written in TypeScript and built with Vite. The `web` service serves it from the person's own substrate, so the person opens it in a browser. Each consumer runs their own substrate ("Option A" below). The Hub has no native shell, no Tauri project and no mobile project.
+**Built today.** The consumer app is the Roym Hub, a web UI written in TypeScript and built with Vite. The `web` service serves it from the person's own substrate, so the person opens it in a browser. Each consumer runs their own substrate ("Option A" below). The Hub has no native shell, no Tauri project, and no mobile project.
 
 The Hub holds little state. It keeps the session token in `sessionStorage` and a delegated key in IndexedDB, as a non-extractable WebCrypto key. It has no local database. All data is in the person's own node, in its SQLite databases. The node encrypts them when encryption is enabled. The master key never enters the browser. The Hub logs in with a delegated key: it signs a challenge from the node's auth service, which has its own origin ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). A short-lived delegation certificate for that key comes from `roymctl session delegate`.
 
@@ -1391,7 +1391,7 @@ flowchart TD
 
 > **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the consumer, and the consumer can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned. Today a substrate can hold a delegated instance key for a member it hosts, and Roym has export and import. Every Hub method that `web` forwards, except `profile.policy`, needs an owner session. `session.whoami` is answered without a session.
 
-> **Envisioned.** Not built yet. The Hub runs in a browser today. Envisioned: a Tauri desktop app and a native mobile app. Also Envisioned: a native shell with a WebView that loads the UIs of other SynApps, native crypto bindings, an FFI connection manager, a client-side SQLite or CoreData store and a WebSocket link from the client. Today the Hub is Roym's own fixed screens. The `web` service declares a `/ws` route, but its handlers do nothing. The mobile case is in [Phase 7](#phase-7-edge-expansion).
+> **Envisioned.** Not built yet. The Hub runs in a browser today. Envisioned: a Tauri desktop app and a native mobile app. Also Envisioned: a native shell with a WebView that loads the UIs of other SynApps, native crypto bindings, an FFI connection manager, a client-side SQLite or CoreData store, and a WebSocket link from the client. Today the Hub is Roym's own fixed screens. The `web` service declares a `/ws` route, but its handlers do nothing. The mobile case is in [Phase 7](#phase-7-edge-expansion).
 
 ---
 
