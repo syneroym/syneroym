@@ -14,4 +14,4 @@ The first language pass (`language-progress.md`) changed little: most edits were
 | L6 | Security, Resolved TBD Items, Appendix, Technology Stack | done | ccd3c0ec | reviewed; 7 long sentences fixed (1 CLI list cell left); TBD table cells already short |
 | L7 | Connectivity Substrate | done | 8a8f44fb | reviewed 19 blocks; 1 long sentence split; unclear DHT sentence fixed from code by coordinator (commit 8a8f44fb, row LP) |
 | L8 | Addendum intro, Phase 0, Phase 1, Phase 2 | done | ad2d1a46 | reviewed 51 blocks; 47 -> 4 sentences over 28 words; would +5 inside Envisioned blocks (fragments made full sentences) |
-| L9 | Phase 3 to Phase 7, Open Questions, Glossary | running | | |
+| L9 | Phase 3 to Phase 7, Open Questions, Glossary | done | 0a3d41bd | reviewed; 26 -> 3 sentences over 28 words in Phases 3-7 and Glossary; Mesh subsection needed no change |
