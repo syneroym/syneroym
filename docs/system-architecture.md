@@ -1,6 +1,6 @@
 # Syneroym Ecosystem — Architecture Document
 
-> **Status legend.** No marker means implemented. A block that starts with `> **Envisioned.** Not built yet.` marks text that describes something we want and have not built. Anything that is not built must carry that marker.
+> **Status legend.** Text with no marker is implemented. A block that starts with `> **Envisioned.** Not built yet.` marks planned features that are not built yet. Anything that is not built must carry that marker.
 
 > **Migration Note:** The architectural designs and roadmap changed a lot after the first version of this document. The Layer 1 to 4 sections are the canonical definition of the layers. The [Target Designs (Addendum)](#target-designs-addendum) at the end of this document adds design detail for features, grouped by phase.
 
