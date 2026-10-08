@@ -26,8 +26,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Connectivity Substrate In Heterogeneous networks | done | 9539349a | - |
 | Target Designs (Addendum) | done | 13b4e3f1 | - |
 | Phase 0: Core Architecture Implementation | done | dc462344 | - |
-| Phase 1: Foundation & Core Infrastructure | done | pending | - |
-| Phase 2: Core Platform Capabilities | not started | - | - |
+| Phase 1: Foundation & Core Infrastructure | done | df4d79bf | - |
+| Phase 2: Core Platform Capabilities | done | pending | - |
 | Phase 3: Substrate & Application Lifecycle | not started | - | - |
 | Phase 4: Advanced Services & Tooling | not started | - | - |
 | Phase 5: Peer-to-Peer Community Primitives | not started | - | - |

@@ -2596,18 +2596,18 @@ The Access Control architecture relies on the Federated Data-Aware Authorization
 
 ### [PLT-DAT] Data Layer
 
-The Data Layer provides a complete foundation for distributed application state and communication, securely accessed via typed host functions.
+The Data Layer provides a foundation for distributed application state and communication. Applications access it securely through typed host functions.
 
 #### 1. Structured Data Service (Document API)
-A platform-managed persistent store that `SynSvcs` use via typed host functions or RPC APIs.
+A platform-managed persistent store that `SynSvcs` use through typed host functions or RPC APIs.
 
 *   **Unified Storage, Tailored Query ([PLT-DAT]):** To avoid data consistency or stale-data issues, the underlying physical data layer is *always* SQLite. We provide build profiles (`syneroym-oltp` vs `syneroym-olap`), but currently both rely entirely on standard SQLite for their queries. The two Cargo features exist and gate no code yet.
-*   **Database Isolation (One DB per Service):** Instead of a monolithic combined database, every service gets its own independent SQLite `.db` file (`state.db`). The substrate also maintains its own separate database (`substrate.db`).
-    *   *Benefits:* Each service database has its own writer task, so writes to different services do not wait for each other. It isolates failure blast radiuses. It would also let one service be replicated on its own (see [PLT-RED](#plt-red-service-redundancy)).
+*   **Database Isolation (One DB per Service):** Each service gets its own independent SQLite `.db` file (`state.db`), rather than sharing a combined database. The substrate also maintains its own separate database (`substrate.db`).
+    *   *Benefits:* Each service database has its own writer task, so writes to different services do not wait for each other. This isolates failure blast radiuses. It also lets one service be replicated on its own (see [PLT-RED](#plt-red-service-redundancy)).
 *   **Concurrency Architecture (Actor/Pool Model):** To handle high concurrency within a single service's database without hitting `SQLITE_BUSY` contention in Tokio, the platform uses **`rusqlite`** combined with **`deadpool-sqlite`**:
-    *   *Why `rusqlite`:* The data layer requires raw access to the SQLite C API for dynamic query generation and progress handlers (they stop a query that runs more than 50,000,000 SQLite instructions, on a query under an access policy, on `aggregate` and on `query-raw`). These use cases reduce the value of `sqlx`'s compile-time query macros. Extension loading (e.g. `sqlite-vec`), WAL inspection hooks and explicit checkpoint control are further reasons, but nothing uses them yet.
-    *   *Reader Pool:* Read queries (e.g., `GET`, `LIST`) are dispatched across a `deadpool-sqlite` connection pool. This enables parallel, non-blocking reads and seamlessly bridges synchronous `rusqlite` calls into the Tokio runtime via `spawn_blocking`.
-    *   *Single Writer Thread:* All mutations (`PUT`, `DELETE`) are routed via an `mpsc` channel to a single, dedicated background task holding an exclusive `rusqlite` write connection. This follows SQLite's single-writer model and removes write-lock contention inside the service. A guest groups writes with `batch-mutate`, which runs in one SQLite transaction.
+    *   *Why `rusqlite`:* The data layer requires raw access to the SQLite C API for dynamic query generation and progress handlers. Progress handlers stop a query that runs more than 50,000,000 SQLite instructions, on a query under an access policy, on `aggregate`, and on `query-raw`. These use cases reduce the value of `sqlx`'s compile-time query macros. Extension loading (e.g. `sqlite-vec`), WAL inspection hooks and explicit checkpoint control are further reasons, but nothing uses them yet.
+    *   *Reader Pool:* Read queries (e.g., `GET`, `LIST`) run across a `deadpool-sqlite` connection pool. This enables parallel, non-blocking reads and seamlessly bridges synchronous `rusqlite` calls into the Tokio runtime via `spawn_blocking`.
+    *   *Single Writer Thread:* All mutations (`PUT`, `DELETE`) route via an `mpsc` channel to a single, dedicated background task holding an exclusive `rusqlite` write connection. This follows SQLite's single-writer model and removes write-lock contention inside the service. A guest groups writes with `batch-mutate`, which runs in one SQLite transaction.
 *   **Resource Model:**  
     *   **Collection:** A named set of records within one service database, declared with a lightweight schema. The schema is the name of the collection plus a list of indexes. Each index names a JSON field and a declared type (`string`, `numeric` or `boolean`).
     *   **Record:** One JSON object identified by a caller-supplied string `id`.
