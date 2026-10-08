@@ -27,8 +27,8 @@ Facts, qualifiers, links, numbers, code spans, diagrams, and headings stay ident
 | Target Designs (Addendum) | done | 13b4e3f1 | - |
 | Phase 0: Core Architecture Implementation | done | dc462344 | - |
 | Phase 1: Foundation & Core Infrastructure | done | df4d79bf | - |
-| Phase 2: Core Platform Capabilities | done | pending | - |
-| Phase 3: Substrate & Application Lifecycle | not started | - | - |
+| Phase 2: Core Platform Capabilities | done | 2a96752c | - |
+| Phase 3: Substrate & Application Lifecycle | done | pending | - |
 | Phase 4: Advanced Services & Tooling | not started | - | - |
 | Phase 5: Peer-to-Peer Community Primitives | not started | - | - |
 | Phase 6: High-Level Applications (SynApps) | not started | - | - |
