@@ -3041,7 +3041,7 @@ In the design, an aggregator is a SynOrg `directory` service, and can federate w
   - Avoid persistent background services (aggressively killed by iOS).
   - Rely on `[PLT-ASY]` outbox and retry semantics as the default mechanism for reaching offline mobile nodes.
   - Use APN/FCM push notifications as an optional trigger to wake a mobile node for urgent incoming requests.
-  - **Deferred Responses**: When woken by a push notification, the mobile app processes the request locally but defers the network response transmission until its next OS-scheduled background window. The sender fetches this response via its continuous `[PLT-ASY]` retries.
+  - **Deferred Responses**: When woken by a push notification, the mobile app processes the request locally but defers transmitting the network response until its next OS-scheduled background window. The sender fetches this response through continuous `[PLT-ASY]` retries.
 - **Hardware Enclave Abstraction**:
   - The Substrate exposes a platform-agnostic `SecureStorage` and `KeyManagement` WIT interface.
   - The native Rust host bridges this to the specific OS API (Android StrongBox Keystore, iOS Secure Enclave, Linux TPM 2.0).
