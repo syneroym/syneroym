@@ -2914,7 +2914,7 @@ Access to `metrics.db` is securely governed by the unified authorization engine 
 
 ### [P2P-DSC] Tag-Routed Discovery Routing Mechanics
 
-**Built today.** Discovery is what the Roym `directory` service does. A SynOrg runs a `directory` service. Providers publish listings to it. Any caller can ask it to search by category, area, text and filters, because `directory.search` is open on the wire. A consumer's node keeps a list of directories that the person chose, at most 8. It sends the query to each of them directly. It runs at most 3 calls at once, gives each call 2 seconds, and merges the answers round-robin, so no one directory fills the page. The consumer's node verifies every listing itself and does not trust the directory's word. Each client chooses which directories it queries. No node forwards a query for another node. See [Search](roym-integrated-experience-spec.md#search) in the Roym spec.
+**Built today.** Discovery is what the Roym `directory` service does. A SynOrg runs a `directory` service. Providers publish listings to it. Any caller can ask it to search by category, area, text, and filters, because `directory.search` is open on the wire. A consumer's node keeps a list of directories that the person chose, at most 8. It sends the query to each of them directly. It runs at most 3 calls at once, gives each call 2 seconds, and merges the answers round-robin, so no one directory fills the page. The consumer's node verifies every listing itself and does not trust the directory's word. Each client chooses which directories it queries. No node forwards a query for another node. See [Search](roym-integrated-experience-spec.md#search) in the Roym spec.
 
 > **Envisioned.** Not built yet. No query carries tags or a hop limit (TTL), and no node forwards a query to its peers. A SynOrg, a directory or an aggregator does not query other directories, so federation between aggregators does not exist. The tag routing below is one option for later. It is not the plan. The leaf index shards in [Discovery & Matching](#discovery--matching) are another option.
 
@@ -2925,7 +2925,7 @@ Access to `metrics.db` is securely governed by the unified authorization engine 
 
 ### [P2P-REP] Satisfaction Signal Mechanics
 
-**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today. Reputation is decentralized, reliable and transparent. The owner controls what is shared.
+**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today. Reputation is decentralized, reliable, and transparent. The owner controls what is shared.
 
 **Built today.** Roym computes no rating or score. It keeps two kinds of signed receipt for a booking: the agreement receipt and the fulfilment receipt. Each party signs its own copy. Neither copy refers to the other, and no signature depends on the other one. A receipt is complete when a copy from each party exists. The record id of each receipt is a content digest.
 
