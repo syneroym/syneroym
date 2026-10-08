@@ -6,7 +6,7 @@ This file tracks progress applying the requirements audit fixes to `docs/system-
 
 | Commit | Scope | Status | Hash | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | Appendix: Substrate Feature Coverage Matrix & Later-Phase Additions | not started | - | O52, O53, O7, O36, O51 |
+| 1 | Appendix: Substrate Feature Coverage Matrix & Later-Phase Additions | done | 0a686af4 | O52, O53, O7, O36, O51 |
 | 2 | Phase 7: Edge and Mobile Substrate & Phase 6: Ecosystem Applications and Hub | not started | - | O56, O29, Q-A4, Tauri shell |
 | 3 | Phase 5: P2P Discovery and Reputation Engine | not started | - | O30, O31, Q-B3 |
 | 4 | Phase 4: Advanced Substrate Capabilities | not started | - | O42, O43, O44, O45 |
