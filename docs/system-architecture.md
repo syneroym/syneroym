@@ -433,7 +433,7 @@ flowchart TD
         subgraph INGRESS["Ingress"]
             QUIC_EP[Iroh QUIC Endpoint]
             WRT[WebRTC Data Channel]
-            GW[Client Gateway local HTTP proxy]
+            GW[Client Gateway HTTP proxy]
         end
 
         subgraph ROUTING["Connection Router"]
@@ -485,7 +485,7 @@ flowchart TD
 |---|---|
 | `app_sandbox` | Runs WASM components with Wasmtime (crate `syneroym-sandbox-wasm`). |
 | `podman_sandbox` | Runs OCI containers by calling the host's `podman` command (crate `syneroym-sandbox-podman`). |
-| `client_gateway` | A local HTTP proxy. It maps the `Host:` header to a service. It forwards the request to the node of that service as a stream. |
+| `client_gateway` | An HTTP proxy. It maps the `Host:` header to a service. It forwards the request to the node of that service as a stream. |
 | `community_registry` | Service discovery. It stores signed endpoint records. |
 | `coordinator` | Helps two peers find a channel to each other. It relays data when no direct path exists. It has an Iroh part and a WebRTC part. |
 | `auth` | Login and session tokens for the client gateway. |
@@ -507,7 +507,7 @@ WebSocket is an option for one app. The guest declares an HTTP route with `targe
 2. **Per-service admission.** A native service rejects a caller without a verified identity. A service can also admit or refuse each method. A WASM guest may admit anonymous callers. The six Roym services use this to be local-only. Each of them answers the error code `-32013` on `invoke` to a caller that did not arrive through a local dispatch path, that is, from another service of this node or from the node's own machinery. A guest learns this with the `caller` function of the `syneroym:invocation` interface, which answers `internal`, `verified` or `anonymous`. `status` stays open on every service, for the health probe. The `directory` service has one table of four methods that a foreign node may call: `directory.search`, `directory.info` and `directory.standing` admit any caller, and `directory.publish` admits a caller with a verified identity. All other `directory` methods are local-only, including `credential.*`, `revocation.*`, `member.suspend` and `member.lift`.
 3. **Row-level policy.** FDAE (Federated Data-Aware Authorization Engine, ADR-0017) compiles a policy into the data-layer query. A caller sees only the rows and fields it may see.
 
-**Node ownership.** A node has one owner, called the controller. The node and the controller both sign a `ControllerAgreement` that names the two DIDs. `roymctl substrate claim --controller <name>` makes it. It must run on the host of the node, because it reads the private key of the node. The controller must be a different identity from the node. By default the agreement is the file `agreement.json` in the data directory of the node, and the substrate reads it at start. The substrate checks the agreement only at start, including its optional expiry. Only an agreement with two valid signatures makes the controller the owner. The router then grants `substrate/admin` to the caller whose verified DID is the controller. This covers deploy, undeploy and status, and the `security` interface (KEK injection). `[iam].admin_ucan_root` is only a fallback for a node with no agreement. A node with neither runs unowned: no caller holds a node-wide capability, so nobody can deploy to it. The setting `[iam].grant_resolve_to_node_did` (off by default) gives a caller whose DID is the node's own the ability `supervisor/resolve`, and nothing else. A client gateway or a coordinator on the same node uses it to resolve logical service names.
+**Node ownership.** A node has one owner, called the controller. The node and the controller both sign a `ControllerAgreement` that names the two DIDs. `roymctl substrate claim --controller <name>` makes it. It must run on the host of the node, because it reads the private key of the node. The controller must be a different identity from the node. By default the agreement is the file `agreement.json` in the data directory of the node, and the substrate reads it at start. The substrate checks the agreement only at start, including its optional expiry. Only an agreement with two valid signatures makes the controller the owner. The router then grants `substrate/admin` to the caller whose verified DID is the controller. This covers every node-wide ability, including deploy, undeploy and status, and the `security` interface (KEK injection). `[iam].admin_ucan_root` is only a fallback for a node with no verified agreement. A node with neither a verified agreement nor `admin_ucan_root` runs unowned: no caller holds a node-wide capability, so nobody can deploy to it. The setting `[iam].grant_resolve_to_node_did` (off by default) gives a caller whose DID is the node's own the ability `supervisor/resolve`, and nothing else. A client gateway or a coordinator on the same node uses it to resolve logical service names.
 
 **Keys.** Three parts hold keys. There is no single key manager.
 
@@ -646,7 +646,7 @@ The substrate has one API surface: **JSON-RPC 2.0**. It serves WASM components (
 
 ### Client Gateway and Auth Service
 
-The client gateway (role `client_gateway`) is the local HTTP entry for browsers and tools. It opens a stream to the node of the target service and copies the bytes both ways. The gateway signs every stream with its own node key. The gateway sets no rule about which machine may connect to it. The identity mode below and the checks at the target node decide what a caller may do.
+The client gateway (role `client_gateway`) is the HTTP entry for browsers and tools. It opens a stream to the node of the target service and copies the bytes both ways. The gateway names its own node key in the route preamble of every stream. It does not sign the stream, and the router does not check that the gateway holds the private key. The gateway sets no rule about which machine may connect to it. The identity mode below and the checks at the target node decide what a caller may do.
 
 `identity_mode` under `[roles.client_gateway]` sets who the target node sees as the caller:
 
@@ -658,18 +658,18 @@ The client gateway (role `client_gateway`) is the local HTTP entry for browsers 
 
 The auth service (role `auth`, ADR-0024) turns a login into a session token. It answers six paths under `/_syneroym/session/`: `challenge`, `login`, `methods`, `whoami`, `logout` and `refresh`. The `delegated-key` login works like this:
 
-1. The client asks for a challenge. The service returns a one-time nonce (lifetime `nonce_ttl_secs`, default 60 seconds) and a text that names the node, the nonce and the master DID.
+1. The client asks for a challenge and names its master DID. The service returns a one-time nonce (lifetime `nonce_ttl_secs`, default 60 seconds) and a text that names the node, the nonce and that master DID. A client that does not name a master DID gets the nonce and the node DID only.
 2. The client signs that text with its temporary key, or with its master key. It posts the signature, the nonce and a delegation certificate with the scope `session-auth`.
 3. The service checks that the nonce is unused and not expired. It checks the certificate and its expiry. It resolves the master anchor and refuses a temporary key that the master has revoked. It checks the signature.
 4. The service mints a session token. This is a short-lived UCAN, signed by the key of the auth service. Its lifetime is the shorter of `session_ttl_secs` (default 8 hours) and the remaining life of the certificate. The service sets the cookie `syneroym_session` (`HttpOnly`, `SameSite=Lax`, and `Secure` when `secure_cookies` is on).
 
-A second method, `local`, mints a token for a person key file that sits in `person_identities_dir` on the node. It is off when that setting is not set. `logout` puts the token on a list that the auth service keeps. The Roym Hub uses the `delegated-key` login with a key that it keeps in the browser.
+A second method, `local`, mints a token for a person key file that sits in `person_identities_dir` on the node. It is off when that setting is not set. It has no proof step: the service mints a token for any key file name in that directory, and refuses only a request that carries an `Origin` header. Use it only on a host you trust. `logout` puts the token on a list that the auth service keeps. The list is in memory only, so a restart clears it. It holds at most 10,000 tokens, and when it is full a new logout is not recorded. The Roym Hub uses the `delegated-key` login with a key that it keeps in the browser.
 
-In the `open` and `login` modes the gateway passes the session cookie on unchanged. The target router replaces the caller with the person in the token. It does this only for an HTTP request whose stream comes from the node's own key with no delegation certificate, that is, from the gateway. It refuses a token that the auth service has logged out. It refuses every token when the node has no auth service.
+In the `open` and `login` modes the gateway passes the session cookie on unchanged. The target router replaces the caller with the person in the token. It does this only for an HTTP request whose stream comes from the node's own key with no delegation certificate, that is, from the gateway of the same node. The router does not check that the caller holds the node key. It refuses a token that the auth service has logged out. It refuses every token when the node has no auth service.
 
 ### Failure and Shutdown
 
-`RuntimeServices` races all components in one `tokio::select!`. These are the connection router, the community registry, the coordinator, the client gateway, the health and metrics servers, the supervisor loop, the supervisor queue worker, the proxy outbox worker and the conversation outbox worker. When any one of them finishes, with success or with an error, the whole substrate shuts down. A component that is not configured never finishes. The health and metrics servers log a bind error and then wait forever, so a failed bind does not stop the substrate.
+`RuntimeServices` races all components in one `tokio::select!`. These are the connection router, the community registry, the coordinator, the client gateway, the health and metrics servers, the supervisor loop, the supervisor queue worker, the proxy outbox worker, the conversation outbox worker and the loop that warns about instance certificates near expiry. When any one of them finishes, with success or with an error, the whole substrate shuts down. A component that is not configured never finishes. The health and metrics servers log a bind error and then wait forever, so a failed bind does not stop the substrate.
 
 The shutdown signal is Ctrl-C. The code installs no handler for SIGTERM.
 
@@ -682,7 +682,7 @@ Shutdown runs in this order:
 
 ### Upgrade and Versioning
 
-A deploy of a WASM service calls the guest's `init()` when the service has no database yet. It calls `migrate()` when the service already has one. A deploy that is identical to the running service does nothing, so no hook runs. The substrate takes no snapshot and does not roll back after a failed `migrate()`. A connection uses one fixed protocol identifier, the ALPN `syneroym/0.1`. Persisted and signed formats carry their own version and refuse a version they do not know: the signed record envelope (`ENVELOPE_VERSION`), the identity backup (`IDENTITY_BACKUP_VERSION`), the Master Anchor payload (`master_anchor_v1`) and the Roym archive. The Envisioned snapshot, rollback and protocol negotiation are in [LFC-VER](#lfc-ver-versioning--migration-flow).
+A deploy of a WASM service calls the guest's `init()` when the service has no database yet. It calls `migrate()` when the service already has one. A hook runs only if the guest exports it, and a hook that fails makes the deploy fail. A deploy that is identical to the running service does nothing, so no hook runs. The substrate takes no snapshot and does not roll back after a failed `migrate()`. A connection uses one fixed protocol identifier, the ALPN `syneroym/0.1`. Persisted and signed formats carry their own version and refuse a version they do not know: the signed record envelope (`ENVELOPE_VERSION`), the identity backup (`IDENTITY_BACKUP_VERSION`), the Master Anchor payload (`master_anchor_v1`) and the Roym archive. The Envisioned snapshot, rollback and protocol negotiation are in [LFC-VER](#lfc-ver-versioning--migration-flow).
 
 ### Limits and Budgets
 
@@ -698,14 +698,14 @@ A deploy of a WASM service calls the guest's `init()` when the service has no da
 | One `init()` or `migrate()` hook | 30 seconds | `[roles.app_sandbox] lifecycle_hook_epoch_timeout_secs` |
 | Replicas of one service | 16 | Checked when the manifest is validated |
 | Scheduled services in one manifest | 16 | Checked when the manifest is validated |
-| One scheduled run | 10 seconds. At most 30 seconds. | The `timeout` of the schedule |
+| One scheduled run | 10 seconds. At most 30 seconds. | The `timeout_ms` of the schedule (in milliseconds) |
 | SDK connect to one mechanism | 10 seconds | `SyneroymClient::with_connect_timeout` |
 
 A schedule is a cron expression with five fields. The parser also accepts a leading seconds field and a trailing year field. The App Supervisor evaluates it in UTC. The benchmarks and the test report are in [performance-and-robustness-spec.md](performance-and-robustness-spec.md).
 
 ### Deployment Profiles
 
-- **Cargo features.** The default build of `syneroym-substrate` has `community_registry`, `coordinator_all` (the Iroh and WebRTC coordinators), `client_gateway`, `auth` and `supervisor`. The `minimal` feature set has `client_gateway` and `auth` only. Other features are `coordinator_iroh`, `coordinator_webrtc`, `aws` (the S3-compatible blob backend) and `roym` (links the Roym services in). `dual_build_fixture` is for tests and must not be in a release build. The router, the sandboxes, the data layer, the MQTT broker, the conversation host and observability are always compiled in. A role also needs its `[roles.*]` section in the config.
+- **Cargo features.** The default build of `syneroym-substrate` has `community_registry`, `coordinator_all` (the Iroh and WebRTC coordinators), `client_gateway`, `auth` and `supervisor`. The `minimal` feature set has `client_gateway` and `auth` only. Other features are `coordinator_iroh` and `coordinator_webrtc` (each turns on the base feature `coordinator`), `aws` (the S3-compatible blob backend) and `roym` (links the Roym services in). `dual_build_fixture` is for tests and must not be in a release build. The router, the sandboxes, the data layer, the MQTT broker, the conversation host and observability are always compiled in. A role also needs its `[roles.*]` section in the config.
 - **Profile name.** `profile` (and `run --profile`) is a name that the substrate writes to its log. The `profiles` table in the config is parsed and nothing reads it.
 - **Docker image.** One image, built from the `Dockerfile` on `debian:bookworm-slim`, holds `syneroym-substrate` and `roymctl` (ADR-0004). The entry point is `syneroym-substrate` and the default command is `run`. The image exposes the ports 7964, 7965, 7961 and 7960. The port plan is in the [developer guide](developer-guide.md#3-port-reference-normalized-796x).
 - **TLS reload.** When `[tls]` has `reload_on_sigusr1 = true`, the HTTPS info server of the Iroh coordinator loads its certificate and key files again when it gets SIGUSR1. This works on Unix only.
@@ -2409,7 +2409,7 @@ Responsibilities are separated as follows:
 
 Discovery only exposes **network entry points**, not complete network paths.
 
-> **Envisioned.** Not built yet. No node role routes inside a BLE or LoRa network. (The `client_gateway` role is a different thing: a local HTTP proxy.)
+> **Envisioned.** Not built yet. No node role routes inside a BLE or LoRa network. (The `client_gateway` role is a different thing: an HTTP proxy.)
 >
 > | Component    | Responsibility                |
 > | ------------ | ----------------------------- |

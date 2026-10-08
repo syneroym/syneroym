@@ -290,6 +290,13 @@ Stage 2 fix, S7:
 - **Not-covered item 7 (aggregator chooses what it queries).** The S4 wording already says only the client half exists. No edit.
 - **Not-covered item 5 (`certify-signing` default).** Optional. Not added.
 
+Stage 2 fix, S8:
+
+- **Cron field count (20.45).** Already fixed in S2 (five fields, plus an optional leading seconds field and an optional trailing year field). Checked against croner 3.0.1 (`CronParser::new()` leaves both optional) and the repo test. Only the `timeout` name changed to `timeout_ms`.
+- **Docker and SIGTERM (not-covered item 6).** The Docker note about PID 1 is an inference, not read in code. Not added to the doc. The missing SIGTERM handler is in the backlog.
+- **Gateway "local" (not-covered item 1).** The word "local" is removed in the four places that used it. The doc states no bind address, as decided in Q-C6. The backlog row on the bind address stays open.
+- **WAL wording (not-covered item 10).** The text already names `state.db` only. No edit.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the
