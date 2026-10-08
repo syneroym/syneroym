@@ -1397,7 +1397,7 @@ flowchart TD
 
 ## Observability Architecture
 
-**Built today.** The substrate gives operators and developers these signals: structured log events, a plain-text health endpoint, a JSON snapshot of in-memory metrics, and health polling with alerts for apps that the control plane manages. The provider-facing part is not built: the plain-language status page, the `health-narrator` component and the tiered stack. Each block of that design is marked Envisioned. Text without a marker is built.
+**Built today.** The substrate gives operators and developers these signals: structured log events, a plain-text health endpoint, a JSON snapshot of in-memory metrics, and health polling with alerts for apps that the control plane manages. The provider-facing part is not built: the plain-language status page, the `health-narrator` component, and the tiered stack. Each block of that design is marked Envisioned. Text without a marker is built.
 
 ### Design Philosophy
 
@@ -1411,26 +1411,26 @@ All instrumentation is in-process and based on open facades:
 
 - **Tracing:** `tracing` crate (Rust). Structured events (`info!`, `warn!`, `error!`, `debug!`) in the components. The code defines no span.
 - **Metrics:** `metrics` crate facade. The substrate emits these metric families:
-    - `substrate.request.total`, `substrate.request.errors` and `substrate.request.duration_ms` for requests the router dispatches.
+    - `substrate.request.total`, `substrate.request.errors`, and `substrate.request.duration_ms` for requests the router dispatches.
     - `substrate.connections.active` for open connections.
     - `substrate.proxy.*` for Universal Proxy calls, retries, call de-duplication, the outbox and sagas.
-    - `substrate.wasm.*` for active instances, component cache size, instantiation and execution time.
+    - `substrate.wasm.*` for active instances, component cache size, instantiation, and execution time.
     - `substrate.fdae.*` for row-level authorization (`abac_ms`, `abac_rows_denied`).
     - `substrate.conversation.outbox.dead_lettered` for messages the conversation outbox gave up on.
     - `substrate.conversation.admission.stuck` for a message that is still undecided after many re-asks (every 20th failed re-ask).
-    - `substrate.system.rss_bytes`, `substrate.system.cpu_percent`, `substrate.system.open_fds` and `substrate.tokio.active_tasks`. A sampler task updates these once a second.
+    - `substrate.system.rss_bytes`, `substrate.system.cpu_percent`, `substrate.system.open_fds`, and `substrate.tokio.active_tasks`. A sampler task updates these once a second.
 
-  Backend: an in-memory recorder (`MemoryRecorder`). A counter or gauge keeps one value. A histogram keeps every sample in a list that is never trimmed, so memory grows with the number of samples. A snapshot lists the counters, the gauges and, for each histogram, its count, sum, minimum, maximum, p50, p95 and p99.
+  Backend: an in-memory recorder (`MemoryRecorder`). A counter or gauge keeps one value. A histogram keeps every sample in a list that is never trimmed, so memory grows with the number of samples. A snapshot lists the counters, the gauges, and, for each histogram, its count, sum, minimum, maximum, p50, p95, and p99.
 - **Logs:** `tracing-subscriber`. The format is JSON or pretty (default pretty). The target is stdout or a file (default stdout). The file target rolls daily, in files whose names start with `syneroym.log` in the app log directory. No external sink exists.
-- **Endpoints:** The `[roles.observability]` config has `health`, `metrics` and `tracing` sub-tables. `health` and `metrics` each have `enabled`, `bind_address` and `endpoint`. Each enabled one runs on its own listener. The health endpoint answers the plain text `OK` and does not inspect substrate state. The metrics endpoint answers the JSON snapshot. When no config file is given, the substrate runs in dev mode and enables both: health on `0.0.0.0:7966` at `/health`, metrics on `0.0.0.0:7967` at `/metrics`. The `tracing` sub-table (`enabled`, `service_name`, `otlp`, `sampling`) is parsed and nothing reads it, so no OTLP export exists.
+- **Endpoints:** The `[roles.observability]` config has `health`, `metrics`, and `tracing` sub-tables. `health` and `metrics` each have `enabled`, `bind_address`, and `endpoint`. Each enabled one runs on its own listener. The health endpoint answers the plain text `OK` and does not inspect substrate state. The metrics endpoint answers the JSON snapshot. When no config file is given, the substrate runs in dev mode and enables both: health on `0.0.0.0:7966` at `/health`, metrics on `0.0.0.0:7967` at `/metrics`. The `tracing` sub-table (`enabled`, `service_name`, `otlp`, `sampling`) is parsed and nothing reads it, so no OTLP export exists.
 
 ### Control-Plane Health and Alerts
 
 This is the built way to see that a managed app has failed. `roymctl app health <instance-id>` polls every substrate that hosts a service of the app instance and asks each one for the status of those services. It polls once, or repeats every N seconds with `--watch`. It records alerts unless `--no-record` is passed. It exits non-zero when a service reports a fault. A service the substrate could not decide about is not fatal unless `--strict` is passed. `roymctl app alerts <instance-id>` shows the alerts, and `--all` includes the cleared ones.
 
-Alerts live in an alert store, the SQLite table `alerts`. `roymctl` keeps it in `alerts.db` beside the deployment journal by default. The App Supervisor keeps the same store in its own database (`supervisor.db` by default), runs the same health check in its resident loop, and serves the alerts through its `alerts` verb. It also publishes each newly opened alert, unretained, to the topic `<alert_topic>/<app_instance_id>` (`supervisor/alerts` by default) of its messaging broker. The broker keeps the topic as `svc/supervisor/<alert_topic>/<app_instance_id>`. A subscriber to the `supervisor` service gives the short form. A subscriber from any other service must give the full name that starts with `svc/`. The store holds one active row for each instance, service, substrate and kind. A repeated signal refreshes the row. A cleared signal that comes back opens a new row.
+Alerts live in an alert store, the SQLite table `alerts`. `roymctl` keeps it in `alerts.db` beside the deployment journal by default. The App Supervisor keeps the same store in its own database (`supervisor.db` by default), runs the same health check in its resident loop, and serves the alerts through its `alerts` verb. It also publishes each newly opened alert, unretained, to the topic `<alert_topic>/<app_instance_id>` (`supervisor/alerts` by default) of its messaging broker. The broker keeps the topic as `svc/supervisor/<alert_topic>/<app_instance_id>`. A subscriber to the `supervisor` service gives the short form. A subscriber from any other service must give the full name that starts with `svc/`. The store holds one active row for each instance, service, substrate, and kind. A repeated signal refreshes the row. A cleared signal that comes back opens a new row.
 
-The alert kinds are `SubstrateUnreachable`, `InstanceNotRunning`, `ProbeFailing`, `CertificateNearExpiry`, `CertificateExpired`, `SupervisorSuperseded`, `RemediationExhausted`, `BindingConflict`, `PlacementChangeRefused`, `OrphanedService`, `VaultLocked`, `InstanceRevoked`, `RotationRestartPending`, `DeliveryExhausted`, `ScheduledRunFailed` and `AppIdentityMismatch`. See [LFC-MGT](#lfc-mgt-synapp-lifecycle-management-design).
+The alert kinds are `SubstrateUnreachable`, `InstanceNotRunning`, `ProbeFailing`, `CertificateNearExpiry`, `CertificateExpired`, `SupervisorSuperseded`, `RemediationExhausted`, `BindingConflict`, `PlacementChangeRefused`, `OrphanedService`, `VaultLocked`, `InstanceRevoked`, `RotationRestartPending`, `DeliveryExhausted`, `ScheduledRunFailed`, and `AppIdentityMismatch`. See [LFC-MGT](#lfc-mgt-synapp-lifecycle-management-design).
 
 ### Provider-Facing Observability
 
@@ -1440,7 +1440,7 @@ The Phase 4 design [`[ADV-OBS]`](#adv-obs-observability-enhancements) is a secon
 
 #### Instrumentation Not Built Yet
 
-- **Spans:** structured spans at every component boundary, substrate hop and async I/O point.
+- **Spans:** structured spans at every component boundary, substrate hop, and async I/O point.
 - **Trace id:** a correlation `trace_id` generated at the client app flows through every JSON-RPC call, queue entry, and cross-substrate message, enabling full reconstruction of any user action across nodes.
 - **Signals:** order state transitions, queue depth and age, relay connection stability, merge conflict rate, component restart count.
 - **External backends:** operators attach Prometheus or VictoriaMetrics by configuration. Today `/metrics` answers a JSON snapshot, not the Prometheus text format.
@@ -1454,7 +1454,7 @@ The translation layer between raw instrumentation and provider-facing experience
 - Maintains a rolling 7-day **plain-language event timeline** in SQLite — human-readable records generated from structured log events via templates (e.g. *"Order #47 confirmed"*, *"Connection to relay lost"*)
 - Evaluates a small set of health rules producing a simple `HealthState`: Connection / Payments / Sync — each Good, Degraded, or Offline with a plain-language explanation
 - Sends proactive alerts via the notification dispatcher when health degrades
-- Generates **diagnostic bundles** on demand: a signed, sanitized snapshot of recent timeline events, metric snapshots, substrate version and configuration — formatted for handoff to support staff
+- Generates **diagnostic bundles** on demand: a signed, sanitized snapshot of recent timeline events, metric snapshots, substrate version, and configuration — formatted for handoff to support staff
 
 #### Provider-Facing Status UI
 
@@ -1513,7 +1513,7 @@ The diagram shows the target design. Today `/health` and `/metrics` are two sepa
 
 #### Tiered Observability Stack
 
-Today there is one level: the instrumentation, endpoints and logs in [Instrumentation Layer](#instrumentation-layer). The substrate does not choose a level by hardware.
+Today there is one level: the instrumentation, endpoints, and logs in [Instrumentation Layer](#instrumentation-layer). The substrate does not choose a level by hardware.
 
 | Tier | What Ships | Notes |
 |---|---|---|
