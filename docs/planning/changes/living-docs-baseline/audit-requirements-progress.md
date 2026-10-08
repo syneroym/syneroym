@@ -6,8 +6,8 @@ This file tracks which batches of the requirements audit are done. A batch is `a
 
 | Batch | Headings covered | Status | Commit | Notes |
 | --- | --- | --- | --- | --- |
-| R1 | Title and intro (before the first section), Philosophy & Design Constraints, Product Outcomes, Guardrails, and Release Scope, Requirements Overview, Personas in the Syneroym Ecosystem, Glossary / Terminology | accepted | PENDING | 72 claims; 5 spot checks passed |
-| R2 | Ecosystem & Domain Model, Common Requirements | not started | - | - |
+| R1 | Title and intro (before the first section), Philosophy & Design Constraints, Product Outcomes, Guardrails, and Release Scope, Requirements Overview, Personas in the Syneroym Ecosystem, Glossary / Terminology | accepted | ffd699b4 | 72 claims; 5 spot checks passed |
+| R2 | Ecosystem & Domain Model, Common Requirements | accepted | PENDING | 52 claims; 5 spot checks passed |
 | R3 | User Experience, Agency, and Accountability, Ecosystem Contracts and Governance, Trust Model | not started | - | - |
 | R4 | Conceptual Model, Substrate Functionality, Supporting Ecosystem Entities, SynApp Lifecycle | not started | - | - |
 | R5 | Reference Vertical Contracts, Post-DD864A1 Specifications (intro), Phase 0 | not started | - | - |
