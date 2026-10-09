@@ -701,70 +701,70 @@ require owner-held encryption keys or attested hardware.
 
 ## Reference Vertical Contracts
 
-The two reference SynApps validate common ecosystem contracts without forcing
-unrelated domains into one generic application. They may share modules and
-schemas, but each has its own language, workflow, policy, and usability tests.
+Reference SynApps validate common ecosystem contracts without forcing unrelated domains into one generic application. They may share modules and schemas, but each has its own language, workflow, policy, and usability tests. Roym implements the primary reference vertical: the Professional and Home Services Guild.
+
+> **Envisioned.** Not built yet. The second reference vertical (local producer-distributor or food and small retailer mesh). Today Roym is the single built reference SynApp.
 
 ### Home Services Guild
 
 #### Provider and guild setup
 
-- A guild operator deploys a signed release profile and creates a guild with
-  public identity, service area, membership policy, support contact, dispute
-  path, directory policy, and data retention policy.
-- A provider joins through an invitation or application, controls a stable
-  provider identity, and grants the guild only the administration rights needed
-  for the chosen managed service.
-- A provider publishes name, description, service categories, service area,
-  availability or response expectation, price style (fixed, range, or quote),
-  cancellation policy, supported payment rails, and trust evidence. Required
-  fields and provenance are machine-readable.
-- One operator can manage multiple provider Spaces without obtaining undeclared
-  read access across their private conversations or histories.
+- A guild operator deploys a signed release profile and creates a guild with public identity, service area, membership policy, support contact, dispute path, directory policy, and data retention policy.
+- A provider controls a stable provider master DID and grants the guild only the administration rights needed for the chosen managed service via scoped delegation certificates.
+  > **Envisioned.** Not built yet. Interactive invitation and application vetting workflows. Today operators manage members directly via roster administration.
+- A provider publishes name, description, service categories, service area, availability, price style (fixed, range, or quote), cancellation policy, supported payment rails, and trust evidence. Required fields and provenance are machine-readable.
+- One operator can manage multiple provider service instances without obtaining undeclared read access across their private conversations or histories. Conversations use Double Ratchet end-to-end encryption, and databases use derived per-instance encryption keys.
+  > **Envisioned.** Not built yet. Externally provisioned per-instance Key Encryption Keys (Model B) protecting against an operator with host memory access.
 
 #### Consumer-provider workflow
 
-- **Discover.** Consumers reach a provider by direct link, referral, or one or
-  more guild directories. Results show source, freshness, filters, and the reason
-  for ordering; paid placement is absent from the initial release.
-- **Assess.** Consumers see relevant services, price basis, availability,
-  provider identity continuity, trust evidence, guild relationship, and material
-  policies before sharing personal details.
-- **Request and clarify.** A request captures category, description, approximate
-  area, preferred window, attachments, and a data-use notice. Exact address is
-  disclosed only when needed. Parties can clarify in the linked conversation.
-- **Quote and agree.** A versioned quote states scope, price, taxes or fees,
-  schedule, location, payment method, cancellation/refund terms, expiry, and
-  dispute path. Both parties' acceptance produces a signed agreement receipt.
-- **Fulfil.** Permitted states and actors are explicit. State changes are
-  idempotent and append-only in the audit history; corrections do not rewrite
-  previously signed facts.
-- **Settle.** The system opens or records an external or out-of-band payment and
-  captures acknowledgement. It never presents an unverified return from a
-  payment app as final settlement.
-- **Close and return.** Completion produces a portable receipt. Feedback is
-  optional, tied to the receipt, and remains distinct from guild membership or
-  platform ranking. Either party can start a repeat request without re-entering
-  information it still consents to retain.
+- **Discover.** Consumers reach a provider by direct link or guild directory queries with client-side deterministic merging. Results show source, freshness, and filters; paid placement is absent.
+  > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today consumers discover providers via direct listing IDs or directory queries.
+- **Assess.** Consumers see relevant services, price basis, availability, provider identity continuity, trust evidence, guild relationship, and material policies before sharing personal details.
+- **Request and clarify.** A request captures category, description, approximate area, preferred window, attachments, and a data-use notice. Exact address disclosure is withheld until quote agreement via machine-readable policy. Parties clarify in the linked conversation.
+- **Quote and agree.** A versioned quote states scope, price, taxes or fees, schedule, location, payment method, cancellation/refund terms, expiry, and dispute path. Both parties' acceptance produces a signed agreement receipt.
+- **Fulfil `[VRT-SRV]`.** Permitted states and actors are explicit. Bookings follow discrete state tracks (`Scheduled`, `InProgress`, `Completed`, `Cancelled`, `Conflict`, `EndedUnconfirmed`). Transitions enforce actor roles: only the provider can cancel a booking, and only before any track has moved. Completed bookings require mutual confirmation on two independent tracks (`payment` and `fulfilment`). State changes produce append-only signed progress records (`BookingProgressPayload`), supersede previous envelopes idempotently, and never rewrite signed history.
+  > **Envisioned.** Not built yet. Consumer-initiated cancellation and automated dispute arbiters. Today cancellation is provider-only and dispute resolution is handled out-of-band.
+- **Settle `[VRT-PAY]`.** Payments use signed out-of-band payment records (`PaymentRequestPayload` and `PaymentAcknowledgementPayload`). Providers request payment stating currency and minor-unit amount. Both parties independently record signed payment acknowledgements. The system does not process funds directly and never treats an unverified return from a third-party payment app as final settlement.
+  > **Envisioned.** Not built yet. Integrated payment processors (such as Stripe Connect SDK), in-app escrow custody, system coins, and mutual credit rails. Today transactions record signed out-of-band payment notices only.
+- **Close and return.** Completion produces portable signed receipts (`InteractionReceipt` and `FulfilmentRecord`). Either party can start a repeat request in the existing conversation without re-entering consented information.
+  > **Envisioned.** Not built yet. Consumer feedback and review submissions tied to receipts.
 
+### [ROY-ADM] Application-Tier Local-Only Ingress Firewall
+
+Private SynApp services enforce an application-tier admission firewall on all inbound invocations to prevent unauthorized remote network access to private data and APIs.
+
+- **Caller Origin Inspection:** Inbound method dispatches inspect caller origin via the invocation host interface (`syneroym:invocation/invocation`). Calls originating from within the local substrate installation resolve to `CallerOrigin::Internal`.
+- **Fail-Closed Rejection (`NOT_LOCAL`):** Inbound calls arriving from remote nodes (`CallerOrigin::Verified` or `CallerOrigin::Anonymous`) are rejected with JSON-RPC error code `-32013` (`NOT_LOCAL`: "this method is reachable only from inside this installation"). The refusal reveals no internal service identifiers or caller DIDs to unauthorized parties.
+- **Explicit Wire Exceptions:** Public directory services define explicit wire exception tables (`WireRule`) allowing foreign callers:
+  - `WireRule::Open`: Permits unauthenticated foreign callers for public read operations (`directory.search`, `directory.info`, `directory.standing`).
+  - `WireRule::VerifiedOnly`: Permits remote callers whose identity was verified by the router for authenticated operations (`directory.publish`).
+- **Default Isolation:** Services lacking explicit wire exception tables (such as `profile`, `catalog`, and `transaction`) remain entirely internal and reject all off-node invocations.
+
+### [TXN-SLT] First-Claim Slot Reservation Concurrency Fence
+
+When multiple consumers accept quotes for the same limited provider availability slot, the transaction ledger enforces single-writer arbitration to prevent double booking.
+
+- **Atomic Seat Claims:** The provider transaction service arbitrates accepted quotes against catalog availability. For slot-based bookings, the service checks slot existence and remaining capacity, bounded by `MAX_SLOT_CAPACITY = 64`. It attempts to write an atomic seat record (`seat:<slot_id>:<seat_number>`) into the ledger.
+- **First-Claim Decision:** Exactly one consumer claim succeeds for an available seat. That booking transitions to `Scheduled` with a signed initial progress snapshot (`BookingProgressPayload`).
+- **Typed Conflict Refusal:** If all seats for the quoted slot are already claimed, or if the slot no longer exists, the competing booking transitions to `Conflict` with a machine-readable reason (`ConflictReason::SlotTaken` or `ConflictReason::SlotUnavailable`). The provider does not countersign conflicting bookings.
+- **Idempotent Retry:** Repeated quote acceptance or sync requests on an already decided booking return cached results (`AlreadyDecided` or `already-accepted`) without altering previously committed seats or creating duplicate records.
 
 ### Service Variation Dimensions
 
-The system accommodates the following variation axes across workflows:
+The reference SynApp implements variation axes across workflows using seven strongly typed, optional named blocks in `ListingPayload`:
 
-**Booking:** Event slots, consulting time slots, open-ended job requests.
-
-**Payment:** One-time; pre- or post-delivery; multi-part; negotiated; subscription. Escrow, system coins, and mutual credit systems are deferred variation axes — see [Appendix: Later-Phase Additions](#appendix-later-phase-additions) and the [Dynamic Ledger Network Specification](https://github.com/syneroym/foundation/blob/main/ideas/commitment-network.md) for mutual credit mechanics.
-
-**Product type:** Time-bound (e.g. prepared food), digital content, physical goods.
-
-**Service type:** Time-slot service, job-completion-based service, location-based service.
-
-**Location:** Fixed location, provider-proximate, consumer-proximate, remote/digital.
-
-**Relationship type:** One-time, recurring, long-term with continuous shared history (e.g. doctor-patient).
-
-**Service record:** Long-term (doctor-patient), engagement-specific (courses), tracking-required (delivery).
+- **Booking (`BookingTerms`):** Event slots, consulting time slots, and open-ended job requests, modeled by `BookingMode` (`Slots`, `Order`, `Enquiry`). Slot bookings enforce capacity limits (`MAX_SLOT_CAPACITY = 64`) and first-claim concurrency fences.
+- **Payment (`PaymentTerms`):** One-time quote-based payments with pre- or post-delivery timing, modeled by `PaymentModel` (`Fixed`, `PerHour`, `PerUnit`, `QuoteOnly`), currency, and minor-unit amounts.
+  > **Envisioned.** Not built yet. Multi-part payments, subscriptions, decentralized escrow, system coins, and mutual credit networks. Today quotes support single out-of-band payments only.
+- **Product type (`ProductDetail`):** Physical goods with unit, pack size, SKU, and condition (`New`, `Used`, `Refurbished`).
+  > **Envisioned.** Not built yet. Time-bound prepared food spoilage timers and digital content streaming or DRM pipelines.
+- **Service type (`ServiceDetail`):** Time-slot services, job-completion-based services, and location-based services with declared durations, inclusions, exclusions, and prerequisites.
+- **Location (`LocationTerms`):** Fixed provider locations, customer locations, and remote digital services (`ServiceLocation`), with bounding service areas and machine-readable address disclosure policies (`AddressDisclosure::OnAgreement` and `AddressDisclosure::Public`).
+- **Relationship type (`RelationshipTerms`):** Eligibility controls (`Anyone`, `Members`, `Referral`, `ExistingCustomers`) and guild membership requirements. Continuous shared history is preserved across engagements in durable conversation threads.
+  > **Envisioned.** Not built yet. Automated recurring relationship agreements and retainer schedules.
+- **Service record (`ServiceRecordTerms`):** Portable completion receipts, stated warranty durations, and declared record retention windows.
+  > **Envisioned.** Not built yet. Real-time active GPS and delivery telemetry tracking feeds.
 
 
 
