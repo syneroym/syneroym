@@ -6,8 +6,6 @@ Our flagship experience and reference application is **Roym** — mini-apps shar
 
 **Status:** Draft product baseline
 
-**Last product review:** 2026-06-22
-
 **Companion documents:** [Thesis](../THESIS.md) · [Vision](./VISION.md) · [Architecture](./system-architecture.md)
 
 This document is the canonical statement of **who Syneroym serves, what outcomes
@@ -24,9 +22,7 @@ technology substrate* into testable product and ecosystem requirements.
 - Product releases are vertical, end-to-end increments. Capability backlog
   phases are engineering sequencing bands and do not independently constitute a
   usable product release.
-- Open questions are tracked as milestone decision gates in the
-  implementation plan and resolved before the milestone that needs them
-  starts.
+- Open questions are tracked as architecture decision records or design questions.
 This requirements spec is structured as follows:
 
 - Philosophy & Design Constraints
@@ -40,14 +36,14 @@ This requirements spec is structured as follows:
 - Substrate Functionality
 - Shared Utilities and Services
 - SynApp Specs:
-    - Reference Application: Business, Professional, and Retail Spaces (covering Home Services and Small Retail)
+    - Reference Application: Business, Professional, and Retail Services (covering Home Services and Small Retail)
 - Target Designs (Addendum)
 
 ---
 
 ## Philosophy & Design Constraints
 
-Providers and consumers cluster locally; global reach from one source is not required. Reach grows instead through federation across autonomous clusters — cooperation between independently owned peer clusters over shared protocols, not server federation; no server sits between participants. The system keeps the benefits and sheds the drawbacks of large platforms listed in [VISION.md](./VISION.md#background), and goes after the open problem stated in the [thesis](../THESIS.md): rich group activity at real scale, with no central server, where no participant's device needs to fully trust any other.
+Providers and consumers cluster locally; global reach from one source is not required. Reach grows instead through federation across autonomous clusters — cooperation between independently owned peer clusters over shared protocols, not server federation; direct peer-to-peer connections need no intermediary server, while relays and coordinators provide fallback connectivity when direct paths fail. The system keeps the benefits and sheds the drawbacks of large platforms listed in [VISION.md](./VISION.md#background), and goes after the open problem stated in the [thesis](../THESIS.md): rich group activity at real scale, with no central server, where no participant's device needs to fully trust any other.
 
 ### Design Principles
 
@@ -81,9 +77,7 @@ possible.
 validated through a real provider-consumer workflow before adjacent generality
 is added.
 
-**Additive evolution.** Nothing is shelved. Payments/ledger primitives, AI
-assistance, attestation, and stronger identity tiers are sequenced, not
-deferred — each lands in its turn and composes with shipped contracts without redesigning them.
+**Additive evolution.** Core contracts evolve without breaking existing deployments. Advanced capabilities — external payment rails, ledger primitives, AI assistance, hardware attestation, and government identity assurance — are Envisioned capabilities tracked in the deferred backlog (`docs/planning/deferred-backlog.md`). Each capability is sequenced to compose with shipped contracts without redesigning them.
 
 ---
 
@@ -142,6 +136,25 @@ High-level requirement highlights:
 | **PRD-EXT** | Third-party SynApps can declare capabilities and pass public compatibility tests. | Package inspection and protocol conformance suite. |
 | **PRD-SAF** | Consent, data lifecycle, moderation boundaries, and responsible parties are explicit throughout a transaction. | Policy-version, grant, report, dispute, and deletion scenarios. |
 
+### [GTW-IDT] Client Gateway Identity Modes & Session Authentication
+
+The Client Gateway MUST provide configurable identity operating modes and session authentication for browser and external clients accessing substrate services.
+
+- **Identity Operating Modes:** The client gateway MUST support three distinct operating modes (`crates/core/src/config/roles.rs:364`, `crates/client_gateway/src/gateway.rs:59`):
+  - `Open`: Proxies client requests without authentication headers.
+  - `Login`: Validates caller session tokens against an authentication service and optionally enforces an HTTP 401 connection gate (`connection_auth_gate`) when no valid session is presented (`crates/client_gateway/src/gateway.rs:115`).
+  - `Fixed`: Injects a preconfigured person master DID (`fixed_identity_did`) and delegation certificate (`fixed_delegation`) onto all proxied requests (`crates/client_gateway/src/gateway.rs:117`).
+- **Node Authentication Service:** The substrate MUST provide an authentication service issuing short-lived cryptographically signed session tokens via nonce challenge-response (`/challenge`, `/login`) for local and delegated keys (`crates/auth/src/service.rs:37`).
+- **Session Cookie Ingress:** The client gateway and router MUST extract sessions from `syneroym_session` HTTP cookies or `Authorization` headers, verify token validity and expiration, and enforce revocation denylists (`crates/router/src/route_handler/http/auth.rs:55`, `crates/substrate/tests/gateway_session_e2e.rs:50`).
+
+### [IDT-BAK] Encrypted Identity Backup & Clean-Node Restore Archive
+
+The identity system MUST support exporting person master keys as versioned, authenticated encrypted backups and packaging them for clean-node disaster recovery.
+
+- **Versioned Encrypted Master Key Backup:** Master identity keys MUST export as versioned `IdentityBackup` payloads (`IDENTITY_BACKUP_VERSION = 1`) encrypted under a 32-byte z-base-32 recovery key via HKDF-SHA256 and AES-256-GCM (`crates/identity/src/backup.rs:22`).
+- **Cryptographic Binding:** The public person DID MUST be authenticated as additional authenticated data (AAD) in the AEAD cipher, preventing relabeling or tampering without decryption failure (`crates/identity/src/backup.rs:37`).
+- **Sealed Disaster Recovery Archives:** Applications and operator tools (`roymctl roym backup`) MUST package application databases alongside the encrypted identity backup into sealed archives (`RoymArchive`), verifying complete data restoration on clean substrate nodes (`crates/roym_directory/src/app/backup.rs:25`, `apps/roymctl/src/commands/roym/backup.rs:37`, `crates/substrate/tests/roym_restore_e2e.rs:49`).
+
 ---
 
 ## Personas in the Syneroym Ecosystem
@@ -151,30 +164,31 @@ multiple roles, but the product must make the active role and its powers clear.
 
 | Persona | Primary job to be done | Adoption constraint |
 |---|---|---|
-| **Individual Service Provider** | Publish an offering, receive qualified local work, serve repeat customers, and retain business history. | Limited time and technical skill; may have only a phone and intermittent connectivity. |
+| **Individual Service Provider** | Publish an offering, receive qualified local work, serve repeat customers, and retain business history. | Limited time and technical skill; intermittent connectivity. (Note: mobile phone substrate operation is an Envisioned capability; today substrates execute on desktop and server platforms, while phone users participate via web browsers or client gateways). |
 | **Self-hosting Provider / Node Owner** | Run the provider's digital business without dependence on an aggregator. | Needs safe defaults, understandable health, backups, and recovery—not a miniature SRE role. |
-| **Guild or Provider Aggregator** | Onboard and support multiple providers, provide local discovery and trust context, and operate shared services. | Must earn trust without acquiring irrevocable control over provider identity or data. |
+| **Guild or Provider Aggregator** | Operate a directory-type SynOrg to aggregate provider listings, offer local discovery, and curate community trust signals. | Must earn trust without acquiring irrevocable control over provider identity, data, or hosting infrastructure. |
 | **Infrastructure Provider** | Offer bounded compute, storage, and connectivity with auditable usage and responsibilities. | Needs isolation, quotas, abuse controls, and an explicit service agreement. |
 | **Consumer** | Find a suitable provider, understand why they are trustworthy, agree terms, communicate, pay, and keep records. | Will not install infrastructure or learn federation concepts before receiving value. |
 | **SynApp Developer** | Build once against stable contracts, test locally, distribute safely, and interoperate with other apps. | Needs concise contracts, compatibility signals, examples, and conformance tooling. |
-| **Space Manager** | Configure a provider or guild presence, policies, catalog, availability, and staff access. | Needs delegated permissions and an audit trail without access to unrelated provider data. |
+| **SynApp Owner / Provider Manager** | Configure a provider or guild presence, policies, catalog, availability, and staff access. | Needs delegated permissions and an audit trail without access to unrelated provider data. |
 | **Facilitator** | Offer an optional bounded service such as delivery, payment gateway, credential issuance, backup, or dispute handling. | Must disclose terms and authority; cannot become an implicit mandatory intermediary. |
 
 ---
 
 ## Glossary / Terminology
 
-**Aggregator.** Takes responsibility for managing online services for multiple providers. E.g. a plumber cooperative.
+**Aggregator.** A directory-type SynOrg service that aggregates provider listings and credentials without hosting or controlling provider infrastructure (e.g. a guild directory or trade cooperative).
 
 **App Developer.** A person or organisation that builds SynApps and publishes them for others to deploy. Does not necessarily host or operate any infrastructure.
 
-**Bootstrap Server.** A Syneroym-operated service that is a registry of active services and Relays, and handles other system management responsibilities.
+**Bootstrap Server.** An envisioned centralized registry service coordinating active services and relays.
+> **Envisioned.** Not built yet. Centralized bootstrap servers (`*.syneroym.xyz`) are not built. Today substrate nodes configure static parent coordinator relay URLs (`parent_coordinator.iroh.url`) and publish endpoints to local Community Registries and Mainline DHT.
 
 **Consumer / General User.** Uses the Syneroym ecosystem to discover and purchase services or products, or to interact with other entities.
 
 **Federation.** The process by which independent providers and infrastructure nodes interoperate to share discovery, reputation, and messaging capabilities without a central authority.
 
-**Home Relay.** A Relay assigned to a Substrate or SYN-SVC as its primary connectivity point.
+**Home Relay / Coordinator Relay.** A coordinator relay endpoint configured at the substrate node level (`parent_coordinator.iroh.url`) to provide fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the substrate node's relay connectivity rather than binding to individual relays.
 
 **Infrastructure Provider.** A person or organisation that makes hardware or virtual infrastructure available for Service Providers to host applications on a leased basis.
 
@@ -187,17 +201,17 @@ Aggregator, or Infrastructure Provider, but those roles confer different duties.
 **P2P.** Peer-to-peer. To denote direct interaction between 2 entities without any intermediate broker service.
 
 
-**Provider.** Short for *Service Provider*. Provides a service to others — e.g. plumber, photographer, consultant. May self-host or use an Aggregator.
+**Provider.** Short for *Service Provider*. Provides a service to others — e.g. plumber, photographer, consultant. May self-host or publish listings through an Aggregator directory.
 
-**Relay.** A service that provides connectivity for SUBSTRATEs and SVCs that cannot accept inbound connections directly (e.g. behind NAT or firewall). Coordinates direct connectivity, occasionally relays encrypted traffic where direct connectivity does not work.
+**Relay.** A service or coordinator node that provides encrypted transport fallback for substrates and services that cannot accept inbound connections directly (e.g. behind symmetric NAT or firewalls). Coordinates direct P2P connectivity where possible, and relays encrypted traffic when direct connections cannot be established.
 
-**Space.** A named, provider-configured business context within a SynApp (e.g. a plumber's catalog and booking page).
+**SynApp Instance / Catalog.** A named, provider-configured business context within a SynApp deployment (e.g. a plumber's catalog and booking service).
 
-**Space Manager.** The person (often the Provider or Aggregator) responsible for configuring and operating a Space: catalog, branding, access control, and operational policies.
+**SynApp Owner / Operator.** The person or provider responsible for configuring and operating a SynApp instance: catalog, branding, access control, and operational policies.
 
 **Substrate (SYN-SUBSTRATE).** The core runtime layer on a NODE. Manages service deployment, lifecycle, discovery registration, messaging, and access control on behalf of the NODE-OWNER.
 
-**Service Sandbox (SVC-SANDBOX).** The execution environment for a SYN-SVC. May be a WASM runtime instance, a Podman container, or equivalent. Provides isolation between services sharing a NODE.
+**Service Sandbox (SVC-SANDBOX).** The execution environment for a SYN-SVC. May be a Wasm runtime instance (`crates/sandbox_wasm`), a Podman container (`crates/sandbox_podman`), or a native host binary dispatch (`crates/app_host_native`). Provides isolation between services sharing a NODE.
 
 **SynApp (SYN-APP, Syneroym Application).** A deployment manifest and control plane overlay that defines a cohesive graph of SYN-SVCs. It acts as a blueprint to deploy, update, and manage capabilities, quotas, and namespaces. It is not an execution boundary.
 
@@ -207,11 +221,12 @@ accounting context.
 
 **SynApp Owner.** The provider who deploys a SynApp to provide services to their clients. Distinct from the Developer who develops it.
 
-**Syneroym Module (SYN-MOD).** A reusable, independently deployable unit of business logic. Packaged as a WASM component or OCI image.
+**Service Artifact.** A reusable, independently deployable unit of business logic. Packaged as a Wasm component (`wasm32-wasip2`) or native binary.
 
 **Syneroym Service (SYN-SVC).** A running instance of a module, executing within a SVC-SANDBOX on a Node. It is the absolute foundational zero-trust execution primitive of the Syneroym Substrate. Managed and proxied by the Substrate.
 
-**Verifiable Credential.** A cryptographically signed attestation issued by a third party (e.g. a trade authority, government body, or community organisation) and attached to a Provider's profile. The consuming party decides which credential issuers they trust.
+**Verifiable Credential / Signed Record.** A cryptographically signed attestation issued by an entity (such as a provider, trade authority, or community directory) using canonical signed Roym record envelopes (`crates/signed_record/`). The consuming party decides which credential issuers they trust.
+> **Envisioned.** Not built yet. Generic W3C VC 2.0 envelope schemas and SSI wallet integration. Today credentials use canonical JSON signed records with Ed25519 signatures.
 
 **Vouching.** A trust mechanism where entities issue signed endorsements for other entities within their network, creating a verifiable web of trust.
 
