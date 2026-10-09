@@ -800,6 +800,10 @@ This phase implements the architectural boundary between Syneroym Applications (
 The `SynSvc` is the absolute foundational primitive of the Syneroym Substrate. 
 *   **Zero-Trust Execution:** Represents an isolated, zero-trust execution boundary (often a WASM component, but could also be a Podman container or a native OS service sitting behind a platform gatekeeper). It does not implicitly trust other services, even those deployed alongside it.
 *   **State & Capabilities:** It owns its state and enforces capability-based security (FDAE ReBAC policies and UCANs) on all incoming requests.
+*   **Protocol Compatibility & Fixed ALPN:** Substrate peer-to-peer connections bind a fixed ALPN identifier (`syneroym/0.1`). Protocol and interface dispatch are negotiated per stream through route preambles; unsupported protocols fail fast with typed errors.
+    > **Envisioned.** Not built yet. Protocol capability negotiation matrix and dynamic HELLO handshake exchanges. Today peer-to-peer connections bind fixed ALPN (`syneroym/0.1`), and unsupported protocols immediately fail fast on preamble parsing.
+    >
+    > Multi-substrate connections establish a capability matrix and negotiate supported protocol versions dynamically during transport connection establishment.
 
 #### `SynApp` (The Control Plane Overlay)
 `SynApp` is removed as a runtime execution boundary and is redefined as a **Deployment Manifest and Control Plane Overlay**.
@@ -814,6 +818,19 @@ The `SynSvc` is the absolute foundational primitive of the Syneroym Substrate.
 Similar to Erlang OTP applications, `SynApps` are highly composable. A `SynApp` manifest is not restricted to explicitly declaring raw `SynSvcs`; it can declare dependencies on other `SynApps`.
 *   **Dependency Resolution:** If `SynApp: Retail Store` depends on `SynApp: Identity Core`, the Orchestrator evaluates the dependency graph during deployment. It will ensure `Identity Core` is instantiated (or bind to an existing instance) before deploying the `Retail Store` instance.
 *   **Instance Mapping:** This maintains the crucial App (Blueprint) vs. App Instance distinction. A higher-level SynApp can compose multiple foundational SynApps into a unified, deployed ecosystem, passing necessary capabilities down the dependency tree.
+
+---
+
+### [NET-PRM] Preamble Routing Tokens & Delegation Verification
+
+Inbound transport streams carry a structured route preamble before payload data, allowing the router to establish identity, check delegation, and configure streaming pipelines before dispatching to destination services.
+
+- **Preamble Wire Format:** The stream preamble follows the grammar `<scheme>://<interface>.<service_id>[?query]`, terminated by a newline. Schemes overload wire transport (`binary`, `http`, `raw`) and application protocol (`json-rpc`, `wrpc`, `raw`). Preamble lines are bounded by a maximum size limit (`MAX_PREAMBLE_LINE_BYTES = 256 KiB`) and a pre-authentication timeout (`PRE_AUTH_READ_TIMEOUT = 5s`) to prevent unauthenticated resource exhaustion.
+- **Transport Security & E2EE Query Parameters:** The preamble supports orthogonal query parameters:
+  - `enc` and `pubkey`: Trigger an ephemeral ECDH-P256 key exchange wrapped in AES-256-GCM encryption before payload forwarding.
+  - `dir`: Designates stream direction (`upload` or `download`) for raw streaming protocols.
+- **Delegation Certificate Verification:** When a caller routes using a delegated identity, the preamble includes a hex-encoded `DelegationCertificate` (`?delegation=<hex>`). The router verifies that the certificate's temporary DID matches the preamble public key, checks validity timestamps, confirms that the scope covers transport permissions, and verifies that the audience key is not revoked in the issuer's Master Anchor DHT record.
+- **UCAN Capability Token Verification:** The preamble supports an optional hex-encoded UCAN capability token (`?ucan=<hex>`). The router validates the token chain into `SessionContext` capabilities, checking each chain edge against issuer Master Anchor revocations. Unauthenticated or invalid UCAN tokens fail closed for native capability interfaces.
 
 ---
 
@@ -834,7 +851,8 @@ Services communicate using a multi-tiered addressing model to support mobility, 
 When registering a Logical Service Name, the local registry tracks its underlying topology:
 *   **Singleton:** Maps to exactly one Explicit ID.
 *   **Redundant (Load Balanced):** Maps to an array of Explicit IDs. The resolver returns the eligible set and the caller/proxy selects a target using the manifest's policy.
-*   **Sharded:** Maps to multiple Explicit IDs based on a stable routing key (for example, consistent hashing on `user_id`).
+*   **Sharded:** Maps to multiple Explicit IDs based on a stable routing key (for example, consistent hashing on `user_id`). The runtime resolver supports Sharded topology selection using range sharding and BLAKE3 rendezvous hashing.
+    > **Envisioned.** Not built yet. Manifest compiler emission of Sharded topologies. Today manifests compile replicas greater than one to Redundant mode, and Sharded manifest syntax is not yet exposed in service manifests.
 
 ---
 
@@ -850,19 +868,17 @@ Rather than a strictly monolithic system, service discovery naturally emerges ac
 
 ### [TOP-DSC] Discovery Mechanisms and Inventory
 
-#### The `syneroym-core/registry` Default Service
-To provide "batteries-included" service discovery, the platform provides a canonical Registry capability. It may run as a native substrate service or as an isolated Registry `SynSvc`, but it is distinct from the in-process local `EndpointRegistry`.
-*   **Purpose:** Acts as the local source of truth for service inventory, logical-to-physical mapping, and health tracking.
-*   **Manifest Configuration:** A `SynApp` manifest dictates how the Orchestrator handles this:
-    1.  **Spawn:** Boot a dedicated, isolated instance of the Registry `SynSvc` exclusively for this app. To handle this correctly, the `SynApp` manifest must support a service dependency graph (either explicitly declared or inferred via references) so the Orchestrator boots the registry *before* the services that depend on it.
-    2.  **Bind:** Register the app's services with a pre-existing, shared node-level Registry `SynSvc` (saving resources).
-*   **Client Caching (Refresh-on-Failure):** Service clients query the registry to resolve a logical name, **cache** the resulting Explicit ID locally, and communicate directly with the Explicit ID. Cache entries carry a topology epoch or TTL and are refreshed on connection failure, registry update notifications, or expiry.
+#### Service Inventory and Resolution Architecture
+Per [ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md), intra-application service discovery does not use a queryable runtime registry service. Instead, service inventory and resolution follow a decoupled configuration-push and signed document architecture:
+*   **Intra-App Binding Propagation:** The App Supervisor or `roymctl` pushes resolved logical-to-physical service bindings into each service's configuration at deploy time. Services load these bindings into an in-memory `StaticInventory`, resolving local dependencies without runtime network lookups.
+*   **Health Tracking & Reconciliation:** Health tracking and readiness checks are performed by the App Supervisor's reconciliation loop rather than a runtime registry service.
+*   **Inter-App Discovery:** Inter-application discovery uses signed `TopologyDocument` records issued by the target application's App Supervisor (see `[TOP-DOC]`) and published endpoint records from community registries or Mainline DHT.
+*   **Client Caching (Refresh-on-Failure):** Resolvers cache resolved topologies in memory (`TopologyCache`) with an epoch or TTL. If a connection fails or an epoch changes, the client refreshes the entry on failure rather than polling continuously.
 *   **Master Anchor Resolution (Revocation Handling):** To maintain secure identity revocation without breaking standard DHT signatures, the ecosystem enforces the **Master Anchor** pattern:
-    *   Registries map Logical Service Names exclusively to the **Master Key**.
-    *   The Master Key maintains a single `pkarr` DHT record containing an array of currently authorized **Temporary Keys** (the actual routing `NodeId`s).
-    *   **Passive Revocation:** If a Temporary Key is compromised, the Master Key simply updates its DHT array to drop the compromised key. The registry and DHT mechanics themselves do not change.
-    *   Dependent clients cache the route. Upon a connection failure (or periodically), they perform a "Refresh-on-Failure" by looking up the Master Key's DHT record again, instantly dropping the compromised key since it is no longer authorized.
-    *   *(Note: Phase 0 delivers the Master Anchor endpoint-resolution contract, but defers production Master Anchor DHT authorization to Phase 1 `[FND-IDT]`.)*
+    *   Registries map Logical Service Names exclusively to the **Master Key** (DID).
+    *   The Master Key publishes a `master_anchor_v1` record to pkarr DHT containing a cryptographic **revocation deny list** (`revoked_keys: Vec<String>`). Temporary routing keys prove authorization via signed delegation certificates (`DelegationCertificate`), not through an allowlist array in DHT.
+    *   **Passive Revocation:** If a Temporary Key is compromised or rotated, the Master Key publishes the compromised key to its DHT `revoked_keys` deny list.
+    *   Dependent clients and routers cache the route and delegation. Ingress routers and handshakes verify that the temporary routing key is not present in the issuer's Master Anchor deny list, rejecting revoked keys during connection setup.
 
 #### Static Deployment Inventory (`roymctl`)
 Not all apps require a live, queryable registry at runtime (e.g., trivial background cron jobs or standalone static UIs).
