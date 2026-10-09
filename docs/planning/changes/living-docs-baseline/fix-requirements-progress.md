@@ -20,7 +20,7 @@ This file tracks progress applying the requirements audit fixes to `docs/system-
 | 12 | UX Agency, Data Rights, Safety & Disputes, Governance, Trust Model | done | 14677967 | O11, O12, O30, O32, O35, O38, Q-B1 |
 | 13 | Ecosystem & Domain Model, Common Requirements | done | 19f22e8e | O1, O2, O8, O10, O46, O56 |
 | 14 | Title, Intro, Philosophy, Product Outcomes, Overview, Personas, Glossary | done | cfae8d2b | O1, O2, O4, O15, O18, O19, O29, Q-R1-5 |
-| 15 | Traceability Matrix: Substrate Capabilities part 2 (rows 45–58) | not started | - | Matrix rows 45–58, O34, O46 |
+| 15 | Traceability Matrix: Substrate Capabilities part 2 (rows 45–58) | done | 7ad9d9fa | Matrix rows 45–58, O34, O46 |
 | 16 | Traceability Matrix: Substrate Capabilities part 1 (rows 25–44) | not started | - | Matrix rows 25–44, O23, O50, O55 |
 | 17 | Traceability Matrix: Core Requirements (rows 1–24) | not started | - | Matrix rows 1–24, O18, O30, O49, O51, D-R9-3 |
 | 18 | Traceability Matrix: Add missing 13 spec requirements | not started | - | Matrix new rows, O54 |
