@@ -41,7 +41,7 @@ This requirements spec is structured as follows:
 - Shared Utilities and Services
 - SynApp Specs:
     - Reference Application: Business, Professional, and Retail Spaces (covering Home Services and Small Retail)
-- Post-DD864A1 Specifications
+- Target Designs (Addendum)
 
 ---
 
@@ -772,10 +772,13 @@ The system accommodates the following variation axes across workflows:
 ---
 
 <a id="post-dd864a1-target-specifications-addendum"></a>
+<a id="target-designs-addendum"></a>
 
-## Post-DD864A1 Specifications
+## Target Designs (Addendum)
 
-Features after commit `dd864a1`. The rest of this document covers the shipped walking-skeleton baseline; this section sequences what comes next.
+This section defines target specifications for the substrate and applications across functional areas. The preceding sections establish the system foundation; each phase section below details specific target capabilities.
+
+> **The phases are targets.** A phase is a planned group of work, not a record that the work is done. Each phase section has built parts and Envisioned parts. Text with no marker is built. Text under the Envisioned marker is not built. The [traceability matrix](planning/traceability-matrix.md) gives the status of each requirement.
 
 ### Tag Legend
 To ensure stable cross-referencing across commits and PRs, features are prefixed with category tags:
