@@ -14,7 +14,7 @@ This file tracks progress applying the requirements audit fixes to `docs/system-
 | 6 | Phase 2: Platform Services | done | c8354845 | O39, O40, O41, O47, Q-1 |
 | 7 | Phase 1: Security, Identity, and Configuration | done | f8565963 | O13, O16, O17, O24, O27, Q-D3 |
 | 8 | Phase 0: Topology and Addressing | done | 746816f3 | O5, O6, O48, Sharded routing |
-| 9 | Post-DD864A1 Target Designs intro and heading | not started | - | Remove commit hash DD864A1, clean status block |
+| 9 | Post-DD864A1 Target Designs intro and heading | done | d07a1206 | Remove commit hash DD864A1, clean status block |
 | 10 | Reference Vertical Contracts & Variation Dimensions | not started | - | O28, O33, O34, O37, Q-2, Q-C2 |
 | 11 | Conceptual ER Model, Substrate Functionality, Ecosystem Entities, SynApp Lifecycle | not started | - | O3, O9, O14, O19, O20, O21, O23, O29 |
 | 12 | UX Agency, Data Rights, Safety & Disputes, Governance, Trust Model | not started | - | O11, O12, O30, O32, O35, O38, Q-B1 |
