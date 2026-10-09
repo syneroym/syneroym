@@ -519,58 +519,61 @@ erDiagram
     direction TB
 
     %% --- Module & Service structure ---
-    MOD ||--|{ MOD : depends-on
-    MOD ||--|{ SVC : invokes
-    MOD ||--|{ SVC : template-for
-    SYNAPP ||--|{ SVC : comprises-of
-    SVC }|--|| SVC-SB : runs-in
+    SERVICE-ARTIFACT ||--o{ SERVICE : instantiates
+    SERVICE }o--o{ SERVICE : invokes
+    SYNAPP ||--|{ SERVICE : comprises-of
+    SERVICE }|--|| SVC-SB : runs-in
     NODE ||--o{ SVC-SB : runs
     SUBSTRATE ||--|| NODE : runs-on
-    SUBSTRATE ||--o{ SVC : manages-and-proxies
+    SUBSTRATE ||--o{ SERVICE : manages-and-proxies
 
-    %% --- Ownership ---
-    PROVIDER ||--o{ SUBSTRATE : owns-or-leases
+    %% --- Ownership & Placement ---
+    PROVIDER ||--o{ SUBSTRATE : owns
     SYNAPP-OWNER ||--|{ SYNAPP : owns
-    SYNAPP }o--|| SUBSTRATE : registers-at
-    AGGREGATOR ||--o{ PROVIDER : manages-for
+    SYNAPP }o--|{ SUBSTRATE : placed-on
 
     %% --- Connectivity ---
-    SVC }o--|{ HOME_RELAY : registers-at
-    SUBSTRATE }o--|{ HOME_RELAY : registers-at
-    HOME_RELAY }o--|| BOOTSTRAP : registers-with
+    SUBSTRATE }o--o| RELAY : uses
+    RELAY }o--|| BOOTSTRAP : registers-with
 
-    %% --- SynApp-level entities ---
-    PROVIDER ||--o{ SPACE : configures
-    SPACE }|--|| SYNAPP : runs-within
-    SPACE-MGR ||--|{ SPACE : manages
+    %% --- Application & Commercial entities ---
+    PROVIDER ||--o{ CATALOG : manages
+    CATALOG }o--|| SYNAPP : runs-within
+    AGGREGATOR ||--o{ CATALOG : aggregates-listings-from
 
     %% --- Consumer side ---
     CONSUMER ||--o{ CONSUMER-APP : uses
     CONSUMER-APP }o--|{ SUBSTRATE : connects-to
-    CONSUMER ||--o{ SPACE : transacts-with
+    CONSUMER ||--o{ PROVIDER : transacts-with
 
-    %% --- Trust ---
+    %% --- Trust & Credentials ---
     PROVIDER }o--o{ VERIFIABLE-CRED : holds
     CONSUMER }o--o{ PROVIDER : vouches-for
-    AGGREGATOR }o--o{ PROVIDER : vouches-for
 
-    MOD[SYN-MOD]{}
-    SVC[SYN-SVC]{}
+    SERVICE-ARTIFACT[SERVICE-ARTIFACT]{}
+    SERVICE[SERVICE]{}
     SYNAPP[SYN-APP]{}
     SYNAPP-OWNER[SYNAPP-OWNER]{}
     SUBSTRATE[SYN-SUBSTRATE]{}
     SVC-SB[SVC-SANDBOX]{}
     NODE[NODE]{}
-    HOME_RELAY[HOME-RELAY]{}
+    RELAY[COORDINATOR-RELAY]{}
     BOOTSTRAP[BOOTSTRAP-SERVER]{}
     PROVIDER[PROVIDER]{}
-    AGGREGATOR[AGGREGATOR]{}
-    SPACE[SPACE]{}
-    SPACE-MGR[SPACE-MANAGER]{}
+    AGGREGATOR[DIRECTORY-SYNORG]{}
+    CATALOG[CATALOG-OR-LISTING]{}
     CONSUMER[CONSUMER]{}
     CONSUMER-APP[CONSUMER-APP]{}
-    VERIFIABLE-CRED[VERIFIABLE-CREDENTIAL]{}
+    VERIFIABLE-CRED[SIGNED-ROYM-RECORD]{}
 ```
+
+A SynApp is placed on one or more substrates. Each service within a SynApp defines its own execution artifact (`ServiceDefinition::source`, such as a WebAssembly component or container image) and runs inside a sandbox or native host runner. Stale entity concepts (`SYN-MOD`, `Space`, and `Space Manager`) do not exist in code: services manage catalogs and listings directly, and providers transact with consumers via structured quote and booking workflows.
+
+An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) aggregating provider listings and credentials per Owner Decision Q-A4. Aggregators do not manage infrastructure or host services for providers. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
+
+Substrates connect to configured coordinator relays (`parent_coordinator.iroh.url`) and publish signed endpoint records to the Community Registry and Mainline DHT. Trust evidence uses canonical signed Roym records (such as guild membership credentials and bilateral agreement receipts) rather than centralized reputation scores or generic W3C VC 2.0 envelopes.
+
+> **Envisioned.** Not built yet. Centralized bootstrap servers, dynamic relay DNS assignment, and consumer-to-provider vouching graphs. Today nodes configure static coordinator relays and trust relies on signed SynOrg membership credentials.
 
 
 ---
@@ -581,49 +584,48 @@ Description of the core Syneroym substrate functionality, key protocols, and imp
 
 ### Substrate Setup
 
-- Node owner installs the substrate on a node.
-- Substrate creates a protected initial administrator credential on first run and
-  requires the owner to establish a tested recovery method before production
-  use. Routine administration uses revocable delegated credentials rather than
-  exposing a root key.
-- Substrate registers with a Relay:
-    - Contacts a bootstrap service to obtain a home relay assignment.
-    - Publishes its node public key and associated relay routing information to a distributed registry or p2p network (used for the node's control plane, e.g. SYN-SVC deploy/remove).
-    - Starts a secure communication server listening via the assigned relay and/or direct peer-to-peer interfaces.
-- Substrate identifies its capabilities (sandbox/container types, quota configurability). Node owner configures capability limits (CPU, GPU, memory, disk, other capabilities) available to hosted Services.
+- Node owner installs and initializes the substrate on a node (`roymctl substrate init`).
+- Substrate creates a protected node key on first run. Administrative ownership requires an offline claim step producing a mutually signed `ControllerAgreement`. Routine administration uses revocable delegated credentials (`DelegationCertificate`, UCAN tokens) rather than exposing a root key.
+  > **Envisioned.** Not built yet. Tested recovery method wizard before production use. Today initial node keys are initialized at boot and claimed offline.
+- Substrate connects to a Relay:
+  - Substrate configures a static coordinator Iroh relay URL (`parent_coordinator.iroh.url`).
+    > **Envisioned.** Not built yet. Dynamic home relay assignment via bootstrap service.
+  - Publishes its signed endpoint information (`SignedEndpointInfo`) containing its public key and relay routing details to the Community Registry and Mainline DHT via pkarr (used for the control plane and service deployment).
+  - Starts a secure communication server listening via the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
+- Substrate identifies its capabilities (sandbox types, quota configurability). Node owner configures capability limits (CPU, memory, instruction fuel) available to hosted services.
+  > **Envisioned.** Not built yet. GPU allocation and dynamic disk quota enforcement.
 - Access control setup:
-    - If the node owner has a primary substrate, this substrate's pubkey is registered with it.
-    - Necessary substrate access is granted to the owner's primary key.
-    - SYN-APP owner pubkeys are granted access to substrate management APIs (deploy, remove, observe) with associated quotas.
+  - Substrate access is granted to the controller's master DID via `ControllerAgreement`.
+  - SynApp owner master DIDs sign UCAN capability tokens granting deployment, removal, and observation access (`orchestrator/{deploy,undeploy,status}`) with associated quotas.
+  > **Envisioned.** Not built yet. Automated multi-substrate peering registration protocol.
+
+### [OPS-CLM] Substrate Node Claiming & Ownership Binding
+
+Substrate nodes boot unowned and fail closed on privileged operations until an operator claims the node via `roymctl substrate claim`, establishing cryptographic controller authority.
+
+- **Initial Unowned State:** A newly initialized substrate generates a local Ed25519 node keypair (`did:key:...`). Until claimed, the node rejects remote administrative operations (`substrate/admin`) over the wire to prevent unauthorized adoption.
+- **Mutual Controller Agreement:** An operator claims the node by executing `roymctl substrate claim`. This mints a `ControllerAgreement` record signed by both the node private key and the controller master key, binding the node DID to the controller DID.
+- **Fail-Closed Authorization:** The substrate router verifies the controller DID on all privileged interfaces (including deployment, service orchestration, and security administration). Requests without a matching controller signature or valid delegated UCAN capability are rejected.
 
 ### Substrate Managing Services
 
-- Substrate provides a secure end-to-end communication channel between clients and the services it manages.
-- Substrate supports WASM and Podman sandbox environments at minimum.
-- Substrate attempts direct client-service communication wherever possible; it falls back to external relay (DERP) when intermediate network infrastructure does not permit direct connections.
-- On mobile platforms, if the substrate and embedded services are throttled by the OS, requests are sent as offline notifications. The service response is triggered when the substrate application is next active.
+- Substrate provides a secure end-to-end communication channel between clients and the services it manages via the Universal Proxy and Client Gateway.
+- Substrate supports WASM (Wasmtime) and Podman sandbox environments at minimum.
+- Substrate attempts direct client-service communication wherever possible; it falls back to external coordinator relay when intermediate network infrastructure does not permit direct connections.
+- On mobile platforms:
+  > **Envisioned.** Not built yet. Mobile platform background execution, OS throttling handlers, and push notification dispatch. Today offline operations rely on substrate SQLite durable outbox queuing and idempotent replay.
 
 ### Core Substrate Services
 
-**Messaging.** The substrate supplies secure, typed, durable delivery primitives.
-Conversation products such as chat, groups, feeds, and collaboration remain
-SynApps built on those primitives.
+**Messaging.** The substrate supplies secure, typed, durable delivery primitives via an embedded MQTT broker (`crates/mqtt_broker`) and Double Ratchet end-to-end encrypted conversation primitives (`crates/conversation/`, ADR-0013). Conversation products such as chat and groups are SynApps built on those primitives.
+> **Envisioned.** Not built yet. Social feeds and collaborative editing SynApps.
 
-**Discovery.** The substrate exposes capability and endpoint discovery. Guild
-directories, referrals, federated catalogs, and ranking are replaceable SynApps
-or services that implement the common publication and query contracts; no one
-global index is required.
+**Discovery.** The substrate exposes capability and endpoint discovery via Community Registry and pkarr Mainline DHT. Guild directories, referrals, and ranking are replaceable SynApps or services (`crates/roym_directory`) implementing common publication and query contracts with client-side merging; no one global index is required.
 
-**Identity.** The substrate manages protected key storage, rotation, revocation,
-recovery, and delegation while separating stable identity from ephemeral routing
-keys. Optional credential and privacy-preserving proof systems plug into this
-issuer-neutral foundation.
+**Identity.** The substrate manages protected key storage (SQLCipher and `mlock` KEK protection), rotation, revocation, and delegation while separating stable master DIDs from ephemeral routing keys (ADR-0020). Master Anchor DHT records publish cryptographic revocation deny lists. Credentials use canonical signed Roym records.
 
-**Access Control.** The substrate enforces deny-by-default policy on inter-service
-and client-service communication. The product accurately documents the
-infrastructure operator's technical powers; policy enforcement alone must not be
-presented as protection from a fully compromised host. Sensitive deployments may
-require owner-held encryption keys or attested hardware.
+**Access Control.** The substrate enforces deny-by-default policy on inter-service and client-service communication via Fine-grained Data Access Engine (FDAE) compiled ReBAC policies (`crates/fdae/`, ADR-0017) and UCAN capability tokens. The product accurately documents the infrastructure operator's technical powers; policy enforcement alone must not be presented as protection from a fully compromised host. Sensitive deployments may require owner-held encryption keys.
+> **Envisioned.** Not built yet. Hardware attestation (TPM/SEV). Today substrate integrity relies on software signature validation.
 
 ---
 
@@ -631,11 +633,10 @@ require owner-held encryption keys or attested hardware.
 
 ### Relay
 
-- On startup, a relay may apply to register as a community relay with the Syneroym bootstrap server (refreshed periodically).
-- On successful registration, it is reachable as `<relaynodeid>.syneroym.net`.
 - Acts as a coordination server for direct connections between peers using UDP hole punching.
-- Acts as an encrypted TCP data relay when direct connection is not possible (no UDP, symmetric NAT, CGNAT).
-- Acts as a TURN relay for WebRTC when browsers access services behind NAT.
+- Acts as an encrypted TCP data relay when direct connection is not possible (no UDP, symmetric NAT, CGNAT) via embedded `iroh-relay`.
+- Substrates connect to a statically configured coordinator relay URL (`parent_coordinator.iroh.url`) and publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Services inherit this substrate relay connectivity.
+  > **Envisioned.** Not built yet. A WebRTC TURN relay server, dynamic bootstrap relay registration, and `<relaynodeid>.syneroym.net` DNS subdomains. Today relays do not provide TURN; browser clients connect through the Client Gateway HTTP proxy or WebRTC data channels with HTTP/WebSocket signaling.
 
 ### Bootstrap
 
@@ -646,25 +647,34 @@ require owner-held encryption keys or attested hardware.
 - Returns a weighted random set of relays from the registry based on requested capability and relay capacity.
 - Periodically audits registered relays and expires stale entries.
 - For node ID lookups, checks internal cache or DHT fallback and returns the relay. For HTTP URL lookups from browsers, finds the relay and issues an HTTP redirect.
+  > **Envisioned.** Not built yet. Centralized bootstrap servers and dynamic HTTP redirects. Today substrates configure a static coordinator relay URL (`parent_coordinator.iroh.url`) and publish signed endpoint records to the Community Registry (`crates/community_registry`) and pkarr BEP-0044 Mainline DHT (`crates/core/src/dht_registry`).
 
 > **Single point of failure note.** A default bootstrap service is a governance
 > and availability dependency. Its signed records must be exportable and
 > publishable through alternative operators or discovery mechanisms. Known peers
 > and cached routes must satisfy the bootstrap outage release gate; one
 > Syneroym-controlled service must not be required to authorise continued use.
+> Today nodes operate independently without central authorization.
 
 ### Consumer-Facing Aggregation
 
 > This section addresses a gap in the prior spec. Centralised platforms provide consumers a single app. In Syneroym, providers may run on different substrates operated by different entities. The consumer experience remains coherent.
 
-- A Consumer App (web or mobile) allows consumers to discover, browse, and transact with providers across multiple substrates and SynApps from a single interface.
-- The Consumer App can query one or more community directories, follow referrals
-  and direct links, and merge results with visible source and ranking provenance;
-  it does not need to know which substrate hosts a provider.
-- A consumer's identity, signed receipts, grants, and preferences are portable
-  and controlled from the consumer's device or a store the consumer has
-  explicitly designated. Running a personal substrate is optional.
-- The Consumer App is itself a thin client; business logic runs on provider substrates. The Consumer App is not a privileged participant in the ecosystem.
+- An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) aggregating provider listings and credentials. Aggregators do not manage hosting or infrastructure for providers.
+- A Consumer App (such as the Roym Hub browser web application) allows consumers to discover, browse, and transact with providers across multiple substrates and SynApps from a single interface.
+- The Consumer App queries one or more community directories, and merges results via deterministic round-robin client-side merging (`crates/roym_directory/src/app/client_merge.rs`) with visible source attribution, freshness, and refusal reasons.
+  > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today consumers discover providers via direct listing IDs or directory queries.
+- A consumer's identity, signed receipts, grants, and preferences are portable and controlled from the consumer's device or designated store. Running a personal substrate is optional; consumers can connect via the Client Gateway.
+- The Consumer App is a thin client; business logic runs on provider substrates. The Consumer App is not a privileged participant in the ecosystem.
+
+### [GTW-PRX] Client Gateway Multi-Substrate Ingress Proxy
+
+The Client Gateway bridges HTTP and WebSocket traffic from web browsers and external clients to internal and remote substrate RPC handlers.
+
+- **Ingress Protocol Translation:** The gateway listens on port 7960 (configurable) and translates browser HTTP requests (`POST /rpc`, `GET /metrics`, `GET /blobs/*`) and WebSocket connections (`/__syneroym/tunnel`, `/__syneroym/ws`) into substrate router invocations.
+- **Session Identity Propagation:** The gateway extracts caller credentials from session cookies (`syneroym_session`) or Authorization headers, validating them against the Node Auth Service and injecting verified caller DIDs into requests.
+- **Multi-Substrate Routing:** Inbound requests for foreign substrate services route across the Iroh network overlay using local static inventories or registry lookups, without requiring browser runtimes to maintain native QUIC connections.
+- **Static Asset Delivery:** Static user interface assets and application bundles stream directly from the filesystem or content-addressed blob storage without instantiating guest WebAssembly components.
 
 ---
 
@@ -672,30 +682,37 @@ require owner-held encryption keys or attested hardware.
 
 ### Development
 
-- Developers build encapsulated components (e.g. using WebAssembly or standard container images) that define clear, strongly-typed interfaces for inter-component communication.
-- The system supports automatically deriving external-facing APIs (e.g., JSON-RPC or HTTP/REST) from these internal component interfaces to support diverse clients like web browsers.
-- Components are packaged into standard distribution formats suitable for the target substrate execution environment.
+- Developers build encapsulated components (using WebAssembly components or Podman container images) that define clear, strongly-typed interfaces for inter-component communication.
+- The system supports automatically deriving external-facing APIs (such as JSON-RPC or HTTP passthrough) from these internal component interfaces via the Universal Proxy to support diverse clients like web browsers.
+- Manifests reference compiled `.wasm` binaries or OCI container images in `ServiceDefinition::source`, and static web assets are bundled into `AssetBundle` records stored in content-addressed blob storage. Dual-build execution compiles SynApps as either sandboxed `wasm32-wasip2` components or statically linked native binaries (`syneroym-app-host-native`).
+  > **Envisioned.** Not built yet. Standalone signed package bundle distribution format and public OCI registry distribution. Today deployment bundles are supplied as local file paths or artifact bundles.
+
+### [APP-AST] Zero-Runtime Static Asset Passthrough
+
+Service deployment packages bundle static web assets (`AssetBundle`) streamed directly by the HTTP proxy from blob storage without instantiating or executing guest WebAssembly components.
+
+- **Asset Bundle Manifest Declaration:** Service manifests declare an optional `AssetBundle` specifying archive location, optional content hash, and visibility (`Visibility::Public` or `Visibility::Private`).
+- **Blob Store Ingestion:** At deployment time, the control plane registers and unpacks asset bundles into the substrate content-addressed blob store.
+- **Direct HTTP Streaming:** Inbound HTTP requests for static routes stream asset bytes directly from the blob store via the Universal Proxy. The substrate serves static assets with low latency and without allocating WebAssembly instance fuel or memory.
 
 ### Deployment
 
-- An Application Specification composes components into a SynApp and declares dependencies, resource requirements, and configuration schema.
-- The specification declares package identity and signature, supported protocol
-  versions, requested capabilities, data classifications, migrations, backup
-  expectations, health checks, and rollback behaviour.
-- Provider applies the Application Specification to chosen substrate(s).
-- Before deployment, the substrate validates resource availability,
-  compatibility, access permissions, and capability expansion and presents a
-  comprehensible approval summary.
-- A partially failed deployment is recoverable or rolled back without leaving
-  undeclared services or grants. Installation state is inspectable and exportable.
+- An Application Specification (`SynAppManifest`) composes components into a SynApp and declares dependencies, resource limits (CPU, memory), and configuration schema.
+- The specification declares service identifiers, versions, requested capabilities, permissions (FDAE policies), and migration lifecycle hooks (`init`, `migrate`).
+  > **Envisioned.** Not built yet. Standalone package signatures, formal data classifications, automated backup declarations, and declarative rollback behaviour.
+- A provider or operator applies the Application Specification to chosen substrate(s) using `roymctl app deploy` or the App Supervisor.
+- Before deployment, the substrate validates UCAN deploy permissions, semver constraints, and configuration schemas.
+  > **Envisioned.** Not built yet. Pre-deploy node-level resource capacity checks and interactive capability-expansion approval summaries.
+- A partially failed deployment is cleaned up by the SQLite deployment journal, tracking reconciliation actions and rolling back partially registered services. Installation state is inspectable via `roymctl app status`.
 
 ### Monitoring
 
-- Substrate monitors the application and provides health information,
-  notifications, and policy-controlled restart or redeploy on failure.
-- Providers receive alerts through UI, CLI, or webhook integrations of their choice.
-- Updates preserve a last known-good package and state snapshot until health and
-  migration checks pass. A capability increase requires renewed owner approval.
+- Substrate monitors applications and provides health information through the App Supervisor's resident reconcile loop and HTTP health endpoints (`/health`, `/v1/info`), publishing failure alerts to MQTT topics.
+  > **Envisioned.** Not built yet. Outbound push notifications to external notification services.
+- Providers receive alerts through CLI inspection (`roymctl app status`, `roymctl app alerts`) and supervisor JSON-RPC `alerts` queries.
+  > **Envisioned.** Not built yet. Webhook dispatch and real-time UI push alert notifications.
+- Updates require valid controller UCAN signatures, and configuration generations are versioned in `config_generations`.
+  > **Envisioned.** Not built yet. Automated snapshot and rollback to last known-good packages on post-update health check failure.
 
 ---
 
@@ -1305,7 +1322,7 @@ All advanced AI capabilities and concierge agent workflows are deferred and trac
 
 ### [ADV-DEV] SynApp Developer Tooling & SDKs
 - **Transparent Developer Experience**: Rather than providing a rigid CLI wrapper, Syneroym development embraces transparent, standard Rust tooling. Project templates (via `cargo generate`) are provided to set up standard `Cargo.toml` files and build scripts. This ensures compatibility with existing IDEs, Language Servers (LSP/rust-analyzer), and agentic coding tools.
-- **Local Substrate for Integration & Dev**: To ensure zero-drift execution, developers use an actual local Syneroym node (e.g., `roymctl dev`) for local integration testing and development. This completely avoids the massive engineering effort of duplicating the WASMTIME host, SQLite, and network logic into a standalone developer SDK. The SynApp couples to the Substrate entirely through standard WIT interfaces, not compile-time bindings.
+- **Local Substrate for Integration & Dev**: To ensure zero-drift execution, developers use an actual local Syneroym node for local integration testing and development. Operations and developer workflows use existing `roymctl` subcommands (`claim`, `app`, `kek`, `supervisor`, `substrate`, `svc`). This completely avoids the massive engineering effort of duplicating the WASMTIME host, SQLite, and network logic into a standalone developer SDK. The SynApp couples to the Substrate entirely through standard WIT interfaces, not compile-time bindings.
 - **Pure Mock SDK for Unit Testing**: We provide a minimal `syneroym-dev-sdk` intended exclusively for isolated unit testing. This SDK provides simple, purely in-memory mock implementations of the Substrate interfaces (Data, Blobs, AI). Developers can write `#[test]` functions that link against these mocks for fast, offline verification of application logic without needing to spawn a real Substrate node.
 
 ## Phase 5: Peer-to-Peer Community Primitives
