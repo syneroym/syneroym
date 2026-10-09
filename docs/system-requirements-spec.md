@@ -352,83 +352,63 @@ Architecture and test plans.
 
 ### Onboarding and recovery
 
-- A provider can choose a managed-guild path or a self-hosted path. The product
-  explains control, cost, availability, privacy, and support trade-offs before
-  the choice is committed.
-- Joining a guild must not transfer ownership of the provider's root identity,
-  signed history, or export rights to the guild. Delegated administration is
-  scoped, visible, revocable, and audit-recorded.
-- Consumer onboarding creates or imports a lightweight identity on the consumer's
-  device. Backup is strongly prompted after first value, not made a blocker to
-  browsing. The recovery model does not claim self-sovereignty if an operator can
-  unilaterally recover or impersonate the consumer.
-- Destructive actions state their scope and recovery consequences. Common
-  recovery flows are available through a guided UI as well as an expert CLI.
+- A provider can choose a managed-guild path or a self-hosted path. Providers initialize self-hosted substrates via `roymctl substrate init` or bind to managed controllers via `ControllerAgreement` (`apps/roymctl/src/commands/substrate.rs:65`).
+  > **Envisioned.** Not built yet. A guided onboarding wizard comparing control, cost, availability, privacy, and support trade-offs before committing. Today substrate initialization and management run via roymctl CLI commands.
+- Joining a guild must not transfer ownership of the provider's root identity, signed history, or export rights to the guild. Delegated administration is scoped (`crates/identity/src/delegation.rs:25`), visible, revocable via Master Anchor deny lists, and audit-recorded via FDAE `DecisionTrace`.
+- Consumer onboarding creates or imports a lightweight device-bound Ed25519 identity on the consumer's device mapped to short-lived session tokens (`crates/client_gateway/src/session.rs`). Users export encrypted identity backups (`crates/identity/src/backup.rs`). The recovery model does not claim self-sovereignty if an operator can unilaterally recover or impersonate the consumer; root keys are self-sovereign Ed25519 master DIDs.
+  > **Envisioned.** Not built yet. Automated post-transaction backup prompts in the UI and optional government identity assurance credentials. Today consumers manage device-bound session keys and export encrypted backups on demand.
+- Destructive actions state their scope and recovery consequences. Common recovery flows are available through an expert CLI (`roymctl roym backup restore`) with warnings on destructive actions.
+  > **Envisioned.** Not built yet. A guided graphical UI recovery wizard for identity and database restore. Today disaster recovery flows execute through the roymctl CLI.
 
 ### Data rights and lifecycle
 
-- Every durable record has a documented owner or controller, permitted writers,
-  retention policy, export representation, and deletion or tombstone behaviour.
-- Shared records such as agreements, receipts, reviews, and revocations cannot be
-  unilaterally rewritten. A participant may remove its local copy or personal
-  presentation where law permits, while the protocol preserves the other party's
-  legitimate signed record and records later corrections separately.
-- Access grants are purpose- and scope-limited, expire by default for sensitive
-  data, and can be revoked. The UI shows who currently has access and what
-  revocation can and cannot retract from already-received data.
-- Export and account deletion are distinct actions. Deletion identifies data
-  held by the provider, operator, backup destination, peers, and legally required
-  records; the product must not promise deletion it cannot enforce.
+- Every durable record has a documented owner or controller, permitted writers, retention policy, export representation, and deletion or tombstone behaviour. Permissions are enforced by FDAE policies (`crates/fdae/src/policy.rs`), directory publications enforce retention pruning (`crates/roym_directory/src/app/publication_ops.rs`), and deleted messages leave tombstones in the conversation DAG (`crates/conversation/src/host_impl.rs:333`).
+- Shared records such as agreements, receipts, and revocations cannot be unilaterally rewritten; they are tamper-proof canonical signed Roym records (`crates/signed_record/`). A participant may remove its local copy or personal presentation where law permits, while the protocol preserves the other party's legitimate signed record and records later corrections separately.
+  > **Envisioned.** Not built yet. Public consumer reviews, reputation ratings, and generic W3C Verifiable Credentials 2.0 envelopes. Today shared records use canonical signed Roym records and bilateral agreement receipts.
+- Access grants are purpose- and scope-limited, expire by default for sensitive data, and can be revoked via UCAN tokens (`crates/ucan/src/token.rs`), delegation certificates (`crates/identity/src/delegation.rs`), and Master Anchor deny lists (`crates/core/src/dht_registry/master_anchor.rs`).
+  > **Envisioned.** Not built yet. A graphical UI dashboard displaying active access grants and explaining what revocation can and cannot retract from already-received data. Today capability grants and revocations are enforced cryptographically via UCAN tokens and Master Anchor deny lists.
+- Export and account deletion are distinct actions. Deletion identifies data held by the provider, operator, backup destination, peers, and legally required records; the product must not promise deletion it cannot enforce. Users export data via sealed backup archives (`roymctl roym backup create`), while message deletion purges readable bodies locally with DAG tombstones (`crates/roym_profile/src/app/profile_ops.rs:25`).
+  > **Envisioned.** Not built yet. Comprehensive multi-party account deletion coordinating erasure across providers, hosting operators, backup destinations, and peer nodes. Today users export data via backup archives and delete local message content via tombstones.
 
 ### Safety, support, and disputes
 
-- Before production use, the system has a reviewed threat model and privacy data
-  inventory covering malicious packages, peers, clients and operators;
-  compromised keys; metadata leakage; denial of service; backup exposure; and
-  recovery abuse. Residual risks and unsupported deployment profiles are stated.
-- Syneroym supplies evidence and workflow primitives; it does not imply that
-  every listed provider, guild, credential issuer, or facilitator has been vetted
-  by the Syneroym project.
-- Provider terms, price, cancellation rules, data use, payment method, and named
-  dispute path are captured before agreement. A material change requires renewed
-  consent and produces a new version.
-- Users can report impersonation, fraud, harassment, unsafe service, and illegal
-  content to the relevant operator or community. Reports have a status, an
-  appeal or correction path where appropriate, and safeguards against publicising
-  unverified allegations as fact.
-- Emergency response, guaranteed refunds, insurance, professional licensing, and
-  legal arbitration are not implied platform services. A guild or facilitator
-  offering them must state jurisdiction, limits, and responsible legal entity.
+- Before production use, the system has a reviewed threat model and privacy data inventory covering malicious packages, peers, clients and operators; compromised keys; metadata leakage; denial of service; backup exposure; and recovery abuse. Residual risks and unsupported deployment profiles are stated.
+  > **Envisioned.** Not built yet. Formal reviewed threat model documents and privacy data inventories. Today technical protections include Wasmtime fuel limits, mlock memory protection, TLS 1.3 QUIC transports, and Double Ratchet messaging encryption.
+- Syneroym supplies evidence and workflow primitives; it does not imply that every listed provider, guild, credential issuer, or facilitator has been vetted by the Syneroym project.
+- Provider terms, price, cancellation rules, data use, payment method, and named dispute path are captured before agreement in `AgreedTerms` (`crates/roym_core/src/transaction.rs:116`). A material change requires renewed consent and produces a new version.
+- Users can report impersonation, fraud, harassment, unsafe service, and illegal content to the relevant operator or community. Reports have a status, an appeal or correction path where appropriate, and safeguards against publicising unverified allegations as fact. Reports are stored locally on the submitting node with status tracking (`crates/roym_profile/src/app/moderation.rs:188`).
+  > **Envisioned.** Not built yet. Community-level appeal, dispute arbitration, and public correction workflows. Today moderation reports are stored locally with status tracked on the submitting node.
+- Emergency response, guaranteed refunds, insurance, professional licensing, and legal arbitration are not implied platform services. A guild or facilitator offering them must state jurisdiction, limits, and responsible legal entity in `AgreedTerms`.
+  > **Envisioned.** Not built yet. Decentralized dispute resolution, independent arbiter panels, and smart-contract escrow custody. Today agreements capture a named dispute path as a text policy term within AgreedTerms.
 
 ---
 
 ## Ecosystem Contracts and Governance
 
-- The minimum federation contract consists of versioned identity resolution,
-  endpoint discovery, provider/catalog publication, service request, agreement,
-  receipt, trust-signal, capability negotiation, and export schemas plus their
-  security and error semantics.
-- Each normative contract has a stable identifier, compatibility policy, test
-  vectors, and an executable conformance suite. A third-party implementation can
-  verify compatibility without contacting a privileged Syneroym service.
-- Protocol changes follow a public proposal process with rationale, security and
-  privacy impact, migration plan, reference fixtures, and a defined review
-  period. Urgent security changes may be expedited but are documented afterward.
-- No public Syneroym-operated bootstrap, relay, registry, app store, model
-  service, or certificate authority is the sole permitted implementation of its
-  role. Defaults may be convenient; replacement and export remain supported.
-- Compatibility claims are capability-specific (for example, "Guild Requests
-  v1") rather than a blanket "Syneroym compatible" label. Certification does not
-  imply provider quality, legal compliance, or financial safety.
-- SynApp packages are content-addressed or signed, declare publisher, requested
-  capabilities, data migrations, supported interfaces, resource bounds, and
-  update policy. Owners approve material capability expansion before update.
-- The project's sustainable business model may charge for hosting, support,
-  certification, or optional services, but protocol participation and data exit
-  cannot depend on paying a mandatory Syneroym toll.
-- The project publishes a vulnerability-reporting channel, supported-version
-  policy, security advisory format, package revocation mechanism, and emergency
-  update/rollback procedure before the public production launch.
+- The minimum federation contract consists of versioned identity resolution, endpoint discovery, provider and catalog publication, service requests, agreements, receipts, trust signals, and backup archive export schemas (`crates/roym_directory/src/app/backup.rs`).
+  > **Envisioned.** Not built yet. Dynamic protocol capability negotiation and cross-vendor federation testing suites. Today protocols bind fixed ALPN `syneroym/0.1` and typed WIT interface packages.
+- Normative contracts have stable identifiers in versioned WIT interface packages (`crates/wit_interfaces/wit/`) and dual-build parity tests.
+  > **Envisioned.** Not built yet. Standalone third-party test vectors and an executable public conformance test suite. Today compatibility is verified via cargo test suites and dual-build parity tests.
+- Architectural decisions and protocol modifications are documented in Architecture Decision Records (ADRs) with rationale, security impacts, and migration plans.
+  > **Envisioned.** Not built yet. A formal external public proposal process with scheduled community review periods. Today architectural changes are proposed and tracked through internal ADRs.
+- No public Syneroym-operated bootstrap, relay, registry, app store, model service, or certificate authority is the sole permitted implementation of its role. Substrates configure custom parent coordinator relay URLs (`parent_coordinator.iroh.url`), publish to self-hosted community registries, use self-sovereign Ed25519 keys, and support complete local data export.
+- Compatibility claims are capability-specific, enforced by versioned WIT packages and manifest interface requirements.
+  > **Envisioned.** Not built yet. A formal third-party capability certification and labeling program. Today compatibility is verified against versioned WIT package definitions.
+- SynApp manifests declare publisher, interfaces, dependencies, resource bounds, FDAE policies, and lifecycle hooks; deployment requires owner UCAN authorization.
+  > **Envisioned.** Not built yet. Standalone publisher-signed package distribution archives and interactive UI prompts for capability expansion during updates. Today SynApp components deploy via manifests and roymctl.
+- SynOrgs operate as single-owner root entities managing membership credentials, directory listings, and revocation lists (`crates/roym_directory/src/app.rs`).
+  > **Envisioned.** Not built yet. Multi-signature voting, token governance, and weighted community consensus. Today SynOrgs operate under single-owner cryptographic controller authority.
+- The project's sustainable business model may charge for hosting, support, certification, or optional services, but protocol participation and data exit cannot depend on paying a mandatory Syneroym toll. Substrate runtime execution, P2P networking, and SQLite storage execute locally with zero licensing checks or network tolls.
+- The project publishes a private vulnerability-reporting channel via GitHub Security Advisories (`SECURITY.md`), and cryptographic key revocations publish to Master Anchor deny lists.
+  > **Envisioned.** Not built yet. Published supported-version policies, standardized security advisory formats, package-level revocations, and automated emergency update procedures. Today vulnerabilities are reported via GitHub Security Advisories and keys are revoked via Master Anchor deny lists.
+
+### [DIR-SYN] SynOrg Directory Credential Management & Pinned Sources
+
+A SynOrg directory service MUST manage signed membership credentials, suspensions, and revocations for its community members, providing authoritative standing verification over public wire protocols.
+
+- **Credential and Revocation Lifecycle:** The SynOrg host issues canonical signed `MembershipCredential` records carrying subject DIDs, authorized categories, and expiration timestamps (`credential.issue`), and publishes signed revocation records (`revocation.issue`) when membership terminates or is suspended. Stored credentials and revocations MUST be queryable via wire-exposed RPC methods (`directory.standing`, `directory.info`).
+- **Publication Admission Gating:** A directory MUST admit service publications (`directory.publish`) only from verified members holding an unexpired, unrevoked membership credential issued by the directory's owning SynOrg.
+- **Pinned Directory Sources:** Consumer and provider nodes MUST maintain an explicit list of trusted directory sources (`SourceRow`), pinning the directory DID and the issuing SynOrg DID on first contact (`issuer_did`) to prevent directory spoofing. Client discovery queries MUST fan out strictly across configured sources and verify returned listing credentials against pinned directory issuers.
 
 ---
 
@@ -442,62 +422,47 @@ When a consumer discovers a provider through Syneroym, they have no prior relati
 
 Minimum requirement at transaction time:
 
-- Before accepting an agreement, the consumer can inspect the provider's stable
-  identity, the provenance and freshness of available trust signals, material
-  policy terms, payment recipient, and dispute/cancellation path. Absence of a
-  trust signal is shown as unknown, never converted into a positive default.
-- Providers can configure proportionate consumer-side requirements for higher
-  risk work, such as a verified contact method, prior receipt, deposit, or named
-  facilitator. The product avoids collecting stronger identity than the risk
-  warrants.
-- Trust displays separate facts (credential, completed interaction, vouch,
-  report, recency) rather than hiding them behind one universal score. Any
-  summary or ranking is explainable and can be recalculated from disclosed input
-  categories.
+- Before accepting an agreement, the consumer can inspect the provider's stable identity, the provenance and freshness of available trust signals, material policy terms in `AgreedTerms`, payment recipient, and dispute or cancellation path. Absence of a trust signal is shown as unknown, never converted into a positive default.
+- The product avoids collecting stronger identity than risk warrants; consumers use lightweight device-bound Ed25519 session keys, and providers configure recipient contact rate limits and block lists (`crates/roym_core/src/safety.rs`).
+  > **Envisioned.** Not built yet. Dynamic provider configuration of consumer-side gates (mandatory deposits, required prior receipts, verified external contacts, or named facilitators). Today consumers use lightweight session identities with recipient-configurable rate limits and block lists.
+- Trust displays separate facts (credentials, completed interaction receipts, recency) rather than hiding them behind one universal score. Directory search ranking uses open, explainable deterministic recency and round-robin merging (`crates/roym_directory/src/app/client_merge.rs`).
+  > **Envisioned.** Not built yet. Joint DHT reputation records, exponential moving average (EMA) score formulas, and consumer vouch graphs are unbuilt. Today trust relies on independent credentials and bilateral receipts without numerical reputation scores.
 
 ### Trust Layers
 
 Trust in the Syneroym ecosystem operates at multiple levels:
 
-**Layer 1: Cryptographic continuity.** A stable, issuer-neutral identity delegates
-to rotatable device and routing keys. Hardware protection, social recovery, or a
-government credential may strengthen recovery or identity assurance, but none is
-required universally. Cryptographic continuity proves control of keys—not a
-person's legal name, quality, or honesty.
+**Layer 1: Cryptographic continuity.** A stable, issuer-neutral root identity (self-sovereign Ed25519 master DID) delegates authority to rotatable device and routing keys using signed `DelegationCertificate` credentials. Key revocations are published to Master Anchor deny lists on the DHT and community registry. Cryptographic continuity proves control of keys—not a person's legal name, quality, or honesty.
 
-**Layer 2: Referral and vouching.** Entities issue signed, scoped, expiring
-statements about other entities. A guild may attest membership or a consumer may
-recommend a completed service. The display preserves who said what and in which
-context; a vouch is not silently treated as objective verification.
+> **Envisioned.** Not built yet. Hardware protection (TPM or secure enclave), social recovery, and government identity credentials are unbuilt optional assurance mechanisms. Today root keys are self-sovereign Ed25519 keypairs delegating via software delegation certificates.
 
-**Layer 3: Verifiable credentials.** Providers attach credentials such as a trade
-licence or certification. Verification checks signature, issuer, scope, expiry,
-and revocation. The consuming party or community decides which issuers it trusts;
-the UI does not reduce "valid signature" to "trusted claim".
+**Layer 2: Referral and vouching.** Guild entities issue signed, scoped, expiring statements about members (`MembershipCredential`). The display preserves who said what and in which context; an issued credential is not silently treated as objective verification of quality.
 
-**Layer 4: Interaction receipts and feedback.** Completed interactions can produce
-mutually signed receipts and separately signed feedback. A receipt proves that
-the parties acknowledged a workflow event, not that every off-system claim is
-true. Portable bundles preserve provenance and allow selective disclosure.
+> **Envisioned.** Not built yet. Consumer referral vouches, recommendation statements, web-of-trust vouching graphs, and vouch decay formulas are unbuilt. Today trust relies on signed SynOrg membership credentials and revocations.
 
-**Layer 5: Community moderation.** Guilds and communities maintain their own
-policies and signed block, warning, or trust lists. Reports are scoped and do not
-automatically propagate as global truth. Consumers see the policy source; people
-affected by a published decision have a correction or appeal mechanism where
-safety and law permit.
+**Layer 3: Verifiable credentials.** Providers attach credentials (such as guild membership or trade certification) structured as canonical signed Roym records (`crates/signed_record/`). Verification checks Ed25519 signatures, issuer DID, scope, expiry timestamps, and issuer revocation lists (`crates/roym_directory/src/app/credential_ops.rs`). The consuming party or community decides which issuers it trusts; the UI does not reduce "valid signature" to "trusted claim".
 
-Trust mechanisms must be evaluated against collusion, selective omission,
-replay, identity farming, review coercion, compromised keys, malicious issuers,
-and discriminatory community policies. Tying feedback to a signed interaction
-reduces casual spam but does not by itself solve Sybil attacks or collusion.
+> **Envisioned.** Not built yet. Generic W3C Verifiable Credentials 2.0 envelopes and external credential library integrations are unbuilt. Today all credentials use canonical signed Roym records.
+
+**Layer 4: Interaction receipts and feedback.** Completed commercial interactions produce bilateral independent agreement receipts (`AgreementReceiptPayload`) and fulfilment receipts (`FulfilmentRecord`) signed and stored separately by each party. A receipt proves that both parties acknowledged a workflow event under identical agreed terms, not that every off-system claim is true. Export bundles preserve provenance with signed record manifests.
+
+> **Envisioned.** Not built yet. Separately signed consumer feedback, public reviews, and selective disclosure (redactable zero-knowledge or field-level disclosure) are unbuilt. Today interactions produce bilateral independent agreement and fulfilment receipts.
+
+**Layer 5: Community moderation.** Guilds and communities maintain signed membership revocation and suspension decisions (`crates/roym_core/src/membership.rs`). Abuse reports submitted by users remain scoped locally to recipient nodes (`crates/roym_profile/src/app/moderation.rs`) and do not broadcast as global truth. Consumers see the policy source.
+
+> **Envisioned.** Not built yet. Published community warning lists and formal automated correction or appeal workflows are unbuilt. Today guilds publish signed revocation lists and nodes store local abuse reports.
+
+Trust mechanisms enforce anti-replay protections via monotonic sequences and timestamps (`crates/signed_record/`), key compromise revocation via Master Anchor deny lists (`crates/core/src/dht_registry/master_anchor.rs`), and tying receipts directly to signed agreements. Tying receipts to signed interactions reduces casual spam but does not by itself solve Sybil attacks or collusion.
+
+> **Envisioned.** Not built yet. Comprehensive Sybil attack mitigation, collusion defenses, and formal evaluation frameworks are unbuilt. Today anti-replay timestamps and Master Anchor key revocations protect against basic replay and compromised keys.
 
 ### Legal Liability Boundary
 
 The system does not provide legal shielding in the way centralised platforms do — that shielding derives from the platform's legal personhood and terms of service. Syneroym infrastructure operators bear their own legal responsibility for services they host under applicable local law. The requirements are:
 
-- The substrate makes it straightforward for a Provider or Aggregator to display their own terms of service to consumers.
+- The substrate makes it straightforward for a Provider or Aggregator (directory-type SynOrg) to display their own terms of service, cancellation policies, and refund rules to consumers through `AgreedTerms` structures.
 - The substrate does not create an implicit representation to consumers that a federated node has been vetted by Syneroym.
-- A separate document will outline recommended legal structures for Provider Aggregators operating at scale. [Legal guidance: Out of scope for this spec]
+- A separate document will outline recommended legal structures for Directory SynOrgs and Aggregators operating at scale. [Legal guidance: Out of scope for this spec]
 
 ---
 
