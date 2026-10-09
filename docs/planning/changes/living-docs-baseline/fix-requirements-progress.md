@@ -23,5 +23,5 @@ This file tracks progress applying the requirements audit fixes to `docs/system-
 | 15 | Traceability Matrix: Substrate Capabilities part 2 (rows 45–58) | done | 7ad9d9fa | Matrix rows 45–58, O34, O46 |
 | 16 | Traceability Matrix: Substrate Capabilities part 1 (rows 25–44) | done | 16702a1a | Matrix rows 25–44, O23, O50, O55 |
 | 17 | Traceability Matrix: Core Requirements (rows 1–24) | done | dbe3b99c | Matrix rows 1–24, O18, O30, O49, O51, D-R9-3 |
-| 18 | Traceability Matrix: Add missing 13 spec requirements | not started | - | Matrix new rows, O54 |
+| 18 | Traceability Matrix: Add missing 13 spec requirements | done | 1c623100 | Matrix new rows, O54 |
 | 19 | Outside the documents | not started | - | TERMINOLOGY.md, deferred-backlog.md, code comments |
