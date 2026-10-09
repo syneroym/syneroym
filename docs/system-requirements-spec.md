@@ -231,11 +231,12 @@ config:
 flowchart TD
     Consumer([Consumer])
     Provider([Provider])
-    Aggregator([Aggregator])
+    Aggregator([Aggregator: Directory SynOrg])
     InfraProv([Infrastructure Provider])
     
     ConsumerApp[Consumer App]
-    SynApp[SynApp: Space / Catalog]
+    SynApp[SynApp: Catalog / Services]
+    SynSvc[SynSvc: Service Instance]
     Substrate[Syneroym Substrate]
     Node[Compute Node]
 
@@ -243,8 +244,7 @@ flowchart TD
     ConsumerApp -->|discovers & interacts via| Substrate
     
     Provider -->|manages| SynApp
-    Aggregator -->|hosts for| Provider
-    Aggregator -->|manages| SynApp
+    Aggregator -->|aggregates listings from| SynApp
     
     SynSvc -->|executes on| Substrate
     SynApp -->|orchestrates| SynSvc
@@ -252,7 +252,7 @@ flowchart TD
     InfraProv -->|owns & operates| Node
 ```
 
-*(Note: For the lower-level technical architecture diagram detailing modules, services, and sandboxes, please refer to the Architecture Design Document).*
+*(Note: For the lower-level technical architecture diagram detailing service components, services, and sandboxes, please refer to the Architecture Design Document).*
 
 ---
 
@@ -263,70 +263,77 @@ These requirements apply across all business domains and SynApps.
 ### Infrastructure & Hosting
 
 - Service Providers run business applications on supported commodity computers
-  they control, or on infrastructure operated under an explicit agreement, even
-  when the host is behind NAT or a firewall.
-- Infrastructure Providers make hardware (old PCs, cloud VMs, etc.) available for Service Providers to host applications or application components on a leased basis.
-- Service Providers see a plain-language service status and receive actionable
-  notification when their intervention is required. Routine managed operation
-  must not require shell access.
-- Infrastructure Providers monitor infrastructure health and resource usage,
-  control node access, and see which obligations are affected by an incident.
-- App Developers package SynApps (e.g. as WASM modules or OCI images), and Providers deploy them to matching container infrastructure (WASM runtime, Podman/Docker).
-- Consumers access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools.
+  they control, or on infrastructure operated under an explicit agreement (`crates/identity/src/substrate.rs:48`), even
+  when the host is behind NAT or a firewall (`crates/router/src/net_iroh.rs:94`).
+- Infrastructure Providers make hardware (old PCs, cloud VMs, etc.) available for Service Providers to host applications or application components under explicit node agreements (`crates/identity/src/substrate.rs:48`).
+  > **Envisioned.** Not built yet. Commercial leased hosting accounting and automated compute marketplaces. Today infrastructure nodes are claimed and authorized via ControllerAgreement and roymctl.
+- Service Providers see a plain-language service status (`crates/coordinator_iroh/src/info_endpoint.rs:104`) and manage routine operations via web UI or CLI without requiring shell access (`crates/roym_web/ui/`).
+  > **Envisioned.** Not built yet. Automated push notifications when provider intervention is required. Today operators inspect status via /v1/info endpoints and the Roym Hub web UI.
+- Infrastructure Providers monitor infrastructure health and resource usage (`crates/observability/src/recorder.rs`), and control node access via Admin DIDs and UCAN delegation (`crates/control_plane/src/service/orchestration.rs:200`).
+  > **Envisioned.** Not built yet. Incident-to-obligation impact mapping and automated SLA tracking during outages. Today health metrics are recorded in memory and node access is governed by UCAN delegation.
+- App Developers package SynApps (e.g. as WASM modules or OCI images; `crates/app_orchestration/src/models/manifest.rs:16`), and Providers deploy them to matching container infrastructure (WASM runtime, Podman/Docker; `crates/sandbox_wasm/src/engine.rs:84`, `crates/sandbox_podman/src/engine.rs:238`).
+- Consumers access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools (`crates/roym_web/ui/`, `crates/client_gateway/src/gateway.rs:73`, `apps/roymctl/src/commands/`).
 - Service Providers export and restore all in-scope data, configuration, grants,
-  and signed history using documented, versioned, non-proprietary formats. An
-  export includes a manifest and completeness report; secrets may require a
-  separately protected transfer.
+  and signed history using documented, versioned formats (`ARCHIVE_VERSION = 1`). An
+  export includes a manifest and completeness report; secrets transfer via
+  encrypted archives (`crates/roym_directory/src/app/backup.rs:25`).
+  > **Envisioned.** Not built yet. Cross-version migration test fixtures for exported data archives. Today same-version export and clean-node restore are verified by automated tests.
 - Every production profile supports encrypted backup and tested restore. Backup
   destination is operator-selectable; peer backup pools are optional and must
-  not be required for portability.
-- The system reports recovery-point and recovery-time expectations before a
-  provider chooses a hosting profile. Backup success is never inferred merely
-  from upload success; restorability is tested.
-- Multi-device clients may work offline using local caches and outboxes. Running
+  not be required for portability (`apps/roymctl/src/commands/roym/backup.rs:25`).
+- Backup success is never inferred merely from upload success; restorability is tested on clean nodes in automated integration test suites (`crates/substrate/tests/roym_restore_e2e.rs:49`).
+  > **Envisioned.** Not built yet. Automated reporting of recovery-point and recovery-time expectations before choosing a hosting profile. Today clean-node backup restore is verified in test harnesses.
+- Multi-device clients may work offline using local caches and outboxes (`crates/async_queue/src/lib.rs:1`, `crates/substrate/tests/roym_group_offline_e2e.rs`). Running
   independent writable copies of the same authoritative service state is a later
-  capability and must not be implied by the baseline requirement.
-- Sharding and multi-node service placement are optional scale capabilities.
-  They must not complicate the single-node deployment or portability contract.
+  capability and must not be implied by the baseline requirement; single-writer serialization per service resolves this (`crates/data_db/src/sqlite/provider.rs:281`).
+- Sharding and multi-node service placement are optional scale capabilities (`crates/app_supervisor/src/lib.rs`).
+  They must not complicate the single-node deployment or portability contract (`crates/substrate/src/main.rs:178`).
 
 ### Connectivity & Offline Behaviour
 
-- The substrate supports direct peer-to-peer connections wherever possible, and falls back to relay-mediated encrypted connections when NAT or firewall constraints prevent direct connectivity.
+- The substrate supports direct peer-to-peer connections without intermediary servers wherever direct paths exist (`crates/router/src/net_iroh.rs:94`), and falls back to relay-mediated encrypted connections through coordinators when NAT or firewall constraints prevent direct connectivity (`crates/coordinator_iroh/src/coordinator.rs:180`, `crates/router/src/route_handler/io.rs:471`).
 - **Offline outbox and retry queue:** Operations explicitly declared safe for
-  deferred delivery are stored durably, expose `pending`, `delivered`, or
-  `failed` status to the user, and retry when connectivity returns. The UI must
+  deferred delivery are stored durably (`crates/async_queue/src/queue.rs:50`), expose `pending`, `delivered`, or
+  `failed` status to the user (`crates/conversation/src/store.rs:127`), and retry when connectivity returns. The UI must
   not present `pending` as final success.
-- Automatic retries require an idempotency contract. The system must not replay
+- Automatic retries require an idempotency contract (ADR-0023 §4). The system must not replay
   a non-idempotent operation merely because a connection failed.
 - Each transactional entity defines permitted state transitions, authority,
-  expiry, idempotency, and conflict behaviour. Reconnection either reaches the
+  expiry, idempotency, and conflict behaviour (`crates/roym_core/src/transaction.rs:86`). Reconnection either reaches the
   same valid final state for all parties or exposes a conflict requiring a named
   party's decision; silent last-write-wins is not acceptable for agreements,
   payments, fulfilment, or access grants. A single writer per service resolves
   this by replaying queued requests through per-entity arbitration rules — no
-  multi-master merge is needed for these entities.
-- Users can cancel a still-pending operation when doing so is safe, and can see
+  multi-master merge is needed for these entities (`crates/data_db/src/sqlite/provider.rs:281`).
+- Users can cancel a still-pending message or booking operation when doing so is safe (`crates/conversation/src/host_impl.rs:333`, `crates/roym_transaction/src/app/booking_ops.rs:358`), and can see
   when cancellation is no longer guaranteed because delivery may have occurred.
+  > **Envisioned.** Not built yet. Generic user interface cancellation of arbitrary queued substrate outbox operations. Today message and booking cancellations are supported specifically.
+
+### [WEB-PRX] Peer-Proxy Browser Fallback Tunneling
+
+For browser clients lacking native QUIC or WebRTC direct peer connectivity, the system MUST provide a service worker fallback proxy and WebSocket blind tunnel to communicate with substrate nodes.
+
+- **Bootstrap Assets & Service Worker:** WebRTC and gateway coordinators serve browser bootstrap assets (`peer-proxy.js`, `/sw.js`) that intercept outbound application network requests and proxy them over client WebSockets (`crates/coordinator_webrtc/src/bootstrap.rs:113`).
+- **Opaque WebSocket Blind Tunneling:** Coordinators expose an opaque WebSocket blind tunnel endpoint (`/__syneroym/tunnel`) that reads the initial route preamble, resolves destination Iroh node endpoints via community registry lookups, and pipes raw binary frames bidirectionally between the browser Service Worker and target Iroh substrate nodes without inspecting decrypted payloads (`crates/coordinator_webrtc/src/bootstrap/tunnel.rs:11`).
+- **Preamble and Endpoint Resolution:** The blind tunnel forwards the route preamble to the destination substrate node, maintaining full stream encapsulation and end-to-end transport encryption between the browser client and destination service (`crates/coordinator_webrtc/src/bootstrap/tunnel.rs:37`).
 
 ### Messaging & Data Sharing
 
 - Providers, Consumers, and Services exchange messages only within an explicit
   conversation or capability context and subject to owner-approved access
-  policy.
+  policy (`crates/conversation/src/lib.rs:56`, `crates/ucan/src/token.rs`).
 - The system supports one-to-one text, attachments, and structured service cards
-  for requests, quotes, agreements, status, receipts, and grants. Group chat,
-  audio/video, social feeds, and collaborative editing are optional later
-  SynApps, not substrate conformance requirements.
+  for requests, quotes, agreements, status, receipts, and grants, as well as private group chat (`crates/roym_group`, `crates/conversation/src/dag.rs`).
+  > **Envisioned.** Not built yet. Audio/video calls, social feeds, and collaborative editing. Today 1:1 messaging, structured cards, and group chat are supported.
 - A structured message has a stable type, schema version, sender, intended
   recipients, creation time, idempotency identifier where applicable, and
-  verification status. Clients render unknown types safely without executing
+  verification status (`crates/conversation/src/store.rs:116`). Clients render unknown types safely without executing
   arbitrary sender code.
-- The product states which message content and metadata are end-to-end encrypted,
-  which operator can observe remaining metadata, and why. Transport encryption
-  alone must not be described to users as end-to-end message privacy.
+- The product states which message content and metadata are end-to-end encrypted using `vodozemac` (X3DH and Double Ratchet) and owner-distributed epoch keys (`crates/conversation/src/crypto.rs:233`, `crates/conversation/src/dag.rs`), which operator can observe remaining metadata, and why. Transport encryption alone must not be described to users as end-to-end message privacy.
 - Unsolicited contact is rate-limited and user-controlled. Recipients can block,
   report, and leave a conversation without surrendering their transaction
-  records.
+  records (`crates/roym_profile/src/app/safety_ops.rs:50`, `crates/roym_core/src/safety.rs:20`).
+  > **Envisioned.** Not built yet. Sender-side visibility of inbound rate-limit refusal reasons. Today recipient nodes enforce local contact blocks and rate limits silently.
 
 ### Non-Functional Requirements
 
@@ -334,17 +341,28 @@ Unless superseded by a stricter vertical requirement, the reference client uses 
 measurable baselines. Test profiles and measurement methods belong in the
 Architecture and test plans.
 
-| Quality | Requirement |
-|---|---|
-| **Security** | All inter-node and client-node traffic is encrypted in transit. Sensitive production data and backups are encrypted at rest by default. No default credential is shared across installations. Critical actions are authenticated, authorised, and audit-recorded. |
-| **Identity security** | Routine key rotation and device loss do not require a new public identity. Revocation freshness, recovery authority, and the consequence of losing every recovery factor are shown to the owner. Government identity is optional, never the universal root of participation. |
-| **Availability** | Local and cached reads remain available during temporary bootstrap or relay loss. Already-known peers continue the reference flow during the 24-hour bootstrap outage test when a viable direct or cached relay route exists. |
-| **Durability** | The disconnect/reconnect and process-restart suites lose no acknowledged in-scope transaction message. Backup restore is verified on a clean node before initial release. |
-| **Performance** | On the documented standard-node and mobile-network profiles, local UI actions reach p95 under 1 second and remote browse, search, message acknowledgement, and request submission reach p95 under 3 seconds, excluding an offline peer or external payment provider. |
-| **Operability** | Health output identifies the affected user capability, likely cause, and safe next action. Updates are reversible; failed migrations automatically preserve or restore the last known-good state. |
-| **Interoperability** | A claimed protocol version passes published conformance tests. Unknown optional capabilities fail gracefully; incompatible mandatory capabilities are rejected before a workflow begins. |
-| **Privacy** | The system minimises observable metadata, documents every operator-visible category, and provides purpose, retention, export, and deletion behaviour for personal data. Telemetry is off or local by default unless the operator or user knowingly enables export. |
-| **Portability** | Export/import formats and identity-linked history are documented, versioned, integrity-checked, and covered by cross-version fixtures. |
+- **Security:** All inter-node and client-node traffic is encrypted in transit (`crates/router/src/net_iroh.rs:94`). Sensitive production data and backups are encrypted at rest by default using SQLCipher KEK/DEK envelope encryption (`crates/data_keystore/src/key_store.rs:29`). No default credential is shared across installations. Critical actions are authenticated, authorised, and audit-recorded.
+- **Identity security:** Routine key rotation and device loss do not require a new public identity. Revocation freshness, recovery authority, and the consequence of losing every recovery factor are shown to the owner (`crates/identity/src/delegation.rs:62`, `crates/core/src/dht_registry/master_anchor.rs:24`). Government identity is optional, never the universal root of participation.
+- **Availability:** Local and cached reads remain available during temporary bootstrap or relay loss (`crates/data_db/src/sqlite/provider.rs:281`). Substrates configure static parent coordinator relay URLs (`parent_coordinator.iroh.url`) and publish to the community registry (`crates/community_registry`).
+  > **Envisioned.** Not built yet. A 24-hour bootstrap outage test. Today substrates configure static parent coordinator relay URLs and publish to community registries.
+- **Durability:** The disconnect/reconnect and process-restart suites lose no acknowledged in-scope transaction message (`crates/substrate/tests/saga_e2e.rs`, `crates/substrate/tests/roym_group_offline_e2e.rs`). Backup restore is verified on a clean node before initial release (`crates/substrate/tests/roym_restore_e2e.rs:49`).
+- **Performance:** On documented standard-node profiles, local UI actions reach p95 under 1 second and remote browse, search, message acknowledgement, and request submission reach p95 under 3 seconds, excluding an offline peer or external payment provider (`crates/observability/src/recorder.rs:136`).
+  > **Envisioned.** Not built yet. Mobile-network performance profile testing and automated mobile latency benchmarks. Today performance metrics are recorded in memory on desktop and server platforms.
+- **Operability:** Health output identifies the affected user capability, likely cause, and safe next action (`crates/coordinator_iroh/src/info_endpoint.rs:104`). Schema migrations execute inside database transactions and roll back automatically on failure (`crates/data_db/src/sqlite/provider.rs:51`).
+  > **Envisioned.** Not built yet. Automated binary update rollback across failed upgrades. Today schema migrations roll back within SQL transactions on failure.
+- **Interoperability:** WIT interfaces define versioned semver contracts (`crates/wit_interfaces/wit/`), and the handshake rejects unsupported protocol versions. Unknown optional capabilities fail gracefully; incompatible mandatory capabilities are rejected before a workflow begins.
+  > **Envisioned.** Not built yet. Published public protocol conformance test suites. Today interface compatibility is verified through Cargo test suites and WIT interface definitions.
+- **Privacy:** The system minimises observable metadata, documents every operator-visible category (`crates/roym_core/src/policy.rs`), and provides purpose, retention, export, and deletion behaviour for personal data. Telemetry is local in-memory by default (`crates/observability/src/recorder.rs`).
+- **Portability:** Export/import formats and identity-linked history are documented, versioned, and integrity-checked (`crates/roym_directory/src/app/backup.rs`, `apps/roymctl/src/commands/roym/backup.rs`).
+  > **Envisioned.** Not built yet. Cross-version migration test fixtures for data archives. Today same-version export and clean-node restore are verified by automated tests.
+
+### [TST-PRT] Dynamic Port Allocation Contract in Test Harnesses
+
+Integration and end-to-end test harnesses MUST dynamically allocate network ports rather than relying on static or hardcoded port numbers, guaranteeing collision-free parallel test execution across test binaries.
+
+- **Dynamic Port Reservation:** Test suites probe and allocate verified-free TCP and UDP ports below the OS ephemeral range (`18_000`–`32_768`) via `alloc_ports::<N>()` before spawning substrate nodes or gateway listeners (`crates/substrate/tests/common/mod.rs:109`).
+- **Complete Listener Port Coverage:** For every spawned substrate node, test harnesses MUST allocate distinct ports for all bound network listeners, including the Iroh HTTP relay, community registry, client gateway, and QUIC transport endpoint (`crates/substrate/tests/common/node.rs:55`).
+- **Ephemeral Port Enforcement:** Integration test suites MUST NOT use port literals in the OS ephemeral range (`32_768`–`60_999`), verified by static test syntax inspection (`crates/substrate/tests/no_ephemeral_port_literals.rs:1`).
 
 ---
 
