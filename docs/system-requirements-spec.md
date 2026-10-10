@@ -732,7 +732,7 @@ The reference SynApp implements variation dimensions across workflows using seve
 
 ---
 
-<a id="post-dd864a1-target-specifications-addendum"></a>
+<a id="target-specifications"></a>
 <a id="target-designs-addendum"></a>
 
 ## Target Designs (Addendum)
