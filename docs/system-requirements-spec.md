@@ -503,11 +503,9 @@ The system does not provide legal shielding in the way centralised platforms do 
 
 ## Conceptual Model
 
-The following ER diagram shows the formal entity model for the Syneroym
-ecosystem, with full relationship cardinalities. See the
-[Glossary](#glossary--terminology) for definitions of all entities. See the
-[Ecosystem & Domain Model](#ecosystem--domain-model) diagram for a higher-level
-overview.
+*Reader: developers and system architects.*
+
+The ER diagram below shows the formal entity model for the Syneroym ecosystem with relationship cardinalities. See the [Glossary](#glossary--terminology) for entity definitions. See the [Ecosystem & Domain Model](#ecosystem--domain-model) diagram for a high-level overview.
 
 ```mermaid
 ---
@@ -567,11 +565,11 @@ erDiagram
     VERIFIABLE-CRED[SIGNED-ROYM-RECORD]{}
 ```
 
-A SynApp is placed on one or more substrates. Each service within a SynApp defines its own execution artifact (`ServiceDefinition::source`, such as a WebAssembly component or container image) and runs inside a sandbox or native host runner. Stale entity concepts (`SYN-MOD`, `Space`, and `Space Manager`) do not exist in code: services manage catalogs and listings directly, and providers transact with consumers via structured quote and booking workflows.
+Operators place a SynApp on one or more substrates. Each service inside a SynApp defines its own execution artifact (`ServiceDefinition::source`, such as a WebAssembly component or container image). The service runs inside a sandbox or native host runner. Stale entity concepts (`SYN-MOD`, `Space`, and `Space Manager`) do not exist in code. Services manage catalogs and listings directly. Providers transact with consumers through structured quote and booking workflows.
 
-An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) aggregating provider listings and credentials. Aggregators do not manage infrastructure or host services for providers. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
+An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates provider listings and credentials. Aggregators do not manage infrastructure or host services for providers. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
 
-Substrates connect to configured coordinator relays (`parent_coordinator.iroh.url`) and publish signed endpoint records to the Community Registry and Mainline DHT. Trust evidence uses canonical signed Roym records (such as guild membership credentials and bilateral agreement receipts) rather than centralized reputation scores or generic W3C VC 2.0 envelopes.
+Substrates connect to configured coordinator relays (`parent_coordinator.iroh.url`). They publish signed endpoint records to the Community Registry and the Mainline DHT. Trust evidence uses canonical signed Roym records (such as guild membership credentials and bilateral agreement receipts). Trust evidence does not use centralized reputation scores or generic W3C VC 2.0 envelopes.
 
 > **Envisioned.** Not built yet. Centralized bootstrap servers, dynamic relay DNS assignment, and consumer-to-provider vouching graphs. Today nodes configure static coordinator relays and trust relies on signed SynOrg membership credentials.
 
@@ -580,145 +578,148 @@ Substrates connect to configured coordinator relays (`parent_coordinator.iroh.ur
 
 ## Substrate Functionality
 
-Description of the core Syneroym substrate functionality, key protocols, and important flows.
+*Reader: developers and system architects.*
+
+This section describes core Syneroym substrate functionality, key protocols, and main workflows.
 
 ### Substrate Setup
 
-- Node owner installs and initializes the substrate on a node (`roymctl substrate init`).
-- Substrate creates a protected node key on first run. Administrative ownership requires an offline claim step producing a mutually signed `ControllerAgreement`. Routine administration uses revocable delegated credentials (`DelegationCertificate`, UCAN tokens) rather than exposing a root key.
+- The node owner installs and initializes the substrate on a node (`roymctl substrate init`).
+- The substrate creates a protected node key on first run. Administrative ownership requires an offline claim step that produces a mutually signed `ControllerAgreement`. Routine administration uses revocable delegated credentials (`DelegationCertificate`, UCAN tokens) instead of exposing a root key.
   > **Envisioned.** Not built yet. Tested recovery method wizard before production use. Today initial node keys are initialized at boot and claimed offline.
-- Substrate connects to a Relay:
-  - Substrate configures a static coordinator Iroh relay URL (`parent_coordinator.iroh.url`).
+- The substrate connects to a relay:
+  - The substrate configures a static coordinator Iroh relay URL (`parent_coordinator.iroh.url`).
     > **Envisioned.** Not built yet. Dynamic home relay assignment via bootstrap service.
-  - Publishes its signed endpoint information (`SignedEndpointInfo`) containing its public key and relay routing details to the Community Registry and Mainline DHT via pkarr (used for the control plane and service deployment).
-  - Starts a secure communication server listening via the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
-- Substrate identifies its capabilities (sandbox types, quota configurability). Node owner configures capability limits (CPU, memory, instruction fuel) available to hosted services.
+  - The substrate publishes signed endpoint information (`SignedEndpointInfo`) to the Community Registry and Mainline DHT via pkarr. This record contains its public key and relay routing details. The control plane and service deployment use this record.
+  - The substrate starts a secure communication server. The server listens through the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
+- The substrate identifies its capabilities (sandbox types and quota configurability). The node owner configures capability limits (CPU, memory, instruction fuel) for hosted services.
   > **Envisioned.** Not built yet. GPU allocation and dynamic disk quota enforcement.
 - Access control setup:
-  - Substrate access is granted to the controller's master DID via `ControllerAgreement`.
-  - SynApp owner master DIDs sign UCAN capability tokens granting deployment, removal, and observation access (`orchestrator/{deploy,undeploy,status}`) with associated quotas.
+  - The substrate grants access to the controller master DID through `ControllerAgreement`.
+  - SynApp owner master DIDs sign UCAN capability tokens. These tokens grant deployment, removal, and status observation access (`orchestrator/{deploy,undeploy,status}`) with assigned quotas.
   > **Envisioned.** Not built yet. Automated multi-substrate peering registration protocol.
 
 ### [OPS-CLM] Substrate Node Claiming & Ownership Binding
 
-Substrate nodes boot unowned and fail closed on privileged operations until an operator claims the node via `roymctl substrate claim`, establishing cryptographic controller authority.
+Substrate nodes boot in an unowned state. They fail closed on privileged operations until an operator claims the node with `roymctl substrate claim` to establish cryptographic controller authority.
 
-- **Initial Unowned State:** A newly initialized substrate generates a local Ed25519 node keypair (`did:key:...`). Until claimed, the node rejects remote administrative operations (`substrate/admin`) over the wire to prevent unauthorized adoption.
-- **Mutual Controller Agreement:** An operator claims the node by executing `roymctl substrate claim`. This mints a `ControllerAgreement` record signed by both the node private key and the controller master key, binding the node DID to the controller DID.
-- **Fail-Closed Authorization:** The substrate router verifies the controller DID on all privileged interfaces (including deployment, service orchestration, and security administration). Requests without a matching controller signature or valid delegated UCAN capability are rejected.
+- **Initial Unowned State:** A newly initialized substrate generates a local Ed25519 node keypair (`did:key:...`). Until claimed, the node rejects remote administrative operations (`substrate/admin`) over the wire. This prevents unauthorized adoption.
+- **Mutual Controller Agreement:** An operator claims the node by running `roymctl substrate claim`. This command creates a `ControllerAgreement` record. The node private key and the controller master key both sign this record. The record binds the node DID to the controller DID.
+- **Fail-Closed Authorization:** The substrate router verifies the controller DID on all privileged interfaces (including deployment, service orchestration, and security administration). The router rejects requests that lack a matching controller signature or a valid delegated UCAN capability.
 
 ### Substrate Managing Services
 
-- Substrate provides a secure end-to-end communication channel between clients and the services it manages via the Universal Proxy and Client Gateway.
-- Substrate supports WASM (Wasmtime) and Podman sandbox environments at minimum.
-- Substrate attempts direct client-service communication wherever possible; it falls back to external coordinator relay when intermediate network infrastructure does not permit direct connections.
+- The substrate provides a secure end-to-end communication channel between clients and managed services through the Universal Proxy and Client Gateway.
+- The substrate supports WebAssembly (Wasmtime) and Podman sandbox environments at minimum.
+- The substrate attempts direct client-service communication when possible. It falls back to an external coordinator relay when network conditions block direct connections.
 - On mobile platforms:
   > **Envisioned.** Not built yet. Mobile platform background execution, OS throttling handlers, and push notification dispatch. Today offline operations rely on substrate SQLite durable outbox queuing and idempotent replay.
 
 ### Core Substrate Services
 
-**Messaging.** The substrate supplies secure, typed, durable delivery primitives via an embedded MQTT broker (`crates/mqtt_broker`) and Double Ratchet end-to-end encrypted conversation primitives (`crates/conversation/`, ADR-0013). Conversation products such as chat and groups are SynApps built on those primitives.
+**Messaging.** The substrate supplies secure, typed, and durable delivery primitives through an embedded MQTT broker (`crates/mqtt_broker`). It also supplies Double Ratchet end-to-end encrypted conversation primitives (`crates/conversation/`, ADR-0013). Chat, groups, and conversation products are SynApps built on these primitives.
 > **Envisioned.** Not built yet. Social feeds and collaborative editing SynApps.
 
-**Discovery.** The substrate exposes capability and endpoint discovery via Community Registry and pkarr Mainline DHT. Guild directories, referrals, and ranking are replaceable SynApps or services (`crates/roym_directory`) implementing common publication and query contracts with client-side merging; no one global index is required.
+**Discovery.** The substrate provides capability and endpoint discovery through the Community Registry and pkarr Mainline DHT. Guild directories, referrals, and ranking are replaceable SynApps or services (`crates/roym_directory`). They implement shared publication and query contracts with client-side merging. The system does not require a single global index.
 
-**Identity.** The substrate manages protected key storage (SQLCipher and `mlock` KEK protection), rotation, revocation, and delegation while separating stable master DIDs from ephemeral routing keys (ADR-0020). Master Anchor DHT records publish cryptographic revocation deny lists. Credentials use canonical signed Roym records.
+**Identity.** The substrate manages protected key storage (SQLCipher and `mlock` KEK protection), key rotation, key revocation, and delegation. It separates stable master DIDs from ephemeral routing keys (ADR-0020). Master Anchor DHT records publish cryptographic revocation deny lists. Credentials use canonical signed Roym records.
 
-**Access Control.** The substrate enforces deny-by-default policy on inter-service and client-service communication via Fine-grained Data Access Engine (FDAE) compiled ReBAC policies (`crates/fdae/`, ADR-0017) and UCAN capability tokens. The product accurately documents the infrastructure operator's technical powers; policy enforcement alone must not be presented as protection from a fully compromised host. Sensitive deployments may require owner-held encryption keys.
+**Access Control.** The substrate enforces deny-by-default access on inter-service and client-service communication. It uses Fine-grained Data Access Engine (FDAE) compiled ReBAC policies (`crates/fdae/`, ADR-0017) and UCAN capability tokens. Documentation accurately describes the technical powers of an infrastructure operator. Access policy enforcement alone does not protect against a fully compromised host. Sensitive deployments may require owner-held encryption keys.
 > **Envisioned.** Not built yet. Hardware attestation (TPM/SEV). Today substrate integrity relies on software signature validation.
 
 ---
 
 ## Supporting Ecosystem Entities
 
+*Reader: developers and system architects.*
+
 ### Relay
 
-- Acts as a coordination server for direct connections between peers using UDP hole punching.
-- Acts as an encrypted TCP data relay when direct connection is not possible (no UDP, symmetric NAT, CGNAT) via embedded `iroh-relay`.
-- Substrates connect to a statically configured coordinator relay URL (`parent_coordinator.iroh.url`) and publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Services inherit this substrate relay connectivity.
+- Acts as a coordination server for direct peer connections using UDP hole punching.
+- Acts as an encrypted TCP data relay through embedded `iroh-relay` when direct connections fail (due to blocked UDP, symmetric NAT, or CGNAT).
+- Substrates connect to a statically configured coordinator relay URL (`parent_coordinator.iroh.url`). They publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Hosted services inherit this relay connectivity from their substrate.
   > **Envisioned.** Not built yet. A WebRTC TURN relay server, dynamic bootstrap relay registration, and `<relaynodeid>.syneroym.net` DNS subdomains. Today relays do not provide TURN; browser clients connect through the Client Gateway HTTP proxy or WebRTC data channels with HTTP/WebSocket signaling.
 
 ### Bootstrap
 
-- Accepts NodeId registration offers; with associated relay details as applicable.
-- Maintains a list of officially operated relays with capability metadata (TCP relay, TURN, etc.).
-- Accepts community relay registration offers; verifies capability claims (offline or real-time checks).
-- Registers DNS entries for community relays under its domain e.g. `*.syneroym.xyz`.
-- Returns a weighted random set of relays from the registry based on requested capability and relay capacity.
-- Periodically audits registered relays and expires stale entries.
-- For node ID lookups, checks internal cache or DHT fallback and returns the relay. For HTTP URL lookups from browsers, finds the relay and issues an HTTP redirect.
+- Accepts NodeId registration offers with associated relay details.
+- Maintains a list of officially operated relays with capability metadata (such as TCP relay and TURN).
+- Accepts community relay registration offers and verifies capability claims with offline or real-time checks.
+- Registers DNS entries for community relays under its domain (such as `*.syneroym.xyz`).
+- Returns a weighted random set of relays from the registry based on requested capabilities and relay capacity.
+- Audits registered relays periodically and expires stale entries.
+- Checks internal cache or DHT fallback for node ID lookups to return the relay. For browser HTTP URL lookups, it locates the relay and issues an HTTP redirect.
   > **Envisioned.** Not built yet. Centralized bootstrap servers and dynamic HTTP redirects. Today substrates configure a static coordinator relay URL (`parent_coordinator.iroh.url`) and publish signed endpoint records to the Community Registry (`crates/community_registry`) and pkarr BEP-0044 Mainline DHT (`crates/core/src/dht_registry`).
 
-> **Single point of failure note.** A default bootstrap service is a governance
-> and availability dependency. Its signed records must be exportable and
-> publishable through alternative operators or discovery mechanisms. Known peers
-> and cached routes must satisfy the bootstrap outage release gate; one
-> Syneroym-controlled service must not be required to authorise continued use.
-> Today nodes operate independently without central authorization.
+> **Single point of failure note.** A default bootstrap service is a governance and availability dependency. Its signed records must be exportable and publishable through alternative operators or discovery mechanisms. Known peers and cached routes must satisfy the bootstrap outage release gate. Continued operation must not require authorization from a single Syneroym-controlled service. Today nodes operate independently without central authorization.
 
 ### Consumer-Facing Aggregation
 
-> This section addresses a gap in the prior spec. Centralised platforms provide consumers a single app. In Syneroym, providers may run on different substrates operated by different entities. The consumer experience remains coherent.
+> This section clarifies consumer aggregation. Centralized platforms give consumers a single app. In Syneroym, providers run on different substrates run by different entities. The consumer experience remains coherent.
 
-- An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) aggregating provider listings and credentials. Aggregators do not manage hosting or infrastructure for providers.
+- An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates provider listings and credentials. Aggregators do not manage hosting or infrastructure for providers.
 - A Consumer App (such as the Roym Hub browser web application) allows consumers to discover, browse, and transact with providers across multiple substrates and SynApps from a single interface.
-- The Consumer App queries one or more community directories, and merges results via deterministic round-robin client-side merging (`crates/roym_directory/src/app/client_merge.rs`) with visible source attribution, freshness, and refusal reasons.
+- The Consumer App queries one or more community directories. It merges results with deterministic round-robin client-side merging (`crates/roym_directory/src/app/client_merge.rs`). Results display clear source attribution, freshness timestamps, and refusal reasons.
   > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today consumers discover providers via direct listing IDs or directory queries.
-- A consumer's identity, signed receipts, grants, and preferences are portable and controlled from the consumer's device or designated store. Running a personal substrate is optional; consumers can connect via the Client Gateway.
-- The Consumer App is a thin client; business logic runs on provider substrates. The Consumer App is not a privileged participant in the ecosystem.
+- A consumer controls portable identity keys, signed receipts, grants, and preferences from their own device or designated store. Running a personal substrate is optional. Consumers can connect through the Client Gateway.
+- The Consumer App is a thin client. Business logic runs on provider substrates. The Consumer App is not a privileged participant in the ecosystem.
 
 ### [GTW-PRX] Client Gateway Multi-Substrate Ingress Proxy
 
 The Client Gateway bridges HTTP and WebSocket traffic from web browsers and external clients to internal and remote substrate RPC handlers.
 
-- **Ingress Protocol Translation:** The gateway listens on port 7960 (configurable) and translates browser HTTP requests (`POST /rpc`, `GET /metrics`, `GET /blobs/*`) and WebSocket connections (`/__syneroym/tunnel`, `/__syneroym/ws`) into substrate router invocations.
-- **Session Identity Propagation:** The gateway extracts caller credentials from session cookies (`syneroym_session`) or Authorization headers, validating them against the Node Auth Service and injecting verified caller DIDs into requests.
-- **Multi-Substrate Routing:** Inbound requests for foreign substrate services route across the Iroh network overlay using local static inventories or registry lookups, without requiring browser runtimes to maintain native QUIC connections.
-- **Static Asset Delivery:** Static user interface assets and application bundles stream directly from the filesystem or content-addressed blob storage without instantiating guest WebAssembly components.
+- **Ingress Protocol Translation:** The gateway listens on port 7960 (configurable). It translates browser HTTP requests (`POST /rpc`, `GET /metrics`, `GET /blobs/*`) and WebSocket connections (`/__syneroym/tunnel`, `/__syneroym/ws`) into substrate router calls.
+- **Session Identity Propagation:** The gateway extracts caller credentials from session cookies (`syneroym_session`) or Authorization headers. It validates credentials against the Node Auth Service and injects verified caller DIDs into requests.
+- **Multi-Substrate Routing:** Inbound requests for foreign substrate services route across the Iroh network overlay using local static inventories or registry lookups. Web browsers do not need native QUIC connections.
+- **Static Asset Delivery:** Static user interface assets and application bundles stream directly from the filesystem or content-addressed blob storage. The gateway does not instantiate guest WebAssembly components for static assets.
 
 ---
 
 ## SynApp Lifecycle
 
+*Reader: developers and system architects.*
+
 ### Development
 
-- Developers build encapsulated components (using WebAssembly components or Podman container images) that define clear, strongly-typed interfaces for inter-component communication.
-- The system supports automatically deriving external-facing APIs (such as JSON-RPC or HTTP passthrough) from these internal component interfaces via the Universal Proxy to support diverse clients like web browsers.
-- Manifests reference compiled `.wasm` binaries or OCI container images in `ServiceDefinition::source`, and static web assets are bundled into `AssetBundle` records stored in content-addressed blob storage. Dual-build execution compiles SynApps as either sandboxed `wasm32-wasip2` components or statically linked native binaries (`syneroym-app-host-native`).
+- Developers build encapsulated components with WebAssembly components or Podman container images. These components define typed interfaces for communication.
+- The Universal Proxy automatically derives external APIs (such as JSON-RPC or HTTP passthrough) from internal component interfaces to support web browsers and other clients.
+- Manifests reference compiled `.wasm` binaries or OCI container images in `ServiceDefinition::source`. Static web assets are bundled into `AssetBundle` records stored in content-addressed blob storage. Dual-build execution compiles SynApps either as sandboxed `wasm32-wasip2` components or as statically linked native binaries (`syneroym-app-host-native`).
   > **Envisioned.** Not built yet. Standalone signed package bundle distribution format and public OCI registry distribution. Today deployment bundles are supplied as local file paths or artifact bundles.
 
 ### [APP-AST] Zero-Runtime Static Asset Passthrough
 
-Service deployment packages bundle static web assets (`AssetBundle`) streamed directly by the HTTP proxy from blob storage without instantiating or executing guest WebAssembly components.
+Service deployment packages bundle static web assets (`AssetBundle`). The HTTP proxy streams these assets directly from blob storage without instantiating or running guest WebAssembly components.
 
-- **Asset Bundle Manifest Declaration:** Service manifests declare an optional `AssetBundle` specifying archive location, optional content hash, and visibility (`Visibility::Public` or `Visibility::Private`).
-- **Blob Store Ingestion:** At deployment time, the control plane registers and unpacks asset bundles into the substrate content-addressed blob store.
-- **Direct HTTP Streaming:** Inbound HTTP requests for static routes stream asset bytes directly from the blob store via the Universal Proxy. The substrate serves static assets with low latency and without allocating WebAssembly instance fuel or memory.
+- **Asset Bundle Manifest Declaration:** Service manifests declare an optional `AssetBundle` that specifies an archive location, an optional content hash, and a visibility setting (`Visibility::Public` or `Visibility::Private`).
+- **Blob Store Ingestion:** During deployment, the control plane registers and unpacks asset bundles into the substrate content-addressed blob store.
+- **Direct HTTP Streaming:** Inbound HTTP requests for static routes stream asset bytes directly from the blob store through the Universal Proxy. The substrate serves static assets with low latency and allocates no WebAssembly instance fuel or memory.
 
 ### Deployment
 
-- An Application Specification (`SynAppManifest`) composes components into a SynApp and declares dependencies, resource limits (CPU, memory), and configuration schema.
-- The specification declares service identifiers, versions, requested capabilities, permissions (FDAE policies), and migration lifecycle hooks (`init`, `migrate`).
+- An Application Specification (`SynAppManifest`) composes components into a SynApp. It declares dependencies, resource limits (CPU and memory), and configuration schemas.
+- The specification declares service identifiers, versions, requested capabilities, permissions (FDAE policies), and migration lifecycle hooks (`init` and `migrate`).
   > **Envisioned.** Not built yet. Standalone package signatures, formal data classifications, automated backup declarations, and declarative rollback behaviour.
-- A provider or operator applies the Application Specification to chosen substrate(s) using `roymctl app deploy` or the App Supervisor.
+- A provider or operator applies the Application Specification to selected substrates using `roymctl app deploy` or the App Supervisor.
 - Before deployment, the substrate validates UCAN deploy permissions, semver constraints, and configuration schemas.
   > **Envisioned.** Not built yet. Pre-deploy node-level resource capacity checks and interactive capability-expansion approval summaries.
-- A partially failed deployment is cleaned up by the SQLite deployment journal, tracking reconciliation actions and rolling back partially registered services. Installation state is inspectable via `roymctl app status`.
+- The SQLite deployment journal cleans up partially failed deployments. It tracks reconciliation actions and rolls back partially registered services. Operators inspect installation state through `roymctl app status`.
 
 ### Monitoring
 
-- Substrate monitors applications and provides health information through the App Supervisor's resident reconcile loop and HTTP health endpoints (`/health`, `/v1/info`), publishing failure alerts to MQTT topics.
+- The substrate monitors applications and reports health information through the resident reconcile loop of the App Supervisor and HTTP health endpoints (`/health`, `/v1/info`). It publishes failure alerts to MQTT topics.
   > **Envisioned.** Not built yet. Outbound push notifications to external notification services.
 - Providers receive alerts through CLI inspection (`roymctl app status`, `roymctl app alerts`) and supervisor JSON-RPC `alerts` queries.
   > **Envisioned.** Not built yet. Webhook dispatch and real-time UI push alert notifications.
-- Updates require valid controller UCAN signatures, and configuration generations are versioned in `config_generations`.
+- Updates require valid controller UCAN signatures. The substrate versions configuration generations in `config_generations`.
   > **Envisioned.** Not built yet. Automated snapshot and rollback to last known-good packages on post-update health check failure.
 
 ---
 
 ## Reference Vertical Contracts
 
-Reference SynApps validate common ecosystem contracts without forcing unrelated domains into one generic application. They may share modules and schemas, but each has its own language, workflow, policy, and usability tests. Roym implements the primary reference vertical: the Professional and Home Services Guild.
+*Reader: developers and system architects.*
+
+Reference SynApps validate shared ecosystem contracts without forcing different domains into one generic application. Applications can share modules and schemas, but each vertical maintains its own language, workflow, policy, and usability tests. Roym implements the primary reference vertical: the Professional and Home Services Guild.
 
 > **Envisioned.** Not built yet. The second reference vertical (local producer-distributor or food and small retailer mesh). Today Roym is the single built reference SynApp.
 
@@ -726,59 +727,59 @@ Reference SynApps validate common ecosystem contracts without forcing unrelated 
 
 #### Provider and guild setup
 
-- A guild operator deploys a signed release profile and creates a guild with public identity, service area, membership policy, support contact, dispute path, directory policy, and data retention policy.
-- A provider controls a stable provider master DID. The provider proves guild membership and standing via signed credentials (`crates/roym_core/src/membership.rs`) rather than granting the guild administration rights via `DelegationCertificate`.
+- A guild operator deploys a signed release profile. The operator creates a guild with public identity, service area, membership policy, support contact, dispute path, directory policy, and data retention policy.
+- A provider controls a stable provider master DID. The provider proves guild membership and standing with signed credentials (`crates/roym_core/src/membership.rs`). The provider does not grant guild administration rights through a `DelegationCertificate`.
   > **Envisioned.** Not built yet. Interactive invitation and application vetting workflows. Today operators manage members directly via roster administration.
-- A provider publishes name, description, service categories, service area, availability, price style (fixed, range, or quote), cancellation policy, supported payment rails, and trust evidence. Required fields and provenance are machine-readable.
-- One operator can manage multiple provider service instances without obtaining undeclared read access across their private conversations or histories. Conversations use Double Ratchet end-to-end encryption, and databases use derived per-instance encryption keys.
+- A provider publishes name, description, service categories, service area, availability, price style (fixed, range, or quote), cancellation policy, supported payment rails, and trust evidence. Required fields and provenance information are machine-readable.
+- One operator can manage multiple provider service instances without getting undeclared read access to private conversations or records. Conversations use Double Ratchet end-to-end encryption. Databases use derived per-instance encryption keys.
   > **Envisioned.** Not built yet. Externally provisioned per-instance Key Encryption Keys (Model B) protecting against an operator with host memory access.
 
 #### Consumer-provider workflow
 
-- **Discover.** Consumers reach a provider by direct link or guild directory queries with client-side deterministic merging. Results show source, freshness, and filters; paid placement is absent.
+- **Discover.** Consumers find a provider through a direct link or guild directory queries with client-side deterministic merging. Results display data source, freshness, and active filters. Paid placement is absent.
   > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today consumers discover providers via direct listing IDs or directory queries.
-- **Assess.** Consumers see relevant services, price basis, availability, provider identity continuity, trust evidence, guild relationship, and material policies before sharing personal details.
-- **Request and clarify.** A request captures category, description, approximate area, preferred window, attachments, and a data-use notice. Exact address disclosure is withheld until quote agreement via machine-readable policy. Parties clarify in the linked conversation.
-- **Quote and agree.** A versioned quote states scope, price, taxes or fees, schedule, location, payment method, cancellation/refund terms, expiry, and dispute path. Both parties' acceptance produces a signed agreement receipt.
-- **Fulfil `[VRT-SRV]`.** Permitted states and actors are explicit. Bookings follow discrete state tracks (`Scheduled`, `InProgress`, `Completed`, `Cancelled`, `Conflict`, `EndedUnconfirmed`). Transitions enforce actor roles: only the provider can cancel a booking, and only before any track has moved. Completed bookings require mutual confirmation on two independent tracks (`payment` and `fulfilment`). State changes produce append-only signed progress records (`BookingProgressPayload`), supersede previous envelopes idempotently, and never rewrite signed history.
+- **Assess.** Consumers review services, price basis, availability, provider identity continuity, trust evidence, guild relationship, and material policies before sharing personal details.
+- **Request and clarify.** A request captures category, description, approximate area, preferred window, attachments, and a data-use notice. Machine-readable policy withholds exact address disclosure until both parties agree to a quote. Parties clarify details in the linked conversation.
+- **Quote and agree.** A versioned quote states scope, price, taxes or fees, schedule, location, payment method, cancellation/refund terms, expiration time, and dispute path. When both parties accept, the system creates a signed agreement receipt.
+- **Fulfil `[VRT-SRV]`.** Permitted states and actors are explicit. Bookings follow discrete state tracks (`Scheduled`, `InProgress`, `Completed`, `Cancelled`, `Conflict`, `EndedUnconfirmed`). Transitions enforce actor roles: only the provider can cancel a booking, and only before any track has moved. Completed bookings require mutual confirmation on two independent tracks (`payment` and `fulfilment`). State changes produce append-only signed progress records (`BookingProgressPayload`). State changes supersede previous envelopes idempotently and never rewrite signed history.
   > **Envisioned.** Not built yet. Consumer-initiated cancellation and automated dispute arbiters. Today cancellation is provider-only and dispute resolution is handled out-of-band.
-- **Settle `[VRT-PAY]`.** Payments use signed out-of-band payment records (`PaymentRequestPayload` and `PaymentAcknowledgementPayload`). Providers request payment stating currency and minor-unit amount. Both parties independently record signed payment acknowledgements. The system does not process funds directly and never treats an unverified return from a third-party payment app as final settlement.
+- **Settle `[VRT-PAY]`.** Payments use signed out-of-band payment records (`PaymentRequestPayload` and `PaymentAcknowledgementPayload`). Providers request payment stating currency and minor-unit amount. Both parties independently record signed payment acknowledgements. The system does not process funds directly. The system never treats an unverified return from a third-party payment app as final settlement.
   > **Envisioned.** Not built yet. Integrated payment processors (such as Stripe Connect SDK), in-app escrow custody, system coins, and mutual credit rails. Today transactions record signed out-of-band payment notices only.
-- **Close and return.** Completion produces portable signed receipts (`InteractionReceipt` and `FulfilmentRecord`). Either party can start a repeat request in the existing conversation without re-entering consented information.
+- **Close and return.** Workflow completion produces portable signed receipts (`InteractionReceipt` and `FulfilmentRecord`). Either party can start a repeat request in the existing conversation without re-entering consented information.
   > **Envisioned.** Not built yet. Consumer feedback and review submissions tied to receipts.
 
 ### [ROY-ADM] Application-Tier Local-Only Ingress Firewall
 
-Private SynApp services enforce an application-tier admission firewall on all inbound invocations to prevent unauthorized remote network access to private data and APIs.
+Private SynApp services enforce an application-tier admission firewall on all inbound calls. This firewall prevents unauthorized remote network access to private data and APIs.
 
-- **Caller Origin Inspection:** Inbound method dispatches inspect caller origin via the invocation host interface (`syneroym:invocation/invocation`). Calls originating from within the local substrate installation resolve to `CallerOrigin::Internal`.
-- **Fail-Closed Rejection (`NOT_LOCAL`):** Inbound calls arriving from remote nodes (`CallerOrigin::Verified` or `CallerOrigin::Anonymous`) are rejected with JSON-RPC error code `-32013` (`NOT_LOCAL`: "this method is reachable only from inside this installation"). The refusal reveals no internal service identifiers or caller DIDs to unauthorized parties.
-- **Explicit Wire Exceptions:** Public directory services define explicit wire exception tables (`WireRule`) allowing foreign callers:
+- **Caller Origin Inspection:** Inbound method dispatch inspects caller origin through the invocation host interface (`syneroym:invocation/invocation`). Calls originating from inside the local substrate installation resolve to `CallerOrigin::Internal`.
+- **Fail-Closed Rejection (`NOT_LOCAL`):** The firewall rejects inbound calls from remote nodes (`CallerOrigin::Verified` or `CallerOrigin::Anonymous`) with JSON-RPC error code `-32013` (`NOT_LOCAL`: "this method is reachable only from inside this installation"). This refusal reveals no internal service identifiers or caller DIDs to unauthorized callers.
+- **Explicit Wire Exceptions:** Public directory services define explicit wire exception tables (`WireRule`) for foreign callers:
   - `WireRule::Open`: Permits unauthenticated foreign callers for public read operations (`directory.search`, `directory.info`, `directory.standing`).
   - `WireRule::VerifiedOnly`: Permits remote callers whose identity was verified by the router for authenticated operations (`directory.publish`).
-- **Default Isolation:** Services lacking explicit wire exception tables (such as `profile`, `catalog`, and `transaction`) remain entirely internal and reject all off-node invocations.
+- **Default Isolation:** Services without explicit wire exception tables (such as `profile`, `catalog`, and `transaction`) remain internal and reject all off-node calls.
 
 ### [TXN-SLT] First-Claim Slot Reservation Concurrency Fence
 
 When multiple consumers accept quotes for the same limited provider availability slot, the transaction ledger enforces single-writer arbitration to prevent double booking.
 
-- **Atomic Seat Claims:** The provider transaction service arbitrates accepted quotes against catalog availability. For slot-based bookings, the service checks slot existence and remaining capacity, bounded by `MAX_SLOT_CAPACITY = 64`. It attempts to write an atomic seat record (`seat:<slot_id>:<seat_number>`) into the ledger.
+- **Atomic Seat Claims:** The provider transaction service arbitrates accepted quotes against catalog availability. For slot-based bookings, the service checks slot existence and remaining capacity, bounded by `MAX_SLOT_CAPACITY = 64`. The service attempts to write an atomic seat record (`seat:<slot_id>:<seat_number>`) into the ledger.
 - **First-Claim Decision:** Exactly one consumer claim succeeds for an available seat. That booking transitions to `Scheduled` with a signed initial progress snapshot (`BookingProgressPayload`).
 - **Typed Conflict Refusal:** If all seats for the quoted slot are already claimed, or if the slot no longer exists, the competing booking transitions to `Conflict` with a machine-readable reason (`ConflictReason::SlotTaken` or `ConflictReason::SlotUnavailable`). The provider does not countersign conflicting bookings.
-- **Idempotent Retry:** Repeated quote acceptance or sync requests on an already decided booking return cached results (`AlreadyDecided` or `already-accepted`) without altering previously committed seats or creating duplicate records.
+- **Idempotent Retry:** Repeated quote acceptance or sync requests for an already decided booking return cached results (`AlreadyDecided` or `already-accepted`). These retries do not alter committed seats or create duplicate records.
 
 ### Service Variation Dimensions
 
-The reference SynApp implements variation axes across workflows using seven strongly typed, optional named blocks in `ListingPayload`:
+The reference SynApp implements variation dimensions across workflows using seven strongly typed, optional named blocks in `ListingPayload`:
 
 - **Booking (`BookingTerms`):** Event slots, consulting time slots, and open-ended job requests, modeled by `BookingMode` (`Slots`, `Order`, `Enquiry`). Slot bookings enforce capacity limits (`MAX_SLOT_CAPACITY = 64`) and first-claim concurrency fences.
-- **Payment (`PaymentTerms`):** One-time quote-based payments with pre- or post-delivery timing, modeled by `PaymentModel` (`Fixed`, `PerHour`, `PerUnit`, `QuoteOnly`), currency, and minor-unit amounts.
+- **Payment (`PaymentTerms`):** One-time quote-based payments with pre-delivery or post-delivery timing. This block is modeled by `PaymentModel` (`Fixed`, `PerHour`, `PerUnit`, `QuoteOnly`), currency, and minor-unit amounts.
   > **Envisioned.** Not built yet. Multi-part payments, subscriptions, decentralized escrow, system coins, and mutual credit networks. Today quotes support single out-of-band payments only.
 - **Product type (`ProductDetail`):** Physical goods with unit, pack size, SKU, and condition (`New`, `Used`, `Refurbished`).
   > **Envisioned.** Not built yet. Time-bound prepared food spoilage timers and digital content streaming or DRM pipelines.
-- **Service type (`ServiceDetail`):** Time-slot services, job-completion-based services, and location-based services with declared durations, inclusions, exclusions, and prerequisites.
-- **Location (`LocationTerms`):** Fixed provider locations, customer locations, and remote digital services (`ServiceLocation`), with bounding service areas and machine-readable address disclosure policies (`AddressDisclosure::OnAgreement` and `AddressDisclosure::Public`).
-- **Relationship type (`RelationshipTerms`):** Eligibility controls (`Anyone`, `Members`, `Referral`, `ExistingCustomers`) and guild membership requirements. Continuous shared history is preserved across engagements in durable conversation threads.
+- **Service type (`ServiceDetail`):** Time-slot services, job-completion services, and location-based services with declared durations, inclusions, exclusions, and prerequisites.
+- **Location (`LocationTerms`):** Fixed provider locations, customer locations, and remote digital services (`ServiceLocation`). This block includes bounding service areas and machine-readable address disclosure policies (`AddressDisclosure::OnAgreement` and `AddressDisclosure::Public`).
+- **Relationship type (`RelationshipTerms`):** Eligibility controls (`Anyone`, `Members`, `Referral`, `ExistingCustomers`) and guild membership requirements. Durable conversation threads preserve shared history across engagements.
   > **Envisioned.** Not built yet. Automated recurring relationship agreements and retainer schedules.
 - **Service record (`ServiceRecordTerms`):** Portable completion receipts, stated warranty durations, and declared record retention windows.
   > **Envisioned.** Not built yet. Real-time active GPS and delivery telemetry tracking feeds.
