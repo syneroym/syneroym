@@ -1453,39 +1453,43 @@ Roym is the one SynApp built so far. It unites directory discovery, catalog list
 
 ## Phase 7: Edge Expansion
 
-### [EDG-MOB] Mobile operation 
+*Reader: developers and system architects.*
+
+### [EDG-MOB] Mobile operation
 - **Platform Support:** Consumer and provider interfaces provide responsive web access for mobile viewports. Substrate binaries target Linux, macOS, and Windows.
   > **Envisioned.** Not built yet. Native Syneroym Substrate execution on Android and iOS. Today mobile devices access substrate services through the web client in a browser.
   >
   > Native substrate execution on Android and iOS must prove acceptable reliability, battery use, background behaviour, and key recovery on supported OS versions.
-- **Background Execution & Throttling:** Substrate communication uses durable outbox queuing and retry mechanisms to handle intermittent connectivity.
+- **Background Execution & Throttling:** Substrate communication handles intermittent connectivity through durable outbox queues and retry mechanisms.
   > **Envisioned.** Not built yet. Silent push wake-ups (APN/FCM) and mobile OS background window scheduling. Today the client gateway and substrate communicate over active HTTP/WebSocket sessions.
   >
-  > For urgent requests, clients can optionally send an out-of-band push notification (APN/FCM) to silently wake the suspended mobile app. The woken app processes requests locally but defers outbound network responses until the mobile OS schedules a background task window.
-- **Hardware Security (TPM 2.0 Equivalent):** Substrate cryptographic keys are stored in encrypted software keystores with memory protection. Guest components access signing only through host WIT calls (`syneroym:signing`).
+  > Clients can send an out-of-band push notification (APN/FCM) for urgent requests to wake a suspended mobile app silently. The woken app processes requests locally. It defers outbound network responses until the mobile OS schedules a background task window.
+- **Hardware Security (TPM 2.0 Equivalent):** The substrate stores cryptographic keys in encrypted software keystores with memory protection. Guest components access signing only through host WIT calls (`syneroym:signing`).
   > **Envisioned.** Not built yet. Unified `SecureStorage` and `KeyManagement` WIT abstractions and host bridges to Android StrongBox, iOS Secure Enclave, and Linux TPM 2.0. Today cryptographic operations use software Ed25519 keys managed by the substrate host.
   >
-  > Unified `SecureStorage` and `KeyManagement` WIT abstractions for SynApps, mapped by host implementations to Android StrongBox, iOS Secure Enclave, and Linux TPM 2.0.
+  > Host implementations will map unified `SecureStorage` and `KeyManagement` WIT abstractions for SynApps to Android StrongBox, iOS Secure Enclave, and Linux TPM 2.0.
 
 ---
 
 ## Appendix: Later-Phase Additions
 
-These additions define envisioned extensions to the substrate and application contracts. They are tracked as a running list in [deferred-backlog.md](planning/deferred-backlog.md).
+*Reader: developers and system architects.*
+
+This appendix defines envisioned extensions to substrate and application contracts. The running list is tracked in [deferred-backlog.md](planning/deferred-backlog.md).
 
 ### [APP-A11Y] Accessibility and Localisation
 
-- **Localisation:** `ProfilePayload` supports an optional `locale` field (`Option<String>`), defaulting to None.
+- **Localisation:** `ProfilePayload` supports an optional `locale` field (`Option<String>`). The default value is None.
 
 > **Envisioned.** Not built yet. Complete internationalisation (i18n) translation frameworks, resource bundles, and non-English UI translations. Today the Roym Hub UI contains hardcoded English text.
 >
-> The architecture must be internationalisation-ready (i18n) to support local community clusters with translated interfaces.
+> The architecture must support internationalisation (i18n). This allows local community clusters to use translated interfaces.
 
 - **Accessibility:**
 
 > **Envisioned.** Not built yet. The Roym Hub UI has no ARIA markup, no screen reader testing, and no WCAG 2.1 AA audit.
 >
-> Base substrate capability flows (onboarding, recovery, Hub UI) must target WCAG 2.1 AA to ensure independent operation by disabled users.
+> Base substrate capability flows (onboarding, recovery, Hub UI) must target WCAG 2.1 AA. This standard ensures that disabled users can operate the system independently.
 
 ### [APP-IOT] Non-IP Mesh Transport Interconnectivity
 
@@ -1493,41 +1497,43 @@ These additions define envisioned extensions to the substrate and application co
 
 > **Envisioned.** Not built yet. Configuration fields `parent_coordinator.ble` and `parent_coordinator.lora` exist in `crates/core/src/config/base.rs` as stubs, but no network transport reads them.
 >
-> The system must support integrating non-IP mesh networks (e.g., Zigbee, Thread, Bluetooth Low Energy (BLE), LoRa) into the IP-based topology.
+> The system must support non-IP mesh networks, including Zigbee, Thread, Bluetooth Low Energy (BLE), and LoRa. It must integrate these networks into the IP-based topology.
 
 ### [APP-ESC] Escrow, System Coins, and Mutual Credit
 
-- **Payment Records:** Payments are recorded through signed out-of-band payment requests and acknowledgements (`crates/roym_core/src/payment.rs`).
+- **Payment Records:** The system records payments through signed out-of-band payment requests and acknowledgements (`crates/roym_core/src/payment.rs`).
 - **Escrow:**
 
 > **Envisioned.** Not built yet. External or out-of-band settlement is the only payment mechanism today. No escrow custody or dispute hold exists.
 >
-> Third-party or multi-signature custody of funds pending service completion or dispute resolution.
+> Third-party or multi-signature custody holds funds pending service completion or dispute resolution.
 
 - **System Coins and Mutual Credit:**
 
 > **Envisioned.** Not built yet. Syneroym has no blockchain token, cryptocurrency, or ledger coin.
 >
-> A native ledger token and bilateral IOU mutual credit system layered onto the Payment Abstraction Layer.
+> The system will provide a native ledger token and a bilateral IOU mutual credit system layered onto the Payment Abstraction Layer.
 
 ## Appendix: Substrate Feature Coverage Matrix
+
+*Reader: developers and system architects.*
 *(Validating core platform primitives across the Roym application suite and substrate runtime)*
 
 | Substrate Capability | Primary App | How it is exercised |
 | :--- | :--- | :--- |
-| **[TOP-*] Routing & Relays** | **Substrate Core** | Establishing secure P2P connections across NATs and resolving cryptographic node IDs (`crates/router`, `crates/coordinator_iroh`). |
-| **[PLT-ASY] Offline Operation** | **Roym Conversation** | Outbox message queuing and causal DAG syncing upon reconnection (`crates/conversation`, `crates/roym_conversation`). |
-| **[PLT-DAT] Conversation DAG** | **Roym Conversation** | End-to-end encrypted messaging with Double Ratchet and causal DAG ordering via `syneroym:conversation` (`crates/conversation`). |
-| **[PLT-DAT] Pub/Sub** | **Substrate Event Bridges** | Event notification delivery through the embedded MQTT broker (`crates/mqtt_broker`). |
-| **[PLT-DAT] S3 Blobs** | **Roym Catalog** | Storing and retrieving content-addressed blobs via `blob-store` WIT capability and `crates/data_blob`. |
-| **[FND-IDT/IAM] Identity & Access** | **roymctl / Substrate Identity** | Generating root keypairs and enforcing authorization via `ControllerAgreement`, App Supervisors, and UCAN / FDAE policies (`crates/identity`, `crates/fdae`). |
-| **[FND-CFG] Service Config (Secrets)** | **Roym Services** | Dynamically retrieving secrets from the encrypted vault via `syneroym:vault/reveal` (`crates/sandbox_wasm`). |
-| **[FND-DEP] App Deployment** | **roymctl** | Compiling and deploying WASM SynApp components into the sandboxed Wasmtime runtime (`apps/roymctl`, `crates/app_orchestration`). |
-| **[FND-VER] Schema Migrations** | **Substrate Runtime** | Executing stateful `init()` and `migrate()` SQL DDL lifecycle hooks (`crates/sandbox_wasm/src/engine/lifecycle.rs`). |
-| **[P2P-DSC] Directory Search** | **Roym Directory** | Publishing signed listing records and resolving local service providers via directory query and deterministic client-side merging (`crates/roym_directory`). |
-| **[P2P-REP] Bilateral Receipts** | **Roym Transaction** | Generating signed bilateral agreement and fulfilment receipts and rendering credential trust summaries in Roym Hub (`crates/roym_core/src/transaction.rs`, `crates/roym_web/ui`). |
-| **[FND-OBS] Metrics Recording** | **Substrate Core** | In-memory metrics recording with `MemoryRecorder` exposed over HTTP `/metrics` (`crates/observability`). |
-| **[LFC-*] Deploy Rollback** | **Control Plane** | Atomic deploy-time rollback of configuration generations, asset bundles, and FDAE policies upon deployment failure (`crates/control_plane`). |
+| **[TOP-*] Routing & Relays** | **Substrate Core** | Establishes secure P2P connections across NATs and resolves cryptographic node IDs (`crates/router`, `crates/coordinator_iroh`). |
+| **[PLT-ASY] Offline Operation** | **Roym Conversation** | Queues outbox messages offline and syncs causal DAG state upon reconnection (`crates/conversation`, `crates/roym_conversation`). |
+| **[PLT-DAT] Conversation DAG** | **Roym Conversation** | Delivers end-to-end encrypted messages with Double Ratchet and causal DAG ordering via `syneroym:conversation` (`crates/conversation`). |
+| **[PLT-DAT] Pub/Sub** | **Substrate Event Bridges** | Delivers event notifications through the embedded MQTT broker (`crates/mqtt_broker`). |
+| **[PLT-DAT] S3 Blobs** | **Roym Catalog** | Stores and retrieves content-addressed blobs via `blob-store` WIT capability and `crates/data_blob`. |
+| **[FND-IDT/IAM] Identity & Access** | **roymctl / Substrate Identity** | Generates root keypairs and enforces authorization via `ControllerAgreement`, App Supervisors, and UCAN / FDAE policies (`crates/identity`, `crates/fdae`). |
+| **[FND-CFG] Service Config (Secrets)** | **Roym Services** | Retrieves secrets dynamically from the encrypted vault via `syneroym:vault/reveal` (`crates/sandbox_wasm`). |
+| **[FND-DEP] App Deployment** | **roymctl** | Compiles and deploys WASM SynApp components into the sandboxed Wasmtime runtime (`apps/roymctl`, `crates/app_orchestration`). |
+| **[FND-VER] Schema Migrations** | **Substrate Runtime** | Executes stateful `init()` and `migrate()` SQL DDL lifecycle hooks (`crates/sandbox_wasm/src/engine/lifecycle.rs`). |
+| **[P2P-DSC] Directory Search** | **Roym Directory** | Publishes signed listing records and resolves local service providers via directory queries and deterministic client-side merging (`crates/roym_directory`). |
+| **[P2P-REP] Bilateral Receipts** | **Roym Transaction** | Generates signed bilateral agreement and fulfilment receipts and renders credential trust summaries in Roym Hub (`crates/roym_core/src/transaction.rs`, `crates/roym_web/ui`). |
+| **[FND-OBS] Metrics Recording** | **Substrate Core** | Records in-memory metrics with `MemoryRecorder` and exposes them over HTTP `/metrics` (`crates/observability`). |
+| **[LFC-*] Deploy Rollback** | **Control Plane** | Rolls back configuration generations, asset bundles, and FDAE policies atomically upon deployment failure (`crates/control_plane`). |
 
 > **Envisioned.** Not built yet. The following matrix targets describe planned capabilities not implemented in code:
 >
@@ -1541,7 +1547,7 @@ These additions define envisioned extensions to the substrate and application co
 > - **Zero-Downtime Settlement Upgrades:** Zero-downtime stateful settlement rule upgrades (`[FND-VER]`). Today migrations execute SQL DDL hooks during deployment.
 > - **Dynamic Node Leasing:** Dynamically leasing external substrate nodes to handle flash traffic spikes (`[FND-LEA]`). Today substrate resources use static local host configurations.
 > - **Resource Utilization Billing:** Tracking exact resource utilization to bill storefront owners (`[FND-OBS]`). Today metrics record in-memory operational counters without billing logs.
-> - **External Gateway Secret Integrations:** Dynamically pulling third-party shipping and fiat payment gateway API keys from the vault (`[FND-CFG]`). Today services retrieve internal service credentials only.
+> - **External Gateway Secret Integrations:** Dynamically fetching third-party shipping and fiat payment gateway API keys from the vault (`[FND-CFG]`). Today services retrieve internal service credentials only.
 > - **Mesh Matching Fabric:** Placing and resolving signed publications across a rendezvous-hashed leaf shard mesh (`[P2P-DSC]`). Today discovery uses direct queries to directory SynOrgs.
 > - **Peer Reputation Scoring:** Peer reputation scoring algorithms, time decay formulas, and rolling trust summaries (`[P2P-REP]`). Today trust is verified via signed SynOrg credentials and bilateral receipts.
 > - **Automated Version Rollback:** Automated rollback of failed application version updates and SQLite filesystem snapshots (`[LFC-*]`). Today rollback is limited to control-plane deploy-time metadata.
