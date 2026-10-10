@@ -102,7 +102,7 @@ The operator's service then:
 1. Reads the challenge and removes it.
 2. Verifies the caller's signature against the audience of the child token.
 3. Verifies the chain with `verify_chain`, with the caller key as expected audience and the operator root as an accepted root. It checks the ability, the resource and the expiry.
-4. Checks the use limits and that the passport id is not denied. The limits are read from the **passport** (the root token) only. A limit in the child token is treated as narrower, or ignored: `verify_chain` does not compare facts between tokens, so an owner could otherwise write `max_nodes: 1000` under a passport that says 3.
+4. Checks the use limits and that the passport id is not denied. The limits are read from the **passport** (the root token) only. A limit in the child token is ignored: `verify_chain` does not compare facts between tokens, so an owner could otherwise write `max_nodes: 1000` under a passport that says 3. Ignoring it means no comparison is needed.
 5. Writes one lease row `(passport_id, owner_did, caller_key, lease_ends_at)`. The lease ends at the earliest of the child token expiry and `max_lease_secs`. Default `max_lease_secs` is 24 hours.
 
 The response gives `lease_ends_at`. The service allows a caller when it has a row with a lease still running. It reads from memory, filled from SQLite at startup. Registration must be over TLS (P-10), because the token is sensitive. The info server runs TLS only when `[tls]` is set, so passport access requires it.

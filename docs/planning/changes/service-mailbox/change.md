@@ -190,7 +190,7 @@ An identity costs nothing to make, so a per-sender share is only a weak limit. T
 
 The passport is the token from [operator-passport](../operator-passport/change.md). The operator is the controller of the mailbox's host substrate, or its node DID. The audience is the owner DID of the service. The owner re-delegates it as a child token whose audience is the **member master DID**, which stays the same when the service moves. The instance proves its link to the master with its existing service-instance `DelegationCertificate`, which the transport already checks. The key that signs the challenge is the instance key.
 
-Ability `mailbox/use` on `substrate:<operator did>/mailbox`. Facts: `max_bytes`, `max_messages`, `max_ttl_secs`, `max_services`. The facts raise the quotas of that queue.
+Ability `mailbox/use` on `substrate:<host node did>/mailbox`. Facts: `max_bytes`, `max_messages`, `max_ttl_secs`, `max_services`. The facts raise the quotas of that queue.
 
 The owner key signs one child token for each member master at deploy time (`roymctl svc deploy` or `app deploy` with a passport file).
 
