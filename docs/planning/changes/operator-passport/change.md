@@ -43,14 +43,15 @@ Core. Each passport use must pass these in its own tests.
 | ID | Criterion | Test |
 | --- | --- | --- |
 | P-1 | The operator can issue a passport with an audience (owner DID), an ability, a resource, an expiry and use limits. | |
-| P-2 | Registration is refused when: the chain does not end at an accepted operator root; the token is expired; the ability or resource does not match; the final audience is not the caller key; the proof-of-possession signature is wrong; the challenge is old or already used; or a use limit is reached. Each case has its own error. | |
-| P-3 | A leaked passport is not enough. The caller must also hold the key that the owner's child token names, and sign the challenge with it. | |
+| P-2 | Registration is refused when: the chain does not end at an accepted operator root; the token is expired; the ability or resource does not match; the key that signs is not bound to the final audience (for the relay the two are the same key; for the mailbox the instance key is bound to the member master by its service-instance certificate); the proof-of-possession signature is wrong; the challenge is old or already used; or a use limit is reached. Each case has its own error. | |
+| P-3 | A leaked passport is not enough. The caller must also hold the key bound to the audience of the owner's child token, and sign the challenge with it. | |
 | P-4 | A caller whose lease has ended is refused when it connects the next time. A connection that is already open is not cut. The lease never outlasts the token or `max_lease_secs`. | |
 | P-5 | After the operator's service restarts, users with a running lease keep their access. | |
 | P-6 | The operator can deny a passport by its id. A denied caller is refused when it connects the next time. | |
 | P-7 | The registration endpoints accept a body of at most 16 KiB, keep at most 1,000 challenges (the oldest is dropped first), give each challenge a life of 60 seconds, do the size and shape checks before any signature check, and limit each source address to 10 requests per minute. | |
 | P-8 | `roymctl` can issue a passport, deny a passport by id, and list the running leases. | |
-| P-9 | The challenge signature covers a domain tag, the DID of the service being registered with, the challenge, and a hash of the token. A signature made for one service is refused by another. | |
+| P-9 | The challenge signature covers a domain tag, the node DID of the host substrate of the service being registered with, the challenge, and a hash of the token. A signature made for one service is refused by another. | |
+| P-10 | The registration endpoints are served only over TLS. A service with passport access and no TLS config stops at startup. | |
 
 Home relay
 
@@ -85,7 +86,7 @@ Home relay
 
 **Passport id.** `token_id` is the SHA-256 of the canonical signed body of the passport (the body that its signature covers). `CapabilityToken` has no id field today. The deny list and the use counts use this id.
 
-**Resource name.** A bare `substrate:<did>` matches every resource (`crates/ucan/src/capability.rs`). Use a selector form instead: `substrate:<operator did>/relay` for the relay and `substrate:<operator did>/mailbox` for the mailbox.
+**Resource name.** A bare `substrate:<did>` matches every resource (`crates/ucan/src/capability.rs`). Use a selector form instead: `substrate:<host node did>/relay` for the relay and `substrate:<host node did>/mailbox` for the mailbox. The DID is always the node DID of the host substrate, whichever root (controller or node DID) issued the passport. The challenge signature (P-9) names the same node DID.
 
 **ADR-0015 amendment.** Required, not optional. It adds the abilities `relay/home` and `mailbox/use` (the ability set is closed, A2), the selector resource form above, and the reserved facts keys for use limits.
 
@@ -101,10 +102,10 @@ The operator's service then:
 1. Reads the challenge and removes it.
 2. Verifies the caller's signature against the audience of the child token.
 3. Verifies the chain with `verify_chain`, with the caller key as expected audience and the operator root as an accepted root. It checks the ability, the resource and the expiry.
-4. Checks the use limits in the facts and that the passport id is not denied.
+4. Checks the use limits and that the passport id is not denied. The limits are read from the **passport** (the root token) only. A limit in the child token is treated as narrower, or ignored: `verify_chain` does not compare facts between tokens, so an owner could otherwise write `max_nodes: 1000` under a passport that says 3.
 5. Writes one lease row `(passport_id, owner_did, caller_key, lease_ends_at)`. The lease ends at the earliest of the child token expiry and `max_lease_secs`. Default `max_lease_secs` is 24 hours.
 
-The response gives `lease_ends_at`. The service allows a caller when it has a row with a lease still running. It reads from memory, filled from SQLite at startup. Registration must be over TLS, because the token is sensitive.
+The response gives `lease_ends_at`. The service allows a caller when it has a row with a lease still running. It reads from memory, filled from SQLite at startup. Registration must be over TLS (P-10), because the token is sensitive. The info server runs TLS only when `[tls]` is set, so passport access requires it.
 
 **What a use provides.** The ability and resource names, its facts, which key signs the challenge, and how the lease is enforced (relay: the access function; mailbox: the quota lookup). For a use where the key that signs differs from the audience of the child token, it also says how they are bound. The mailbox use binds an instance key to a stable service master by the existing service-instance certificate that the transport already checks.
 
@@ -119,7 +120,7 @@ The response gives `lease_ends_at`. The service allows a caller when it has a ro
 
 ### Use: home relay
 
-**Ability and facts.** Ability `relay/home` on `substrate:<operator did>/relay`. Facts: `max_nodes`. The caller key is the substrate's node key, and it is also the audience of the child token.
+**Ability and facts.** Ability `relay/home` on `substrate:<host node did>/relay`. Facts: `max_nodes`. The caller key is the substrate's node key, and it is also the audience of the child token.
 
 **Endpoints.** On the coordinator's info HTTP server (the one with `/v1/info`): `POST /v1/home-relay/challenge` and `POST /v1/home-relay/register`.
 

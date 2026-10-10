@@ -66,7 +66,7 @@ Mailbox service
 | M-10 | A queue that has not been claimed for the queue lifetime (30 days) is removed. | |
 | M-11 | The mailbox stores no content, interface name, method name or parameters in clear text. | |
 | M-12 | For each queue the mailbox serves `claim` and `ack` only to the instance with the newest certificate it has seen (by `issued_at_secs`), and only if that certificate is not revoked. After a relocation, the old instance can no longer take messages. | |
-| M-13 | A `delivered` receipt carries the receiver's signature (message id, state, time) made with its instance key. The mailbox stores it as sent. The mailbox cannot make a `delivered` receipt. | |
+| M-13 | A `delivered` receipt carries the receiver's signature over `(deposit_id, state, time)`, made with its instance key, and the receiver's instance certificate. The sender knows only the receiver's member master DID, so it checks the certificate against that DID and then the signature. The mailbox stores the receipt as sent. The mailbox cannot make a `delivered` receipt. | |
 | M-14 | A message that was claimed 5 times without an acknowledgement is closed with the receipt `rejected`. The mailbox counts the claims. | |
 
 Record and keys
@@ -100,13 +100,13 @@ Receiver
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| R-1 | For each hosted service that has a mailbox, the substrate registers (again when needed), claims, unseals, delivers and acknowledges. It runs this at start, every 60 seconds, and when asked. If the instance certificate has expired, the substrate waits for the supervisor to renew it, then registers and pulls. | |
+| R-1 | For each hosted service that has a mailbox, the substrate registers (again when needed), claims, unseals, delivers and acknowledges. It runs this at start, every 60 seconds, and when asked. If the instance certificate has expired, the substrate waits for the supervisor to renew it, then registers and pulls. A service deployed with `svc deploy` has no supervisor, so nothing renews its certificate. Its pull stays blocked, with a warning in the log and a metric every hour, until a new certificate is installed. Deposits for it still wait at the mailbox until the queue lifetime ends. Use the per-member certificate lifetime (K-8) for such a service. | |
 | R-2 | The message enters the normal inbound path, including the receiver idempotency fence and admission rules. | |
 | R-3 | The caller identity of a delivered message is the original sender, taken from the sealed proof. It is never the mailbox. | |
 | R-4 | The receiver accepts a message only if the sender's certificate was valid at the sealed send time and is not revoked now. It rejects a send time older than the longest mailbox time-to-live plus 24 hours of clock skew (the same allowance as Conversation). A rejected message is acknowledged as `rejected`. | |
 | R-5 | A method that has not opted in is acknowledged as `rejected`. | |
 | R-6 | A temporary local failure is not acknowledged. The mailbox closes the message after 5 claims (M-14). | |
-| R-7 | For a service with a mailbox, the receiver idempotency memory lasts at least the longest mailbox time-to-live plus the clock skew allowance. When the row limit is reached first, the oldest-expiring rows go first (R-4 bounds the age of a message, so the limit is raised for such services). A message that arrives both direct and from the mailbox runs once. | |
+| R-7 | For a service with a mailbox, the receiver idempotency memory lasts at least the longest mailbox time-to-live plus the clock skew allowance. The row limit for such a service is 100,000 (the default is 10,000). When it is reached first, the oldest-expiring rows go first, and R-4 bounds the age of a message. This extends the existing backlog row "A resent envelope can be refused after the receiver's dedup record expires". A message that arrives both direct and from the mailbox runs once. | |
 
 Dedicated mailbox (last task)
 
@@ -154,7 +154,7 @@ A renewed instance certificate lasts 4 hours (`crates/core/src/config/roles.rs`)
 The sender builds two parts.
 
 - Outer, for the mailbox: destination, a random `deposit_id`, size, time-to-live. The sender is not a field. The mailbox reads it from the verified identity. The outer id is random, not the idempotency key: Conversation ids come from the content, and a mailbox could confirm a guessed message by its id.
-- Inner, sealed to the mailbox key with an anonymous sealed box (a fresh key for each message; the inner signature gives the authenticity): `interface`, `method`, `params`, the idempotency key, the sender's instance certificate, a sender signature over the destination, the idempotency key and the payload hash, and the send time.
+- Inner, sealed to the mailbox key with an anonymous sealed box (a fresh key for each message; the inner signature gives the authenticity): `interface`, `method`, `params`, the idempotency key, the sender's instance certificate, and a sender signature over the destination, the idempotency key, the payload hash and the send time. The signature covers the send time, which R-4 depends on.
 
 The receiver checks the inner signature and the certificate after it opens the message (R-4). The mailbox cannot change the content without breaking the signature. The crate for the sealed box is an open item.
 

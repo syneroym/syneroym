@@ -42,12 +42,12 @@ This change builds that for the Iroh relay. A community registry operator lists 
 | AC-3 | The registry returns its configured list from `GET /coordinators?transport=iroh-relay`. Each entry has `transport`, `url`, `info_url` (where `GET /v1/info` is served, because it has its own port), and `operator`. The response says how long a client may cache it (`max_age_secs`). | |
 | AC-4 | The choice is deterministic. The substrate ranks the entries by SHA-256 over a fixed byte layout (see Design) and takes the first. The same inputs always give the same result on every version of the compiler. | |
 | AC-5 | The substrate keeps the list and its choice on disk. It does not ask the registry again until `max_age_secs` has passed. If a refresh fails, the old list stays in use, also after it has expired. | |
-| AC-6 | Before it uses an entry, the substrate reads `info_url`. It skips an entry that cannot be reached or reports `at_capacity`, and takes the next entry in rank order. `at_capacity` is computed from the number of relay clients, not router connections. | |
+| AC-6 | Before it uses an entry, the substrate reads `info_url`. It skips an entry that cannot be reached or reports `at_capacity`, and takes the next entry in rank order. `at_capacity` is computed from the number of relay clients, not router connections. The count is the `accepts` counter minus the `disconnects` counter of `iroh-relay` (`server/metrics.rs`), which has no direct gauge. | |
 | AC-7 | A saved choice is kept while it works, even if a new list changes the ranking. The substrate picks again only when the choice is removed from the list, or after 3 connection failures within 5 minutes. | |
 | AC-8 | When the relay changes at run time, the endpoint switches relay without a restart. The substrate then publishes its endpoint record again with the new relay URL. | |
-| AC-9 | The substrate is in degraded mode only when all three are true: there is no `url`, there is no saved choice or list, and there is no `registry_url` or the registry cannot be reached. In degraded mode the endpoint has relays disabled, the log has a clear warning, and the substrate retries the registry with backoff when `registry_url` is set. | |
-| AC-10 | The endpoint is never built with the public n0 preset, with or without a relay URL, and also when a relay URL does not parse. | |
-| AC-11 | Boot does not wait for the registry. It starts with the saved choice, or with relays disabled, and resolves in the background. | |
+| AC-9 | The substrate is in degraded mode only when all three are true: there is no `url`, there is no saved choice or list, and there is no `registry_url` or the registry cannot be reached. In degraded mode the endpoint has an empty relay map (`RelayMode::Custom(RelayMap::empty())`), the log has a clear warning, and the substrate retries the registry with backoff when `registry_url` is set. | |
+| AC-10 | The endpoint is never built with the public n0 preset, with or without a relay URL, and also when a relay URL does not parse. This covers every runtime caller of `net_iroh::build_iroh_endpoint`. The smoke-test tool has its own n0 builder (`crates/smoke-tests/src/main.rs:222`); it is a test tool and is not covered. | |
+| AC-11 | Boot does not wait for the registry. It starts with the saved choice, or with an empty relay map, and resolves in the background. A relay inserted later becomes the home relay. | |
 | AC-12 | The default of `registry_url` stays `None`. The substrate never contacts a registry or a relay that the operator did not configure or that a configured registry did not list. | |
 | AC-13 | The registry config check fails at startup for a list entry with a bad URL, or a duplicate after URL normalisation. | |
 | AC-14 | `coordinator_discovery_url` is removed from the config. | |
@@ -77,7 +77,7 @@ The endpoint returns:
 
 Only open relays are listed. The URL is the entry id. The operator must only list a coordinator whose `[roles.coordinator] access` is `"everyone"`.
 
-A registry with an empty list forwards the request to its parent URL, like `lookup` does. A hop counter in the request stops a loop after 3 hops.
+A registry with an empty list forwards the request to its parent URL. This is new behaviour: today only registration is passed upward (`crates/community_registry/src/registry.rs:226-229,287`), and `lookup` never asks the parent. A hop counter in the request stops a loop after 3 hops.
 
 This list is separate from `share_in_registry`. That setting makes a coordinator publish its own endpoint record so that other nodes can find it by id. It does not say "this is a relay for anyone to use".
 
@@ -95,9 +95,9 @@ Resolution order for the Iroh transport:
 2. A saved choice exists and its entry still answers `info_url`. Use it.
 3. A saved list exists. Rank it, check entries in order, save the first good one. An expired list counts as usable when the refresh fails.
 4. Ask the configured `registry_url` for the list. Save it. Then continue as in step 3.
-5. Nothing worked. Degraded mode: relays disabled, warning in the log, background retry only when `registry_url` is set.
+5. Nothing worked. Degraded mode: empty relay map, warning in the log, background retry only when `registry_url` is set.
 
-**Boot and runtime change.** Today the endpoint is built once with a fixed relay (`crates/router/src/connection_router.rs:81`), and the relay URL in the published record is read once (`crates/substrate/src/runtime/router.rs:220`). The change: the substrate boots with the saved choice, or with relays disabled, and resolves in a background task. When a relay is chosen or changed, the task calls `Endpoint::insert_relay` and `remove_relay` (both exist in iroh 0.97) and publishes the record again.
+**Boot and runtime change.** Today the endpoint is built once with a fixed relay (`crates/router/src/connection_router.rs:81`), and the relay URL in the published record is read once (`crates/substrate/src/runtime/router.rs:220`). The change: the substrate boots with the saved choice, or with an empty relay map, and resolves in a background task. When a relay is chosen or changed, the task calls `Endpoint::insert_relay` and `remove_relay` (both exist in iroh 0.97) and publishes the record again.
 
 **Ranking.** Rendezvous hashing: when the list changes, only the substrates whose choice was removed move. The sorted order is also the failover order.
 
@@ -105,15 +105,18 @@ Resolution order for the Iroh transport:
 
 **Where the files go.** The cache is a small file under `config.storage.db_dir` (`coordinators.json`: list, fetch time, `max_age_secs`, chosen URL). There is no single data-directory accessor; the runtime uses `config.storage.db_dir` (`crates/core/src/config/base.rs:30`).
 
-**Degraded mode.** With relays disabled and no address lookup, a peer can only reach the node through the direct addresses in its record. Outbound calls work. *Unverified:* run this once and confirm. The API exists (`RelayMode::Disabled`, iroh 0.97).
+**Degraded mode.** The endpoint has a relay transport but no home relay. It can dial a peer through that peer's relay (the relay actor opens a connection to any URL a peer gives). Peers cannot reach it through a relay until a home relay is inserted, so it is reachable only by the direct addresses in its record. *Unverified:* run a test that a relay inserted later with `insert_relay` becomes the home relay.
 
-**Removing the n0 fallback.** Two places build the endpoint with the n0 preset today: `build_iroh_endpoint` (`crates/router/src/net_iroh.rs:99-108`, when no URL is given or the URL does not parse) and the coordinator with no parent and its relay off (`crates/coordinator_iroh/src/coordinator.rs:77`). Both change to `RelayMode::Disabled`.
+**Why not `RelayMode::Disabled`.** In iroh 0.97 this mode builds no relay transport at all: neither listening nor dialing through relays is possible (`iroh-0.97.0/src/endpoint.rs:1721`, `socket/transports.rs:209-212`). A later `insert_relay` would only change a list with no transport behind it, and the node could not dial a peer that is behind NAT.
+
+**Removing the n0 fallback.** Two places build the endpoint with the n0 preset today: `build_iroh_endpoint` (`crates/router/src/net_iroh.rs:99-108`, when no URL is given or the URL does not parse) and the coordinator with no parent and its relay off (`crates/coordinator_iroh/src/coordinator.rs:77`). Every runtime caller goes through `net_iroh::build_iroh_endpoint`: the substrate router, the Iroh coordinator, and the two WebRTC coordinator callers (`crates/coordinator_webrtc/src/coordinator.rs:72`, `bootstrap.rs:281`). They change to `RelayMode::Custom(RelayMap::empty())`, so a coordinator with no parent can still dial substrates through their relays.
 
 ### Rejected options
 
 - **Random choice on every start.** The relay URL is part of the signed endpoint record. A new relay on each start means a new record and cold caches for every caller.
 - **A `requires_passport` field in the list.** A passport coordinator is never found through the registry, so the field has no use.
 - **n0 public relays as a fallback.** They show metadata to a third party outside the community.
+- **`RelayMode::Disabled` for degraded mode, boot and the n0 replacement.** It builds no relay transport (see Design).
 - **A separate opt-out flag.** Removing `iroh` from `communication_interfaces` already does this.
 - **Reusing `share_in_registry` as the list.** It is a different thing (see above). It also expires after 2 hours.
 - **Probing `/v1/info` on the relay's own port.** `/v1/info` has its own bind address (`info_http_bind_address`, or the relay port plus 10), which is why each entry has `info_url`.
@@ -125,7 +128,7 @@ Resolution order for the Iroh transport:
 
 ## Tasks
 
-- [ ] Run degraded mode once (relays disabled) and record the result here.
+- [ ] Run degraded mode once (empty relay map, then `insert_relay`) and record the result here.
 - [ ] Config: make `url` optional, remove `coordinator_discovery_url`, add the registry `coordinators` list and its checks (URL normalisation, duplicates).
 - [ ] Registry: `GET /coordinators` and parent forwarding with a hop limit.
 - [ ] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
