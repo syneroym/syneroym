@@ -1213,34 +1213,36 @@ SynApps support compiling from a single Rust codebase into either sandboxed `was
 
 ## Phase 4: Advanced Services & Tooling
 
+*Reader: developers and system architects.*
+
 ### [ADV-OBS] Observability enhancements
 
-The substrate captures in-memory counters, gauges, and latency histograms via a thread-safe `MemoryRecorder` (`syneroym-observability`) and exposes a JSON snapshot over HTTP `GET /metrics`. Dedicated SQLite metric storage, automated data rollups, and multi-tenant access control are envisioned.
+The substrate records in-memory counters, gauges, and latency histograms using a thread-safe `MemoryRecorder` (`syneroym-observability`). It exposes a JSON snapshot over HTTP `GET /metrics`. Dedicated SQLite metric storage, automated data rollups, and multi-tenant access control are envisioned.
 
-- **Comprehensive Metric Types:** Beyond system-level resources, track application metrics (service call counts, error rates, response times) in an in-memory metrics recorder.
+- **Comprehensive Metric Types:** The system tracks application metrics (service call counts, error rates, and response times) in an in-memory metrics recorder, in addition to system-level resources.
   > **Envisioned.** Not built yet. Network byte metering, connection duration tracking, relayed byte accounting, and GPU or LLM token counters. Today the substrate tracks in-memory counters, gauges, and latency histograms without per-stream byte counters or external token metering.
   >
-  > Track Network Metering (bytes transferred, connection durations, relayed byte amounts for multi-hop routing). The metric pipeline is extensible to support future infrastructure additions like GPU usage, LLM token counts, or specific AI service utilization.
+  > The system tracks network metering (bytes transferred, connection durations, and relayed byte amounts for multi-hop routing). The metric pipeline extends to support future infrastructure additions such as GPU usage, LLM token counts, or specific AI service utilization.
 - **Granularity & Retention:**
   > **Envisioned.** Not built yet. Persistent SQLite `metrics.db`, raw event logging, and automatic data rollups. Today metrics are stored strictly in memory and reset upon process restart.
   >
-  > Implement automatic data rollups to balance storage costs. The system defaults to storing raw events for 24 hours, which then roll up directly into 1-hour buckets retained for 30 days (skipping minute-level granularity for simplicity and storage efficiency).
+  > The system performs automatic data rollups to balance storage costs. The system stores raw events for 24 hours by default. These events roll up directly into 1-hour buckets retained for 30 days. The system skips minute-level granularity for simplicity and storage efficiency.
 - **Data Mashups & Flexible Metadata:**
   > **Envisioned.** Not built yet. Structured metadata tagging with Substrate ID, Service Owner DID, and dynamic JSON billing metadata. Today in-memory metric keys use plain metric names without DID tagging or dynamic billing schemas.
   >
-  > Metrics are tagged with Substrate ID, Service Owner ID (DID), and Datetime. The underlying format incorporates extensible JSON properties to support dynamic metadata, allowing for future additions such as applying "agreed rates" for billing without rigid schema coupling.
+  > The system tags metrics with Substrate ID, Service Owner ID (DID), and Datetime. The format includes extensible JSON properties to support dynamic metadata. This allows future additions, such as applying "agreed rates" for billing without rigid schema coupling.
 - **Access Control Enforcement:**
   > **Envisioned.** Not built yet. Role-based metrics access control, per-service owner scoping, and relay billing logs. Today the metrics HTTP endpoint is unauthenticated and serves all recorded metrics.
   >
-  > Substrate owners have root access to all metrics on their node. Service owners are restricted to viewing metrics exclusively for their deployed SynApps/SynSvcs. Relay providers have access to routing byte counts to log charges against source/destination nodes.
-- **External API Strategy:** Substrates do not render internal dashboards. Instead, metric data is exposed as a JSON snapshot via HTTP `GET /metrics`.
+  > Substrate owners have root access to all metrics on their node. Service owners can view metrics only for their deployed SynApps and SynSvcs. Relay providers have access to routing byte counts to log charges against source and destination nodes.
+- **External API Strategy:** Substrates do not render internal dashboards. Instead, the substrate exposes metric data as a JSON snapshot over HTTP `GET /metrics`.
   > **Envisioned.** Not built yet. Access-controlled RPC metric endpoints and dedicated metering visualization applications. Today the substrate exposes an unauthenticated local HTTP endpoint returning JSON metrics snapshots.
   >
-  > Metric data is exposed securely via an access-controlled RPC endpoint, designed to be consumed by external visualization SynApps or dedicated metering applications.
+  > The substrate exposes metric data securely through an access-controlled RPC endpoint. External visualization SynApps or dedicated metering applications consume this endpoint.
 
 ### [OBS-ALT] Control-Plane Health Sweep & Alert Store
 
-The substrate App Supervisor and operator tools maintain an isolated SQLite `AlertStore` (`alerts.db`) tracking discrete health failure modes (`AlertKind`).
+The substrate App Supervisor and operator tools maintain an isolated SQLite `AlertStore` (`alerts.db`). This store tracks discrete health failure modes (`AlertKind`).
 
 - **Failure Mode Classification (`AlertKind`):** The store tracks distinct failure signals without collapsing them into generic errors:
   - `SubstrateUnreachable`: Target substrate failed to respond to the health poll.
@@ -1255,201 +1257,206 @@ The substrate App Supervisor and operator tools maintain an isolated SQLite `Ale
   - `OrphanedService`: A service continues running despite removal from the stored plan.
   - `VaultLocked`: Supervisor vault lacks the Key Encryption Key (KEK) needed to reissue instance certificates.
   - `InstanceRevoked`: An operator revoked the placement's instance key.
-  - `RotationRestartPending`: Certificate renewal succeeded but the subsequent instance restart failed.
+  - `RotationRestartPending`: Certificate renewal succeeded, but the subsequent instance restart failed.
   - `DeliveryExhausted`: A queued binding write exhausted its delivery attempt budget.
   - `ScheduledRunFailed`: A scheduled cron tick failed or timed out.
   - `AppIdentityMismatch`: Vault app master key does not derive the expected application DID.
-- **Lifecycle Tracking:** Alert records persist `first_seen_at`, `last_seen_at`, and `cleared_at` timestamps. Alerts remain active while failure conditions persist, and transition to cleared once the underlying fault resolves.
+- **Lifecycle Tracking:** Alert records persist `first_seen_at`, `last_seen_at`, and `cleared_at` timestamps. Alerts remain active while failure conditions persist. They transition to cleared once the underlying fault resolves.
 
 ### [OBS-PRB] Diagnostic Health Probes & Operator Health CLI
 
 The SDK and operator CLI provide read-only multi-substrate status polling and alert reporting without modifying deployment state.
 
-- **Status Queries (`StatusQuery`):** The substrate client implements the `StatusQuery` trait (`crates/sdk/src/health.rs`) to query service statuses across target substrates, reporting instance phases, probe results, and node facts.
-- **Operator Health CLI (`roymctl app health`):** Operators audit application instance health via `roymctl app health --instance-id <id>`. The command polls target nodes, evaluates readiness probes and certificate lifetimes, records active alerts in `alerts.db`, and exits non-zero if any service reports a fault. The `--watch <secs>` option enables periodic polling, and `--no-record` allows read-only inspection without persisting alert rows.
-- **Alert Inspection (`roymctl app alerts`):** Operators inspect recorded alerts for an application instance via `roymctl app alerts --instance-id <id>`. The command displays active alerts and can include cleared alerts with `--all`.
+- **Status Queries (`StatusQuery`):** The substrate client implements the `StatusQuery` trait (`crates/sdk/src/health.rs`) to query service statuses across target substrates. It reports instance phases, probe results, and node facts.
+- **Operator Health CLI (`roymctl app health`):** Operators audit application instance health with `roymctl app health --instance-id <id>`. The command polls target nodes, evaluates readiness probes and certificate lifetimes, records active alerts in `alerts.db`, and exits non-zero if any service reports a fault. The `--watch <secs>` option enables periodic polling. The `--no-record` option allows read-only inspection without persisting alert rows.
+- **Alert Inspection (`roymctl app alerts`):** Operators inspect recorded alerts for an application instance with `roymctl app alerts --instance-id <id>`. The command displays active alerts. Operators can include cleared alerts with `--all`.
 
 ### [ADV-AI] Advanced AI & Agentic Workflows
 
-All advanced AI capabilities and concierge agent workflows are deferred and tracked in `docs/planning/deferred-backlog.md`. No AI engine, local inference service, MCP gateway, or vector database exists in the codebase today.
+The project defers all advanced AI capabilities and concierge agent workflows to `docs/planning/deferred-backlog.md`. No AI engine, local inference service, MCP gateway, or vector database exists in the codebase today.
 
 - **Local Model Inference Service:**
   > **Envisioned.** Not built yet. Local model inference service and Ollama runtime management. Today the substrate runs WASM services and native services without AI engine wrappers.
   >
-  > A lightweight wrapper service within the substrate that manages the underlying AI engine (e.g., Ollama). It orders the engine to install/download specific base models from a strict allow-list defined by the node operator, and proxies inference calls to the desired agent/model combination. Supports dynamic model loading within the permitted list and is accessible by other `SynApp` services via the Universal Proxy.
+  > A lightweight wrapper service runs inside the substrate to manage the underlying AI engine (such as Ollama). The service directs the engine to download and install specific base models from an allow-list defined by the node operator. It proxies inference calls to the selected agent and model combination. The service supports dynamic model loading within the permitted list. Other `SynApp` services can access it through the Universal Proxy.
 - **Hardware-Gated Capabilities & Decoupling:**
   > **Envisioned.** Not built yet. GPU/NPU hardware detection gating and decoupled remote LLM inference routing. Today the substrate samples basic host CPU and RAM in `crates/observability/src/engine.rs`.
   >
-  > Local model installation and inference are strictly gated by automatic hardware detection (e.g., GPU/NPU availability, RAM capacity) and explicit owner configuration overrides. Crucially, the Agent logic (lightweight WASM) and the LLM inference (heavy compute) are fully decoupled. If the local node lacks hardware for LLMs, it can still run the Concierge Agent locally while routing just the LLM inference requests to capable remote substrates. Alternatively, it can outsource both the Agent and the LLM entirely. The proxy agent service explicitly configures these upstream/remote endpoints to avoid any inverted dependency on application-layer aggregators.
+  > Automatic hardware detection (such as GPU/NPU availability and RAM capacity) and owner configuration overrides gate local model installation and inference. Agent logic (lightweight WASM) and LLM inference (heavy compute) are fully decoupled. If the local node lacks hardware for LLMs, it can still run the Concierge Agent locally while routing LLM inference requests to capable remote substrates. Alternatively, the node can outsource both the Agent and the LLM entirely. The proxy agent service explicitly configures these remote endpoints to avoid dependencies on application-layer aggregators.
 - **The Concierge Agent (Rig-core):**
   > **Envisioned.** Not built yet. Native concierge agent and natural language intent pipeline. Today user interaction uses structured UI screens and Action Cards.
   >
-  > The core agentic `SynSvc` running natively on the substrate. Frontend clients (like Trusted Rooms) send natural language intent directly to this agent.
+  > A core agentic `SynSvc` runs natively on the substrate. Frontend clients (such as Trusted Rooms) send natural language intent directly to this agent.
 - **Dynamic Tool Retrieval Loop:**
   > **Envisioned.** Not built yet. Dynamic tool retrieval loop with `search_ecosystem_tools` and semantic vector search. Today services are discovered via directory listings and explicit RPC method calls.
   >
-  > The agent uses a dynamic "Retrieval Augmented Tool" approach to avoid context bloat:
-  > 1. The loop starts by giving the LLM exactly **one** meta-tool: `search_ecosystem_tools`.
+  > The agent uses dynamic tool retrieval to avoid large context sizes:
+  > 1. The loop starts by giving the LLM one meta-tool: `search_ecosystem_tools`.
   > 2. The LLM calls `search_ecosystem_tools(query)`.
   > 3. The Concierge Agent executes a semantic search against its local Ecosystem Vector Directory.
-  > 4. The agent dynamically injects matching tool schemas into the LLM's context.
+  > 4. The agent injects matching tool schemas dynamically into the LLM context.
   > 5. The LLM selects the best tool and generates the execution command.
-  > 6. The agent invokes the target service via the Universal Proxy, returning **Action Cards**.
+  > 6. The agent calls the target service through the Universal Proxy and returns **Action Cards**.
 - **Human-in-the-Loop (HITL) Consent:**
   > **Envisioned.** Not built yet. Proposal Cards and agent execution pause-and-yield loops. Today user consent occurs via interactive UI screens and form submissions.
   >
-  > For high-stakes tool calls, the Concierge Agent pauses execution and yields a "Proposal Card" to the Trusted Room. The user must cryptographically sign (consent) before the loop resumes. This is configured natively via tool arguments.
+  > For high-stakes tool calls, the Concierge Agent pauses execution and sends a "Proposal Card" to the Trusted Room. The user must sign with a cryptographic key before the loop resumes. Tool arguments configure this behavior natively.
 - **Agent Observability (Progress Streaming):**
   > **Envisioned.** Not built yet. Agent progress streaming and citation broadcasting. Today observability captures operational metrics and control-plane alerts.
   >
-  > Configurable progress streaming where the Concierge Agent broadcasts structured status, tool calls, citations, and validation events back to the UI. Raw private model reasoning is not exposed as an application contract.
+  > The Concierge Agent supports progress streaming. It broadcasts structured status updates, tool calls, citations, and validation events back to the UI. Raw private model reasoning is not part of the application contract.
 - **MCP Gateway:**
   > **Envisioned.** Not built yet. Model Context Protocol (MCP) server or gateway. Today external clients interact through JSON-RPC and HTTP endpoints.
   >
-  > A headless gateway layer that exposes the substrate's local capabilities to *external* desktop clients using the Model Context Protocol (MCP).
+  > A headless gateway exposes local substrate capabilities to external desktop clients using the Model Context Protocol (MCP).
 - **Agent-to-Agent Delegation:**
   > **Envisioned.** Not built yet. Autonomous agent-to-agent negotiation protocol. Today inter-service communication uses typed WIT interfaces and RPC routing.
   >
-  > The capability for a user's Concierge Agent to autonomously negotiate with external provider agents across the Syneroym substrate.
+  > A user's Concierge Agent can autonomously negotiate with external provider agents across the Syneroym substrate.
 - **Ecosystem Vector Directory & Memory:**
   > **Envisioned.** Not built yet. Local `sqlite-vec` vector database and episodic agent memory. Today SQLite stores relational service records and deployment metadata.
   >
-  > A specialized local data store (`sqlite-vec`) indexing available tools and storing episodic memory.
+  > A local data store (`sqlite-vec`) indexes available tools and stores episodic memory.
 - **Orchestrated Loopcraft (Nested Agentic Loops):**
   > **Envisioned.** Not built yet. Nested Loopcraft agent methodology and specialized WASM critic sub-agents. Today WASM services execute single-invocation request/response and event workflows.
   >
-  > To ensure high reliability on complex tasks, the Concierge Agent employs the "Loopcraft" methodology. Rather than executing a single, flat ReAct loop, the agent network utilizes pre-defined, specialized loops (e.g., a "Data Gathering Loop," a "Synthesis Loop," or a "Verification Loop"). These specialized loops are compiled and deployed as independent native WASM components (`SynSvcs`). The core Concierge Agent conditionally routes tasks through these stacked loops via the Universal Proxy based on the problem state. For instance, drafting an Action Card for a financial transaction will strictly route through a Verification Loop (a Critic sub-agent) before presenting it to the user. This orchestrated nesting allows for deep, self-correcting reasoning while maintaining strict zero-trust isolation between loops.
+  > To achieve high reliability on complex tasks, the Concierge Agent uses the "Loopcraft" methodology. The agent network uses predefined, specialized loops (such as a "Data Gathering Loop," a "Synthesis Loop," or a "Verification Loop") instead of a single flat ReAct loop. Developers compile and deploy these specialized loops as independent native WASM components (`SynSvcs`). The core Concierge Agent routes tasks through these stacked loops via the Universal Proxy based on problem state. For example, drafting an Action Card for a financial transaction routes through a Verification Loop (a Critic sub-agent) before showing it to the user. This nested structure enables deep, self-correcting reasoning while maintaining strict zero-trust isolation between loops.
 
 ### [ADV-DEV] SynApp Developer Tooling & SDKs
-- **Transparent Developer Experience**: Rather than providing a rigid CLI wrapper, Syneroym development embraces transparent, standard Rust tooling. Project templates (via `cargo generate`) are provided to set up standard `Cargo.toml` files and build scripts. This ensures compatibility with existing IDEs, Language Servers (LSP/rust-analyzer), and agentic coding tools.
-- **Local Substrate for Integration & Dev**: To ensure zero-drift execution, developers use an actual local Syneroym node for local integration testing and development. Operations and developer workflows use existing `roymctl` subcommands (`claim`, `app`, `kek`, `supervisor`, `substrate`, `svc`). This completely avoids the massive engineering effort of duplicating the WASMTIME host, SQLite, and network logic into a standalone developer SDK. The SynApp couples to the Substrate entirely through standard WIT interfaces, not compile-time bindings.
-- **Pure Mock SDK for Unit Testing**: We provide a minimal `syneroym-dev-sdk` intended exclusively for isolated unit testing. This SDK provides simple, purely in-memory mock implementations of the Substrate interfaces (Data, Blobs, AI). Developers can write `#[test]` functions that link against these mocks for fast, offline verification of application logic without needing to spawn a real Substrate node.
+- **Transparent Developer Experience**: Syneroym uses standard Rust tooling rather than a custom CLI wrapper. Project templates (using `cargo generate`) create standard `Cargo.toml` files and build scripts. This design works with existing IDEs, language servers (such as `rust-analyzer`), and agentic coding tools.
+- **Local Substrate for Integration & Dev**: Developers use a local Syneroym node for integration testing and development to ensure identical behavior with production. Developer workflows use existing `roymctl` subcommands (`claim`, `app`, `kek`, `supervisor`, `substrate`, and `svc`). This approach avoids duplicating Wasmtime host, SQLite, and network logic in a separate developer SDK. SynApps connect to the substrate through standard WIT interfaces rather than compile-time bindings.
+- **Pure Mock SDK for Unit Testing**: The workspace provides a minimal `syneroym-dev-sdk` for isolated unit testing. This SDK provides in-memory mock implementations of substrate interfaces (Data, Blobs, and AI). Developers can write `#[test]` functions that link against these mocks for fast, offline testing of application logic without running a real substrate node.
 
 ## Phase 5: Peer-to-Peer Community Primitives
 
-Because Syneroym can be used as a general open cloud, this section separates foundational low-level network connectivity (`[TOP]`) from higher-level community-driven peer networking primitives.
+*Reader: developers and system architects.*
+
+Syneroym can serve as a general open cloud. This section separates foundational low-level network connectivity (`[TOP]`) from higher-level community peer networking primitives.
 
 ### [P2P-DSC] Distributed Matching Fabric
-Discovery uses directory services (`syneroym-roym-directory`) where clients, SynOrgs, and directories each choose what they query and publish. Providers publish signed publication records (listings and profiles) to chosen directories, and clients fan out queries across designated directory sources, deterministically merging and verifying results locally.
+Discovery uses directory services (`syneroym-roym-directory`). Clients, SynOrgs, and directories choose what they query and publish. Providers publish signed publication records (listings and profiles) to selected directories. Clients fan out queries across designated directory sources, then merge and verify results locally.
 
-- **Publications, not a global index:** Providers, consumers, and services publish signed publication records (`SignedRecord` envelopes carrying listings, profiles, and intents). Client applications query designated directory services with bounded fan-out, deterministically merge results, and verify cryptographic signatures, timestamps, and validity windows before use.
+- **Publications, not a global index:** Providers, consumers, and services publish signed publication records (`SignedRecord` envelopes carrying listings, profiles, and intents). Client applications query designated directory services with bounded fan-out. Clients merge results and verify cryptographic signatures, timestamps, and validity windows before use.
   > **Envisioned.** Not built yet. Fully decentralized P2P index caches across arbitrary peer nodes. Today discovery uses client queries fanned out across designated directory SynOrgs, with client-side verification and merging.
   >
-  > Distributed matching index caches across peer substrates, where indexes are distributed non-authoritative caches and every result is client-verified before use.
+  > Distributed index caches match records across peer substrates. These indexes act as distributed non-authoritative caches. Clients verify every result before use.
 - **Deterministic placement:**
   > **Envisioned.** Not built yet. Deterministic routing schema and rendezvous hashing onto leaf index shards. Today providers publish directly to chosen directory SynOrg services.
   >
-  > A protocol-defined Routing Schema (spatial cell, category, and attributes) plus rendezvous hashing maps each publication onto leaf index shards. Providers compute their own placement without coordinators.
-- **Aggregators as directory services:** Directory applications ("Aggregators") operate as directory-type SynOrgs (`syneroym-roym-directory`) indexing provider listings and credentials without privileged substrate status. No aggregator is a required or privileged intermediary.
+  > A protocol-defined Routing Schema (spatial cell, category, and attributes) and rendezvous hashing map each publication onto leaf index shards. Providers compute their own placement without coordinators.
+- **Aggregators as directory services:** Directory applications ("Aggregators") operate as directory-type SynOrgs (`syneroym-roym-directory`). They index provider listings and credentials without privileged substrate status. No aggregator is a required or privileged intermediary.
   > **Envisioned.** Not built yet. Leaf index shard opt-in and federation protocol. Today directory services run as standard SynApps, and clients configure which directory sources they query.
   >
-  > Directory applications can opt in as leaf index shards in a decentralized matching fabric, presenting the identical standard interface as any other peer.
+  > Directory applications can join as leaf index shards in a decentralized matching fabric. They present the same standard interface as any other peer.
 - **Hierarchical synopsis trees and query planning:**
   > **Envisioned.** Not built yet. Hierarchical synopsis trees, query planners, and cross-shard ranking. Today directories execute local SQL searches and clients merge results.
   >
-  > A hierarchical synopsis tree and query planner (when leaf-shard count makes flat lookup expensive), composite routing descriptors, and cross-shard ranking layer on top without reworking the publication or placement contract.
+  > The system can add hierarchical synopsis trees and query planners when high shard counts make flat lookups slow. Composite routing descriptors and cross-shard ranking layer on top without changing the publication or placement contract.
 
 ### [P2P-REP] Peer Reputation & Trust
 
-**Principles.** The reputation design is not frozen. It will be frozen later. Only these principles are fixed today: reputation is decentralized, reliable, transparent, and under the owner's control of what is shared.
+**Principles.** The reputation design is not frozen yet. It will be frozen later. Only these principles are fixed today: reputation is decentralized, reliable, transparent, and under the owner's control of what is shared.
 
-**Built today.** Trust evidence relies on portable signed records and bilateral independent interaction receipts, rather than public ratings or reputation scores. Commercial transactions generate signed agreement receipts and fulfilment receipts, where each party signs its own independent attestation without requiring a joint multi-party transaction.
+**Built today.** Trust evidence uses portable signed records and bilateral independent interaction receipts rather than public ratings or reputation scores. Commercial transactions generate signed agreement receipts and fulfilment receipts. Each party signs its own attestation without requiring a joint multi-party transaction.
 
 - **Coarse-Grained Satisfaction Signal:**
   > **Envisioned.** Not built yet. Coarse-grained numerical satisfaction scoring (0=Poor, 1=Decent, 2=Great). Today Roym produces no public numerical ratings or scores.
   >
-  > Reputation is implemented as a low-resolution scale (e.g., 0=Poor, 1=Decent, 2=Great) to minimize cognitive load and mathematical complexity.
-- **Cryptographic Tying & Bilateral Receipts:** Interaction agreements produce bilateral receipts (`AgreementReceiptPayload` and `FulfilmentReceiptPayload`), where each party signs and stores its own attestation in its own ledger without joint multi-party ceremonies.
+  > The system uses a low-resolution scale for reputation (such as 0=Poor, 1=Decent, 2=Great) to minimize mental effort and mathematical complexity.
+- **Cryptographic Tying & Bilateral Receipts:** Interaction agreements produce bilateral receipts (`AgreementReceiptPayload` and `FulfilmentReceiptPayload`). Each party signs and stores its own attestation in its own ledger without joint multi-party ceremonies.
   > **Envisioned.** Not built yet. Satisfaction signals referencing interaction receipts. Today bilateral receipts record completed agreements and fulfilments without attached review signals.
   >
-  > To reduce unsolicited review spam, a verified-interaction satisfaction signal references a mutually signed interaction receipt. Other feedback is labelled separately. Receipt tying does not prevent collusion, coercion, selective disclosure, or identity farming.
+  > To reduce unsolicited review spam, a verified satisfaction signal references a mutually signed interaction receipt. The system labels other feedback separately. Receipt tying does not prevent collusion, coercion, selective disclosure, or identity farming.
 - **Time-Decay:**
   > **Envisioned.** Not built yet. Time-decay algorithms and Exponential Moving Average (EMA) scoring formulas. Today no score calculations or decay mechanisms exist.
   >
-  > A peer's reputation naturally decays to the center ("decent") over time, prioritizing recent interactions over historical legacy.
+  > Peer reputation decays toward the center ("decent") over time. This prioritizes recent interactions over older history.
 - **Incremental Rolling Summaries:**
   > **Envisioned.** Not built yet. Substrate-side rolling summary aggregations and moving averages. Today client nodes inspect individual signed records and credentials directly.
   >
-  > The substrate runs continuous, compute-light incremental aggregations (e.g., updating total user counts, moving averages, and maintaining a small, tiered summary paragraph based on timeframes). This avoids the need to process heavy LLM summarization on massive blocks of raw text.
-- **Portable Trust Evidence:** Trust evidence is not pushed to a global public DHT. Providers and SynOrgs serve portable signed records (membership credentials, revocations, and bilateral receipts), and client applications preserve provenance and verify signatures against pinned group sources. Provider hosting does not imply that the presented set is complete.
+  > The substrate runs continuous, low-compute aggregations. For example, it updates total user counts, moving averages, and short summary text across timeframes. This avoids running heavy LLM summarization on large blocks of raw text.
+- **Portable Trust Evidence:** Trust evidence is not stored on a global public DHT. Providers and SynOrgs serve portable signed records (membership credentials, revocations, and bilateral receipts). Client applications preserve provenance and verify signatures against pinned group sources. A provider that hosts records does not guarantee that the set is complete.
   > **Envisioned.** Not built yet. Joint DHT reputation records and public reputation score distribution. Today trust evidence consists of individual signed records and receipts verified by the recipient.
   >
-  > Reputation signals and evidence are shared without a global public DHT, allowing clients to compare guild, consumer-held, or other authorised sources.
+  > Nodes share reputation signals and evidence without a global public DHT. This allows clients to compare sources from guilds, consumers, or other authorized parties.
 
 ## Phase 6: High-Level Applications (SynApps)
-Roym is the one SynApp built so far. It unites directory discovery, catalog listings, bookings, encrypted messaging, professional guilds, and trust verification into actor-centric workflows. Separate standalone mini-apps (such as independent Ledger or Marketplace applications) are not built.
+
+*Reader: developers and system architects.*
+
+Roym is the only SynApp built so far. It combines directory discovery, catalog listings, bookings, encrypted messaging, professional guilds, and trust verification into actor-focused workflows. The system does not build separate standalone mini-apps (such as independent Ledger or Marketplace applications).
 
 ### The Syneroym Hub (Core Client Application)
-*The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.* The Hub is implemented as a browser web application and progressive web application (`crates/roym_web/ui`), served by the client gateway over HTTP and JSON-RPC (`POST /rpc`).
+*The universal shell connects the user to their local substrate and coordinates all ecosystem activities.* The Hub runs as a browser web application and progressive web application (`crates/roym_web/ui`). The client gateway serves it over HTTP and JSON-RPC (`POST /rpc`).
 
-- **The Personal Data Homebase:** An interface managing the user's digital identity session and transaction history. The web UI exports application data JSON, while encrypted backup creation is performed via `roymctl roym backup create`.
+- **The Personal Data Homebase:** An interface to manage the user's digital identity session and transaction history. The web UI exports application data as JSON. Operators create encrypted backups using `roymctl roym backup create`.
   > **Envisioned.** Not built yet. Active FDAE access grant management interface. Today identity sessions and JSON data exports run via the web UI, while encrypted backup creation is performed via `roymctl roym backup create`.
   >
-  > A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
-- **The Trusted Room Inbox:** A unified messaging view combining human-to-human social chats, professional guild groups, and interactive business-to-consumer service threads.
+  > A secure vault interface manages digital identity, portable service history, and active FDAE access grants.
+- **The Trusted Room Inbox:** A unified messaging view that combines person-to-person chats, professional guild groups, and interactive customer service threads.
 - **The Agentic Concierge (optional):**
   > **Envisioned.** Not built yet. Text or voice AI concierge. Today all Hub interactions use deterministic UI workflows without AI models.
   >
-  > A text/voice interface powered by a local or user-chosen AI service. It remains subordinate to deterministic workflows, explicit consent, and a fully usable non-AI path.
+  > A text or voice interface powered by a local or user-selected AI service. It remains subordinate to deterministic workflows, explicit user consent, and a fully functional non-AI path.
 - **The Opportunity & Discovery Radar:** Directory search supports geographic radius filtering (`--near`) to discover local providers and listings.
   > **Envisioned.** Not built yet. Visual map-based radar, mesh network browsing, and real-time opportunity streams. Today discovery uses directory search with text and radius parameters.
   >
-  > A visual, map-based interface to browse local mesh networks, assess neighborhood trust proximity, and consume localized opportunity streams.
-- **The Web Client and Action Card Renderer (`[HUB-APP]`):** A lightweight client running in a browser that contains zero business logic or private keys, acting as a renderer for versioned JSON Action Cards and communicating with the substrate over JSON-RPC.
+  > A visual map interface allows users to browse local mesh networks, check neighborhood trust proximity, and view localized opportunity streams.
+- **The Web Client and Action Card Renderer (`[HUB-APP]`):** A lightweight client runs in a browser without business logic or private keys. It renders versioned JSON Action Cards and communicates with the substrate over JSON-RPC.
   > **Envisioned.** Not built yet. Desktop native shells (e.g. Tauri) and native mobile shells. Today the Hub runs as a web application served by the substrate client gateway.
   >
-  > A cross-platform native shell containing zero core business logic, acting purely as a thin renderer for JSON Action Cards securely pushed by the underlying local Substrate node.
+  > A cross-platform native shell contains no core business logic. It serves purely as a thin renderer for JSON Action Cards pushed by the local substrate node.
 
 ### Everyday Users (Consumers)
-*Activities focused on social connection, discovering services, secure negotiation, and seamless payment.*
-- **Social & Group Messaging:** Chat with friends, family, or local community groups using an encrypted messaging interface to share messages, media, and recommendations.
+*User activities for social connection, service discovery, secure negotiation, and payments.*
+- **Social & Group Messaging:** Users chat with friends, family, or local community groups using an encrypted messaging interface to share messages, media, and recommendations.
 - **AI-Assisted Discovery:**
   > **Envisioned.** Not built yet. AI assistant searching community directories. Today consumers search directories directly through text queries and location radius filters.
   >
-  > Ask a personal AI assistant to find local services (like a plumber or doctor) by automatically searching community directories and understanding what each provider offers.
+  > A personal AI assistant finds local services (such as a plumber or doctor) by searching community directories and matching provider offerings.
 - **Service Bundling:**
   > **Envisioned.** Not built yet. Multi-service bundling into a single coordinated request. Today each service request is created and agreed independently.
   >
-  > Combine multiple services into a single request (e.g., ordering food from a restaurant and requesting a separate delivery driver to pick it up).
-- **Interactive Negotiation:** Chat directly with service providers in secure rooms to discuss details, negotiate prices, and instantly approve interactive Quote Cards dropped into chat.
-- **Flexible Payments:** Finalize services by approving versioned payment request and acknowledgement cards. External or out-of-band rails remain the default until a separately validated ledger product is approved; every method identifies the responsible payment or settlement provider.
-- **Portable Data & Privacy:** Export and import encrypted identity and service history archives when switching devices or providers.
+  > The user combines multiple services into one request (such as ordering food from a restaurant and booking a delivery driver).
+- **Interactive Negotiation:** Users chat directly with service providers in secure rooms to discuss details, negotiate prices, and approve interactive Quote Cards in chat.
+- **Flexible Payments:** Users complete services by approving versioned payment requests and acknowledgement cards. External or out-of-band payment rails remain the default until an approved ledger product exists. Every payment method identifies the responsible payment or settlement provider.
+- **Portable Data & Privacy:** Users export and import encrypted identity and service history archives when switching devices or providers.
   > **Envisioned.** Not built yet. Time-limited selective record sharing through consumer FDAE interfaces. Today full encrypted backups can be exported and restored.
   >
-  > Securely share personal information (like medical records or delivery addresses) with a provider for a limited time, and seamlessly take your service history with you if you switch providers.
-- **Trust Context:** Inspect sourced credentials, referrals, receipts, and community context without exposing private social graphs or implying a universal objective score.
+  > Users can share personal information (such as medical records or delivery addresses) with a provider for a limited time. Users can take service history to another provider.
+- **Trust Context:** Users inspect credentials, referrals, receipts, and community context without exposing private social graphs or creating a universal score.
 
 ### Service Creators (Primary Providers)
-*Activities focused on setting up shop, generating leads, and delivering services.*
-- **Digital Storefront Setup:** Create a business profile and publish service listings and catalogs to discovery directories.
-- **Advertising & Outreach (evidence-gated):** Any cold outreach or paid placement requires recipient controls, rate limits, disclosure, and community policy. Digital stamps are one later hypothesis, not the default solution.
-- **Lead Engagement:** Receive customer requests and respond by dropping interactive quote Action Cards directly into customer chat.
+*Provider activities for setting up shop, generating leads, and delivering services.*
+- **Digital Storefront Setup:** Providers create a business profile and publish service listings and catalogs to discovery directories.
+- **Advertising & Outreach (evidence-gated):** Any cold outreach or paid placement requires recipient controls, rate limits, disclosure, and community policy. Digital stamps remain an idea for later evaluation, not a default mechanism.
+- **Lead Engagement:** Providers receive customer requests and reply by sending interactive quote Action Cards into the customer chat.
   > **Envisioned.** Not built yet. Network-wide live feed of public customer requests. Today providers receive requests sent directly to them by consumers.
   >
-  > Browse a live feed of local customer requests and respond by dropping interactive forms, booking widgets, or quotes directly into the customer's chat.
-- **Service Delivery & Billing:** Deliver services and push payment request cards into chat.
+  > Providers browse a live feed of local customer requests. They reply by sending interactive forms, booking widgets, or quotes into customer chat.
+- **Service Delivery & Billing:** Providers deliver services and send payment request cards into chat.
   > **Envisioned.** Not built yet. Automated debt-clearing ledgers and integrated external payment gateways. Today payment requests identify accepted settlement methods, and payments settle out-of-band.
   >
-  > The invoice can feed directly into the network's automated debt-clearing ledger or route through traditional payment gateways depending on business configuration.
-- **Professional Guilds:** Join private group chats with other professionals in your industry to share work, refer clients, and coordinate projects.
-- **Reputation Building:** Collect portable signed agreement receipts, fulfilment receipts, and SynOrg membership credentials that preserve provenance.
+  > Invoices can feed into an automated debt-clearing ledger or route through external payment gateways based on business configuration.
+- **Professional Guilds:** Professionals join private group chats with industry peers to share work, refer clients, and coordinate projects.
+- **Reputation Building:** Providers collect portable signed agreement receipts, fulfilment receipts, and SynOrg membership credentials that preserve provenance.
   > **Envisioned.** Not built yet. Public feedback collection and review systems. Today trust evidence consists of cryptographic receipts and membership credentials.
   >
-  > Collect portable, receipt-linked feedback and other signed trust evidence that preserves provenance when hosting changes.
+  > Providers collect portable, receipt-linked feedback and signed trust evidence that preserve provenance across hosts.
 
 ### Network Enablers (Aggregators & Facilitators)
-*Activities focused on making the market run smoothly, providing infrastructure, and resolving disputes.* An Aggregator is a directory-type SynOrg service (`syneroym-roym-directory`) that aggregates provider listings and credentials. It is not a hosting provider.
+*Participant activities for market operation, infrastructure, and dispute handling.* An Aggregator is a directory-type SynOrg service (`syneroym-roym-directory`) that aggregates provider listings and credentials. It does not provide hosting.
 
-- **Discovery Directories (Aggregator):** Run search services and community directories that collect and index provider listings, making it easy for users to find services.
-- **Spam Prevention (Aggregator):** Enforce disclosed publication rate limits, recipient block controls, and abuse response policies. Fuel quotas and economic costs remain optional mechanisms.
-- **Trust Summaries (Aggregator):** Serve sourced membership credentials and verify trust records under a declared community policy.
+- **Discovery Directories (Aggregator):** Operators run search services and community directories that collect and index provider listings. This helps users discover services.
+- **Spam Prevention (Aggregator):** Operators enforce declared publication rate limits, recipient block controls, and abuse response policies. Fuel quotas and economic costs remain optional mechanisms.
+- **Trust Summaries (Aggregator):** Directory services serve sourced membership credentials and verify trust records under a declared community policy.
   > **Envisioned.** Not built yet. Computed opinion scores and automated trust summary ratings. Today directory services return verified membership credentials and revocations without computing numerical scores.
   >
-  > An aggregator's output is an opinion or computation, not a guaranteed reliable truth score.
+  > An aggregator output is an opinion or calculation, not a guaranteed objective truth score.
 - **Financial Gateways (Facilitator):**
   > **Envisioned.** Not built yet. Specialized financial services converting digital credits to fiat currency or integrating automated tax and accounting ledgers. Today payments are recorded out-of-band between parties.
   >
-  > Provide specialized financial services, like converting digital network credits into traditional fiat currency (bank money), or automating tax and accounting records by plugging directly into a provider's local ledger.
+  > Facilitators provide specialized financial services, such as converting digital network credits into fiat currency or updating tax and accounting records in a local ledger.
 
 ## Phase 7: Edge Expansion
 
