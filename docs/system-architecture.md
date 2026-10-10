@@ -2449,7 +2449,7 @@ Additional transports, gateways, and protocol adapters can be added later withou
 
 ### Syneroym: Substrate Feature Implementation Design
 
-This part gives design details for the features in the [Feature Specification](system-requirements-spec.md#post-dd864a1-target-specifications-addendum). The Layer 1 to 4 sections above give the official definitions of the layers. Each Phase section below adds details for one group of topics.
+This part gives design details for the features in the [Feature Specification](system-requirements-spec.md#target-specifications). The Layer 1 to 4 sections above give the official definitions of the layers. Each Phase section below adds details for one group of topics.
 
 > **Note:** Only sections with complex architectural questions are expanded here. Simple mappings are omitted.
 >

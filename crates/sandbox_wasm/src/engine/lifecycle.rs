@@ -119,9 +119,9 @@ impl AppSandboxEngine {
         let hook = if is_first_deploy {
             "init"
         } else {
-            // TODO(M5): full snapshot/rollback safety net for migrate() is
-            // deferred to M5 [LFC-VER]. migrate() may execute destructive
-            // DDL; there is no automatic rollback on partial failure in M3A.
+            // TODO: full snapshot/rollback safety net for migrate() is
+            // deferred. migrate() may execute destructive DDL; there is
+            // no automatic rollback on partial failure.
             "migrate"
         };
         self.invoke_lifecycle_hook(service_id, hook)
