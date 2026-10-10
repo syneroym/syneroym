@@ -360,6 +360,16 @@ A second check compared every audit decision and proposed fix with the doc (the 
 - Not applied on purpose: the dual-build paragraph in Layer 2 Sandboxes (the content is in the developer tooling text); renaming the Layer 3 heading (owner choice, links depend on it); whether one observability visualization design replaces the other (owner choice, both kept).
 - The `TODO(M5)` comment in `crates/sandbox_wasm/src/engine/lifecycle.rs` and the requirements spec text ("peer backup pools are optional") are outside this change.
 
+### Stage 2 independent check fixes
+
+The Stage 2 independent check found small discrepancies across the requirements spec and traceability matrix:
+
+- Corrected ProfilePayload locale default to None.
+- Corrected guild membership mechanism from delegation certificates to signed membership credentials.
+- Clarified that encrypted backup creation is handled via roymctl rather than browser UI.
+- Corrected stale crate paths (`roym_group`, `session.rs`, `data_db/pubsub.rs`, `policy.rs`) and matrix links.
+- Stripped internal audit decision citations (`per Q-*`, `per D-*`) from living docs prose.
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

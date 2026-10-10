@@ -175,6 +175,7 @@ multiple roles, but the product must make the active role and its powers clear.
 
 ---
 
+<a id="glossary--terminology"></a>
 ## Glossary / Terminology
 
 **Aggregator.** A directory-type SynOrg service that aggregates provider listings and credentials without hosting or controlling provider infrastructure (e.g. a guild directory or trade cooperative).
@@ -233,6 +234,7 @@ accounting context.
 
 ---
 
+<a id="ecosystem--domain-model"></a>
 ## Ecosystem & Domain Model
 
 The following diagram shows the high-level business entities in the Syneroym ecosystem and how they interact.
@@ -338,7 +340,7 @@ For browser clients lacking native QUIC or WebRTC direct peer connectivity, the 
   conversation or capability context and subject to owner-approved access
   policy (`crates/conversation/src/lib.rs:56`, `crates/ucan/src/token.rs`).
 - The system supports one-to-one text, attachments, and structured service cards
-  for requests, quotes, agreements, status, receipts, and grants, as well as private group chat (`crates/roym_group`, `crates/conversation/src/dag.rs`).
+  for requests, quotes, agreements, status, receipts, and grants, as well as private group chat (`crates/roym_conversation`, `crates/conversation/src/dag.rs`).
   > **Envisioned.** Not built yet. Audio/video calls, social feeds, and collaborative editing. Today 1:1 messaging, structured cards, and group chat are supported.
 - A structured message has a stable type, schema version, sender, intended
   recipients, creation time, idempotency identifier where applicable, and
@@ -367,7 +369,7 @@ Architecture and test plans.
   > **Envisioned.** Not built yet. Automated binary update rollback across failed upgrades. Today schema migrations roll back within SQL transactions on failure.
 - **Interoperability:** WIT interfaces define versioned semver contracts (`crates/wit_interfaces/wit/`), and the handshake rejects unsupported protocol versions. Unknown optional capabilities fail gracefully; incompatible mandatory capabilities are rejected before a workflow begins.
   > **Envisioned.** Not built yet. Published public protocol conformance test suites. Today interface compatibility is verified through Cargo test suites and WIT interface definitions.
-- **Privacy:** The system minimises observable metadata, documents every operator-visible category (`crates/roym_core/src/policy.rs`), and provides purpose, retention, export, and deletion behaviour for personal data. Telemetry is local in-memory by default (`crates/observability/src/recorder.rs`).
+- **Privacy:** The system minimises observable metadata, documents every operator-visible category (`crates/fdae/src/policy.rs`), and provides purpose, retention, export, and deletion behaviour for personal data. Telemetry is local in-memory by default (`crates/observability/src/recorder.rs`).
 - **Portability:** Export/import formats and identity-linked history are documented, versioned, and integrity-checked (`crates/roym_directory/src/app/backup.rs`, `apps/roymctl/src/commands/roym/backup.rs`).
   > **Envisioned.** Not built yet. Cross-version migration test fixtures for data archives. Today same-version export and clean-node restore are verified by automated tests.
 
@@ -387,8 +389,8 @@ Integration and end-to-end test harnesses MUST dynamically allocate network port
 
 - A provider can choose a managed-guild path or a self-hosted path. Providers initialize self-hosted substrates via `roymctl substrate init` or bind to managed controllers via `ControllerAgreement` (`apps/roymctl/src/commands/substrate.rs:65`).
   > **Envisioned.** Not built yet. A guided onboarding wizard comparing control, cost, availability, privacy, and support trade-offs before committing. Today substrate initialization and management run via roymctl CLI commands.
-- Joining a guild must not transfer ownership of the provider's root identity, signed history, or export rights to the guild. Delegated administration is scoped (`crates/identity/src/delegation.rs:25`), visible, revocable via Master Anchor deny lists, and audit-recorded via FDAE `DecisionTrace`.
-- Consumer onboarding creates or imports a lightweight device-bound Ed25519 identity on the consumer's device mapped to short-lived session tokens (`crates/client_gateway/src/session.rs`). Users export encrypted identity backups (`crates/identity/src/backup.rs`). The recovery model does not claim self-sovereignty if an operator can unilaterally recover or impersonate the consumer; root keys are self-sovereign Ed25519 master DIDs.
+- Joining a guild must not transfer ownership of the provider's root identity, signed history, or export rights to the guild. Joining a guild does not delegate administration via `DelegationCertificate`. Instead, providers use signed membership credentials (`crates/roym_core/src/membership.rs`). Root key backup protects master keys (`crates/identity/src/backup.rs`). Any delegated administration is scoped (`crates/identity/src/delegation.rs:25`), visible, revocable via Master Anchor deny lists, and audit-recorded via FDAE `DecisionTrace`.
+- Consumer onboarding creates or imports a lightweight device-bound Ed25519 identity on the consumer's device mapped to short-lived session tokens (`crates/client_gateway/src/gateway.rs`). Users export encrypted identity backups (`crates/identity/src/backup.rs`) to protect master keys. The recovery model does not claim self-sovereignty if an operator can unilaterally recover or impersonate the consumer; root keys are self-sovereign Ed25519 master DIDs.
   > **Envisioned.** Not built yet. Automated post-transaction backup prompts in the UI and optional government identity assurance credentials. Today consumers manage device-bound session keys and export encrypted backups on demand.
 - Destructive actions state their scope and recovery consequences. Common recovery flows are available through an expert CLI (`roymctl roym backup restore`) with warnings on destructive actions.
   > **Envisioned.** Not built yet. A guided graphical UI recovery wizard for identity and database restore. Today disaster recovery flows execute through the roymctl CLI.
@@ -567,7 +569,7 @@ erDiagram
 
 A SynApp is placed on one or more substrates. Each service within a SynApp defines its own execution artifact (`ServiceDefinition::source`, such as a WebAssembly component or container image) and runs inside a sandbox or native host runner. Stale entity concepts (`SYN-MOD`, `Space`, and `Space Manager`) do not exist in code: services manage catalogs and listings directly, and providers transact with consumers via structured quote and booking workflows.
 
-An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) aggregating provider listings and credentials per Owner Decision Q-A4. Aggregators do not manage infrastructure or host services for providers. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
+An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) aggregating provider listings and credentials. Aggregators do not manage infrastructure or host services for providers. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
 
 Substrates connect to configured coordinator relays (`parent_coordinator.iroh.url`) and publish signed endpoint records to the Community Registry and Mainline DHT. Trust evidence uses canonical signed Roym records (such as guild membership credentials and bilateral agreement receipts) rather than centralized reputation scores or generic W3C VC 2.0 envelopes.
 
@@ -725,7 +727,7 @@ Reference SynApps validate common ecosystem contracts without forcing unrelated 
 #### Provider and guild setup
 
 - A guild operator deploys a signed release profile and creates a guild with public identity, service area, membership policy, support contact, dispute path, directory policy, and data retention policy.
-- A provider controls a stable provider master DID and grants the guild only the administration rights needed for the chosen managed service via scoped delegation certificates.
+- A provider controls a stable provider master DID. The provider proves guild membership and standing via signed credentials (`crates/roym_core/src/membership.rs`) rather than granting the guild administration rights via `DelegationCertificate`.
   > **Envisioned.** Not built yet. Interactive invitation and application vetting workflows. Today operators manage members directly via roster administration.
 - A provider publishes name, description, service categories, service area, availability, price style (fixed, range, or quote), cancellation policy, supported payment rails, and trust evidence. Required fields and provenance are machine-readable.
 - One operator can manage multiple provider service instances without obtaining undeclared read access across their private conversations or histories. Conversations use Double Ratchet end-to-end encryption, and databases use derived per-instance encryption keys.
@@ -1380,8 +1382,8 @@ Roym is the one SynApp built so far. It unites directory discovery, catalog list
 ### The Syneroym Hub (Core Client Application)
 *The universal, multi-surface shell that connects the user to their local substrate and orchestrates all ecosystem activities.* The Hub is implemented as a browser web application and progressive web application (`crates/roym_web/ui`), served by the client gateway over HTTP and JSON-RPC (`POST /rpc`).
 
-- **The Personal Data Homebase:** An interface managing the user's digital identity session, transaction history, and encrypted backups.
-  > **Envisioned.** Not built yet. Active FDAE access grant management interface. Today identity sessions and backups are managed via the web UI and roymctl.
+- **The Personal Data Homebase:** An interface managing the user's digital identity session and transaction history. The web UI exports application data JSON, while encrypted backup creation is performed via `roymctl roym backup create`.
+  > **Envisioned.** Not built yet. Active FDAE access grant management interface. Today identity sessions and JSON data exports run via the web UI, while encrypted backup creation is performed via `roymctl roym backup create`.
   >
   > A secure vault interface managing the user's digital identity, portable service history, and active FDAE access grants.
 - **The Trusted Room Inbox:** A unified messaging view combining human-to-human social chats, professional guild groups, and interactive business-to-consumer service threads.
@@ -1473,7 +1475,7 @@ These additions define envisioned extensions to the substrate and application co
 
 ### [APP-A11Y] Accessibility and Localisation
 
-- **Localisation:** `ProfilePayload` supports an optional `locale` field (`Option<String>`), with default `en-US`.
+- **Localisation:** `ProfilePayload` supports an optional `locale` field (`Option<String>`), defaulting to None.
 
 > **Envisioned.** Not built yet. Complete internationalisation (i18n) translation frameworks, resource bundles, and non-English UI translations. Today the Roym Hub UI contains hardcoded English text.
 >
@@ -1518,7 +1520,7 @@ These additions define envisioned extensions to the substrate and application co
 | **[PLT-DAT] Conversation DAG** | **Roym Conversation** | End-to-end encrypted messaging with Double Ratchet and causal DAG ordering via `syneroym:conversation` (`crates/conversation`). |
 | **[PLT-DAT] Pub/Sub** | **Substrate Event Bridges** | Event notification delivery through the embedded MQTT broker (`crates/mqtt_broker`). |
 | **[PLT-DAT] S3 Blobs** | **Roym Catalog** | Storing and retrieving content-addressed blobs via `blob-store` WIT capability and `crates/data_blob`. |
-| **[FND-IDT/IAM] Identity & Access** | **Roym Hub / roymctl** | Generating root keypairs and enforcing authorization via `ControllerAgreement`, App Supervisors, and UCAN / FDAE policies (`crates/identity`, `crates/fdae`). |
+| **[FND-IDT/IAM] Identity & Access** | **roymctl / Substrate Identity** | Generating root keypairs and enforcing authorization via `ControllerAgreement`, App Supervisors, and UCAN / FDAE policies (`crates/identity`, `crates/fdae`). |
 | **[FND-CFG] Service Config (Secrets)** | **Roym Services** | Dynamically retrieving secrets from the encrypted vault via `syneroym:vault/reveal` (`crates/sandbox_wasm`). |
 | **[FND-DEP] App Deployment** | **roymctl** | Compiling and deploying WASM SynApp components into the sandboxed Wasmtime runtime (`apps/roymctl`, `crates/app_orchestration`). |
 | **[FND-VER] Schema Migrations** | **Substrate Runtime** | Executing stateful `init()` and `migrate()` SQL DDL lifecycle hooks (`crates/sandbox_wasm/src/engine/lifecycle.rs`). |
