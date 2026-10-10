@@ -370,6 +370,90 @@ The Stage 2 independent check found small discrepancies across the requirements 
 - Corrected stale crate paths (`roym_group`, `session.rs`, `data_db/pubsub.rs`, `policy.rs`) and matrix links.
 - Stripped internal audit decision citations (`per Q-*`, `per D-*`) from living docs prose.
 
+## Stage 4: Requirement ID Alignment
+
+Stage 4 verified requirement tags across three living documents:
+1. `docs/system-requirements-spec.md` (System Requirements Specification)
+2. `docs/planning/traceability-matrix.md` (Traceability Matrix)
+3. `docs/system-architecture.md` (System Architecture)
+
+### Alignment Summary
+
+All requirement tags match across the specification, traceability matrix, and architecture documents. The audit confirmed the following:
+
+- **Mock SDK aligned to Envisioned (`[ADV-DEV]`):** In `docs/system-requirements-spec.md`, the pure mock SDK (`syneroym-dev-sdk`) is marked with an explicit Envisioned marker. This aligns with traceability matrix row 63. Today unit tests link against integration test harnesses and local substrate test contexts rather than a standalone mock SDK.
+- **Explicit heading tags for `[APP-ROY]` and `[PLT-WEB]`:** In `docs/system-requirements-spec.md`, Phase 6 was updated to `## Phase 6: High-Level Applications (SynApps) — [APP-ROY]`. This matches traceability matrix row 57. In Phase 2, the web serving heading was updated to `### [PLT-DAP] / [PLT-WEB] Static Web Assets, Guest HTTP & WebSockets`. This matches traceability matrix row 51.
+- **Consistent lifecycle status across all documents:** No requirement is described as built in one document and Envisioned in another. All capabilities documented as Implemented in the traceability matrix have matching implementation descriptions in the specification and architecture. All items marked Envisioned in the matrix carry explicit Envisioned markers in both the specification and architecture documents.
+
+### Requirement Tag Mapping
+
+| Tag | Capability Area | Spec Section | Matrix Status | Architecture Section | Alignment Notes |
+| --- | --- | --- | --- | --- | --- |
+| `[PRD-AUT]` | Provider Autonomy | Product Outcomes | Envisioned | System Overview | Core requirement. Migration drills Envisioned. |
+| `[PRD-CUX]` | Consumer Experience | Product Outcomes | Envisioned | System Overview | Core requirement. Accessibility audit Envisioned. |
+| `[PRD-FED]` | Decentralized Federation | Product Outcomes | Envisioned | System Overview | Core requirement. Central-coordinator-free federation Envisioned. |
+| `[PRD-OFF]` | Offline Convergence | Product Outcomes | Implemented | System Overview | Core requirement. Verified by saga and offline tests. |
+| `[PRD-POR]` | Data Portability | Product Outcomes | Implemented | System Overview | Core requirement. Clean-node restore verified. |
+| `[PRD-TRU]` | Verifiable Trust | Product Outcomes | Implemented | System Overview | Core requirement. Pinned directory verification verified. |
+| `[PRD-OPS]` | Operator Journey | Product Outcomes | Implemented | System Overview | Core requirement. CLI and info endpoint verified. |
+| `[PRD-EXT]` | SynApp Extensibility | Product Outcomes | Envisioned | System Overview | Core requirement. Conformance suite Envisioned. |
+| `[PRD-SAF]` | Safety & Moderation | Product Outcomes | Implemented | System Overview | Core requirement. Moderation and rate-limit refusals verified. |
+| `[TOP-PRM]` | Core Primitives | Phase 0 | Implemented | Foundational Architecture | Domain models and compiled manifests implemented. |
+| `[TOP-ADR]` | Service Addressing | Phase 0 | Implemented | Foundational Architecture | Rendezvous hashing and resolvers implemented. |
+| `[TOP-REG]` | Registry Types | Phase 0 | Implemented | Foundational Architecture | App registry and DHT endpoints implemented. |
+| `[TOP-DSC]` | Service Discovery | Phase 0 | Implemented | Foundational Architecture | Master anchors and revocation checking implemented. |
+| `[TOP-ROB]` | Network Robustness | Phase 0 | Implemented | Foundational Architecture | Connection handling and retries implemented. |
+| `[TOP-DOC]` | Topology Documents | Phase 3 | Implemented | Phase 3 Architecture | Signed two-tier topology resolution implemented. |
+| `[NET-PRM]` | Routing Tokens | Phase 0 | Implemented | Layer 2 Security | Preamble validation and certificates implemented. |
+| `[WEB-PRX]` | Browser Peer Tunnel | Connectivity | Implemented | Layer 1 Connectivity | Service worker WebSocket blind tunnel implemented. |
+| `[FND-IDT]` | Cryptographic Identity | Phase 1 | Implemented | Layer 3 Identity | Master keys and delegation certificates implemented. |
+| `[FND-DEP]` | Deployment & Ops | Phase 1 | Implemented | Operations Architecture | TLS and container deployment pipelines implemented. |
+| `[FND-SEC]` | Runtime Security | Phase 1 | Implemented | Layer 2 Sandboxes | Wasmtime fuel limits and storage encryption implemented. |
+| `[FND-CFG]` | Service Configuration | Phase 1 | Implemented | Phase 1 Architecture | Versioned config and artifact delivery implemented. |
+| `[FND-IAM]` | Access Control | Phase 1 | Implemented | Phase 1 Architecture | UCAN verification and claiming tools implemented. |
+| `[FND-LEA]` | Substrate Leasing | Target Designs | Envisioned | Foundational Architecture | Dynamic node leasing is Envisioned. |
+| `[FND-VER]` | Settlement Migrations | Target Designs | Envisioned | Foundational Architecture | Zero-downtime settlement migrations are Envisioned. |
+| `[SEC-SGN]` | Signing Isolation | Phase 1 | Implemented | Layer 3 Identity | Host-only signing via WIT interface implemented. |
+| `[SEC-ISO]` | Wasmtime Isolation | Phase 1 | Implemented | Layer 2 Sandboxes | Pooling allocator and fuel limits implemented. |
+| `[SEC-ABAC]` | Row-Level ABAC | Phase 1 | Implemented | Layer 2 Access Control | Stage-4 guest evaluation hook implemented. |
+| `[OPS-CLM]` | Node Claiming | Substrate Setup | Implemented | Layer 3 Identity | roymctl claiming and ControllerAgreement implemented. |
+| `[IDT-BAK]` | Encrypted Backup | Onboarding | Implemented | Storage Architecture | HKDF-SHA256 and AES-256-GCM archive implemented. |
+| `[TST-PRT]` | Dynamic Port Allocation | Non-Functional | Implemented | Testing Standards | Dynamic alloc_ports contract enforced. |
+| `[PLT-DAT]` | Data Layer | Phase 2 | Implemented | Phase 2 Data Layer | Per-service SQLite, blobs, and Universal Proxy implemented. |
+| `[PLT-DAP]` | Data Access Primitives | Phase 2 | Implemented | Phase 2 Data Layer | StorageProvider and ServiceStore traits implemented. |
+| `[PLT-DAP-01]` | Logical Data Services | Phase 2 | Envisioned | Phase 2 Data Layer | Logical multi-substrate dataset sharding is Envisioned. |
+| `[PLT-DAP-02]` | Storage Pushdown | Phase 2 | Envisioned | Phase 2 Data Layer | Substrait query plan pushdown is Envisioned. |
+| `[PLT-DAP-03]` | Declarative Replication | Phase 2 | Envisioned | Phase 2 Data Layer | Multi-node state replication is Envisioned. |
+| `[PLT-DAP-04]` | Decentralized Pub/Sub | Phase 2 | Implemented | Phase 2 Messaging | Embedded rumqttd broker implemented. Multi-node log sync Envisioned. |
+| `[PLT-DAP-05]` | Data Pipeline Streams | Phase 2 | Envisioned | Phase 2 Data Streams | QUIC credit-based streams are Envisioned. |
+| `[PLT-DAP-06]` | Bidirectional Streaming | Phase 2 | Implemented | Phase 2 Messaging | Stream cursor and sink WIT interfaces implemented. |
+| `[PLT-WEB]` | Web Application Serving | Phase 2 | Implemented | Phase 2 Web Serving | Blob asset streaming and guest HTTP/WebSockets implemented. |
+| `[MSG-TOP]` | Scoped Pub/Sub Topics | Phase 2 | Implemented | Phase 2 Messaging | Topic prefix isolation implemented. |
+| `[PLT-ASY]` | Async & Scheduling | Phase 2 | Implemented | Phase 2 Async | Outbox, DLQ, scheduled tasks, and sagas implemented. |
+| `[PLT-RED]` | Service Redundancy | Phase 2 | Envisioned | Phase 2 Redundancy | Single-writer verified. Replication options are Envisioned. |
+| `[GTW-IDT]` | Gateway Identity | Client Gateway | Implemented | Ingress Architecture | Open, Login, and Fixed identity modes implemented. |
+| `[GTW-PRX]` | Gateway Ingress Proxy | Client Gateway | Implemented | Ingress Architecture | Browser HTTP and WebSocket proxying implemented. |
+| `[LFC-MGT]` | Lifecycle Management | Phase 3 | Implemented | Phase 3 Architecture | App Supervisor and resident reconcile loops implemented. |
+| `[LFC-VER]` | Versioning Support | Phase 3 | Envisioned | Phase 3 Architecture | Semver and SQL hooks implemented. Dynamic negotiation Envisioned. |
+| `[ADV-DEV]` | Developer Tooling & SDK | Phase 4 | Envisioned | Phase 4 Architecture | roymctl dev workflows built. Mock SDK is Envisioned. |
+| `[APP-DUL]` | Dual-Build Execution | Phase 3 | Implemented | Sandboxes Architecture | Parity across WASM and native execution implemented. |
+| `[APP-AST]` | Zero-Runtime Assets | SynApp Lifecycle | Implemented | Ingress Architecture | Direct blob asset streaming implemented. |
+| `[ADV-OBS]` | Operational Metrics | Phase 4 | Implemented | Observability Architecture | MemoryRecorder and HTTP GET /metrics implemented. |
+| `[OBS-ALT]` | Health Sweep & Alerts | Phase 4 | Implemented | Control Plane Architecture | AlertStore and reconcile health checks implemented. |
+| `[OBS-PRB]` | Health Probes & CLI | Phase 4 | Implemented | Tooling Architecture | StatusQuery and roymctl health CLI implemented. |
+| `[ADV-AI]` | AI & Agentic Workflows | Phase 4 | Envisioned | Phase 4 Architecture | Concierge agents and vector directories are Envisioned. |
+| `[P2P-DSC]` | Distributed Matching | Phase 5 | Implemented | Phase 5 Architecture | Directory publish, query, and client merge implemented. |
+| `[P2P-REP]` | Peer Reputation | Phase 5 | Implemented | Phase 5 Architecture | Signed bilateral receipts implemented. Scores Envisioned. |
+| `[DIR-SYN]` | SynOrg Directory | Ecosystem | Implemented | Community Architecture | Credential issuance and standing checks implemented. |
+| `[APP-ROY]` | Roym Integrated Product | Phase 6 | Implemented | Applications Architecture | Six Roym services and Hub UI implemented. |
+| `[ROY-ADM]` | App Ingress Firewall | Reference Vertical | Implemented | Applications Architecture | NOT_LOCAL refusal on non-local callers implemented. |
+| `[TXN-SLT]` | Slot Reservation Fence | Reference Vertical | Implemented | Applications Architecture | Atomic seat reservations and conflict fences implemented. |
+| `[VRT-PAY]` | Payment Records | Reference Vertical | Implemented | Applications Architecture | Signed out-of-band payment records implemented. |
+| `[EDG-MOB]` | Mobile Operations | Phase 6 | Envisioned | Edge Architecture | Mobile styling built. Native mobile runtimes are Envisioned. |
+| `[APP-A11Y]` | Accessibility & i18n | Phase 6 | Envisioned | Applications Architecture | Profile locale field built. Full audits are Envisioned. |
+| `[APP-IOT]` | Mesh Wireless Bridges | Phase 6 | Envisioned | Network Architecture | Wireless non-IP mesh transport bridging is Envisioned. |
+| `[APP-ESC]` | Escrow & Credit Ledgers | Phase 6 | Envisioned | Applications Architecture | Custody escrow and mutual credit rails are Envisioned. |
+
 ## Close-out
 
 Before merge of the last step, update the living docs so they describe the

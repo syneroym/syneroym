@@ -93,7 +93,8 @@ High-level requirement highlights:
 - All provider participants retain the ability to exit. They can migrate data and services to a different infrastructure provider or run independently.
 - Ecosystem protocols are open, versioned, testable, and governed through a published process that does not give special privilege to Syneroym-operated services.
 
----|---|---|
+| Requirement | Outcome | Primary Acceptance Evidence |
+|---|---|---|
 | **PRD-AUT** | Provider identity, data, policy, and operator choice remain under provider control. | Delegation-revocation and operator-migration journeys. |
 | **PRD-CUX** | Consumers complete the reference journey without understanding hosting or federation. | Moderated task-success test and accessibility audit. |
 | **PRD-FED** | Independent implementations interoperate without a mandatory central data plane or authority. | Two-node federation and bootstrap-outage tests. |
@@ -990,7 +991,7 @@ Enforce row-level attribute-based access control (ABAC) on candidate data rows i
 
 *Reader: developers and system architects.*
 
-### [PLT-DAP] Distributed Data Topology
+### [PLT-DAP] / [PLT-WEB] Static Web Assets, Guest HTTP & WebSockets
 Model data as a distributed, programmable topology instead of isolated object state.
 
 - **[PLT-DAP-04] Decentralized Pub/Sub:** The system MUST support an MQTT-compatible API for decoupled event routing. Cross-node calls to `publish` and `subscribe` route to the node hosting the target service via standard JSON-RPC dispatch, matching cross-node data-layer calls.
@@ -1268,7 +1269,10 @@ The project defers all advanced AI capabilities and concierge agent workflows to
 ### [ADV-DEV] SynApp Developer Tooling & SDKs
 - **Transparent Developer Experience**: Syneroym uses standard Rust tooling rather than a custom CLI wrapper. Project templates (using `cargo generate`) create standard `Cargo.toml` files and build scripts. This design works with existing IDEs, language servers (such as `rust-analyzer`), and agentic coding tools.
 - **Local Substrate for Integration & Dev**: Developers use a local Syneroym node for integration testing and development to ensure identical behavior with production. Developer workflows use existing `roymctl` subcommands (`claim`, `app`, `kek`, `supervisor`, `substrate`, and `svc`). This approach avoids duplicating Wasmtime host, SQLite, and network logic in a separate developer SDK. SynApps connect to the substrate through standard WIT interfaces rather than compile-time bindings.
-- **Pure Mock SDK for Unit Testing**: The workspace provides a minimal `syneroym-dev-sdk` for isolated unit testing. This SDK provides in-memory mock implementations of substrate interfaces (Data, Blobs, and AI). Developers can write `#[test]` functions that link against these mocks for fast, offline testing of application logic without running a real substrate node.
+- **Pure Mock SDK for Unit Testing**:
+  > **Envisioned.** Not built yet. A standalone mock SDK (`syneroym-dev-sdk`) for offline unit testing. Today tests link against integration test harnesses and local substrate test contexts.
+  >
+  > A minimal mock SDK providing in-memory mock implementations of substrate interfaces for isolated unit testing.
 
 ## Phase 5: Peer-to-Peer Community Primitives
 
@@ -1323,7 +1327,7 @@ Discovery uses directory services (`syneroym-roym-directory`). Clients, SynOrgs,
   >
   > Nodes share reputation signals and evidence without a global public DHT. This allows clients to compare sources from guilds, consumers, or other authorized parties.
 
-## Phase 6: High-Level Applications (SynApps)
+## Phase 6: High-Level Applications (SynApps) — [APP-ROY]
 
 *Reader: developers and system architects.*
 
