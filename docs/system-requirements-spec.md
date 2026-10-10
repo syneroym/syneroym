@@ -237,7 +237,9 @@ accounting context.
 <a id="ecosystem--domain-model"></a>
 ## Ecosystem & Domain Model
 
-The following diagram shows the high-level business entities in the Syneroym ecosystem and how they interact.
+*Reader: developers and system architects.*
+
+This diagram shows the main business entities in the Syneroym ecosystem and their interactions.
 
 ```mermaid
 ---
@@ -269,234 +271,213 @@ flowchart TD
     InfraProv -->|owns & operates| Node
 ```
 
-*(Note: For the lower-level technical architecture diagram detailing service components, services, and sandboxes, please refer to the Architecture Design Document).*
+*(Note: For the technical architecture diagram of service components, services, and sandboxes, see the Architecture Design Document).*
 
 ---
 
 ## Common Requirements
 
-These requirements apply across all business domains and SynApps.
+*Reader: developers and system architects.*
+
+These requirements apply to all business domains and SynApps.
 
 ### Infrastructure & Hosting
 
-- Service Providers run business applications on supported commodity computers
-  they control, or on infrastructure operated under an explicit agreement (`crates/identity/src/substrate.rs:48`), even
-  when the host is behind NAT or a firewall (`crates/router/src/net_iroh.rs:94`).
-- Infrastructure Providers make hardware (old PCs, cloud VMs, etc.) available for Service Providers to host applications or application components under explicit node agreements (`crates/identity/src/substrate.rs:48`).
+- Service Providers run business applications on supported commodity computers that they control. They can also run applications on infrastructure operated under an explicit agreement (`crates/identity/src/substrate.rs:48`). This works even when the host is behind NAT or a firewall (`crates/router/src/net_iroh.rs:94`).
+- Infrastructure Providers make hardware (such as older personal computers or cloud virtual machines) available to Service Providers. Service Providers use this hardware to host applications or application components under explicit node agreements (`crates/identity/src/substrate.rs:48`).
   > **Envisioned.** Not built yet. Commercial leased hosting accounting and automated compute marketplaces. Today infrastructure nodes are claimed and authorized via ControllerAgreement and roymctl.
-- Service Providers see a plain-language service status (`crates/coordinator_iroh/src/info_endpoint.rs:104`) and manage routine operations via web UI or CLI without requiring shell access (`crates/roym_web/ui/`).
+- Service Providers can view service status in plain language (`crates/coordinator_iroh/src/info_endpoint.rs:104`). They manage routine operations through a web user interface or command-line interface without shell access (`crates/roym_web/ui/`).
   > **Envisioned.** Not built yet. Automated push notifications when provider intervention is required. Today operators inspect status via /v1/info endpoints and the Roym Hub web UI.
-- Infrastructure Providers monitor infrastructure health and resource usage (`crates/observability/src/recorder.rs`), and control node access via Admin DIDs and UCAN delegation (`crates/control_plane/src/service/orchestration.rs:200`).
+- Infrastructure Providers monitor infrastructure health and resource use (`crates/observability/src/recorder.rs`). They control node access with Admin DIDs and UCAN delegation (`crates/control_plane/src/service/orchestration.rs:200`).
   > **Envisioned.** Not built yet. Incident-to-obligation impact mapping and automated SLA tracking during outages. Today health metrics are recorded in memory and node access is governed by UCAN delegation.
-- App Developers package SynApps (e.g. as WASM modules or OCI images; `crates/app_orchestration/src/models/manifest.rs:16`), and Providers deploy them to matching container infrastructure (WASM runtime, Podman/Docker; `crates/sandbox_wasm/src/engine.rs:84`, `crates/sandbox_podman/src/engine.rs:238`).
-- Consumers access Provider services through options the Provider makes available: app UI, browser, API, or command-line tools (`crates/roym_web/ui/`, `crates/client_gateway/src/gateway.rs:73`, `apps/roymctl/src/commands/`).
-- Service Providers export and restore all in-scope data, configuration, grants,
-  and signed history using documented, versioned formats (`ARCHIVE_VERSION = 1`). An
-  export includes a manifest and completeness report; secrets transfer via
-  encrypted archives (`crates/roym_directory/src/app/backup.rs:25`).
+- App Developers package SynApps as WASM modules or OCI images (`crates/app_orchestration/src/models/manifest.rs:16`). Providers deploy these SynApps to matching container infrastructure, such as a WASM runtime or Podman/Docker (`crates/sandbox_wasm/src/engine.rs:84`, `crates/sandbox_podman/src/engine.rs:238`).
+- Consumers access Provider services through options that the Provider makes available: an application user interface, a web browser, an API, or command-line tools (`crates/roym_web/ui/`, `crates/client_gateway/src/gateway.rs:73`, `apps/roymctl/src/commands/`).
+- Service Providers export and restore all in-scope data, configuration, grants, and signed history using documented, versioned formats (`ARCHIVE_VERSION = 1`). Each export contains a manifest and a completeness report. Secrets transfer inside encrypted archives (`crates/roym_directory/src/app/backup.rs:25`).
   > **Envisioned.** Not built yet. Cross-version migration test fixtures for exported data archives. Today same-version export and clean-node restore are verified by automated tests.
-- Every production profile supports encrypted backup and tested restore. Backup
-  destination is operator-selectable; peer backup pools are optional and must
-  not be required for portability (`apps/roymctl/src/commands/roym/backup.rs:25`).
-- Backup success is never inferred merely from upload success; restorability is tested on clean nodes in automated integration test suites (`crates/substrate/tests/roym_restore_e2e.rs:49`).
+- Every production profile supports encrypted backup and verified restore. The operator selects the backup destination. Peer backup pools are optional. The system must not require peer backup pools for portability (`apps/roymctl/src/commands/roym/backup.rs:25`).
+- The system must never treat an upload success as proof of a successful backup. Automated integration test suites verify data restoration on clean nodes (`crates/substrate/tests/roym_restore_e2e.rs:49`).
   > **Envisioned.** Not built yet. Automated reporting of recovery-point and recovery-time expectations before choosing a hosting profile. Today clean-node backup restore is verified in test harnesses.
-- Multi-device clients may work offline using local caches and outboxes (`crates/async_queue/src/lib.rs:1`, `crates/substrate/tests/roym_group_offline_e2e.rs`). Running
-  independent writable copies of the same authoritative service state is a later
-  capability and must not be implied by the baseline requirement; single-writer serialization per service resolves this (`crates/data_db/src/sqlite/provider.rs:281`).
-- Sharding and multi-node service placement are optional scale capabilities (`crates/app_supervisor/src/lib.rs`).
-  They must not complicate the single-node deployment or portability contract (`crates/substrate/src/main.rs:178`).
+- Multi-device clients may work offline using local caches and outboxes (`crates/async_queue/src/lib.rs:1`, `crates/substrate/tests/roym_group_offline_e2e.rs`). Running independent writable copies of the same authoritative service state is a later capability. The baseline requirement does not include writable replicas. Single-writer serialization per service resolves this state requirement (`crates/data_db/src/sqlite/provider.rs:281`).
+- Sharding and multi-node service placement are optional scaling capabilities (`crates/app_supervisor/src/lib.rs`). They must not complicate single-node deployment or the portability contract (`crates/substrate/src/main.rs:178`).
 
 ### Connectivity & Offline Behaviour
 
-- The substrate supports direct peer-to-peer connections without intermediary servers wherever direct paths exist (`crates/router/src/net_iroh.rs:94`), and falls back to relay-mediated encrypted connections through coordinators when NAT or firewall constraints prevent direct connectivity (`crates/coordinator_iroh/src/coordinator.rs:180`, `crates/router/src/route_handler/io.rs:471`).
-- **Offline outbox and retry queue:** Operations explicitly declared safe for
-  deferred delivery are stored durably (`crates/async_queue/src/queue.rs:50`), expose `pending`, `delivered`, or
-  `failed` status to the user (`crates/conversation/src/store.rs:127`), and retry when connectivity returns. The UI must
-  not present `pending` as final success.
-- Automatic retries require an idempotency contract (ADR-0023 §4). The system must not replay
-  a non-idempotent operation merely because a connection failed.
-- Each transactional entity defines permitted state transitions, authority,
-  expiry, idempotency, and conflict behaviour (`crates/roym_core/src/transaction.rs:86`). Reconnection either reaches the
-  same valid final state for all parties or exposes a conflict requiring a named
-  party's decision; silent last-write-wins is not acceptable for agreements,
-  payments, fulfilment, or access grants. A single writer per service resolves
-  this by replaying queued requests through per-entity arbitration rules — no
-  multi-master merge is needed for these entities (`crates/data_db/src/sqlite/provider.rs:281`).
-- Users can cancel a still-pending message or booking operation when doing so is safe (`crates/conversation/src/host_impl.rs:333`, `crates/roym_transaction/src/app/booking_ops.rs:358`), and can see
-  when cancellation is no longer guaranteed because delivery may have occurred.
+- The substrate supports direct peer-to-peer connections without intermediary servers whenever a direct network path exists (`crates/router/src/net_iroh.rs:94`). When NAT or firewall rules block direct connectivity, the substrate falls back to encrypted connections through coordinator relays (`crates/coordinator_iroh/src/coordinator.rs:180`, `crates/router/src/route_handler/io.rs:471`).
+- **Offline outbox and retry queue:** The system durably stores operations that are explicitly marked safe for deferred delivery (`crates/async_queue/src/queue.rs:50`). The system presents `pending`, `delivered`, or `failed` status to the user (`crates/conversation/src/store.rs:127`). The system retries queued operations when network connectivity returns. The user interface must not show `pending` as a final success.
+- Automatic retries require an idempotency contract (ADR-0023 §4). The system must not replay a non-idempotent operation simply because a connection failed.
+- Each transactional entity defines valid state transitions, authority rules, expiration times, idempotency keys, and conflict handling (`crates/roym_core/src/transaction.rs:86`). After reconnecting, all parties either reach the same valid final state or see a conflict that requires a named party to decide. The system must not use silent last-write-wins rules for agreements, payments, fulfilment, or access grants. A single writer per service resolves updates by replaying queued requests through entity arbitration rules. These entities do not require a multi-master merge (`crates/data_db/src/sqlite/provider.rs:281`).
+- Users can cancel a pending message or booking operation when cancellation is safe (`crates/conversation/src/host_impl.rs:333`, `crates/roym_transaction/src/app/booking_ops.rs:358`). The user interface shows when cancellation is no longer guaranteed because delivery may have already occurred.
   > **Envisioned.** Not built yet. Generic user interface cancellation of arbitrary queued substrate outbox operations. Today message and booking cancellations are supported specifically.
 
 ### [WEB-PRX] Peer-Proxy Browser Fallback Tunneling
 
-For browser clients lacking native QUIC or WebRTC direct peer connectivity, the system MUST provide a service worker fallback proxy and WebSocket blind tunnel to communicate with substrate nodes.
+When browser clients lack native QUIC or WebRTC direct peer connectivity, the system MUST provide a service worker fallback proxy and a WebSocket blind tunnel to communicate with substrate nodes.
 
-- **Bootstrap Assets & Service Worker:** WebRTC and gateway coordinators serve browser bootstrap assets (`peer-proxy.js`, `/sw.js`) that intercept outbound application network requests and proxy them over client WebSockets (`crates/coordinator_webrtc/src/bootstrap.rs:113`).
-- **Opaque WebSocket Blind Tunneling:** Coordinators expose an opaque WebSocket blind tunnel endpoint (`/__syneroym/tunnel`) that reads the initial route preamble, resolves destination Iroh node endpoints via community registry lookups, and pipes raw binary frames bidirectionally between the browser Service Worker and target Iroh substrate nodes without inspecting decrypted payloads (`crates/coordinator_webrtc/src/bootstrap/tunnel.rs:11`).
-- **Preamble and Endpoint Resolution:** The blind tunnel forwards the route preamble to the destination substrate node, maintaining full stream encapsulation and end-to-end transport encryption between the browser client and destination service (`crates/coordinator_webrtc/src/bootstrap/tunnel.rs:37`).
+- **Bootstrap Assets & Service Worker:** WebRTC and gateway coordinators serve browser bootstrap assets (`peer-proxy.js`, `/sw.js`). These assets intercept outbound application network requests and proxy them over client WebSockets (`crates/coordinator_webrtc/src/bootstrap.rs:113`).
+- **Opaque WebSocket Blind Tunneling:** Coordinators expose an opaque WebSocket blind tunnel endpoint (`/__syneroym/tunnel`). This endpoint reads the initial route preamble, resolves destination Iroh node endpoints through community registry lookups, and forwards raw binary frames in both directions between the browser Service Worker and target Iroh substrate nodes without inspecting decrypted payloads (`crates/coordinator_webrtc/src/bootstrap/tunnel.rs:11`).
+- **Preamble and Endpoint Resolution:** The blind tunnel forwards the route preamble to the destination substrate node. This preserves complete stream encapsulation and end-to-end transport encryption between the browser client and destination service (`crates/coordinator_webrtc/src/bootstrap/tunnel.rs:37`).
 
 ### Messaging & Data Sharing
 
-- Providers, Consumers, and Services exchange messages only within an explicit
-  conversation or capability context and subject to owner-approved access
-  policy (`crates/conversation/src/lib.rs:56`, `crates/ucan/src/token.rs`).
-- The system supports one-to-one text, attachments, and structured service cards
-  for requests, quotes, agreements, status, receipts, and grants, as well as private group chat (`crates/roym_conversation`, `crates/conversation/src/dag.rs`).
+- Providers, Consumers, and Services exchange messages only within an explicit conversation or capability context. All message exchanges follow owner-approved access policy (`crates/conversation/src/lib.rs:56`, `crates/ucan/src/token.rs`).
+- The system supports one-to-one text, attachments, private group chat, and structured service cards. Supported cards include requests, quotes, agreements, status updates, receipts, and grants (`crates/roym_conversation`, `crates/conversation/src/dag.rs`).
   > **Envisioned.** Not built yet. Audio/video calls, social feeds, and collaborative editing. Today 1:1 messaging, structured cards, and group chat are supported.
-- A structured message has a stable type, schema version, sender, intended
-  recipients, creation time, idempotency identifier where applicable, and
-  verification status (`crates/conversation/src/store.rs:116`). Clients render unknown types safely without executing
-  arbitrary sender code.
-- The product states which message content and metadata are end-to-end encrypted using `vodozemac` (X3DH and Double Ratchet) and owner-distributed epoch keys (`crates/conversation/src/crypto.rs:233`, `crates/conversation/src/dag.rs`), which operator can observe remaining metadata, and why. Transport encryption alone must not be described to users as end-to-end message privacy.
-- Unsolicited contact is rate-limited and user-controlled. Recipients can block,
-  report, and leave a conversation without surrendering their transaction
-  records (`crates/roym_profile/src/app/safety_ops.rs:50`, `crates/roym_core/src/safety.rs:20`).
+- A structured message has a stable type, schema version, sender, intended recipients, creation timestamp, idempotency identifier when applicable, and verification status (`crates/conversation/src/store.rs:116`). Clients render unknown message types safely without executing sender code.
+- The product documentation states which message content and metadata are end-to-end encrypted. End-to-end encryption uses `vodozemac` (X3DH and Double Ratchet) and owner-distributed epoch keys (`crates/conversation/src/crypto.rs:233`, `crates/conversation/src/dag.rs`). The documentation also identifies which operators can observe remaining metadata and explains why. The system must not describe transport encryption alone to users as end-to-end message privacy.
+- Unsolicited contact is rate-limited and controlled by users. Recipients can block senders, report abuse, and leave a conversation without losing their transaction records (`crates/roym_profile/src/app/safety_ops.rs:50`, `crates/roym_core/src/safety.rs:20`).
   > **Envisioned.** Not built yet. Sender-side visibility of inbound rate-limit refusal reasons. Today recipient nodes enforce local contact blocks and rate limits silently.
 
 ### Non-Functional Requirements
 
-Unless superseded by a stricter vertical requirement, the reference client uses these
-measurable baselines. Test profiles and measurement methods belong in the
-Architecture and test plans.
+The reference client uses these measurable baselines unless a vertical requirement defines a stricter baseline. Test profiles and measurement methods are defined in the Architecture and test plans.
 
-- **Security:** All inter-node and client-node traffic is encrypted in transit (`crates/router/src/net_iroh.rs:94`). Sensitive production data and backups are encrypted at rest by default using SQLCipher KEK/DEK envelope encryption (`crates/data_keystore/src/key_store.rs:29`). No default credential is shared across installations. Critical actions are authenticated, authorised, and audit-recorded.
-- **Identity security:** Routine key rotation and device loss do not require a new public identity. Revocation freshness, recovery authority, and the consequence of losing every recovery factor are shown to the owner (`crates/identity/src/delegation.rs:62`, `crates/core/src/dht_registry/master_anchor.rs:24`). Government identity is optional, never the universal root of participation.
-- **Availability:** Local and cached reads remain available during temporary bootstrap or relay loss (`crates/data_db/src/sqlite/provider.rs:281`). Substrates configure static parent coordinator relay URLs (`parent_coordinator.iroh.url`) and publish to the community registry (`crates/community_registry`).
+- **Security:** The system encrypts all traffic between nodes and between clients and nodes in transit (`crates/router/src/net_iroh.rs:94`). Sensitive production data and backups are encrypted at rest by default using SQLCipher KEK/DEK envelope encryption (`crates/data_keystore/src/key_store.rs:29`). The system never shares default credentials across installations. The system authenticates, authorizes, and audits critical actions.
+- **Identity security:** Routine key rotation and device loss do not require a new public identity. The system shows revocation freshness, recovery authority, and the consequences of losing all recovery factors to the owner (`crates/identity/src/delegation.rs:62`, `crates/core/src/dht_registry/master_anchor.rs:24`). Government identity is optional. Government identity is never the universal root of participation.
+- **Availability:** Local and cached reads remain available during temporary bootstrap or relay loss (`crates/data_db/src/sqlite/provider.rs:281`). Substrates configure static parent coordinator relay URLs (`parent_coordinator.iroh.url`) and publish endpoints to the community registry (`crates/community_registry`).
   > **Envisioned.** Not built yet. A 24-hour bootstrap outage test. Today substrates configure static parent coordinator relay URLs and publish to community registries.
-- **Durability:** The disconnect/reconnect and process-restart suites lose no acknowledged in-scope transaction message (`crates/substrate/tests/saga_e2e.rs`, `crates/substrate/tests/roym_group_offline_e2e.rs`). Backup restore is verified on a clean node before initial release (`crates/substrate/tests/roym_restore_e2e.rs:49`).
-- **Performance:** On documented standard-node profiles, local UI actions reach p95 under 1 second and remote browse, search, message acknowledgement, and request submission reach p95 under 3 seconds, excluding an offline peer or external payment provider (`crates/observability/src/recorder.rs:136`).
+- **Durability:** Test suites for disconnect/reconnect and process restart must lose zero acknowledged in-scope transaction messages (`crates/substrate/tests/saga_e2e.rs`, `crates/substrate/tests/roym_group_offline_e2e.rs`). Backup restore is verified on a clean node before initial release (`crates/substrate/tests/roym_restore_e2e.rs:49`).
+- **Performance:** On documented standard-node profiles, local user interface actions must reach a p95 latency under 1 second. Remote browse, search, message acknowledgement, and request submission must reach a p95 latency under 3 seconds, excluding delays from an offline peer or external payment provider (`crates/observability/src/recorder.rs:136`).
   > **Envisioned.** Not built yet. Mobile-network performance profile testing and automated mobile latency benchmarks. Today performance metrics are recorded in memory on desktop and server platforms.
-- **Operability:** Health output identifies the affected user capability, likely cause, and safe next action (`crates/coordinator_iroh/src/info_endpoint.rs:104`). Schema migrations execute inside database transactions and roll back automatically on failure (`crates/data_db/src/sqlite/provider.rs:51`).
+- **Operability:** Health output identifies the affected user capability, the likely cause, and the safe next action (`crates/coordinator_iroh/src/info_endpoint.rs:104`). Database schema migrations execute inside transactions and roll back automatically on failure (`crates/data_db/src/sqlite/provider.rs:51`).
   > **Envisioned.** Not built yet. Automated binary update rollback across failed upgrades. Today schema migrations roll back within SQL transactions on failure.
-- **Interoperability:** WIT interfaces define versioned semver contracts (`crates/wit_interfaces/wit/`), and the handshake rejects unsupported protocol versions. Unknown optional capabilities fail gracefully; incompatible mandatory capabilities are rejected before a workflow begins.
+- **Interoperability:** WIT interfaces define versioned semver contracts (`crates/wit_interfaces/wit/`). The network handshake rejects unsupported protocol versions. Unknown optional capabilities fail gracefully. The system rejects incompatible mandatory capabilities before a workflow begins.
   > **Envisioned.** Not built yet. Published public protocol conformance test suites. Today interface compatibility is verified through Cargo test suites and WIT interface definitions.
-- **Privacy:** The system minimises observable metadata, documents every operator-visible category (`crates/fdae/src/policy.rs`), and provides purpose, retention, export, and deletion behaviour for personal data. Telemetry is local in-memory by default (`crates/observability/src/recorder.rs`).
-- **Portability:** Export/import formats and identity-linked history are documented, versioned, and integrity-checked (`crates/roym_directory/src/app/backup.rs`, `apps/roymctl/src/commands/roym/backup.rs`).
+- **Privacy:** The system minimises observable metadata and documents every operator-visible data category (`crates/fdae/src/policy.rs`). The system defines purpose, retention, export, and deletion rules for personal data. Telemetry is stored locally in memory by default (`crates/observability/src/recorder.rs`).
+- **Portability:** Export and import formats and identity-linked history are documented, versioned, and verified for integrity (`crates/roym_directory/src/app/backup.rs`, `apps/roymctl/src/commands/roym/backup.rs`).
   > **Envisioned.** Not built yet. Cross-version migration test fixtures for data archives. Today same-version export and clean-node restore are verified by automated tests.
 
 ### [TST-PRT] Dynamic Port Allocation Contract in Test Harnesses
 
-Integration and end-to-end test harnesses MUST dynamically allocate network ports rather than relying on static or hardcoded port numbers, guaranteeing collision-free parallel test execution across test binaries.
+Integration and end-to-end test harnesses MUST dynamically allocate network ports instead of using static or hardcoded port numbers. This rule guarantees collision-free parallel test execution across test binaries.
 
-- **Dynamic Port Reservation:** Test suites probe and allocate verified-free TCP and UDP ports below the OS ephemeral range (`18_000`–`32_768`) via `alloc_ports::<N>()` before spawning substrate nodes or gateway listeners (`crates/substrate/tests/common/mod.rs:109`).
-- **Complete Listener Port Coverage:** For every spawned substrate node, test harnesses MUST allocate distinct ports for all bound network listeners, including the Iroh HTTP relay, community registry, client gateway, and QUIC transport endpoint (`crates/substrate/tests/common/node.rs:55`).
-- **Ephemeral Port Enforcement:** Integration test suites MUST NOT use port literals in the OS ephemeral range (`32_768`–`60_999`), verified by static test syntax inspection (`crates/substrate/tests/no_ephemeral_port_literals.rs:1`).
+- **Dynamic Port Reservation:** Test suites probe and allocate verified-free TCP and UDP ports below the OS ephemeral range (`18_000`–`32_768`) with `alloc_ports::<N>()` before starting substrate nodes or gateway listeners (`crates/substrate/tests/common/mod.rs:109`).
+- **Complete Listener Port Coverage:** For every spawned substrate node, test harnesses MUST allocate distinct ports for all bound network listeners. This includes the Iroh HTTP relay, community registry, client gateway, and QUIC transport endpoint (`crates/substrate/tests/common/node.rs:55`).
+- **Ephemeral Port Enforcement:** Integration test suites MUST NOT use port literals in the OS ephemeral range (`32_768`–`60_999`). A static test syntax check verifies this rule (`crates/substrate/tests/no_ephemeral_port_literals.rs:1`).
 
 ---
 
 ## User Experience, Agency, and Accountability
 
+*Reader: developers and system architects.*
+
 ### Onboarding and recovery
 
-- A provider can choose a managed-guild path or a self-hosted path. Providers initialize self-hosted substrates via `roymctl substrate init` or bind to managed controllers via `ControllerAgreement` (`apps/roymctl/src/commands/substrate.rs:65`).
+- A provider can choose a managed-guild path or a self-hosted path. Providers initialize self-hosted substrates with `roymctl substrate init` or connect to managed controllers through a `ControllerAgreement` (`apps/roymctl/src/commands/substrate.rs:65`).
   > **Envisioned.** Not built yet. A guided onboarding wizard comparing control, cost, availability, privacy, and support trade-offs before committing. Today substrate initialization and management run via roymctl CLI commands.
-- Joining a guild must not transfer ownership of the provider's root identity, signed history, or export rights to the guild. Joining a guild does not delegate administration via `DelegationCertificate`. Instead, providers use signed membership credentials (`crates/roym_core/src/membership.rs`). Root key backup protects master keys (`crates/identity/src/backup.rs`). Any delegated administration is scoped (`crates/identity/src/delegation.rs:25`), visible, revocable via Master Anchor deny lists, and audit-recorded via FDAE `DecisionTrace`.
-- Consumer onboarding creates or imports a lightweight device-bound Ed25519 identity on the consumer's device mapped to short-lived session tokens (`crates/client_gateway/src/gateway.rs`). Users export encrypted identity backups (`crates/identity/src/backup.rs`) to protect master keys. The recovery model does not claim self-sovereignty if an operator can unilaterally recover or impersonate the consumer; root keys are self-sovereign Ed25519 master DIDs.
+- Joining a guild must not transfer ownership of the provider's root identity, signed history, or export rights to the guild. Joining a guild does not delegate administration through a `DelegationCertificate`. Providers use signed membership credentials instead (`crates/roym_core/src/membership.rs`). Root key backup protects master keys (`crates/identity/src/backup.rs`). Any delegated administration is scoped (`crates/identity/src/delegation.rs:25`), visible, revocable through Master Anchor deny lists, and audit-recorded through FDAE `DecisionTrace`.
+- Consumer onboarding creates or imports a lightweight device-bound Ed25519 identity on the consumer's device. This identity maps to short-lived session tokens (`crates/client_gateway/src/gateway.rs`). Users export encrypted identity backups (`crates/identity/src/backup.rs`) to protect master keys. The recovery model does not claim self-sovereignty if an operator can unilaterally recover or impersonate the consumer. Root keys are self-sovereign Ed25519 master DIDs.
   > **Envisioned.** Not built yet. Automated post-transaction backup prompts in the UI and optional government identity assurance credentials. Today consumers manage device-bound session keys and export encrypted backups on demand.
 - Destructive actions state their scope and recovery consequences. Common recovery flows are available through an expert CLI (`roymctl roym backup restore`) with warnings on destructive actions.
   > **Envisioned.** Not built yet. A guided graphical UI recovery wizard for identity and database restore. Today disaster recovery flows execute through the roymctl CLI.
 
 ### Data rights and lifecycle
 
-- Every durable record has a documented owner or controller, permitted writers, retention policy, export representation, and deletion or tombstone behaviour. Permissions are enforced by FDAE policies (`crates/fdae/src/policy.rs`), directory publications enforce retention pruning (`crates/roym_directory/src/app/publication_ops.rs`), and deleted messages leave tombstones in the conversation DAG (`crates/conversation/src/host_impl.rs:333`).
-- Shared records such as agreements, receipts, and revocations cannot be unilaterally rewritten; they are tamper-proof canonical signed Roym records (`crates/signed_record/`). A participant may remove its local copy or personal presentation where law permits, while the protocol preserves the other party's legitimate signed record and records later corrections separately.
+- Every durable record has a documented owner or controller, permitted writers, retention policy, export representation, and deletion or tombstone behaviour. FDAE policies enforce permissions (`crates/fdae/src/policy.rs`). Directory publications enforce retention pruning (`crates/roym_directory/src/app/publication_ops.rs`). Deleted messages leave tombstones in the conversation DAG (`crates/conversation/src/host_impl.rs:333`).
+- A single party cannot rewrite shared records such as agreements, receipts, and revocations. These records are tamper-proof canonical signed Roym records (`crates/signed_record/`). A participant may remove their local copy or personal display when law permits. The protocol preserves the other party's signed record and stores later corrections separately.
   > **Envisioned.** Not built yet. Public consumer reviews, reputation ratings, and generic W3C Verifiable Credentials 2.0 envelopes. Today shared records use canonical signed Roym records and bilateral agreement receipts.
-- Access grants are purpose- and scope-limited, expire by default for sensitive data, and can be revoked via UCAN tokens (`crates/ucan/src/token.rs`), delegation certificates (`crates/identity/src/delegation.rs`), and Master Anchor deny lists (`crates/core/src/dht_registry/master_anchor.rs`).
+- Access grants have limited purpose and scope. Grants expire by default for sensitive data. Grants can be revoked through UCAN tokens (`crates/ucan/src/token.rs`), delegation certificates (`crates/identity/src/delegation.rs`), and Master Anchor deny lists (`crates/core/src/dht_registry/master_anchor.rs`).
   > **Envisioned.** Not built yet. A graphical UI dashboard displaying active access grants and explaining what revocation can and cannot retract from already-received data. Today capability grants and revocations are enforced cryptographically via UCAN tokens and Master Anchor deny lists.
-- Export and account deletion are distinct actions. Deletion identifies data held by the provider, operator, backup destination, peers, and legally required records; the product must not promise deletion it cannot enforce. Users export data via sealed backup archives (`roymctl roym backup create`), while message deletion purges readable bodies locally with DAG tombstones (`crates/roym_profile/src/app/profile_ops.rs:25`).
+- Export and account deletion are separate actions. Deletion identifies data held by the provider, operator, backup destination, peers, and legally required records. The product must not promise deletion that it cannot enforce. Users export data through sealed backup archives (`roymctl roym backup create`). Message deletion removes readable bodies locally and leaves DAG tombstones (`crates/roym_profile/src/app/profile_ops.rs:25`).
   > **Envisioned.** Not built yet. Comprehensive multi-party account deletion coordinating erasure across providers, hosting operators, backup destinations, and peer nodes. Today users export data via backup archives and delete local message content via tombstones.
 
 ### Safety, support, and disputes
 
-- Before production use, the system has a reviewed threat model and privacy data inventory covering malicious packages, peers, clients and operators; compromised keys; metadata leakage; denial of service; backup exposure; and recovery abuse. Residual risks and unsupported deployment profiles are stated.
+- Before production use, the system must have a reviewed threat model and privacy data inventory. These documents cover malicious packages, peers, clients, and operators. They also cover compromised keys, metadata leakage, denial of service, backup exposure, and recovery abuse. Documentation states residual risks and unsupported deployment profiles.
   > **Envisioned.** Not built yet. Formal reviewed threat model documents and privacy data inventories. Today technical protections include Wasmtime fuel limits, mlock memory protection, TLS 1.3 QUIC transports, and Double Ratchet messaging encryption.
-- Syneroym supplies evidence and workflow primitives; it does not imply that every listed provider, guild, credential issuer, or facilitator has been vetted by the Syneroym project.
-- Provider terms, price, cancellation rules, data use, payment method, and named dispute path are captured before agreement in `AgreedTerms` (`crates/roym_core/src/transaction.rs:116`). A material change requires renewed consent and produces a new version.
-- Users can report impersonation, fraud, harassment, unsafe service, and illegal content to the relevant operator or community. Reports have a status, an appeal or correction path where appropriate, and safeguards against publicising unverified allegations as fact. Reports are stored locally on the submitting node with status tracking (`crates/roym_profile/src/app/moderation.rs:188`).
+- Syneroym supplies evidence and workflow primitives. The system does not imply that the Syneroym project has vetted every listed provider, guild, credential issuer, or facilitator.
+- Provider terms, price, cancellation rules, data use, payment method, and named dispute paths are recorded before agreement in `AgreedTerms` (`crates/roym_core/src/transaction.rs:116`). Any material change requires renewed consent and produces a new version.
+- Users can report impersonation, fraud, harassment, unsafe service, and illegal content to the relevant operator or community. Reports include a status, an appeal or correction path when appropriate, and safeguards against publishing unverified allegations as fact. Submitting nodes store reports locally and track report status (`crates/roym_profile/src/app/moderation.rs:188`).
   > **Envisioned.** Not built yet. Community-level appeal, dispute arbitration, and public correction workflows. Today moderation reports are stored locally with status tracked on the submitting node.
-- Emergency response, guaranteed refunds, insurance, professional licensing, and legal arbitration are not implied platform services. A guild or facilitator offering them must state jurisdiction, limits, and responsible legal entity in `AgreedTerms`.
+- Emergency response, guaranteed refunds, insurance, professional licensing, and legal arbitration are not platform services. When a guild or facilitator offers these services, it must state the jurisdiction, limits, and responsible legal entity in `AgreedTerms`.
   > **Envisioned.** Not built yet. Decentralized dispute resolution, independent arbiter panels, and smart-contract escrow custody. Today agreements capture a named dispute path as a text policy term within AgreedTerms.
 
 ---
 
 ## Ecosystem Contracts and Governance
 
-- The minimum federation contract consists of versioned identity resolution, endpoint discovery, provider and catalog publication, service requests, agreements, receipts, trust signals, and backup archive export schemas (`crates/roym_directory/src/app/backup.rs`).
+*Reader: developers and system architects.*
+
+- The minimum federation contract includes versioned identity resolution, endpoint discovery, provider and catalog publication, service requests, agreements, receipts, trust signals, and backup archive export schemas (`crates/roym_directory/src/app/backup.rs`).
   > **Envisioned.** Not built yet. Dynamic protocol capability negotiation and cross-vendor federation testing suites. Today protocols bind fixed ALPN `syneroym/0.1` and typed WIT interface packages.
-- Normative contracts have stable identifiers in versioned WIT interface packages (`crates/wit_interfaces/wit/`) and dual-build parity tests.
+- Normative contracts use stable identifiers in versioned WIT interface packages (`crates/wit_interfaces/wit/`) and dual-build parity tests.
   > **Envisioned.** Not built yet. Standalone third-party test vectors and an executable public conformance test suite. Today compatibility is verified via cargo test suites and dual-build parity tests.
-- Architectural decisions and protocol modifications are documented in Architecture Decision Records (ADRs) with rationale, security impacts, and migration plans.
+- Developers document architectural decisions and protocol changes in Architecture Decision Records (ADRs). ADRs explain the rationale, security impacts, and migration plans.
   > **Envisioned.** Not built yet. A formal external public proposal process with scheduled community review periods. Today architectural changes are proposed and tracked through internal ADRs.
-- No public Syneroym-operated bootstrap, relay, registry, app store, model service, or certificate authority is the sole permitted implementation of its role. Substrates configure custom parent coordinator relay URLs (`parent_coordinator.iroh.url`), publish to self-hosted community registries, use self-sovereign Ed25519 keys, and support complete local data export.
-- Compatibility claims are capability-specific, enforced by versioned WIT packages and manifest interface requirements.
+- No public Syneroym-operated bootstrap, relay, registry, app store, model service, or certificate authority is the only permitted implementation of its role. Substrates configure custom parent coordinator relay URLs (`parent_coordinator.iroh.url`), publish to self-hosted community registries, use self-sovereign Ed25519 keys, and support full local data export.
+- Compatibility claims apply to specific capabilities. Versioned WIT packages and manifest interface requirements enforce these claims.
   > **Envisioned.** Not built yet. A formal third-party capability certification and labeling program. Today compatibility is verified against versioned WIT package definitions.
-- SynApp manifests declare publisher, interfaces, dependencies, resource bounds, FDAE policies, and lifecycle hooks; deployment requires owner UCAN authorization.
+- SynApp manifests declare the publisher, interfaces, dependencies, resource limits, FDAE policies, and lifecycle hooks. Deployment requires owner UCAN authorization.
   > **Envisioned.** Not built yet. Standalone publisher-signed package distribution archives and interactive UI prompts for capability expansion during updates. Today SynApp components deploy via manifests and roymctl.
-- SynOrgs operate as single-owner root entities managing membership credentials, directory listings, and revocation lists (`crates/roym_directory/src/app.rs`).
+- SynOrgs operate as single-owner root entities. They manage membership credentials, directory listings, and revocation lists (`crates/roym_directory/src/app.rs`).
   > **Envisioned.** Not built yet. Multi-signature voting, token governance, and weighted community consensus. Today SynOrgs operate under single-owner cryptographic controller authority.
-- The project's sustainable business model may charge for hosting, support, certification, or optional services, but protocol participation and data exit cannot depend on paying a mandatory Syneroym toll. Substrate runtime execution, P2P networking, and SQLite storage execute locally with zero licensing checks or network tolls.
-- The project publishes a private vulnerability-reporting channel via GitHub Security Advisories (`SECURITY.md`), and cryptographic key revocations publish to Master Anchor deny lists.
+- The business model may charge fees for hosting, support, certification, or optional services. However, protocol participation and data export must not require a mandatory Syneroym fee. Substrate runtime execution, P2P networking, and SQLite storage run locally with zero licensing checks and zero network fees.
+- The project provides a private vulnerability reporting channel through GitHub Security Advisories (`SECURITY.md`). Cryptographic key revocations publish to Master Anchor deny lists.
   > **Envisioned.** Not built yet. Published supported-version policies, standardized security advisory formats, package-level revocations, and automated emergency update procedures. Today vulnerabilities are reported via GitHub Security Advisories and keys are revoked via Master Anchor deny lists.
 
 ### [DIR-SYN] SynOrg Directory Credential Management & Pinned Sources
 
-A SynOrg directory service MUST manage signed membership credentials, suspensions, and revocations for its community members, providing authoritative standing verification over public wire protocols.
+A SynOrg directory service MUST manage signed membership credentials, suspensions, and revocations for community members. This provides authoritative standing verification over public wire protocols.
 
-- **Credential and Revocation Lifecycle:** The SynOrg host issues canonical signed `MembershipCredential` records carrying subject DIDs, authorized categories, and expiration timestamps (`credential.issue`), and publishes signed revocation records (`revocation.issue`) when membership terminates or is suspended. Stored credentials and revocations MUST be queryable via wire-exposed RPC methods (`directory.standing`, `directory.info`).
-- **Publication Admission Gating:** A directory MUST admit service publications (`directory.publish`) only from verified members holding an unexpired, unrevoked membership credential issued by the directory's owning SynOrg.
-- **Pinned Directory Sources:** Consumer and provider nodes MUST maintain an explicit list of trusted directory sources (`SourceRow`), pinning the directory DID and the issuing SynOrg DID on first contact (`issuer_did`) to prevent directory spoofing. Client discovery queries MUST fan out strictly across configured sources and verify returned listing credentials against pinned directory issuers.
+- **Credential and Revocation Lifecycle:** The SynOrg host issues canonical signed `MembershipCredential` records. These records carry subject DIDs, authorized categories, and expiration timestamps (`credential.issue`). The host publishes signed revocation records (`revocation.issue`) when membership terminates or suspends. Clients MUST be able to query stored credentials and revocations through wire RPC methods (`directory.standing`, `directory.info`).
+- **Publication Admission Gating:** A directory MUST accept service publications (`directory.publish`) only from verified members. These members must hold an unexpired, unrevoked membership credential issued by the directory's owning SynOrg.
+- **Pinned Directory Sources:** Consumer and provider nodes MUST maintain an explicit list of trusted directory sources (`SourceRow`). Nodes pin the directory DID and the issuing SynOrg DID on first contact (`issuer_did`) to prevent directory spoofing. Client discovery queries MUST query only configured sources. Clients MUST verify returned listing credentials against pinned directory issuers.
 
 ---
 
 ## Trust Model
 
-Centralized platforms derive consumer trust from brand, legal accountability, and aggregated reviews. A truly peer-to-peer system — where no participant's device needs to fully trust any other — needs explicit mechanisms to establish equivalent trust without central authority.
+*Reader: developers and system architects.*
+
+Centralized platforms build consumer trust from brand recognition, legal accountability, and aggregated reviews. A peer-to-peer system needs explicit mechanisms to build trust without a central authority. In this system, no device needs to trust another device completely.
 
 ### The Trust Problem
 
-When a consumer discovers a provider through Syneroym, they have no prior relationship with either the provider or the infrastructure operator. The system gives the consumer sufficient signal to decide whether to transact. Conversely, providers have signal that consumers are not fraudulent.
+When a consumer discovers a provider through Syneroym, they have no existing relationship with the provider or the infrastructure operator. The system gives the consumer clear signals to decide whether to transact. The system also gives providers signals that consumers are not fraudulent.
 
-Minimum requirement at transaction time:
+Minimum requirements at transaction time:
 
-- Before accepting an agreement, the consumer can inspect the provider's stable identity, the provenance and freshness of available trust signals, material policy terms in `AgreedTerms`, payment recipient, and dispute or cancellation path. Absence of a trust signal is shown as unknown, never converted into a positive default.
-- The product avoids collecting stronger identity than risk warrants; consumers use lightweight device-bound Ed25519 session keys, and providers configure recipient contact rate limits and block lists (`crates/roym_core/src/safety.rs`).
+- Before accepting an agreement, the consumer can inspect the provider's stable identity, the provenance and freshness of trust signals, material terms in `AgreedTerms`, the payment recipient, and dispute or cancellation paths. The system displays missing trust signals as unknown. It never converts a missing signal into a positive default.
+- The product avoids collecting stronger identity details than risk warrants. Consumers use lightweight device-bound Ed25519 session keys. Providers configure contact rate limits and block lists (`crates/roym_core/src/safety.rs`).
   > **Envisioned.** Not built yet. Dynamic provider configuration of consumer-side gates (mandatory deposits, required prior receipts, verified external contacts, or named facilitators). Today consumers use lightweight session identities with recipient-configurable rate limits and block lists.
-- Trust displays separate facts (credentials, completed interaction receipts, recency) rather than hiding them behind one universal score. Directory search ranking uses open, explainable deterministic recency and round-robin merging (`crates/roym_directory/src/app/client_merge.rs`).
+- Trust displays present separate facts (credentials, receipts from completed interactions, recency) rather than hiding facts behind a single score. Directory search ranking uses open, explainable deterministic recency and round-robin merging (`crates/roym_directory/src/app/client_merge.rs`).
   > **Envisioned.** Not built yet. Joint DHT reputation records, exponential moving average (EMA) score formulas, and consumer vouch graphs are unbuilt. Today trust relies on independent credentials and bilateral receipts without numerical reputation scores.
 
 ### Trust Layers
 
-Trust in the Syneroym ecosystem operates at multiple levels:
+Trust in the Syneroym ecosystem operates across multiple layers:
 
-**Layer 1: Cryptographic continuity.** A stable, issuer-neutral root identity (self-sovereign Ed25519 master DID) delegates authority to rotatable device and routing keys using signed `DelegationCertificate` credentials. Key revocations are published to Master Anchor deny lists on the DHT and community registry. Cryptographic continuity proves control of keys—not a person's legal name, quality, or honesty.
+**Layer 1: Cryptographic continuity.** A stable root identity (a self-sovereign Ed25519 master DID) delegates authority to rotatable device and routing keys with signed `DelegationCertificate` credentials. The system publishes key revocations to Master Anchor deny lists on the DHT and community registry. Cryptographic continuity proves control of keys. It does not prove a person's legal name, quality, or honesty.
 
 > **Envisioned.** Not built yet. Hardware protection (TPM or secure enclave), social recovery, and government identity credentials are unbuilt optional assurance mechanisms. Today root keys are self-sovereign Ed25519 keypairs delegating via software delegation certificates.
 
-**Layer 2: Referral and vouching.** Guild entities issue signed, scoped, expiring statements about members (`MembershipCredential`). The display preserves who said what and in which context; an issued credential is not silently treated as objective verification of quality.
+**Layer 2: Referral and vouching.** Guild entities issue signed, scoped, and expiring statements about members (`MembershipCredential`). The display preserves who issued the statement and in what context. The system does not treat an issued credential as objective proof of quality.
 
 > **Envisioned.** Not built yet. Consumer referral vouches, recommendation statements, web-of-trust vouching graphs, and vouch decay formulas are unbuilt. Today trust relies on signed SynOrg membership credentials and revocations.
 
-**Layer 3: Verifiable credentials.** Providers attach credentials (such as guild membership or trade certification) structured as canonical signed Roym records (`crates/signed_record/`). Verification checks Ed25519 signatures, issuer DID, scope, expiry timestamps, and issuer revocation lists (`crates/roym_directory/src/app/credential_ops.rs`). The consuming party or community decides which issuers it trusts; the UI does not reduce "valid signature" to "trusted claim".
+**Layer 3: Verifiable credentials.** Providers attach credentials (such as guild membership or trade certification) packaged as canonical signed Roym records (`crates/signed_record/`). Verification checks Ed25519 signatures, the issuer DID, scope, expiration timestamps, and issuer revocation lists (`crates/roym_directory/src/app/credential_ops.rs`). The consuming party or community decides which issuers to trust. The user interface does not reduce a valid signature to a trusted claim.
 
 > **Envisioned.** Not built yet. Generic W3C Verifiable Credentials 2.0 envelopes and external credential library integrations are unbuilt. Today all credentials use canonical signed Roym records.
 
-**Layer 4: Interaction receipts and feedback.** Completed commercial interactions produce bilateral independent agreement receipts (`AgreementReceiptPayload`) and fulfilment receipts (`FulfilmentRecord`) signed and stored separately by each party. A receipt proves that both parties acknowledged a workflow event under identical agreed terms, not that every off-system claim is true. Export bundles preserve provenance with signed record manifests.
+**Layer 4: Interaction receipts and feedback.** Completed commercial interactions create bilateral agreement receipts (`AgreementReceiptPayload`) and fulfilment receipts (`FulfilmentRecord`). Each party signs and stores these receipts independently. A receipt proves that both parties agreed to a workflow event under identical terms. It does not prove that every real-world claim is true. Export archives preserve record provenance with signed manifests.
 
 > **Envisioned.** Not built yet. Separately signed consumer feedback, public reviews, and selective disclosure (redactable zero-knowledge or field-level disclosure) are unbuilt. Today interactions produce bilateral independent agreement and fulfilment receipts.
 
-**Layer 5: Community moderation.** Guilds and communities maintain signed membership revocation and suspension decisions (`crates/roym_core/src/membership.rs`). Abuse reports submitted by users remain scoped locally to recipient nodes (`crates/roym_profile/src/app/moderation.rs`) and do not broadcast as global truth. Consumers see the policy source.
+**Layer 5: Community moderation.** Guilds and communities maintain signed membership revocation and suspension records (`crates/roym_core/src/membership.rs`). Abuse reports submitted by users stay on recipient nodes (`crates/roym_profile/src/app/moderation.rs`). The system does not broadcast reports as global truth. Consumers can see the source of moderation policies.
 
 > **Envisioned.** Not built yet. Published community warning lists and formal automated correction or appeal workflows are unbuilt. Today guilds publish signed revocation lists and nodes store local abuse reports.
 
-Trust mechanisms enforce anti-replay protections via monotonic sequences and timestamps (`crates/signed_record/`), key compromise revocation via Master Anchor deny lists (`crates/core/src/dht_registry/master_anchor.rs`), and tying receipts directly to signed agreements. Tying receipts to signed interactions reduces casual spam but does not by itself solve Sybil attacks or collusion.
+Trust mechanisms enforce anti-replay protections with monotonic sequence numbers and timestamps (`crates/signed_record/`). They enforce key revocation through Master Anchor deny lists (`crates/core/src/dht_registry/master_anchor.rs`). They also tie receipts directly to signed agreements. Tying receipts to signed interactions reduces casual spam, but it does not stop Sybil attacks or collusion.
 
 > **Envisioned.** Not built yet. Comprehensive Sybil attack mitigation, collusion defenses, and formal evaluation frameworks are unbuilt. Today anti-replay timestamps and Master Anchor key revocations protect against basic replay and compromised keys.
 
 ### Legal Liability Boundary
 
-The system does not provide legal shielding in the way centralised platforms do — that shielding derives from the platform's legal personhood and terms of service. Syneroym infrastructure operators bear their own legal responsibility for services they host under applicable local law. The requirements are:
+The system does not provide legal liability protection like centralized platforms. That protection comes from corporate legal status and terms of service. Syneroym infrastructure operators hold their own legal responsibility for services that they host under local laws.
 
-- The substrate makes it straightforward for a Provider or Aggregator (directory-type SynOrg) to display their own terms of service, cancellation policies, and refund rules to consumers through `AgreedTerms` structures.
-- The substrate does not create an implicit representation to consumers that a federated node has been vetted by Syneroym.
+Requirements:
+
+- The substrate allows a Provider or Aggregator (directory-type SynOrg) to show terms of service, cancellation policies, and refund rules to consumers through `AgreedTerms` structures.
+- The substrate must not state or imply to consumers that the Syneroym project vetted a federated node.
 - A separate document will outline recommended legal structures for Directory SynOrgs and Aggregators operating at scale. [Legal guidance: Out of scope for this spec]
 
 ---
