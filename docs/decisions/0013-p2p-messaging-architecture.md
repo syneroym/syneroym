@@ -122,6 +122,8 @@ between members.
 The reasons, the limits and the trade-offs are in
 [ADR-0026](0026-receiver-chosen-mailbox.md).
 
+This amendment takes effect when ADR-0026 is accepted.
+
 ## Consequences
 
 **Positive:**
