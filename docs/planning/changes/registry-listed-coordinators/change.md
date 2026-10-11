@@ -107,7 +107,7 @@ Resolution order for the Iroh transport:
 
 **Where the files go.** The cache is a small file under `config.storage.db_dir` (`coordinators.json`: list, fetch time, `max_age_secs`, chosen URL). There is no single data-directory accessor; the runtime uses `config.storage.db_dir` (`crates/core/src/config/base.rs:30`).
 
-**Degraded mode.** The endpoint has a relay transport but no home relay. It can dial a peer through that peer's relay (the relay actor opens a connection to any URL a peer gives). Peers cannot reach it through a relay until a home relay is inserted, so it is reachable only by the direct addresses in its record. *Unverified:* run a test that a relay inserted later with `insert_relay` becomes the home relay.
+**Degraded mode.** The endpoint has a relay transport but no home relay. It can dial a peer through that peer's relay (the relay actor opens a connection to any URL a peer gives). Peers cannot reach it through a relay until a home relay is inserted, so it is reachable only by the direct addresses in its record. Verified by `crates/coordinator_iroh/tests/relay_map_runtime.rs`: a relay inserted later with `insert_relay` becomes the home relay within ~300 ms, `Endpoint::online()` finishes, and peers reach the endpoint through that relay.
 
 **Why not `RelayMode::Disabled`.** In iroh 0.97 this mode builds no relay transport at all: neither listening nor dialing through relays is possible (`iroh-0.97.0/src/endpoint.rs:1721`, `socket/transports.rs:209-212`). A later `insert_relay` would only change a list with no transport behind it, and the node could not dial a peer that is behind NAT.
 
@@ -133,7 +133,7 @@ Decided 2026-10-11:
 
 ## Tasks
 
-- [ ] Run degraded mode once (empty relay map, then `insert_relay`) and record the result here.
+- [x] Run degraded mode once (empty relay map, then `insert_relay`) and record the result here.
 - [ ] Config: make `url` optional, remove `coordinator_discovery_url`, add the registry `coordinators` list and its checks (URL normalisation, duplicates). Parse `[roles.coordinator] access` strictly, in the final shape from [operator-passport](../operator-passport/change.md) (H-6), because an unknown value opens the relay to everyone today and the list relies on `access = "everyone"` being exact.
 - [ ] Registry: `GET /coordinators` and parent forwarding with a hop limit.
 - [ ] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
@@ -145,6 +145,8 @@ Decided 2026-10-11:
 - [ ] Update the living docs listed in the close-out.
 
 ## Deviations
+
+- `remove_relay` on the home relay: when all relays are removed, leaving an empty relay map, iroh 0.97 does not clear the previous home relay from `addr().relay_urls()` because it skips net-report runs when the relay map is empty; inserting a replacement relay updates the home relay immediately (`crates/coordinator_iroh/tests/relay_map_runtime.rs`).
 
 ## Close-out
 
