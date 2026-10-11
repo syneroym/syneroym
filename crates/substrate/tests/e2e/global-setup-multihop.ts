@@ -2,6 +2,7 @@ import { ChildProcess, execSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { reserveTcpPort, reserveUdpPort } from './ports';
+import { waitForRegistryRecord } from './wait';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data-multihop');
 const LOG_DIR = path.join(process.cwd(), 'e2e-logs');
@@ -41,20 +42,6 @@ async function waitForDid(child: ChildProcess, name: string): Promise<string> {
     await new Promise(r => setTimeout(r, 200));
   }
   throw new Error(`Timeout waiting for ${name} DID; see ${logPath(name)}`);
-}
-
-async function waitForRegistryRecord(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {
-      // not up yet
-    }
-    await new Promise(r => setTimeout(r, 200));
-  }
-  throw new Error(`Timed out waiting for registry record at ${url}`);
 }
 
 // Offline-first install so a warm cache costs ~100 ms, not a registry
@@ -316,8 +303,6 @@ registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
   await miniappPortRes.release();
   const miniapp1Process = spawnLogged(MINIAPP_BIN, ['--port', ports.miniappPort.toString(), '--https-port', '0', '--data-dir', path.join(TEST_DIR, 'miniapp-data1')], 'miniapp1');
   (global as any).__MINIAPP1_PROCESS__ = miniapp1Process;
-
-  await new Promise(r => setTimeout(r, 4000));
 
   console.log('Waiting for Sz and Sx registry records...');
   await waitForRegistryRecord(`http://127.0.0.1:${ports.cRegistryPort}/lookup/${szDid}`, 30000);

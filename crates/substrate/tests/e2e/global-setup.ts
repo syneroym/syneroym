@@ -14,34 +14,7 @@ const NPM_INSTALL = 'npm install --prefer-offline --no-audit --no-fund';
 const NPM_CI = 'npm ci --prefer-offline --no-audit --no-fund';
 
 import { reserveTcpPort, reserveUdpPort } from './ports';
-
-async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      const res = await fetch(url);
-      if (res.ok || res.status === 404) return;
-    } catch {
-      // not up yet
-    }
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${url}`);
-    await new Promise(r => setTimeout(r, 200));
-  }
-}
-
-async function waitForRegistryRecord(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) return;
-    } catch {
-      // not up yet
-    }
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for registry record at ${url}`);
-    await new Promise(r => setTimeout(r, 200));
-  }
-}
+import { waitForHttp, waitForRegistryRecord } from './wait';
 
 export default async function globalSetup() {
   console.log('\n--- E2E Global Setup ---');
