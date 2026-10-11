@@ -43,6 +43,20 @@ async function waitForDid(child: ChildProcess, name: string): Promise<string> {
   throw new Error(`Timeout waiting for ${name} DID; see ${logPath(name)}`);
 }
 
+async function waitForRegistryRecord(url: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch {
+      // not up yet
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  throw new Error(`Timed out waiting for registry record at ${url}`);
+}
+
 // Offline-first install so a warm cache costs ~100 ms, not a registry
 // round trip that can eat the suite's `globalTimeout` (see global-setup.ts).
 const NPM_INSTALL = 'npm install --prefer-offline --no-audit --no-fund';
@@ -304,6 +318,10 @@ registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
   (global as any).__MINIAPP1_PROCESS__ = miniapp1Process;
 
   await new Promise(r => setTimeout(r, 4000));
+
+  console.log('Waiting for Sz and Sx registry records...');
+  await waitForRegistryRecord(`http://127.0.0.1:${ports.cRegistryPort}/lookup/${szDid}`, 30000);
+  await waitForRegistryRecord(`http://127.0.0.1:${ports.cRegistryPort}/lookup/${sxDid}`, 30000);
 
   // Initialize and Register demo1 for Sz
   console.log('Creating demo1 identity (Sz)...');
