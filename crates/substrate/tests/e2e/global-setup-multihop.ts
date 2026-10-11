@@ -2,7 +2,7 @@ import { ChildProcess, execSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { reserveTcpPort, reserveUdpPort } from './ports';
-import { waitForRegistryRecord } from './wait';
+import { waitForHttp, waitForRegistryRecord } from './wait';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data-multihop');
 const LOG_DIR = path.join(process.cwd(), 'e2e-logs');
@@ -307,6 +307,7 @@ registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
   console.log('Waiting for Sz and Sx registry records...');
   await waitForRegistryRecord(`http://127.0.0.1:${ports.cRegistryPort}/lookup/${szDid}`, 30000);
   await waitForRegistryRecord(`http://127.0.0.1:${ports.cRegistryPort}/lookup/${sxDid}`, 30000);
+  await waitForHttp(`http://127.0.0.1:${ports.miniappPort}/`, 20000);
 
   // Initialize and Register demo1 for Sz
   console.log('Creating demo1 identity (Sz)...');
