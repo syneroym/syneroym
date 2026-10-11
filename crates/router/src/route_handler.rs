@@ -367,8 +367,7 @@ impl RouteHandler {
     ) -> Result<Self> {
         let identity = Arc::new(Identity::from_bytes(&secret_key));
 
-        let parent_coordinator_url =
-            config.parent_coordinator.iroh.as_ref().map(|cfg| cfg.url.clone());
+        let parent_coordinator_url = config.parent_coordinator.iroh.url.clone();
 
         let registry_client = Arc::new(RegistryClient::new(
             config.substrate.enable_bep0044_dht,

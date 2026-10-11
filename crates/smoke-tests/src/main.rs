@@ -11,8 +11,8 @@ use syneroym_community_registry::EcosystemRegistry;
 use syneroym_coordinator_iroh::{CoordinatorIroh, info_endpoint::CoordinatorInfo};
 use syneroym_core::{
     config::{
-        AccessControl, AppSandboxRole, CoordinatorIrohConfig, CoordinatorRole, RetryPolicy,
-        ServiceRegistryRole, SubstrateConfig,
+        AccessControl, AppSandboxRole, CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole,
+        RetryPolicy, ServiceRegistryRole, SubstrateConfig,
     },
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
     local_registry::EndpointRegistry,
@@ -94,7 +94,7 @@ async fn setup_in_process_services(
 
     let mut coord_config = SubstrateConfig::default();
     coord_config.roles.coordinator = Some(CoordinatorRole {
-        access: AccessControl::String("everyone".to_string()),
+        access: CoordinatorAccess::Everyone,
         tls: None,
         iroh: Some(CoordinatorIrohConfig {
             enable_signalling: false,

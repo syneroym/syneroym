@@ -17,6 +17,7 @@ use tracing::{error, info};
 mod auth;
 mod dual_build_fixture;
 mod handles;
+mod home_relay;
 mod publish;
 mod router;
 mod roym;

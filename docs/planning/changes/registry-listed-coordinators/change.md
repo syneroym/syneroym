@@ -1,6 +1,10 @@
 ---
-status: approved
+status: in-progress
 living-docs-touched:
+  - docs/system-architecture.md
+  - docs/system-requirements-spec.md
+  - docs/TERMINOLOGY.md
+  - docs/demo/demo.md
 ---
 # Registry-listed coordinators
 
@@ -138,15 +142,19 @@ Decided 2026-10-11:
 - [ ] Registry: `GET /coordinators` and parent forwarding with a hop limit.
 - [ ] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
 - [ ] Substrate: background resolve, rank, cache, fail over, degraded mode, relay switch at run time, publish the record again.
-- [ ] Remove both n0 fallbacks. Check the tests that rely on them.
-- [ ] Coordinator roles: never auto-resolve. Test configs that rely on a missing section.
-- [ ] Write the dev profile relay explicitly.
+- [x] Remove both n0 fallbacks. Check the tests that rely on them.
+- [x] Coordinator roles: never auto-resolve. Test configs that rely on a missing section.
+- [x] Write the dev profile relay explicitly.
 - [ ] Integration tests (registry with a list, substrate with no `url`, relay that is down, registry that is down, relay change at run time). Use `common::alloc_ports`.
-- [ ] Update the living docs listed in the close-out.
+- [x] Update the living docs listed in the close-out.
 
 ## Deviations
 
 - `remove_relay` on the home relay: when all relays are removed, leaving an empty relay map, iroh 0.97 does not clear the previous home relay from `addr().relay_urls()` because it skips net-report runs when the relay map is empty; inserting a replacement relay updates the home relay immediately (`crates/coordinator_iroh/tests/relay_map_runtime.rs`).
+- `[roles.coordinator] access`: list entries admit valid Iroh endpoint IDs for relay access; DID-formatted strings will not parse as endpoint IDs because relay admission checks Iroh endpoint IDs directly.
+- `HomeRelay::set` confirmation timeout is 15 seconds (`HOME_RELAY_CONFIRM_TIMEOUT`) to allow net-report probe cycles to settle reliably across environments.
+- Publication of the substrate's own endpoint record to the community registry is deferred until a home relay is confirmed by the watch channel (D4). Hosted service endpoints continue to be replayed.
+- On candidate relay confirmation failure during a switch from an active confirmed relay, the endpoint rolls back to the previous confirmed relay (D5).
 
 ## Close-out
 

@@ -4,13 +4,13 @@
 
 use std::{io, net::SocketAddr, path::Path, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use iroh_base::EndpointId;
 use iroh_relay::server::{self as relay, QuicConfig, ServerConfig};
 use relay::{Access, AccessConfig, CertConfig, RelayConfig, TlsConfig};
 use rustls::{ServerConfig as RustlsServerConfig, crypto::ring};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use syneroym_core::config::{AccessControl, CoordinatorRole};
+use syneroym_core::config::{CoordinatorAccess, CoordinatorRole};
 use tokio::task;
 
 fn load_certs(filename: impl AsRef<Path>) -> Result<Vec<CertificateDer<'static>>> {
@@ -28,6 +28,44 @@ fn load_secret_key(filename: impl AsRef<Path>) -> Result<PrivateKeyDer<'static>>
         format!("failed to read or parse private key file at {}", filename.as_ref().display())
     })?;
     Ok(key)
+}
+
+/// Builds the relay access check from `[roles.coordinator] access`.
+///
+/// # Errors
+/// For the passport forms, which this build cannot enforce yet, and for a
+/// list entry that is not an Iroh endpoint id.
+pub fn relay_access(access: &CoordinatorAccess) -> Result<AccessConfig> {
+    match access {
+        CoordinatorAccess::Everyone => Ok(AccessConfig::Everyone),
+        CoordinatorAccess::List(ids) => restricted_to(ids),
+        CoordinatorAccess::Passport => bail!(
+            "[roles.coordinator] access = \"passport\" is not supported yet; use \"everyone\" or \
+             a list of endpoint ids"
+        ),
+        CoordinatorAccess::ListOrPassport(_) => bail!(
+            "[roles.coordinator] access = {{ list = [...], passport = true }} is not supported \
+             yet; use the plain list form access = [...]"
+        ),
+    }
+}
+
+fn restricted_to(ids: &[String]) -> Result<AccessConfig> {
+    let list = ids
+        .iter()
+        .map(|s| {
+            s.parse::<EndpointId>().with_context(|| {
+                format!("[roles.coordinator] access: {s:?} is not an Iroh endpoint id")
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let list = Arc::new(list);
+    Ok(AccessConfig::Restricted(Box::new(move |endpoint_id| {
+        let list = list.clone();
+        Box::pin(
+            async move { if list.contains(&endpoint_id) { Access::Allow } else { Access::Deny } },
+        )
+    })))
 }
 
 pub async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<io::Error>> {
@@ -79,24 +117,7 @@ pub async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<i
         });
     }
 
-    let access_config = match &role.access {
-        AccessControl::String(s) if s == "everyone" => AccessConfig::Everyone,
-        AccessControl::List(l) => {
-            let mut list = Vec::new();
-            for s in l {
-                let id: EndpointId = s.parse().context("invalid endpoint ID in access list")?;
-                list.push(id);
-            }
-            let list = Arc::new(list);
-            AccessConfig::Restricted(Box::new(move |endpoint_id| {
-                let list = list.clone();
-                Box::pin(async move {
-                    if list.contains(&endpoint_id) { Access::Allow } else { Access::Deny }
-                })
-            }))
-        }
-        _ => AccessConfig::Everyone,
-    };
+    let access_config = relay_access(&role.access)?;
 
     let relay_config = if iroh_cfg.enable_relay {
         Some(RelayConfig {
@@ -115,6 +136,7 @@ pub async fn build_relay_config(role: &CoordinatorRole) -> Result<ServerConfig<i
 
 #[cfg(test)]
 mod tests {
+    use iroh::SecretKey;
     use syneroym_core::config::CoordinatorIrohConfig;
 
     use super::*;
@@ -164,5 +186,61 @@ mod tests {
         let config = build_relay_config(&role).await?;
         assert!(config.relay.is_none());
         Ok(())
+    }
+
+    #[test]
+    fn everyone_admits_any_endpoint() -> Result<()> {
+        let access = relay_access(&CoordinatorAccess::Everyone)?;
+        assert!(matches!(access, AccessConfig::Everyone));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn list_admits_only_listed_endpoints() -> Result<()> {
+        let key1 = SecretKey::generate(&mut rand::rng());
+        let key2 = SecretKey::generate(&mut rand::rng());
+        let id1 = key1.public();
+        let id2 = key2.public();
+
+        let access = relay_access(&CoordinatorAccess::List(vec![id1.to_string()]))?;
+        let AccessConfig::Restricted(check) = access else {
+            panic!("expected Restricted access config");
+        };
+
+        assert_eq!(check(id1).await, Access::Allow);
+        assert_eq!(check(id2).await, Access::Deny);
+        Ok(())
+    }
+
+    #[test]
+    fn list_with_bad_id_is_an_error() {
+        let err = relay_access(&CoordinatorAccess::List(vec!["not an id".into()]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not an Iroh endpoint id"), "expected error: {err}");
+    }
+
+    #[test]
+    fn passport_access_is_an_error() {
+        let err = relay_access(&CoordinatorAccess::Passport).unwrap_err().to_string();
+        assert!(err.contains("not supported yet"), "expected error: {err}");
+    }
+
+    #[test]
+    fn table_access_is_an_error() {
+        let err = relay_access(&CoordinatorAccess::ListOrPassport(vec![])).unwrap_err().to_string();
+        assert!(err.contains("not supported yet"), "expected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn build_relay_config_rejects_passport_access() {
+        let role = CoordinatorRole {
+            access: CoordinatorAccess::Passport,
+            iroh: Some(CoordinatorIrohConfig { enable_relay: true, ..Default::default() }),
+            ..Default::default()
+        };
+        let res = build_relay_config(&role).await;
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("not supported yet"));
     }
 }

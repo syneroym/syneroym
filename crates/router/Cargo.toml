@@ -24,6 +24,7 @@ syneroym-async-queue.workspace = true
 syneroym-app-orchestration.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+thiserror.workspace = true
 
 async-trait.workspace = true
 bytes.workspace = true

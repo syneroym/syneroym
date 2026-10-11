@@ -48,12 +48,15 @@ enum Verdict {
     Rejected,
 }
 
+mod common;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn accepts_up_to_cap_and_rejects_the_rest() -> Result<()> {
     init_tracing();
 
     let temp_dir = tempfile::tempdir()?;
     let mut coordinator = start_capped_coordinator(temp_dir.path()).await?;
+    common::wait_for_relay(&coordinator, Duration::from_secs(5)).await?;
     let dial = fetch_dial_info(&coordinator).await?;
 
     // Accepted attempts park on `release`, holding their connection (and thus

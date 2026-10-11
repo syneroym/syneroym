@@ -127,3 +127,4 @@ async-trait.workspace = true
 hex.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
+iroh-relay.workspace = true

@@ -12,12 +12,13 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey,
-    endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream, presets::N0},
+    endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream},
 };
 use syneroym_core::{
-    config::RetryPolicy,
+    config::{IrohParentConfig, RetryPolicy},
     dht_registry::{EndpointMechanism, RegistryClient},
     retry::retry_with_backoff,
 };
@@ -91,23 +92,47 @@ impl StopSignal for IrohStream {
     }
 }
 
+/// Parses a relay URL from a config setting. A relay URL must be `http`
+/// or `https` and have a host. The error names the setting and the value,
+/// because a bad value stops startup.
+///
+/// # Errors
+/// When `raw` is not such a URL.
+pub fn parse_relay_url(setting: &str, raw: &str) -> anyhow::Result<RelayUrl> {
+    let url = raw
+        .parse::<RelayUrl>()
+        .with_context(|| format!("{setting} = {raw:?} is not a valid URL"))?;
+    // `RelayUrl` derefs to `url::Url`.
+    anyhow::ensure!(
+        matches!(url.scheme(), "http" | "https") && url.host_str().is_some(),
+        "{setting} = {raw:?} must be an http:// or https:// URL with a host"
+    );
+    Ok(url)
+}
+
+/// The parent relay of this node: `parent_coordinator.iroh.url`, parsed.
+/// `Ok(None)` when it is not set.
+///
+/// # Errors
+/// When it is set and not a valid relay URL.
+pub fn parent_relay_url(config: &IrohParentConfig) -> anyhow::Result<Option<RelayUrl>> {
+    config.url.as_deref().map(|raw| parse_relay_url("parent_coordinator.iroh.url", raw)).transpose()
+}
+
+/// Only the given relay, or an empty map. Never the n0 preset: an endpoint
+/// with an empty map can still dial a peer through that peer's relay, and
+/// can get a relay later with `Endpoint::insert_relay`.
+/// `RelayMode::Disabled` would build no relay transport at all.
+fn relay_mode(relay_url: Option<RelayUrl>) -> RelayMode {
+    RelayMode::Custom(relay_url.map_or_else(RelayMap::empty, RelayMap::from))
+}
+
 pub async fn build_iroh_endpoint(
-    relay_url: Option<String>,
+    relay_url: Option<RelayUrl>,
     secret_key: Option<SecretKey>,
     idle_timeout_secs: Option<u64>,
 ) -> anyhow::Result<Endpoint> {
-    let mut builder = Endpoint::builder(N0);
-    if let Some(url) = relay_url {
-        match url.parse::<RelayUrl>() {
-            Ok(relay_url) => {
-                builder = Endpoint::empty_builder()
-                    .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
-            }
-            Err(e) => {
-                tracing::warn!("Failed to parse relay URL '{}': {}, falling back to N0", url, e);
-            }
-        }
-    }
+    let mut builder = Endpoint::empty_builder().relay_mode(relay_mode(relay_url));
     if let Some(sk) = secret_key {
         builder = builder.secret_key(sk);
     }
@@ -160,4 +185,61 @@ pub async fn connect_with_retry(
     })
     .await
     .map_err(anyhow::Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_mode_without_url_is_an_empty_custom_map() {
+        let mode = relay_mode(None);
+        assert!(matches!(mode, RelayMode::Custom(_)));
+        assert_eq!(mode.relay_map().len(), 0);
+    }
+
+    #[test]
+    fn relay_mode_with_url_has_only_that_relay() {
+        let url: RelayUrl = "http://127.0.0.1:7964".parse().unwrap();
+        let mode = relay_mode(Some(url.clone()));
+        assert!(matches!(mode, RelayMode::Custom(_)));
+        assert_eq!(mode.relay_map().len(), 1);
+        assert!(mode.relay_map().contains(&url));
+    }
+
+    #[test]
+    fn parse_relay_url_accepts_http_and_https() {
+        let http = parse_relay_url("test", "http://example.org:7964").unwrap();
+        assert_eq!(http.as_str(), "http://example.org:7964/");
+
+        let https = parse_relay_url("test", "https://example.org:7964").unwrap();
+        assert_eq!(https.as_str(), "https://example.org:7964/");
+    }
+
+    #[test]
+    fn parse_relay_url_rejects_a_value_without_scheme() {
+        let err = parse_relay_url("parent_coordinator.iroh.url", "localhost:7964")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parent_coordinator.iroh.url"), "expected setting name: {err}");
+        assert!(err.contains("localhost:7964"), "expected bad value: {err}");
+    }
+
+    #[test]
+    fn parse_relay_url_rejects_other_schemes() {
+        let err = parse_relay_url("test", "ftp://x").unwrap_err().to_string();
+        assert!(err.contains("must be an http:// or https:// URL"), "expected error: {err}");
+    }
+
+    #[test]
+    fn parse_relay_url_rejects_garbage() {
+        let err = parse_relay_url("test", "not a url").unwrap_err().to_string();
+        assert!(err.contains("test = \"not a url\""), "expected error: {err}");
+    }
+
+    #[test]
+    fn parent_relay_url_is_none_without_url() {
+        let config = IrohParentConfig { url: None };
+        assert_eq!(parent_relay_url(&config).unwrap(), None);
+    }
 }

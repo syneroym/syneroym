@@ -5,8 +5,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use iroh::EndpointAddr;
+use iroh::{EndpointAddr, RelayUrl};
+use syneroym_control_plane::ControlPlaneService;
 use syneroym_core::{
+    config::SubstrateConfig,
     dht_registry::{
         DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
         HEARTBEAT_INTERVAL_SECS, RegistryClient, SignedEndpointInfo,
@@ -15,11 +17,17 @@ use syneroym_core::{
     local_registry::EndpointRegistry,
 };
 use syneroym_identity::Identity;
+use syneroym_router::ConnectionRouter;
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     time,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+async fn replay_hosted(publisher: &EndpointPublisher) {
+    publisher.publish_all_services().await;
+    publisher.warn_on_near_expiry_records().await;
+}
 
 /// One heartbeat pass's worth of work: (re-)register this substrate's own
 /// endpoint record, then replay every hosted service's still-verifying
@@ -35,9 +43,22 @@ pub(super) async fn publish_self_and_hosted(
     registry_client: &RegistryClient,
     publisher: &EndpointPublisher,
 ) -> anyhow::Result<()> {
-    let signed_info =
-        build_signed_endpoint_info(service_id, endpoint_addr, relay_url, secret_key, nickname)
-            .map_err(|e| anyhow::anyhow!("failed to build signed endpoint info: {e}"))?;
+    let Some(relay_url) = relay_url else {
+        debug!("no confirmed home relay yet; not publishing this substrate's endpoint record");
+        replay_hosted(publisher).await;
+        return Err(anyhow::anyhow!(
+            "this substrate has no home relay yet, so its endpoint record was not published"
+        ));
+    };
+
+    let signed_info = build_signed_endpoint_info(
+        service_id,
+        endpoint_addr,
+        Some(relay_url),
+        secret_key,
+        nickname,
+    )
+    .map_err(|e| anyhow::anyhow!("failed to build signed endpoint info: {e}"))?;
 
     let mut attempts = 0;
     let mut success = false;
@@ -64,8 +85,7 @@ pub(super) async fn publish_self_and_hosted(
     // Hosted services: replay every stored, still-verifying record
     // verbatim. The substrate holds no key that could ever sign one itself
     // (ADR-0020 §3), so this is pure replay, never a rebuild.
-    publisher.publish_all_services().await;
-    publisher.warn_on_near_expiry_records().await;
+    replay_hosted(publisher).await;
 
     if success {
         Ok(())
@@ -77,7 +97,7 @@ pub(super) async fn publish_self_and_hosted(
 pub(super) fn publish_to_community_registry(
     service_id: String,
     endpoint_addr: EndpointAddr,
-    relay_url: Option<String>,
+    mut relay_rx: watch::Receiver<Option<RelayUrl>>,
     secret_key: [u8; 32],
     nickname: Option<String>,
     publisher: Arc<EndpointPublisher>,
@@ -96,10 +116,13 @@ pub(super) fn publish_to_community_registry(
         // the caller's request going unanswered.
         let mut pending_reply: Option<oneshot::Sender<anyhow::Result<()>>> = None;
         loop {
+            // `borrow_and_update` marks the value seen, so the `changed` arm below
+            // fires only for a newer relay.
+            let relay_url = relay_rx.borrow_and_update().as_ref().map(ToString::to_string);
             let result = publish_self_and_hosted(
                 &service_id,
                 &endpoint_addr,
-                relay_url.clone(),
+                relay_url,
                 &secret_key,
                 nickname.clone(),
                 &registry_client,
@@ -116,9 +139,41 @@ pub(super) fn publish_to_community_registry(
             tokio::select! {
                 () = time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)) => {},
                 Some(reply) = force_rx.recv() => pending_reply = Some(reply),
+                // A new confirmed home relay: publish the record again now. If the
+                // sender is gone this pattern does not match, so the arm is
+                // disabled for this `select!` and cannot spin.
+                Ok(()) = relay_rx.changed() => {},
             }
         }
     });
+}
+
+/// Starts the heartbeat that publishes this substrate's own endpoint
+/// record. The heartbeat also runs on a forced republish request and when
+/// the home relay changes.
+pub(super) fn start_self_record(
+    config: &SubstrateConfig,
+    service_id: &str,
+    secret_key: [u8; 32],
+    router: &ConnectionRouter,
+    control_plane: &ControlPlaneService,
+    publisher: Arc<EndpointPublisher>,
+) {
+    let (Some(endpoint_addr), Some(home_relay)) = (router.endpoint_addr(), router.home_relay())
+    else {
+        return;
+    };
+    let (force_tx, force_rx) = mpsc::channel(4);
+    control_plane.set_republish_trigger(force_tx);
+    publish_to_community_registry(
+        service_id.to_string(),
+        endpoint_addr,
+        home_relay.subscribe(),
+        secret_key,
+        config.identity.nickname.clone(),
+        publisher,
+        force_rx,
+    );
 }
 
 /// The attended posture's visibility half (ADR-0020 §3): nothing here

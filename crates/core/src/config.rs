@@ -4,6 +4,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod access;
 pub mod base;
 pub mod roles;
 pub mod sandbox;
@@ -11,6 +12,7 @@ pub mod sandbox;
 #[cfg(test)]
 mod tests;
 
+pub use access::*;
 pub use base::*;
 pub use roles::*;
 pub use sandbox::*;

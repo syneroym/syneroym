@@ -157,7 +157,7 @@ bootstrap_page_bind_address = "0.0.0.0:${ports.cWebrtcBootPort}"
 http_port = ${ports.cGatewayPort}
 
 [substrate]
-communication_interfaces = ["webrtc", "iroh"]
+communication_interfaces = ["webrtc"]
 registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 `;
   fs.writeFileSync(path.join(TEST_DIR, 'c.toml'), configC);

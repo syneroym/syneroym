@@ -25,7 +25,7 @@ use reqwest::{Client, StatusCode};
 use rustls::crypto::ring;
 use serde_json::Value;
 use syneroym_core::{
-    config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
+    config::{ClientGatewayRole, LogTarget, SubstrateConfig},
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
     test_constants, util,
 };
@@ -235,8 +235,7 @@ impl SubstrateTestContext {
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
         config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
+        config.parent_coordinator.iroh.url = Some(format!("http://localhost:{iroh_port}"));
 
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });

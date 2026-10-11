@@ -253,7 +253,7 @@ Provider and Consumer are not substrate entities. They are the two roles of a pe
 
 *Note: connectivity works over IP networks: Iroh QUIC between nodes, and WebRTC for browsers. No BLE or LoRa transport exists. See the [Connectivity Substrate](#connectivity-substrate-in-heterogeneous-networks) section.*
 
-A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the relay and moves to a direct path when hole punching finds one. A substrate has one configured relay. It publishes the relay URL in its signed record so callers know which relay to use.
+A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the relay and moves to a direct path when hole punching finds one. An Iroh endpoint starts with an empty relay map and no hardcoded preset servers. When a home relay is configured, the node adds it to the map and waits for Iroh to confirm it via net-report probes. Once confirmed, it publishes the relay URL in its signed record so callers know which relay to use. Without a home relay, the node starts in degraded mode: it can dial peers through their relays, but peers cannot reach it through a relay, and its endpoint record is not published until a home relay is confirmed.
 
 ```mermaid
 flowchart TD
@@ -263,7 +263,7 @@ flowchart TD
     REG([Community registry])
     DHT([BEP 0044 DHT])
 
-    A -->|"1. Publish record: Iroh id and relay URL"| REG
+    A -->|"1. Publish record: Iroh id and confirmed relay URL"| REG
     A -.->|"1. Same record, when the DHT is enabled"| DHT
     B -->|"2. Look up the record: registry first, DHT second"| REG
 
@@ -277,7 +277,13 @@ flowchart TD
 
 ### Relay Node Architecture
 
-A coordinator runs an Iroh relay server when `[roles.coordinator.iroh]` sets `enable_relay = true`. The relay is the `iroh-relay` crate with its `server` feature. It helps two peers hole punch and carries their traffic when no direct path exists. It is open to every Iroh endpoint by default. `[roles.coordinator] access` can list the Iroh endpoint ids that are allowed instead. With `[roles.coordinator.tls]` set, the relay uses that certificate and key, and it also runs QUIC address discovery on `quic_bind_address`. Without that setting it does not run QUIC address discovery. The code gives the HTTPS listener of the relay and its plain HTTP probe listener the same `http_bind_address`. The relay library says these need different ports, so a fixed port may fail with address in use. No test covers relay TLS.
+A coordinator runs an Iroh relay server when `[roles.coordinator.iroh]` sets `enable_relay = true`. The relay is the `iroh-relay` crate with its `server` feature. It helps two peers hole punch and carries their traffic when no direct path exists. Relay access is controlled by `[roles.coordinator] access`:
+- `"everyone"` (default): open to any Iroh endpoint.
+- `"passport"`: requires an operator passport token (reserved for future release).
+- `[ "<endpoint_id>", ... ]`: admits only explicitly listed Iroh endpoint IDs.
+- `[ "passport", "<endpoint_id>", ... ]`: admits listed endpoint IDs or valid passport tokens.
+
+Passport variants are rejected at startup because passports are not yet enforced by the relay. With `[roles.coordinator.tls]` set, the relay uses that certificate and key, and it also runs QUIC address discovery on `quic_bind_address`. Without that setting it does not run QUIC address discovery. The code gives the HTTPS listener of the relay and its plain HTTP probe listener the same `http_bind_address`. The relay library says these need different ports, so a fixed port may fail with address in use. No test covers relay TLS.
 
 The relay carries QUIC traffic that is already encrypted between the two peers. It does not read it. It still sees which endpoints talk, and the size and timing of the traffic.
 
@@ -348,7 +354,8 @@ A substrate is given its relay by a fixed setting. Nothing chooses a relay for i
 
 | Setting | Default | What it does |
 |---|---|---|
-| `[parent_coordinator.iroh] url` | The section is absent by default. When the section is present without `url`: `http://localhost:7964`. | The relay of this substrate. A substrate builds an Iroh endpoint only when this section exists and `communication_interfaces` has `iroh`. `run --iroh-relay-url` sets it. |
+| `[parent_coordinator.iroh] url` | `None` | The home relay URL of this substrate. Optional. When omitted, the substrate runs in degraded mode without a home relay. `run --iroh-relay-url` sets it. |
+| `[roles.coordinator] access` | `"everyone"` | Access control for the relay: `"everyone"` or a list of Iroh endpoint IDs `[ "<id>", ... ]`. |
 | `[parent_coordinator.webrtc] signaling_url` | `ws://localhost:7963/ws` | The signalling server where the substrate registers. |
 | `[parent_coordinator.webrtc] stun_servers` | `["stun:stun.l.google.com:19302"]` | The STUN servers for WebRTC. The browser page has the same server written in `peer-proxy.js`. |
 | `[substrate] communication_interfaces` | `["iroh", "webrtc"]` | The transports the router starts. |

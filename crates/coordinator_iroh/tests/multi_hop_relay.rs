@@ -22,8 +22,7 @@ use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
 use syneroym_core::{
     asset_manifest::AssetRegistry,
     config::{
-        AccessControl, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig,
-        ServiceRegistryRole, SubstrateConfig,
+        AccessControl, CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig,
     },
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
@@ -358,7 +357,7 @@ async fn spawn_private_coordinator(
         }),
         ..Default::default()
     });
-    config_cp.parent_coordinator.iroh = Some(IrohParentConfig { url: c_relay_url.to_string() });
+    config_cp.parent_coordinator.iroh.url = Some(c_relay_url.to_string());
     let cp = CoordinatorIroh::init(&config_cp).await?;
     let cp_info_addr = cp.info_addr().unwrap();
 

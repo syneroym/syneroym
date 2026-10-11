@@ -120,3 +120,35 @@ fn test_resolve_paths_absolute_untouched() {
 
     assert_eq!(config.identity.key.unwrap(), Path::new(abs_path));
 }
+
+#[test]
+fn iroh_relay_url_is_none_without_the_section() {
+    let config = toml::from_str::<SubstrateConfig>("").unwrap();
+    assert_eq!(config.parent_coordinator.iroh.url, None);
+}
+
+#[test]
+fn iroh_relay_url_is_none_in_an_empty_section() {
+    let config = toml::from_str::<SubstrateConfig>("[parent_coordinator.iroh]\n").unwrap();
+    assert_eq!(config.parent_coordinator.iroh.url, None);
+}
+
+#[test]
+fn iroh_relay_url_is_read_from_the_section() {
+    let toml = r#"
+[parent_coordinator.iroh]
+url = "http://relay.example:7964"
+"#;
+    let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
+    assert_eq!(config.parent_coordinator.iroh.url.as_deref(), Some("http://relay.example:7964"));
+}
+
+#[test]
+fn old_coordinator_discovery_url_key_is_ignored() {
+    let toml = r#"
+[substrate]
+coordinator_discovery_url = "http://x"
+"#;
+    let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
+    assert!(config.substrate.communication_interfaces.contains(&"iroh".to_string()));
+}

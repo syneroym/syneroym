@@ -13,7 +13,7 @@ use std::{process::Command, time::Duration};
 use ed25519_dalek::VerifyingKey;
 use rustls::crypto::ring;
 use syneroym_core::{
-    config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
+    config::{ClientGatewayRole, LogTarget, SubstrateConfig},
     dht_registry::EndpointMechanism,
 };
 use syneroym_identity::{
@@ -97,8 +97,7 @@ impl SubstrateTestContext {
         let registry_url = format!("http://localhost:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
         config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://localhost:{iroh_port}") });
+        config.parent_coordinator.iroh.url = Some(format!("http://localhost:{iroh_port}"));
 
         // An unowned substrate now fails closed, so this
         // harness must own its own node.

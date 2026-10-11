@@ -35,10 +35,11 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig, LogTarget,
-    ServiceRegistryRole, SubstrateConfig, SupervisorRole,
+    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, LogTarget, ServiceRegistryRole,
+    SubstrateConfig, SupervisorRole,
 };
 use syneroym_identity::{Identity, substrate};
+use syneroym_router::HomeRelay;
 use syneroym_sdk::SyneroymClient;
 use syneroym_substrate::identity;
 use tempfile::TempDir;
@@ -88,6 +89,7 @@ pub struct NodeBuilder {
     shared_relay_url: Option<String>,
     supervisor: Option<SupervisorRole>,
     inject_kek: Option<[u8; 32]>,
+    skip_ready_wait: bool,
     configure: ConfigHook,
     inspect_identity: Option<IdentityHook>,
 }
@@ -104,9 +106,16 @@ impl NodeBuilder {
             shared_relay_url: None,
             supervisor: None,
             inject_kek: None,
+            skip_ready_wait: false,
             configure: Arc::new(|_| {}),
             inspect_identity: None,
         }
+    }
+
+    /// When true, `boot` does not wait for registry readiness before returning.
+    pub fn skip_ready_wait(mut self) -> Self {
+        self.skip_ready_wait = true;
+        self
     }
 
     /// Own this node with `owner` instead of a fresh random identity. The
@@ -247,7 +256,7 @@ impl NodeBuilder {
 
         let own_relay_url = format!("http://127.0.0.1:{}", self.ports.iroh);
         let relay_url = self.shared_relay_url.clone().unwrap_or(own_relay_url.clone());
-        config.parent_coordinator.iroh = Some(IrohParentConfig { url: relay_url });
+        config.parent_coordinator.iroh.url = Some(relay_url);
 
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: self.ports.gateway, ..Default::default() });
@@ -306,6 +315,7 @@ impl NodeBuilder {
         ]);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
+        let home_relay = runtime.connection_router.home_relay();
         let run_config = config.clone();
         let substrate_handle = tokio::spawn(async move {
             syneroym_substrate::run_with_signal(run_config, runtime, async {
@@ -324,13 +334,16 @@ impl NodeBuilder {
             _ => SyneroymClient::new(service_id.clone(), registry_url.clone()),
         }
         .with_registry_dht(false);
-        substrate_client
-            .wait_for_ready(Duration::from_secs(30))
-            .await
-            .expect("substrate did not become available in time");
 
-        if let Some(kek) = self.inject_kek {
-            substrate_client.inject_kek(hex::encode(kek)).await.expect("inject_kek failed");
+        if !self.skip_ready_wait {
+            substrate_client
+                .wait_for_ready(Duration::from_secs(30))
+                .await
+                .expect("substrate did not become available in time");
+
+            if let Some(kek) = self.inject_kek {
+                substrate_client.inject_kek(hex::encode(kek)).await.expect("inject_kek failed");
+            }
         }
 
         SubstrateNode {
@@ -341,6 +354,7 @@ impl NodeBuilder {
             registry_url,
             relay_url,
             owner,
+            home_relay,
             substrate_client,
             shutdown_tx,
             substrate_handle,
@@ -359,6 +373,7 @@ pub struct SubstrateNode {
     registry_url: String,
     relay_url: String,
     owner: Option<Arc<Identity>>,
+    home_relay: Option<HomeRelay>,
     /// The owner's client, dialed and proven live during boot. Absent only
     /// when the builder was told to skip it ([`NodeBuilder::unowned`] /
     /// [`NodeBuilder::no_owner_client`]) -- calling this then panics, which
@@ -371,6 +386,10 @@ pub struct SubstrateNode {
 impl SubstrateNode {
     pub fn builder() -> NodeBuilder {
         NodeBuilder::new()
+    }
+
+    pub fn home_relay(&self) -> &HomeRelay {
+        self.home_relay.as_ref().expect("substrate was built with a router")
     }
 
     /// This node's DID.

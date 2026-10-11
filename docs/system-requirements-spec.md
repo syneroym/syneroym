@@ -157,7 +157,7 @@ The following table lists key personas in the Syneroym ecosystem. A single perso
 
 **Federation.** The process by which independent providers and infrastructure nodes interoperate. They share discovery, reputation, and messaging capabilities without a central authority.
 
-**Home Relay / Coordinator Relay.** A coordinator relay endpoint configured at the substrate node level (`parent_coordinator.iroh.url`). It provides fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the relay connectivity of the substrate node rather than binding to individual relays.
+**Home Relay / Coordinator Relay.** A coordinator relay endpoint confirmed at the substrate node level (`parent_coordinator.iroh.url` or dynamic runtime assignment). It provides fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the relay connectivity of the substrate node rather than binding to individual relays. A substrate without a confirmed home relay operates in degraded mode.
 
 **Infrastructure Provider.** A person or organization that provides hardware or virtual infrastructure for Service Providers to host applications on a lease.
 
@@ -531,10 +531,9 @@ This section describes core Syneroym substrate functionality, key protocols, and
 - The substrate creates a protected node key on first run. Administrative ownership requires an offline claim step that produces a mutually signed `ControllerAgreement`. Routine administration uses revocable delegated credentials (`DelegationCertificate`, UCAN tokens) instead of exposing a root key.
   > **Envisioned.** Not built yet. Tested recovery method wizard before production use. Today initial node keys are initialized at boot and claimed offline.
 - The substrate connects to a relay:
-  - The substrate configures a static coordinator Iroh relay URL (`parent_coordinator.iroh.url`).
-    > **Envisioned.** Not built yet. Dynamic home relay assignment via bootstrap service.
-  - The substrate publishes signed endpoint information (`SignedEndpointInfo`) to the Community Registry and Mainline DHT via pkarr. This record contains its public key and relay routing details. The control plane and service deployment use this record.
-  - The substrate starts a secure communication server. The server listens through the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
+  - The substrate configures a home relay URL (`parent_coordinator.iroh.url`) or updates it dynamically at runtime. The endpoint starts with an empty relay map and confirms candidates via net-report probes before publishing.
+  - When confirmed, the substrate publishes signed endpoint information (`SignedEndpointInfo`) containing its confirmed relay URL to the Community Registry and Mainline DHT. When no home relay is configured, registration is deferred.
+  - The substrate listens through the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
 - The substrate identifies its capabilities (sandbox types and quota configurability). The node owner configures capability limits (CPU, memory, instruction fuel) for hosted services.
   > **Envisioned.** Not built yet. GPU allocation and dynamic disk quota enforcement.
 - Access control setup:
@@ -579,8 +578,8 @@ Substrate nodes boot in an unowned state. They fail closed on privileged operati
 ### Relay
 
 - Acts as a coordination server for direct peer connections using UDP hole punching.
-- Acts as an encrypted TCP data relay through embedded `iroh-relay` when direct connections fail (due to blocked UDP, symmetric NAT, or CGNAT).
-- Substrates connect to a statically configured coordinator relay URL (`parent_coordinator.iroh.url`). They publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Hosted services inherit this relay connectivity from their substrate.
+- Acts as an encrypted TCP data relay through embedded `iroh-relay` when direct connections fail (due to blocked UDP, symmetric NAT, or CGNAT). Access is controlled by `[roles.coordinator] access` (`"everyone"`, or a list of allowed Iroh endpoint IDs).
+- Substrates connect to a home relay URL (`parent_coordinator.iroh.url` or dynamic update). When confirmed, they publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Hosted services inherit this relay connectivity from their substrate.
   > **Envisioned.** Not built yet. A WebRTC TURN relay server, dynamic bootstrap relay registration, and `<relaynodeid>.syneroym.net` DNS subdomains. Today relays do not provide TURN; browser clients connect through the Client Gateway HTTP proxy or WebRTC data channels with HTTP/WebSocket signaling.
 
 ### Bootstrap
