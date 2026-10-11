@@ -279,6 +279,12 @@ impl NodeBuilder {
     }
 
     async fn boot_at(self, base_path: PathBuf, temp_dir: Option<TempDir>) -> SubstrateNode {
+        assert!(
+            !(self.skip_ready_wait && self.inject_kek.is_some()),
+            "skip_ready_wait cannot be combined with inject_kek because KEK injection requires an \
+             active connection"
+        );
+
         let (mut config, registry_url, relay_url) = self.build_config(&base_path);
 
         let owner: Option<Arc<Identity>> = if self.own_node || self.make_owner_client {
@@ -334,12 +340,6 @@ impl NodeBuilder {
             _ => SyneroymClient::new(service_id.clone(), registry_url.clone()),
         }
         .with_registry_dht(false);
-
-        assert!(
-            !(self.skip_ready_wait && self.inject_kek.is_some()),
-            "skip_ready_wait cannot be combined with inject_kek because KEK injection requires an \
-             active connection"
-        );
 
         if !self.skip_ready_wait {
             substrate_client
