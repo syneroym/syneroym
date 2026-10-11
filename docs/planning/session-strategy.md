@@ -20,8 +20,11 @@ All strategic planning artifacts must live directly in the repository to guarant
 
 ```text
 docs/planning/
-├── meta-implementation-plan.md
+├── roadmap.md                  # build order and status, one row per milestone
+├── meta-implementation-plan.md # closed 2026-10-11, history only
 ├── traceability-matrix.md
+├── changes/
+│   └── <feature>/change.md     # one per feature
 └── milestones/
     ├── M01-local-app-model/
     │   ├── task.md
@@ -39,11 +42,11 @@ M00 predates this task/status convention and lives as flat `m0-task.md` / `m0-st
 Do not ask one session to implement an entire milestone. The phases remain requirement groupings; the milestones dictate the implementation order.
 
 We use three levels of granularity:
-1. **Meta-plan:** One permanent roadmap for the whole program (`meta-implementation-plan.md`).
-2. **Milestone plan:** A detailed `task.md` created before implementing that milestone.
+1. **Roadmap:** One permanent index of milestones, in build order (`roadmap.md`). It grows by one row per milestone and holds no design.
+2. **Milestone plan:** A detailed `task.md` created before implementing that milestone. Each feature in the milestone also has its own change doc under `changes/`.
 3. **Implementation slice:** One agent session per small, independently verifiable slice.
 
-*Example slicing for Milestone 1 (illustrative only — see `meta-implementation-plan.md` for the actual milestone list and slice breakdown):*
+*Example slicing for Milestone 1 (illustrative only — see `roadmap.md` for the actual milestone list, and each milestone's `task.md` for its slices):*
 - M1A: Domain types and versioned manifest
 - M1B: Pure manifest compiler and dependency graph
 - M1C: Registry abstractions and logical resolver
@@ -60,7 +63,7 @@ Each slice should be small enough to review as one coherent change.
 Follow this strict sequence for every milestone:
 
 ```text
-Meta-plan
+Roadmap
   → Milestone Planning Session
   → Slice Implementation Session
   → Review/Fix Sessions (different tool than the implementer)
@@ -72,7 +75,7 @@ Meta-plan
 Open a new session, in either tool. Ask it to inspect the codebase and produce `task.md`.
 
 **Prompt Template:**
-> We are beginning Milestone 1 from `docs/planning/meta-implementation-plan.md`.
+> We are beginning Milestone 1 from `docs/planning/roadmap.md`.
 >
 > Read AGENTS.md, the requirements and architecture documents, the traceability matrix, decision register, and current implementation.
 >
@@ -134,7 +137,7 @@ You can retain **one** lightweight session, in either tool, purely for roadmap-l
 - What is blocked?
 - Which ADR is unresolved?
 - Is the next slice safe to start?
-- Does new information require updating the meta-plan?
+- Does new information require updating the roadmap?
 
 **Avoid implementing code in this session.** Its job is navigation and high-level tracking, not construction.
 

@@ -364,3 +364,51 @@ both. So `AuthNormalizer` and `DidKeyNormalizer` are **deleted** in slice
 C1.1 (`D-06C-1.1-9`), and this ADR no longer requires a normalizer seam. The
 external-provider slice designs its own interface against ADR-0024 §4c when
 it has a real second implementation to design against.
+
+### A10. Operator passports: two abilities, two selectors, signed use limits
+
+**Added 2026-10-11.** An operator passport is a `CapabilityToken` that admits a
+user to an infrastructure service of the operator: a home relay or a dedicated
+mailbox. The flow is specified in the change docs
+[operator-passport](../planning/changes/operator-passport/change.md) and
+[service-mailbox](../planning/changes/service-mailbox/change.md). This
+amendment adds only what the token model needs.
+
+1. **Two platform abilities.** `relay/home` (use this relay as the home relay)
+   and `mailbox/use` (keep a mailbox queue here). Each is flat: neither entails
+   the other, and neither entails or is entailed by a `data-layer` ability.
+   `substrate/admin` still entails both (§1). But the service does not accept
+   entailment for the passport itself: the passport's capability must name the
+   ability and the selector of point 2 exactly. A node admin token is therefore
+   never a passport.
+2. **Two selectors.** `substrate:<node_did>/relay` and
+   `substrate:<node_did>/mailbox`, in the selector form of A1. `<node_did>` is
+   always the node DID of the substrate that hosts the service, also when the
+   controller DID issued the passport. A passport names the selector. A
+   passport on the bare `substrate:<node_did>` is refused, because the bare form
+   covers every resource on the node.
+3. **Use limits are signed facts, not caveats.** A use limit such as "at most 3
+   nodes" needs a count of earlier registrations, which is a data lookup. A3
+   forbids a caveat that needs a data lookup. So the limits go in the token's
+   signed `facts`, and the operator's service checks them after `verify_chain`
+   succeeds. The service reads them **from the root token (the passport)
+   only**. It ignores facts in a child token, because `verify_chain` does not
+   compare facts between tokens, and a child could otherwise widen a limit.
+   Reserved keys:
+
+   | Key | Ability | Meaning |
+   | --- | --- | --- |
+   | `max_nodes` | `relay/home` | Distinct node keys that may hold a lease under this passport |
+   | `max_services` | `mailbox/use` | Distinct member master DIDs that may hold a queue under this passport |
+   | `max_bytes` | `mailbox/use` | Bytes per queue |
+   | `max_messages` | `mailbox/use` | Messages per queue |
+   | `max_ttl_secs` | `mailbox/use` | Longest message time-to-live, in seconds |
+
+   A missing key means the open limit of the service applies.
+4. **Accepted roots.** The service accepts a passport whose root issuer is the
+   controller of its host substrate, or the host node DID when the substrate
+   has no controller. This is a per-service root set, in the spirit of A6. It is
+   not the node-wide `admin_ucan_root`.
+5. **Passport id.** `token_id` is the SHA-256 of the canonical signed body of
+   the passport (the bytes its signature covers). Deny lists and use counts key
+   on it.

@@ -2,7 +2,9 @@
 
 ## Status
 Proposed — **amended 2026-08-13**: Decision 6's MLS choice is replaced by an
-owner-distributed group key. See *Amendment 1* below. Decision 5's ordering rule
+owner-distributed group key. See *Amendment 1* below. **Amended 2026-10-10**: Decision 3 and
+Decision 4 allow an opt-in mailbox chosen by the receiver. See *Amendment 2* and
+[ADR-0026](0026-receiver-chosen-mailbox.md). Decision 5's ordering rule
 is unaffected and still stands. **Amended 2026-10-02**: Inbound admission, deletion,
 search, and history export ownership are defined in [ADR-0025](0025-conversation-capability-owns-history.md).
 
@@ -101,6 +103,26 @@ rekeying bounds that exposure instead of removing it.
 remains available later — for very large groups, or for interoperability with
 other MLS clients — as a replacement of that one module rather than a redesign.
 Tracked in [deferred-backlog.md](../planning/deferred-backlog.md) §5.
+
+## Amendment 2 (2026-10-10): Opt-in Receiver-Chosen Mailbox
+
+Decision 3 said that no third party holds a 1-to-1 message, and Decision 4 said
+that a group uses no external storage. Mobile receivers are asleep most of the
+time, and a sender may be asleep when the receiver wakes. Then no overlap
+exists and the message is never delivered.
+
+A service may now name one **mailbox** in its signed service record. A mailbox
+holds only sealed messages (ciphertext), for a limited time, for that service.
+It never sees the content, the interface or the method. The rest of Decisions 3
+and 4 stands: delivery is direct first, ordering is unchanged, and a service
+with no mailbox behaves as before. For groups, a member's mailbox may hold the
+sealed pushes meant for that member. Missed entries are still recovered by sync
+between members.
+
+The reasons, the limits and the trade-offs are in
+[ADR-0026](0026-receiver-chosen-mailbox.md).
+
+This amendment takes effect when ADR-0026 is accepted.
 
 ## Consequences
 
