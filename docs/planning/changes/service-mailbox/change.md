@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 living-docs-touched:
 ---
 # Service mailbox
@@ -154,9 +154,11 @@ A renewed instance certificate lasts 4 hours (`crates/core/src/config/roles.rs`)
 The sender builds two parts.
 
 - Outer, for the mailbox: destination, a random `deposit_id`, size, time-to-live. The sender is not a field. The mailbox reads it from the verified identity. The outer id is random, not the idempotency key: Conversation ids come from the content, and a mailbox could confirm a guessed message by its id.
-- Inner, sealed to the mailbox key with an anonymous sealed box (a fresh key for each message; the inner signature gives the authenticity): `interface`, `method`, `params`, the idempotency key, the sender's instance certificate, and a sender signature over the destination, the idempotency key, the payload hash and the send time. The signature covers the send time, which R-4 depends on.
+- Inner, sealed to the mailbox key with HPKE ([RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)) in base mode, which uses a fresh key for each message (the inner signature gives the authenticity): `interface`, `method`, `params`, the idempotency key, the sender's instance certificate, and a sender signature over the destination, the idempotency key, the payload hash and the send time. The signature covers the send time, which R-4 depends on.
 
-The receiver checks the inner signature and the certificate after it opens the message (R-4). The mailbox cannot change the content without breaking the signature. The crate for the sealed box is an open item.
+The receiver checks the inner signature and the certificate after it opens the message (R-4). The mailbox cannot change the content without breaking the signature.
+
+**Sealing algorithm.** HPKE base mode with `DHKEM(X25519, HKDF-SHA256)`, `HKDF-SHA256` and `AES-256-GCM`, from the `hpke` crate. The HPKE `info` is a fixed domain tag, `syneroym-mailbox-v1`. Reasons: X25519 is already in the build through `vodozemac`; the key is 32 bytes; HPKE is a standard with test vectors, so we do not write our own key derivation. Rejected: our own X25519 + HKDF + AES-GCM composition (no outside test vectors), and P-256 ECDH like the router stream handshake (that code is an interactive handshake, not a sealed box, and P-256 only helps browser senders, which a mailbox never has). *Unverified:* the `curve25519-dalek` and `rand_core` versions that `hpke` needs fit the workspace pins. If they do not, use our own composition and test it against the RFC 9180 test vectors.
 
 Conversation payloads are already encrypted end to end. We seal them again anyway. One format is simpler, and the mailbox then never sees the method name.
 
@@ -188,7 +190,7 @@ An identity costs nothing to make, so a per-sender share is only a weak limit. T
 
 ### Dedicated mailbox and passport
 
-The passport is the token from [operator-passport](../operator-passport/change.md). The operator is the controller of the mailbox's host substrate, or its node DID. The audience is the owner DID of the service. The owner re-delegates it as a child token whose audience is the **member master DID**, which stays the same when the service moves. The instance proves its link to the master with its existing service-instance `DelegationCertificate`, which the transport already checks. The key that signs the challenge is the instance key.
+The passport is the token from [operator-passport](../operator-passport/change.md). The operator is the controller of the mailbox's host substrate, or its node DID. The audience is the owner DID of the service. The owner re-delegates it as a child token whose audience is the **member master DID**, which stays the same when the service moves. The instance proves its link to the master with its existing service-instance `DelegationCertificate`, which the transport already checks. There is no challenge. `register` is a native call over Iroh, and the transport has already checked the instance key and its certificate (M-2, M-3). The passport core takes that verified key as the proof of possession (its transport form), and the instance certificate is the signer binding. The passport lease lasts at most 30 days, the same as the queue lifetime. The receiver renews it each time it registers, so the queue keeps its raised quota while it lives.
 
 Ability `mailbox/use` on `substrate:<host node did>/mailbox`. Facts: `max_bytes`, `max_messages`, `max_ttl_secs`, `max_services`. The facts raise the quotas of that queue.
 
@@ -227,9 +229,8 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 
 ## Open questions
 
-- Which part of the control-plane deploy call carries the mailbox private key, and is the vault the right place to keep it?
-- Where is mailbox eligibility declared for a guest method: the app manifest, or the WIT interface? Find where `idempotency_key` and queued-call rules are declared.
-- Which crate gives the sealed box? Prefer one already in the workspace.
+- Which part of the control-plane deploy call carries the mailbox private key, and is the vault the right place to keep it? Resolve before the record-and-keys task. Design the field with room for the owner's child token of a dedicated mailbox, so that task does not change the deploy call again.
+- Where is mailbox eligibility declared for a guest method: the app manifest, or the WIT interface? Find where `idempotency_key` and queued-call rules are declared. Resolve before the sender task.
 - Does the substrate know it was woken (for `pull-now`) on mobile, or does the shell call it?
 - Time-to-live, size and rate values above are starting points. Confirm after a first test.
 

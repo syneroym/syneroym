@@ -62,7 +62,7 @@ slice is `mise run verify` (see `AGENTS.md`).
 
 | Order | ID | Milestone | Status | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | M06D | Reachability and deferred delivery: registry-listed relays, operator passport, service mailbox | planning | Next. |
+| 1 | M06D | Reachability and deferred delivery: registry-listed relays, operator passport, service mailbox | planning | Next. [Folder](milestones/M06D-reachability-and-deferred-delivery/). |
 | 2 | M8 | Federation and trust | sketched | [Sketch](meta-implementation-plan.md#milestone-8-federation-and-trust). Moved ahead of M7. |
 | 3 | M9 | AI concierge (M9A agentic foundations, M9B advanced orchestration) | sketched | [Sketch](meta-implementation-plan.md#milestone-9-expansion-track---ai-concierge). Moved ahead of M7. |
 | 4 | M10 | Mobile edge | sketched | [Sketch](meta-implementation-plan.md#milestone-10-expansion-track---mobile-edge). Moved ahead of M7. Builds on the M06D mailbox, which serves sleeping phones. |

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: approved
 living-docs-touched:
 ---
 # Registry-listed coordinators
@@ -99,6 +99,8 @@ Resolution order for the Iroh transport:
 
 **Boot and runtime change.** Today the endpoint is built once with a fixed relay (`crates/router/src/connection_router.rs:81`), and the relay URL in the published record is read once (`crates/substrate/src/runtime/router.rs:220`). The change: the substrate boots with the saved choice, or with an empty relay map, and resolves in a background task. When a relay is chosen or changed, the task calls `Endpoint::insert_relay` and `remove_relay` (both exist in iroh 0.97) and publishes the record again.
 
+**Home-relay handle.** The router builds the endpoint with an empty relay map and exposes a handle that inserts and removes the home relay. The record publisher reads the relay URL from a `watch` channel, and the existing republish trigger (`set_republish_trigger`) publishes again when it changes. A fixed `url` goes through the same handle: it is inserted at boot, so there is one code path. The source of the home relay is one enum, for example `HomeRelaySource::{Fixed { url }, Registry}`. The [operator-passport](../operator-passport/change.md) change adds a registration step to `Fixed` (register, then insert the relay), so the handle must allow a step before the insert.
+
 **Ranking.** Rendezvous hashing: when the list changes, only the substrates whose choice was removed move. The sorted order is also the failover order.
 
 **Opt-out.** There is no new flag. To run without Iroh, remove `iroh` from `communication_interfaces`. A config with no `[parent_coordinator.iroh]` section used to mean "no Iroh endpoint". After this change it means "resolve from the registry". Test configs that rely on the old meaning must be checked. The dev profile (no `--config`) gets its `localhost` relay from `Default` today. Write it into the dev profile explicitly once `url` is optional.
@@ -123,13 +125,16 @@ Resolution order for the Iroh transport:
 
 ## Open questions
 
-- Which crate owns the resolve-and-cache code: `crates/router`, `crates/substrate`, or a small new module in `crates/core`? The reads of `parent_coordinator.iroh.url` are in `connection_router.rs:81`, `runtime/router.rs:220`, `route_handler.rs:370`, and both coordinator roles.
 - Does the list entry need `bootstrap_url` for the later WebRTC work? Not for this version.
+
+Decided 2026-10-11:
+
+- **Crate homes.** The ranking helper, the URL normaliser and the list wire types go in `crates/core`, because the registry, the router, the SDK and `roymctl` all depend on it, and the [service-mailbox](../service-mailbox/change.md) change reuses them for `--mailbox auto`. The list endpoint and its parent forwarding go in `crates/community_registry`, written generic over the entry type, so the mailbox list is a second instance. The resolve-and-cache task goes in `crates/substrate`, which owns the endpoint handle and the record publisher. The reads of `parent_coordinator.iroh.url` today are in `connection_router.rs:81`, `runtime/router.rs:220`, `route_handler.rs:370`, and both coordinator roles.
 
 ## Tasks
 
 - [ ] Run degraded mode once (empty relay map, then `insert_relay`) and record the result here.
-- [ ] Config: make `url` optional, remove `coordinator_discovery_url`, add the registry `coordinators` list and its checks (URL normalisation, duplicates).
+- [ ] Config: make `url` optional, remove `coordinator_discovery_url`, add the registry `coordinators` list and its checks (URL normalisation, duplicates). Parse `[roles.coordinator] access` strictly, in the final shape from [operator-passport](../operator-passport/change.md) (H-6), because an unknown value opens the relay to everyone today and the list relies on `access = "everyone"` being exact.
 - [ ] Registry: `GET /coordinators` and parent forwarding with a hop limit.
 - [ ] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
 - [ ] Substrate: background resolve, rank, cache, fail over, degraded mode, relay switch at run time, publish the record again.
