@@ -32,14 +32,16 @@ understand the current system. The living docs are the source for that.
 | Doc | What it is | How to use it |
 | --- | --- | --- |
 | [decisions/](decisions/) (ADRs) | The permanent record of one decision and its reason | Read them. Link them from anywhere. |
-| [planning/meta-implementation-plan.md](planning/meta-implementation-plan.md) | Roadmap and order of the large pieces of work | Read it to see what is planned. |
+| [planning/roadmap.md](planning/roadmap.md) | Build order and status of the milestones, one row each | Read it to see what is planned. Add a row when you propose a milestone. |
+| [planning/meta-implementation-plan.md](planning/meta-implementation-plan.md) | The old roadmap with milestone sketches. Closed 2026-10-11. | History. The roadmap links to the sketches that are still planned. |
 | [planning/milestones/](planning/milestones/) | Plans and progress logs (`task.md`, `status.md`, slice plans) for large efforts built from many features. The structure varies between folders, because it grew over time. | History. Do not copy the format. Do not trust `status.md` for the current state of the system. |
 | [planning/changes/](planning/changes/) | The change doc for one feature | Use the [template](planning/templates/change-doc.md). |
 | [planning/deferred-backlog.md](planning/deferred-backlog.md) | What we postponed, with the reason | Update it when you postpone something. |
 | [planning/session-strategy.md](planning/session-strategy.md) | How agent sessions are organized | Read it before planning a milestone. |
 
 **One feature** gets a change doc under `planning/changes/`.
-**A group of features planned together** gets a milestone folder as an umbrella.
+**A group of features planned together** gets a milestone folder as an umbrella,
+and one row in [planning/roadmap.md](planning/roadmap.md).
 It holds the scope and the order of the work. Each feature in it still gets its
 own change doc. Existing milestone folders stay as they are.
 

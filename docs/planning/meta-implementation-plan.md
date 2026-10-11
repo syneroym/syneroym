@@ -1,5 +1,13 @@
 # Syneroym Meta-Implementation Plan
 
+> **Closed on 2026-10-11.** This file is history. Do not add to it. The build
+> order and the status of every milestone are now in [roadmap.md](roadmap.md),
+> one row for each milestone. A new milestone gets its plan in its own folder
+> under `milestones/`. The sketches below for M5 (rest), M7, M8, M9, M10 and
+> the later-phase additions are still the starting point for those
+> milestones; the roadmap links to them. The roadmap's order replaces the
+> order in this file.
+
 This document provides a high-level strategic roadmap for implementing the Post-DD864A1 architecture. It takes the pending items described across Phase 0 to Phase 7 and reorganizes them into logical, sequentially buildable **Milestones (Epics)**. 
 
 There is no single "MVP" boundary or distinct "Pilot" launch. Instead, we build features phase by phase, treating every phase as its own incremental pilot that delivers immediate end-to-end value. This meta-plan avoids dependency cycles by slicing deep architectural features (like Security and Data) across multiple milestones. It emphasizes the "walking skeleton" principle by growing a reference SynApp (Professional Services Guild) through every milestone to prove out the infrastructure.
