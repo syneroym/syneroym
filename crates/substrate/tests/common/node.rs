@@ -335,6 +335,12 @@ impl NodeBuilder {
         }
         .with_registry_dht(false);
 
+        assert!(
+            !(self.skip_ready_wait && self.inject_kek.is_some()),
+            "skip_ready_wait cannot be combined with inject_kek because KEK injection requires an \
+             active connection"
+        );
+
         if !self.skip_ready_wait {
             substrate_client
                 .wait_for_ready(Duration::from_secs(30))

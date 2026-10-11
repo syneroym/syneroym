@@ -1,7 +1,8 @@
-//! Runtime tests for Iroh endpoint relay map behavior.
+//! Runtime tests for Iroh endpoint relay map and HomeRelay behavior.
 //!
-//! Verifies dynamic relay insertion, removal, home relay selection, and
-//! relay-assisted connectivity for endpoints configured with empty relay maps.
+//! Verifies dynamic relay insertion, removal, home relay selection, rollback,
+//! and relay-assisted connectivity for endpoints configured with empty relay
+//! maps.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -10,7 +11,8 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, TransportAddr,
 };
 use iroh_relay::server::{AccessConfig, RelayConfig as ServerRelayConfig, Server, ServerConfig};
-use tokio::{task::JoinHandle, time};
+use syneroym_router::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
+use tokio::{net::TcpListener, task::JoinHandle, time};
 
 const ALPN: &[u8] = b"syneroym-test/relay-map/0";
 const WAIT: Duration = Duration::from_secs(10);
@@ -215,5 +217,156 @@ async fn two_relays_in_map_home_relay_list() -> Result<()> {
     }
 
     a.close().await;
+    Ok(())
+}
+
+/// A listener on 127.0.0.1:0 that accepts TCP but never answers.
+async fn dead_relay() -> Result<(TcpListener, RelayUrl)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.context("failed to bind dead relay")?;
+    let port = listener.local_addr()?.port();
+    let url: RelayUrl =
+        format!("http://127.0.0.1:{port}").parse().context("parse dead relay url")?;
+    Ok((listener, url))
+}
+
+#[tokio::test]
+async fn inserting_new_relay_then_removing_old_moves_home_relay() -> Result<()> {
+    let (_relay_server_1, r1) = spawn_relay().await?;
+    let (_relay_server_2, r2) = spawn_relay().await?;
+    let a = bind_empty().await?;
+
+    a.insert_relay(r1.clone(), Arc::new(RelayConfig { url: r1.clone(), quic: None })).await;
+    let observed_r1 = wait_for_relays(&a, |r| r == [r1.clone()]).await;
+    assert_eq!(observed_r1, vec![r1.clone()]);
+
+    a.insert_relay(r2.clone(), Arc::new(RelayConfig { url: r2.clone(), quic: None })).await;
+    a.remove_relay(&r1).await;
+
+    let observed_r2 = wait_for_relays(&a, |r| r == [r2.clone()]).await;
+    assert_eq!(observed_r2, vec![r2.clone()]);
+
+    let b = bind_empty().await?;
+    let echo_handle = spawn_echo(a.clone());
+    dial_via_relay_only(&b, a.id(), &r2).await?;
+    echo_handle.await??;
+
+    a.close().await;
+    b.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_relay_set_confirms_relay_and_updates_watch() -> Result<()> {
+    let (_relay_server_1, r1) = spawn_relay().await?;
+    let a = bind_empty().await?;
+    let handle = HomeRelay::new(a.clone(), HOME_RELAY_CONFIRM_TIMEOUT);
+    let mut rx = handle.subscribe();
+
+    handle.set(r1.clone()).await?;
+    assert!(rx.has_changed()?);
+    assert_eq!(*rx.borrow_and_update(), Some(r1.clone()));
+
+    let relays: Vec<RelayUrl> = a.addr().relay_urls().cloned().collect();
+    assert_eq!(relays, vec![r1.clone()]);
+
+    let b = bind_empty().await?;
+    let echo_handle = spawn_echo(a.clone());
+    dial_via_relay_only(&b, a.id(), &r1).await?;
+    echo_handle.await??;
+
+    handle.set(r1.clone()).await?;
+    assert!(!rx.has_changed()?);
+
+    a.close().await;
+    b.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_relay_switch_moves_home_relay_and_updates_watch() -> Result<()> {
+    let (_relay_server_1, r1) = spawn_relay().await?;
+    let (_relay_server_2, r2) = spawn_relay().await?;
+    let a = bind_empty().await?;
+    let handle = HomeRelay::new(a.clone(), HOME_RELAY_CONFIRM_TIMEOUT);
+    let mut rx = handle.subscribe();
+
+    let start_1 = time::Instant::now();
+    handle.set(r1.clone()).await?;
+    let elapsed_1 = start_1.elapsed();
+    eprintln!("First set(r1) confirm time: {elapsed_1:?}");
+
+    let start_2 = time::Instant::now();
+    handle.set(r2.clone()).await?;
+    let elapsed_2 = start_2.elapsed();
+    eprintln!("Switch set(r2) confirm time: {elapsed_2:?}");
+
+    assert_eq!(*rx.borrow_and_update(), Some(r2.clone()));
+    let relays: Vec<RelayUrl> = a.addr().relay_urls().cloned().collect();
+    assert_eq!(relays, vec![r2.clone()]);
+
+    let b = bind_empty().await?;
+    let echo_handle = spawn_echo(a.clone());
+    dial_via_relay_only(&b, a.id(), &r2).await?;
+    echo_handle.await??;
+
+    a.close().await;
+    b.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_relay_switch_to_a_dead_relay_rolls_back() -> Result<()> {
+    let (_relay_server_1, r1) = spawn_relay().await?;
+    let (_dead_listener, dead) = dead_relay().await?;
+    let a = bind_empty().await?;
+    let handle = HomeRelay::new(a.clone(), HOME_RELAY_CONFIRM_TIMEOUT);
+    let mut rx = handle.subscribe();
+
+    handle.set(r1.clone()).await?;
+    assert_eq!(*rx.borrow_and_update(), Some(r1.clone()));
+
+    let res = handle.set(dead).await;
+    assert!(matches!(res, Err(HomeRelayError::NotConfirmed { .. })));
+    assert_eq!(*rx.borrow_and_update(), Some(r1.clone()));
+
+    let relays: Vec<RelayUrl> = a.addr().relay_urls().cloned().collect();
+    assert_eq!(relays, vec![r1.clone()]);
+
+    let b = bind_empty().await?;
+    let echo_handle = spawn_echo(a.clone());
+    dial_via_relay_only(&b, a.id(), &r1).await?;
+    echo_handle.await??;
+
+    a.close().await;
+    b.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_relay_set_after_a_rolled_back_switch_works() -> Result<()> {
+    let (_relay_server_1, r1) = spawn_relay().await?;
+    let (_relay_server_2, r2) = spawn_relay().await?;
+    let (_dead_listener, dead) = dead_relay().await?;
+    let a = bind_empty().await?;
+    let handle = HomeRelay::new(a.clone(), HOME_RELAY_CONFIRM_TIMEOUT);
+    let mut rx = handle.subscribe();
+
+    handle.set(r1.clone()).await?;
+    let res = handle.set(dead).await;
+    assert!(matches!(res, Err(HomeRelayError::NotConfirmed { .. })));
+
+    handle.set(r2.clone()).await?;
+    assert_eq!(*rx.borrow_and_update(), Some(r2.clone()));
+
+    let relays: Vec<RelayUrl> = a.addr().relay_urls().cloned().collect();
+    assert_eq!(relays, vec![r2.clone()]);
+
+    let b = bind_empty().await?;
+    let echo_handle = spawn_echo(a.clone());
+    dial_via_relay_only(&b, a.id(), &r2).await?;
+    echo_handle.await??;
+
+    a.close().await;
+    b.close().await;
     Ok(())
 }

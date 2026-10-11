@@ -160,9 +160,10 @@ http_bind_address = "0.0.0.0:7961"
 [roles.coordinator]
 # Access control for the coordinator relay service:
 # - "everyone" (default): any peer may use this relay
-# - "passport": requires an operator passport token
-# - [ "did:key:...", ... ]: admits only explicitly listed node DIDs
-# - [ "passport", "did:key:...", ... ]: admits listed node DIDs or valid passport tokens
+# - [ "<endpoint_id>", ... ]: admits only explicitly listed Iroh endpoint IDs
+# - "passport": reserved for operator passports; stops the coordinator today
+# - { list = [ "<endpoint_id>", ... ], passport = true }: reserved; stops the coordinator today
+# Any other value is a config error and stops startup.
 access = "everyone"
 
 # TLS configuration for coordinator HTTPS/WSS endpoints

@@ -178,3 +178,6 @@ impl CoordinatorWebRtc {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -81,6 +81,12 @@ impl HomeRelay {
 
     /// Makes `url` the home relay.
     ///
+    /// # Cancellation
+    /// If the returned future is dropped while waiting for confirmation (such
+    /// as during a timeout or `select!`), no rollback runs. The new relay stays
+    /// in the map while the watch channel still names the old relay. Callers
+    /// should run `set` to completion without dropping the future.
+    ///
     /// # Errors
     /// `NotConfirmed` when iroh does not confirm the relay in time. A switch
     /// from a confirmed relay is then rolled back; a first relay stays in the

@@ -12,6 +12,7 @@ use rustls::{ServerConfig as RustlsServerConfig, crypto::ring};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use syneroym_core::config::{CoordinatorAccess, CoordinatorRole};
 use tokio::task;
+use tracing::warn;
 
 fn load_certs(filename: impl AsRef<Path>) -> Result<Vec<CertificateDer<'static>>> {
     let certs: Vec<_> = CertificateDer::pem_file_iter(filename.as_ref())
@@ -51,6 +52,12 @@ pub fn relay_access(access: &CoordinatorAccess) -> Result<AccessConfig> {
 }
 
 fn restricted_to(ids: &[String]) -> Result<AccessConfig> {
+    if ids.is_empty() {
+        warn!(
+            "[roles.coordinator] access is configured with an empty list; all endpoints will be \
+             denied access to this relay"
+        );
+    }
     let list = ids
         .iter()
         .map(|s| {
