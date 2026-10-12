@@ -10,37 +10,42 @@ Read these before you change anything:
 - `AGENTS.md`. All rules apply. The ones this slice touches most:
   `mise run verify` before you finish, the import clean-up pass, the
   living-docs close-out, the deferred backlog, no planning references in code
-  (no "M06D", "A3", "X7", "AC-6", "AC-17" in code, comments or test names; ADR
-  ids are fine), simple English in comments and docs, the 800-line file cap,
-  the 100-line function cap, and the module layout rule (`foo.rs` beside
-  `foo/`, never `mod.rs` under `src/`).
+  (no "M06D", "A3", "B2", "X7", "AC-6", "AC-17" in code, comments or test
+  names; ADR ids are fine), simple English in comments and docs, the 800-line
+  file cap, the 100-line function cap, and the module layout rule (`foo.rs`
+  beside `foo/`, never `mod.rs` under `src/`).
 - `docs/planning/milestones/M06D-reachability-and-deferred-delivery/task.md`:
   §1 (row X7), §3 (slices A3, A4 and B2). B2 adds passport routes to the same
   info server later; do not build them.
 - `docs/planning/changes/registry-listed-coordinators/change.md`: AC-6,
-  AC-17, the Tasks list and `## Deviations`.
-- This plan, §2 (the open decisions). **Confirm the four open decisions with
-  the user before you write code.** The plan is written with the recommended
-  answer for each one.
+  AC-17, the Tasks list, the "Note for Slice A4" lines and `## Deviations`.
+- `docs/planning/changes/operator-passport/change.md`: "Operator root" and
+  "Endpoints" (what B2 adds to the info server).
+- This plan, §2.
 
-**Branch.** A3 does not need A2's code, but A2 (`feat/m06d-a2-implementation`)
-is not merged into `main` yet, and both slices edit the same docs
-(`docs/system-architecture.md` config table, the change doc's Tasks and
-`## Deviations`, `status.md`, `docs/planning/deferred-backlog.md`).
+**Branch.** Work on `feat/m06d-a3-implementation`. It starts at the last A2
+commit `db1ceb3c` ("chore: move constant to appropriate place", on
+`feat/m06d-a2-implementation`) plus the commit that adds this plan. A2 is not
+merged into `main` yet. The code of this branch is the A2 code. Check this
+with:
 
-- If A2 is merged when you start: branch from `origin/main`.
-  ```bash
-  git fetch origin main
-  git checkout -b feat/m06d-a3-coordinator-info origin/main
-  ```
-- If A2 is not merged: branch from the A2 branch, so the doc edits do not
-  conflict. After A2 is squash-merged, move A3 onto `main` with
-  `git rebase --onto origin/main <last A2 commit>` (today the last A2 commit
-  is `59ab5c9f`).
+```bash
+git fetch origin
+git diff --stat origin/feat/m06d-a2-implementation HEAD -- crates apps xtask
+```
 
-Push with `git push -u origin feat/m06d-a3-coordinator-info`. Do not open a
-pull request unless the user asks. Commit messages follow the Conventional
-Commits and 50/72 rules in `AGENTS.md`.
+The diff must be empty. If A2 gets new commits, rebase A3 onto them first.
+After A2 is squash-merged into `main`, move A3 onto `main` with:
+
+```bash
+git fetch origin main
+git rebase --onto origin/main db1ceb3c feat/m06d-a3-implementation
+```
+
+(If A2 got more commits before its merge, use its last commit instead of
+`db1ceb3c`.) Push with `git push -u origin feat/m06d-a3-implementation`. Do
+not open a pull request unless the user asks. Commit messages follow the
+Conventional Commits and 50/72 rules in `AGENTS.md`.
 
 ### Terms used in this plan
 
@@ -48,141 +53,172 @@ Commits and 50/72 rules in `AGENTS.md`.
   Iroh coordinator that serves `GET /v1/info`. It has its own bind address
   (`info_http_bind_address`, or the relay port plus 10). It is built in
   `crates/coordinator_iroh/src/coordinator.rs` (`spawn_http_info_server`).
-- **Relay client.** An Iroh endpoint that holds an open connection to the
-  relay server of this coordinator. The coordinator's own endpoint is one,
-  when it uses its own relay as its home relay.
+- **Relay connection.** An open connection from an Iroh endpoint to the relay
+  server of this coordinator. One endpoint can hold more than one for a short
+  time (see step 3b).
 - **Router connection.** A Syneroym connection (ALPN `SYNEROYM_ALPN`) to the
-  coordinator's own endpoint. `max_connections` caps these. They are not relay
-  clients.
-- **Controller status.** The `identity.controller_status` field of
-  `/v1/info`. `verified` means the community registry returns this
-  coordinator's own endpoint record.
+  coordinator's own endpoint. `max_connections` caps these. They are not
+  relay connections.
+- **Coordinator DID.** `did:key` of the coordinator endpoint's Iroh key. The
+  key is made at random at every start (`build_iroh_endpoint`), so this DID
+  changes at every start. The coordinator registers its endpoint record in the
+  community registry under this DID.
+- **Host substrate.** The substrate process that runs the coordinator role. Its
+  node DID and its controller are the passport root (operator-passport change
+  doc, "Operator root"). The coordinator code does not know them today.
 
 ## 1. What this slice delivers
 
 1. `crates/core`: a new module `coordinator_info` with the `/v1/info` wire
-   types, moved from `crates/coordinator_iroh`, with typed `status` and
-   `controller_status` enums and the new relay client fields. A4 (in
-   `crates/substrate`) reads this answer, and `crates/substrate` reaches
-   `crates/coordinator_iroh` only behind the `coordinator_iroh` feature. So
-   the wire types must live in `crates/core`.
+   types, moved from `crates/coordinator_iroh`. `status` gets a typed enum.
+   New fields: `relay.clients`, `relay.max_clients`, and a new `registry`
+   object. A4 (in `crates/substrate`) reads this answer, and
+   `crates/substrate` reaches `crates/coordinator_iroh` only behind the
+   `coordinator_iroh` feature. So the wire types must live in `crates/core`.
 2. `crates/core` config: `[roles.coordinator.iroh] max_relay_clients`.
 3. `crates/coordinator_iroh`:
-   - `/v1/info` reports the relay client count (`relay.clients`), computed
-     as `accepts - disconnects` of the `iroh-relay` server counters.
+   - `/v1/info` reports the number of relay connections (`relay.clients`),
+     computed as `accepts - disconnects` of the `iroh-relay` server counters.
    - `status` is `at_capacity` when `relay.clients >= max_relay_clients`.
      Router connections no longer decide `status` (AC-6).
-   - The handler does no network call. The registry lookup for
-     `controller_status` runs in the background, on a timer, after the
-     coordinator registers itself. Probes only read the last result (AC-17).
-   - The lookup uses the coordinator's DID, which is the id it registers
-     under. Today it uses the Iroh endpoint id, so the lookup never succeeds
-     (see §4 item 1).
-4. Tests for the server side of AC-6, and for AC-17.
-5. Living docs, change doc, backlog and status updates.
+   - The handler does no network call (AC-17). The registry lookup in the
+     handler is removed.
+   - A coordinator that shares itself in a registry registers again every
+     hour, so its record no longer expires after 2 hours. `/v1/info` reports
+     the result of the last registration under `registry`.
+   - `identity` is not reported any more (`null`). Its two values were never
+     correct (§2, D-A3-4). B2 fills it with the host substrate's identity.
+   - `spawn_http_info_server` takes a ready `axum::Router`, so B2 adds its
+     routes without changing this function again.
+4. Tests for the server side of AC-6, for AC-17, for the registration
+   refresh, and for "router cap does not give `at_capacity`".
+5. Living docs, change doc, backlog, `task.md` and status updates.
 
 Not in this slice: the substrate resolver and its probe of `info_url` (A4),
-passport routes and the TLS rule on the info server (B2), enforcing the relay
-client cap (see D-A3-2), re-registering the coordinator before its registry
-record expires (backlog row exists).
+passport routes, the TLS rule and the host identity on the info server (B2),
+enforcing the relay client cap (D-A3-2).
 
 ## 2. Decisions
 
-### Open: confirm with the user before you write code
+Each decision below was reviewed. Record each one in the change doc's
+`## Deviations` (completion step 2).
 
-**OQ-1. Which cap decides `at_capacity`?** AC-6 says the count is relay
-clients, not router connections, but no config key sets a relay client cap.
-`max_connections` already caps router connections (`RouteHandler` refuses
-connection number `cap + 1` with `ServiceUnavailable`).
-*Recommended:* a new key `[roles.coordinator.iroh] max_relay_clients:
-Option<u64>`, default `None` (no cap, `status` is always `healthy`). Reusing
-`max_connections` would give one number two meanings and would change the
-router cap of every coordinator that sets it.
-
-**OQ-2. Is the relay client cap enforced, or only reported?** `iroh-relay`
-0.97 has no client limit (`Limits` has only accept rate and per-client byte
-rate). The relay `AccessConfig::Restricted` closure could refuse a new client
-at the cap, but it runs before the connection replaces an older connection of
-the same endpoint, so a reconnecting client could be refused by its own old
-connection. B2 also rewrites this closure for passports.
-*Recommended:* report only. A substrate skips an `at_capacity` relay (A4).
-Add a backlog row for enforcement (completion step 4).
-
-**OQ-3. Move the `/v1/info` wire types to `crates/core`?**
-*Recommended:* yes, in this slice (reason in §1 item 1). The old path
-`syneroym_coordinator_iroh::CoordinatorInfo` goes away; three call sites
-change (step 4). Doing it in A4 instead means A4 edits this module again.
-
-**OQ-4. Fix the lookup id and `identity.did`?** Today the handler looks up
-`state.substrate_id`, which is the coordinator's Iroh endpoint id
-(`coordinator.rs:284`). The coordinator registers under its DID
-(`derive_did_key`, `coordinator.rs:457`). The registry keys records by DID
-and by a `nickname-shorthash` alias (`registry.rs:209-225,311`), so the
-lookup never matches, and `controller_status` is always `unverified`.
-`identity.did` also shows the endpoint id, not a DID.
-*Recommended:* yes. Caching a lookup that can never succeed has no value.
-`substrate_id` keeps the endpoint id, because clients dial with it
-(`connection_limit.rs:213`, `multi_hop_relay.rs`).
-
-### Made in this plan
-
-- **D-A3-1. Config key name:** `max_relay_clients` (OQ-1).
-- **D-A3-2. The cap is reported, not enforced** (OQ-2).
-- **D-A3-3. `status` reads relay clients only.** A coordinator with no relay
-  server, or with no `max_relay_clients`, reports `healthy`. Reaching
+- **D-A3-1. Cap key.** A new key `[roles.coordinator.iroh] max_relay_clients:
+  Option<u64>`, default `None` (no cap). AC-6 says how to count, but no key
+  set a cap. `max_connections` already caps router connections (the
+  `RouteHandler` refuses connection `cap + 1` with `ServiceUnavailable`), so
+  reusing it would give one number two meanings.
+- **D-A3-2. The cap is reported, not enforced.** `iroh-relay` 0.97 has no
+  client limit (`Limits` has only an accept rate and a per-client byte rate).
+  The `AccessConfig::Restricted` closure could refuse a new client at the cap,
+  but it runs before a new connection of an endpoint replaces its old one, so
+  a reconnecting endpoint could be refused because of its own old connection.
+  B2 also rewrites this closure for passports. A4 skips an `at_capacity`
+  relay.
+- **D-A3-3. `max_relay_clients = 0` stops startup.** With the relay on, `0`
+  always reports `at_capacity`, which is never what an operator means. The
+  error names the setting. When `max_relay_clients` is set and
+  `enable_relay = false`, startup logs a warning (the key has no effect).
+- **D-A3-4. `identity` is `null` until the host identity is known.** Today
+  `identity.did` is the coordinator's Iroh endpoint id (not a DID, and new at
+  every start), and `identity.controller_status` comes from a registry lookup
+  of that id. The registry keys records by DID and by a `nickname-shorthash`
+  alias (`crates/community_registry/src/registry.rs:209-225,311`), and the
+  coordinator registers under its DID (`coordinator.rs:457`), so the lookup
+  never matches and the value is always `unverified`. The M02 schema
+  (`docs/planning/milestones/M02-reliable-node/task.md:501-542`) meant
+  `identity.did` to be the node's DID and `controller_status: verified` to
+  mean "the controller (master-key delegation) is verified". That is the host
+  substrate's identity, which is also the passport root that B2 needs. So
+  A3 does not give `identity` a new meaning. It stops sending the two wrong
+  values and leaves the field `null`. B2 fills it with the M02 meaning. The
+  `IdentityInfo` type moves to `crates/core` unchanged
+  (`controller_status: String`), so B2 chooses its values.
+- **D-A3-5. Registry state has its own field, `registry`.** `registry` is
+  present only when the coordinator registers itself
+  (`share_in_registry = true` and `community_registry_url` set). It holds the
+  coordinator DID (`did`) and whether the last registration was accepted
+  (`registered`). Before the first attempt ends, `registered` is `false`.
+- **D-A3-6. Register again on a timer, and drop the lookup.** Today the
+  coordinator registers once at startup. The registry removes a record that
+  is not refreshed within `DEFAULT_REGISTRY_TTL_SECS` (2 hours,
+  `crates/core/src/dht_registry/types.rs:16`), so the record is gone after
+  about 2 hours (backlog row "A coordinator registers itself once…"). If the
+  registry is down at boot, the coordinator never registers. The new loop:
+  register (with the existing `retry_with_backoff` and `config.retry`), set
+  `registered`, then sleep `HEARTBEAT_INTERVAL_SECS` (1 hour, the same
+  interval substrates use, `types.rs:20`) after a success, or
+  `REGISTRATION_RETRY` (60 s) after a failure. Each registration signs a new
+  record with a newer timestamp, which the registry accepts and which resets
+  its TTL clock (`admit_endpoint`, `registry.rs:258`). A separate lookup would
+  only tell what a `2xx` from `/register` already told, so there is none. This
+  meets AC-17 in the strongest way: probes cause no lookups at all, and a slow
+  registry cannot slow a probe (A4 probes with a timeout).
+- **D-A3-7. Registration uses `RegistryClient::register`.** Today
+  `register_coordinator_in_registry` posts with `reqwest::Client::new()`,
+  which has no timeout. In a loop, one hung request would stop the refresh
+  forever. `RegistryClient::new(false, Some(url))` has the shared
+  `registry_http::HTTP_REQUEST_TIMEOUT` (10 s) and its `register` posts to
+  the same `{url}/register`. `false` turns the DHT off: the coordinator has
+  never published to the DHT, and this slice does not change that.
+- **D-A3-8. `status` reads relay connections only.** A coordinator with no
+  relay server, or with no `max_relay_clients`, reports `healthy`. Reaching
   `max_connections` no longer gives `at_capacity`. `connections.active` and
-  `connections.cap` stay in the answer for operators.
-- **D-A3-4. No lookup in the handler.** AC-17 says "the registry lookup inside
-  it is cached". The plan goes one step further: the handler never does a
-  lookup. A background task does it on a timer, so the number of lookups does
-  not depend on the number of probes at all, and a slow registry cannot slow a
-  probe (A4 probes with a timeout).
-- **D-A3-5. The lookup runs only after the coordinator registered itself.**
-  The task is the existing registration task: register (with the existing
-  retry), then check the own record every `RECORD_CHECK_UNVERIFIED` (60 s)
-  while it is not found, and every `RECORD_CHECK_VERIFIED` (10 min) while it
-  is found. When registration fails after all retries, the task ends and the
-  status stays `unverified`. A coordinator without `share_in_registry` and
-  `community_registry_url` never registers, so it never looks up; it reports
-  `unverified` as today.
-- **D-A3-6. The lookup asks the HTTP registry only, never the DHT.** The
-  coordinator posts its record to the registry only
-  (`register_coordinator_in_registry`); it never publishes to the DHT. A DHT
-  lookup can never find it and costs a slow DHT query. So the lookup client is
-  `RegistryClient::new(false, Some(registry_url))`.
-- **D-A3-7. Wire changes.** All field names stay. `status` becomes an enum
-  that serialises to the same strings (`healthy`, `at_capacity`).
-  `controller_status` becomes an enum (`verified`, `unverified`). Both enums
-  read an unknown string as `Unknown` (`#[serde(other)]`), so an older or
-  newer peer still parses. `relay` gains `clients` and `max_clients`.
-  `identity.did` becomes the DID (OQ-4).
-- **D-A3-8. The relay client count includes the coordinator's own endpoint**
-  when that endpoint uses this relay (no parent relay). It is a real client of
-  the relay, so it is not subtracted. Write this in the architecture doc.
-- **D-A3-9. `relay.online` keeps its meaning** ("this coordinator runs a relay
-  server"), now read as "the relay counters exist". The field name is not
-  changed.
+  `connections.cap` stay for operators. A4 must also check `relay.online`
+  (completion step 2 adds the note).
+- **D-A3-9. The count is connections, not endpoints.** Each client actor
+  counts one accept when it starts and one disconnect when it ends
+  (`iroh-relay-0.97.0/src/server/client.rs:276-294`). When an endpoint
+  connects again, `Clients::register` moves its old client to `inactive` and
+  sends it a health message (`server/clients.rs:82-94`). The old actor keeps
+  running, and stays counted, until its own connection closes. So for a short
+  time one endpoint can count twice.
+- **D-A3-10. The coordinator's own endpoint is counted only when its relay
+  admits it.** With no parent relay, the coordinator's endpoint uses its own
+  relay as its home relay. With `access = "everyone"` it is admitted and
+  counted. With `access = [ids]` it is refused, because its id is random at
+  every start and cannot be in the list (`restricted_to`,
+  `crates/coordinator_iroh/src/config.rs:54`), so it is not counted (and has
+  no home relay). With B2's `access = "passport"` it would be refused too,
+  because it holds no lease. B2 must decide whether a coordinator's own
+  endpoint is always admitted on its own relay (completion step 4 adds the
+  note).
+- **D-A3-11. Wire changes.** All existing field names stay. `status` becomes
+  an enum that serialises to the same strings (`healthy`, `at_capacity`); an
+  unknown string reads as `Unknown` (`#[serde(other)]`), so a newer peer
+  still parses. `relay` gains `clients` and `max_clients`. New `registry`.
+  `identity` is `null` (D-A3-4). `relay.online` keeps its meaning, "this
+  coordinator runs a relay server".
+- **D-A3-12. Wire types move to `crates/core`.** Reason in §1 item 1. The
+  path `syneroym_coordinator_iroh::CoordinatorInfo` goes away; its three users
+  change (step 4).
 
 ## 3. Step-by-step changes
 
 Files touched:
 
 ```text
-crates/core/src/lib.rs                               add `pub mod coordinator_info;`
-crates/core/src/coordinator_info.rs                  new: wire types (step 1)
-crates/core/src/coordinator_info/tests.rs            new: serde tests (step 6)
-crates/core/src/config/roles.rs                      new key (step 2)
-crates/coordinator_iroh/Cargo.toml                   dev-dep tokio test-util (step 6)
-crates/coordinator_iroh/src/lib.rs                   module visibility, re-export (step 4)
-crates/coordinator_iroh/src/info_endpoint.rs         handler, count, record check (step 3)
-crates/coordinator_iroh/src/info_endpoint/tests.rs   new: unit tests (step 6)
-crates/coordinator_iroh/src/coordinator.rs           wiring and refactor (step 5)
-crates/coordinator_iroh/tests/common/mod.rs          shared registry helper (step 7)
-crates/coordinator_iroh/tests/info_endpoint.rs       new: integration tests (step 7)
-crates/coordinator_iroh/tests/connection_limit.rs    import path (step 4)
-crates/coordinator_iroh/tests/multi_hop_relay.rs     import path, helper move (steps 4, 7)
-crates/smoke-tests/src/main.rs                       import path, `{:?}` (step 4)
-xtask/oversized-test-files.txt                       multi_hop_relay.rs count (step 7)
+crates/core/src/lib.rs                                add `pub mod coordinator_info;`
+crates/core/src/coordinator_info.rs                   new: wire types (step 1)
+crates/core/src/coordinator_info/tests.rs             new: serde tests (step 7)
+crates/core/src/config/roles.rs                       new key (step 2)
+crates/substrate/config.sample.toml                   new key, commented (step 2)
+crates/coordinator_iroh/Cargo.toml                    dev-dep tokio test-util (step 7)
+crates/coordinator_iroh/src/lib.rs                    modules, exports (step 4)
+crates/coordinator_iroh/src/config.rs                 cap check (step 2)
+crates/coordinator_iroh/src/info_endpoint.rs          handler and count (step 3)
+crates/coordinator_iroh/src/info_endpoint/tests.rs    new: unit tests (step 7)
+crates/coordinator_iroh/src/registration.rs           new: register loop (step 5)
+crates/coordinator_iroh/src/registration/tests.rs     new: unit tests (step 7)
+crates/coordinator_iroh/src/coordinator.rs            wiring and refactor (step 6)
+crates/coordinator_iroh/tests/common/mod.rs           shared registry helper (step 8)
+crates/coordinator_iroh/tests/info_endpoint.rs        new: integration tests (step 8)
+crates/coordinator_iroh/tests/startup_config.rs       cap `0` test (step 8)
+crates/coordinator_iroh/tests/connection_limit.rs     import, router-cap check (steps 4, 8)
+crates/coordinator_iroh/tests/multi_hop_relay.rs      import, helper move (steps 4, 8)
+crates/coordinator_iroh/tests/tls_rotation.rs         `INFO_PATH` (step 4)
+crates/smoke-tests/src/main.rs                        import, `{:?}` (step 4)
+xtask/oversized-test-files.txt                        multi_hop_relay.rs count (step 8)
 ```
 
 ### Step 1 — `crates/core/src/coordinator_info.rs` (new)
@@ -191,7 +227,7 @@ Add `pub mod coordinator_info;` to `crates/core/src/lib.rs` (keep the list
 sorted: after `config`, before `curated_list`).
 
 Move the five structs out of `crates/coordinator_iroh/src/info_endpoint.rs`
-(lines 19-63) into this file. Change them as below. Keep the field order and
+(l.19-63) into this file. Change them as below. Keep the field order and
 names. Remove `default_status()`.
 
 ```rust
@@ -209,8 +245,8 @@ pub const INFO_PATH: &str = "/v1/info";
 #[serde(rename_all = "snake_case")]
 pub enum CoordinatorStatus {
     Healthy,
-    /// The relay has at least `max_relay_clients` clients. A substrate picks
-    /// another relay.
+    /// The relay has at least `max_relay_clients` connections. A substrate
+    /// picks another relay.
     AtCapacity,
     /// A value this build does not know, or no value.
     #[default]
@@ -218,28 +254,17 @@ pub enum CoordinatorStatus {
     Unknown,
 }
 
-/// Whether the community registry returns this coordinator's own record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ControllerStatus {
-    Verified,
-    Unverified,
-    #[default]
-    #[serde(other)]
-    Unknown,
-}
-
+/// The identity of the host substrate. Not reported yet: the field is `null`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IdentityInfo {
-    /// The DID the coordinator registers under (`did:key` of its Iroh key).
     pub did: String,
-    pub controller_status: ControllerStatus,
+    pub controller_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConnectionsInfo {
     /// Open Syneroym connections to the coordinator's endpoint. Not relay
-    /// clients.
+    /// connections.
     pub active: usize,
     /// `max_connections`.
     pub cap: Option<usize>,
@@ -254,13 +279,22 @@ pub struct TlsInfo {
 pub struct RelayInfo {
     /// The coordinator runs a relay server.
     pub online: bool,
-    /// Clients connected to the relay now. `None` when there is no relay
-    /// server.
+    /// Open relay connections now. `None` when there is no relay server.
     #[serde(default)]
     pub clients: Option<u64>,
     /// `max_relay_clients`.
     #[serde(default)]
     pub max_clients: Option<u64>,
+}
+
+/// The coordinator's own record in its community registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryInfo {
+    /// The DID the record is registered under. New at every start.
+    pub did: String,
+    /// The registry accepted the last registration. Registration repeats
+    /// every hour after a success and every minute after a failure.
+    pub registered: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,56 +315,86 @@ pub struct CoordinatorInfo {
     pub tls: Option<TlsInfo>,
     #[serde(default)]
     pub relay: Option<RelayInfo>,
+    /// `None` when the coordinator does not register itself.
+    #[serde(default)]
+    pub registry: Option<RegistryInfo>,
 }
 ```
 
 Check: `#[serde(other)]` and `#[default]` on the same unit variant compile
-together (serde 1.0 and Rust 2024 both allow it). If clippy or serde rejects
-it, write `impl Default` by hand.
+together. If not, write `impl Default` by hand.
 
-Add `#[cfg(test)] mod tests;` at the end of the file (tests in step 6).
+Add `#[cfg(test)] mod tests;` at the end of the file (tests in step 7).
 
-### Step 2 — `crates/core/src/config/roles.rs`: the cap
+### Step 2 — the cap: config and startup check
 
-In `CoordinatorIrohConfig` (l.297), add after `max_connections`:
+`crates/core/src/config/roles.rs`, in `CoordinatorIrohConfig` (l.297), add
+after `max_connections`:
 
 ```rust
-    /// Relay clients at which `/v1/info` reports `at_capacity`. Reported
+    /// Relay connections at which `/v1/info` reports `at_capacity`. Reported
     /// only: the relay still admits more clients. `None` means no cap.
     pub max_relay_clients: Option<u64>,
 ```
 
 In `impl Default for CoordinatorIrohConfig` (l.309) add
-`max_relay_clients: None,`.
+`max_relay_clients: None,`. Every struct literal of `CoordinatorIrohConfig`
+in the workspace ends with `..Default::default()` (checked: 13 files), so no
+other literal changes.
 
-Every struct literal of `CoordinatorIrohConfig` in the workspace ends with
-`..Default::default()` (checked: 13 files), so no other call site changes.
+`crates/substrate/config.sample.toml`, in `[roles.coordinator.iroh]`
+(l.185-193), add after `quic_bind_address`:
 
-If the repo has a commented config template that lists
-`[roles.coordinator.iroh]` keys, add the key there too. (A2 found no such
-template for this section; check with
-`git grep -n 'info_http_bind_address' -- '*.toml'`.)
+```toml
+# Relay connections at which GET /v1/info reports "at_capacity" (reported
+# only; the relay still admits more). Leave unset for no cap. Must be >= 1.
+# max_relay_clients = 1000
+```
+
+`crates/coordinator_iroh/src/config.rs`, next to `relay_access`:
+
+```rust
+/// Checks `[roles.coordinator.iroh] max_relay_clients`.
+///
+/// # Errors
+/// For `0`, which would always report `at_capacity`.
+pub fn check_relay_cap(iroh_cfg: &CoordinatorIrohConfig) -> Result<()> {
+    match iroh_cfg.max_relay_clients {
+        Some(0) => bail!("[roles.coordinator.iroh] max_relay_clients must be at least 1"),
+        Some(_) if !iroh_cfg.enable_relay => warn!(
+            "[roles.coordinator.iroh] max_relay_clients is set, but enable_relay is false; it \
+             has no effect"
+        ),
+        _ => {}
+    }
+    Ok(())
+}
+```
+
+Call it in `CoordinatorIroh::init` right after `relay_access(&role.access)?`
+(l.106), before the relay server is spawned:
+`if let Some(iroh_cfg) = &role.iroh { check_relay_cap(iroh_cfg)?; }`.
+A wrong value must stop startup before any listener starts.
 
 ### Step 3 — `crates/coordinator_iroh/src/info_endpoint.rs`
 
 After step 1 the file keeps: `InfoState`, `get_cert_expiry_days`, `get_info`.
-Add: `relay_client_count`, `relay_status`, `watch_own_record`, and the two
-interval constants. Make the module crate-private (step 4), so its items are
-`pub(crate)`.
+Add: `relay_client_count`, `relay_status`, `info_router`. The module becomes
+crate-private (step 4), so its items are `pub(crate)`.
 
 Imports (types via `use`, functions through their module, per `AGENTS.md`):
 
 ```rust
-use std::{fs, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicUsize, Ordering}}, time::Duration};
+use std::{fs, path::{Path, PathBuf}, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 
-use axum::{Json, extract::State};
+use axum::{Json, Router, extract::State, routing};
 use chrono::Utc;
 use iroh_relay::server::Metrics as RelayServerMetrics;
 use syneroym_core::coordinator_info::{
-    ConnectionsInfo, ControllerStatus, CoordinatorInfo, CoordinatorStatus, IdentityInfo,
-    RelayInfo, TlsInfo,
+    ConnectionsInfo, CoordinatorInfo, CoordinatorStatus, INFO_PATH, RegistryInfo, RelayInfo,
+    TlsInfo,
 };
-use tokio::{sync::watch, time};
+use tokio::sync::watch;
 use x509_parser::{...};   // unchanged
 ```
 
@@ -344,8 +408,6 @@ pub(crate) struct InfoState {
     pub endpoint_addr_bytes: Vec<u8>,
     /// The coordinator's Iroh endpoint id.
     pub substrate_id: String,
-    /// The DID the coordinator registers under.
-    pub did: String,
     pub relay_url: Option<String>,
     pub parent_coordinator_url: Option<String>,
     pub active_connections: Arc<AtomicUsize>,
@@ -355,31 +417,29 @@ pub(crate) struct InfoState {
     /// no relay server.
     pub relay_metrics: Option<Arc<RelayServerMetrics>>,
     pub max_relay_clients: Option<u64>,
-    /// Last result of the background record check. The handler only reads it.
-    pub controller_status: watch::Receiver<ControllerStatus>,
+    /// The coordinator DID and the result of the last registration. `None`
+    /// when the coordinator does not register itself.
+    pub registry: Option<(String, watch::Receiver<bool>)>,
 }
 ```
 
-Removed fields: `is_relay_enabled` (now `relay_metrics.is_some()`, see D-A3-9;
-the relay server exists exactly when `enable_relay` is true, `coordinator.rs:123`)
-and `registry_client`.
+Removed fields: `is_relay_enabled` (now `relay_metrics.is_some()`; the relay
+server exists exactly when `enable_relay` is true, `coordinator.rs:123`) and
+`registry_client`.
 
-**3b. Relay client count.** Fact checked in
-`iroh-relay-0.97.0/src/server/client.rs:276-294`: each client actor calls
-`metrics.accepts.inc()` when it starts and `metrics.disconnects.inc()` when it
-ends, always as a pair. A client refused by the access check never starts an
-actor (`http_server.rs:750`), so it is not counted. A second connection from
-the same endpoint replaces the first, and the first one's actor ends, so the
-count is about one per endpoint. `Counter::get` returns 0 without the
-`iroh-metrics/metrics` feature; the `iroh-relay` `server` feature (workspace
-`Cargo.toml` l.194) turns on `metrics`, so the counters work.
+**3b. Relay connection count.** Facts checked in `iroh-relay` 0.97 source:
+see D-A3-9. A client refused by the access check never starts an actor
+(`server/http_server.rs:750`), so it is not counted. `Counter::get` returns 0
+without the `iroh-metrics/metrics` feature; the `iroh-relay` `server` feature
+(workspace `Cargo.toml` l.194) turns on `metrics`, so the counters work.
 
 ```rust
-/// Relay clients connected now. `iroh-relay` has no gauge for this; each
+/// Open relay connections now. `iroh-relay` has no gauge for this; each
 /// client actor counts one accept when it starts and one disconnect when it
-/// ends.
+/// ends. An endpoint that connects again counts twice until its old
+/// connection closes.
 pub(crate) fn relay_client_count(metrics: &RelayServerMetrics) -> u64 {
-    // Read disconnects first: a client's disconnect is counted after its
+    // Read disconnects first: a connection's disconnect is counted after its
     // accept, so this order does not see a disconnect without its accept.
     // The counters are relaxed atomics, so still never go below zero.
     let disconnects = metrics.disconnects.get();
@@ -394,7 +454,7 @@ pub(crate) fn relay_status(clients: Option<u64>, cap: Option<u64>) -> Coordinato
 }
 ```
 
-**3c. Handler.** No network call, no `await` on I/O:
+**3c. Handler.** No network call:
 
 ```rust
 pub(crate) async fn get_info(State(state): State<Arc<InfoState>>) -> Json<CoordinatorInfo> {
@@ -411,10 +471,7 @@ pub(crate) async fn get_info(State(state): State<Arc<InfoState>>) -> Json<Coordi
         relay_url: state.relay_url.clone(),
         parent_coordinator_url: state.parent_coordinator_url.clone(),
         status: relay_status(relay_clients, state.max_relay_clients),
-        identity: Some(IdentityInfo {
-            did: state.did.clone(),
-            controller_status: *state.controller_status.borrow(),
-        }),
+        identity: None,
         connections: Some(ConnectionsInfo {
             active: state.active_connections.load(Ordering::SeqCst),
             cap: state.max_connections,
@@ -425,50 +482,24 @@ pub(crate) async fn get_info(State(state): State<Arc<InfoState>>) -> Json<Coordi
             clients: relay_clients,
             max_clients: state.max_relay_clients,
         }),
+        registry: state.registry.as_ref().map(|(did, registered)| RegistryInfo {
+            did: did.clone(),
+            registered: *registered.borrow(),
+        }),
     })
 }
-```
 
-Keep `async fn`: axum needs it as a handler.
-
-**3d. Background record check.**
-
-```rust
-/// How often the coordinator checks that the registry returns its record,
-/// while the registry returns it.
-pub(crate) const RECORD_CHECK_VERIFIED: Duration = Duration::from_secs(600);
-/// ... while the registry does not return it.
-pub(crate) const RECORD_CHECK_UNVERIFIED: Duration = Duration::from_secs(60);
-
-/// Checks on a timer that the registry returns the coordinator's own record,
-/// and publishes the result for `/v1/info`. Runs until its task is aborted.
-pub(crate) async fn watch_own_record(
-    mut lookup: impl AsyncFnMut() -> bool,
-    status: watch::Sender<ControllerStatus>,
-) {
-    loop {
-        let verified = lookup().await;
-        let next = if verified {
-            status.send_replace(ControllerStatus::Verified);
-            RECORD_CHECK_VERIFIED
-        } else {
-            status.send_replace(ControllerStatus::Unverified);
-            RECORD_CHECK_UNVERIFIED
-        };
-        time::sleep(next).await;
-    }
+/// The routes of the info server.
+pub(crate) fn info_router(state: InfoState) -> Router {
+    Router::new().route(INFO_PATH, routing::get(get_info)).with_state(Arc::new(state))
 }
 ```
 
-`send_replace` (not `send`) stores the value even when no receiver is left.
-`AsyncFnMut` is stable since Rust 1.85; the workspace uses edition 2024 on
-stable. No other crate uses it yet. If it causes trouble, take
-`F: FnMut() -> Fut, Fut: Future<Output = bool>` and give the closure an
-`Arc<RegistryClient>` clone.
+Keep `get_info` an `async fn`: axum needs it as a handler.
 
 Add `#[cfg(test)] mod tests;` at the end of the file.
 
-### Step 4 — `lib.rs` and the three call sites of the moved type
+### Step 4 — `lib.rs` and the users of the moved type
 
 `crates/coordinator_iroh/src/lib.rs`:
 
@@ -476,38 +507,163 @@ Add `#[cfg(test)] mod tests;` at the end of the file.
 mod config;
 mod coordinator;
 mod info_endpoint;
+mod registration;
 
 pub use coordinator::CoordinatorIroh;
 ```
 
 (Remove `pub mod info_endpoint` and `pub use info_endpoint::CoordinatorInfo`.)
 
-Call sites (all checked with `git grep -n CoordinatorInfo`):
+Users (checked with `git grep -n -e CoordinatorInfo -e '/v1/info'`):
 
 | File | Line | Change |
 | --- | --- | --- |
-| `crates/coordinator_iroh/tests/connection_limit.rs` | 17 | `use syneroym_coordinator_iroh::CoordinatorIroh;` and add `coordinator_info::CoordinatorInfo` to the existing `syneroym_core::{...}` import (l.18) |
-| `crates/coordinator_iroh/tests/multi_hop_relay.rs` | 21 | same as above (the `syneroym_core::{...}` import is l.22) |
+| `crates/coordinator_iroh/tests/connection_limit.rs` | 17, 18, 211 | `use syneroym_coordinator_iroh::CoordinatorIroh;`; add `coordinator_info::{CoordinatorInfo, INFO_PATH}` to the `syneroym_core::{...}` import; `format!("http://{info_addr}{INFO_PATH}")` |
+| `crates/coordinator_iroh/tests/multi_hop_relay.rs` | 21, 22, 324, 362 | same import change; both URLs use `INFO_PATH` |
+| `crates/coordinator_iroh/tests/tls_rotation.rs` | 109 | `format!("https://{info_addr}{INFO_PATH}")`, import `syneroym_core::coordinator_info::INFO_PATH` |
 | `crates/smoke-tests/src/main.rs` | 11 | `use syneroym_coordinator_iroh::CoordinatorIroh;` and import `syneroym_core::coordinator_info::CoordinatorInfo` |
 | `crates/smoke-tests/src/main.rs` | 166 | `println!("  Status:       {:?}", info.status);` (the enum has no `Display`) |
 
-No code reads `info.identity` or compares `info.status` as a string (checked).
+`crates/smoke-tests/src/main.rs` l.73 and l.122 build the URL from a base URL
+given on the command line; leave them, or use `INFO_PATH` there too. No code
+reads `info.identity` or compares `info.status` as a string (checked).
 
-### Step 5 — `crates/coordinator_iroh/src/coordinator.rs`
+### Step 5 — `crates/coordinator_iroh/src/registration.rs` (new)
 
-`init` is 97 lines today (l.88-184). New lines would push it over the
-100-line limit, and `spawn_http_info_server` would need 8 arguments
-(clippy `too_many_arguments` allows 7). So extract the per-endpoint work into
-one function and build `InfoState` there.
-
-**5a. New helpers (free functions near `resolve_relay_url`):**
+Move `register_in_global_registry` (`coordinator.rs:327-367`) and
+`register_coordinator_in_registry` (`coordinator.rs:446-487`) here, and
+change them as below. `coordinator.rs` loses about 90 lines.
 
 ```rust
+//! The coordinator's own record in its community registry: register, then
+//! register again on a timer so the record does not expire.
+
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use anyhow::Result;
+use iroh::{EndpointAddr, SecretKey};
+use syneroym_core::{
+    config::RetryPolicy,
+    dht_registry::{
+        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
+        HEARTBEAT_INTERVAL_SECS, RegistryClient,
+    },
+    retry,
+};
+use syneroym_identity::{Identity, substrate};
+use tokio::{sync::watch, task::JoinHandle, time};
+use tracing::{debug, warn};
+
+/// Wait after a successful registration. The registry drops a record that is
+/// not refreshed within `DEFAULT_REGISTRY_TTL_SECS` (2 hours).
+pub(crate) const REGISTRATION_REFRESH: Duration = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+/// Wait after a registration that failed all its retries.
+pub(crate) const REGISTRATION_RETRY: Duration = Duration::from_secs(60);
+
 /// The DID the coordinator registers under: `did:key` of its Iroh key.
-fn coordinator_did(secret_key: &SecretKey) -> String {
-    derive_did_key(&Identity::from_bytes(&secret_key.to_bytes()).public_key())
+pub(crate) fn coordinator_did(secret_key: &SecretKey) -> String {
+    substrate::derive_did_key(&Identity::from_bytes(&secret_key.to_bytes()).public_key())
 }
 
+/// Registers the coordinator's record and keeps it registered until the task
+/// is aborted. `registered` holds the result of the last attempt.
+pub(crate) fn spawn(
+    registry_url: String,
+    secret_key: SecretKey,
+    relay_url: Option<String>,
+    retry_policy: RetryPolicy,
+    registered: watch::Sender<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        // The coordinator has never published to the DHT.
+        let registry = RegistryClient::new(false, Some(registry_url));
+        keep_registered(
+            async || {
+                let res = retry::retry_with_backoff(&retry_policy, || {
+                    register_once(&registry, &secret_key, relay_url.clone())
+                })
+                .await;
+                match res {
+                    Ok(()) => debug!("coordinator registered in its community registry"),
+                    Err(e) => warn!("coordinator registration failed after all retries: {e}"),
+                }
+                res.is_ok()
+            },
+            registered,
+        )
+        .await;
+    })
+}
+
+/// Calls `register` now, then again after `REGISTRATION_REFRESH` when it
+/// succeeded or `REGISTRATION_RETRY` when it failed. Never returns.
+pub(crate) async fn keep_registered(
+    mut register: impl AsyncFnMut() -> bool,
+    registered: watch::Sender<bool>,
+) {
+    loop {
+        let ok = register().await;
+        registered.send_replace(ok);
+        time::sleep(if ok { REGISTRATION_REFRESH } else { REGISTRATION_RETRY }).await;
+    }
+}
+
+/// Signs a fresh record (new timestamp, so the registry accepts it as newer)
+/// and posts it.
+async fn register_once(
+    registry: &RegistryClient,
+    secret_key: &SecretKey,
+    relay_url: Option<String>,
+) -> Result<()> {
+    let node_id = secret_key.public();
+    let endpoint_addr_bytes = serde_json::to_vec(&EndpointAddr::new(node_id))?;
+    let identity = Identity::from_bytes(&secret_key.to_bytes());
+    let did = coordinator_did(secret_key);
+    let not_after = /* unchanged: now + DEFAULT_ENDPOINT_NOT_AFTER_SECS */;
+    let info = EndpointInfo {
+        service_id: did.clone(),
+        substrate_id: did,
+        endpoint_type: EndpointType::Substrate,
+        nickname: Some(format!("coordinator-{}", &node_id.to_string()[..8])),
+        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
+        is_private: false,
+        ttl: None,
+        not_after,
+        generation: 0,
+    };
+    registry.register(&info.sign(&identity)?, false).await
+}
+```
+
+Notes:
+
+- Keep the record fields exactly as today (`coordinator.rs:465-475`). Only
+  the transport changes: `RegistryClient::register`
+  (`crates/core/src/dht_registry/client.rs`) posts the same JSON to
+  `{url}/register` with the shared 10 s timeout, and returns an error for a
+  non-`2xx` answer. With the DHT off and `is_private = false` it publishes
+  nothing else.
+- `register_once` derives the DID with `coordinator_did`, and `start_endpoint`
+  calls the same function (step 6), so the DID is derived in one place.
+- `AsyncFnMut` is stable since Rust 1.85; the workspace is edition 2024 on
+  stable. If the borrow of `registry` in the async closure causes trouble,
+  move `registry` into an `Arc` and clone it into each call.
+- Check the import rule for `retry::retry_with_backoff` against how
+  `coordinator.rs` imports it today (it imports the function directly at
+  l.28). Follow `AGENTS.md`: functions are called through their module.
+
+Add `#[cfg(test)] mod tests;` at the end of the file.
+
+### Step 6 — `crates/coordinator_iroh/src/coordinator.rs`
+
+`init` is 97 lines today (l.88-184), and the old `spawn_http_info_server`
+would need 8 arguments (clippy `too_many_arguments` allows 7). So build the
+info state and the router in one new function, and pass a ready router to the
+server.
+
+**6a. Helper (free function near `resolve_relay_url`):**
+
+```rust
 /// The address `/v1/info` gives to clients. (Move the existing comment from
 /// `spawn_http_info_server` l.271-274 here.)
 fn info_addr_bytes(node_id: EndpointId, relay_url: Option<&RelayUrl>) -> Result<Vec<u8>> {
@@ -516,15 +672,9 @@ fn info_addr_bytes(node_id: EndpointId, relay_url: Option<&RelayUrl>) -> Result<
 }
 ```
 
-Derive the DID in one place only. `register_coordinator_in_registry`
-(l.446) derives it again today (l.456-457). Give it a new argument
-`did: &str` (six arguments) and delete its `let did = …` line. It still builds
-`identity` from `secret_key_bytes`, because it signs the record. Use `did` where
-it used the local `did` (`service_id` and `substrate_id`).
-
 `EndpointId` is `iroh::EndpointId` (add it to the `iroh::{...}` import).
 
-**5b. Result struct and `start_endpoint`:**
+**6b. Result struct and `start_endpoint`:**
 
 ```rust
 /// What `start_endpoint` starts. `init` stores each part in `CoordinatorIroh`.
@@ -544,16 +694,18 @@ impl CoordinatorIroh {
     ) -> Result<EndpointParts> {
         let relay_url = resolve_relay_url(parent_relay_url, relay_server, iroh_cfg)?;
         let (endpoint, secret_key) = Self::build_iroh_endpoint(iroh_cfg, relay_url.clone()).await?;
-        let did = coordinator_did(&secret_key);
         let (iroh_router, active_connections) = Self::spawn_iroh_router(
             &endpoint, iroh_cfg, config, parent_relay_url.map(ToString::to_string));
 
-        // Stays `Unverified` when the coordinator never registers.
-        let (status_tx, status_rx) = watch::channel(ControllerStatus::Unverified);
+        let registry_url = iroh_cfg
+            .community_registry_url
+            .clone()
+            .filter(|_| iroh_cfg.share_in_registry);
+        let (registered_tx, registered_rx) = watch::channel(false);
+
         let state = InfoState {
             endpoint_addr_bytes: info_addr_bytes(endpoint.id(), relay_url.as_ref())?,
             substrate_id: endpoint.id().to_string(),
-            did: did.clone(),
             relay_url: relay_url.as_ref().map(ToString::to_string),
             parent_coordinator_url: parent_relay_url.map(ToString::to_string),
             active_connections,
@@ -561,17 +713,22 @@ impl CoordinatorIroh {
             tls_cert_path: config.tls.as_ref().map(|t| t.cert_path.clone()),
             relay_metrics: relay_server.as_ref().map(|s| s.metrics().server.clone()),
             max_relay_clients: iroh_cfg.max_relay_clients,
-            controller_status: status_rx,
+            registry: registry_url
+                .is_some()
+                .then(|| (registration::coordinator_did(&secret_key), registered_rx)),
         };
         let (http_info_handle, info_addr) =
-            Self::spawn_http_info_server(config, iroh_cfg, state).await?;
+            Self::spawn_http_info_server(config, iroh_cfg, info_endpoint::info_router(state)).await?;
 
-        let registry_registration_handle = match &iroh_cfg.community_registry_url {
-            Some(registry_url) if iroh_cfg.share_in_registry => Some(Self::register_in_global_registry(
-                registry_url.clone(), secret_key, relay_url.as_ref().map(ToString::to_string),
-                did, config.retry.clone(), status_tx)),
-            _ => None,
-        };
+        let registry_registration_handle = registry_url.map(|url| {
+            registration::spawn(
+                url,
+                secret_key,
+                relay_url.as_ref().map(ToString::to_string),
+                config.retry.clone(),
+                registered_tx,
+            )
+        });
 
         Ok(EndpointParts { iroh_router, http_info_handle, info_addr, registry_registration_handle })
     }
@@ -579,18 +736,17 @@ impl CoordinatorIroh {
 ```
 
 The order of side effects stays as today: endpoint, router, info server,
-registration. `relay_url` in `InfoState` stays the `RelayUrl` string form with
-a trailing slash (change doc D3). Behaviour for `relay_url`, `substrate_id`,
-`endpoint_addr_bytes` and `parent_coordinator_url` must not change.
+registration. These must not change: `relay_url` (the `RelayUrl` string form
+with a trailing slash, change doc D3), `substrate_id`, `endpoint_addr_bytes`,
+`parent_coordinator_url`, and the registered record's `relay_url` (today
+`relay_url.as_ref().map(ToString::to_string)`, l.162).
 
-**5c. `init` (l.88-184)** keeps the access check, the architecture comment
-and the relay spawn. Replace the body of `if let Some(iroh_cfg) = &role.iroh`
+**6c. `init` (l.88-184)** keeps the access check, the architecture comment
+and the relay spawn. After `relay_access(&role.access)?;` add the cap check
+from step 2. Replace the body of `if let Some(iroh_cfg) = &role.iroh`
 (l.127-174) with:
 
 ```rust
-if iroh_cfg.max_relay_clients.is_some() && !iroh_cfg.enable_relay {
-    warn!("[roles.coordinator.iroh] max_relay_clients is set, but enable_relay is false; it has no effect");
-}
 let parts = Self::start_endpoint(config, iroh_cfg, parent_relay_url.as_ref(), &relay_server).await?;
 iroh_router = Some(parts.iroh_router);
 http_info_handle = Some(parts.http_info_handle);
@@ -598,138 +754,105 @@ info_addr = Some(parts.info_addr);
 registry_registration_handle = parts.registry_registration_handle;
 ```
 
-**5d. `spawn_http_info_server`** takes the state:
+**6d. `spawn_http_info_server`** takes the router:
 
 ```rust
 async fn spawn_http_info_server(
     config: &SubstrateConfig,
     iroh_cfg: &CoordinatorIrohConfig,
-    state: InfoState,
+    app: Router,
 ) -> Result<(JoinHandle<Result<()>>, SocketAddr)>
 ```
 
-Keep l.255-268 (bind address, listener, log) and l.297-324 (router, TLS
-branch). Delete l.270-295 (the `InfoState` build, now in `start_endpoint`).
-Route with the core constant:
-`Router::new().route(INFO_PATH, get(get_info)).with_state(Arc::new(state))`.
+Keep l.255-268 (bind address, listener, log) and l.299-324 (TLS branch and
+serve). Delete l.270-297 (the state build and the router build, now in
+`start_endpoint` and `info_router`). B2 merges its own routes (with their own
+state) into `app` before this call, so this function does not change again.
 
-**5e. `register_in_global_registry`** becomes:
+**6e. `registry_registration_handle`.** Add a doc comment on the field:
+"Keeps the coordinator registered in its community registry." `shutdown`
+already aborts this handle (l.428-430). No change there.
 
-```rust
-fn register_in_global_registry(
-    registry_url: String,
-    secret_key: SecretKey,
-    relay_url_payload: Option<String>,
-    did: String,
-    retry_policy: RetryPolicy,
-    controller_status: watch::Sender<ControllerStatus>,
-) -> JoinHandle<()> {
-    let node_id = secret_key.public();
-    let node_id_str = node_id.to_string();
-    let endpoint_addr_payload = EndpointAddr::new(node_id);
-    let secret_key_bytes = secret_key.to_bytes();
-    tokio::spawn(async move {
-        // Unchanged closure, except that it also clones `did` and passes
-        // `&did` to `register_coordinator_in_registry` (step 5a).
-        let res = retry_with_backoff(&retry_policy, || { /* … */ }).await;
-        if let Err(e) = res {
-            warn!("Failed to register coordinator in global registry after all retries: {}", e);
-            return;
-        }
-        info!("Coordinator successfully registered in global registry");
-
-        // The coordinator posts its record to the HTTP registry only, never
-        // to the DHT, so a DHT lookup could not find it.
-        let registry = RegistryClient::new(false, Some(registry_url));
-        info_endpoint::watch_own_record(
-            async || registry.lookup(&did, false).await.is_ok(),
-            controller_status,
-        )
-        .await;
-    })
-}
-```
-
-`node_id_str` and `endpoint_addr_payload` were arguments before; they come
-from `secret_key` now (same values: `init` passed `node_id.to_string()` and
-`EndpointAddr::new(node_id)` with `node_id = endpoint.addr().id`, the public
-key of `secret_key`). Six arguments.
-
-Update the doc comment of the `registry_registration_handle` field (or add
-one): "Registers the coordinator, then checks on a timer that the registry
-returns its record." `shutdown` already aborts this handle (l.428-430), which
-also stops the record check. No change there.
-
-**5f. Imports.** Add `tokio::sync::watch`, `iroh::EndpointId`,
-`syneroym_core::coordinator_info::{ControllerStatus, INFO_PATH}`. Remove
-`std::sync::atomic::AtomicUsize` only if it is no longer used (it is still
-used by `spawn_iroh_router`'s return type). Run the import clean-up pass from
+**6f. Imports.** Add `tokio::sync::watch`, `iroh::EndpointId`, and the module
+paths `crate::{info_endpoint, registration}`. Remove what moved to
+`registration.rs` (`Identity`, `derive_did_key`, `EndpointInfo`,
+`EndpointMechanism`, `EndpointType`, `DEFAULT_ENDPOINT_NOT_AFTER_SECS`,
+`RegistryClient` if unused, `retry_with_backoff`, `SystemTime`, `UNIX_EPOCH`,
+`RetryPolicy`, `reqwest::Client` if only `wait_for_relay_server` still uses
+it — it does, so keep that one). `RegistryClient` is still used by
+`spawn_iroh_router` (l.229); keep it. Run the import clean-up pass from
 `AGENTS.md`.
 
-### Step 6 — unit tests
+### Step 7 — unit tests
 
-**6a. `crates/core/src/coordinator_info/tests.rs`:**
+**7a. `crates/core/src/coordinator_info/tests.rs`:**
 
 - `status_values_keep_their_wire_strings`: `serde_json::to_string` of
-  `Healthy` is `"\"healthy\""`, `AtCapacity` is `"\"at_capacity\""`,
-  `Verified` is `"\"verified\""`, `Unverified` is `"\"unverified\""`.
-- `unknown_status_strings_parse_as_unknown`: `"degraded"` gives
-  `CoordinatorStatus::Unknown` and `ControllerStatus::Unknown`.
+  `Healthy` is `"\"healthy\""` and of `AtCapacity` is `"\"at_capacity\""`.
+- `unknown_status_string_parses_as_unknown`: `"degraded"` gives
+  `CoordinatorStatus::Unknown`.
 - `older_answer_without_new_fields_parses`: parse a JSON object with only
-  `endpoint_addr_bytes`, `substrate_id`, `relay_url`, `parent_coordinator_url`
-  and `"relay": {"online": true}`. Expect `status == Unknown`,
-  `relay.clients == None`, `relay.max_clients == None`.
+  `endpoint_addr_bytes`, `substrate_id`, `relay_url`,
+  `parent_coordinator_url`, `"identity": {"did": "x", "controller_status":
+  "unverified"}` and `"relay": {"online": true}`. Expect `status == Unknown`,
+  `relay.clients == None`, `relay.max_clients == None`, `registry == None`.
 
-**6b. `crates/coordinator_iroh/src/info_endpoint/tests.rs`:**
+**7b. `crates/coordinator_iroh/src/info_endpoint/tests.rs`:**
 
 - `client_count_is_accepts_minus_disconnects`: `RelayServerMetrics::default()`;
   call `accepts.inc()` 3 times and `disconnects.inc()` once; expect 2. Then
   `disconnects.inc()` 3 more times; expect 0 (no underflow).
 - `status_is_at_capacity_only_at_or_above_the_cap`: table over
-  `relay_status`: `(None, None)`, `(Some(5), None)`, `(None, Some(0))`,
+  `relay_status`: `(None, None)`, `(Some(5), None)`, `(None, Some(1))`,
   `(Some(1), Some(2))` give `Healthy`; `(Some(2), Some(2))`,
   `(Some(3), Some(2))` give `AtCapacity`.
 - `info_reads_state_without_network`: build an `InfoState` by hand (no TLS
-  path, `relay_metrics: Some(Arc::new(RelayServerMetrics::default()))` with two
-  accepts, `max_relay_clients: Some(2)`, a `watch::channel(Verified)`
-  receiver, a fixed `did`). Call `get_info(State(Arc::new(state))).await`.
-  Expect `status == AtCapacity`, `relay.clients == Some(2)`,
-  `relay.online`, `identity.controller_status == Verified`, `identity.did`
-  equal to the given DID.
-- `record_check_runs_on_its_own_timer` with
-  `#[tokio::test(start_paused = true)]`: a lookup closure that counts calls in
-  an `Arc<AtomicUsize>` and answers `false` on call 1 and `true` after. Spawn
-  `watch_own_record(lookup, tx)`. Then:
-  1. `tokio::task::yield_now()` until the count is 1; expect `Unverified`.
-  2. `time::advance(RECORD_CHECK_UNVERIFIED - 1s)`, yield: count still 1.
-  3. `time::advance(1s)`, yield: count 2, status `Verified`.
-  4. `time::advance(RECORD_CHECK_VERIFIED - 1s)`, yield: count 2.
+  path, `relay_metrics` with two accepts, `max_relay_clients: Some(2)`,
+  `registry: Some(("did:key:test".into(), rx))` with
+  `watch::channel(true)`). Call `get_info(State(Arc::new(state))).await`.
+  Expect `status == AtCapacity`, `relay.clients == Some(2)`, `relay.online`,
+  `identity.is_none()`, `registry.did == "did:key:test"`,
+  `registry.registered`.
+
+**7c. `crates/coordinator_iroh/src/registration/tests.rs`:**
+
+- `registration_repeats_on_its_own_timer` with
+  `#[tokio::test(start_paused = true)]`: a `register` closure that counts
+  calls in an `Arc<AtomicUsize>` and answers `false` on call 1 and `true`
+  after. Spawn `keep_registered(register, tx)`. Then:
+  1. `tokio::task::yield_now()` until the count is 1; expect `*rx.borrow()`
+     is `false`.
+  2. `time::advance(REGISTRATION_RETRY - 1s)`, yield: count still 1.
+  3. `time::advance(1s)`, yield: count 2, `*rx.borrow()` is `true`.
+  4. `time::advance(REGISTRATION_REFRESH - 1s)`, yield: count 2.
   5. `time::advance(1s)`, yield: count 3.
   Abort the task at the end.
+- `refresh_is_shorter_than_the_registry_ttl`: `REGISTRATION_REFRESH <
+  Duration::from_secs(DEFAULT_REGISTRY_TTL_SECS)`. This keeps the record
+  alive if someone changes either constant.
 
-`start_paused` needs tokio's `test-util` feature, which the workspace
-`tokio` entry does not turn on. Add to
-`crates/coordinator_iroh/Cargo.toml` `[dev-dependencies]`:
-`tokio = { workspace = true, features = ["test-util"] }` (the same pattern as
-`crates/rpc/Cargo.toml` l.25).
+`start_paused` needs tokio's `test-util` feature, which the workspace `tokio`
+entry does not turn on. Add to `crates/coordinator_iroh/Cargo.toml`
+`[dev-dependencies]`: `tokio = { workspace = true, features = ["test-util"] }`
+(the same pattern as `crates/rpc/Cargo.toml` l.25).
 
-### Step 7 — integration tests: `crates/coordinator_iroh/tests/info_endpoint.rs` (new)
+### Step 8 — integration tests
 
 All listeners bind `127.0.0.1:0` (no port literals). Turn the DHT off
 (`config.substrate.enable_bep0044_dht = false`). Set
 `info_http_bind_address: Some("127.0.0.1:0".into())`. Bound every wait with a
 deadline and poll every 50-100 ms. Use the crate-level allow line that the
-other test files use (`#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`).
+other test files use.
 
-Shared helper: move `spawn_global_registry` from `multi_hop_relay.rs`
+**Shared helper.** Move `spawn_global_registry` from `multi_hop_relay.rs`
 (l.274-291) into `tests/common/mod.rs` as
 `pub async fn spawn_registry(base_path: &Path) -> Result<(EcosystemRegistry, String)>`,
 and call it from both files. `multi_hop_relay.rs` is in
 `xtask/oversized-test-files.txt` (cap 1128). Its line count changes with this
-move and the import change. Set its entry to the new real count
-(`wc -l`), because the ratchet fails in both directions.
+move and the import change. Set its entry to the new real count (`wc -l`),
+because the ratchet fails in both directions.
 
-A small helper in the new file:
+**New file `crates/coordinator_iroh/tests/info_endpoint.rs`.** Helpers:
 
 ```rust
 async fn fetch_info(coord: &CoordinatorIroh) -> Result<CoordinatorInfo> {
@@ -743,14 +866,15 @@ async fn wait_for_info(coord: &CoordinatorIroh, deadline: Duration,
     pred: impl Fn(&CoordinatorInfo) -> bool) -> Result<CoordinatorInfo>
 ```
 
-**7a. `relay_client_count_follows_connections_and_capacity`** (AC-6 server
-side, AC-17 first half):
+**8a. `relay_count_follows_connections_and_capacity`** (AC-6 server side,
+AC-17 count):
 
 1. Start a coordinator: `enable_relay = true`, `http_bind_address` and
-   `quic_bind_address` `127.0.0.1:0`, `max_relay_clients = Some(2)`, no
-   registry. `common::wait_for_relay(&coord, 20s)`.
+   `quic_bind_address` `127.0.0.1:0`, `access = "everyone"` (the default),
+   `max_relay_clients = Some(2)`, no registry.
+   `common::wait_for_relay(&coord, 20s)`.
 2. Wait until `relay.clients == Some(1)` and `status == Healthy`. The one
-   client is the coordinator's own endpoint (D-A3-8).
+   connection is the coordinator's own endpoint (D-A3-10).
 3. Bind a client endpoint on the coordinator's relay:
    ```rust
    let relay_url: RelayUrl = info.relay_url.unwrap().parse()?;
@@ -759,83 +883,98 @@ side, AC-17 first half):
        .bind().await?;
    time::timeout(Duration::from_secs(20), client.online()).await?;
    ```
-4. Wait until `relay.clients == Some(2)` and `status == AtCapacity`, and
+4. Wait until `relay.clients == Some(2)`, `status == AtCapacity` and
    `relay.max_clients == Some(2)`.
 5. `client.close().await`. Wait until `relay.clients == Some(1)` and
    `status == Healthy`.
 6. `coord.shutdown().await`.
 
-If step 2 never reaches 1, check first whether the coordinator's endpoint
-connects to its own relay at all (log `relay.clients`); do not loosen the
-test to `>= 1` without finding out why.
+If step 2 never reaches 1, first find out whether the coordinator's endpoint
+connects to its own relay (log `relay.clients`). Do not loosen the test to
+`>= 1` without knowing why.
 
-**7b. `controller_status_is_verified_after_registration`** (OQ-4 fix):
+**8b. `coordinator_record_is_registered_under_its_did`:**
 
 1. `common::spawn_registry(tmp)`.
 2. Start a coordinator with `enable_relay = true`,
    `community_registry_url = Some(r_url)`, `share_in_registry = true`.
-3. Wait (20 s deadline) until
-   `identity.controller_status == Verified`.
-4. Expect `identity.did` to start with `did:key:` and to differ from
-   `substrate_id`.
+3. Wait (20 s deadline) until `registry.registered`.
+4. `RegistryClient::new(false, Some(r_url)).lookup(&registry.did, false)`
+   succeeds, and its `info.service_id == registry.did`. `registry.did` starts
+   with `did:key:` and differs from `substrate_id`. `identity` is `None`.
 
-**7c. `probes_do_not_trigger_registry_lookups`** (AC-17 second half):
+**8c. `probes_do_not_call_the_registry`** (AC-17):
 
 1. Start a mock registry: an `axum::Router` on `127.0.0.1:0` with
-   `POST /register` → `200`, and `GET /lookup/{id}` → add 1 to an
-   `Arc<AtomicUsize>` and answer `404`. (Use the same axum path syntax as
-   `crates/community_registry/src/registry.rs:135`.)
+   `POST /register` → add 1 to a register counter, answer `200`; and
+   `GET /lookup/{id}` → add 1 to a lookup counter, answer `404`. (Use the same
+   axum path syntax as `crates/community_registry/src/registry.rs:135`.)
 2. Start a coordinator with `enable_relay = false`,
    `community_registry_url = Some(mock_url)`, `share_in_registry = true`.
-3. Wait until the lookup counter is 1 (10 s deadline). This is the first
-   check after registration.
+3. Wait until `registry.registered` (10 s deadline).
 4. Send 20 `GET /v1/info` requests. Each must answer within 2 s
-   (`time::timeout`). Each answer has `controller_status == Unverified`.
-5. Expect the lookup counter to still be 1. (The next check is 60 s away,
-   `RECORD_CHECK_UNVERIFIED`, and the test takes a few seconds.)
+   (`time::timeout`).
+5. Expect the lookup counter to be 0 and the register counter to be 1 (the
+   next registration is an hour away).
+6. On the last answer: `relay.online == false`, `relay.clients == None`,
+   `status == Healthy` (no relay server means no capacity check, D-A3-8).
+
+**8d. `connection_limit.rs`: the router cap does not give `at_capacity`.**
+In `accepts_up_to_cap_and_rejects_the_rest`, after `tally_verdicts` and
+before `release.notify_waiters()` (l.103-107), while the accepted connections
+are still held: poll `/v1/info` (deadline `SETTLE_DEADLINE`) until
+`connections.active == CAP`, then assert `status == Healthy` (D-A3-8). Keep
+the file's existing `fetch_dial_info` style for the request.
+
+**8e. `startup_config.rs`: `rejects_zero_max_relay_clients`.** `test_config()`
+with `enable_relay = true` and `max_relay_clients = Some(0)`. `init` fails,
+and the error contains `max_relay_clients`.
 
 ## 4. Things that are ambiguous or stale in task.md and the change docs
 
 For A3:
 
-1. **The lookup id is wrong today, so `controller_status` is always
-   `unverified`.** Not mentioned in task.md or the change doc. See OQ-4.
+1. **The registry lookup in `/v1/info` never matched**, so
+   `controller_status` was always `unverified`, and `identity` had a meaning
+   different from the M02 schema. Not mentioned in task.md or the change doc.
+   See D-A3-4 to D-A3-6.
 2. **No config key for the relay client cap.** AC-6 says how to count, not
-   what to compare with. See OQ-1.
-3. **"at_capacity" cannot be enforced with the `iroh-relay` 0.97 API.** See
-   OQ-2.
-4. **AC-17 "cached" lookup.** The plan removes the lookup from the handler
-   instead (D-A3-4). This meets the criterion and is stronger. Record as a
-   deviation.
-5. **Where the wire type lives.** Neither task.md nor the change doc says
-   that A4 needs `CoordinatorInfo` from a crate the substrate always links.
-   See OQ-3.
-6. **AC-6 is mostly substrate side.** A3 does only the server half (count and
-   `at_capacity`). Leave AC-6's Test column with the server tests and the note
-   "substrate skip in A4", so A4's close-out does not skip it.
-7. **task.md §3 says A3 runs "Parallel with A2".** A2 is done but not merged.
+   what to compare with. See D-A3-1.
+3. **The cap cannot be enforced with the `iroh-relay` 0.97 API.** See
+   D-A3-2.
+4. **AC-17 "cached" lookup.** The plan removes the lookup instead (D-A3-6).
+   This meets the criterion and is stronger.
+5. **AC-6 counts "relay clients".** The counters count connections, not
+   endpoints (D-A3-9). The difference is small and short, and AC-6's rule is
+   kept as written.
+6. **Where the wire type lives.** Neither task.md nor the change doc says that
+   A4 needs `CoordinatorInfo` from a crate the substrate always links. See
+   D-A3-12.
+7. **AC-6 is mostly substrate side.** A3 does only the server half. Leave
+   AC-6's Test column with the server tests and the note "substrate skip in
+   A4", so A4's close-out does not skip it.
+8. **task.md §3 says A3 runs "Parallel with A2".** A2 is done but not merged.
    See the branch rule in §0.
 
-Stale facts in task.md §1 that later slices rely on (fix them in the same
-docs commit):
+Stale facts in task.md that later slices rely on (fix them in the same docs
+commit, completion step 4):
 
-- "The info server state already holds the host `substrate_id`
+- §1: "The info server state already holds the host `substrate_id`
   (`crates/coordinator_iroh/src/info_endpoint.rs`), which is the passport
   root." Wrong. `InfoState.substrate_id` is the coordinator's own Iroh
   endpoint id, from a key made at random at every start
-  (`coordinator.rs:203`). It is not the host substrate's DID and is not
+  (`build_iroh_endpoint`). It is not the host substrate's DID and is not
   stable. The operator-passport change doc already says this ("A coordinator
-  role has no stable DID of its own"). B2 must pass the host substrate DID (or
-  its controller DID) into the info server itself. Rewrite the bullet to say
-  that.
-- B2: "*Unverified:* the test harness can run the info server with TLS." It
-  can: `crates/coordinator_iroh/tests/tls_rotation.rs` runs the info server
-  with `[tls]` and calls `https://{info_addr}/v1/info` (l.109). Rewrite as
-  verified, with that file as the evidence.
+  role has no stable DID of its own"). Rewrite: B2 must pass the host
+  substrate's node DID and controller into the info server, and report them
+  in `identity` (M02 meaning, D-A3-4).
+- §3 B2: "*Unverified:* the test harness can run the info server with TLS."
+  It can: `crates/coordinator_iroh/tests/tls_rotation.rs` runs the info
+  server with `[tls]` and calls `https://{info_addr}/v1/info` (l.109).
+  Rewrite as verified, with that file as the evidence.
 - The operator-passport change doc cites `coordinator.rs:193-200` for the
-  random key. It is `coordinator.rs:203` today, and will move again with this
-  slice's refactor (into `build_iroh_endpoint`). Cite the function name, not
-  the line.
+  random key. It is in `build_iroh_endpoint` (l.203 today). Cite the function
+  name, not the line.
 
 ## 5. Completion steps
 
@@ -852,57 +991,80 @@ The implementer must follow these steps.
 2. **Change doc** `docs/planning/changes/registry-listed-coordinators/change.md`:
    - AC-6 Test column: "server side:
      `crates/coordinator_iroh/tests/info_endpoint.rs`
-     (`relay_client_count_follows_connections_and_capacity`),
+     (`relay_count_follows_connections_and_capacity`),
+     `crates/coordinator_iroh/tests/connection_limit.rs`,
      `crates/coordinator_iroh/src/info_endpoint/tests.rs`; substrate skip in
      A4".
    - AC-17 Test column: `crates/coordinator_iroh/tests/info_endpoint.rs`
-     (`relay_client_count_follows_connections_and_capacity`,
-     `probes_do_not_trigger_registry_lookups`),
-     `crates/coordinator_iroh/src/info_endpoint/tests.rs`
-     (`record_check_runs_on_its_own_timer`).
+     (`relay_count_follows_connections_and_capacity`,
+     `probes_do_not_call_the_registry`).
    - Tick the task "Coordinator info endpoint: relay client count for
      `at_capacity`, cache the registry lookup."
-   - `## Deviations`: D-A3-1 to D-A3-9, one line each, plus any change you
+   - Add two lines next to the existing "Note for Slice A4" lines:
+     - "Note for Slice A4: use an entry only when `/v1/info` answers with
+       `status == "healthy"` and `relay.online == true`. Skip it when
+       `status` is `at_capacity` or `Unknown` (a value this build does not
+       know), and when `relay` is missing or `relay.online` is false: a
+       coordinator with no relay server reports `healthy`."
+     - "Note for Slice A4: read `/v1/info` with
+       `syneroym_core::coordinator_info::{CoordinatorInfo, INFO_PATH}`;
+       the URL is `info_url` (normalised, no trailing slash) followed by
+       `INFO_PATH`."
+   - `## Deviations`: D-A3-1 to D-A3-12, one line each, plus any change you
      made to this plan.
    - Add to `living-docs-touched` every living doc you change (it already
      lists `docs/system-architecture.md`). Keep `status: in-progress`.
 3. **Living docs.**
    - `docs/system-architecture.md`:
      - the paragraph that starts "`GET /v1/info` on a coordinator returns"
-       (~l.379): say that `status` is `at_capacity` when the relay has at
-       least `max_relay_clients` clients and `healthy` otherwise; that
-       `relay.clients` is the current relay client count and includes the
-       coordinator's own endpoint when it uses its own relay; that the cap is
-       reported, not enforced; that `connections` is the Syneroym connection
-       count and its cap `max_connections`; that `identity.controller_status`
-       comes from a background check of the registry (every 60 s until found,
-       then every 10 min), only for a coordinator that registers itself, and
-       never from the probe; that `identity.did` is the DID it registers
-       under.
+       (~l.379): `status` is `at_capacity` when the relay has at least
+       `max_relay_clients` open connections, `healthy` otherwise, and
+       `healthy` for a coordinator with no relay server; `relay.clients` is
+       the number of open relay connections (an endpoint that connects again
+       counts twice until its old connection closes); it includes the
+       coordinator's own endpoint only when that endpoint uses this relay and
+       the relay admits it (with `access = "everyone"`; a list never contains
+       the coordinator's random id); the cap is reported, not enforced;
+       `connections` is the Syneroym connection count and its cap
+       `max_connections`; `registry` (only when the coordinator registers
+       itself) gives the DID it registers under and whether the last
+       registration was accepted; `identity` is not reported yet.
      - config table (~l.355-374): add
        `[roles.coordinator.iroh] max_relay_clients` | None (no cap) | "Relay
-       clients at which `/v1/info` reports `at_capacity`. Reported only; the
-       relay still admits more clients."
+       connections at which `/v1/info` reports `at_capacity`. Reported only;
+       the relay still admits more clients. `0` stops startup."
+     - config table row `community_registry_url`, `share_in_registry`
+       (l.369): replace "registers itself in that registry once at startup"
+       with "registers itself in that registry at startup, and again every
+       hour (every minute after a failure), so its record does not expire."
    - `docs/system-requirements-spec.md`, `docs/developer-guide.md`,
      `docs/TERMINOLOGY.md`, `docs/planning/traceability-matrix.md`: no change
-     expected. Check once (`git grep -n 'v1/info'`).
-4. **Status and backlog.**
-   - `status.md`: add an A3 row (Done, the tool that implemented it, the
-     `mise run verify` result and the test files).
+     expected. Check once (`git grep -n -e 'v1/info' -e 'controller_status'`).
+4. **Status, task and backlog.**
+   - `status.md`: split the last row "A3 to A4, B1 to B3, C1 to C8 | Not
+     started" into an A3 row (Done, the tool that implemented it, the
+     `mise run verify` result and the test files) and a row "A4, B1 to B3, C1
+     to C8 | Not started".
+   - `task.md`: fix the stale facts listed in §4. Under §3 B2, add two
+     bullets:
+     - "`/v1/info` `identity` is `null` since A3. Fill `identity.did` with the
+       host substrate's node DID and `identity.controller_status` with the
+       controller check (the M02 meaning). These are also the passport root."
+     - "Decide whether the coordinator's own endpoint is always admitted on
+       its own relay. With `access = "passport"` it holds no lease, so it
+       would be refused and have no home relay. `spawn_http_info_server`
+       takes a ready `axum::Router`; merge the passport routes into it."
    - `docs/planning/deferred-backlog.md`:
-     - new row "The relay client cap is reported, not enforced"
-       (D-A3-2: `iroh-relay` 0.97 has no client limit; the access closure
-       could refuse, but it runs before a reconnect replaces the old
-       connection, and B2 rewrites it). Target `TBD`. Link
+     - new row "The relay client cap is reported, not enforced" (D-A3-2:
+       `iroh-relay` 0.97 has no client limit; the access closure could
+       refuse, but it runs before a reconnect replaces the old connection,
+       and B2 rewrites it). Target `TBD`. Link
        `crates/coordinator_iroh/src/info_endpoint.rs`.
      - the row "A coordinator registers itself once, so its registry record
-       expires after 2 hours" (~l.275): add that `controller_status` turns
-       `unverified` when this happens, and that the record check task added
-       here is the natural place to register again. Update its file links
-       (the registration code moves into `start_endpoint` and
-       `register_in_global_registry`).
+       expires after 2 hours" (l.274): resolved by D-A3-6. Move it to
+       "Recently resolved" with one line and the new file
+       `crates/coordinator_iroh/src/registration.rs`.
      - a row for any `TODO`/`FIXME` you leave.
-   - `task.md` §1: fix the stale bullets listed in §4 of this plan.
 5. **Stop.** Do not start A4 or B2. If you are not making progress after a
    reasonable number of attempts, stop and report what blocks you, with the
    failing output.
