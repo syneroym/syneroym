@@ -25,9 +25,9 @@ rework.
 
 | # | Shared part | Used by | Built in |
 | --- | --- | --- | --- |
-| X1 | **Home-relay handle.** The router builds the Iroh endpoint with an empty relay map and exposes a handle that inserts and removes the home relay at run time. The record publisher reads the relay URL from a `watch` channel and publishes again when it changes. | Coordinators (all resolve paths, `AC-8`, `AC-11`). Passport (`H-7`: register *before* the relay is inserted). | A1 |
-| X2 | **Curated-list framework in the registry.** A config list, entry checks (normalised id, no duplicates), a `GET` route with `max_age_secs`, and parent forwarding with a hop limit. | Coordinators (`AC-3`, `AC-13`, `AC-15`). Mailboxes (`GET /mailboxes`). | A2 |
-| X3 | **Rendezvous ranking helper and URL normaliser** (`SHA-256` over length-prefixed fields), in `crates/core`. | Substrate relay choice (`AC-4`). `roymctl ... --mailbox auto` (`K-3`). | A2 |
+| X1 | **Home-relay handle.** The router builds the Iroh endpoint with an empty relay map and exposes a handle that inserts and removes the home relay at run time. The record publisher reads the relay URL from a `watch` channel and publishes again when it changes. | Coordinators (all resolve paths, `AC-8`, `AC-11`). Passport (`H-7`: register *before* the relay is inserted). | A1 (Done) |
+| X2 | **Curated-list framework in the registry.** A config list, entry checks (normalised id, no duplicates), a `GET` route with `max_age_secs`, and parent forwarding with a hop limit. | Coordinators (`AC-3`, `AC-13`, `AC-15`). Mailboxes (`GET /mailboxes`). | A2 (Done) |
+| X3 | **Rendezvous ranking helper and URL normaliser** (`SHA-256` over length-prefixed fields), in `crates/core`. | Substrate relay choice (`AC-4`). `roymctl ... --mailbox auto` (`K-3`). | A2 (Done) |
 | X4 | **Passport core module.** Token id, issue, child token, chain check with limits read from the root only, deny list, lease table, distinct-subject counting, challenge store, request limits. | Relay (`H-*`). Dedicated mailbox (`D-*`). | B1 |
 | X5 | **ADR-0015 amendment.** Abilities `relay/home` and `mailbox/use`, the selector resource form, and *all* reserved facts keys (`max_nodes`, `max_services`, `max_bytes`, `max_messages`, `max_ttl_secs`). | Both passport uses. | S0 |
 | X6 | **Parked state in `async_queue`.** A row outside the attempt budget, with its own poll interval and deadline. The supervisor keeps its behaviour. | Proxy outbox and conversation outbox (`S-6`, `S-9`). | C1 |
@@ -35,9 +35,9 @@ rework.
 
 Facts checked in the code for this plan:
 
-- The relay URL in the published record is read once, but a republish trigger already exists (`crates/substrate/src/runtime/router.rs:218-222`, `set_republish_trigger`). X1 changes only the relay URL source, not the publisher loop.
-- The registry already accepts a byte-identical record with the same timestamp as a refresh, and rejects an older timestamp (`crates/community_registry/src/registry.rs:243-281`). So the registry side of `K-4` is mostly tests. *Unverified:* the same rule on the DHT path.
-- The relay access function is built once from config (`crates/coordinator_iroh/src/config.rs:82-98`), and any unknown `access` string falls through to `Everyone`. Both the strict parse (`H-6`) and the passport access function replace this one `match`.
+- After A1 the publisher reads a `watch` channel and wakes on `relay_rx.changed()` (`crates/substrate/src/runtime/publish.rs:100`).
+- The registry already accepts a byte-identical record with the same timestamp as a refresh, and rejects an older timestamp (`crates/community_registry/src/registry.rs:243-299`, `admit_endpoint`). So the registry side of `K-4` is mostly tests. *Unverified:* the same rule on the DHT path.
+- A1 made the `access` parse strict (`crates/core/src/config/access.rs`). Both the strict parse (`H-6`) and the passport access function replace the earlier `match`.
 - The info server state already holds the host `substrate_id` (`crates/coordinator_iroh/src/info_endpoint.rs`), which is the passport root.
 - X25519 is already in the build: `x25519-dalek` 2.0 comes in through `vodozemac`, which the conversation capability uses. It is not a direct workspace dependency. The router stream handshake uses `p256` ECDH and `aes-gcm` (`crates/router/src/route_handler/encryption.rs`). No crate in the workspace gives a sealed box.
 - `crates/ucan` depends only on `crates/identity`. `crates/community_registry`, `crates/router`, `crates/sdk` and `apps/roymctl` all depend on `crates/core`, so X3 in `crates/core` reaches every user.
@@ -79,14 +79,14 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 
 ### Track A — Registry-listed coordinators
 
-**A1 — Relay plumbing (M).** No new user feature yet. It makes the base that A4 and B3 build on.
+**A1 — Relay plumbing (M, Done).** No new user feature yet. It makes the base that A4 and B3 build on.
 - X1: home-relay handle. A fixed `url` goes through the same handle (insert at boot), so there is one code path. Define the source as an enum, for example `HomeRelaySource::{Fixed { url }, Registry}`. A4 adds the registry source, and B3 adds a passport step to `Fixed`.
 - Remove both n0 fallbacks; use the empty relay map (`AC-10`).
 - `parent_coordinator.iroh.url` becomes optional; write the dev profile relay explicitly; check the test configs that rely on a missing section (`AC-1`, `AC-14`, `AC-16`).
 - Remove `coordinator_discovery_url`.
 - Strict `access` parsing with the final shape from §2.4 (`H-6`). This is pulled forward from the passport change, because it is a safety fix on the same `match`, and the registry list assumes `access = "everyone"` is exact.
 
-**A2 — Curated lists and ranking (M).** Parallel with A3.
+**A2 — Curated lists and ranking (M, Done).** Parallel with A3.
 - X2 in `crates/community_registry`, generic over the entry type. The coordinator list is its first instance: `[[roles.community_registry.coordinators]]`, `GET /coordinators?transport=iroh-relay`, `max_age_secs`, checks at startup, parent forwarding with a hop counter (`AC-3`, `AC-13`, `AC-15`).
 - X3 in `crates/core`, with a fixed test vector so the ranking never changes between compiler versions (`AC-4`).
 - Done when adding a second list needs only a config field, an entry type and one route. C7 relies on this.

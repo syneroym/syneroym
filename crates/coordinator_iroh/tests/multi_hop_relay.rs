@@ -21,9 +21,7 @@ use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
 use syneroym_core::{
     asset_manifest::AssetRegistry,
-    config::{
-        AccessControl, CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig,
-    },
+    config::{CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig},
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
     },
@@ -283,9 +281,8 @@ async fn spawn_global_registry(base_path: &Path) -> Result<(EcosystemRegistry, S
     };
     config_r.substrate.enable_bep0044_dht = false;
     config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
-        parent_registry_url: None,
+        ..Default::default()
     });
     let mut registry_r = EcosystemRegistry::init(&config_r).await?;
     let r_url = registry_r.bind().await?;
@@ -505,9 +502,8 @@ async fn test_registry_propagation() -> Result<()> {
     };
     config_r.substrate.enable_bep0044_dht = false;
     config_r.roles.community_registry = Some(ServiceRegistryRole {
-        access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
-        parent_registry_url: None,
+        ..Default::default()
     });
     let mut registry_r = EcosystemRegistry::init(&config_r).await?;
     let r_url = registry_r.bind().await?;
@@ -521,9 +517,9 @@ async fn test_registry_propagation() -> Result<()> {
     };
     config_rp.substrate.enable_bep0044_dht = false;
     config_rp.roles.community_registry = Some(ServiceRegistryRole {
-        access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:0".to_string(),
         parent_registry_url: Some(r_url.clone()),
+        ..Default::default()
     });
     let mut registry_rp = EcosystemRegistry::init(&config_rp).await?;
     let rp_url = registry_rp.bind().await?;

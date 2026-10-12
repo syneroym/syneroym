@@ -155,6 +155,16 @@ lifecycle_hook_epoch_timeout_secs = 30
 access = "everyone"
 # Registry HTTP bind address
 http_bind_address = "0.0.0.0:7961"
+# How long a client may cache a curated list of this registry (seconds).
+# list_max_age_secs = 86400
+#
+# Open Iroh relays that substrates without their own relay may use.
+# Only list a coordinator whose [roles.coordinator] access is "everyone".
+# [[roles.community_registry.coordinators]]
+# transport = "iroh-relay"
+# url = "https://relay.example.org"
+# info_url = "https://relay.example.org:7974"
+# operator = "Example Org"
 
 # Coordinator: Rendezvous and relay service for peer-to-peer connection establishment
 [roles.coordinator]

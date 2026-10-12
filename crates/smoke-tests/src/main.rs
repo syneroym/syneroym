@@ -87,6 +87,7 @@ async fn setup_in_process_services(
         access: AccessControl::String("everyone".to_string()),
         http_bind_address: "127.0.0.1:7961".to_string(),
         parent_registry_url: None,
+        ..Default::default()
     });
     let mut registry =
         EcosystemRegistry::init(&reg_config).await.context("Failed to init in-process registry")?;

@@ -314,6 +314,9 @@ Lookup a specific service by its DID:
 ```bash
 # Returns signed endpoint info
 curl http://localhost:7961/lookup/did:key:z6MkhaXn...
+
+# Returns curated coordinators
+curl 'http://localhost:7961/coordinators?transport=iroh-relay'
 ```
 
 ### Managing Applications (Orchestrator)

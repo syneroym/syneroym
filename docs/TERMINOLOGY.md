@@ -41,6 +41,7 @@ neighbourhood.
 | **Instance DID** | The transport-level identity of one physical service instance, delegated from its master DID. Appears in the route preamble and the hosting substrate's keystore, never in the application model. See [ADR-0020](decisions/0020-stable-logical-service-identity.md). | Master DID. |
 | **Home relay** | The one Iroh relay that a substrate endpoint stays connected to, providing fallback connectivity when direct peer-to-peer connections fail. Its URL is advertised in the node's signed endpoint record. Confirmation by net-report probe means Iroh selected the relay, but does not prove the relay admits this node. | The relay server running locally on a coordinator. |
 | **Degraded mode** | Operating mode where a substrate runs with an empty relay map and no home relay. It can dial peers through their relays, but peers cannot reach it through a relay, and it defers publishing its endpoint record until a home relay is confirmed. | Normal operating mode with a confirmed home relay. |
+| **Curated list** | A hand-written list in the registry config that the registry serves over HTTP; the coordinator list is one. | Dynamic or self-registered directory entries. |
 
 ## Key phrasings
 

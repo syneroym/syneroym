@@ -6,6 +6,7 @@ use super::{
     access::CoordinatorAccess,
     sandbox::{AppSandboxRole, PodmanSandboxRole, RoymRole},
 };
+use crate::curated_list::CoordinatorEntry;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -28,12 +29,22 @@ fn default_registry_http_bind_address() -> String {
     "0.0.0.0:7961".to_string()
 }
 
+const fn default_list_max_age_secs() -> u64 {
+    86_400
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServiceRegistryRole {
     pub access: AccessControl,
     pub http_bind_address: String,
     pub parent_registry_url: Option<String>,
+    /// `[[roles.community_registry.coordinators]]`: open Iroh relays this
+    /// registry lists. Only list a coordinator whose
+    /// `[roles.coordinator] access` is "everyone".
+    pub coordinators: Vec<CoordinatorEntry>,
+    /// How long a client may cache any curated list of this registry.
+    pub list_max_age_secs: u64,
 }
 
 impl Default for ServiceRegistryRole {
@@ -42,6 +53,8 @@ impl Default for ServiceRegistryRole {
             access: Default::default(),
             http_bind_address: default_registry_http_bind_address(),
             parent_registry_url: None,
+            coordinators: Vec::new(),
+            list_max_age_secs: default_list_max_age_secs(),
         }
     }
 }
