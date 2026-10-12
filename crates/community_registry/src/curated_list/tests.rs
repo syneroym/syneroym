@@ -3,11 +3,16 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use axum::{Router, http::StatusCode};
+use axum::{
+    Json, Router,
+    extract::OriginalUri,
+    http::{StatusCode, header},
+    routing::get,
+};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use syneroym_core::{
-    config::{SubstrateConfig, roles::ServiceRegistryRole},
+    config::{RolesConfig, SubstrateConfig, roles::ServiceRegistryRole},
     curated_list::{
         CoordinatorEntry, CoordinatorFilter, CoordinatorTransport, CuratedList, ListEntry, fetch,
     },
@@ -32,10 +37,7 @@ async fn spawn_list_registry(
         role.list_max_age_secs = max_age;
     }
     let config = SubstrateConfig {
-        roles: syneroym_core::config::RolesConfig {
-            community_registry: Some(role),
-            ..Default::default()
-        },
+        roles: RolesConfig { community_registry: Some(role), ..Default::default() },
         ..Default::default()
     };
     let mut registry = EcosystemRegistry::init(&config).await?;
@@ -86,7 +88,7 @@ async fn spawn_stub_parent(mode: StubMode) -> (String, Arc<AtomicUsize>) {
                 let cnt = counter_clone.clone();
                 async move {
                     cnt.fetch_add(1, Ordering::SeqCst);
-                    ([(axum::http::header::CONTENT_TYPE, "application/json")], body)
+                    ([(header::CONTENT_TYPE, "application/json")], body)
                 }
             });
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -149,7 +151,7 @@ async fn query_with_bad_or_missing_transport_returns_bad_request() {
 #[tokio::test]
 async fn bad_config_or_duplicate_urls_stop_initialization() {
     let make_config = |coordinators| SubstrateConfig {
-        roles: syneroym_core::config::RolesConfig {
+        roles: RolesConfig {
             community_registry: Some(ServiceRegistryRole {
                 http_bind_address: "127.0.0.1:0".to_string(),
                 coordinators,
@@ -187,6 +189,36 @@ async fn bad_config_or_duplicate_urls_stop_initialization() {
     let err_duplicate = EcosystemRegistry::init(&duplicate_config).await.unwrap_err();
     let msg_duplicate = format!("{err_duplicate:#}");
     assert!(msg_duplicate.contains("roles.community_registry.coordinators[1] is a duplicate"));
+
+    let bad_parent_config = SubstrateConfig {
+        roles: RolesConfig {
+            community_registry: Some(ServiceRegistryRole {
+                http_bind_address: "127.0.0.1:0".to_string(),
+                parent_registry_url: Some("bad-url".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let err_bad_parent = EcosystemRegistry::init(&bad_parent_config).await.unwrap_err();
+    let msg_bad_parent = format!("{err_bad_parent:#}");
+    assert!(msg_bad_parent.contains("parent_registry_url"));
+
+    let query_parent_config = SubstrateConfig {
+        roles: RolesConfig {
+            community_registry: Some(ServiceRegistryRole {
+                http_bind_address: "127.0.0.1:0".to_string(),
+                parent_registry_url: Some("https://parent.example.org/?q=1".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let err_query_parent = EcosystemRegistry::init(&query_parent_config).await.unwrap_err();
+    let msg_query_parent = format!("{err_query_parent:#}");
+    assert!(msg_query_parent.contains("parent_registry_url"));
 }
 
 #[tokio::test]
@@ -287,6 +319,31 @@ async fn loop_prevention_at_hop_limit_does_not_call_parent() {
 }
 
 #[tokio::test]
+async fn large_hop_count_stops_forwarding_or_returns_bad_request() {
+    let (p_url, counter) = spawn_stub_parent(StubMode::Status500).await;
+    let (_r0, r0_url) = spawn_list_registry(vec![], Some(p_url), None).await.unwrap();
+
+    let client = Client::new();
+    let res_200 = client
+        .get(format!("{r0_url}/coordinators?transport=iroh-relay&hops=200"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_200.status(), StatusCode::OK);
+    let list = res_200.json::<CuratedList<CoordinatorEntry>>().await.unwrap();
+    assert!(list.entries.is_empty());
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+    let res_256 = client
+        .get(format!("{r0_url}/coordinators?transport=iroh-relay&hops=256"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_256.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn failing_parent_returns_bad_gateway() {
     for mode in [StubMode::Status500, StubMode::Body("not valid json"), StubMode::HangUp] {
         let (p_url, counter) = spawn_stub_parent(mode).await;
@@ -377,4 +434,54 @@ async fn generic_curated_list_route_supports_second_entry_type() {
     let dup_entries =
         vec![TestEntry { id: "dup".to_string() }, TestEntry { id: "dup".to_string() }];
     assert!(list_route::<TestEntry>(dup_entries, &role, client).is_err());
+}
+
+#[tokio::test]
+async fn forward_with_no_filter_carries_only_hops_query_param() {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+    let parent_app = Router::new().route(
+        "/test-entries",
+        get(move |OriginalUri(uri): OriginalUri| {
+            let tx = tx.clone();
+            async move {
+                if let Some(sender) = tx.lock().unwrap().take() {
+                    let _ = sender.send(uri.to_string());
+                }
+                Json(CuratedList {
+                    max_age_secs: 1800,
+                    entries: vec![TestEntry { id: "parent-item".to_string() }],
+                })
+            }
+        }),
+    );
+    let parent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let parent_port = parent_listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let _ = axum::serve(parent_listener, parent_app).await;
+    });
+
+    let client = Client::new();
+    let child_role = ServiceRegistryRole {
+        http_bind_address: "127.0.0.1:0".to_string(),
+        parent_registry_url: Some(format!("http://127.0.0.1:{parent_port}")),
+        list_max_age_secs: 1800,
+        ..Default::default()
+    };
+    let child_entries: Vec<TestEntry> = Vec::new();
+    let child_route = list_route::<TestEntry>(child_entries, &child_role, client.clone()).unwrap();
+    let child_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let child_port = child_listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let _ = axum::serve(child_listener, child_route).await;
+    });
+
+    let child_url = format!("http://127.0.0.1:{child_port}");
+    let list = fetch::<TestEntry>(&client, &child_url, &NoFilter {}, 0).await.unwrap();
+    assert_eq!(list.max_age_secs, 1800);
+    assert_eq!(list.entries.len(), 1);
+    assert_eq!(list.entries[0].id, "parent-item");
+
+    let received_uri = rx.await.unwrap();
+    assert_eq!(received_uri, "/test-entries?hops=1");
 }

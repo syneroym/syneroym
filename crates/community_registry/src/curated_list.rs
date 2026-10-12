@@ -35,7 +35,8 @@ struct HopQuery {
 /// `.merge(list_route(...)?)` line here.
 ///
 /// # Errors
-/// When an entry is bad or a duplicate. The registry then does not start.
+/// When an entry is bad or a duplicate, or when `parent_registry_url` is
+/// invalid. The registry then does not start.
 pub(crate) fn router(role: &ServiceRegistryRole) -> anyhow::Result<Router> {
     let client = reqwest::Client::builder()
         .timeout(dht_registry::HTTP_REQUEST_TIMEOUT)
@@ -49,12 +50,19 @@ pub(crate) fn list_route<E: ListEntry>(
     role: &ServiceRegistryRole,
     client: reqwest::Client,
 ) -> anyhow::Result<Router> {
+    let parent_registry_url = match role.parent_registry_url.as_deref() {
+        Some(parent) => Some(
+            curated_list::normalize_url(parent)
+                .with_context(|| format!("parent_registry_url {parent:?}"))?,
+        ),
+        None => None,
+    };
     curated_list::check_entries(&mut entries)?;
     info!(list = E::LIST_KEY, count = entries.len(), "serving curated list");
     let state = Arc::new(ListState {
         entries,
         max_age_secs: role.list_max_age_secs,
-        parent_registry_url: role.parent_registry_url.clone(),
+        parent_registry_url,
         client,
     });
     Ok(Router::new().route(&format!("/{}", E::LIST_KEY), get(serve_list::<E>)).with_state(state))
@@ -81,7 +89,7 @@ async fn serve_list<E: ListEntry>(
         Ok(list) => Ok(Json(list)),
         Err(e) => {
             warn!(list = E::LIST_KEY, parent, error = %e, "parent registry did not answer the list");
-            Err((StatusCode::BAD_GATEWAY, format!("parent registry did not answer: {e}")))
+            Err((StatusCode::BAD_GATEWAY, "parent registry did not answer".to_string()))
         }
     }
 }

@@ -141,7 +141,8 @@ pub async fn fetch<E: ListEntry>(
     filter: &E::Filter,
     hops: u8,
 ) -> anyhow::Result<CuratedList<E>> {
-    let base = registry_url.trim_end_matches('/');
+    let base =
+        normalize_url(registry_url).with_context(|| format!("registry URL {registry_url:?}"))?;
     let mut url = Url::parse(&format!("{base}/{}", E::LIST_KEY))
         .with_context(|| format!("registry URL {registry_url:?}"))?;
     {
@@ -160,12 +161,14 @@ pub async fn fetch<E: ListEntry>(
 /// form, because `x` and `x/` must be the same entry.
 ///
 /// # Errors
-/// When `raw` is not an `http` or `https` URL with a host, or has a user,
-/// password, query or fragment.
+/// When `raw` is not an `http` or `https` URL with a host, has a trailing dot
+/// in the host, has consecutive slashes in the path, or has a user, password,
+/// query or fragment.
 pub fn normalize_url(raw: &str) -> anyhow::Result<String> {
     let url = Url::parse(raw).with_context(|| format!("{raw:?} is not a valid URL"))?;
     ensure!(matches!(url.scheme(), "http" | "https"), "{raw:?}: scheme must be http or https");
-    ensure!(url.host_str().is_some(), "{raw:?}: URL has no host");
+    let host = url.host_str().ok_or_else(|| anyhow::anyhow!("{raw:?}: URL has no host"))?;
+    ensure!(!host.ends_with('.'), "{raw:?}: host has a trailing dot");
     ensure!(
         url.username().is_empty() && url.password().is_none(),
         "{raw:?}: URL has a user or password"
@@ -174,6 +177,7 @@ pub fn normalize_url(raw: &str) -> anyhow::Result<String> {
         url.query().is_none() && url.fragment().is_none(),
         "{raw:?}: URL has a query or fragment"
     );
+    ensure!(!url.path().contains("//"), "{raw:?}: URL path contains consecutive slashes");
     let s = url.as_str();
     Ok(s.strip_suffix('/').unwrap_or(s).to_owned())
 }

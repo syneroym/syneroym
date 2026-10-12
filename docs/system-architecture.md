@@ -369,6 +369,7 @@ A substrate is given its relay by a fixed setting. Nothing chooses a relay for i
 | `[roles.coordinator.iroh] community_registry_url`, `share_in_registry` | None, `false` | When both are set, the coordinator registers itself in that registry once at startup. |
 | `[roles.coordinator.webrtc] signalling_bind_address` | `0.0.0.0:7963` | The signalling server. |
 | `[roles.coordinator.webrtc] bootstrap_page_bind_address` | `0.0.0.0:7962` | The bootstrap page and the blind tunnel. |
+| `[roles.coordinator] tls` | none | The certificate and key of the relay. |
 | `[roles.community_registry] http_bind_address` | `0.0.0.0:7961` | The HTTP community registry. |
 | `[roles.community_registry] list_max_age_secs` | `86400` | How long clients may cache curated lists. |
 | `[[roles.community_registry.coordinators]]` | None | Curated open coordinators (`transport`, `url`, `info_url`, `operator`). Checked at startup. Operators list only relays with `access = "everyone"`. |
@@ -1746,9 +1747,9 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
     *   **Sz** starts in the private network and connects to its local Registry (**Rp**, set by `substrate.registry_url`).
     *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting. A substrate has an Iroh endpoint, and so can forward a stream, whenever `communication_interfaces` has `iroh`.
 
-> **Envisioned.** Today a substrate is given its relay by `parent_coordinator.iroh.url`. The community registry lists open coordinators in its config and forwards list requests to its parent registry. A substrate choosing one at run time and caching it is envisioned and not built yet.
+> **Envisioned.** Today a substrate is given its relay by `parent_coordinator.iroh.url`. The community registry serves and forwards `GET /coordinators?transport=iroh-relay`. A substrate querying the registry to find a local coordinator, selecting one at run time, and caching it is envisioned (A4).
 
-*   To find a local coordinator, **Sz** asks its local Registry **Rp** for available coordinators (`GET /coordinators?transport=iroh-relay`). If its own list is empty, **Rp** forwards the request to **R**. Selecting one at run time and caching its details on **Sz** is envisioned.
+*   The community registry **Rp** serves its configured list of open coordinators (`GET /coordinators?transport=iroh-relay`). If its own list is empty, **Rp** forwards the request to its parent registry **R**. In the envisioned design (A4), **Sz** asks **Rp** for available coordinators, ranks them deterministically, and selects one at run time.
 
 #### 2. Registry Entries at Deployment
 

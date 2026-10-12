@@ -33,6 +33,11 @@ fn normalize_url_rejects_invalid_urls() {
         "https://user@relay.example.org",
         "https://relay.example.org/?a=1",
         "https://relay.example.org/#x",
+        "https://h//",
+        "https://relay.example.org//",
+        "https://relay.example.org.",
+        "https://relay.example.org.:443/",
+        "https://relay.example.org/base//",
         "",
     ];
 
@@ -149,28 +154,66 @@ fn rank_normalizes_and_deduplicates_entries() {
     let ranked = rank(real_did, entries);
     assert_eq!(ranked.len(), 1);
     assert_eq!(ranked[0].url, "https://relay-a.example.org");
+    assert_eq!(ranked[0].operator, "A1");
+
+    let entry_b = CoordinatorEntry {
+        transport: CoordinatorTransport::IrohRelay,
+        url: "https://relay-b.example.org".to_string(),
+        info_url: "https://relay-b.example.org:7974".to_string(),
+        operator: "B".to_string(),
+    };
+    let entry_c = CoordinatorEntry {
+        transport: CoordinatorTransport::IrohRelay,
+        url: "https://relay-c.example.org".to_string(),
+        info_url: "https://relay-c.example.org:7974".to_string(),
+        operator: "C".to_string(),
+    };
+    let unnorm = CoordinatorEntry {
+        transport: CoordinatorTransport::IrohRelay,
+        url: "HTTPS://Relay-A.example.org:443/".to_string(),
+        info_url: "https://relay-a.example.org:7974".to_string(),
+        operator: "A".to_string(),
+    };
+    let norm = CoordinatorEntry {
+        transport: CoordinatorTransport::IrohRelay,
+        url: "https://relay-a.example.org".to_string(),
+        info_url: "https://relay-a.example.org:7974".to_string(),
+        operator: "A".to_string(),
+    };
+    let ranked_with_unnorm = rank(real_did, vec![unnorm, entry_b.clone(), entry_c.clone()]);
+    let ranked_with_norm = rank(real_did, vec![norm, entry_b, entry_c]);
+    let urls_unnorm: Vec<_> = ranked_with_unnorm.iter().map(|e| e.url.as_str()).collect();
+    let urls_norm: Vec<_> = ranked_with_norm.iter().map(|e| e.url.as_str()).collect();
+    assert_eq!(urls_unnorm, urls_norm);
 }
 
 #[test]
 fn rank_preserves_first_choice_when_non_first_entry_removed() {
     let other = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-    let entries = vec![
-        CoordinatorEntry {
-            transport: CoordinatorTransport::IrohRelay,
-            url: "https://relay-b.example.org".to_string(),
-            info_url: "https://relay-b.example.org:7974".to_string(),
-            operator: "B".to_string(),
-        },
-        CoordinatorEntry {
-            transport: CoordinatorTransport::IrohRelay,
-            url: "https://relay-c.example.org".to_string(),
-            info_url: "https://relay-c.example.org:7974".to_string(),
-            operator: "C".to_string(),
-        },
-    ];
+    let entry_a = CoordinatorEntry {
+        transport: CoordinatorTransport::IrohRelay,
+        url: "https://relay-a.example.org".to_string(),
+        info_url: "https://relay-a.example.org:7974".to_string(),
+        operator: "A".to_string(),
+    };
+    let entry_b = CoordinatorEntry {
+        transport: CoordinatorTransport::IrohRelay,
+        url: "https://relay-b.example.org".to_string(),
+        info_url: "https://relay-b.example.org:7974".to_string(),
+        operator: "B".to_string(),
+    };
+    let entry_c = CoordinatorEntry {
+        transport: CoordinatorTransport::IrohRelay,
+        url: "https://relay-c.example.org".to_string(),
+        info_url: "https://relay-c.example.org:7974".to_string(),
+        operator: "C".to_string(),
+    };
 
-    let ranked = rank(other, entries);
-    assert_eq!(ranked[0].url, "https://relay-c.example.org");
+    let full = rank(other, vec![entry_a, entry_b.clone(), entry_c.clone()]);
+    let reduced = rank(other, vec![entry_b, entry_c]);
+
+    assert_eq!(full[0].url, "https://relay-c.example.org");
+    assert_eq!(full[0].url, reduced[0].url);
 }
 
 #[test]
