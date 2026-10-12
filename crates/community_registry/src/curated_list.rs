@@ -14,7 +14,7 @@ use serde::Deserialize;
 use syneroym_core::{
     config::roles::ServiceRegistryRole,
     curated_list::{self, CuratedList, ListEntry},
-    dht_registry,
+    registry_http,
 };
 use tracing::{debug, info, warn};
 
@@ -39,7 +39,7 @@ struct HopQuery {
 /// invalid. The registry then does not start.
 pub(crate) fn router(role: &ServiceRegistryRole) -> anyhow::Result<Router> {
     let client = reqwest::Client::builder()
-        .timeout(dht_registry::HTTP_REQUEST_TIMEOUT)
+        .timeout(registry_http::HTTP_REQUEST_TIMEOUT)
         .build()
         .context("building the curated-list HTTP client")?;
     Ok(Router::new().merge(list_route(role.coordinators.clone(), role, client)?))

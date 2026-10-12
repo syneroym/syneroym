@@ -1,5 +1,3 @@
-use std::time;
-
 use bytes::Bytes;
 use pkarr::{Client, PublicKey, SignedPacket, dns::rdata::RData};
 use reqwest::Client as ReqwestClient;
@@ -9,16 +7,7 @@ use super::{
     master_anchor::{MASTER_ANCHOR_SCHEMA_V1, MasterAnchorPayload, SignedMasterAnchor},
     types::{EndpointInfo, EndpointType, PKARR_DNS_NAME, SignedEndpointInfo},
 };
-
-/// How long a registry request waits before giving up. `reqwest::Client`
-/// sets no default -- an unresponsive-but-not-refusing registry (packets
-/// dropped rather than an RST) would otherwise stall the caller for the OS
-/// connect timeout, which on some networks is minutes, not seconds. Every
-/// call site here treats a registry failure as non-fatal already (warn and
-/// continue, or fall back to the DHT), so a short timeout only trades a
-/// slightly less patient retry loop for never blocking the caller this long.
-/// Also used for curated-list requests.
-pub const HTTP_REQUEST_TIMEOUT: time::Duration = time::Duration::from_secs(10);
+use crate::registry_http;
 
 #[derive(Debug)]
 pub struct RegistryClient {
@@ -26,7 +15,7 @@ pub struct RegistryClient {
     registry_url: Option<String>,
     /// Built once and reused across every request this client makes, rather
     /// than a fresh `ReqwestClient::new()` per call: cheaper (connection
-    /// pooling) and the only place the timeout above needs to be set.
+    /// pooling) and the only place the timeout needs to be set.
     http_client: ReqwestClient,
 }
 
@@ -86,7 +75,7 @@ impl RegistryClient {
     pub fn new(enable_dht: bool, registry_url: Option<String>) -> Self {
         let dht_client = if enable_dht { Client::builder().build().ok() } else { None };
         let http_client = ReqwestClient::builder()
-            .timeout(HTTP_REQUEST_TIMEOUT)
+            .timeout(registry_http::HTTP_REQUEST_TIMEOUT)
             .build()
             .unwrap_or_else(|_| ReqwestClient::new());
         Self { dht_client, registry_url, http_client }

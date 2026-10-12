@@ -181,7 +181,7 @@ Decided 2026-10-11:
 - D-A2-13: The entry ID for rendezvous ranking is `url` alone.
 - `list_route` is `pub(crate)` within `crates/community_registry`, scoped to the registry's own router assembly.
 - Test helper `spawn_list_registry` takes a third parameter (`list_max_age_secs: Option<u64>`) to configure custom TTLs in tests.
-- Note for A4 (forward timeout budget): every hop uses the 10 s timeout (`HTTP_REQUEST_TIMEOUT`). Multi-hop forward chains can exceed a client's 10 s timeout. Slice A4 must design hop-budgeted or decreasing forward timeouts for substrate discovery.
+- Note for A4 (forward timeout budget): every hop uses the 10 s timeout (`registry_http::HTTP_REQUEST_TIMEOUT`). Multi-hop forward chains can exceed a client's 10 s timeout. Slice A4 must design hop-budgeted or decreasing forward timeouts for substrate discovery.
 - The registry checks `parent_registry_url` at startup with `normalize_url` and refuses to start if it is not a valid `http` or `https` URL, has a query, has a trailing dot in the host, or has consecutive slashes in the path.
 
 ## Close-out
