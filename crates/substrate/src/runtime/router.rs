@@ -169,7 +169,7 @@ async fn setup_router(
     .await?;
 
     if let Some(handle) = router.home_relay() {
-        home_relay::start_home_relay(handle, relay_source);
+        home_relay::connect_home_relay(handle, relay_source);
     }
 
     // `ProxyRouter` (the sole `ServiceProxy`) exists only now -- wired the

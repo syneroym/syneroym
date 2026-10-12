@@ -28,9 +28,9 @@ impl HomeRelaySource {
     }
 }
 
-/// Starts setting the home relay in the background, or logs the degraded
+/// Connects to the home relay in the background, or logs the degraded
 /// mode warning when there is no source. Never blocks.
-pub(super) fn start_home_relay(home_relay: HomeRelay, source: Option<HomeRelaySource>) {
+pub(super) fn connect_home_relay(home_relay: HomeRelay, source: Option<HomeRelaySource>) {
     let Some(source) = source else {
         warn!(
             "parent_coordinator.iroh.url is not set: the Iroh endpoint has no home relay \
