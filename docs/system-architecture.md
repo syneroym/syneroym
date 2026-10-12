@@ -1747,9 +1747,9 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
     *   **Sz** starts in the private network and connects to its local Registry (**Rp**, set by `substrate.registry_url`).
     *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting. A substrate has an Iroh endpoint, and so can forward a stream, whenever `communication_interfaces` has `iroh`.
 
-> **Envisioned.** Today a substrate is given its relay by `parent_coordinator.iroh.url`. The community registry serves and forwards `GET /coordinators?transport=iroh-relay`. A substrate querying the registry to find a local coordinator, selecting one at run time, and caching it is envisioned (A4).
+> **Envisioned.** Today a substrate is given its relay by `parent_coordinator.iroh.url`. The community registry serves and forwards `GET /coordinators?transport=iroh-relay`. A substrate querying the registry to find a local coordinator, selecting one at run time, and caching it is envisioned.
 
-*   The community registry **Rp** serves its configured list of open coordinators (`GET /coordinators?transport=iroh-relay`). If its own list is empty, **Rp** forwards the request to its parent registry **R**. In the envisioned design (A4), **Sz** asks **Rp** for available coordinators, ranks them deterministically, and selects one at run time.
+*   The community registry **Rp** serves its configured list of open coordinators (`GET /coordinators?transport=iroh-relay`). If its own list is empty, **Rp** forwards the request to its parent registry **R**. In the envisioned design, **Sz** asks **Rp** for available coordinators, ranks them deterministically, and selects one at run time.
 
 #### 2. Registry Entries at Deployment
 
@@ -2101,7 +2101,7 @@ A lookup checks every record it gets:
 
 The community registry may have a parent registry (`parent_registry_url`). A registry passes each public record on to its parent.
 
-A registry also serves curated lists from its config, such as `GET /coordinators?transport=iroh-relay`. The response contains `max_age_secs` and an array of coordinator entries (`transport`, `url`, `info_url`, `operator`). At startup the registry normalises URLs (lowercasing scheme and host, removing default ports and trailing slashes) and rejects invalid URLs or duplicates. When its own list is empty and `parent_registry_url` is set, the registry forwards the request to its parent. Forwarding stops after 3 hops. If the parent fails, returns an invalid body, or cannot be reached, the registry returns `502 Bad Gateway`. Entries are ranked with a deterministic SHA-256 rendezvous key over the chooser DID and the normalised URL. No substrate uses the list yet; substrate resolution and caching are envisioned.
+A registry also serves curated lists from its config, such as `GET /coordinators?transport=iroh-relay`. The response contains `max_age_secs` and an array of coordinator entries (`transport`, `url`, `info_url`, `operator`). At startup the registry normalises URLs (lowercasing scheme and host, removing default ports and trailing slashes) and rejects invalid URLs or duplicates. The registry also checks `parent_registry_url` at startup and refuses to start if it is not a valid `http` or `https` URL, or has a query, a trailing dot in the host, or consecutive slashes in the path. When its own list is empty and `parent_registry_url` is set, the registry forwards the request to its parent. Forwarding stops after 3 hops. If the parent fails, returns an invalid body, or cannot be reached, the registry returns `502 Bad Gateway`. Entries are ranked with a deterministic SHA-256 rendezvous key over the chooser DID and the normalised URL. No substrate uses the list yet; substrate resolution and caching are envisioned.
 
 A coordinator that sets `share_in_registry` and `community_registry_url` registers itself once at startup, with retries. It has no republish loop.
 

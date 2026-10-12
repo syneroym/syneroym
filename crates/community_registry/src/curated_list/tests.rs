@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -17,7 +17,7 @@ use syneroym_core::{
         CoordinatorEntry, CoordinatorFilter, CoordinatorTransport, CuratedList, ListEntry, fetch,
     },
 };
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::oneshot};
 
 use super::list_route;
 use crate::EcosystemRegistry;
@@ -354,6 +354,8 @@ async fn failing_parent_returns_bad_gateway() {
             client.get(format!("{c_url}/coordinators?transport=iroh-relay")).send().await.unwrap();
 
         assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        let body = res.text().await.unwrap();
+        assert_eq!(body, "parent registry did not answer");
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
@@ -438,8 +440,8 @@ async fn generic_curated_list_route_supports_second_entry_type() {
 
 #[tokio::test]
 async fn forward_with_no_filter_carries_only_hops_query_param() {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+    let (tx, rx) = oneshot::channel();
+    let tx = Arc::new(Mutex::new(Some(tx)));
     let parent_app = Router::new().route(
         "/test-entries",
         get(move |OriginalUri(uri): OriginalUri| {
