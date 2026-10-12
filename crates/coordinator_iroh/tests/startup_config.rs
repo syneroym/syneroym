@@ -85,3 +85,16 @@ async fn boots_without_parent_relay_url() {
     let coord = CoordinatorIroh::init(&config).await;
     assert!(coord.is_ok(), "expected coordinator to boot without parent relay url");
 }
+
+#[tokio::test]
+async fn rejects_zero_max_relay_clients() {
+    let mut config = test_config();
+    let iroh_cfg = config.roles.coordinator.as_mut().unwrap().iroh.as_mut().unwrap();
+    iroh_cfg.enable_relay = true;
+    iroh_cfg.max_relay_clients = Some(0);
+
+    let result = CoordinatorIroh::init(&config).await;
+    assert!(result.is_err(), "expected error for max_relay_clients = 0");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("max_relay_clients"), "unexpected error message: {err}");
+}

@@ -535,7 +535,6 @@ change them as below. `coordinator.rs` loses about 90 lines.
 //! register again on a timer so the record does not expire.
 
 use std::{
-    future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };

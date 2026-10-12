@@ -48,7 +48,7 @@ This change builds that for the Iroh relay. A community registry operator lists 
 | AC-3 | The registry returns its configured list from `GET /coordinators?transport=iroh-relay`. Each entry has `transport`, `url`, `info_url` (where `GET /v1/info` is served, because it has its own port), and `operator`. The response says how long a client may cache it (`max_age_secs`). | `crates/community_registry/src/curated_list/tests.rs` (`registry_serves_its_configured_curated_list`, `no_parent_and_empty_list_returns_empty_list_ok`), `crates/substrate/tests/curated_list_e2e.rs` (`booted_substrate_serves_curated_coordinators_list`) |
 | AC-4 | The choice is deterministic. The substrate ranks the entries by SHA-256 over a fixed byte layout (see Design) and takes the first. The same inputs always give the same result on every version of the compiler. | ranking helper only (`crates/core/src/curated_list/tests.rs`); substrate use in A4 |
 | AC-5 | The substrate keeps the list and its choice on disk. It does not ask the registry again until `max_age_secs` has passed. If a refresh fails, the old list stays in use, also after it has expired. | |
-| AC-6 | Before it uses an entry, the substrate reads `info_url`. It skips an entry that cannot be reached or reports `at_capacity`, and takes the next entry in rank order. `at_capacity` is computed from the number of relay clients, not router connections. The count is the `accepts` counter minus the `disconnects` counter of `iroh-relay` (`server/metrics.rs`), which has no direct gauge. | |
+| AC-6 | Before it uses an entry, the substrate reads `info_url`. It skips an entry that cannot be reached or reports `at_capacity`, and takes the next entry in rank order. `at_capacity` is computed from the number of relay clients, not router connections. The count is the `accepts` counter minus the `disconnects` counter of `iroh-relay` (`server/metrics.rs`), which has no direct gauge. | server side: `crates/coordinator_iroh/tests/info_endpoint.rs` (`relay_count_follows_connections_and_capacity`), `crates/coordinator_iroh/tests/connection_limit.rs`, `crates/coordinator_iroh/src/info_endpoint/tests.rs`; substrate skip in A4 |
 | AC-7 | A saved choice is kept while it works, even if a new list changes the ranking. The substrate picks again only when the choice is removed from the list, or after 3 connection failures within 5 minutes. | |
 | AC-8 | When the relay changes at run time, the endpoint switches relay without a restart. The substrate then publishes its endpoint record again with the new relay URL. | |
 | AC-9 | The substrate is in degraded mode only when all three are true: there is no `url`, there is no saved choice or list, and there is no `registry_url` or the registry cannot be reached. In degraded mode the endpoint has an empty relay map (`RelayMode::Custom(RelayMap::empty())`), the log has a clear warning, and the substrate retries the registry with backoff when `registry_url` is set. | |
@@ -59,7 +59,7 @@ This change builds that for the Iroh relay. A community registry operator lists 
 | AC-14 | `coordinator_discovery_url` is removed from the config. | `crates/core/src/config/tests.rs` |
 | AC-15 | A registry with an empty list asks its parent registry and returns that answer. Forwarding stops after 3 hops. | `crates/community_registry/src/curated_list/tests.rs` (`empty_list_forwards_to_parent_registry`, `hop_limit_stops_forwarding_chain`, `loop_prevention_at_hop_limit_does_not_call_parent`) |
 | AC-16 | A coordinator role (Iroh or WebRTC) never resolves its own parent relay from the registry, even when `url` is not set. | |
-| AC-17 | `GET /v1/info` reports the number of relay clients. The registry lookup inside it is cached, so many probes do not cause many lookups. | |
+| AC-17 | `GET /v1/info` reports the number of relay clients. The registry lookup inside it is cached, so many probes do not cause many lookups. | `crates/coordinator_iroh/tests/info_endpoint.rs` (`relay_count_follows_connections_and_capacity`, `probes_do_not_call_the_registry`) |
 
 ## Design
 
@@ -96,6 +96,10 @@ Rank key for an entry: `SHA-256( len(did) || did || len(url) || url )`, where `d
 Note for Slice A4: The normalised URL has no trailing slash, but the published record uses `RelayUrl` form with a trailing slash. Slice A4 must compare a saved choice and a list entry through `normalize_url`, never as raw strings, and must parse the chosen URL into `RelayUrl` before `HomeRelay::set`.
 
 Note for Slice A4: An empty list is cached with the normal `max_age_secs`. Slice A4 must not treat an empty list as a usable saved list, to avoid blocking retry with backoff.
+
+Note for Slice A4: use an entry only when `/v1/info` answers with `status == "healthy"` and `relay.online == true`. Skip it when `status` is `at_capacity` or `Unknown` (a value this build does not know), and when `relay` is missing or `relay.online` is false: a coordinator with no relay server reports `healthy`.
+
+Note for Slice A4: read `/v1/info` with `syneroym_core::coordinator_info::{CoordinatorInfo, INFO_PATH}`; the URL is `info_url` (normalised, no trailing slash) followed by `INFO_PATH`.
 
 ### Substrate side
 
@@ -146,7 +150,7 @@ Decided 2026-10-11:
 - [x] Run degraded mode once (empty relay map, then `insert_relay`) and record the result here.
 - [x] Config: make `url` optional, remove `coordinator_discovery_url`, add the registry `coordinators` list and its checks (URL normalisation, duplicates). Parse `[roles.coordinator] access` strictly, in the final shape from [operator-passport](../operator-passport/change.md) (H-6), because an unknown value opens the relay to everyone today and the list relies on `access = "everyone"` being exact.
 - [x] Registry: `GET /coordinators` and parent forwarding with a hop limit.
-- [ ] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
+- [x] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
 - [ ] Substrate: background resolve, rank, cache, fail over, degraded mode, relay switch at run time, publish the record again.
 - [x] Remove both n0 fallbacks. Check the tests that rely on them.
 - [x] Coordinator roles: never auto-resolve. Test configs that rely on a missing section.
@@ -183,6 +187,18 @@ Decided 2026-10-11:
 - Test helper `spawn_list_registry` takes a third parameter (`list_max_age_secs: Option<u64>`) to configure custom TTLs in tests.
 - Note for A4 (forward timeout budget): every hop uses the 10 s timeout (`registry_http::HTTP_REQUEST_TIMEOUT`). Multi-hop forward chains can exceed a client's 10 s timeout. Slice A4 must design hop-budgeted or decreasing forward timeouts for substrate discovery.
 - The registry checks `parent_registry_url` at startup with `normalize_url` and refuses to start if it is not a valid `http` or `https` URL, has a query, has a trailing dot in the host, or has consecutive slashes in the path.
+- D-A3-1: Relay client cap key `[roles.coordinator.iroh] max_relay_clients: Option<u64>`, default `None` (no cap); `max_connections` continues to cap router connections only.
+- D-A3-2: The relay client cap is reported via `/v1/info`, not enforced at connection admission (iroh-relay 0.97 has no client limit and access closure runs before reconnect cleanup).
+- D-A3-3: Setting `max_relay_clients = 0` stops startup with an error naming the key; setting it with `enable_relay = false` logs a warning.
+- D-A3-4: `/v1/info` leaves `identity` as `null` until the host substrate's node DID and controller verification are wired in Slice B2.
+- D-A3-5: Registry state has its own object `registry` in `/v1/info` (`did` and `registered`), present only when the coordinator registers itself.
+- D-A3-6: The coordinator refreshes its registry registration on a timer (1 hour after success, 60s after failure) rather than registering once; the `/v1/info` handler performs no network lookup.
+- D-A3-7: Coordinator registry registration uses `RegistryClient::register` with standard 10s HTTP timeout and no DHT publication.
+- D-A3-8: Coordinator `/v1/info` `status` evaluates relay connections against `max_relay_clients` only; router connections at `max_connections` do not yield `at_capacity`.
+- D-A3-9: Relay client count is calculated from iroh-relay server metrics as `accepts.saturating_sub(disconnects)`, counting open connections rather than unique endpoints.
+- D-A3-10: The coordinator's own endpoint is counted toward relay clients only when admitted by relay access (e.g. `access = "everyone"`).
+- D-A3-11: `/v1/info` `status` is serialized as typed `CoordinatorStatus` enum (`healthy`, `at_capacity`, `unknown` fallback); added `relay.clients`, `relay.max_clients`, and `registry`.
+- D-A3-12: `/v1/info` wire types move to `crates/core::coordinator_info` so substrate resolver (Slice A4) can access them without depending on `syneroym-coordinator-iroh`.
 
 ## Close-out
 

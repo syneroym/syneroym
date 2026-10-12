@@ -38,7 +38,7 @@ Facts checked in the code for this plan:
 - After A1 the publisher reads a `watch` channel and wakes on `relay_rx.changed()` (`crates/substrate/src/runtime/publish.rs:100`).
 - The registry already accepts a byte-identical record with the same timestamp as a refresh, and rejects an older timestamp (`crates/community_registry/src/registry.rs:243-299`, `admit_endpoint`). So the registry side of `K-4` is mostly tests. *Unverified:* the same rule on the DHT path.
 - A1 made the `access` parse strict (`crates/core/src/config/access.rs`). Both the strict parse (`H-6`) and the passport access function replace the earlier `match`.
-- The info server state already holds the host `substrate_id` (`crates/coordinator_iroh/src/info_endpoint.rs`), which is the passport root.
+- `InfoState.substrate_id` (`crates/coordinator_iroh/src/info_endpoint.rs`) is the coordinator's random endpoint ID, not the host node ID. B2 must pass the host substrate's node DID and controller into the info server when building passport routes.
 - X25519 is already in the build: `x25519-dalek` 2.0 comes in through `vodozemac`, which the conversation capability uses. It is not a direct workspace dependency. The router stream handshake uses `p256` ECDH and `aes-gcm` (`crates/router/src/route_handler/encryption.rs`). No crate in the workspace gives a sealed box.
 - `crates/ucan` depends only on `crates/identity`. `crates/community_registry`, `crates/router`, `crates/sdk` and `apps/roymctl` all depend on `crates/core`, so X3 in `crates/core` reaches every user.
 
@@ -91,7 +91,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - X3 in `crates/core`, with a fixed test vector so the ranking never changes between compiler versions (`AC-4`).
 - Done when adding a second list needs only a config field, an entry type and one route. C7 relies on this.
 
-**A3 — Coordinator info (S).** Parallel with A2.
+**A3 — Coordinator info (S, Done).** Parallel with A2.
 - Relay client count from `accepts` minus `disconnects`; `at_capacity` from that count (`AC-6`, server side).
 - Cache the registry lookup in `/v1/info` (`AC-17`).
 
@@ -109,7 +109,9 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 
 **B2 — Relay use, coordinator side (M).** Needs A1, A3 (same info server) and B1.
 - `access = "passport"` (and the combined form); a run-time access function that reads the lease table.
-- `/v1/home-relay/challenge` and `/register` on the info server; refuse to start with passport access and no TLS (`P-10`). *Unverified:* the test harness can run the info server with TLS. Check this first, because the integration test needs it.
+- `/v1/home-relay/challenge` and `/register` on the info server; refuse to start with passport access and no TLS (`P-10`). The test harness running the info server with TLS is verified by `crates/coordinator_iroh/tests/tls_rotation.rs`.
+- `/v1/info` `identity` reports `null` until B2 passes the host substrate's node DID and controller into the info server.
+- Decide whether the coordinator's own endpoint is admitted on its own relay with passport access.
 - Leases survive a restart; deny by id; `roymctl coordinator passport deny` and `leases` (`P-4` to `P-6`, `P-8`, `H-1` to `H-3`).
 
 **B3 — Relay use, substrate side (M).** Needs A1 and B2. It does not need A4.

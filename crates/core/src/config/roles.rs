@@ -303,6 +303,9 @@ pub struct CoordinatorIrohConfig {
     pub share_in_registry: bool,
     pub idle_timeout_secs: Option<u64>,
     pub max_connections: Option<usize>,
+    /// Relay connections at which `/v1/info` reports `at_capacity`. Reported
+    /// only: the relay still admits more clients. `None` means no cap.
+    pub max_relay_clients: Option<u64>,
     pub info_http_bind_address: Option<String>,
 }
 
@@ -317,6 +320,7 @@ impl Default for CoordinatorIrohConfig {
             share_in_registry: false,
             idle_timeout_secs: None,
             max_connections: None,
+            max_relay_clients: None,
             info_http_bind_address: None,
         }
     }

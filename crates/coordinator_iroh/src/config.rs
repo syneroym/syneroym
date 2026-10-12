@@ -10,7 +10,7 @@ use iroh_relay::server::{self as relay, QuicConfig, ServerConfig};
 use relay::{Access, AccessConfig, CertConfig, RelayConfig, TlsConfig};
 use rustls::{ServerConfig as RustlsServerConfig, crypto::ring};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use syneroym_core::config::{CoordinatorAccess, CoordinatorRole};
+use syneroym_core::config::{CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole};
 use tokio::task;
 use tracing::warn;
 
@@ -49,6 +49,22 @@ pub fn relay_access(access: &CoordinatorAccess) -> Result<AccessConfig> {
              yet; use the plain list form access = [...]"
         ),
     }
+}
+
+/// Checks `[roles.coordinator.iroh] max_relay_clients`.
+///
+/// # Errors
+/// For `0`, which would always report `at_capacity`.
+pub fn check_relay_cap(iroh_cfg: &CoordinatorIrohConfig) -> Result<()> {
+    match iroh_cfg.max_relay_clients {
+        Some(0) => bail!("[roles.coordinator.iroh] max_relay_clients must be at least 1"),
+        Some(_) if !iroh_cfg.enable_relay => warn!(
+            "[roles.coordinator.iroh] max_relay_clients is set, but enable_relay is false; it has \
+             no effect"
+        ),
+        _ => {}
+    }
+    Ok(())
 }
 
 fn restricted_to(ids: &[String]) -> Result<AccessConfig> {
