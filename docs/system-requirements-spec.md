@@ -157,7 +157,7 @@ The following table lists key personas in the Syneroym ecosystem. A single perso
 
 **Federation.** The process by which independent providers and infrastructure nodes interoperate. They share discovery, reputation, and messaging capabilities without a central authority.
 
-**Home Relay / Coordinator Relay.** A coordinator relay endpoint configured at the substrate node level (`parent_coordinator.iroh.url`). It provides fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the relay connectivity of the substrate node rather than binding to individual relays.
+**Home Relay / Coordinator Relay.** A coordinator relay endpoint confirmed at the substrate node level (`parent_coordinator.iroh.url` or dynamic runtime assignment). It provides fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the relay connectivity of the substrate node rather than binding to individual relays. A substrate without a confirmed home relay operates in degraded mode.
 
 **Infrastructure Provider.** A person or organization that provides hardware or virtual infrastructure for Service Providers to host applications on a lease.
 
@@ -245,7 +245,7 @@ These requirements apply to all business domains and SynApps.
 
 ### Infrastructure & Hosting
 
-- Service Providers run business applications on supported commodity computers that they control. They can also run applications on infrastructure operated under an explicit agreement (`crates/identity/src/substrate.rs:48`). This works even when the host is behind NAT or a firewall (`crates/router/src/net_iroh.rs:94`).
+- Service Providers run business applications on supported commodity computers that they control. They can also run applications on infrastructure operated under an explicit agreement (`crates/identity/src/substrate.rs:48`). This works even when the host is behind NAT or a firewall (`crates/router/src/net_iroh.rs:130`).
 - Infrastructure Providers make hardware (such as older personal computers or cloud virtual machines) available to Service Providers. Service Providers use this hardware to host applications or application components under explicit node agreements (`crates/identity/src/substrate.rs:48`).
   > **Envisioned.** Not built yet. Commercial leased hosting accounting and automated compute marketplaces. Today infrastructure nodes are claimed and authorized via ControllerAgreement and roymctl.
 - Service Providers can view service status in plain language (`crates/coordinator_iroh/src/info_endpoint.rs:104`). They manage routine operations through a web user interface or command-line interface without shell access (`crates/roym_web/ui/`).
@@ -264,7 +264,7 @@ These requirements apply to all business domains and SynApps.
 
 ### Connectivity & Offline Behaviour
 
-- The substrate supports direct peer-to-peer connections without intermediary servers whenever a direct network path exists (`crates/router/src/net_iroh.rs:94`). When NAT or firewall rules block direct connectivity, the substrate falls back to encrypted connections through coordinator relays (`crates/coordinator_iroh/src/coordinator.rs:180`, `crates/router/src/route_handler/io.rs:471`).
+- The substrate supports direct peer-to-peer connections without intermediary servers whenever a direct network path exists (`crates/router/src/net_iroh.rs:130`). When NAT or firewall rules block direct connectivity, the substrate falls back to encrypted connections through coordinator relays (`crates/coordinator_iroh/src/coordinator.rs:199`, `crates/router/src/route_handler/io.rs:471`).
 - **Offline outbox and retry queue:** The system durably stores operations that are explicitly marked safe for deferred delivery (`crates/async_queue/src/queue.rs:50`). The system presents `pending`, `delivered`, or `failed` status to the user (`crates/conversation/src/store.rs:127`). The system retries queued operations when network connectivity returns. The user interface must not show `pending` as a final success.
 - Automatic retries require an idempotency contract (ADR-0023 §4). The system must not replay a non-idempotent operation simply because a connection failed.
 - Each transactional entity defines valid state transitions, authority rules, expiration times, idempotency keys, and conflict handling (`crates/roym_core/src/transaction.rs:86`). After reconnecting, all parties either reach the same valid final state or see a conflict that requires a named party to decide. The system must not use silent last-write-wins rules for agreements, payments, fulfilment, or access grants. A single writer per service resolves updates by replaying queued requests through entity arbitration rules. These entities do not require a multi-master merge (`crates/data_db/src/sqlite/provider.rs:281`).
@@ -293,7 +293,7 @@ When browser clients lack native QUIC or WebRTC direct peer connectivity, the sy
 
 The reference client uses these measurable baselines unless a vertical requirement defines a stricter baseline. Test profiles and measurement methods are defined in the Architecture and test plans.
 
-- **Security:** The system encrypts all traffic between nodes and between clients and nodes in transit (`crates/router/src/net_iroh.rs:94`). Sensitive production data and backups are encrypted at rest by default using SQLCipher KEK/DEK envelope encryption (`crates/data_keystore/src/key_store.rs:29`). The system never shares default credentials across installations. The system authenticates, authorizes, and audits critical actions.
+- **Security:** The system encrypts all traffic between nodes and between clients and nodes in transit (`crates/router/src/net_iroh.rs:130`). Sensitive production data and backups are encrypted at rest by default using SQLCipher KEK/DEK envelope encryption (`crates/data_keystore/src/key_store.rs:29`). The system never shares default credentials across installations. The system authenticates, authorizes, and audits critical actions.
 - **Identity security:** Routine key rotation and device loss do not require a new public identity. The system shows revocation freshness, recovery authority, and the consequences of losing all recovery factors to the owner (`crates/identity/src/delegation.rs:62`, `crates/core/src/dht_registry/master_anchor.rs:24`). Government identity is optional. Government identity is never the universal root of participation.
 - **Availability:** Local and cached reads remain available during temporary bootstrap or relay loss (`crates/data_db/src/sqlite/provider.rs:281`). Substrates configure static parent coordinator relay URLs (`parent_coordinator.iroh.url`) and publish endpoints to the community registry (`crates/community_registry`).
   > **Envisioned.** Not built yet. A 24-hour bootstrap outage test. Today substrates configure static parent coordinator relay URLs and publish to community registries.
@@ -531,10 +531,9 @@ This section describes core Syneroym substrate functionality, key protocols, and
 - The substrate creates a protected node key on first run. Administrative ownership requires an offline claim step that produces a mutually signed `ControllerAgreement`. Routine administration uses revocable delegated credentials (`DelegationCertificate`, UCAN tokens) instead of exposing a root key.
   > **Envisioned.** Not built yet. Tested recovery method wizard before production use. Today initial node keys are initialized at boot and claimed offline.
 - The substrate connects to a relay:
-  - The substrate configures a static coordinator Iroh relay URL (`parent_coordinator.iroh.url`).
-    > **Envisioned.** Not built yet. Dynamic home relay assignment via bootstrap service.
-  - The substrate publishes signed endpoint information (`SignedEndpointInfo`) to the Community Registry and Mainline DHT via pkarr. This record contains its public key and relay routing details. The control plane and service deployment use this record.
-  - The substrate starts a secure communication server. The server listens through the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
+  - The substrate configures a home relay URL (`parent_coordinator.iroh.url`) or updates it dynamically at runtime. The endpoint starts with an empty relay map and confirms candidates via net-report probes before publishing.
+  - When confirmed, the substrate publishes signed endpoint information (`SignedEndpointInfo`) containing its confirmed relay URL to the Community Registry and Mainline DHT. When no home relay is configured, registration is deferred.
+  - The substrate listens through the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
 - The substrate identifies its capabilities (sandbox types and quota configurability). The node owner configures capability limits (CPU, memory, instruction fuel) for hosted services.
   > **Envisioned.** Not built yet. GPU allocation and dynamic disk quota enforcement.
 - Access control setup:
@@ -579,8 +578,8 @@ Substrate nodes boot in an unowned state. They fail closed on privileged operati
 ### Relay
 
 - Acts as a coordination server for direct peer connections using UDP hole punching.
-- Acts as an encrypted TCP data relay through embedded `iroh-relay` when direct connections fail (due to blocked UDP, symmetric NAT, or CGNAT).
-- Substrates connect to a statically configured coordinator relay URL (`parent_coordinator.iroh.url`). They publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Hosted services inherit this relay connectivity from their substrate.
+- Acts as an encrypted TCP data relay through embedded `iroh-relay` when direct connections fail (due to blocked UDP, symmetric NAT, or CGNAT). Access is controlled by `[roles.coordinator] access` (`"everyone"`, or a list of allowed Iroh endpoint IDs).
+- Substrates connect to a home relay URL (`parent_coordinator.iroh.url` or dynamic update). When confirmed, they publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Hosted services inherit this relay connectivity from their substrate.
   > **Envisioned.** Not built yet. A WebRTC TURN relay server, dynamic bootstrap relay registration, and `<relaynodeid>.syneroym.net` DNS subdomains. Today relays do not provide TURN; browser clients connect through the Client Gateway HTTP proxy or WebRTC data channels with HTTP/WebSocket signaling.
 
 ### Bootstrap

@@ -91,7 +91,8 @@ registry_url = "http://localhost:7961"
 
 # Iroh communication configuration for uplink/signaling
 [parent_coordinator.iroh]
-# The relay/signaling URL for Iroh connections.
+# The relay/signaling URL for Iroh connections. Optional.
+# When unset, the node starts with an empty relay map and dials peers through their relays.
 url = "http://localhost:7964"
 
 # WebRTC communication configuration
@@ -157,7 +158,12 @@ http_bind_address = "0.0.0.0:7961"
 
 # Coordinator: Rendezvous and relay service for peer-to-peer connection establishment
 [roles.coordinator]
-# Access control for the coordinator service
+# Access control for the coordinator relay service:
+# - "everyone" (default): any peer may use this relay
+# - [ "<endpoint_id>", ... ]: admits only explicitly listed Iroh endpoint IDs
+# - "passport": reserved for operator passports; stops the coordinator today
+# - { list = [ "<endpoint_id>", ... ], passport = true }: reserved; stops the coordinator today
+# Any other value is a config error and stops startup.
 access = "everyone"
 
 # TLS configuration for coordinator HTTPS/WSS endpoints

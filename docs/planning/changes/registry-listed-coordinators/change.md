@@ -1,6 +1,10 @@
 ---
-status: approved
+status: in-progress
 living-docs-touched:
+  - docs/system-architecture.md
+  - docs/system-requirements-spec.md
+  - docs/TERMINOLOGY.md
+  - docs/demo/demo.md
 ---
 # Registry-listed coordinators
 
@@ -37,7 +41,7 @@ This change builds that for the Iroh relay. A community registry operator lists 
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| AC-1 | `parent_coordinator.iroh.url` is optional. When it is set, the substrate uses it and never asks the registry. | |
+| AC-1 | `parent_coordinator.iroh.url` is optional. When it is set, the substrate uses it and never asks the registry. | `crates/substrate/tests/home_relay_e2e.rs`, `crates/core/src/config/tests.rs` |
 | AC-2 | When `url` is not set and `iroh` is in `communication_interfaces`, the substrate resolves a relay in this order: saved choice, then saved list, then the registry. | |
 | AC-3 | The registry returns its configured list from `GET /coordinators?transport=iroh-relay`. Each entry has `transport`, `url`, `info_url` (where `GET /v1/info` is served, because it has its own port), and `operator`. The response says how long a client may cache it (`max_age_secs`). | |
 | AC-4 | The choice is deterministic. The substrate ranks the entries by SHA-256 over a fixed byte layout (see Design) and takes the first. The same inputs always give the same result on every version of the compiler. | |
@@ -46,11 +50,11 @@ This change builds that for the Iroh relay. A community registry operator lists 
 | AC-7 | A saved choice is kept while it works, even if a new list changes the ranking. The substrate picks again only when the choice is removed from the list, or after 3 connection failures within 5 minutes. | |
 | AC-8 | When the relay changes at run time, the endpoint switches relay without a restart. The substrate then publishes its endpoint record again with the new relay URL. | |
 | AC-9 | The substrate is in degraded mode only when all three are true: there is no `url`, there is no saved choice or list, and there is no `registry_url` or the registry cannot be reached. In degraded mode the endpoint has an empty relay map (`RelayMode::Custom(RelayMap::empty())`), the log has a clear warning, and the substrate retries the registry with backoff when `registry_url` is set. | |
-| AC-10 | The endpoint is never built with the public n0 preset, with or without a relay URL, and also when a relay URL does not parse. This covers every runtime caller of `net_iroh::build_iroh_endpoint`. The smoke-test tool has its own n0 builder (`crates/smoke-tests/src/main.rs:222`); it is a test tool and is not covered. | |
+| AC-10 | The endpoint is never built with the public n0 preset, with or without a relay URL, and also when a relay URL does not parse. This covers every runtime caller of `net_iroh::build_iroh_endpoint`. The smoke-test tool has its own n0 builder (`crates/smoke-tests/src/main.rs:222`); it is a test tool and is not covered. | `crates/router/tests/no_n0_relay_preset.rs`, `crates/coordinator_iroh/tests/startup_config.rs` |
 | AC-11 | Boot does not wait for the registry. It starts with the saved choice, or with an empty relay map, and resolves in the background. A relay inserted later becomes the home relay. | |
 | AC-12 | The default of `registry_url` stays `None`. The substrate never contacts a registry or a relay that the operator did not configure or that a configured registry did not list. | |
 | AC-13 | The registry config check fails at startup for a list entry with a bad URL, or a duplicate after URL normalisation. | |
-| AC-14 | `coordinator_discovery_url` is removed from the config. | |
+| AC-14 | `coordinator_discovery_url` is removed from the config. | `crates/core/src/config/tests.rs` |
 | AC-15 | A registry with an empty list asks its parent registry and returns that answer. Forwarding stops after 3 hops. | |
 | AC-16 | A coordinator role (Iroh or WebRTC) never resolves its own parent relay from the registry, even when `url` is not set. | |
 | AC-17 | `GET /v1/info` reports the number of relay clients. The registry lookup inside it is cached, so many probes do not cause many lookups. | |
@@ -138,15 +142,24 @@ Decided 2026-10-11:
 - [ ] Registry: `GET /coordinators` and parent forwarding with a hop limit.
 - [ ] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
 - [ ] Substrate: background resolve, rank, cache, fail over, degraded mode, relay switch at run time, publish the record again.
-- [ ] Remove both n0 fallbacks. Check the tests that rely on them.
-- [ ] Coordinator roles: never auto-resolve. Test configs that rely on a missing section.
-- [ ] Write the dev profile relay explicitly.
+- [x] Remove both n0 fallbacks. Check the tests that rely on them.
+- [x] Coordinator roles: never auto-resolve. Test configs that rely on a missing section.
+- [x] Write the dev profile relay explicitly.
 - [ ] Integration tests (registry with a list, substrate with no `url`, relay that is down, registry that is down, relay change at run time). Use `common::alloc_ports`.
-- [ ] Update the living docs listed in the close-out.
+- [x] Update the living docs listed in the close-out.
 
 ## Deviations
 
+- D2: an invalid `parent_coordinator.iroh.url` stops startup with an error naming the setting and value, rather than starting with an empty relay map. This changes the AC-10 text (which originally said empty relay map on invalid URL).
+- D3: relay URLs are normalized to `RelayUrl` form (trailing slash appended), which reaches `/v1/info`, the signed endpoint record, and the coordinator registry registration.
+- D4: publication of the substrate's own endpoint record to the community registry is deferred until a home relay is confirmed by the watch channel. Hosted service endpoints continue to be replayed.
+- D5: on candidate relay confirmation failure during a switch from an active confirmed relay, the endpoint rolls back to the previous confirmed relay. Known limit: the rollback itself is not confirmed; if the old relay does not answer in the rollback's report, `set` reads `addr()` and logs a warning if it does not list the old relay.
+- D6: the Iroh coordinator does not wait for `online()` at boot. A background task logs when the endpoint comes online.
+- D10: `HomeRelay::set` confirmation timeout is 15 seconds (`HOME_RELAY_CONFIRM_TIMEOUT`) and QAD stays on. Measured confirm times in tests: first `set(r1)` ~3.01 s, switch `set(r2)` ~6.01 s.
+- D11: the publish loop wakes on relay changes directly via `relay_rx.changed()` in the same `select!`, instead of pushing requests into the republish trigger channel.
+- Confirmed home relay does not prove access: confirmation occurs when net-report probes reach the relay, before the relay connection opens and before the relay runs its access checks. Registration success, not relay confirmation, proves access (relevant for B3).
 - `remove_relay` on the home relay: when all relays are removed, leaving an empty relay map, iroh 0.97 does not clear the previous home relay from `addr().relay_urls()` because it skips net-report runs when the relay map is empty; inserting a replacement relay updates the home relay immediately (`crates/coordinator_iroh/tests/relay_map_runtime.rs`).
+- `[roles.coordinator] access`: list entries admit valid Iroh endpoint IDs for relay access; DID-formatted strings will not parse as endpoint IDs because relay admission checks Iroh endpoint IDs directly.
 
 ## Close-out
 

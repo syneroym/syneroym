@@ -22,8 +22,7 @@ use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
 use syneroym_core::{
     asset_manifest::AssetRegistry,
     config::{
-        AccessControl, CoordinatorIrohConfig, CoordinatorRole, IrohParentConfig,
-        ServiceRegistryRole, SubstrateConfig,
+        AccessControl, CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig,
     },
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
@@ -53,6 +52,8 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
 use tokio::time;
+
+mod common;
 
 /// Mirrors `syneroym_substrate::runtime::build_route_handler_deps`: this
 /// test simulates a full substrate node via `RouteHandler::init` directly
@@ -313,14 +314,13 @@ async fn spawn_global_coordinator(
             http_bind_address: "127.0.0.1:0".to_string(),
             quic_bind_address: "127.0.0.1:0".to_string(),
             community_registry_url: Some(r_url.to_string()),
-            idle_timeout_secs: None,
             share_in_registry: true,
-            max_connections: None,
             ..Default::default()
         }),
         ..Default::default()
     });
     let c = CoordinatorIroh::init(&config_c).await?;
+    common::wait_for_relay(&c, Duration::from_secs(30)).await?;
     let c_info_addr = c.info_addr().unwrap();
 
     let c_info: CoordinatorInfo =
@@ -351,15 +351,14 @@ async fn spawn_private_coordinator(
             http_bind_address: "127.0.0.1:0".to_string(),
             quic_bind_address: "127.0.0.1:0".to_string(),
             community_registry_url: Some(r_url.to_string()),
-            idle_timeout_secs: None,
             share_in_registry: true,
-            max_connections: None,
             ..Default::default()
         }),
         ..Default::default()
     });
-    config_cp.parent_coordinator.iroh = Some(IrohParentConfig { url: c_relay_url.to_string() });
+    config_cp.parent_coordinator.iroh.url = Some(c_relay_url.to_string());
     let cp = CoordinatorIroh::init(&config_cp).await?;
+    common::wait_for_relay(&cp, Duration::from_secs(30)).await?;
     let cp_info_addr = cp.info_addr().unwrap();
 
     let cp_info: CoordinatorInfo =

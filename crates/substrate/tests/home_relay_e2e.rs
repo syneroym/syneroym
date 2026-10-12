@@ -1,0 +1,204 @@
+#![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! Integration tests verifying dynamic home relay switching, confirmation,
+//! rollback on failure, and deferred registry publication.
+
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result};
+use iroh::RelayUrl;
+use iroh_relay::server::{AccessConfig, RelayConfig as ServerRelayConfig, Server, ServerConfig};
+use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
+use tokio::{net::TcpListener, time};
+
+use crate::common::SubstrateNode;
+
+mod common;
+
+/// Spawns a plain-HTTP relay server on a dynamic local port.
+async fn spawn_relay() -> Result<(Server, RelayUrl)> {
+    let http_bind_addr = SocketAddr::from(([127, 0, 0, 1], 0));
+    let relay_config = ServerRelayConfig {
+        http_bind_addr,
+        tls: None,
+        limits: Default::default(),
+        key_cache_capacity: Some(1024),
+        access: AccessConfig::Everyone,
+    };
+    let server_config =
+        ServerConfig::<(), ()> { relay: Some(relay_config), quic: None, ..Default::default() };
+    let server = Server::spawn(server_config).await.context("failed to spawn relay server")?;
+    let http_addr = server.http_addr().context("relay server has no HTTP address")?;
+    let url: RelayUrl =
+        format!("http://{http_addr}").parse().context("failed to parse relay url")?;
+    Ok((server, url))
+}
+
+/// A listener on 127.0.0.1:0 that accepts TCP but never answers.
+async fn dead_relay() -> Result<(TcpListener, RelayUrl)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await.context("failed to bind dead relay")?;
+    let port = listener.local_addr()?.port();
+    let url: RelayUrl =
+        format!("http://127.0.0.1:{port}").parse().context("parse dead relay url")?;
+    Ok((listener, url))
+}
+
+fn get_iroh_relay_url(record: &SignedEndpointInfo) -> Option<String> {
+    for mechanism in &record.info.mechanisms {
+        if let EndpointMechanism::Iroh { relay_url, .. } = mechanism {
+            return relay_url.clone();
+        }
+    }
+    None
+}
+
+async fn wait_for_registry_relay(
+    client: &RegistryClient,
+    did: &str,
+    expected_relay: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let expected_url: RelayUrl = expected_relay.parse().context("parse expected relay")?;
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Ok(rec) = client.lookup(did, false).await
+            && let Some(actual) = get_iroh_relay_url(&rec)
+            && let Ok(actual_url) = actual.parse::<RelayUrl>()
+            && actual_url == expected_url
+        {
+            return Ok(());
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("timed out waiting for registry record to list relay {expected_relay}")
+}
+
+#[tokio::test]
+async fn substrate_switches_home_relay_when_watch_channel_updates() -> Result<()> {
+    let _serial_guard = common::serial_guard().await;
+
+    let (_server_a, relay_a_url) = spawn_relay().await?;
+    let mut node = SubstrateNode::builder().shared_relay(relay_a_url.to_string()).boot().await;
+
+    let registry_client = RegistryClient::new(false, Some(node.registry_url().to_string()));
+    let record = registry_client.lookup(node.did(), false).await?;
+    assert_eq!(get_iroh_relay_url(&record), Some(relay_a_url.to_string()));
+
+    let (_server_b, relay_b_url) = spawn_relay().await?;
+    node.home_relay().set(relay_b_url.clone()).await?;
+
+    assert_eq!(node.home_relay().current_url(), Some(relay_b_url.clone()));
+    wait_for_registry_relay(
+        &registry_client,
+        node.did(),
+        relay_b_url.as_str(),
+        Duration::from_secs(10),
+    )
+    .await?;
+
+    node.substrate_client.shutdown().await?;
+    node.substrate_client.connect().await?;
+    node.substrate_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
+
+    node.teardown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn substrate_rolls_back_when_candidate_relay_unreachable() -> Result<()> {
+    let _serial_guard = common::serial_guard().await;
+
+    let (_server_a, relay_a_url) = spawn_relay().await?;
+    let mut node = SubstrateNode::builder().shared_relay(relay_a_url.to_string()).boot().await;
+
+    let registry_client = RegistryClient::new(false, Some(node.registry_url().to_string()));
+    let record = registry_client.lookup(node.did(), false).await?;
+    assert_eq!(get_iroh_relay_url(&record), Some(relay_a_url.to_string()));
+
+    let (_dead_listener, unreachable_url) = dead_relay().await?;
+
+    let switch_result = node.home_relay().set(unreachable_url).await;
+    assert!(switch_result.is_err(), "expected unreachable relay switch to fail");
+
+    assert_eq!(node.home_relay().current_url(), Some(relay_a_url.clone()));
+
+    let current_record = registry_client.lookup(node.did(), false).await?;
+    assert_eq!(get_iroh_relay_url(&current_record), Some(relay_a_url.to_string()));
+
+    node.substrate_client.shutdown().await?;
+    node.substrate_client.connect().await?;
+    node.substrate_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
+
+    node.teardown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn substrate_without_home_relay_skips_registration_until_relay_configured() -> Result<()> {
+    let _serial_guard = common::serial_guard().await;
+
+    let mut node = SubstrateNode::builder()
+        .configure(|cfg| {
+            cfg.parent_coordinator.iroh.url = None;
+        })
+        .skip_ready_wait()
+        .boot()
+        .await;
+
+    let registry_client = RegistryClient::new(false, Some(node.registry_url().to_string()));
+    time::sleep(Duration::from_secs(2)).await;
+
+    let initial_lookup = registry_client.lookup(node.did(), false).await;
+    assert!(initial_lookup.is_err(), "expected lookup to fail before home relay is set");
+
+    let (_server_a, relay_a_url) = spawn_relay().await?;
+    node.home_relay().set(relay_a_url.clone()).await?;
+
+    wait_for_registry_relay(
+        &registry_client,
+        node.did(),
+        relay_a_url.as_str(),
+        Duration::from_secs(10),
+    )
+    .await?;
+
+    node.substrate_client.wait_for_ready(Duration::from_secs(30)).await?;
+
+    node.teardown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_relay_that_is_down_at_boot_is_used_once_it_comes_up() -> Result<()> {
+    let _serial_guard = common::serial_guard().await;
+
+    let builder_b = SubstrateNode::builder();
+    let b_relay = format!("http://127.0.0.1:{}", builder_b.ports().iroh);
+
+    let mut node_a =
+        SubstrateNode::builder().shared_relay(b_relay.clone()).skip_ready_wait().boot().await;
+
+    let registry_client = RegistryClient::new(false, Some(node_a.registry_url().to_string()));
+    time::sleep(Duration::from_secs(3)).await;
+
+    let initial_lookup = registry_client.lookup(node_a.did(), false).await;
+    assert!(initial_lookup.is_err(), "node a should have no published record while relay is down");
+
+    let node_b = builder_b.boot().await;
+
+    wait_for_registry_relay(
+        &registry_client,
+        node_a.did(),
+        b_relay.as_str(),
+        Duration::from_secs(60),
+    )
+    .await?;
+
+    node_a.substrate_client.wait_for_ready(Duration::from_secs(30)).await?;
+
+    node_a.teardown().await;
+    node_b.teardown().await;
+    Ok(())
+}

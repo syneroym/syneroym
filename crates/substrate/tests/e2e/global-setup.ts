@@ -14,20 +14,7 @@ const NPM_INSTALL = 'npm install --prefer-offline --no-audit --no-fund';
 const NPM_CI = 'npm ci --prefer-offline --no-audit --no-fund';
 
 import { reserveTcpPort, reserveUdpPort } from './ports';
-
-async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      const res = await fetch(url);
-      if (res.ok || res.status === 404) return;
-    } catch {
-      // not up yet
-    }
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${url}`);
-    await new Promise(r => setTimeout(r, 200));
-  }
-}
+import { waitForHttp, waitForRegistryRecord } from './wait';
 
 export default async function globalSetup() {
   console.log('\n--- E2E Global Setup ---');
@@ -250,7 +237,8 @@ registry_url = "http://127.0.0.1:${ports.registryPort}"
   // later.
   await waitForHttp(`http://127.0.0.1:${ports.miniappPort}/`, 20000);        // miniapp
   await waitForHttp(`http://127.0.0.1:${ports.registryPort}/`, 20000);        // community registry
-  await new Promise(r => setTimeout(r, 1000));
+  console.log(`Waiting for substrate registry record (${substrateDid})...`);
+  await waitForRegistryRecord(`http://127.0.0.1:${ports.registryPort}/lookup/${substrateDid}`, 30000);
 
   // Fixed 32-byte Key Encryption Key (KEK). Required for WASM services because
   // static asset unpacking, the data-layer store, and the blob store wrap their

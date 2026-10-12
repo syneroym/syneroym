@@ -2,6 +2,7 @@ import { ChildProcess, execSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { reserveTcpPort, reserveUdpPort } from './ports';
+import { waitForHttp, waitForRegistryRecord } from './wait';
 
 const TEST_DIR = path.join(process.cwd(), '.e2e-data-multihop');
 const LOG_DIR = path.join(process.cwd(), 'e2e-logs');
@@ -157,7 +158,7 @@ bootstrap_page_bind_address = "0.0.0.0:${ports.cWebrtcBootPort}"
 http_port = ${ports.cGatewayPort}
 
 [substrate]
-communication_interfaces = ["webrtc", "iroh"]
+communication_interfaces = ["webrtc"]
 registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
 `;
   fs.writeFileSync(path.join(TEST_DIR, 'c.toml'), configC);
@@ -303,7 +304,10 @@ registry_url = "http://127.0.0.1:${ports.cRegistryPort}"
   const miniapp1Process = spawnLogged(MINIAPP_BIN, ['--port', ports.miniappPort.toString(), '--https-port', '0', '--data-dir', path.join(TEST_DIR, 'miniapp-data1')], 'miniapp1');
   (global as any).__MINIAPP1_PROCESS__ = miniapp1Process;
 
-  await new Promise(r => setTimeout(r, 4000));
+  console.log('Waiting for Sz and Sx registry records...');
+  await waitForRegistryRecord(`http://127.0.0.1:${ports.cRegistryPort}/lookup/${szDid}`, 30000);
+  await waitForRegistryRecord(`http://127.0.0.1:${ports.cRegistryPort}/lookup/${sxDid}`, 30000);
+  await waitForHttp(`http://127.0.0.1:${ports.miniappPort}/`, 20000);
 
   // Initialize and Register demo1 for Sz
   console.log('Creating demo1 identity (Sz)...');

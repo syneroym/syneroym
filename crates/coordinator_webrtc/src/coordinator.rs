@@ -55,6 +55,8 @@ impl CoordinatorWebRtc {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("Initializing coordinator webrtc");
 
+        let iroh_relay_url = net_iroh::parent_relay_url(&config.parent_coordinator.iroh)?;
+
         let webrtc_config = config
             .roles
             .coordinator
@@ -68,7 +70,6 @@ impl CoordinatorWebRtc {
 
         let actual_signalling_port = signalling_listener.local_addr()?.port();
 
-        let iroh_relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
         let endpoint = net_iroh::build_iroh_endpoint(iroh_relay_url, None, None).await?;
 
         let data_store = registry_store::init_store(config).await?;
@@ -177,3 +178,6 @@ impl CoordinatorWebRtc {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

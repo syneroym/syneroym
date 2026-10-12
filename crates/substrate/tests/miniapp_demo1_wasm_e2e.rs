@@ -533,13 +533,19 @@ async fn test_miniapp_demo1_wasm_sse_live_updates() {
     assert_eq!(post_resp.status, 201);
 
     // 3. Read SSE event frame from sse_recv
+    let mut raw_sse = String::new();
     let mut sse_buf = vec![0u8; 4096];
-    let n_sse = timeout(Duration::from_secs(5), sse_recv.read(&mut sse_buf))
-        .await
-        .expect("timed out waiting for SSE frame")
-        .unwrap()
-        .unwrap();
-    let raw_sse = String::from_utf8_lossy(&sse_buf[..n_sse]);
+    while !raw_sse.contains("commentUpdateTimestamp") {
+        let n_sse = timeout(Duration::from_secs(10), sse_recv.read(&mut sse_buf))
+            .await
+            .expect("timed out waiting for SSE frame")
+            .unwrap()
+            .expect("SSE stream closed prematurely");
+        if n_sse == 0 {
+            break;
+        }
+        raw_sse.push_str(&String::from_utf8_lossy(&sse_buf[..n_sse]));
+    }
     assert!(raw_sse.contains("event: comment-updates\n"), "SSE event name missing: {raw_sse}");
     assert!(raw_sse.contains("commentUpdateTimestamp"), "SSE stream received: {raw_sse}");
 }

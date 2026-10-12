@@ -145,20 +145,15 @@ pub enum LogTarget {
     File,
 }
 
-fn default_relay_url() -> String {
-    "http://localhost:7964".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `[parent_coordinator.iroh]`: the home relay of this substrate's Iroh
+/// endpoint.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IrohParentConfig {
-    pub url: String,
-}
-
-impl Default for IrohParentConfig {
-    fn default() -> Self {
-        Self { url: default_relay_url() }
-    }
+    /// The relay URL. When it is not set, the endpoint starts with an
+    /// empty relay map: it can dial peers through their relays, but no
+    /// peer can reach it through a relay.
+    pub url: Option<String>,
 }
 
 fn default_signaling_server_url() -> String {
@@ -192,7 +187,7 @@ impl Default for WebRtcParentConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ParentCoordinatorConfig {
-    pub iroh: Option<IrohParentConfig>,
+    pub iroh: IrohParentConfig,
     pub webrtc: Option<WebRtcParentConfig>,
     pub ble: Option<BridgeConfig>,
     pub lora: Option<BridgeConfig>,
@@ -220,7 +215,6 @@ fn default_communication_interfaces() -> Vec<String> {
 pub struct SubstrateGlobalConfig {
     pub communication_interfaces: Vec<String>,
     pub registry_url: Option<String>,
-    pub coordinator_discovery_url: Option<String>,
     pub enable_bep0044_dht: bool,
 }
 
@@ -229,7 +223,6 @@ impl Default for SubstrateGlobalConfig {
         Self {
             communication_interfaces: default_communication_interfaces(),
             registry_url: None,
-            coordinator_discovery_url: None,
             enable_bep0044_dht: !cfg!(test),
         }
     }

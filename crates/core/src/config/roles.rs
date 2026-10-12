@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::sandbox::{AppSandboxRole, PodmanSandboxRole, RoymRole};
+use super::{
+    access::CoordinatorAccess,
+    sandbox::{AppSandboxRole, PodmanSandboxRole, RoymRole},
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -43,8 +46,8 @@ impl Default for ServiceRegistryRole {
     }
 }
 
-/// Represents configurations like `access = "everyone"` OR `access = ["did1",
-/// "did2"]`
+/// Access control setting for the community registry:
+/// `access = "everyone"` OR `access = ["did1", "did2"]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AccessControl {
@@ -250,7 +253,7 @@ impl Default for SupervisorRole {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CoordinatorRole {
-    pub access: AccessControl,
+    pub access: CoordinatorAccess,
     pub tls: Option<TlsConfig>,
     pub iroh: Option<CoordinatorIrohConfig>,
     pub webrtc: Option<CoordinatorWebRtcConfig>,

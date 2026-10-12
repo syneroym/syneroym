@@ -62,7 +62,7 @@ Home relay
 | H-3 | An open relay (`access = "everyone"`) refuses registration with a clear error. | |
 | H-4 | The substrate registers again when a third of the lease is left, retries with backoff, and logs a warning and sets a metric when 7 days or less of the passport life is left. | |
 | H-5 | `roymctl` can hand a passport to a substrate and show its lease. | |
-| H-6 | An unknown value of `[roles.coordinator] access` stops the coordinator at startup. Today any unknown string, including a typo, opens the relay to everyone. | |
+| H-6 | An unknown value of `[roles.coordinator] access` stops the coordinator at startup. Today any unknown string, including a typo, opens the relay to everyone. | `crates/core/src/config/access/tests.rs`, `crates/coordinator_iroh/tests/startup_config.rs` |
 | H-7 | The substrate registers before the endpoint first connects to the relay. | |
 
 ## Design
@@ -134,7 +134,7 @@ The response gives `lease_ends_at`. The service allows a caller when it has a ro
 
 **When access ends.** The Iroh relay checks access only when it accepts a connection (`iroh-relay-0.97.0/src/server/http_server.rs:750`), and no API to drop a connected client was found. So an expired lease or a denied passport ends access at the next reconnect. A live connection is not cut.
 
-**Substrate.** The passport is kept by the substrate and used for the coordinator named by `parent_coordinator.iroh.url`. The substrate registers at start, before the endpoint first connects to the relay (otherwise the reconnect backoff of Iroh delays access after registration), and again when a third of the lease is left. Failures are retried with backoff.
+**Substrate.** The passport is kept by the substrate and used for the coordinator named by `parent_coordinator.iroh.url`. The substrate registers at start, before the endpoint first connects to the relay (otherwise the reconnect backoff of Iroh delays access after registration), and again when a third of the lease is left. Failures are retried with backoff. A relay confirmed as the home relay may still refuse the node, so registration success, not relay confirmation, is the proof of access.
 
 **roymctl.** These names are a proposal. Check them against the existing `roymctl` layout.
 

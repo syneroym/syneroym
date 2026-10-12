@@ -7,6 +7,7 @@
 mod call_dedup;
 mod connection_router;
 pub mod handshake;
+mod home_relay;
 pub mod net_iroh;
 pub mod net_webrtc;
 mod preamble;
@@ -21,6 +22,7 @@ mod stop_signal;
 pub use call_dedup::{ASYNC_DB_NAME, CallDedupGuard, DedupClaim, GuardOutcome, replay_as_result};
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};
+pub use home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
 pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
 pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};

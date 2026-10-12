@@ -227,7 +227,7 @@ signalling_bind_address = "0.0.0.0:7963"
 bootstrap_page_bind_address = "0.0.0.0:7962"
 
 [substrate]
-communication_interfaces = ["webrtc", "iroh"]
+communication_interfaces = ["webrtc"]
 registry_url = "http://127.0.0.1:7961"
 EOF
 

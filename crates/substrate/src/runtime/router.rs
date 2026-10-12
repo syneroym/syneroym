@@ -33,7 +33,6 @@ use syneroym_rpc::{
 };
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 #[cfg(feature = "auth")]
@@ -44,7 +43,8 @@ use super::dual_build_fixture::init_dual_build_fixture;
 use super::roym::init_roym;
 use super::{
     handles::SharedNodeHandles,
-    publish::publish_to_community_registry,
+    home_relay::{self, HomeRelaySource},
+    publish,
     supervisor::{SUPERVISOR_DISPATCH_ID, SupervisorHandle, init_supervisor},
 };
 use crate::identity;
@@ -124,6 +124,7 @@ async fn setup_router(
     Arc<ConversationService>,
     Option<String>,
 )> {
+    let relay_source = HomeRelaySource::from_config(&config.parent_coordinator.iroh)?;
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
@@ -166,6 +167,10 @@ async fn setup_router(
         route_handler_deps,
     )
     .await?;
+
+    if let Some(handle) = router.home_relay() {
+        home_relay::connect_home_relay(handle, relay_source);
+    }
 
     // `ProxyRouter` (the sole `ServiceProxy`) exists only now -- wired the
     // same post-construction way `AppSandboxEngine.service_proxy`/
@@ -212,24 +217,14 @@ async fn setup_router(
         })?;
         control_plane.set_endpoint_publisher(publisher.clone());
 
-        // Wires `republish_now` to this heartbeat loop before spawning it,
-        // so a caller can force an immediate republish (e.g. after a
-        // community registry this node's records were wiped from comes
-        // back up) instead of waiting up to `HEARTBEAT_INTERVAL_SECS`.
-        if let Some(endpoint_addr) = router.endpoint_addr() {
-            let relay_url = config.parent_coordinator.iroh.as_ref().map(|c| c.url.clone());
-            let (force_tx, force_rx) = mpsc::channel(4);
-            control_plane.set_republish_trigger(force_tx);
-            publish_to_community_registry(
-                service_id.to_string(),
-                endpoint_addr,
-                relay_url,
-                secret_key,
-                config.identity.nickname.clone(),
-                publisher.clone(),
-                force_rx,
-            );
-        }
+        publish::start_self_record(
+            config,
+            service_id,
+            secret_key,
+            &router,
+            &control_plane,
+            publisher.clone(),
+        );
     }
 
     let auth_did = shared

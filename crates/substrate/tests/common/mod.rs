@@ -49,7 +49,7 @@ pub use fixtures::*;
 #[allow(unused_imports)]
 pub use node::*;
 use syneroym_core::{
-    config::{ClientGatewayRole, IrohParentConfig, LogTarget, SubstrateConfig},
+    config::{ClientGatewayRole, LogTarget, SubstrateConfig},
     dht_registry::EndpointMechanism,
 };
 use syneroym_identity::{Identity, substrate};
@@ -283,8 +283,7 @@ impl SubstrateTestContext {
         let registry_url = format!("http://127.0.0.1:{registry_port}");
         config.substrate.registry_url = Some(registry_url.clone());
         config.substrate.enable_bep0044_dht = false;
-        config.parent_coordinator.iroh =
-            Some(IrohParentConfig { url: format!("http://127.0.0.1:{iroh_port}") });
+        config.parent_coordinator.iroh.url = Some(format!("http://127.0.0.1:{iroh_port}"));
         config.roles.client_gateway =
             Some(ClientGatewayRole { http_port: gateway_port, ..Default::default() });
         config.roles.auth = Some(syneroym_core::config::AuthRole::default());

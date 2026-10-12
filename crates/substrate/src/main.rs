@@ -139,8 +139,7 @@ pub(crate) fn resolve_config(command: Commands) -> Result<SubstrateConfig> {
             }
 
             if let Some(url) = iroh_relay_url {
-                let iroh = config.parent_coordinator.iroh.get_or_insert_with(Default::default);
-                iroh.url = url;
+                config.parent_coordinator.iroh.url = Some(url);
             }
 
             if let Some(enable) = enable_coordinator_webrtc {
@@ -185,6 +184,8 @@ fn main() -> Result<()> {
         .block_on(run(config))
 }
 
+const DEV_RELAY_URL: &str = "http://localhost:7964";
+
 /// Returns a default configuration suitable for local development.
 /// This enables all core roles and points to a local registry.
 fn dev_mode_config() -> SubstrateConfig {
@@ -224,7 +225,7 @@ fn dev_mode_config() -> SubstrateConfig {
         tracing: Some(Default::default()),
     });
 
-    c.parent_coordinator.iroh = Some(Default::default());
+    c.parent_coordinator.iroh.url = Some(DEV_RELAY_URL.to_string());
     c.parent_coordinator.webrtc = Some(Default::default());
 
     // Default to local registry
@@ -248,7 +249,7 @@ mod tests {
         profile = "config_profile"
         
         [parent_coordinator.iroh]
-        relay_url = "http://config.relay:3340"
+        url = "http://config.relay:3340"
         
         [roles.coordinator.iroh]
         enable_signalling = true
@@ -301,8 +302,8 @@ mod tests {
 
         // Assert: Value specified in CLI overriding config file
         assert_eq!(
-            config.parent_coordinator.iroh.as_ref().unwrap().url,
-            "http://cli.relay:3340",
+            config.parent_coordinator.iroh.url.as_deref(),
+            Some("http://cli.relay:3340"),
             "Iroh relay URL should be overridden by CLI"
         );
 
@@ -354,5 +355,11 @@ mod tests {
             "Inconsistent configuration: Both `agreement` and `controller_did` are provided. \
              Please provide only one."
         );
+    }
+
+    #[test]
+    fn dev_mode_config_sets_the_local_relay() {
+        let cfg = dev_mode_config();
+        assert_eq!(cfg.parent_coordinator.iroh.url.as_deref(), Some(DEV_RELAY_URL));
     }
 }

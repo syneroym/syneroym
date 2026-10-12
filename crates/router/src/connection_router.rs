@@ -7,7 +7,6 @@
 use std::{
     future, str,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use anyhow::Result;
@@ -20,7 +19,7 @@ use syneroym_core::{
     config::{SubstrateConfig, WebRtcParentConfig},
     local_registry::EndpointRegistry,
 };
-use tokio::{net::TcpStream, time};
+use tokio::net::TcpStream;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
 use tracing::{debug, error, info};
 use webrtc::{
@@ -39,6 +38,7 @@ use webrtc::{
 };
 
 use crate::{
+    home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay},
     net_iroh,
     net_webrtc::WebRTCStream,
     proxy::ProxyRouter,
@@ -53,6 +53,9 @@ pub const SYNEROYM_ALPN: &[u8] = b"syneroym/0.1";
 #[derive(Debug, Clone)]
 pub struct ConnectionRouter {
     iroh_router: Option<IrohRouter>,
+    /// Sets the home relay of the Iroh endpoint. `None` when `iroh` is not in
+    /// `communication_interfaces`.
+    home_relay: Option<HomeRelay>,
     /// The Universal Proxy this router's handler dispatches through.
     /// Published so the substrate's composition root can drive the durable
     /// outbox worker off it -- the worker delivers by making an ordinary
@@ -69,17 +72,14 @@ impl ConnectionRouter {
         service_id: String,
         route_handler_deps: RouteHandlerDeps,
     ) -> Result<Self> {
-        let mut router = Self { iroh_router: None, proxy: None };
+        let mut router = Self { iroh_router: None, proxy: None, home_relay: None };
 
-        // Built *before* `RouteHandler::init`: the
-        // Universal Proxy's outbound remote hop needs a live Iroh endpoint,
-        // and `RouteHandler::init` wires it into its `ProxyRouter`. Iroh is
-        // enabled iff both "iroh" is a configured communication interface
-        // *and* a parent-coordinator Iroh config exists -- mirrors the
-        // pre-existing per-interface check the loop below used to make
-        // inline.
+        // Built *before* `RouteHandler::init`: the Universal Proxy's outbound
+        // remote hop needs an Iroh endpoint, and `RouteHandler::init` wires it
+        // into its `ProxyRouter`. The endpoint starts with no relay. The
+        // substrate sets the home relay in the background through
+        // `home_relay()`.
         let iroh_endpoint = if config.substrate.communication_interfaces.iter().any(|c| c == "iroh")
-            && let Some(iroh_config) = config.parent_coordinator.iroh.as_ref()
         {
             let idle_timeout = config
                 .roles
@@ -89,7 +89,7 @@ impl ConnectionRouter {
                 .and_then(|i| i.idle_timeout_secs);
             Some(
                 net_iroh::build_iroh_endpoint(
-                    Some(iroh_config.url.clone()),
+                    None,
                     Some(SecretKey::from_bytes(&iroh_secret_key)),
                     idle_timeout,
                 )
@@ -98,6 +98,8 @@ impl ConnectionRouter {
         } else {
             None
         };
+        router.home_relay =
+            iroh_endpoint.clone().map(|ep| HomeRelay::new(ep, HOME_RELAY_CONFIRM_TIMEOUT));
 
         let route_handler = RouteHandler::init(
             service_id.clone(),
@@ -116,7 +118,7 @@ impl ConnectionRouter {
                     if let Some(ep) = iroh_endpoint.clone() {
                         info!("Initializing Iroh interface for Router...");
                         router.iroh_router =
-                            Some(Self::spawn_iroh_router(ep, route_handler.clone()).await?);
+                            Some(Self::spawn_iroh_router(ep, route_handler.clone())?);
                     }
                 }
                 "webrtc" => {
@@ -143,25 +145,22 @@ impl ConnectionRouter {
         self.proxy.clone()
     }
 
+    /// The home-relay handle of the Iroh endpoint, when there is one.
+    #[must_use]
+    pub fn home_relay(&self) -> Option<HomeRelay> {
+        self.home_relay.clone()
+    }
+
     /// Spawns the Iroh protocol handler on an already-built, already-bound
     /// endpoint (see `init`'s `iroh_endpoint` construction above -- split
     /// out so that endpoint construction can happen before
     /// `RouteHandler::init`, which needs it for the Universal Proxy's
     /// outbound remote hop).
-    async fn spawn_iroh_router(ep: Endpoint, route_handler: RouteHandler) -> Result<IrohRouter> {
+    fn spawn_iroh_router(ep: Endpoint, route_handler: RouteHandler) -> Result<IrohRouter> {
         debug!("Initializing Iroh communication...");
 
         let iroh_router: IrohRouter =
-            IrohRouter::builder(ep.clone()).accept(SYNEROYM_ALPN, route_handler).spawn();
-
-        match time::timeout(Duration::from_secs(30), ep.online()).await {
-            Ok(_) => {
-                debug!("Iroh endpoint is online");
-            }
-            Err(_) => {
-                tracing::warn!("Timeout waiting for Iroh endpoint to come online");
-            }
-        }
+            IrohRouter::builder(ep).accept(SYNEROYM_ALPN, route_handler).spawn();
 
         info!(
             "Iroh listening on ALPN: {:?}",

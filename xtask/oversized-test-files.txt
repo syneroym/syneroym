@@ -13,7 +13,7 @@ crates/control_plane/src/service/orchestration/tests/deploy.rs 1258
 crates/control_plane/src/service/orchestration/tests/helpers.rs 1018
 crates/control_plane/src/service/orchestration/tests/rollback.rs 912
 crates/control_plane/src/service/tests.rs 1383
-crates/coordinator_iroh/tests/multi_hop_relay.rs 1133
+crates/coordinator_iroh/tests/multi_hop_relay.rs 1132
 crates/data_db/src/sqlite/tests.rs 899
 crates/data_db/src/tests_crud.rs 819
 crates/data_db/src/tests_fdae.rs 1791
