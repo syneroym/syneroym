@@ -3,6 +3,7 @@
 
 pub mod asset_manifest;
 pub mod config;
+pub mod curated_list;
 pub mod deploy_docs;
 pub mod dht_registry;
 pub mod endpoint_publisher;

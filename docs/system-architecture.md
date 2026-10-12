@@ -369,8 +369,9 @@ A substrate is given its relay by a fixed setting. Nothing chooses a relay for i
 | `[roles.coordinator.iroh] community_registry_url`, `share_in_registry` | None, `false` | When both are set, the coordinator registers itself in that registry once at startup. |
 | `[roles.coordinator.webrtc] signalling_bind_address` | `0.0.0.0:7963` | The signalling server. |
 | `[roles.coordinator.webrtc] bootstrap_page_bind_address` | `0.0.0.0:7962` | The bootstrap page and the blind tunnel. |
-| `[roles.coordinator] tls` | none | The certificate and key of the relay. |
 | `[roles.community_registry] http_bind_address` | `0.0.0.0:7961` | The HTTP community registry. |
+| `[roles.community_registry] list_max_age_secs` | `86400` | How long clients may cache curated lists. |
+| `[[roles.community_registry.coordinators]]` | None | Curated open coordinators (`transport`, `url`, `info_url`, `operator`). Checked at startup. Operators list only relays with `access = "everyone"`. |
 
 The defaults in the table are the defaults of the config types. With no `--config`, `run` starts a development setup instead. In it, the dev profile sets `parent_coordinator.iroh.url = "http://localhost:7964"` explicitly, `parent_coordinator.webrtc` is present, and `registry_url` is `http://localhost:7961`. The Iroh and WebRTC coordinator roles are on, with `enable_relay = true`.
 
@@ -1745,9 +1746,9 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
     *   **Sz** starts in the private network and connects to its local Registry (**Rp**, set by `substrate.registry_url`).
     *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting. A substrate has an Iroh endpoint, and so can forward a stream, whenever `communication_interfaces` has `iroh`.
 
-> **Envisioned.** Not built yet. Today a substrate is given its relay by the fixed setting `parent_coordinator.iroh.url`. No code lists, selects, or caches coordinators.
+> **Envisioned.** Today a substrate is given its relay by `parent_coordinator.iroh.url`. The community registry lists open coordinators in its config and forwards list requests to its parent registry. A substrate choosing one at run time and caching it is envisioned and not built yet.
 
-*   To find a local coordinator, **Sz** first checks its config for a direct `discovery_url`, and fetches the Iroh connection details by HTTP. If it has no direct URL, **Sz** asks its local Registry **Rp** for the available coordinators, and **Rp** forwards the lookup to **R**. **Sz** then selects one at run time (for example **Cp**) and caches its Iroh details.
+*   To find a local coordinator, **Sz** asks its local Registry **Rp** for available coordinators (`GET /coordinators?transport=iroh-relay`). If its own list is empty, **Rp** forwards the request to **R**. Selecting one at run time and caching its details on **Sz** is envisioned.
 
 #### 2. Registry Entries at Deployment
 
@@ -2098,6 +2099,8 @@ A lookup checks every record it gets:
 - A registry answer that fails these checks ends the lookup. The lookup does not fall back to the DHT.
 
 The community registry may have a parent registry (`parent_registry_url`). A registry passes each public record on to its parent.
+
+A registry also serves curated lists from its config, such as `GET /coordinators?transport=iroh-relay`. The response contains `max_age_secs` and an array of coordinator entries (`transport`, `url`, `info_url`, `operator`). At startup the registry normalises URLs (lowercasing scheme and host, removing default ports and trailing slashes) and rejects invalid URLs or duplicates. When its own list is empty and `parent_registry_url` is set, the registry forwards the request to its parent. Forwarding stops after 3 hops. If the parent fails, returns an invalid body, or cannot be reached, the registry returns `502 Bad Gateway`. Entries are ranked with a deterministic SHA-256 rendezvous key over the chooser DID and the normalised URL. No substrate uses the list yet; substrate resolution and caching are envisioned.
 
 A coordinator that sets `share_in_registry` and `community_registry_url` registers itself once at startup, with retries. It has no republish loop.
 

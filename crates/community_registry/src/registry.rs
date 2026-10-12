@@ -27,9 +27,12 @@ use syneroym_core::{
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time};
 use tracing::{debug, error, info, warn};
 
+use crate::curated_list;
+
 pub struct EcosystemRegistry {
     bind_address: String,
     state: Arc<RegistryState>,
+    curated_lists: Router,
     shutdown_tx: Option<Sender<()>>,
     server_handle: Option<JoinHandle<()>>,
     listener: Option<TcpListener>,
@@ -40,6 +43,7 @@ impl Debug for EcosystemRegistry {
         f.debug_struct("EcosystemRegistry")
             .field("bind_address", &self.bind_address)
             .field("state", &self.state)
+            .field("curated_lists", &self.curated_lists)
             .field("shutdown_tx", &self.shutdown_tx.as_ref().map(|_| "oneshot::Sender"))
             .field("server_handle", &self.server_handle)
             .field("listener", &self.listener.as_ref().map(|l| l.local_addr().ok()))
@@ -77,18 +81,13 @@ impl EcosystemRegistry {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("initializing service registry");
 
-        let bind_address = config
-            .roles
-            .community_registry
-            .as_ref()
-            .ok_or_else(|| {
-                anyhow::anyhow!("community registry role must be enabled to initialize registry")
-            })?
-            .http_bind_address
-            .clone();
+        let role = config.roles.community_registry.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("community registry role must be enabled to initialize registry")
+        })?;
 
-        let parent_registry_url =
-            config.roles.community_registry.as_ref().and_then(|r| r.parent_registry_url.clone());
+        let curated_lists = curated_list::router(role)?;
+        let bind_address = role.http_bind_address.clone();
+        let parent_registry_url = role.parent_registry_url.clone();
 
         Ok(Self {
             bind_address,
@@ -98,6 +97,7 @@ impl EcosystemRegistry {
                 master_anchors: DashMap::new(),
                 parent_registry_url,
             }),
+            curated_lists,
             shutdown_tx: None,
             server_handle: None,
             listener: None,
@@ -135,7 +135,8 @@ impl EcosystemRegistry {
             .route("/lookup/{service_id}", get(lookup_endpoint))
             .route("/register_master", post(register_master_endpoint))
             .route("/lookup_master/{master_id}", get(lookup_master_endpoint))
-            .with_state(self.state.clone());
+            .with_state(self.state.clone())
+            .merge(self.curated_lists.clone());
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         self.shutdown_tx = Some(shutdown_tx);

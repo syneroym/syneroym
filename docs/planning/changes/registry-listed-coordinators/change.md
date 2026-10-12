@@ -3,7 +3,9 @@ status: in-progress
 living-docs-touched:
   - docs/system-architecture.md
   - docs/system-requirements-spec.md
+  - docs/developer-guide.md
   - docs/TERMINOLOGY.md
+  - docs/planning/traceability-matrix.md
   - docs/demo/demo.md
 ---
 # Registry-listed coordinators
@@ -43,8 +45,8 @@ This change builds that for the Iroh relay. A community registry operator lists 
 | --- | --- | --- |
 | AC-1 | `parent_coordinator.iroh.url` is optional. When it is set, the substrate uses it and never asks the registry. | `crates/substrate/tests/home_relay_e2e.rs`, `crates/core/src/config/tests.rs` |
 | AC-2 | When `url` is not set and `iroh` is in `communication_interfaces`, the substrate resolves a relay in this order: saved choice, then saved list, then the registry. | |
-| AC-3 | The registry returns its configured list from `GET /coordinators?transport=iroh-relay`. Each entry has `transport`, `url`, `info_url` (where `GET /v1/info` is served, because it has its own port), and `operator`. The response says how long a client may cache it (`max_age_secs`). | |
-| AC-4 | The choice is deterministic. The substrate ranks the entries by SHA-256 over a fixed byte layout (see Design) and takes the first. The same inputs always give the same result on every version of the compiler. | |
+| AC-3 | The registry returns its configured list from `GET /coordinators?transport=iroh-relay`. Each entry has `transport`, `url`, `info_url` (where `GET /v1/info` is served, because it has its own port), and `operator`. The response says how long a client may cache it (`max_age_secs`). | `crates/community_registry/src/curated_list/tests.rs` (`serves_list`, `serves_empty_list_when_no_parent`), `crates/substrate/tests/curated_list_e2e.rs` (`booted_substrate_serves_normalized_coordinator_list`) |
+| AC-4 | The choice is deterministic. The substrate ranks the entries by SHA-256 over a fixed byte layout (see Design) and takes the first. The same inputs always give the same result on every version of the compiler. | ranking helper only (`crates/core/src/curated_list/tests.rs`); substrate use in A4 |
 | AC-5 | The substrate keeps the list and its choice on disk. It does not ask the registry again until `max_age_secs` has passed. If a refresh fails, the old list stays in use, also after it has expired. | |
 | AC-6 | Before it uses an entry, the substrate reads `info_url`. It skips an entry that cannot be reached or reports `at_capacity`, and takes the next entry in rank order. `at_capacity` is computed from the number of relay clients, not router connections. The count is the `accepts` counter minus the `disconnects` counter of `iroh-relay` (`server/metrics.rs`), which has no direct gauge. | |
 | AC-7 | A saved choice is kept while it works, even if a new list changes the ranking. The substrate picks again only when the choice is removed from the list, or after 3 connection failures within 5 minutes. | |
@@ -53,9 +55,9 @@ This change builds that for the Iroh relay. A community registry operator lists 
 | AC-10 | The endpoint is never built with the public n0 preset, with or without a relay URL, and also when a relay URL does not parse. This covers every runtime caller of `net_iroh::build_iroh_endpoint`. The smoke-test tool has its own n0 builder (`crates/smoke-tests/src/main.rs:222`); it is a test tool and is not covered. | `crates/router/tests/no_n0_relay_preset.rs`, `crates/coordinator_iroh/tests/startup_config.rs` |
 | AC-11 | Boot does not wait for the registry. It starts with the saved choice, or with an empty relay map, and resolves in the background. A relay inserted later becomes the home relay. | |
 | AC-12 | The default of `registry_url` stays `None`. The substrate never contacts a registry or a relay that the operator did not configure or that a configured registry did not list. | |
-| AC-13 | The registry config check fails at startup for a list entry with a bad URL, or a duplicate after URL normalisation. | |
+| AC-13 | The registry config check fails at startup for a list entry with a bad URL, or a duplicate after URL normalisation. | `crates/core/src/curated_list/tests.rs` (`check_entries_normalizes_and_detects_bad_or_duplicate_urls`), `crates/community_registry/src/curated_list/tests.rs` (`bad_config_stops_init`), `crates/substrate/tests/curated_list_e2e.rs` (`duplicate_coordinator_urls_fail_substrate_init`) |
 | AC-14 | `coordinator_discovery_url` is removed from the config. | `crates/core/src/config/tests.rs` |
-| AC-15 | A registry with an empty list asks its parent registry and returns that answer. Forwarding stops after 3 hops. | |
+| AC-15 | A registry with an empty list asks its parent registry and returns that answer. Forwarding stops after 3 hops. | `crates/community_registry/src/curated_list/tests.rs` (`empty_list_forwards_to_parent`, `hop_limit_stops_forwarding_at_max_hops`, `loop_stops_when_max_hops_reached`) |
 | AC-16 | A coordinator role (Iroh or WebRTC) never resolves its own parent relay from the registry, even when `url` is not set. | |
 | AC-17 | `GET /v1/info` reports the number of relay clients. The registry lookup inside it is cached, so many probes do not cause many lookups. | |
 
@@ -89,7 +91,11 @@ This list is separate from `share_in_registry`. That setting makes a coordinator
 
 Normalise every URL before it is ranked and before the duplicate check: lower-case the scheme and host, drop a default port, and drop a trailing slash. `RelayUrl` adds a trailing slash, so `x` and `x/` would otherwise rank differently.
 
-Rank key for an entry: `SHA-256( len(did) || did || len(url) || url )`, where `did` is the substrate DID, `url` is the normalised URL, and `len` is a 4-byte big-endian length. Sort the entries by this key, smallest first. Do not use Rust's default hasher: it is not stable across versions.
+Rank key for an entry: `SHA-256( len(did) || did || len(url) || url )`, where `did` is the substrate DID, `url` is the normalised URL, and `len` is a 4-byte big-endian length. Sort the entries by this key, smallest first. Do not use Rust's default hasher: it is not stable across versions. The chooser string for coordinator ranking is the substrate's DID string (`derive_did_key`, format `did:key:h…`).
+
+Note for Slice A4: The normalised URL has no trailing slash, but the published record uses `RelayUrl` form with a trailing slash. Slice A4 must compare a saved choice and a list entry through `normalize_url`, never as raw strings, and must parse the chosen URL into `RelayUrl` before `HomeRelay::set`.
+
+Note for Slice A4: An empty list is cached with the normal `max_age_secs`. Slice A4 must not treat an empty list as a usable saved list, to avoid blocking retry with backoff.
 
 ### Substrate side
 
@@ -138,8 +144,8 @@ Decided 2026-10-11:
 ## Tasks
 
 - [x] Run degraded mode once (empty relay map, then `insert_relay`) and record the result here.
-- [ ] Config: make `url` optional, remove `coordinator_discovery_url`, add the registry `coordinators` list and its checks (URL normalisation, duplicates). Parse `[roles.coordinator] access` strictly, in the final shape from [operator-passport](../operator-passport/change.md) (H-6), because an unknown value opens the relay to everyone today and the list relies on `access = "everyone"` being exact.
-- [ ] Registry: `GET /coordinators` and parent forwarding with a hop limit.
+- [x] Config: make `url` optional, remove `coordinator_discovery_url`, add the registry `coordinators` list and its checks (URL normalisation, duplicates). Parse `[roles.coordinator] access` strictly, in the final shape from [operator-passport](../operator-passport/change.md) (H-6), because an unknown value opens the relay to everyone today and the list relies on `access = "everyone"` being exact.
+- [x] Registry: `GET /coordinators` and parent forwarding with a hop limit.
 - [ ] Coordinator info endpoint: relay client count for `at_capacity`, cache the registry lookup.
 - [ ] Substrate: background resolve, rank, cache, fail over, degraded mode, relay switch at run time, publish the record again.
 - [x] Remove both n0 fallbacks. Check the tests that rely on them.
@@ -160,6 +166,19 @@ Decided 2026-10-11:
 - Confirmed home relay does not prove access: confirmation occurs when net-report probes reach the relay, before the relay connection opens and before the relay runs its access checks. Registration success, not relay confirmation, proves access (relevant for B3).
 - `remove_relay` on the home relay: when all relays are removed, leaving an empty relay map, iroh 0.97 does not clear the previous home relay from `addr().relay_urls()` because it skips net-report runs when the relay map is empty; inserting a replacement relay updates the home relay immediately (`crates/coordinator_iroh/tests/relay_map_runtime.rs`).
 - `[roles.coordinator] access`: list entries admit valid Iroh endpoint IDs for relay access; DID-formatted strings will not parse as endpoint IDs because relay admission checks Iroh endpoint IDs directly.
+- D-A2-1: Config setting for list cache duration is named `list_max_age_secs` (default 86,400 seconds).
+- D-A2-2: Forwarding between registries uses the `hops` query parameter (`0`..`3`), forwarding while `hops < 3` and passing `hops + 1`.
+- D-A2-3: When a parent registry fails, is unreachable, or returns an invalid body, the registry returns `502 Bad Gateway`.
+- D-A2-4: Forwarded responses are passed through as-is without local caching or body size limit.
+- D-A2-5: URL normalisation lowercases scheme and host, removes default ports (80 for http, 443 for https), strips trailing slashes, and rejects userinfo, query, fragment, and non-http(s) schemes.
+- D-A2-6: Both `url` and `info_url` are checked and normalised at startup.
+- D-A2-7: Top-level JSON array key is derived dynamically from `ListEntry::LIST_KEY`.
+- D-A2-8: The `transport` parameter on `GET /coordinators` is required and strict (`iroh-relay`).
+- D-A2-9: `CoordinatorEntry` ignores unknown fields during deserialization for forward compatibility.
+- D-A2-10: An empty list is served with normal `max_age_secs`.
+- D-A2-11: `serde.workspace = true` is added to `crates/community_registry/Cargo.toml`; `Url::query_pairs_mut()` is used instead of `reqwest::RequestBuilder::query`.
+- D-A2-12: The chooser string is fixed to the substrate's DID string (`derive_did_key`, `did:key:h…`).
+- D-A2-13: The entry ID for rendezvous ranking is `url` alone.
 
 ## Close-out
 

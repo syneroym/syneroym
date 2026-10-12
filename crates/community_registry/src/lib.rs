@@ -2,6 +2,7 @@
 //! Service registry for discovering and managing services within a Syneroym
 //! ecosystem.
 
+mod curated_list;
 mod registry;
 
 pub use registry::EcosystemRegistry;

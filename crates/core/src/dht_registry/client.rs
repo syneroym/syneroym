@@ -17,7 +17,8 @@ use super::{
 /// call site here treats a registry failure as non-fatal already (warn and
 /// continue, or fall back to the DHT), so a short timeout only trades a
 /// slightly less patient retry loop for never blocking the caller this long.
-const HTTP_REQUEST_TIMEOUT: time::Duration = time::Duration::from_secs(10);
+/// Also used for curated-list requests.
+pub const HTTP_REQUEST_TIMEOUT: time::Duration = time::Duration::from_secs(10);
 
 #[derive(Debug)]
 pub struct RegistryClient {

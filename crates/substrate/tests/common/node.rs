@@ -32,7 +32,11 @@
 
 #![allow(clippy::cognitive_complexity, dead_code)]
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use syneroym_core::config::{
     ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, LogTarget, ServiceRegistryRole,
@@ -92,6 +96,14 @@ pub struct NodeBuilder {
     skip_ready_wait: bool,
     configure: ConfigHook,
     inspect_identity: Option<IdentityHook>,
+}
+
+struct PreparedNode {
+    config: SubstrateConfig,
+    registry_url: String,
+    relay_url: String,
+    owner: Option<Arc<Identity>>,
+    service_id: String,
 }
 
 impl NodeBuilder {
@@ -278,14 +290,8 @@ impl NodeBuilder {
         self.boot_at(base_path, temp_dir).await
     }
 
-    async fn boot_at(self, base_path: PathBuf, temp_dir: Option<TempDir>) -> SubstrateNode {
-        assert!(
-            !(self.skip_ready_wait && self.inject_kek.is_some()),
-            "skip_ready_wait cannot be combined with inject_kek because KEK injection requires an \
-             active connection"
-        );
-
-        let (mut config, registry_url, relay_url) = self.build_config(&base_path);
+    fn prepare_config(&self, base_path: &Path) -> PreparedNode {
+        let (mut config, registry_url, relay_url) = self.build_config(base_path);
 
         let owner: Option<Arc<Identity>> = if self.own_node || self.make_owner_client {
             Some(
@@ -312,13 +318,42 @@ impl NodeBuilder {
         }
         let service_id = identity_state.did.clone();
 
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         crate::common::release_held_ports(&[
             self.ports.iroh,
             self.ports.registry,
             self.ports.gateway,
             self.ports.quic,
         ]);
+
+        PreparedNode { config, registry_url, relay_url, owner, service_id }
+    }
+
+    /// Attempt to initialize the substrate and return the error on failure.
+    /// Panics if initialization succeeds.
+    pub async fn init_error(self) -> anyhow::Error {
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let prepared = self.prepare_config(dir.path());
+        match syneroym_substrate::init(prepared.config).await {
+            Ok(_) => panic!("expected substrate::init to fail, but it succeeded"),
+            Err(e) => e,
+        }
+    }
+
+    async fn boot_at(self, base_path: PathBuf, temp_dir: Option<TempDir>) -> SubstrateNode {
+        assert!(
+            !(self.skip_ready_wait && self.inject_kek.is_some()),
+            "skip_ready_wait cannot be combined with inject_kek because KEK injection requires an \
+             active connection"
+        );
+
+        let prepared = self.prepare_config(&base_path);
+        let config = prepared.config;
+        let registry_url = prepared.registry_url;
+        let relay_url = prepared.relay_url;
+        let owner = prepared.owner;
+        let service_id = prepared.service_id;
+
+        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("failed to initialize runtime");
         let home_relay = runtime.connection_router.home_relay();

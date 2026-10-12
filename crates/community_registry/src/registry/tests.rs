@@ -51,6 +51,7 @@ async fn spawn_registry_with_parent(
                 access: AccessControl::String("everyone".to_string()),
                 http_bind_address: "127.0.0.1:0".to_string(),
                 parent_registry_url,
+                ..Default::default()
             }),
             ..Default::default()
         },

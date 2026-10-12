@@ -152,3 +152,52 @@ coordinator_discovery_url = "http://x"
     let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
     assert!(config.substrate.communication_interfaces.contains(&"iroh".to_string()));
 }
+
+#[test]
+fn community_registry_coordinators_list_parses_from_toml() {
+    let toml = r#"
+[roles.community_registry]
+list_max_age_secs = 3600
+
+[[roles.community_registry.coordinators]]
+transport = "iroh-relay"
+url = "https://relay-1.example.org"
+info_url = "https://relay-1.example.org:7974"
+operator = "First Operator"
+
+[[roles.community_registry.coordinators]]
+transport = "iroh-relay"
+url = "https://relay-2.example.org"
+info_url = "https://relay-2.example.org:7974"
+operator = "Second Operator"
+"#;
+    let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
+    let reg = config.roles.community_registry.unwrap();
+    assert_eq!(reg.list_max_age_secs, 3600);
+    assert_eq!(reg.coordinators.len(), 2);
+    assert_eq!(reg.coordinators[0].url, "https://relay-1.example.org");
+    assert_eq!(reg.coordinators[1].operator, "Second Operator");
+}
+
+#[test]
+fn community_registry_coordinators_defaults_when_absent() {
+    let toml = r#"
+[roles.community_registry]
+"#;
+    let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
+    let reg = config.roles.community_registry.unwrap();
+    assert_eq!(reg.list_max_age_secs, 86_400);
+    assert!(reg.coordinators.is_empty());
+}
+
+#[test]
+fn community_registry_coordinator_unknown_transport_fails() {
+    let toml = r#"
+[[roles.community_registry.coordinators]]
+transport = "webrtc"
+url = "https://relay.example.org"
+info_url = "https://relay.example.org:7974"
+operator = "Operator"
+"#;
+    assert!(toml::from_str::<SubstrateConfig>(toml).is_err());
+}

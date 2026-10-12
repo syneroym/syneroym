@@ -17,6 +17,7 @@ dashmap.workspace = true
 serde_json.workspace = true
 syneroym-identity.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 pkarr.workspace = true
