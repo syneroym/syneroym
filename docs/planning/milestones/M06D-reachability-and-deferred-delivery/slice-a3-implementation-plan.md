@@ -23,29 +23,22 @@ Read these before you change anything:
   "Endpoints" (what B2 adds to the info server).
 - This plan, §2.
 
-**Branch.** Work on `feat/m06d-a3-implementation`. It starts at the last A2
-commit `db1ceb3c` ("chore: move constant to appropriate place", on
-`feat/m06d-a2-implementation`) plus the commit that adds this plan. A2 is not
-merged into `main` yet. The code of this branch is the A2 code. Check this
-with:
-
-```bash
-git fetch origin
-git diff --stat origin/feat/m06d-a2-implementation HEAD -- crates apps xtask
-```
-
-The diff must be empty. If A2 gets new commits, rebase A3 onto them first.
-After A2 is squash-merged into `main`, move A3 onto `main` with:
+**Branch.** Work on `feat/m06d-a3-implementation`. A2 is merged into `main`
+(#302, commit `83d3ae32`), and this branch is based on that commit: it is
+`main` plus the commits that add this plan. Check that no code differs from
+`main` before you start:
 
 ```bash
 git fetch origin main
-git rebase --onto origin/main db1ceb3c feat/m06d-a3-implementation
+git diff --stat origin/main HEAD -- crates apps xtask
 ```
 
-(If A2 got more commits before its merge, use its last commit instead of
-`db1ceb3c`.) Push with `git push -u origin feat/m06d-a3-implementation`. Do
-not open a pull request unless the user asks. Commit messages follow the
-Conventional Commits and 50/72 rules in `AGENTS.md`.
+The diff must be empty. If `main` has moved on, rebase first
+(`git rebase origin/main`). The branch was rebased after it was pushed, so the
+first push needs `git push --force-with-lease -u origin
+feat/m06d-a3-implementation`. Do not open a pull request unless the user
+asks. Commit messages follow the Conventional Commits and 50/72 rules in
+`AGENTS.md`.
 
 ### Terms used in this plan
 
@@ -351,7 +344,10 @@ other literal changes.
 # max_relay_clients = 1000
 ```
 
-`crates/coordinator_iroh/src/config.rs`, next to `relay_access`:
+`crates/coordinator_iroh/src/config.rs`, next to `relay_access`. Add
+`CoordinatorIrohConfig` to its existing import
+`use syneroym_core::config::{CoordinatorAccess, CoordinatorRole};` (l.13);
+`bail` and `warn` are already imported.
 
 ```rust
 /// Checks `[roles.coordinator.iroh] max_relay_clients`.
@@ -538,15 +534,19 @@ change them as below. `coordinator.rs` loses about 90 lines.
 //! The coordinator's own record in its community registry: register, then
 //! register again on a timer so the record does not expire.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Result;
 use iroh::{EndpointAddr, SecretKey};
 use syneroym_core::{
     config::RetryPolicy,
     dht_registry::{
-        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
-        HEARTBEAT_INTERVAL_SECS, RegistryClient,
+        DEFAULT_ENDPOINT_NOT_AFTER_SECS, DEFAULT_REGISTRY_TTL_SECS, EndpointInfo,
+        EndpointMechanism, EndpointType, HEARTBEAT_INTERVAL_SECS, RegistryClient,
     },
     retry,
 };
@@ -554,15 +554,27 @@ use syneroym_identity::{Identity, substrate};
 use tokio::{sync::watch, task::JoinHandle, time};
 use tracing::{debug, warn};
 
-/// Wait after a successful registration. The registry drops a record that is
-/// not refreshed within `DEFAULT_REGISTRY_TTL_SECS` (2 hours).
+/// Wait after a successful registration.
 pub(crate) const REGISTRATION_REFRESH: Duration = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
 /// Wait after a registration that failed all its retries.
 pub(crate) const REGISTRATION_RETRY: Duration = Duration::from_secs(60);
 
+// The registry drops a record that is not refreshed within its TTL, so the
+// refresh must come first.
+const _: () = assert!(HEARTBEAT_INTERVAL_SECS < DEFAULT_REGISTRY_TTL_SECS);
+
 /// The DID the coordinator registers under: `did:key` of its Iroh key.
 pub(crate) fn coordinator_did(secret_key: &SecretKey) -> String {
     substrate::derive_did_key(&Identity::from_bytes(&secret_key.to_bytes()).public_key())
+}
+
+/// What one registration needs. Shared by every round of the loop.
+#[derive(Debug)]
+struct Registration {
+    registry: RegistryClient,
+    secret_key: SecretKey,
+    relay_url: Option<String>,
+    retry_policy: RetryPolicy,
 }
 
 /// Registers the coordinator's record and keeps it registered until the task
@@ -574,33 +586,29 @@ pub(crate) fn spawn(
     retry_policy: RetryPolicy,
     registered: watch::Sender<bool>,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    let registration = Arc::new(Registration {
         // The coordinator has never published to the DHT.
-        let registry = RegistryClient::new(false, Some(registry_url));
-        keep_registered(
-            async || {
-                let res = retry::retry_with_backoff(&retry_policy, || {
-                    register_once(&registry, &secret_key, relay_url.clone())
-                })
-                .await;
-                match res {
-                    Ok(()) => debug!("coordinator registered in its community registry"),
-                    Err(e) => warn!("coordinator registration failed after all retries: {e}"),
-                }
-                res.is_ok()
-            },
-            registered,
-        )
-        .await;
-    })
+        registry: RegistryClient::new(false, Some(registry_url)),
+        secret_key,
+        relay_url,
+        retry_policy,
+    });
+    tokio::spawn(keep_registered(
+        move || {
+            let registration = Arc::clone(&registration);
+            async move { registration.register_with_retries().await }
+        },
+        registered,
+    ))
 }
 
 /// Calls `register` now, then again after `REGISTRATION_REFRESH` when it
 /// succeeded or `REGISTRATION_RETRY` when it failed. Never returns.
-pub(crate) async fn keep_registered(
-    mut register: impl AsyncFnMut() -> bool,
-    registered: watch::Sender<bool>,
-) {
+pub(crate) async fn keep_registered<F, Fut>(mut register: F, registered: watch::Sender<bool>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
     loop {
         let ok = register().await;
         registered.send_replace(ok);
@@ -608,30 +616,40 @@ pub(crate) async fn keep_registered(
     }
 }
 
-/// Signs a fresh record (new timestamp, so the registry accepts it as newer)
-/// and posts it.
-async fn register_once(
-    registry: &RegistryClient,
-    secret_key: &SecretKey,
-    relay_url: Option<String>,
-) -> Result<()> {
-    let node_id = secret_key.public();
-    let endpoint_addr_bytes = serde_json::to_vec(&EndpointAddr::new(node_id))?;
-    let identity = Identity::from_bytes(&secret_key.to_bytes());
-    let did = coordinator_did(secret_key);
-    let not_after = /* unchanged: now + DEFAULT_ENDPOINT_NOT_AFTER_SECS */;
-    let info = EndpointInfo {
-        service_id: did.clone(),
-        substrate_id: did,
-        endpoint_type: EndpointType::Substrate,
-        nickname: Some(format!("coordinator-{}", &node_id.to_string()[..8])),
-        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
-        is_private: false,
-        ttl: None,
-        not_after,
-        generation: 0,
-    };
-    registry.register(&info.sign(&identity)?, false).await
+impl Registration {
+    async fn register_with_retries(&self) -> bool {
+        let res = retry::retry_with_backoff(&self.retry_policy, || self.register_once()).await;
+        match &res {
+            Ok(()) => debug!("coordinator registered in its community registry"),
+            Err(e) => warn!("coordinator registration failed after all retries: {e}"),
+        }
+        res.is_ok()
+    }
+
+    /// Signs a fresh record (new timestamp, so the registry accepts it as
+    /// newer) and posts it.
+    async fn register_once(&self) -> Result<()> {
+        let node_id = self.secret_key.public();
+        let endpoint_addr_bytes = serde_json::to_vec(&EndpointAddr::new(node_id))?;
+        let identity = Identity::from_bytes(&self.secret_key.to_bytes());
+        let did = coordinator_did(&self.secret_key);
+        let not_after = /* unchanged: now + DEFAULT_ENDPOINT_NOT_AFTER_SECS */;
+        let info = EndpointInfo {
+            service_id: did.clone(),
+            substrate_id: did,
+            endpoint_type: EndpointType::Substrate,
+            nickname: Some(format!("coordinator-{}", &node_id.to_string()[..8])),
+            mechanisms: vec![EndpointMechanism::Iroh {
+                endpoint_addr_bytes,
+                relay_url: self.relay_url.clone(),
+            }],
+            is_private: false,
+            ttl: None,
+            not_after,
+            generation: 0,
+        };
+        self.registry.register(&info.sign(&identity)?, false).await
+    }
 }
 ```
 
@@ -645,9 +663,18 @@ Notes:
   nothing else.
 - `register_once` derives the DID with `coordinator_did`, and `start_endpoint`
   calls the same function (step 6), so the DID is derived in one place.
-- `AsyncFnMut` is stable since Rust 1.85; the workspace is edition 2024 on
-  stable. If the borrow of `registry` in the async closure causes trouble,
-  move `registry` into an `Arc` and clone it into each call.
+- `keep_registered` takes `F: FnMut() -> Fut`, not an async closure
+  (`impl AsyncFnMut() -> bool`). It runs inside `tokio::spawn`, which needs a
+  `Send` future. With an async closure that borrows its captures, rustc often
+  cannot prove that the returned future is `Send` for every lifetime
+  ("implementation of `Send` is not general enough"). Here each call clones
+  an `Arc<Registration>` into an `async move` block, so the future owns what
+  it uses and is `Send`. `RegistryClient` and `SecretKey` are `Send + Sync`.
+- The `const _: () = assert!(…)` line fails the build if someone makes the
+  refresh as long as the registry TTL. It needs no test. Do not write it as a
+  runtime `assert!` in a test: on two constants that triggers
+  `clippy::assertions_on_constants`, and the gate runs clippy with
+  `-D warnings`.
 - Check the import rule for `retry::retry_with_backoff` against how
   `coordinator.rs` imports it today (it imports the function directly at
   l.28). Follow `AGENTS.md`: functions are called through their module.
@@ -819,7 +846,9 @@ it — it does, so keep that one). `RegistryClient` is still used by
 - `registration_repeats_on_its_own_timer` with
   `#[tokio::test(start_paused = true)]`: a `register` closure that counts
   calls in an `Arc<AtomicUsize>` and answers `false` on call 1 and `true`
-  after. Spawn `keep_registered(register, tx)`. Then:
+  after. Write it in the same shape as production:
+  `move || { let calls = Arc::clone(&calls); async move { calls.fetch_add(1, Ordering::SeqCst) > 0 } }`.
+  Spawn `keep_registered(register, tx)` with `tokio::spawn`. Then:
   1. `tokio::task::yield_now()` until the count is 1; expect `*rx.borrow()`
      is `false`.
   2. `time::advance(REGISTRATION_RETRY - 1s)`, yield: count still 1.
@@ -827,9 +856,9 @@ it — it does, so keep that one). `RegistryClient` is still used by
   4. `time::advance(REGISTRATION_REFRESH - 1s)`, yield: count 2.
   5. `time::advance(1s)`, yield: count 3.
   Abort the task at the end.
-- `refresh_is_shorter_than_the_registry_ttl`: `REGISTRATION_REFRESH <
-  Duration::from_secs(DEFAULT_REGISTRY_TTL_SECS)`. This keeps the record
-  alive if someone changes either constant.
+
+The rule "refresh before the registry TTL" is a compile-time assert in
+`registration.rs` (step 5), not a test.
 
 `start_paused` needs tokio's `test-util` feature, which the workspace `tokio`
 entry does not turn on. Add to `crates/coordinator_iroh/Cargo.toml`
@@ -953,8 +982,8 @@ For A3:
 7. **AC-6 is mostly substrate side.** A3 does only the server half. Leave
    AC-6's Test column with the server tests and the note "substrate skip in
    A4", so A4's close-out does not skip it.
-8. **task.md §3 says A3 runs "Parallel with A2".** A2 is done but not merged.
-   See the branch rule in §0.
+8. **task.md §3 says A3 runs "Parallel with A2".** A2 is merged now (#302),
+   so this no longer applies. A3 is based on `main` (§0).
 
 Stale facts in task.md that later slices rely on (fix them in the same docs
 commit, completion step 4):
@@ -1037,6 +1066,20 @@ The implementer must follow these steps.
        (l.369): replace "registers itself in that registry once at startup"
        with "registers itself in that registry at startup, and again every
        hour (every minute after a failure), so its record does not expire."
+     - Multi-Hop section, the Cp bullet (l.1763): replace "Cp registers once
+       at startup, with retries if the call fails. It does not register
+       again. … So this record is gone from the registry about 2 hours after
+       Cp starts." with: Cp registers at startup, with retries if the call
+       fails, and registers again every hour (every minute after a failure).
+       The registry deletes an entry that is not refreshed within 2 hours, so
+       the hourly refresh keeps Cp's record.
+     - Registry section (l.2106): replace "registers itself once at startup,
+       with retries. It has no republish loop." with: registers itself at
+       startup, with retries, and again every hour (every minute after a
+       failure). `/v1/info` shows the DID it registers under and whether the
+       last registration was accepted (`registry`).
+     - l.2523 (the coordinator uses the retry policy when it registers) stays
+       true. Do not change it.
    - `docs/system-requirements-spec.md`, `docs/developer-guide.md`,
      `docs/TERMINOLOGY.md`, `docs/planning/traceability-matrix.md`: no change
      expected. Check once (`git grep -n -e 'v1/info' -e 'controller_status'`).
