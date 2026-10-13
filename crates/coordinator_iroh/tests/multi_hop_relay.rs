@@ -272,10 +272,8 @@ fn create_signed_info(
     info.sign(identity).unwrap()
 }
 
-/// Spawns global Coordinator C exactly as `test_inbound_relay` and
-/// `test_outbound_relay` both do: with relay and signalling enabled, and its
-/// own record published in registry R (`share_in_registry`). No routing in
-/// these tests reads that record; it is checked in `info_endpoint.rs`.
+/// Spawns global Coordinator C as both relay tests do: relay and signalling
+/// on, own record published in R (`share_in_registry`; unused by routing here).
 async fn spawn_global_coordinator(
     base_path: &Path,
     r_url: &str,
@@ -310,9 +308,7 @@ async fn spawn_global_coordinator(
     Ok((c, c_info, c_relay_url))
 }
 
-/// Spawns private Coordinator Cp pointing at global Coordinator C, exactly as
-/// `test_inbound_relay` and `test_outbound_relay` both do. Cp uses C's relay
-/// as its home relay, and also publishes its own record in R.
+/// Spawns private Coordinator Cp (home relay: C's; record published in R).
 async fn spawn_private_coordinator(
     base_path: &Path,
     r_url: &str,
@@ -562,9 +558,8 @@ async fn test_inbound_relay() -> Result<()> {
         spawn_z_target_substrate(base_path, &r_url, cp_info.relay_url.clone(), &info_client)
             .await?;
 
-    // 5. Connect from a client in public network (under C). The client dials only
-    //    C. C does not host Sz, so it looks Sz up in R and dials Sz through Sz's
-    //    home relay, which is Cp's relay. Cp is a relay here, not a forwarder.
+    // 5. Client in public network dials only C. C looks Sz up in R and dials it via
+    //    Sz's home relay (Cp's relay). Cp is a relay here, not a forwarder.
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
         target_z.did.clone(),
         vec![EndpointMechanism::Iroh {
@@ -607,9 +602,8 @@ async fn test_outbound_relay() -> Result<()> {
     // 4. Spawn target substrate Sx in public network under C
     let target_x = spawn_x_target_substrate(base_path, &r_url, &c_relay_url, &info_client).await?;
 
-    // 5. Connect from a client in private network (under Cp). The client dials Cp,
-    //    so Cp is the forwarding entry point. Cp looks Sx up in R and dials Sx
-    //    through Sx's home relay, which is C's relay.
+    // 5. Client in private network dials Cp, the forwarding entry point. Cp looks
+    //    Sx up in R and dials it via Sx's home relay (C's relay).
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
         target_x.did.clone(),
         vec![EndpointMechanism::Iroh {
