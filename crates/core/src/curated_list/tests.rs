@@ -3,7 +3,7 @@ use syneroym_identity::substrate;
 
 use super::{
     CoordinatorEntry, CoordinatorFilter, CoordinatorTransport, CuratedList, check_entries,
-    normalize_url, rank, rank_key,
+    list_request_timeout, normalize_url, rank, rank_key,
 };
 
 #[test]
@@ -372,4 +372,10 @@ fn coordinator_filter_matches_transport() {
     };
     let filter = CoordinatorFilter { transport: CoordinatorTransport::IrohRelay };
     assert!(super::ListEntry::matches(&entry, &filter));
+}
+
+#[test]
+fn list_request_timeout_shrinks_with_each_hop() {
+    let secs = |h| list_request_timeout(h).as_secs();
+    assert_eq!([secs(0), secs(1), secs(2), secs(3), secs(4)], [40, 30, 20, 10, 10]);
 }
