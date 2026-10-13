@@ -140,6 +140,26 @@ impl HomeRelay {
         Err(HomeRelayError::NotConfirmed { url, timeout: self.inner.confirm_timeout })
     }
 
+    /// Waits until the endpoint is closed. A background task uses it to stop.
+    pub async fn closed(&self) {
+        self.inner.endpoint.closed().await;
+    }
+
+    /// Removes a relay that a `set` put in the map but iroh never confirmed,
+    /// so the relay map is empty again. Does nothing when a relay is
+    /// confirmed.
+    pub async fn clear_unconfirmed(&self) {
+        // Take the lock first, as `set` does, so this never runs in the
+        // middle of a `set`.
+        let mut in_map = self.inner.in_map.lock().await;
+        if self.inner.confirmed.borrow().is_some() {
+            return;
+        }
+        if let Some(url) = in_map.take() {
+            self.inner.endpoint.remove_relay(&url).await;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn in_map(&self) -> Option<RelayUrl> {
         self.inner.in_map.lock().await.clone()

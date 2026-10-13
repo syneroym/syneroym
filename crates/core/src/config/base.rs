@@ -150,9 +150,11 @@ pub enum LogTarget {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IrohParentConfig {
-    /// The relay URL. When it is not set, the endpoint starts with an
-    /// empty relay map: it can dial peers through their relays, but no
-    /// peer can reach it through a relay.
+    /// The relay URL. When it is not set and `substrate.registry_url` is,
+    /// the substrate picks a relay from that registry's coordinator list. It
+    /// is in degraded mode only when neither is set, or the list gives no
+    /// usable relay: the endpoint then has an empty relay map and can dial
+    /// peers through their relays, but no peer can reach it through a relay.
     pub url: Option<String>,
 }
 

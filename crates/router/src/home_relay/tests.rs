@@ -84,3 +84,37 @@ async fn close_during_set_ends_the_wait() {
         start.elapsed()
     );
 }
+
+#[tokio::test]
+async fn clear_unconfirmed_empties_the_map_after_a_failed_first_set() {
+    let ep = bind_empty().await;
+    let (_l1, dead1) = dead_relay().await;
+    let handle = HomeRelay::new(ep, Duration::from_secs(1));
+
+    let res = handle.set(dead1).await;
+    assert!(matches!(res, Err(HomeRelayError::NotConfirmed { .. })));
+
+    handle.clear_unconfirmed().await;
+    assert_eq!(handle.in_map().await, None);
+    assert_eq!(*handle.subscribe().borrow(), None);
+}
+
+#[tokio::test]
+async fn clear_unconfirmed_on_a_new_handle_does_nothing() {
+    let ep = bind_empty().await;
+    let handle = HomeRelay::new(ep, Duration::from_secs(1));
+
+    handle.clear_unconfirmed().await;
+    assert_eq!(handle.in_map().await, None);
+}
+
+#[tokio::test]
+async fn closed_returns_after_the_endpoint_closes() {
+    let ep = bind_empty().await;
+    let handle = HomeRelay::new(ep.clone(), Duration::from_secs(1));
+
+    let task = tokio::spawn(async move { handle.closed().await });
+    ep.close().await;
+
+    time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+}

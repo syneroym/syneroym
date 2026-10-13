@@ -151,13 +151,13 @@ The following table lists key personas in the Syneroym ecosystem. A single perso
 **App Developer.** A person or organization that builds SynApps and publishes them for others to deploy. An App Developer does not necessarily host or operate any infrastructure.
 
 **Bootstrap Server.** An envisioned centralized registry service that coordinates active services and relays.
-> **Envisioned.** Not built yet. Centralized bootstrap servers (`*.syneroym.xyz`) are not built. Today substrate nodes configure static parent coordinator relay URLs (`parent_coordinator.iroh.url`) and publish endpoints to local Community Registries and Mainline DHT.
+> **Envisioned.** Not built yet. Centralized bootstrap servers (`*.syneroym.xyz`) are not built. Today a substrate node sets a parent coordinator relay URL (`parent_coordinator.iroh.url`) or picks a relay from the coordinator list of its Community Registry, and publishes endpoints to local Community Registries and Mainline DHT.
 
 **Consumer / General User.** A user who discovers and purchases services or products, or interacts with other entities in the Syneroym ecosystem.
 
 **Federation.** The process by which independent providers and infrastructure nodes interoperate. They share discovery, reputation, and messaging capabilities without a central authority.
 
-**Home Relay / Coordinator Relay.** A coordinator relay endpoint confirmed at the substrate node level (`parent_coordinator.iroh.url` or dynamic runtime assignment). It provides fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the relay connectivity of the substrate node rather than binding to individual relays. A substrate without a confirmed home relay operates in degraded mode.
+**Home Relay / Coordinator Relay.** A coordinator relay endpoint confirmed at the substrate node level (`parent_coordinator.iroh.url`, or a relay picked from the coordinator list of the registry). It provides fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the relay connectivity of the substrate node rather than binding to individual relays. A substrate without a confirmed home relay operates in degraded mode.
 
 **Infrastructure Provider.** A person or organization that provides hardware or virtual infrastructure for Service Providers to host applications on a lease.
 
@@ -295,8 +295,8 @@ The reference client uses these measurable baselines unless a vertical requireme
 
 - **Security:** The system encrypts all traffic between nodes and between clients and nodes in transit (`crates/router/src/net_iroh.rs:130`). Sensitive production data and backups are encrypted at rest by default using SQLCipher KEK/DEK envelope encryption (`crates/data_keystore/src/key_store.rs:29`). The system never shares default credentials across installations. The system authenticates, authorizes, and audits critical actions.
 - **Identity security:** Routine key rotation and device loss do not require a new public identity. The system shows revocation freshness, recovery authority, and the consequences of losing all recovery factors to the owner (`crates/identity/src/delegation.rs:62`, `crates/core/src/dht_registry/master_anchor.rs:24`). Government identity is optional. Government identity is never the universal root of participation.
-- **Availability:** Local and cached reads remain available during temporary bootstrap or relay loss (`crates/data_db/src/sqlite/provider.rs:281`). Substrates configure static parent coordinator relay URLs (`parent_coordinator.iroh.url`) and publish endpoints to the community registry (`crates/community_registry`).
-  > **Envisioned.** Not built yet. A 24-hour bootstrap outage test. Today substrates configure static parent coordinator relay URLs and publish to community registries.
+- **Availability:** Local and cached reads remain available during temporary bootstrap or relay loss (`crates/data_db/src/sqlite/provider.rs:281`). Substrates set a parent coordinator relay URL (`parent_coordinator.iroh.url`) or pick a relay from the coordinator list of the registry, and publish endpoints to the community registry (`crates/community_registry`).
+  > **Envisioned.** Not built yet. A 24-hour bootstrap outage test. Today a substrate sets a relay URL or picks one from the coordinator list, and publishes to community registries.
 - **Durability:** Test suites for disconnect/reconnect and process restart must lose zero acknowledged in-scope transaction messages (`crates/substrate/tests/saga_e2e.rs`, `crates/substrate/tests/roym_group_offline_e2e.rs`). Backup restore is verified on a clean node before initial release (`crates/substrate/tests/roym_restore_e2e.rs:49`).
 - **Performance:** On documented standard-node profiles, local user interface actions must reach a p95 latency under 1 second. Remote browse, search, message acknowledgement, and request submission must reach a p95 latency under 3 seconds, excluding delays from an offline peer or external payment provider (`crates/observability/src/recorder.rs:136`).
   > **Envisioned.** Not built yet. Mobile-network performance profile testing and automated mobile latency benchmarks. Today performance metrics are recorded in memory on desktop and server platforms.
@@ -512,9 +512,9 @@ Operators place a SynApp on one or more substrates. Each service inside a SynApp
 
 An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates provider listings and credentials. Aggregators do not manage infrastructure or host services for providers. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
 
-Substrates connect to configured coordinator relays (`parent_coordinator.iroh.url`). They publish signed endpoint records to the Community Registry and the Mainline DHT. Trust evidence uses canonical signed Roym records (such as guild membership credentials and bilateral agreement receipts). Trust evidence does not use centralized reputation scores or generic W3C VC 2.0 envelopes.
+Substrates connect to a coordinator relay: the one in `parent_coordinator.iroh.url`, or one from the coordinator list of the registry. They publish signed endpoint records to the Community Registry and the Mainline DHT. Trust evidence uses canonical signed Roym records (such as guild membership credentials and bilateral agreement receipts). Trust evidence does not use centralized reputation scores or generic W3C VC 2.0 envelopes.
 
-> **Envisioned.** Not built yet. Centralized bootstrap servers, dynamic relay DNS assignment, and consumer-to-provider vouching graphs. Today nodes configure static coordinator relays and trust relies on signed SynOrg membership credentials.
+> **Envisioned.** Not built yet. Centralized bootstrap servers, dynamic relay DNS assignment, and consumer-to-provider vouching graphs. Today a relay is set in the config or picked from the coordinator list, and trust relies on signed SynOrg membership credentials.
 
 
 ---
@@ -531,7 +531,7 @@ This section describes core Syneroym substrate functionality, key protocols, and
 - The substrate creates a protected node key on first run. Administrative ownership requires an offline claim step that produces a mutually signed `ControllerAgreement`. Routine administration uses revocable delegated credentials (`DelegationCertificate`, UCAN tokens) instead of exposing a root key.
   > **Envisioned.** Not built yet. Tested recovery method wizard before production use. Today initial node keys are initialized at boot and claimed offline.
 - The substrate connects to a relay:
-  - The substrate configures a home relay URL (`parent_coordinator.iroh.url`) or updates it dynamically at runtime. The endpoint starts with an empty relay map and confirms candidates via net-report probes before publishing.
+  - The home relay is the URL in `parent_coordinator.iroh.url`, or a relay that the substrate picks from the coordinator list of its registry. The substrate replaces it at run time when it fails or leaves the list. The endpoint starts with an empty relay map and confirms candidates via net-report probes before publishing.
   - When confirmed, the substrate publishes signed endpoint information (`SignedEndpointInfo`) containing its confirmed relay URL to the Community Registry and Mainline DHT. When no home relay is configured, registration is deferred.
   - The substrate listens through the assigned coordinator relay and direct peer-to-peer interfaces (Iroh QUIC).
 - The substrate identifies its capabilities (sandbox types and quota configurability). The node owner configures capability limits (CPU, memory, instruction fuel) for hosted services.
@@ -579,7 +579,7 @@ Substrate nodes boot in an unowned state. They fail closed on privileged operati
 
 - Acts as a coordination server for direct peer connections using UDP hole punching.
 - Acts as an encrypted TCP data relay through embedded `iroh-relay` when direct connections fail (due to blocked UDP, symmetric NAT, or CGNAT). Access is controlled by `[roles.coordinator] access` (`"everyone"`, or a list of allowed Iroh endpoint IDs).
-- Substrates connect to a home relay URL (`parent_coordinator.iroh.url` or dynamic update). When confirmed, they publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Hosted services inherit this relay connectivity from their substrate.
+- Substrates connect to a home relay URL (`parent_coordinator.iroh.url`, or picked from the coordinator list). When confirmed, they publish signed endpoint records to the Community Registry or Mainline DHT via pkarr. Hosted services inherit this relay connectivity from their substrate.
   > **Envisioned.** Not built yet. A WebRTC TURN relay server, dynamic bootstrap relay registration, and `<relaynodeid>.syneroym.net` DNS subdomains. Today relays do not provide TURN; browser clients connect through the Client Gateway HTTP proxy or WebRTC data channels with HTTP/WebSocket signaling.
 
 ### Bootstrap

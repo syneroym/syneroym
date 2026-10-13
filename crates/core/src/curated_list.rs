@@ -2,7 +2,7 @@
 //! registry config, and that the registry serves over HTTP. A client ranks a
 //! list with `rank` to pick one entry.
 
-use std::{collections::HashMap, fmt, marker::PhantomData};
+use std::{collections::HashMap, fmt, marker::PhantomData, time::Duration};
 
 use anyhow::{Context, ensure};
 use reqwest::Url;
@@ -11,6 +11,8 @@ use serde::{
     de::{self, DeserializeOwned, Deserializer, MapAccess, Visitor},
     ser::SerializeMap,
 };
+
+use crate::registry_http;
 
 mod coordinator;
 mod rank;
@@ -26,6 +28,16 @@ pub const HOPS_PARAM: &str = "hops";
 /// A registry forwards a list request to its parent only while the request
 /// has made fewer forwards than this. It stops loops between registries.
 pub const MAX_LIST_HOPS: u8 = 3;
+
+/// The total time a list request that has made `hops` forwards may take.
+/// Each forward gets 10 s less than the request it serves, so an inner
+/// registry gives up and answers `502` before the outer one stops waiting:
+/// a client (0 hops) waits 40 s, the first forward 30 s, then 20 s, then 10 s.
+#[must_use]
+pub fn list_request_timeout(hops: u8) -> Duration {
+    let steps = u32::from(MAX_LIST_HOPS.saturating_sub(hops)) + 1;
+    registry_http::HTTP_REQUEST_TIMEOUT * steps
+}
 
 /// One kind of entry in a curated list.
 pub trait ListEntry: Clone + Serialize + DeserializeOwned + Send + Sync + 'static {
@@ -131,6 +143,8 @@ pub fn check_entries<E: ListEntry>(entries: &mut [E]) -> anyhow::Result<()> {
 
 /// Asks the registry at `registry_url` for its list.
 /// `hops` is the number of forwards already made; a client sends 0.
+/// The request time limit is `list_request_timeout(hops)`; it overrides the
+/// client's own timeout.
 ///
 /// # Errors
 /// When the registry cannot be reached, answers with a non-2xx status, or
@@ -152,7 +166,14 @@ pub async fn fetch<E: ListEntry>(
         }
         q.append_pair(HOPS_PARAM, &hops.to_string());
     }
-    let list = client.get(url).send().await?.error_for_status()?.json::<CuratedList<E>>().await?;
+    let list = client
+        .get(url)
+        .timeout(list_request_timeout(hops))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<CuratedList<E>>()
+        .await?;
     Ok(list)
 }
 

@@ -8246,6 +8246,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "semver",
+ "serde",
  "serde_json",
  "syneroym-app-host-native",
  "syneroym-app-orchestration",
@@ -8287,6 +8288,7 @@ dependencies = [
  "tokio-util",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 
 *Reader: developers who build these three changes.*
 
-**Status: planning (2026-10-11).** Progress is in [status.md](status.md).
+**Status: in progress (2026-10-13).** S0 and A1 to A4 are done. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -95,10 +95,11 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Relay client count from `accepts` minus `disconnects`; `at_capacity` from that count (`AC-6`, server side).
 - Cache the registry lookup in `/v1/info` (`AC-17`).
 
-**A4 — Substrate resolver (M).** Needs A1, A2, A3.
+**A4 — Substrate resolver (M, Done).** Needs A1, A2, A3.
 - Background resolve, `coordinators.json` cache under `storage.db_dir`, probe `info_url`, keep the saved choice, fail over after 3 failures in 5 minutes, degraded mode with backoff, publish again on change (`AC-2`, `AC-5` to `AC-9`, `AC-11`, `AC-12`).
 - Integration tests from the coordinators doc, with `common::alloc_ports`.
 - Close out the coordinators change doc and its living docs.
+- Done 2026-10-13. Built as planned. The differences and the decisions `D-A4-1` to `D-A4-19` are in the `## Deviations` of the [coordinators change doc](../../changes/registry-listed-coordinators/change.md). B3 must not set the relay by hand on a node whose source is `Registry` or none (`D-A4-15`, written into the passport doc).
 
 ### Track B — Operator passport
 
