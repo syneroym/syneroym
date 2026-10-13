@@ -4,7 +4,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU8, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -21,12 +21,16 @@ use syneroym_core::{
 };
 use syneroym_identity::{Identity, substrate};
 use tokio::{sync::watch, task::JoinHandle, time};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Wait after a successful registration.
 pub(crate) const REGISTRATION_REFRESH: Duration = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
 /// Wait after a registration that failed all its retries.
 pub(crate) const REGISTRATION_RETRY: Duration = Duration::from_secs(60);
+
+const OUTCOME_NONE: u8 = 0;
+const OUTCOME_OK: u8 = 1;
+const OUTCOME_ERR: u8 = 2;
 
 // The registry drops a record that is not refreshed within its TTL, so the
 // refresh must come first.
@@ -44,7 +48,7 @@ pub(crate) struct Registration {
     secret_key: SecretKey,
     relay_url: Option<String>,
     retry_policy: RetryPolicy,
-    failure_logged: AtomicBool,
+    last_outcome: AtomicU8,
 }
 
 impl Registration {
@@ -59,7 +63,7 @@ impl Registration {
             secret_key,
             relay_url,
             retry_policy,
-            failure_logged: AtomicBool::new(false),
+            last_outcome: AtomicU8::new(OUTCOME_NONE),
         }
     }
 }
@@ -102,15 +106,17 @@ impl Registration {
     pub(crate) async fn register_with_retries(&self) -> bool {
         let res = retry::retry_with_backoff(&self.retry_policy, || self.register_once()).await;
         match &res {
-            Ok(()) => {
-                self.failure_logged.store(false, Ordering::SeqCst);
+            Ok(()) if self.last_outcome.swap(OUTCOME_OK, Ordering::SeqCst) == OUTCOME_OK => {
                 debug!("coordinator registered in its community registry");
             }
-            Err(e) if !self.failure_logged.swap(true, Ordering::SeqCst) => {
-                warn!("coordinator registration failed after all retries: {e}");
+            Ok(()) => {
+                info!("coordinator registered in its community registry");
+            }
+            Err(e) if self.last_outcome.swap(OUTCOME_ERR, Ordering::SeqCst) == OUTCOME_ERR => {
+                debug!("coordinator registration retry failed: {e}");
             }
             Err(e) => {
-                debug!("coordinator registration retry failed: {e}");
+                warn!("coordinator registration failed after all retries: {e}");
             }
         }
         res.is_ok()
