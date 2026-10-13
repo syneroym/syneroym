@@ -1,8 +1,10 @@
+use std::time::Duration;
+
 use serde_json::json;
 use syneroym_identity::substrate;
 
 use super::{
-    CoordinatorEntry, CoordinatorFilter, CoordinatorTransport, CuratedList, check_entries,
+    CoordinatorEntry, CoordinatorFilter, CoordinatorTransport, CuratedList, check_entries, fetch,
     list_request_timeout, normalize_url, rank, rank_key,
 };
 
@@ -378,4 +380,33 @@ fn coordinator_filter_matches_transport() {
 fn list_request_timeout_shrinks_with_each_hop() {
     let secs = |h| list_request_timeout(h).as_secs();
     assert_eq!([secs(0), secs(1), secs(2), secs(3), secs(4)], [40, 30, 20, 10, 10]);
+}
+
+/// A server that accepts a connection and never answers.
+async fn silent_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+    url
+}
+
+#[tokio::test(start_paused = true)]
+async fn fetch_gives_up_after_the_time_of_its_hop() {
+    let url = silent_server().await;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(600)).build().unwrap();
+    let filter = CoordinatorFilter { transport: CoordinatorTransport::IrohRelay };
+
+    for (hops, secs) in [(0, 40), (1, 30), (3, 10)] {
+        let start = tokio::time::Instant::now();
+        let err = fetch::<CoordinatorEntry>(&client, &url, &filter, hops).await.unwrap_err();
+        let timed_out =
+            err.downcast_ref::<reqwest::Error>().is_some_and(reqwest::Error::is_timeout);
+        assert!(timed_out, "hops {hops}: {err:#}");
+        assert_eq!(start.elapsed().as_secs(), secs, "hops {hops}");
+    }
 }

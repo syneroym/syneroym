@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use syneroym_core::curated_list::{self, CoordinatorEntry, CuratedList};
+use syneroym_core::curated_list::{self, CoordinatorEntry, CuratedList, ListEntry};
 use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +34,20 @@ impl CoordinatorCache {
 
     pub(super) fn is_fresh(&self, now_secs: u64) -> bool {
         now_secs < self.expires_at_secs()
+    }
+
+    /// Replaces the chosen entry with the entry of the list that has the same
+    /// URL, so a changed `info_url` or `operator` is used. Does nothing when
+    /// the list no longer has the entry.
+    pub(super) fn refresh_chosen(&mut self) {
+        let Some(url) = self.chosen.as_ref().map(|c| c.url.clone()) else { return };
+        let fresh = self.list.entries.iter().find_map(|e| {
+            let mut e = e.clone();
+            e.check().is_ok_and(|id| id == url).then_some(e)
+        });
+        if fresh.is_some() {
+            self.chosen = fresh;
+        }
     }
 
     /// Whether the list has an entry whose normalised `url` is `url`.

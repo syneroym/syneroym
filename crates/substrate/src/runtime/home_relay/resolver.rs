@@ -7,6 +7,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    future::Future,
     mem,
     path::PathBuf,
     time::Duration,
@@ -166,6 +167,10 @@ struct Resolver<I> {
     warn_refresh: WarnLimiter,
     /// "Coordinator did not answer" and "relay not confirmed".
     warn_relay: WarnLimiter,
+    /// "Choosing another relay": the decision gets its own limit, so the
+    /// failed probes before it do not hide it.
+    warn_failover: WarnLimiter,
+    warn_persist: WarnLimiter,
 }
 
 /// Entry point, called by `connect_home_relay`.
@@ -210,6 +215,8 @@ impl<I: ResolverIo> Resolver<I> {
             warn_degraded: WarnLimiter::default(),
             warn_refresh: WarnLimiter::default(),
             warn_relay: WarnLimiter::default(),
+            warn_failover: WarnLimiter::default(),
+            warn_persist: WarnLimiter::default(),
         }
     }
 
@@ -252,7 +259,10 @@ impl<I: ResolverIo> Resolver<I> {
         let delay = self.retry.next();
         if self.io.current_relay().is_some() {
             if !mem::replace(outside_logged, true) {
-                info!("the home relay was set outside the coordinator list; leaving it alone");
+                info!(
+                    "the home relay was set outside the coordinator list; it stays until a listed \
+                     relay is confirmed"
+                );
             }
         } else {
             self.io.clear_unconfirmed().await;
@@ -273,6 +283,15 @@ impl<I: ResolverIo> Resolver<I> {
              published. Last list error: {last_error}. Trying again in {delay:?}.",
             self.registry_url
         );
+    }
+
+    /// Runs `work`, and gives up when the endpoint closes. Only for work that
+    /// may be dropped half way: never `HomeRelay::set`.
+    async fn until_closed<T>(&self, work: impl Future<Output = T>) -> Result<T, Closed> {
+        tokio::select! {
+            out = work => Ok(out),
+            () = self.io.closed() => Err(Closed),
+        }
     }
 
     fn chosen(&self) -> Option<&CoordinatorEntry> {
@@ -296,7 +315,7 @@ impl<I: ResolverIo> Resolver<I> {
         {
             return Ok(true);
         }
-        match self.io.fetch_list(&self.registry_url).await {
+        match self.until_closed(self.io.fetch_list(&self.registry_url)).await? {
             Ok(list) => {
                 self.last_fetch_error = None;
                 let entries = list.entries.clone();
@@ -316,13 +335,18 @@ impl<I: ResolverIo> Resolver<I> {
     /// The saved choice, while the saved list still lists it and its
     /// coordinator answers. A relay off the list gets no new connection.
     async fn try_saved_choice(&mut self, tried: &mut HashSet<String>) -> Result<bool, Closed> {
+        // The list may have a newer `info_url` than the one saved with the choice.
+        if let Some(cache) = self.cache.as_mut() {
+            cache.refresh_chosen();
+        }
         let Some(entry) =
             self.chosen().filter(|e| !tried.contains(&e.url) && self.lists(&e.url)).cloned()
         else {
             return Ok(false);
         };
         tried.insert(entry.url.clone());
-        if !ProbeVerdict::of(self.io.probe(&entry.info_url).await).can_keep() {
+        let answer = self.until_closed(self.io.probe(&entry.info_url)).await?;
+        if !ProbeVerdict::of(answer).can_keep() {
             return Ok(false);
         }
         self.try_set(&entry).await
@@ -361,7 +385,8 @@ impl<I: ResolverIo> Resolver<I> {
             {
                 continue;
             }
-            match ProbeVerdict::of(self.io.probe(&entry.info_url).await) {
+            let answer = self.until_closed(self.io.probe(&entry.info_url)).await?;
+            match ProbeVerdict::of(answer) {
                 ProbeVerdict::Open => {}
                 ProbeVerdict::Full => {
                     info!(relay_url = %entry.url, "skipping a full coordinator");
@@ -424,6 +449,9 @@ impl<I: ResolverIo> Resolver<I> {
             list,
             chosen,
         });
+        if let Some(cache) = self.cache.as_mut() {
+            cache.refresh_chosen();
+        }
         self.persist();
     }
 
@@ -436,10 +464,14 @@ impl<I: ResolverIo> Resolver<I> {
     }
 
     /// Saving is best effort: the state in memory still works without it.
-    fn persist(&self) {
+    fn persist(&mut self) {
         let Some(cache) = &self.cache else { return };
         if let Err(e) = cache::save(&self.cache_path, cache) {
-            warn!(error = %format!("{e:#}"), "cannot save the coordinator cache");
+            warn_limited!(
+                self.warn_persist,
+                error = %format!("{e:#}"),
+                "cannot save the coordinator cache"
+            );
         }
     }
 
@@ -454,7 +486,7 @@ impl<I: ResolverIo> Resolver<I> {
     /// it left the list, or it failed too often.
     ///
     /// A new list that ranks another entry first does not start a new pick.
-    async fn keep(&mut self, chosen: CoordinatorEntry) -> Result<String, Closed> {
+    async fn keep(&mut self, mut chosen: CoordinatorEntry) -> Result<String, Closed> {
         let mut refresh_retry = Backoff::new(REFRESH_RETRY_INITIAL, REFRESH_RETRY_MAX);
         let mut refresh_at = Instant::now() + self.refresh_delay();
         loop {
@@ -468,7 +500,12 @@ impl<I: ResolverIo> Resolver<I> {
                     }
                 }
                 () = time::sleep_until(refresh_at) => {
-                    if self.on_refresh(&chosen, &mut refresh_at, &mut refresh_retry).await {
+                    let gone = self.on_refresh(&chosen, &mut refresh_at, &mut refresh_retry).await;
+                    // A new list may carry a new `info_url` for the same relay.
+                    if let Some(fresh) = self.chosen().cloned() {
+                        chosen = fresh;
+                    }
+                    if gone {
                         return Ok(chosen.url);
                     }
                 }
@@ -485,7 +522,10 @@ impl<I: ResolverIo> Resolver<I> {
     /// to pick again.
     async fn on_health_tick(&mut self, chosen: &CoordinatorEntry) -> bool {
         self.next_health = Instant::now() + HEALTH_INTERVAL;
-        self.kept_relay_ok = ProbeVerdict::of(self.io.probe(&chosen.info_url).await).can_keep();
+        let Ok(answer) = self.until_closed(self.io.probe(&chosen.info_url)).await else {
+            return false;
+        };
+        self.kept_relay_ok = ProbeVerdict::of(answer).can_keep();
         if self.kept_relay_ok {
             return false;
         }
@@ -497,7 +537,7 @@ impl<I: ResolverIo> Resolver<I> {
         if !self.failures.record(Instant::now()) {
             return false;
         }
-        warn_limited!(self.warn_relay, "3 failures within 5 minutes; choosing another relay");
+        warn_limited!(self.warn_failover, "3 failures within 5 minutes; choosing another relay");
         self.failures = FailureWindow::default();
         true
     }
@@ -510,7 +550,10 @@ impl<I: ResolverIo> Resolver<I> {
         refresh_at: &mut Instant,
         refresh_retry: &mut Backoff,
     ) -> bool {
-        match self.io.fetch_list(&self.registry_url).await {
+        let Ok(answer) = self.until_closed(self.io.fetch_list(&self.registry_url)).await else {
+            return false;
+        };
+        match answer {
             Ok(list) => {
                 refresh_retry.reset();
                 self.store_list(list);

@@ -70,6 +70,32 @@ fn is_fresh_ends_at_max_age() {
 }
 
 #[test]
+fn refresh_chosen_takes_the_entry_of_the_list() {
+    let mut c = cache(100, 10);
+    let mut moved = entry("HTTP://Relay.Example:80/");
+    moved.info_url = "http://moved.example".into();
+    moved.operator = "New operator".into();
+    c.list.entries = vec![entry("http://other.example"), moved];
+
+    c.refresh_chosen();
+
+    let chosen = c.chosen.unwrap();
+    assert_eq!(chosen.url, "http://relay.example");
+    assert_eq!(chosen.info_url, "http://moved.example");
+    assert_eq!(chosen.operator, "New operator");
+}
+
+#[test]
+fn refresh_chosen_keeps_the_entry_when_the_list_dropped_it() {
+    let mut c = cache(100, 10);
+    c.list.entries = vec![entry("http://other.example")];
+
+    c.refresh_chosen();
+
+    assert_eq!(c.chosen, Some(entry("http://relay.example")));
+}
+
+#[test]
 fn lists_compares_normalised_urls() {
     let mut c = cache(100, 10);
     c.list.entries = vec![entry("HTTP://R.Example:80/")];

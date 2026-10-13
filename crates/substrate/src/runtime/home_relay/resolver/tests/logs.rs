@@ -1,7 +1,7 @@
 //! How often the resolver warns.
 
 use std::{
-    io,
+    fs, io, slice,
     sync::{Arc, Mutex},
 };
 
@@ -9,7 +9,7 @@ use tokio::time::Instant;
 use tracing::subscriber::{self, DefaultGuard};
 use tracing_subscriber::{fmt, prelude::*};
 
-use super::{FakeIo, at, entry, secs, start};
+use super::{FakeIo, at, entry, secs, start, start_with};
 
 struct MockWriter {
     logs: Arc<Mutex<Vec<u8>>>,
@@ -38,6 +38,11 @@ fn capture() -> (Arc<Mutex<Vec<u8>>>, DefaultGuard) {
 fn lines_with(logs: &Mutex<Vec<u8>>, level: &str) -> usize {
     let text = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
     text.lines().filter(|l| l.contains(level)).count()
+}
+
+fn warnings_about(logs: &Mutex<Vec<u8>>, text: &str) -> usize {
+    let text_of_logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    text_of_logs.lines().filter(|l| l.contains("WARN") && l.contains(text)).count()
 }
 
 #[tokio::test(start_paused = true)]
@@ -72,5 +77,29 @@ async fn relay_set_outside_the_resolver_is_not_called_degraded() {
     assert_eq!(io.clears(), 0);
     assert_eq!(lines_with(&logs, "no home relay"), 0);
     assert!(lines_with(&logs, "set outside") >= 1);
+    run.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn relay_is_chosen_and_warnings_are_limited_when_the_cache_cannot_be_saved() {
+    let (logs, _guard) = capture();
+    let a = entry(1);
+    let io = FakeIo::new();
+    io.up(&a);
+    io.confirm(&a);
+    // A refresh every 10 s, and every save fails: the directory of the cache
+    // file is a regular file.
+    io.serve(slice::from_ref(&a), 0);
+    let t0 = Instant::now();
+    let run = start_with(&io, None, |dir| {
+        fs::write(dir.join("blocker"), "").unwrap();
+        dir.join("blocker").join("coordinators.json")
+    });
+
+    at(t0, 200).await;
+
+    assert_eq!(io.sets(), slice::from_ref(&a.url));
+    assert!(io.fetches() >= 10, "{} refreshes", io.fetches());
+    assert_eq!(warnings_about(&logs, "cannot save"), 1);
     run.stop().await;
 }

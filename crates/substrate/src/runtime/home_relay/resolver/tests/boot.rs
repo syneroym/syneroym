@@ -263,3 +263,33 @@ async fn closed_endpoint_ends_the_task() {
     assert_eq!(io.sets().len(), 0);
     run.stop().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn saved_choice_follows_a_changed_info_url_in_the_list() {
+    let old = entry(1);
+    let mut moved = old.clone();
+    moved.info_url = "http://info-moved.test".into();
+    let io = FakeIo::new();
+    io.up(&moved);
+    io.confirm(&old);
+    // Only the new `info_url` answers. The saved choice still has the old one.
+    let run = start(&io, Some(cache(slice::from_ref(&moved), 3600, 0, Some(&old))));
+
+    secs(1).await;
+
+    assert_eq!(io.fetches(), 0);
+    assert_eq!(io.sets(), slice::from_ref(&old.url));
+    run.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn closed_endpoint_ends_the_task_during_a_slow_registry_request() {
+    let io = FakeIo::new();
+    io.hang_fetch();
+    let run = start(&io, None);
+
+    secs(1).await;
+    assert_eq!(io.fetches(), 1, "the request is under way");
+
+    run.stop().await;
+}

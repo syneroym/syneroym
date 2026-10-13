@@ -223,8 +223,15 @@ async fn fixed_url_never_asks_the_registry() -> Result<()> {
         .boot()
         .await;
 
-    time::sleep(Duration::from_secs(2)).await;
+    // The node's own registry may need a few seconds to bind. Wait longer
+    // than its retries, so a resolver that started by mistake would have
+    // asked by now.
+    time::sleep(Duration::from_secs(6)).await;
     assert_eq!(parent.requests(), 0);
+    assert!(
+        !node.base_path().join("data/db/coordinators.json").exists(),
+        "no resolver ran, so no cache file exists"
+    );
     node.teardown().await;
     Ok(())
 }

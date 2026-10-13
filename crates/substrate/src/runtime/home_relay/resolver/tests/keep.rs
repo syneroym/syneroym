@@ -16,12 +16,21 @@ fn io_with_relay(a: &super::CoordinatorEntry) -> FakeIo {
     io
 }
 
+/// `a` works and is listed; `spare` also works. A new pick would move to
+/// `spare`, so a test that expects `sets == [a]` shows that none started.
+fn io_with_spare(a: &super::CoordinatorEntry, spare: &super::CoordinatorEntry) -> FakeIo {
+    let io = io_with_relay(a);
+    io.up(spare);
+    io.confirm(spare);
+    io
+}
+
 #[tokio::test(start_paused = true)]
 async fn two_failures_in_five_minutes_keep_the_relay() {
-    let a = entry(1);
-    let io = io_with_relay(&a);
+    let (a, b) = (entry(1), entry(2));
+    let io = io_with_spare(&a, &b);
     let t0 = Instant::now();
-    let run = start(&io, Some(cache(slice::from_ref(&a), 3600, 0, None)));
+    let run = start(&io, Some(cache(&[a.clone(), b.clone()], 3600, 0, Some(&a))));
 
     secs(1).await;
     io.down(&a);
@@ -57,10 +66,10 @@ async fn three_failures_in_five_minutes_pick_another_relay() {
 
 #[tokio::test(start_paused = true)]
 async fn failures_spread_over_more_than_five_minutes_keep_the_relay() {
-    let a = entry(1);
-    let io = io_with_relay(&a);
+    let (a, b) = (entry(1), entry(2));
+    let io = io_with_spare(&a, &b);
     let t0 = Instant::now();
-    let run = start(&io, Some(cache(slice::from_ref(&a), 3600, 0, None)));
+    let run = start(&io, Some(cache(&[a.clone(), b.clone()], 3600, 0, Some(&a))));
 
     // One failed probe at 60 s, 240 s and 420 s: never 3 within 300 s.
     for probe_at in [60, 240, 420] {
@@ -240,14 +249,37 @@ async fn dead_kept_relay_gets_no_cool_down() {
 
 #[tokio::test(start_paused = true)]
 async fn relay_at_capacity_is_not_left_by_the_health_probe() {
-    let a = entry(1);
-    let io = io_with_relay(&a);
+    let (a, b) = (entry(1), entry(2));
+    let io = io_with_spare(&a, &b);
     let t0 = Instant::now();
-    let run = start(&io, Some(cache(slice::from_ref(&a), 3600, 0, None)));
+    let run = start(&io, Some(cache(&[a.clone(), b.clone()], 3600, 0, Some(&a))));
 
     secs(1).await;
     io.answer(&a, Some(info(CoordinatorStatus::AtCapacity, true)));
     at(t0, 600).await;
+
+    assert_eq!(io.sets(), slice::from_ref(&a.url));
+    run.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn relay_whose_info_url_changes_is_probed_at_the_new_url() {
+    let (a, b) = (entry(1), entry(2));
+    let io = io_with_spare(&a, &b);
+    io.serve(slice::from_ref(&a), 60);
+    let t0 = Instant::now();
+    let run = start(&io, None);
+
+    secs(1).await;
+    assert_eq!(io.sets(), slice::from_ref(&a.url));
+
+    // The registry moves the info server of `a`. Only the new address answers.
+    let mut moved = a.clone();
+    moved.info_url = "http://info-moved.test".into();
+    io.down(&a);
+    io.up(&moved);
+    io.serve(&[moved, b.clone()], 60);
+    at(t0, 900).await;
 
     assert_eq!(io.sets(), slice::from_ref(&a.url));
     run.stop().await;

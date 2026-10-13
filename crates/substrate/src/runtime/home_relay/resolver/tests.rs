@@ -4,10 +4,11 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    future,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -97,6 +98,8 @@ struct FakeState {
     /// The answer of `fetch_list`; `None` is an error.
     list: Mutex<Option<CuratedList<CoordinatorEntry>>>,
     fetches: AtomicUsize,
+    /// `fetch_list` never answers.
+    fetch_hangs: AtomicBool,
     /// `info_url` to answer; a missing key is a probe error.
     infos: Mutex<HashMap<String, CoordinatorInfo>>,
     probes: Mutex<HashMap<String, usize>>,
@@ -115,6 +118,7 @@ impl FakeIo {
         Self(Arc::new(FakeState {
             list: Mutex::new(None),
             fetches: AtomicUsize::new(0),
+            fetch_hangs: AtomicBool::new(false),
             infos: Mutex::new(HashMap::new()),
             probes: Mutex::new(HashMap::new()),
             confirms: Mutex::new(HashSet::new()),
@@ -130,6 +134,11 @@ impl FakeIo {
     pub(super) fn serve(&self, entries: &[CoordinatorEntry], max_age_secs: u64) {
         let list = CuratedList { max_age_secs, entries: entries.to_vec() };
         *self.0.list.lock().unwrap() = Some(list);
+    }
+
+    /// The registry accepts the request and never answers.
+    pub(super) fn hang_fetch(&self) {
+        self.0.fetch_hangs.store(true, Ordering::SeqCst);
     }
 
     /// The registry does not answer.
@@ -202,6 +211,9 @@ impl ResolverIo for FakeIo {
         _registry_url: &str,
     ) -> anyhow::Result<CuratedList<CoordinatorEntry>> {
         self.0.fetches.fetch_add(1, Ordering::SeqCst);
+        if self.0.fetch_hangs.load(Ordering::SeqCst) {
+            future::pending::<()>().await;
+        }
         self.0.list.lock().unwrap().clone().ok_or_else(|| anyhow!("registry is down"))
     }
 
@@ -248,8 +260,18 @@ pub(super) struct Run {
 
 /// Starts the resolver with `saved` already on disk, if any.
 pub(super) fn start(io: &FakeIo, saved: Option<CoordinatorCache>) -> Run {
+    start_with(io, saved, |dir| dir.join("coordinators.json"))
+}
+
+/// Like `start`, with a cache file at the path that `place` gives for the
+/// test directory.
+pub(super) fn start_with(
+    io: &FakeIo,
+    saved: Option<CoordinatorCache>,
+    place: impl FnOnce(&Path) -> PathBuf,
+) -> Run {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("coordinators.json");
+    let path = place(dir.path());
     if let Some(saved) = saved {
         cache_file::save(&path, &saved).unwrap();
     }
