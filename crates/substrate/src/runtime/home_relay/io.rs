@@ -60,7 +60,8 @@ pub(super) struct Http {
     /// third party, so a probe must not follow a redirect to another address
     /// of this host.
     probe_client: reqwest::Client,
-    /// The registry has sent an HTTP answer (any status). Until then a
+    /// A list request has ended with something other than a refused
+    /// connection: an HTTP answer of any status, or a timeout. Until then a
     /// refused connection is tried again quickly.
     registry_reached: AtomicBool,
 }

@@ -318,9 +318,7 @@ impl<I: ResolverIo> Resolver<I> {
         match self.until_closed(self.io.fetch_list(&self.registry_url)).await? {
             Ok(list) => {
                 self.last_fetch_error = None;
-                let entries = list.entries.clone();
-                self.store_list(list);
-                self.pick_from(entries, &mut tried).await
+                self.use_fetched(list, &mut tried).await
             }
             Err(e) => {
                 self.last_fetch_error = Some(format!("{e:#}"));
@@ -330,6 +328,29 @@ impl<I: ResolverIo> Resolver<I> {
                 }
             }
         }
+    }
+
+    /// Stores a list from the registry and picks from it. When the list gives
+    /// the saved choice a new `info_url`, the choice failed its first probe at
+    /// the old address, so it gets one more probe at the new one before the
+    /// pick moves on.
+    async fn use_fetched(
+        &mut self,
+        list: CuratedList<CoordinatorEntry>,
+        tried: &mut HashSet<String>,
+    ) -> Result<bool, Closed> {
+        let entries = list.entries.clone();
+        let before = self.chosen().cloned();
+        self.store_list(list);
+        if self.chosen() != before.as_ref() {
+            if let Some(url) = self.chosen().map(|c| c.url.clone()) {
+                tried.remove(&url);
+            }
+            if self.try_saved_choice(tried).await? {
+                return Ok(true);
+            }
+        }
+        self.pick_from(entries, tried).await
     }
 
     /// The saved choice, while the saved list still lists it and its

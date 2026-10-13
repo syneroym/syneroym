@@ -99,7 +99,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Background resolve, `coordinators.json` cache under `storage.db_dir`, probe `info_url`, keep the saved choice, fail over after 3 failures in 5 minutes, degraded mode with backoff, publish again on change (`AC-2`, `AC-5` to `AC-9`, `AC-11`, `AC-12`).
 - Integration tests from the coordinators doc, with `common::alloc_ports`.
 - Close out the coordinators change doc and its living docs.
-- Done 2026-10-13. Built as planned. The differences and the decisions `D-A4-1` to `D-A4-16` are in the `## Deviations` of the [coordinators change doc](../../changes/registry-listed-coordinators/change.md). B3 must not set the relay by hand on a node whose source is `Registry` or none (`D-A4-15`, written into the passport doc).
+- Done 2026-10-13. Built as planned. The differences and the decisions `D-A4-1` to `D-A4-19` are in the `## Deviations` of the [coordinators change doc](../../changes/registry-listed-coordinators/change.md). B3 must not set the relay by hand on a node whose source is `Registry` or none (`D-A4-15`, written into the passport doc).
 
 ### Track B — Operator passport
 

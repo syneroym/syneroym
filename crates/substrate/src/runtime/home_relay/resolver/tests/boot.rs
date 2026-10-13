@@ -293,3 +293,26 @@ async fn closed_endpoint_ends_the_task_during_a_slow_registry_request() {
 
     run.stop().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn saved_choice_is_probed_again_when_the_fetched_list_moves_its_info_url() {
+    let (a, b) = (entry(1), entry(2));
+    let mut moved = a.clone();
+    moved.info_url = "http://info-moved.test".into();
+    let io = FakeIo::new();
+    io.up(&moved);
+    io.confirm(&a);
+    io.up(&b);
+    io.confirm(&b);
+    // The saved list is old and still has the old `info_url`. The registry
+    // has the new one, and only the new one answers.
+    io.serve(&[moved, b.clone()], 3600);
+    let saved = cache(&[a.clone(), b.clone()], 10, 100, Some(&a));
+    let run = start(&io, Some(saved));
+
+    secs(1).await;
+
+    assert_eq!(io.fetches(), 1);
+    assert_eq!(io.sets(), slice::from_ref(&a.url), "the node did not move to another relay");
+    run.stop().await;
+}
