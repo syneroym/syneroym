@@ -205,7 +205,7 @@ block-beta
 
 Layer 3 holds two substrate utilities: identity and messaging. Discovery and matching, trust and reputation, and payments are Roym features. They are not substrate components, so the diagram shows them in Roym. The [Layer 3](#layer-3--shared-substrate-utilities) section describes them too.
 
-> **Envisioned.** Not built yet. Replication of service databases, a bootstrap server, a substrate on an Android phone, and a reputation record. Today the built data backup is the Roym archive. Keys have their own backups: `roymctl identity export` and `roymctl supervisor export-master`. A relay is a URL in the config of each substrate. Trust is the signed membership credentials of a SynOrg. The replication design is open: see [PLT-RED](#plt-red-service-redundancy).
+> **Envisioned.** Not built yet. Replication of service databases, a bootstrap server, a substrate on an Android phone, and a reputation record. Today the built data backup is the Roym archive. Keys have their own backups: `roymctl identity export` and `roymctl supervisor export-master`. A relay is a URL in the substrate config, or an entry in the coordinator list of its registry. Trust is the signed membership credentials of a SynOrg. The replication design is open: see [PLT-RED](#plt-red-service-redundancy).
 
 ### Conceptual Entity Model
 
@@ -237,7 +237,7 @@ erDiagram
     PERSON { string master_did }
 ```
 
-A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one configured relay URL. The substrate does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. The process of a TCP service runs outside the substrate. A native-host service cannot be named in a deployment plan. A WASM or container service is built from an artifact. The artifact is a WASM component or an OCI image. The `source` field of the service spec names it. For a container, `image` in `custom_config` replaces `source` when it is set.
+A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one home relay. The substrate does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. The process of a TCP service runs outside the substrate. A native-host service cannot be named in a deployment plan. A WASM or container service is built from an artifact. The artifact is a WASM component or an OCI image. The `source` field of the service spec names it. For a container, `image` in `custom_config` replaces `source` when it is set.
 
 Provider and Consumer are not substrate entities. They are the two roles of a person in one Roym transaction. An aggregator is a `directory` service of a SynOrg (Syneroym Organization). It collects the listings of the providers who publish to it. See [Federation Architecture](#federation-architecture).
 
@@ -253,7 +253,7 @@ Provider and Consumer are not substrate entities. They are the two roles of a pe
 
 *Note: connectivity works over IP networks: Iroh QUIC between nodes, and WebRTC for browsers. No BLE or LoRa transport exists. See the [Connectivity Substrate](#connectivity-substrate-in-heterogeneous-networks) section.*
 
-A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the relay and moves to a direct path when hole punching finds one. An Iroh endpoint starts with an empty relay map and no hardcoded preset servers. When a home relay is configured, the node adds it to the map and waits for Iroh to confirm it via net-report probes. Once confirmed, it publishes the relay URL in its signed record so callers know which relay to use. Without a home relay, the node starts in degraded mode: it can dial peers through their relays, but peers cannot reach it through a relay, and its endpoint record is not published until a home relay is confirmed.
+A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the relay and moves to a direct path when hole punching finds one. An Iroh endpoint starts with an empty relay map and no hardcoded preset servers. The home relay is `parent_coordinator.iroh.url`. When that is not set and `substrate.registry_url` is, the node picks a relay from the coordinator list of that registry, in the background (see [Relay and Registry Configuration](#relay-and-registry-configuration)). The node adds the relay to the map and waits for Iroh to confirm it via net-report probes. Once confirmed, it publishes the relay URL in its signed record so callers know which relay to use. Without a home relay, the node starts in degraded mode: it can dial peers through their relays, but peers cannot reach it through a relay, and its endpoint record is not published until a home relay is confirmed. A node that has a `substrate.registry_url` keeps asking for a relay in the background.
 
 ```mermaid
 flowchart TD
@@ -289,7 +289,7 @@ The relay carries QUIC traffic that is already encrypted between the two peers. 
 
 A coordinator with `[roles.coordinator.iroh]` always runs the Syneroym endpoint that forwards streams ([Multi-Hop Relay](#multi-hop-relay-federated-coordinator)) and the HTTP `/v1/info` endpoint. The relay server and the Syneroym endpoint are separate parts. The relay server also runs, but only when `enable_relay = true`.
 
-> **Envisioned.** Not built yet. Today a relay is a URL that an operator writes into the config of each substrate, and no code gives a relay a `*.syneroym.net` name. Nothing runs a TURN server, nothing registers relays at a bootstrap server, and no substrate caches relay names. The design below is the target.
+> **Envisioned.** Not built yet. Today a relay is a URL that an operator writes into the config of a substrate, or an entry in the coordinator list of its registry. No code gives a relay a `*.syneroym.net` name. Nothing runs a TURN server, nothing registers relays at a bootstrap server, and no substrate caches relay names. The design below is the target.
 
 ```mermaid
 flowchart LR
@@ -313,7 +313,7 @@ flowchart LR
 
 The connection router (`crates/router`) handles next-hop forwarding in the function `relay_to_next_hop` in `route_handler/io.rs`. It is not in `crates/coordinator_iroh`. That crate builds the Iroh endpoint and a router handler in coordinator mode, which has no local services. In this mode the handler has an empty mock endpoint registry, no sandbox, a freshly generated identity and its own embedded MQTT broker. A substrate runs the same code. When a stream names a service the substrate does not host, and the registry resolves that service, the substrate forwards the stream. Coordinators are the intended forwarders.
 
-A substrate on a private network sets `parent_coordinator.iroh.url` to the relay of a coordinator on that network. Its Iroh endpoint uses that relay, and it publishes the Iroh id and the relay URL in its signed record. A caller that looks the record up in the registry dials the substrate through that relay. An Iroh relay exists so that callers can still reach a peer that accepts no inbound connection. No test in this repository blocks inbound traffic.
+A substrate on a private network sets `parent_coordinator.iroh.url` to the relay of a coordinator on that network. Its Iroh endpoint uses that relay, and it publishes the Iroh id and the relay URL in its signed record. A caller that looks the record up in the registry dials the substrate through that relay. An Iroh relay exists so that callers can still reach a peer that accepts no inbound connection. No test in this repository blocks inbound traffic. A substrate that sets no `url` and has a `registry_url` picks an open relay from the coordinator list of its registry instead.
 
 A coordinator is the entry point only when an SDK call names it, or when a caller dials the record of the coordinator itself. The coordinator reads the route preamble, resolves the target service in the registry and dials the next hop. The next hop is the target substrate, not another coordinator. The coordinator then copies bytes in both directions. A coordinator that has a parent uses the relay of that parent as its own relay. No code dials the parent on demand. The coordinator still accepts inbound streams, and it opens a new connection to each target substrate.
 
@@ -350,11 +350,12 @@ flowchart LR
 
 ### Relay and Registry Configuration
 
-A substrate is given its relay by a fixed setting. Nothing chooses a relay for it.
+A substrate gets its home relay from a fixed setting, or picks one from the coordinator list of its registry.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `[parent_coordinator.iroh] url` | `None` | The home relay URL of this substrate. Optional. When omitted, the substrate runs in degraded mode without a home relay. A value that is not an `http`/`https` URL with a host stops startup. `run --iroh-relay-url` sets it. |
+| `[parent_coordinator.iroh] url` | `None` | The home relay URL of this substrate. Optional. When omitted and `substrate.registry_url` is set, the substrate picks a relay from that registry's coordinator list. When both are omitted, the substrate runs in degraded mode without a home relay. A value that is not an `http`/`https` URL with a host stops startup. `run --iroh-relay-url` sets it. |
+| `[substrate] registry_url` | `None` | The community registry of this substrate. A substrate with no `parent_coordinator.iroh.url` and `iroh` in `communication_interfaces` also reads its coordinator list from it. A value that is not a valid `http`/`https` URL stops startup in that case. |
 | `[roles.coordinator] access` | `"everyone"` | Access control for the relay: `"everyone"`, a list of Iroh endpoint IDs `[ "<id>", ... ]`, or reserved forms (`"passport"`, table form). Any other value stops startup. |
 | `[parent_coordinator.webrtc] signaling_url` | `ws://localhost:7963/ws` | The signalling server where the substrate registers. |
 | `[parent_coordinator.webrtc] stun_servers` | `["stun:stun.l.google.com:19302"]` | The STUN servers for WebRTC. The browser page has the same server written in `peer-proxy.js`. |
@@ -381,15 +382,28 @@ The defaults in the table are the defaults of the config types. With no `--confi
 
 **Default relay.** There is no n0 preset fallback at run time. For a substrate, the endpoint always starts with an empty relay map, and the relay is added later. Only coordinators start with their relay in the map. The substrate sets its home relay at run time and publishes no record of its own until a relay is confirmed. It publishes again whenever its home relay changes. Boot does not wait for the endpoint to come online. The SDK client uses the relay URL from the record it dials, if that URL parses. With no relay URL in the record, it sets no relay.
 
+**Home relay from the registry.** A substrate resolves its home relay from the coordinator list when it has no `parent_coordinator.iroh.url`, has `iroh` in `communication_interfaces`, and has a `substrate.registry_url`. A task does this in the background. Boot never waits for it. The task tries these steps in order:
+
+1. The saved choice, when the saved list still lists it and its `info_url` answers `GET /v1/info` with an online relay and the status `healthy` or `at_capacity`.
+2. The saved list, when it is not empty and not older than its `max_age_secs`. The task asks no registry.
+3. The registry: `GET /coordinators?transport=iroh-relay`. The first request tries up to 3 times, because the registry of the same node binds its port after the task starts.
+4. The saved list at any age, when the registry does not answer.
+
+To pick a new relay, the task ranks the entries with the substrate DID. It skips an entry whose `/v1/info` does not answer, has no online relay, or reports `at_capacity` or an unknown status. It uses the first relay that Iroh confirms. If a fresh list gives no working relay, the task asks the registry anyway. An empty list is saved but is never used.
+
+The list and the choice are saved in `coordinators.json` in `storage.db_dir`, with the registry URL they came from. A file from another registry is ignored. The task keeps its choice while it works, also when a new list ranks another entry first. It probes `/v1/info` of the chosen coordinator every 60 seconds. It picks again after 3 failed probes within 5 minutes, or when a refreshed list no longer has the relay. Iroh 0.97 gives no signal for a failed relay connection, so the health of the relay is read from `/v1/info`. A listed relay that refuses this node (an `access` other than `"everyone"`) is confirmed and answers probes, so the node never leaves it. Operators must list only relays with `access = "everyone"`.
+
+When no other relay works, the node stays on the relay it has and tries again after 5 seconds, with a delay that doubles up to 10 minutes. It does not make a new connection to a relay that its registry does not list, and it does not try a relay that failed to confirm again for one hour while the current relay works. With no relay at all, the node is in degraded mode: the relay map is empty, the log has a warning (at most one every 5 minutes), and the task asks again with the same growing delay. A list refresh is at least 10 seconds after the last one, also when a registry sends `max_age_secs = 0`.
+
 > **Envisioned.** Not built yet. These settings are parsed and no code reads them: `parent_coordinator.webrtc.bootstrap_url`, `enable_signalling` (Iroh and WebRTC), the WebRTC `enable_relay`, `[roles.coordinator.transport_bridge]`, and `parent_coordinator.ble` and `parent_coordinator.lora`. The WebRTC signalling server and the bootstrap page start when `[roles.coordinator.webrtc]` exists, regardless of the value of `enable_signalling`.
 
 The discovery side of this configuration is in [Registry first, DHT second](#registry-first-dht-second) and [Record freshness](#record-freshness).
 
 ### Bootstrap Server & DHT Fallback
 
-Today a substrate finds its relay in its config, and a caller finds a node through the community registry first and the DHT second. A node publishes one `pkarr` signed packet under its own key, with its signed endpoint record: its Iroh id and its relay URL. A record with `is_private` set is not published to the DHT. A lookup asks the HTTP registry first. It asks the DHT when the registry has no answer, and then writes the DHT answer back to the registry. A registry answer that fails verification ends the lookup with no DHT fallback. A DHT lookup needs the full DID. The records are republished every hour. See [Registry first, DHT second](#registry-first-dht-second).
+Today a substrate finds its relay in its config or in the coordinator list of its registry, and a caller finds a node through the community registry first and the DHT second. A node publishes one `pkarr` signed packet under its own key, with its signed endpoint record: its Iroh id and its relay URL. A record with `is_private` set is not published to the DHT. A lookup asks the HTTP registry first. It asks the DHT when the registry has no answer, and then writes the DHT answer back to the registry. A registry answer that fails verification ends the lookup with no DHT fallback. A DHT lookup needs the full DID. The records are republished every hour. See [Registry first, DHT second](#registry-first-dht-second).
 
-> **Envisioned.** Not built yet. The design below has no code. Today no substrate is assigned a relay, no list of relays exists, and no substrate caches one. No `syneroym-relays` record exists, and no community governance key exists.
+> **Envisioned.** Not built yet. The design below has no code. Today no bootstrap server assigns a relay. A registry serves a list of open coordinators and a substrate caches it, but no `syneroym-relays` record exists, and no community governance key exists.
 
 **Decentralized Bootstrap Fallback**
 
@@ -1746,11 +1760,9 @@ Next-hop forwarding is the function `relay_to_next_hop` in `crates/router/src/ro
     *   **Sx** uses Coordinator **C** as its Iroh relay (`parent_coordinator.iroh.url`) and registers its own record in Registry **R** (`substrate.registry_url`). 
 4.  **Hidden Substrate (Sz) Starts**: 
     *   **Sz** starts in the private network and connects to its local Registry (**Rp**, set by `substrate.registry_url`).
-    *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting. A substrate has an Iroh endpoint, and so can forward a stream, whenever `communication_interfaces` has `iroh`.
+    *   Its Iroh endpoint uses the relay named by its `parent_coordinator.iroh.url` setting, or a relay that it picks from the coordinator list of **Rp**. A substrate has an Iroh endpoint, and so can forward a stream, whenever `communication_interfaces` has `iroh`.
 
-> **Envisioned.** Today a substrate is given its relay by `parent_coordinator.iroh.url`. The community registry serves and forwards `GET /coordinators?transport=iroh-relay`. A substrate querying the registry to find a local coordinator, selecting one at run time, and caching it is envisioned.
-
-*   The community registry **Rp** serves its configured list of open coordinators (`GET /coordinators?transport=iroh-relay`). If its own list is empty, **Rp** forwards the request to its parent registry **R**. In the envisioned design, **Sz** asks **Rp** for available coordinators, ranks them deterministically, and selects one at run time.
+*   The community registry **Rp** serves its configured list of open coordinators (`GET /coordinators?transport=iroh-relay`). If its own list is empty, **Rp** forwards the request to its parent registry **R**. When `parent_coordinator.iroh.url` is not set, **Sz** asks **Rp** for the list in the background, ranks it with its own DID, and uses the first relay that works. It keeps the list and its choice on disk.
 
 #### 2. Registry Entries at Deployment
 
@@ -2102,7 +2114,7 @@ A lookup checks every record it gets:
 
 The community registry may have a parent registry (`parent_registry_url`). A registry passes each public record on to its parent.
 
-A registry also serves curated lists from its config, such as `GET /coordinators?transport=iroh-relay`. The response contains `max_age_secs` and an array of coordinator entries (`transport`, `url`, `info_url`, `operator`). At startup the registry normalises URLs (lowercasing scheme and host, removing default ports and trailing slashes) and rejects invalid URLs or duplicates. The registry also checks `parent_registry_url` at startup and refuses to start if it is not a valid `http` or `https` URL, or has a query, a trailing dot in the host, or consecutive slashes in the path. When its own list is empty and `parent_registry_url` is set, the registry forwards the request to its parent. Forwarding stops after 3 hops. If the parent fails, returns an invalid body, or cannot be reached, the registry returns `502 Bad Gateway`. Entries are ranked with a deterministic SHA-256 rendezvous key over the chooser DID and the normalised URL. No substrate uses the list yet; substrate resolution and caching are envisioned.
+A registry also serves curated lists from its config, such as `GET /coordinators?transport=iroh-relay`. The response contains `max_age_secs` and an array of coordinator entries (`transport`, `url`, `info_url`, `operator`). At startup the registry normalises URLs (lowercasing scheme and host, removing default ports and trailing slashes) and rejects invalid URLs or duplicates. The registry also checks `parent_registry_url` at startup and refuses to start if it is not a valid `http` or `https` URL, or has a query, a trailing dot in the host, or consecutive slashes in the path. When its own list is empty and `parent_registry_url` is set, the registry forwards the request to its parent. Forwarding stops after 3 hops. If the parent fails, returns an invalid body, or cannot be reached, the registry returns `502 Bad Gateway`. Entries are ranked with a deterministic SHA-256 rendezvous key over the chooser DID and the normalised URL. A list request carries the number of forwards made so far, and a request with `h` forwards may take `10 s × (4 − h)`: a client waits 40 s, the first forward 30 s, then 20 s and 10 s. So an inner registry answers `502` before the outer one stops waiting. A substrate with no `parent_coordinator.iroh.url` uses the list to find its home relay (see [Relay and Registry Configuration](#relay-and-registry-configuration)).
 
 A coordinator that sets `share_in_registry` and `community_registry_url` registers itself at startup, with retries, and again every hour (every minute after a failure). `/v1/info` shows the DID it registers under and whether the last registration was accepted (`registry`). This does not reflect records lost if the community registry restarted between refreshes. The record lets a caller that knows only the DID of the coordinator find its Iroh address and relay URL, and then dial it as the entry point. Set `share_in_registry` on a coordinator that callers dial this way. Leave it off on a coordinator that only serves as the home relay of substrates, because those substrates take its URL from `parent_coordinator.iroh.url`. No other routing step reads this record: a stream reaches a target through the record of the target substrate. The record uses the key of the coordinator. It is separate from the record of any substrate that runs on the same node. It is also separate from the curated `/coordinators` list, which the registry operator writes by hand.
 

@@ -267,7 +267,7 @@ Copy these items. Paths in the table are the defaults. If your config sets diffe
 | Node key | `<app_data_dir>/substrate.key` | The node DID. Service record-signing keys are derived from it, so a new key breaks old signatures and agreements. |
 | Controller agreement | `<app_data_dir>/agreement.json` | Ownership of the node. Without it the node is unowned and refuses all control calls. |
 | Identities | `<app_data_dir>/identities/` | Includes the owner identity and the member master keys (`member-<app-instance>#<service>-0.key`). A member master is a service's address. Losing it cannot be undone. |
-| Database directory | `<app_local_data_dir>/db/` (`storage.db_dir`) | `substrate.db` (catalog and wrapped data keys), and `services/<service-id>/state.db` and `conversation.db` for every service. Copy it as a whole. The wrapped data keys live inside `substrate.db`, so a partial copy cannot be opened. |
+| Database directory | `<app_local_data_dir>/db/` (`storage.db_dir`) | `substrate.db` (catalog and wrapped data keys), `coordinators.json` (the saved coordinator list and relay choice; a cache, safe to delete), and `services/<service-id>/state.db` and `conversation.db` for every service. Copy it as a whole. The wrapped data keys live inside `substrate.db`, so a partial copy cannot be opened. |
 | Blobs | `<app_local_data_dir>/blobs/` and `blob_objects/` | Blob data, if the node uses it. |
 | Hosted app certificates | `<app_local_data_dir>/hosted_apps/` | Instance certificates. |
 | Config file | your `--config` path | Ports, roles, TLS and storage settings. |

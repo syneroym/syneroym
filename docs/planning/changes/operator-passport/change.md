@@ -143,6 +143,8 @@ The response gives `lease_ends_at`. The service allows a caller when it has a ro
 - `roymctl substrate home-relay set --coordinator <url> --passport <file>` runs on the owner's machine. It signs the child token for the node key of the substrate with the owner key, and hands it to the substrate through the control plane. The substrate registers itself.
 - `roymctl substrate home-relay status` shows the lease and the expiry.
 
+**Which home-relay source `home-relay set` applies to.** A substrate runs one home-relay source ([registry-listed-coordinators](../registry-listed-coordinators/change.md), D-A4-1): `Fixed` (from `parent_coordinator.iroh.url`), `Registry` (a background task picks a relay from the coordinator list), or none. The `Registry` task owns the `HomeRelay` handle and would undo a manual `set`. So the passport step (register, then insert the relay) applies to the `Fixed` source. On a node whose source is `Registry` or none, `home-relay set` must either refuse with a clear error, or first stop the resolver task. If it stops the task, it uses a cancellation token that the task checks between steps, never inside `HomeRelay::set` (a dropped `set` leaves the relay map and the watch channel out of step). The registry slice builds no way to stop the task (D-A4-15).
+
 ## Open questions
 
 None open. Decided 2026-10-11:
