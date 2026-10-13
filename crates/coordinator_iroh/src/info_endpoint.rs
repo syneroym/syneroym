@@ -7,72 +7,36 @@ use std::{
     },
 };
 
-use axum::{Json, extract::State};
+use axum::{Json, Router, extract::State, routing};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use syneroym_core::dht_registry::RegistryClient;
+use iroh_relay::server::Metrics as RelayServerMetrics;
+use syneroym_core::coordinator_info::{
+    ConnectionsInfo, CoordinatorInfo, CoordinatorStatus, INFO_PATH, RegistryInfo, RelayInfo,
+    TlsInfo,
+};
+use tokio::{sync::watch, task};
 use x509_parser::{
     pem::parse_x509_pem,
     prelude::{FromDer, X509Certificate},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct IdentityInfo {
-    pub did: String,
-    pub controller_status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ConnectionsInfo {
-    pub active: usize,
-    pub cap: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TlsInfo {
-    pub cert_expiry_days: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RelayInfo {
-    pub online: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoordinatorInfo {
-    pub endpoint_addr_bytes: Vec<u8>, // serde_json-encoded EndpointAddr
-    pub substrate_id: String,
-    pub relay_url: Option<String>, // Local relay URL hosted by this coordinator
-    pub parent_coordinator_url: Option<String>, // Parent coordinator URL
-
-    // Extensions
-    #[serde(default = "default_status")]
-    pub status: String,
-    #[serde(default)]
-    pub identity: Option<IdentityInfo>,
-    #[serde(default)]
-    pub connections: Option<ConnectionsInfo>,
-    #[serde(default)]
-    pub tls: Option<TlsInfo>,
-    #[serde(default)]
-    pub relay: Option<RelayInfo>,
-}
-
-fn default_status() -> String {
-    "unknown".to_string()
-}
-
 #[derive(Debug)]
-pub struct InfoState {
+pub(crate) struct InfoState {
     pub endpoint_addr_bytes: Vec<u8>,
+    /// The coordinator's Iroh endpoint id.
     pub substrate_id: String,
     pub relay_url: Option<String>,
     pub parent_coordinator_url: Option<String>,
     pub active_connections: Arc<AtomicUsize>,
     pub max_connections: Option<usize>,
     pub tls_cert_path: Option<PathBuf>,
-    pub is_relay_enabled: bool,
-    pub registry_client: RegistryClient,
+    /// Counters of the relay server this coordinator runs. `None` when it runs
+    /// no relay server.
+    pub relay_metrics: Option<Arc<RelayServerMetrics>>,
+    pub max_relay_clients: Option<u64>,
+    /// The coordinator DID and the result of the last registration. `None`
+    /// when the coordinator does not register itself.
+    pub registry: Option<(String, watch::Receiver<bool>)>,
 }
 
 fn get_cert_expiry_days(path: &Path) -> Option<i64> {
@@ -89,41 +53,73 @@ fn get_cert_expiry_days(path: &Path) -> Option<i64> {
     Some(diff_seconds / (24 * 3600))
 }
 
-pub async fn get_info(State(state): State<Arc<InfoState>>) -> Json<CoordinatorInfo> {
-    let active = state.active_connections.load(Ordering::SeqCst);
-    let cap = state.max_connections;
+/// Open relay connections now. `iroh-relay` has no gauge for this; each
+/// client actor counts one accept when it starts and one disconnect when it
+/// ends. An endpoint that connects again counts twice until its old
+/// connection closes.
+pub(crate) fn relay_client_count(metrics: &RelayServerMetrics) -> u64 {
+    // Read disconnects first: a connection's disconnect is counted after its
+    // accept, so this order does not see a disconnect without its accept.
+    // The counters are relaxed atomics, so the order is not guaranteed;
+    // `saturating_sub` keeps the result at zero or above.
+    let disconnects = metrics.disconnects.get();
+    metrics.accepts.get().saturating_sub(disconnects)
+}
 
-    let tls = if let Some(ref path) = state.tls_cert_path {
-        if path.exists() {
-            Some(TlsInfo { cert_expiry_days: get_cert_expiry_days(path) })
-        } else {
-            None
+pub(crate) fn relay_status(clients: Option<u64>, cap: Option<u64>) -> CoordinatorStatus {
+    match (clients, cap) {
+        (Some(clients), Some(cap)) if clients >= cap => CoordinatorStatus::AtCapacity,
+        _ => CoordinatorStatus::Healthy,
+    }
+}
+
+pub(crate) async fn get_info(State(state): State<Arc<InfoState>>) -> Json<CoordinatorInfo> {
+    let relay_clients = state.relay_metrics.as_deref().map(relay_client_count);
+    let tls = match &state.tls_cert_path {
+        Some(path) => {
+            let path = path.clone();
+            task::spawn_blocking(move || {
+                if path.exists() {
+                    Some(TlsInfo { cert_expiry_days: get_cert_expiry_days(&path) })
+                } else {
+                    None
+                }
+            })
+            .await
+            .ok()
+            .flatten()
         }
-    } else {
-        None
+        None => None,
     };
 
-    let controller_status = match state.registry_client.lookup(&state.substrate_id, false).await {
-        Ok(_) => "verified".to_string(),
-        Err(_) => "unverified".to_string(),
-    };
-
-    let status = if let Some(max_conn) = cap {
-        if active >= max_conn { "at_capacity".to_string() } else { "healthy".to_string() }
-    } else {
-        "healthy".to_string()
-    };
-
-    let info = CoordinatorInfo {
+    Json(CoordinatorInfo {
         endpoint_addr_bytes: state.endpoint_addr_bytes.clone(),
         substrate_id: state.substrate_id.clone(),
         relay_url: state.relay_url.clone(),
         parent_coordinator_url: state.parent_coordinator_url.clone(),
-        status,
-        identity: Some(IdentityInfo { did: state.substrate_id.clone(), controller_status }),
-        connections: Some(ConnectionsInfo { active, cap }),
+        status: relay_status(relay_clients, state.max_relay_clients),
+        identity: None,
+        connections: Some(ConnectionsInfo {
+            active: state.active_connections.load(Ordering::SeqCst),
+            cap: state.max_connections,
+        }),
         tls,
-        relay: Some(RelayInfo { online: state.is_relay_enabled }),
-    };
-    Json(info)
+        relay: Some(RelayInfo {
+            online: state.relay_metrics.is_some(),
+            clients: relay_clients,
+            max_clients: state.max_relay_clients,
+        }),
+        registry: state.registry.as_ref().map(|(did, registered)| RegistryInfo {
+            did: did.clone(),
+            registered: *registered.borrow(),
+        }),
+    })
 }
+
+/// The routes of the info server.
+pub(crate) fn info_router(state: InfoState) -> Router {
+    Router::new().route(INFO_PATH, routing::get(get_info)).with_state(Arc::new(state))
+}
+
+#[cfg(test)]
+mod tests;

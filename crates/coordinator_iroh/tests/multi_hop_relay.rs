@@ -18,10 +18,11 @@ use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, pro
 use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
 use syneroym_control_plane::ControlPlaneService;
-use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
+use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
     asset_manifest::AssetRegistry,
     config::{CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig},
+    coordinator_info::{CoordinatorInfo, INFO_PATH},
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
     },
@@ -271,28 +272,8 @@ fn create_signed_info(
     info.sign(identity).unwrap()
 }
 
-/// Spawns registry R exactly as every test in this file does: a lightweight
-/// HTTP community registry (no DHT), reachable at the returned URL.
-async fn spawn_global_registry(base_path: &Path) -> Result<(EcosystemRegistry, String)> {
-    let mut config_r = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_r"),
-        app_data_dir: base_path.join("user_data_r"),
-        ..Default::default()
-    };
-    config_r.substrate.enable_bep0044_dht = false;
-    config_r.roles.community_registry = Some(ServiceRegistryRole {
-        http_bind_address: "127.0.0.1:0".to_string(),
-        ..Default::default()
-    });
-    let mut registry_r = EcosystemRegistry::init(&config_r).await?;
-    let r_url = registry_r.bind().await?;
-    registry_r.spawn().await?;
-    Ok((registry_r, r_url))
-}
-
-/// Spawns global Coordinator C exactly as `test_inbound_relay` and
-/// `test_outbound_relay` both do: registered with registry R, with relay and
-/// signalling enabled.
+/// Spawns global Coordinator C as both relay tests do: relay and signalling
+/// on, own record published in R (`share_in_registry`; unused by routing here).
 async fn spawn_global_coordinator(
     base_path: &Path,
     r_url: &str,
@@ -321,14 +302,13 @@ async fn spawn_global_coordinator(
     let c_info_addr = c.info_addr().unwrap();
 
     let c_info: CoordinatorInfo =
-        info_client.get(format!("http://{c_info_addr}/v1/info")).send().await?.json().await?;
+        info_client.get(format!("http://{c_info_addr}{INFO_PATH}")).send().await?.json().await?;
     let c_relay_url = c_info.relay_url.clone().unwrap();
 
     Ok((c, c_info, c_relay_url))
 }
 
-/// Spawns private Coordinator Cp pointing at global Coordinator C, exactly as
-/// `test_inbound_relay` and `test_outbound_relay` both do.
+/// Spawns private Coordinator Cp (home relay: C's; record published in R).
 async fn spawn_private_coordinator(
     base_path: &Path,
     r_url: &str,
@@ -359,7 +339,7 @@ async fn spawn_private_coordinator(
     let cp_info_addr = cp.info_addr().unwrap();
 
     let cp_info: CoordinatorInfo =
-        info_client.get(format!("http://{cp_info_addr}/v1/info")).send().await?.json().await?;
+        info_client.get(format!("http://{cp_info_addr}{INFO_PATH}")).send().await?.json().await?;
 
     Ok((cp, cp_info))
 }
@@ -563,7 +543,7 @@ async fn test_inbound_relay() -> Result<()> {
     let info_client = Client::new();
 
     // 1. Spawn global registry R
-    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
+    let (mut registry_r, r_url) = common::spawn_registry(base_path).await?;
 
     // 2. Spawn Global Coordinator C
     let (mut c, c_info, c_relay_url) =
@@ -578,7 +558,8 @@ async fn test_inbound_relay() -> Result<()> {
         spawn_z_target_substrate(base_path, &r_url, cp_info.relay_url.clone(), &info_client)
             .await?;
 
-    // 5. Connect from a client in public network (under C) to Sz via C -> Cp
+    // 5. Client in public network dials only C. C looks Sz up in R and dials it via
+    //    Sz's home relay (Cp's relay). Cp is a relay here, not a forwarder.
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
         target_z.did.clone(),
         vec![EndpointMechanism::Iroh {
@@ -608,7 +589,7 @@ async fn test_outbound_relay() -> Result<()> {
     let info_client = Client::new();
 
     // 1. Spawn global registry R
-    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
+    let (mut registry_r, r_url) = common::spawn_registry(base_path).await?;
 
     // 2. Spawn Global Coordinator C
     let (mut c, _c_info, c_relay_url) =
@@ -621,7 +602,8 @@ async fn test_outbound_relay() -> Result<()> {
     // 4. Spawn target substrate Sx in public network under C
     let target_x = spawn_x_target_substrate(base_path, &r_url, &c_relay_url, &info_client).await?;
 
-    // 5. Connect from a client in private network (under Cp) to Sx via Cp -> C
+    // 5. Client in private network dials Cp, the forwarding entry point. Cp looks
+    //    Sx up in R and dials it via Sx's home relay (C's relay).
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
         target_x.did.clone(),
         vec![EndpointMechanism::Iroh {
@@ -849,7 +831,7 @@ async fn test_cross_node_proxy_call() -> Result<()> {
 
     // 1. A lightweight HTTP community registry (no DHT) -- just enough for Sx's
     //    ProxyRouter to resolve Sz's Iroh address.
-    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
+    let (mut registry_r, r_url) = common::spawn_registry(base_path).await?;
 
     // 2. Node Sz: the greeter callee. Direct-address-only Iroh endpoint (no relay
     //    -- both nodes are local, direct addresses suffice).
@@ -1095,7 +1077,7 @@ async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
 
     // 1. Community registry -- also where Sz resolves the caller's master anchor to
     //    re-verify the delegation certificate.
-    let (mut registry_r, r_url) = spawn_global_registry(base_path).await?;
+    let (mut registry_r, r_url) = common::spawn_registry(base_path).await?;
 
     // 2. Node Sz: the native-capability callee.
     let callee = spawn_native_capability_callee_node(base_path, &r_url).await?;

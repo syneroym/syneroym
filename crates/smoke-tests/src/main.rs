@@ -8,12 +8,13 @@ use iroh::{
 use reqwest::Client;
 use serde_json::{Number, Value};
 use syneroym_community_registry::EcosystemRegistry;
-use syneroym_coordinator_iroh::{CoordinatorIroh, info_endpoint::CoordinatorInfo};
+use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
     config::{
         AccessControl, AppSandboxRole, CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole,
         RetryPolicy, ServiceRegistryRole, SubstrateConfig,
     },
+    coordinator_info::CoordinatorInfo,
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
     local_registry::EndpointRegistry,
     retry,
@@ -163,7 +164,7 @@ async fn test_coordinator_connectivity(
         resp.json().await.context("Failed to parse CoordinatorInfo JSON")?;
     println!("Coordinator info received successfully!");
     println!("  Substrate ID: {}", info.substrate_id);
-    println!("  Status:       {}", info.status);
+    println!("  Status:       {:?}", info.status);
     println!("  Relay Online: {}", info.relay.as_ref().map(|r| r.online).unwrap_or(false));
     if let Some(conn) = &info.connections {
         println!("  Connections:  active={}/cap={:?}", conn.active, conn.cap);

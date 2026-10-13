@@ -10,8 +10,11 @@ use anyhow::Result;
 use reqwest::{Certificate, Client};
 use rustls::crypto::ring;
 use syneroym_coordinator_iroh::CoordinatorIroh;
-use syneroym_core::config::{
-    CoordinatorIrohConfig, CoordinatorRole, LogTarget, SubstrateConfig, SubstrateTlsConfig,
+use syneroym_core::{
+    config::{
+        CoordinatorIrohConfig, CoordinatorRole, LogTarget, SubstrateConfig, SubstrateTlsConfig,
+    },
+    coordinator_info::INFO_PATH,
 };
 use tokio::time;
 
@@ -106,7 +109,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     let reqwest_cert_a = Certificate::from_pem(&cert_a_bytes)?;
     let client_a = Client::builder().add_root_certificate(reqwest_cert_a.clone()).build()?;
 
-    let url = format!("https://{info_addr}/v1/info");
+    let url = format!("https://{info_addr}{INFO_PATH}");
 
     // Initial connection should succeed with Client A
     let resp = client_a.get(&url).send().await?;

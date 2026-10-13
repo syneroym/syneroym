@@ -191,6 +191,9 @@ enable_relay = true
 http_bind_address = "0.0.0.0:7964"
 # QUIC relay bind address
 quic_bind_address = "0.0.0.0:7965"
+# Relay connections at which GET /v1/info reports "at_capacity" (reported
+# only; the relay still admits more). Leave unset for no cap. Must be >= 1.
+# max_relay_clients = 1000
 
 # WebRTC coordinator configuration
 [roles.coordinator.webrtc]

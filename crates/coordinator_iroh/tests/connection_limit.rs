@@ -14,9 +14,10 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use reqwest::Client;
-use syneroym_coordinator_iroh::{CoordinatorInfo, CoordinatorIroh};
+use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
     config::{CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
+    coordinator_info::{CoordinatorInfo, CoordinatorStatus, INFO_PATH},
     dht_registry::EndpointMechanism,
 };
 use syneroym_sdk::SyneroymClient;
@@ -102,6 +103,9 @@ async fn accepts_up_to_cap_and_rejects_the_rest() -> Result<()> {
 
     let (accepted, rejected) = tally_verdicts(&mut verdict_rx).await?;
     println!("accepted: {accepted}, rejected: {rejected}");
+
+    let info_addr = coordinator.info_addr().context("coordinator has no info address")?;
+    assert_router_cap_does_not_give_at_capacity(&format!("http://{info_addr}{INFO_PATH}")).await?;
 
     // Release the held connections and let every task finish cleanly.
     release.notify_waiters();
@@ -196,6 +200,7 @@ async fn start_capped_coordinator(base_path: &Path) -> Result<CoordinatorIroh> {
             idle_timeout_secs: None,
             share_in_registry: false,
             max_connections: Some(CAP),
+            max_relay_clients: Some((CAP + 10) as u64),
             ..Default::default()
         }),
         ..Default::default()
@@ -208,12 +213,31 @@ async fn start_capped_coordinator(base_path: &Path) -> Result<CoordinatorIroh> {
 async fn fetch_dial_info(coordinator: &CoordinatorIroh) -> Result<DialInfo> {
     let info_addr = coordinator.info_addr().context("coordinator has no info address")?;
     let info: CoordinatorInfo =
-        Client::new().get(format!("http://{info_addr}/v1/info")).send().await?.json().await?;
+        Client::new().get(format!("http://{info_addr}{INFO_PATH}")).send().await?.json().await?;
     Ok(DialInfo {
         substrate_id: info.substrate_id,
         endpoint_addr_bytes: info.endpoint_addr_bytes,
         relay_url: info.relay_url.context("coordinator did not advertise a relay URL")?,
     })
+}
+
+async fn assert_router_cap_does_not_give_at_capacity(info_url: &str) -> Result<()> {
+    let poll_info = async {
+        loop {
+            if let Ok(resp) = Client::new().get(info_url).send().await
+                && let Ok(info) = resp.json::<CoordinatorInfo>().await
+                && let Some(conn) = info.connections
+                && conn.active == CAP
+            {
+                assert_eq!(info.status, CoordinatorStatus::Healthy);
+                break;
+            }
+            time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    time::timeout(SETTLE_DEADLINE, poll_info)
+        .await
+        .context("timed out waiting for active connections to reach CAP")
 }
 
 fn init_tracing() {

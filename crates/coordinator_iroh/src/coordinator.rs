@@ -9,39 +9,37 @@ use std::{
     net::SocketAddr,
     pin,
     sync::{Arc, atomic::AtomicUsize},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
-use axum::{Router, routing::get};
+use axum::Router;
 use iroh::{
-    Endpoint, EndpointAddr, RelayUrl, SecretKey, TransportAddr, protocol::Router as IrohRouter,
+    Endpoint, EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr,
+    protocol::Router as IrohRouter,
 };
 use iroh_relay::server::Server;
 use reqwest::Client;
 use syneroym_core::{
-    config::{CoordinatorIrohConfig, CoordinatorRole, RetryPolicy, SubstrateConfig},
-    dht_registry::{
-        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMechanism, EndpointType,
-        RegistryClient,
-    },
-    retry::retry_with_backoff,
+    config::{CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
+    dht_registry::RegistryClient,
     tls::TlsCertLoader,
 };
-use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
-use tokio::{net::TcpListener, task::JoinHandle, time};
+use tokio::{net::TcpListener, sync::watch, task::JoinHandle, time};
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::{build_relay_config, relay_access},
-    info_endpoint::{InfoState, get_info},
+    config::{self, build_relay_config, relay_access},
+    info_endpoint::{self, InfoState},
+    registration,
 };
 
 pub struct CoordinatorIroh {
     relay_server: Option<Server>,
     iroh_router: Option<IrohRouter>,
     http_info_handle: Option<JoinHandle<Result<()>>>,
+    /// Keeps the coordinator registered in its community registry.
     registry_registration_handle: Option<JoinHandle<()>>,
     info_addr: Option<SocketAddr>,
 }
@@ -84,6 +82,24 @@ fn resolve_relay_url(
     net_iroh::parse_relay_url("roles.coordinator.iroh.http_bind_address", &raw).map(Some)
 }
 
+/// The address `/v1/info` gives to clients. Direct addresses are left out
+/// because they cannot be dialed between two processes that share only a
+/// relay, and link-local addresses lose their scope id. The relay address
+/// comes from the chosen URL, because boot does not wait for the endpoint to
+/// come online.
+fn info_addr_bytes(node_id: EndpointId, relay_url: Option<&RelayUrl>) -> Result<Vec<u8>> {
+    let addr = EndpointAddr::from_parts(node_id, relay_url.cloned().map(TransportAddr::Relay));
+    Ok(serde_json::to_vec(&addr)?)
+}
+
+/// What `start_endpoint` starts. `init` stores each part in `CoordinatorIroh`.
+struct EndpointParts {
+    iroh_router: IrohRouter,
+    http_info_handle: JoinHandle<Result<()>>,
+    info_addr: SocketAddr,
+    registry_registration_handle: Option<JoinHandle<()>>,
+}
+
 impl CoordinatorIroh {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("Initializing Coordinator IROH");
@@ -104,6 +120,9 @@ impl CoordinatorIroh {
             // Checked even when the relay is off, so a value this build cannot enforce
             // stops the coordinator at startup instead of waiting unused.
             relay_access(&role.access)?;
+            if let Some(iroh_cfg) = &role.iroh {
+                config::check_relay_cap(iroh_cfg, &role.access, parent_relay_url.is_some())?;
+            }
 
             // --- Architectural Note ---
             // Syneroym Coordinators can fulfill two overlapping but distinct IROH roles:
@@ -125,52 +144,17 @@ impl CoordinatorIroh {
             }
 
             if let Some(iroh_cfg) = &role.iroh {
-                let relay_url =
-                    resolve_relay_url(parent_relay_url.as_ref(), &relay_server, iroh_cfg)?;
-
-                // 1. Build Iroh Endpoint
-                let (iroh_endpoint, secret_key) =
-                    Self::build_iroh_endpoint(iroh_cfg, relay_url.clone()).await?;
-                let node_id = iroh_endpoint.addr().id;
-
-                // 2. Spawn Iroh Router
-                let (router, active_conns) = Self::spawn_iroh_router(
-                    &iroh_endpoint,
-                    iroh_cfg,
-                    config,
-                    parent_relay_url.as_ref().map(ToString::to_string),
-                );
-                iroh_router = Some(router);
-
-                // 3. Start Axum /v1/info HTTP Server
-                let (handle, local_addr) = Self::spawn_http_info_server(
+                let parts = Self::start_endpoint(
                     config,
                     iroh_cfg,
-                    &iroh_endpoint,
-                    relay_url.clone(),
-                    parent_relay_url.clone(),
-                    active_conns,
+                    parent_relay_url.as_ref(),
+                    &relay_server,
                 )
                 .await?;
-                info_addr = Some(local_addr);
-                http_info_handle = Some(handle);
-
-                // 4. Register in Global Registry if requested
-                if iroh_cfg.share_in_registry
-                    && let Some(registry_url) = &iroh_cfg.community_registry_url
-                {
-                    let relay_url_payload = relay_url.as_ref().map(ToString::to_string);
-
-                    let reg_handle = Self::register_in_global_registry(
-                        registry_url.clone(),
-                        node_id.to_string(),
-                        EndpointAddr::new(node_id),
-                        relay_url_payload,
-                        secret_key,
-                        config.retry.clone(),
-                    );
-                    registry_registration_handle = Some(reg_handle);
-                }
+                iroh_router = Some(parts.iroh_router);
+                http_info_handle = Some(parts.http_info_handle);
+                info_addr = Some(parts.info_addr);
+                registry_registration_handle = parts.registry_registration_handle;
             }
         }
 
@@ -244,13 +228,60 @@ impl CoordinatorIroh {
         (router, active_connections)
     }
 
+    async fn start_endpoint(
+        config: &SubstrateConfig,
+        iroh_cfg: &CoordinatorIrohConfig,
+        parent_relay_url: Option<&RelayUrl>,
+        relay_server: &Option<Server>,
+    ) -> Result<EndpointParts> {
+        let relay_url = resolve_relay_url(parent_relay_url, relay_server, iroh_cfg)?;
+        let (endpoint, secret_key) = Self::build_iroh_endpoint(iroh_cfg, relay_url.clone()).await?;
+        let (iroh_router, active_connections) = Self::spawn_iroh_router(
+            &endpoint,
+            iroh_cfg,
+            config,
+            parent_relay_url.map(ToString::to_string),
+        );
+
+        let registry_url =
+            iroh_cfg.community_registry_url.clone().filter(|_| iroh_cfg.share_in_registry);
+        let (registered_tx, registered_rx) = watch::channel(false);
+
+        let state = InfoState {
+            endpoint_addr_bytes: info_addr_bytes(endpoint.id(), relay_url.as_ref())?,
+            substrate_id: endpoint.id().to_string(),
+            relay_url: relay_url.as_ref().map(ToString::to_string),
+            parent_coordinator_url: parent_relay_url.map(ToString::to_string),
+            active_connections,
+            max_connections: iroh_cfg.max_connections,
+            tls_cert_path: config.tls.as_ref().map(|t| t.cert_path.clone()),
+            relay_metrics: relay_server.as_ref().map(|s| s.metrics().server.clone()),
+            max_relay_clients: iroh_cfg.max_relay_clients,
+            registry: registry_url
+                .is_some()
+                .then(|| (registration::coordinator_did(&secret_key), registered_rx)),
+        };
+        let (http_info_handle, info_addr) =
+            Self::spawn_http_info_server(config, iroh_cfg, info_endpoint::info_router(state))
+                .await?;
+
+        let registry_registration_handle = registry_url.map(|url| {
+            registration::spawn(
+                url,
+                secret_key,
+                relay_url.as_ref().map(ToString::to_string),
+                config.retry.clone(),
+                registered_tx,
+            )
+        });
+
+        Ok(EndpointParts { iroh_router, http_info_handle, info_addr, registry_registration_handle })
+    }
+
     async fn spawn_http_info_server(
         config: &SubstrateConfig,
         iroh_cfg: &CoordinatorIrohConfig,
-        iroh_endpoint: &Endpoint,
-        relay_url: Option<RelayUrl>,
-        parent_relay_url: Option<RelayUrl>,
-        active_connections: Arc<AtomicUsize>,
+        app: Router,
     ) -> Result<(JoinHandle<Result<()>>, SocketAddr)> {
         let http_info_addr: SocketAddr = if let Some(addr_str) = &iroh_cfg.info_http_bind_address {
             addr_str.parse().context("invalid info_http_bind_address")?
@@ -266,35 +297,6 @@ impl CoordinatorIroh {
         let listener = TcpListener::bind(http_info_addr).await?;
         let local_addr = listener.local_addr()?;
         info!("Coordinator /v1/info listening on {}", local_addr);
-
-        let node_id = iroh_endpoint.id();
-        // Direct addresses are left out because they cannot be dialed between two
-        // processes that share only a relay, and link-local addresses lose their
-        // scope id. The relay address comes from the chosen URL, because boot does
-        // not wait for the endpoint to come online.
-        let endpoint_addr_payload =
-            EndpointAddr::from_parts(node_id, relay_url.clone().map(TransportAddr::Relay));
-        let endpoint_addr_bytes = serde_json::to_vec(&endpoint_addr_payload)?;
-
-        let tls_cert_path = config.tls.as_ref().map(|t| t.cert_path.clone());
-        let is_relay_enabled = iroh_cfg.enable_relay;
-
-        let info_state = Arc::new(InfoState {
-            endpoint_addr_bytes,
-            substrate_id: node_id.to_string(),
-            relay_url: relay_url.map(|u| u.to_string()),
-            parent_coordinator_url: parent_relay_url.map(|u| u.to_string()),
-            active_connections,
-            max_connections: iroh_cfg.max_connections,
-            tls_cert_path,
-            is_relay_enabled,
-            registry_client: RegistryClient::new(
-                config.substrate.enable_bep0044_dht,
-                iroh_cfg.community_registry_url.clone(),
-            ),
-        });
-
-        let app = Router::new().route("/v1/info", get(get_info)).with_state(info_state);
 
         let tls_cfg = config.tls.clone();
         let handle = tokio::spawn(async move {
@@ -322,48 +324,6 @@ impl CoordinatorIroh {
         });
 
         Ok((handle, local_addr))
-    }
-
-    fn register_in_global_registry(
-        registry_url: String,
-        node_id_str: String,
-        endpoint_addr_payload: EndpointAddr,
-        relay_url_payload: Option<String>,
-        secret_key: SecretKey,
-        retry_policy: RetryPolicy,
-    ) -> JoinHandle<()> {
-        let secret_key_bytes = secret_key.to_bytes();
-        tokio::spawn(async move {
-            let res = retry_with_backoff(&retry_policy, || {
-                let registry_url = registry_url.clone();
-                let node_id_str = node_id_str.clone();
-                let endpoint_addr_payload = endpoint_addr_payload.clone();
-                let relay_url_payload = relay_url_payload.clone();
-                async move {
-                    register_coordinator_in_registry(
-                        &registry_url,
-                        &node_id_str,
-                        &endpoint_addr_payload,
-                        relay_url_payload,
-                        &secret_key_bytes,
-                    )
-                    .await
-                }
-            })
-            .await;
-
-            match res {
-                Ok(()) => {
-                    info!("Coordinator successfully registered in global registry");
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to register coordinator in global registry after all retries: {}",
-                        e
-                    );
-                }
-            }
-        })
     }
 
     #[must_use]
@@ -441,49 +401,6 @@ impl CoordinatorIroh {
         }
         Ok(())
     }
-}
-
-async fn register_coordinator_in_registry(
-    registry_url: &str,
-    node_id_str: &str,
-    endpoint_addr: &EndpointAddr,
-    relay_url: Option<String>,
-    secret_key_bytes: &[u8; 32],
-) -> Result<()> {
-    let endpoint_addr_bytes = serde_json::to_vec(endpoint_addr)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize endpoint addr: {e}"))?;
-
-    let identity = Identity::from_bytes(secret_key_bytes);
-    let did = derive_did_key(&identity.public_key());
-
-    let not_after = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-        .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
-
-    let info = EndpointInfo {
-        service_id: did.clone(),
-        substrate_id: did.clone(),
-        endpoint_type: EndpointType::Substrate,
-        nickname: Some(format!("coordinator-{}", &node_id_str[..8])),
-        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url }],
-        is_private: false,
-        ttl: None,
-        not_after,
-        generation: 0,
-    };
-
-    let signed_info = info.sign(&identity)?;
-    let client = Client::new();
-    let url = format!("{registry_url}/register");
-    let res = client.post(&url).json(&signed_info).send().await?;
-
-    if !res.status().is_success() {
-        return Err(anyhow::anyhow!("Registry registration returned status: {}", res.status()));
-    }
-
-    Ok(())
 }
 
 async fn wait_for_relay_server(addr: SocketAddr) -> Result<()> {
