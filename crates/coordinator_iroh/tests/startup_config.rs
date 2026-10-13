@@ -100,7 +100,7 @@ async fn rejects_zero_max_relay_clients() {
 }
 
 #[tokio::test]
-async fn accepts_one_max_relay_clients_with_warning() {
+async fn accepts_one_max_relay_clients() {
     let mut config = test_config();
     let iroh_cfg = config.roles.coordinator.as_mut().unwrap().iroh.as_mut().unwrap();
     iroh_cfg.enable_relay = true;

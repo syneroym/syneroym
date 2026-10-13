@@ -21,7 +21,7 @@ use syneroym_core::{
 };
 use syneroym_identity::{Identity, substrate};
 use tokio::{sync::watch, task::JoinHandle, time};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Wait after a successful registration.
 pub(crate) const REGISTRATION_REFRESH: Duration = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
@@ -33,23 +33,22 @@ pub(crate) const REGISTRATION_RETRY: Duration = Duration::from_secs(60);
 const _: () = assert!(HEARTBEAT_INTERVAL_SECS < DEFAULT_REGISTRY_TTL_SECS);
 
 /// The DID the coordinator registers under: `did:key` of its Iroh key.
-pub fn coordinator_did(secret_key: &SecretKey) -> String {
+pub(crate) fn coordinator_did(secret_key: &SecretKey) -> String {
     substrate::derive_did_key(&Identity::from_bytes(&secret_key.to_bytes()).public_key())
 }
 
 /// What one registration needs. Shared by every round of the loop.
 #[derive(Debug)]
-pub struct Registration {
+pub(crate) struct Registration {
     registry: RegistryClient,
     secret_key: SecretKey,
     relay_url: Option<String>,
     retry_policy: RetryPolicy,
-    last_succeeded: AtomicBool,
-    first_failure_logged: AtomicBool,
+    failure_logged: AtomicBool,
 }
 
 impl Registration {
-    pub fn new(
+    pub(crate) fn new(
         registry_url: String,
         secret_key: SecretKey,
         relay_url: Option<String>,
@@ -60,8 +59,7 @@ impl Registration {
             secret_key,
             relay_url,
             retry_policy,
-            last_succeeded: AtomicBool::new(false),
-            first_failure_logged: AtomicBool::new(false),
+            failure_logged: AtomicBool::new(false),
         }
     }
 }
@@ -101,25 +99,18 @@ where
 }
 
 impl Registration {
-    pub async fn register_with_retries(&self) -> bool {
+    pub(crate) async fn register_with_retries(&self) -> bool {
         let res = retry::retry_with_backoff(&self.retry_policy, || self.register_once()).await;
         match &res {
             Ok(()) => {
-                self.first_failure_logged.store(false, Ordering::SeqCst);
-                if !self.last_succeeded.swap(true, Ordering::SeqCst) {
-                    info!("coordinator registered in its community registry");
-                } else {
-                    debug!("coordinator refreshed registration in community registry");
-                }
+                self.failure_logged.store(false, Ordering::SeqCst);
+                debug!("coordinator registered in its community registry");
+            }
+            Err(e) if !self.failure_logged.swap(true, Ordering::SeqCst) => {
+                warn!("coordinator registration failed after all retries: {e}");
             }
             Err(e) => {
-                let was_succeeding = self.last_succeeded.swap(false, Ordering::SeqCst);
-                let is_first_failure = !self.first_failure_logged.swap(true, Ordering::SeqCst);
-                if was_succeeding || is_first_failure {
-                    warn!("coordinator registration failed after all retries: {e}");
-                } else {
-                    debug!("coordinator registration retry failed: {e}");
-                }
+                debug!("coordinator registration retry failed: {e}");
             }
         }
         res.is_ok()

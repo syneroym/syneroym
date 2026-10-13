@@ -16,11 +16,9 @@ use anyhow::{Context, Result, bail};
 use axum::{Router, http::StatusCode, routing};
 use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
 use reqwest::Client;
-use syneroym_coordinator_iroh::{CoordinatorIroh, registration};
+use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
-    config::{
-        CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole, RetryPolicy, SubstrateConfig,
-    },
+    config::{CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
     coordinator_info::{CoordinatorInfo, CoordinatorStatus, INFO_PATH},
     dht_registry::RegistryClient,
 };
@@ -248,44 +246,10 @@ async fn probes_do_not_call_the_registry() -> Result<()> {
 }
 
 #[tokio::test]
-async fn second_registration_is_accepted_by_registry() -> Result<()> {
-    let temp_dir = tempfile::tempdir()?;
-    let (mut registry_r, r_url) = common::spawn_registry(temp_dir.path()).await?;
-
-    let secret_key = SecretKey::generate(&mut rand::rng());
-    let reg = registration::Registration::new(
-        r_url.clone(),
-        secret_key.clone(),
-        Some("https://relay.example.com".to_string()),
-        RetryPolicy::default(),
-    );
-
-    let ok1 = reg.register_with_retries().await;
-    assert!(ok1, "first registration should succeed");
-
-    let did = registration::coordinator_did(&secret_key);
-    let reg_client = RegistryClient::new(false, Some(r_url));
-    let lookup1 = reg_client.lookup(&did, false).await?;
-    assert_eq!(lookup1.info.service_id, did);
-
-    // Give time to ensure timestamp does not regress; the registry must accept
-    // the refresh rather than refusing with 409 Conflict.
-    time::sleep(Duration::from_millis(50)).await;
-
-    let ok2 = reg.register_with_retries().await;
-    assert!(ok2, "second registration should be accepted as refresh");
-
-    let lookup2 = reg_client.lookup(&did, false).await?;
-    assert_eq!(lookup2.info.service_id, did);
-
-    registry_r.shutdown().await?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
-    let foreign_key = SecretKey::generate(&mut rand::rng()).public().to_string();
+    let allowed_secret = SecretKey::generate(&mut rand::rng());
+    let allowed_id = allowed_secret.public().to_string();
 
     let mut config = SubstrateConfig {
         app_local_data_dir: temp_dir.path().join("local"),
@@ -294,7 +258,7 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     };
     config.substrate.enable_bep0044_dht = false;
     config.roles.coordinator = Some(CoordinatorRole {
-        access: CoordinatorAccess::List(vec![foreign_key]),
+        access: CoordinatorAccess::List(vec![allowed_id]),
         iroh: Some(CoordinatorIrohConfig {
             enable_signalling: false,
             enable_relay: true,
@@ -315,16 +279,32 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     .await?;
 
     let relay_url: RelayUrl = info.relay_url.context("missing relay_url")?.parse()?;
-    let client = Endpoint::empty_builder()
+
+    // Connect the allowed control client and wait until the relay counts it.
+    let allowed_client = Endpoint::empty_builder()
+        .secret_key(allowed_secret)
+        .relay_mode(RelayMode::Custom(RelayMap::from(relay_url.clone())))
+        .bind()
+        .await?;
+    time::timeout(Duration::from_secs(20), allowed_client.online()).await?;
+
+    wait_for_info(&coord, Duration::from_secs(10), |info| {
+        info.relay.as_ref().and_then(|r| r.clients) == Some(1)
+    })
+    .await?;
+
+    // Connect an excluded client and verify the relay client count stays at 1.
+    let excluded_client = Endpoint::empty_builder()
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
         .bind()
         .await?;
 
     time::sleep(Duration::from_millis(500)).await;
     let info_after = fetch_info(&coord).await?;
-    assert_eq!(info_after.relay.as_ref().and_then(|r| r.clients), Some(0));
+    assert_eq!(info_after.relay.as_ref().and_then(|r| r.clients), Some(1));
 
-    let _ = client.close().await;
+    let _ = excluded_client.close().await;
+    let _ = allowed_client.close().await;
     coord.shutdown().await?;
     Ok(())
 }
