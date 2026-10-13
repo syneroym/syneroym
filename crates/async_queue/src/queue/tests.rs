@@ -342,10 +342,11 @@ fn an_empty_queue_tick_issues_one_indexed_query_and_no_scan() {
     let queue = Queue::open_in_memory(config()).unwrap();
     assert!(queue.claim_due(1_000, 10).unwrap().is_empty());
 
-    let plan = queue.explain_claim_plan().unwrap();
+    let plan = queue.explain_claim_plan(ClaimKind::Pending).unwrap();
     assert!(
-        plan.contains("USING INDEX") || plan.contains("USING COVERING INDEX"),
-        "expected the claim query to use idx_outbox_visible_at, got: {plan}"
+        plan.contains("idx_outbox_due")
+            && (plan.contains("USING INDEX") || plan.contains("USING COVERING INDEX")),
+        "expected the claim query to use idx_outbox_due, got: {plan}"
     );
     assert!(!plan.to_uppercase().contains("SCAN TABLE"), "expected no table scan, got: {plan}");
 }
@@ -574,3 +575,5 @@ fn dead_letters_lists_what_the_store_holds() {
     assert_eq!(dead[0].queue_key, "k");
     assert_eq!(dead[0].payload, b"p");
 }
+
+mod parked;

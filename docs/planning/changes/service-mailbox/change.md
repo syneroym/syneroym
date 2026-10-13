@@ -233,6 +233,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - Where is mailbox eligibility declared for a guest method: the app manifest, or the WIT interface? Find where `idempotency_key` and queued-call rules are declared. Resolve before the sender task.
 - Does the substrate know it was woken (for `pull-now`) on mobile, or does the shell call it?
 - Time-to-live, size and rate values above are starting points. Confirm after a first test.
+- Parked rows count toward `max_pending_rows` (10 000). With a 7-day mailbox time-to-live, a sender with many sleeping receivers can fill its proxy outbox with parked rows and refuse new calls. Keep this bound, or give parked rows their own limit? (Resolve before the sender task.)
 
 ## Tasks
 
@@ -241,7 +242,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - [ ] Lookup change: `resolve_iroh_addr` returns the mailbox field. Sender stores the last record. Mailbox republishes the record.
 - [ ] Sealed message format with tests (tamper, wrong key, replay, old send time).
 - [ ] Mailbox role, native service, store, quotas, fair eviction, sweeps, newest-certificate rule, signed receipts.
-- [ ] `async_queue`: a `deposited` state outside the attempt budget. Keep the supervisor behaviour.
+- [x] `async_queue`: a `deposited` state outside the attempt budget. Keep the supervisor behaviour.
 - [ ] `ProxyRouter` deposit and status poll. New state in both outboxes. New `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI.
 - [ ] Substrate pull worker and injection with sender identity.
 - [ ] Receiver idempotency memory for services with a mailbox.
@@ -251,6 +252,13 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - [ ] Last: dedicated mailboxes with a passport (D-1 to D-3).
 
 ## Deviations
+
+- `D-C1-1`: the crate calls the state "parked"; the outboxes show it as `deposited`.
+- `D-C1-2`: the queue does not act at the parked deadline. It schedules the next poll no later than the deadline; the caller chooses `unpark` or `fail` (S-5 has two outcomes).
+- `D-C1-3`: the deposit receipt is kept in the queue row as an opaque context blob, not in a separate table.
+- `D-C1-4`: `unpark` keeps `attempts`, and there is no reset. This is what makes a proxy-outbox row that keeps getting `expired` receipts end (that outbox has no age limit).
+- `D-C1-5`: `TxQueue::park` and `TxQueue::unpark` exist. C5 must set the Conversation `deposited` state and park the row in one `Queue::transaction`, because the Conversation worker deletes any row whose message is not `Pending` (`crates/conversation/src/outbox.rs:190`). Inside that closure, C5 must not call `ConversationStore::set_state`, `set_recipient_state` or `restart_pending` (`crates/conversation/src/store/message.rs:612-665`): each one locks the connection mutex that `Queue::transaction` already holds, and a `std::sync::Mutex` locked twice by one thread hangs it forever. C5 needs versions of them that write through the `&Transaction`, as `store/message.rs:73` already does with `tx.execute`. This holds for the `expired` → `unpark` path too.
+- `D-C1-6`: the "Attempt budget" paragraph is partly stale. The Conversation outbox already calls `Queue::defer` for an unreachable peer (`crates/conversation/src/outbox.rs:227`), which charges no attempt and un-counts the claim. So for Conversation only the `Retry` path is bound by the attempt budget; an unreachable peer is bound by `conversation_max_pending_age_secs` (30 days). The parked state is still needed for S-3, its own poll interval and deadline, and S-6.
 
 ## Close-out
 

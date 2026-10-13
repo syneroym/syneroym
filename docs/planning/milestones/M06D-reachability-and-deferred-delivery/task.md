@@ -141,7 +141,8 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `[roles.mailbox]`, native service, SQLite store, all seven methods, quotas, fair eviction, sweeps, newest-certificate rule, receipts, hourly record publish (`M-1` to `M-14`, `K-4`).
 - Open limits only. `register` takes no passport yet.
 
-**C5 — Sender path (L).** Needs C1, C3 and C4. Parallel with C6.
+**C5 — Sender path (L).** Needs C1, C3, C4 and R-7 of C6. Parallel with C6, but the R-7 part of C6 must merge first.
+- Needs R-7 (C6) in `main` first, or carries R-7 itself. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver.
 - First: decide where a guest method declares that it is mailbox-eligible (app manifest or WIT interface).
 - Eligibility check (`S-1`), one direct attempt then deposit, `status` polling, `ProxyRouter` hook below both outboxes (`S-2` to `S-5`, `S-7`, `S-8`).
 - `deposited` state in both outboxes on X6 (`S-6`, `S-9`), the `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI. Group pushes.
@@ -177,7 +178,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 | C2 | S0 | S |
 | C3 | C2 | L |
 | C4 | C2, C3 | L |
-| C5 | C1, C3, C4 | L |
+| C5 | C1, C3, C4, R-7 of C6 | L |
 | C6 | C3, C4 | L |
 | C7 | A2, C3 | S |
 | C8 | B1, C4, C7 | M |
@@ -191,7 +192,7 @@ them. C1 is early because it is independent and touches the supervisor, which
 is cheaper to check while little else is changing.
 
 With two developers: one takes Track A then Track B. The other takes C1, C2,
-C3, C4, then joins for C5 and C6.
+C3, C4, then joins for C5 and C6 (the R-7 part of C6 must merge first).
 
 ## 5. Where rework would come from, and how this order avoids it
 

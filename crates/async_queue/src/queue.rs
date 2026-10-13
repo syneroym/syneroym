@@ -4,13 +4,16 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use syneroym_core::{config::RetryPolicy, retry::calculate_jittered_backoff};
 use zeroize::Zeroizing;
 
+mod parked;
 pub mod types;
 
-pub use types::{DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, QueueConfig, QueueItem};
+pub use types::{
+    DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, Parked, QueueConfig, QueueItem,
+};
 
 /// One SQLite-backed queue: an `outbox` of pending/in-flight items and a
 /// bounded `dead_letters` table. `conn: Arc<Mutex<Connection>>` (matching
@@ -22,6 +25,85 @@ pub use types::{DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, QueueConfig, 
 pub struct Queue {
     conn: Arc<Mutex<Connection>>,
     config: QueueConfig,
+}
+
+const CLEAR_PARK: &str =
+    "parked_at = NULL, park_deadline = NULL, park_poll_ms = NULL, park_context = NULL";
+
+/// The columns every item read selects, in the order `read_item` expects.
+const ITEM_COLUMNS: &str = "id, queue_key, payload, attempts, claim_count, parked_at, \
+                            park_deadline, park_poll_ms, park_context";
+
+fn read_item(row: &Row<'_>) -> rusqlite::Result<QueueItem> {
+    let parked = match row.get::<_, Option<i64>>(6)? {
+        None => None,
+        // The four park columns are written together, so a NULL here is a
+        // broken row; `get` of a non-Option type returns that as an error.
+        Some(deadline_at) => Some(Parked {
+            parked_at: row.get(5)?,
+            deadline_at,
+            poll_interval_ms: row.get::<_, i64>(7)? as u64,
+            context: row.get(8)?,
+        }),
+    };
+    Ok(QueueItem {
+        id: row.get(0)?,
+        queue_key: row.get(1)?,
+        payload: row.get(2)?,
+        attempts: row.get::<_, i64>(3)? as u32,
+        claim_count: row.get::<_, i64>(4)? as u32,
+        parked,
+    })
+}
+
+/// Which rows a claim takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClaimKind {
+    Pending,
+    Parked,
+}
+
+impl ClaimKind {
+    fn select_sql(self) -> String {
+        let filter = match self {
+            Self::Pending => "park_deadline IS NULL",
+            Self::Parked => "park_deadline IS NOT NULL",
+        };
+        format!(
+            "SELECT {ITEM_COLUMNS} FROM outbox WHERE {filter} AND visible_at <= ?1 ORDER BY \
+             visible_at ASC LIMIT ?2"
+        )
+    }
+
+    /// A pending claim counts against `claim_count`; a parked claim does
+    /// not, because a parked item is outside the attempt budget.
+    fn update_sql(self) -> &'static str {
+        match self {
+            Self::Pending => {
+                "UPDATE outbox SET visible_at = ?1, claim_count = claim_count + 1 WHERE id = ?2 \
+                 AND visible_at <= ?3 AND park_deadline IS NULL"
+            }
+            Self::Parked => {
+                "UPDATE outbox SET visible_at = ?1 WHERE id = ?2 AND visible_at <= ?3 AND \
+                 park_deadline IS NOT NULL"
+            }
+        }
+    }
+}
+
+const PARK_COLUMNS: [&str; 4] =
+    ["parked_at INTEGER", "park_deadline INTEGER", "park_poll_ms INTEGER", "park_context BLOB"];
+
+/// Adds a column to a table that an older build created without it.
+/// "duplicate column name" is the normal result on every open after the
+/// first.
+fn add_column_if_missing(conn: &Connection, table: &str, column_def: &str) -> Result<()> {
+    if let Err(err) = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column_def}"), [])
+        && !err.to_string().contains("duplicate column name")
+    {
+        return Err(err.into());
+    }
+    Ok(())
 }
 
 // Lock-poisoning from a panicking holder is a programming error (bug) that
@@ -69,22 +151,19 @@ impl Queue {
         // `IF NOT EXISTS` is already idempotent.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS outbox (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_key   TEXT NOT NULL,
-                queue_key   TEXT NOT NULL,
-                payload     BLOB NOT NULL,
-                attempts    INTEGER NOT NULL DEFAULT 0,
-                claim_count INTEGER NOT NULL DEFAULT 0,
-                visible_at  INTEGER NOT NULL,
-                created_at  INTEGER NOT NULL
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_key     TEXT NOT NULL,
+                queue_key     TEXT NOT NULL,
+                payload       BLOB NOT NULL,
+                attempts      INTEGER NOT NULL DEFAULT 0,
+                claim_count   INTEGER NOT NULL DEFAULT 0,
+                visible_at    INTEGER NOT NULL,
+                created_at    INTEGER NOT NULL,
+                parked_at     INTEGER,
+                park_deadline INTEGER,
+                park_poll_ms  INTEGER,
+                park_context  BLOB
              );
-             -- Drives both scheduling (an item due for its first or next
-             -- attempt) and visibility (an in-flight item's lock deadline)
-             -- through the one column: an in-flight item is simply one
-             -- whose visible_at has been pushed into the future, so
-             -- `claim_due`'s single indexed range scan finds both kinds
-             -- with no separate state check.
-             CREATE INDEX IF NOT EXISTS idx_outbox_visible_at ON outbox(visible_at);
              -- Queue::has_pending's indexed dedup lookup -- an outbox is
              -- normally small, but a caller should not have to pull every
              -- payload blob into memory just to answer whether a key
@@ -103,6 +182,23 @@ impl Queue {
              CREATE INDEX IF NOT EXISTS idx_dead_letters_created_at ON dead_letters(created_at);
              CREATE INDEX IF NOT EXISTS idx_dead_letters_queue_key ON dead_letters(queue_key);
              CREATE INDEX IF NOT EXISTS idx_dead_letters_group_key ON dead_letters(group_key);",
+        )?;
+        // The ALTER statements upgrade databases created by an older build.
+        // Some queues live inside existing stores where deleting the file to
+        // recover would delete user data, so missing columns are added on open.
+        for column in PARK_COLUMNS {
+            add_column_if_missing(conn, "outbox", column)?;
+        }
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_outbox_visible_at;
+             -- Drives both scheduling (an item due for its first or next
+             -- attempt) and visibility (an in-flight item's lock deadline)
+             -- through the one column. Two partial indexes split pending
+             -- and parked rows, so each claim is one indexed range scan.
+             CREATE INDEX IF NOT EXISTS idx_outbox_due
+                 ON outbox(visible_at) WHERE park_deadline IS NULL;
+             CREATE INDEX IF NOT EXISTS idx_outbox_parked_due
+                 ON outbox(visible_at) WHERE park_deadline IS NOT NULL;",
         )?;
         Ok(())
     }
@@ -183,10 +279,13 @@ impl Queue {
     /// (`claim_count > max_attempts`) does not fire on an item that is
     /// deliberately waiting. For a target that is absent rather than
     /// broken; a caller using this owes its own outer bound.
+    ///
+    /// Has no effect on a parked item; re-park it with [`Self::park`] instead.
     pub fn defer(&self, id: i64, visible_at: i64) -> Result<()> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         conn.execute(
-            "UPDATE outbox SET visible_at = ?1, claim_count = claim_count - 1 WHERE id = ?2",
+            "UPDATE outbox SET visible_at = ?1, claim_count = claim_count - 1 WHERE id = ?2 AND \
+             park_deadline IS NULL",
             params![visible_at, id],
         )?;
         Ok(())
@@ -207,8 +306,9 @@ impl Queue {
 
     /// Whether `queue_key` already has a row in the outbox -- pending or
     /// claimed, either way already durable and already on its own retry
-    /// schedule. An indexed lookup (`idx_outbox_queue_key`), not a scan of
-    /// every payload (the caller-side `Queue::all()` scan
+    /// schedule. Parked items count, because a parked item still holds its
+    /// key and its data. An indexed lookup (`idx_outbox_queue_key`), not a scan
+    /// of every payload (the caller-side `Queue::all()` scan
     /// `SupervisorOutbox::already_pending` used to pay on every failed
     /// push).
     pub fn has_pending(&self, queue_key: &str) -> Result<bool> {
@@ -223,8 +323,9 @@ impl Queue {
             .is_some())
     }
 
-    /// How many items are waiting or in flight. The bound a caller
-    /// applies before accepting more work.
+    /// How many items are waiting or in flight. Parked items count,
+    /// because a parked item still holds its key and its data. The bound a
+    /// caller applies before accepting more work.
     pub fn pending_count(&self) -> Result<u32> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))?;
@@ -277,42 +378,22 @@ impl Queue {
     /// write is itself an `UPDATE ... WHERE id = ? AND visible_at <= ?`, not an
     /// unconditional one, so the guarantee holds even if a future caller
     /// ever shares this table across more than one held lock.
+    ///
+    /// Never returns a parked item.
     pub fn claim_due(&self, now: i64, limit: u32) -> Result<Vec<QueueItem>> {
+        self.claim(now, limit, ClaimKind::Pending)
+    }
+
+    fn claim(&self, now: i64, limit: u32, kind: ClaimKind) -> Result<Vec<QueueItem>> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         let locked_until = now + self.config.visibility_timeout_ms as i64;
-        struct Candidate {
-            id: i64,
-            queue_key: String,
-            payload: Vec<u8>,
-            attempts: u32,
-            claim_count: u32,
-        }
-        let candidates: Vec<Candidate> = {
-            let mut stmt = conn.prepare(
-                "SELECT id, queue_key, payload, attempts, claim_count FROM outbox
-                 WHERE visible_at <= ?1 ORDER BY visible_at ASC LIMIT ?2",
-            )?;
-            let mut rows = stmt.query(params![now, limit])?;
-            let mut out = Vec::new();
-            while let Some(row) = rows.next()? {
-                out.push(Candidate {
-                    id: row.get(0)?,
-                    queue_key: row.get(1)?,
-                    payload: row.get(2)?,
-                    attempts: row.get::<_, i64>(3)? as u32,
-                    claim_count: row.get::<_, i64>(4)? as u32,
-                });
-            }
-            out
+        let candidates: Vec<QueueItem> = {
+            let mut stmt = conn.prepare(&kind.select_sql())?;
+            stmt.query_map(params![now, limit], read_item)?.collect::<rusqlite::Result<_>>()?
         };
         let mut claimed = Vec::with_capacity(candidates.len());
-        for c in candidates {
-            let claim_count = c.claim_count + 1;
-            let updated = conn.execute(
-                "UPDATE outbox SET visible_at = ?1, claim_count = ?2 WHERE id = ?3 AND visible_at \
-                 <= ?4",
-                params![locked_until, claim_count, c.id, now],
-            )?;
+        for mut item in candidates {
+            let updated = conn.execute(kind.update_sql(), params![locked_until, item.id, now])?;
             if updated == 0 {
                 // Lost the row between the read above and this write --
                 // cannot happen while both run under the same held lock,
@@ -321,13 +402,10 @@ impl Queue {
                 // a future refactor could silently break.
                 continue;
             }
-            claimed.push(QueueItem {
-                id: c.id,
-                queue_key: c.queue_key,
-                payload: c.payload,
-                attempts: c.attempts,
-                claim_count,
-            });
+            if kind == ClaimKind::Pending {
+                item.claim_count += 1;
+            }
+            claimed.push(item);
         }
         Ok(claimed)
     }
@@ -354,7 +432,9 @@ impl Queue {
     /// and leaves the item due again then; exhausted moves it to
     /// `dead_letters` with `error` and this attempt count, deletes it from
     /// `outbox`, and prunes the oldest dead letter -- within this item's
-    /// own `group_key` -- past `dlq_max_rows`.
+    /// own `group_key` -- past `dlq_max_rows`. A failed attempt on a
+    /// parked item makes it pending again, or dead-letters it when the budget
+    /// is used up, the same as for a pending item.
     pub fn fail(&self, id: i64, now: i64, error: &str, terminal: bool) -> Result<FailOutcome> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         let (group_key, queue_key, payload, prior_attempts): (String, String, Vec<u8>, i64) = conn
@@ -384,7 +464,9 @@ impl Queue {
         let jittered = calculate_jittered_backoff(base);
         let next_attempt_at = now + jittered as i64;
         conn.execute(
-            "UPDATE outbox SET attempts = ?1, visible_at = ?2 WHERE id = ?3",
+            &format!(
+                "UPDATE outbox SET attempts = ?1, visible_at = ?2, {CLEAR_PARK} WHERE id = ?3"
+            ),
             params![attempts, next_attempt_at, id],
         )?;
         Ok(FailOutcome::Retrying { next_attempt_at })
@@ -524,24 +606,13 @@ impl Queue {
 
     /// Every outbox item regardless of due time, oldest first -- test and
     /// operator-inspection use; an ordinary worker always goes through
-    /// `claim_due`.
+    /// `claim_due`. Returns pending and parked items.
     pub fn all(&self) -> Result<Vec<QueueItem>> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT id, queue_key, payload, attempts, claim_count FROM outbox ORDER BY id ASC",
-        )?;
-        let mut rows = stmt.query([])?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            out.push(QueueItem {
-                id: row.get(0)?,
-                queue_key: row.get(1)?,
-                payload: row.get(2)?,
-                attempts: row.get::<_, i64>(3)? as u32,
-                claim_count: row.get::<_, i64>(4)? as u32,
-            });
-        }
-        Ok(out)
+        let mut stmt =
+            conn.prepare(&format!("SELECT {ITEM_COLUMNS} FROM outbox ORDER BY id ASC"))?;
+        let items = stmt.query_map([], read_item)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(items)
     }
 
     /// The `EXPLAIN QUERY PLAN` `claim_due`'s own `SELECT` produces --
@@ -549,12 +620,10 @@ impl Queue {
     /// must not scan -- can be asserted structurally rather than by
     /// wall-clock.
     #[cfg(test)]
-    fn explain_claim_plan(&self) -> Result<String> {
+    fn explain_claim_plan(&self, kind: ClaimKind) -> Result<String> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
-        let mut stmt = conn.prepare(
-            "EXPLAIN QUERY PLAN SELECT id, queue_key, payload, attempts, claim_count FROM outbox
-             WHERE visible_at <= ?1 ORDER BY visible_at ASC LIMIT ?2",
-        )?;
+        let sql = format!("EXPLAIN QUERY PLAN {}", kind.select_sql());
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query(params![0i64, 10u32])?;
         let mut plan = String::new();
         while let Some(row) = rows.next()? {
