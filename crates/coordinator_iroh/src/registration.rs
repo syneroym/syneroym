@@ -105,17 +105,19 @@ where
 impl Registration {
     pub(crate) async fn register_with_retries(&self) -> bool {
         let res = retry::retry_with_backoff(&self.retry_policy, || self.register_once()).await;
-        match &res {
-            Ok(()) if self.last_outcome.swap(OUTCOME_OK, Ordering::SeqCst) == OUTCOME_OK => {
+        let new = if res.is_ok() { OUTCOME_OK } else { OUTCOME_ERR };
+        let prev = self.last_outcome.swap(new, Ordering::SeqCst);
+        match (&res, prev) {
+            (Ok(()), OUTCOME_OK) => {
                 debug!("coordinator registered in its community registry");
             }
-            Ok(()) => {
+            (Ok(()), _) => {
                 info!("coordinator registered in its community registry");
             }
-            Err(e) if self.last_outcome.swap(OUTCOME_ERR, Ordering::SeqCst) == OUTCOME_ERR => {
+            (Err(e), OUTCOME_ERR) => {
                 debug!("coordinator registration retry failed: {e}");
             }
-            Err(e) => {
+            (Err(e), _) => {
                 warn!("coordinator registration failed after all retries: {e}");
             }
         }
