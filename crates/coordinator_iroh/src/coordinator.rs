@@ -121,7 +121,7 @@ impl CoordinatorIroh {
             // stops the coordinator at startup instead of waiting unused.
             relay_access(&role.access)?;
             if let Some(iroh_cfg) = &role.iroh {
-                config::check_relay_cap(iroh_cfg)?;
+                config::check_relay_cap(iroh_cfg, &role.access, parent_relay_url.is_some())?;
             }
 
             // --- Architectural Note ---

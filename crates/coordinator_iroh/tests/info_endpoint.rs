@@ -14,11 +14,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axum::{Router, http::StatusCode, routing};
-use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl};
+use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
 use reqwest::Client;
-use syneroym_coordinator_iroh::CoordinatorIroh;
+use syneroym_coordinator_iroh::{CoordinatorIroh, registration};
 use syneroym_core::{
-    config::{CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
+    config::{
+        CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole, RetryPolicy, SubstrateConfig,
+    },
     coordinator_info::{CoordinatorInfo, CoordinatorStatus, INFO_PATH},
     dht_registry::RegistryClient,
 };
@@ -242,5 +244,87 @@ async fn probes_do_not_call_the_registry() -> Result<()> {
 
     coord.shutdown().await?;
     mock_handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn second_registration_is_accepted_by_registry() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let (mut registry_r, r_url) = common::spawn_registry(temp_dir.path()).await?;
+
+    let secret_key = SecretKey::generate(&mut rand::rng());
+    let reg = registration::Registration::new(
+        r_url.clone(),
+        secret_key.clone(),
+        Some("https://relay.example.com".to_string()),
+        RetryPolicy::default(),
+    );
+
+    let ok1 = reg.register_with_retries().await;
+    assert!(ok1, "first registration should succeed");
+
+    let did = registration::coordinator_did(&secret_key);
+    let reg_client = RegistryClient::new(false, Some(r_url));
+    let lookup1 = reg_client.lookup(&did, false).await?;
+    assert_eq!(lookup1.info.service_id, did);
+
+    // Give time to ensure timestamp does not regress; the registry must accept
+    // the refresh rather than refusing with 409 Conflict.
+    time::sleep(Duration::from_millis(50)).await;
+
+    let ok2 = reg.register_with_retries().await;
+    assert!(ok2, "second registration should be accepted as refresh");
+
+    let lookup2 = reg_client.lookup(&did, false).await?;
+    assert_eq!(lookup2.info.service_id, did);
+
+    registry_r.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let foreign_key = SecretKey::generate(&mut rand::rng()).public().to_string();
+
+    let mut config = SubstrateConfig {
+        app_local_data_dir: temp_dir.path().join("local"),
+        app_data_dir: temp_dir.path().join("data"),
+        ..Default::default()
+    };
+    config.substrate.enable_bep0044_dht = false;
+    config.roles.coordinator = Some(CoordinatorRole {
+        access: CoordinatorAccess::List(vec![foreign_key]),
+        iroh: Some(CoordinatorIrohConfig {
+            enable_signalling: false,
+            enable_relay: true,
+            http_bind_address: "127.0.0.1:0".to_string(),
+            quic_bind_address: "127.0.0.1:0".to_string(),
+            info_http_bind_address: Some("127.0.0.1:0".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+
+    let mut coord = CoordinatorIroh::init(&config).await?;
+    common::wait_for_relay(&coord, Duration::from_secs(20)).await?;
+
+    let info = wait_for_info(&coord, Duration::from_secs(5), |info| {
+        info.relay.as_ref().and_then(|r| r.clients) == Some(0)
+    })
+    .await?;
+
+    let relay_url: RelayUrl = info.relay_url.context("missing relay_url")?.parse()?;
+    let client = Endpoint::empty_builder()
+        .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
+        .bind()
+        .await?;
+
+    time::sleep(Duration::from_millis(500)).await;
+    let info_after = fetch_info(&coord).await?;
+    assert_eq!(info_after.relay.as_ref().and_then(|r| r.clients), Some(0));
+
+    let _ = client.close().await;
+    coord.shutdown().await?;
     Ok(())
 }

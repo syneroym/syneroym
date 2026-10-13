@@ -2,7 +2,10 @@
 //! register again on a timer so the record does not expire.
 
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -18,7 +21,7 @@ use syneroym_core::{
 };
 use syneroym_identity::{Identity, substrate};
 use tokio::{sync::watch, task::JoinHandle, time};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Wait after a successful registration.
 pub(crate) const REGISTRATION_REFRESH: Duration = Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
@@ -30,17 +33,37 @@ pub(crate) const REGISTRATION_RETRY: Duration = Duration::from_secs(60);
 const _: () = assert!(HEARTBEAT_INTERVAL_SECS < DEFAULT_REGISTRY_TTL_SECS);
 
 /// The DID the coordinator registers under: `did:key` of its Iroh key.
-pub(crate) fn coordinator_did(secret_key: &SecretKey) -> String {
+pub fn coordinator_did(secret_key: &SecretKey) -> String {
     substrate::derive_did_key(&Identity::from_bytes(&secret_key.to_bytes()).public_key())
 }
 
 /// What one registration needs. Shared by every round of the loop.
 #[derive(Debug)]
-struct Registration {
+pub struct Registration {
     registry: RegistryClient,
     secret_key: SecretKey,
     relay_url: Option<String>,
     retry_policy: RetryPolicy,
+    last_succeeded: AtomicBool,
+    first_failure_logged: AtomicBool,
+}
+
+impl Registration {
+    pub fn new(
+        registry_url: String,
+        secret_key: SecretKey,
+        relay_url: Option<String>,
+        retry_policy: RetryPolicy,
+    ) -> Self {
+        Self {
+            registry: RegistryClient::new(false, Some(registry_url)),
+            secret_key,
+            relay_url,
+            retry_policy,
+            last_succeeded: AtomicBool::new(false),
+            first_failure_logged: AtomicBool::new(false),
+        }
+    }
 }
 
 /// Registers the coordinator's record and keeps it registered until the task
@@ -52,13 +75,8 @@ pub(crate) fn spawn(
     retry_policy: RetryPolicy,
     registered: watch::Sender<bool>,
 ) -> JoinHandle<()> {
-    let registration = Arc::new(Registration {
-        // The coordinator has never published to the DHT.
-        registry: RegistryClient::new(false, Some(registry_url)),
-        secret_key,
-        relay_url,
-        retry_policy,
-    });
+    let registration =
+        Arc::new(Registration::new(registry_url, secret_key, relay_url, retry_policy));
     tokio::spawn(keep_registered(
         move || {
             let registration = Arc::clone(&registration);
@@ -83,11 +101,26 @@ where
 }
 
 impl Registration {
-    async fn register_with_retries(&self) -> bool {
+    pub async fn register_with_retries(&self) -> bool {
         let res = retry::retry_with_backoff(&self.retry_policy, || self.register_once()).await;
         match &res {
-            Ok(()) => debug!("coordinator registered in its community registry"),
-            Err(e) => warn!("coordinator registration failed after all retries: {e}"),
+            Ok(()) => {
+                self.first_failure_logged.store(false, Ordering::SeqCst);
+                if !self.last_succeeded.swap(true, Ordering::SeqCst) {
+                    info!("coordinator registered in its community registry");
+                } else {
+                    debug!("coordinator refreshed registration in community registry");
+                }
+            }
+            Err(e) => {
+                let was_succeeding = self.last_succeeded.swap(false, Ordering::SeqCst);
+                let is_first_failure = !self.first_failure_logged.swap(true, Ordering::SeqCst);
+                if was_succeeding || is_first_failure {
+                    warn!("coordinator registration failed after all retries: {e}");
+                } else {
+                    debug!("coordinator registration retry failed: {e}");
+                }
+            }
         }
         res.is_ok()
     }

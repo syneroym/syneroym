@@ -549,7 +549,7 @@ Live `TODO`/`FIXME` markers that encode a real deferral. Remove both the code ma
 
 ## Recently resolved
 
-| **A coordinator registers itself once, so its registry record expires after 2 hours** | M06D **A3** (2026-10-12): The Iroh coordinator now spawns a background keep-alive task (`crates/coordinator_iroh/src/registration.rs`) that registers the coordinator under its node DID (`did:key:...`) at boot and re-registers periodically every hour on success, or retries every 60 seconds on error, keeping the registry record alive indefinitely. | 2026-10-12 | `crates/coordinator_iroh/src/registration.rs`; `crates/coordinator_iroh/tests/info_endpoint.rs` |
+| **A coordinator registers itself once, so its registry record expires after 2 hours** | M06D **A3** (2026-10-12): The Iroh coordinator now spawns a background keep-alive task (`crates/coordinator_iroh/src/registration.rs`) that registers the coordinator under the `did:key` of its per-start Iroh key (not the host node DID) at boot and re-registers periodically every hour on success, or retries every 60 seconds on error, keeping the registry record alive indefinitely. | 2026-10-12 | `crates/coordinator_iroh/src/registration.rs`; `crates/coordinator_iroh/tests/info_endpoint.rs` |
 
 | **Quality gates only failed when a number got worse, so gains could be given back** | Duplication, oversized-test-file limits and the `too_many_lines` cap now fail in both directions: a change that improves a number must record the new value in the same change (`AGENTS.md` "Mandatory Ratchet Update"). The duplication ceiling is read from `cargo dupes stats` and stops at a floor. | 2026-10-05 | `xtask/src/duplication.rs`; `xtask/src/file_lengths.rs`; `xtask/oversized-test-files.txt` |
 

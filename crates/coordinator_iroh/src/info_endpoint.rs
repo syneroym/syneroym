@@ -14,7 +14,7 @@ use syneroym_core::coordinator_info::{
     ConnectionsInfo, CoordinatorInfo, CoordinatorStatus, INFO_PATH, RegistryInfo, RelayInfo,
     TlsInfo,
 };
-use tokio::sync::watch;
+use tokio::{sync::watch, task};
 use x509_parser::{
     pem::parse_x509_pem,
     prelude::{FromDer, X509Certificate},
@@ -60,7 +60,8 @@ fn get_cert_expiry_days(path: &Path) -> Option<i64> {
 pub(crate) fn relay_client_count(metrics: &RelayServerMetrics) -> u64 {
     // Read disconnects first: a connection's disconnect is counted after its
     // accept, so this order does not see a disconnect without its accept.
-    // The counters are relaxed atomics, so still never go below zero.
+    // The counters are relaxed atomics, so the order is not guaranteed;
+    // `saturating_sub` keeps the result at zero or above.
     let disconnects = metrics.disconnects.get();
     metrics.accepts.get().saturating_sub(disconnects)
 }
@@ -74,11 +75,22 @@ pub(crate) fn relay_status(clients: Option<u64>, cap: Option<u64>) -> Coordinato
 
 pub(crate) async fn get_info(State(state): State<Arc<InfoState>>) -> Json<CoordinatorInfo> {
     let relay_clients = state.relay_metrics.as_deref().map(relay_client_count);
-    let tls = state
-        .tls_cert_path
-        .as_deref()
-        .filter(|path| path.exists())
-        .map(|path| TlsInfo { cert_expiry_days: get_cert_expiry_days(path) });
+    let tls = match &state.tls_cert_path {
+        Some(path) => {
+            let path = path.clone();
+            task::spawn_blocking(move || {
+                if path.exists() {
+                    Some(TlsInfo { cert_expiry_days: get_cert_expiry_days(&path) })
+                } else {
+                    None
+                }
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+        None => None,
+    };
 
     Json(CoordinatorInfo {
         endpoint_addr_bytes: state.endpoint_addr_bytes.clone(),

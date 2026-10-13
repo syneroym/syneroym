@@ -111,6 +111,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `access = "passport"` (and the combined form); a run-time access function that reads the lease table.
 - `/v1/home-relay/challenge` and `/register` on the info server; refuse to start with passport access and no TLS (`P-10`). The test harness running the info server with TLS is verified by `crates/coordinator_iroh/tests/tls_rotation.rs`.
 - `/v1/info` `identity` reports `null` until B2 passes the host substrate's node DID and controller into the info server.
+- `spawn_http_info_server` takes a ready `axum::Router`; B2 merges its passport routes into it.
 - Decide whether the coordinator's own endpoint is admitted on its own relay with passport access.
 - Leases survive a restart; deny by id; `roymctl coordinator passport deny` and `leases` (`P-4` to `P-6`, `P-8`, `H-1` to `H-3`).
 

@@ -98,3 +98,14 @@ async fn rejects_zero_max_relay_clients() {
     let err = result.unwrap_err().to_string();
     assert!(err.contains("max_relay_clients"), "unexpected error message: {err}");
 }
+
+#[tokio::test]
+async fn accepts_one_max_relay_clients_with_warning() {
+    let mut config = test_config();
+    let iroh_cfg = config.roles.coordinator.as_mut().unwrap().iroh.as_mut().unwrap();
+    iroh_cfg.enable_relay = true;
+    iroh_cfg.max_relay_clients = Some(1);
+
+    let result = CoordinatorIroh::init(&config).await;
+    assert!(result.is_ok(), "expected coordinator to boot with max_relay_clients = 1");
+}

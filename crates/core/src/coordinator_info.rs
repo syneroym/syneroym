@@ -60,7 +60,9 @@ pub struct RegistryInfo {
     /// The DID the record is registered under. New at every start.
     pub did: String,
     /// The registry accepted the last registration. Registration repeats
-    /// every hour after a success and every minute after a failure.
+    /// every hour after a success and every minute after a failure. This
+    /// does not reflect records lost if the community registry restarted
+    /// in the meantime.
     pub registered: bool,
 }
 
