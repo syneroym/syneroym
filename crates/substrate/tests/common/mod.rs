@@ -18,6 +18,9 @@
 
 mod node;
 
+/// Stand-ins for coordinators and registries, for the home-relay tests.
+mod relay;
+
 /// Supervisor-family test fixtures. Gated on the `supervisor` feature (in the
 /// default set) because it pulls the inventory type from the optional
 /// `syneroym-app-supervisor` crate.
@@ -48,6 +51,8 @@ pub use deploy::*;
 pub use fixtures::*;
 #[allow(unused_imports)]
 pub use node::*;
+#[allow(unused_imports)]
+pub use relay::*;
 use syneroym_core::{
     config::{ClientGatewayRole, LogTarget, SubstrateConfig},
     dht_registry::EndpointMechanism,

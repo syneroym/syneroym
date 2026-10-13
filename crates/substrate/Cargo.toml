@@ -49,6 +49,8 @@ iroh.workspace = true
 axum.workspace = true
 dashmap.workspace = true
 futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
 
 
 [features]
@@ -125,6 +127,6 @@ syneroym-signed-record.workspace = true
 syneroym-roym-core.workspace = true
 async-trait.workspace = true
 hex.workspace = true
-reqwest.workspace = true
+tracing-subscriber.workspace = true
 rusqlite.workspace = true
 iroh-relay.workspace = true

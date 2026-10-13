@@ -92,7 +92,9 @@ registry_url = "http://localhost:7961"
 # Iroh communication configuration for uplink/signaling
 [parent_coordinator.iroh]
 # The relay/signaling URL for Iroh connections. Optional.
-# When unset, the node starts with an empty relay map and dials peers through their relays.
+# When unset, the node picks a relay from the coordinator list of `substrate.registry_url`.
+# It is in degraded mode (an empty relay map: it dials peers through their relays, but
+# no peer can reach it through a relay) only when that gives no usable relay.
 url = "http://localhost:7964"
 
 # WebRTC communication configuration

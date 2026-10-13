@@ -124,7 +124,7 @@ async fn setup_router(
     Arc<ConversationService>,
     Option<String>,
 )> {
-    let relay_source = HomeRelaySource::from_config(&config.parent_coordinator.iroh)?;
+    let relay_source = HomeRelaySource::from_config(config)?;
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
@@ -169,7 +169,7 @@ async fn setup_router(
     .await?;
 
     if let Some(handle) = router.home_relay() {
-        home_relay::connect_home_relay(handle, relay_source);
+        home_relay::connect_home_relay(handle, relay_source, service_id);
     }
 
     // `ProxyRouter` (the sole `ServiceProxy`) exists only now -- wired the
