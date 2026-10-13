@@ -316,3 +316,20 @@ async fn saved_choice_is_probed_again_when_the_fetched_list_moves_its_info_url()
     assert_eq!(io.sets(), slice::from_ref(&a.url), "the node did not move to another relay");
     run.stop().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn saved_choice_is_not_probed_again_when_only_the_operator_changes() {
+    let a = entry(1);
+    let mut renamed = a.clone();
+    renamed.operator = "New operator".into();
+    let io = FakeIo::new();
+    io.confirm(&a);
+    // `a` does not answer. A new operator name does not change that.
+    io.serve(slice::from_ref(&renamed), 3600);
+    let run = start(&io, Some(cache(slice::from_ref(&a), 10, 100, Some(&a))));
+
+    secs(1).await;
+
+    assert_eq!(io.probes(&a), 1, "one probe of the saved choice, none more");
+    run.stop().await;
+}

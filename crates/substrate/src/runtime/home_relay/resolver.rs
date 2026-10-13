@@ -340,9 +340,11 @@ impl<I: ResolverIo> Resolver<I> {
         tried: &mut HashSet<String>,
     ) -> Result<bool, Closed> {
         let entries = list.entries.clone();
-        let before = self.chosen().cloned();
+        let before = self.chosen().map(|c| c.info_url.clone());
         self.store_list(list);
-        if self.chosen() != before.as_ref() {
+        // Only `info_url` matters: it is the one field a probe uses.
+        let info_url_moved = self.chosen().is_some_and(|c| before.as_deref() != Some(&c.info_url));
+        if info_url_moved {
             if let Some(url) = self.chosen().map(|c| c.url.clone()) {
                 tried.remove(&url);
             }
