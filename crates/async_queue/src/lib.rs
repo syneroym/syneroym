@@ -36,8 +36,8 @@ pub use crate::{
         DedupDecision, DedupStore, FirstOutcome,
     },
     queue::{
-        DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, Queue, QueueConfig, QueueItem, TxQueue,
-        backoff_before_wait,
+        DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, MAX_PARK_CONTEXT_BYTES, Parked, Queue,
+        QueueConfig, QueueItem, TxQueue, backoff_before_wait,
     },
     saga::{
         CompensationOutcome, MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, SagaConfig, SagaHead,

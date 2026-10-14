@@ -116,6 +116,9 @@ pub struct QueueItem {
     /// item whose `claim_count` reaches the same attempt budget, closing
     /// the poison-pill gap that `attempts` alone leaves open.
     ///
+    /// A claim on a parked item does not advance this count. A parked item
+    /// is outside the attempt budget and bounded by its deadline instead.
+    ///
     /// **Also counts a claim a caller abandoned on purpose**, not only a
     /// crash: the supervisor's own worker (`app_supervisor::service::
     /// queue_worker_tick`) races cancellation into a delivery via
@@ -129,6 +132,37 @@ pub struct QueueItem {
     /// 54 by default) to matter -- an operator sees a real, replayable dead
     /// letter either way, never silent loss.
     pub claim_count: u32,
+    /// `Some` while the item is parked. Always `None` for an item from
+    /// [`Queue::claim_due`]; always `Some` for one from
+    /// [`Queue::claim_parked_due`]. [`Queue::all`] returns both kinds.
+    pub parked: Option<Parked>,
+}
+
+/// How a parked item waits: outside the attempt budget, on its own poll
+/// interval, until its own deadline. A parked item is never returned by
+/// [`Queue::claim_due`]; only [`Queue::claim_parked_due`] returns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Parked {
+    /// When the item was first parked (Unix ms). A re-park keeps it.
+    pub parked_at: i64,
+    /// Unix ms. [`Queue::park`] schedules the next poll no later than
+    /// this. A claimed item that the caller leaves unresolved comes back
+    /// only after the visibility timeout, which can be after this time.
+    pub deadline_at: i64,
+    /// How long to wait before polling the item again.
+    pub poll_interval_ms: u64,
+    /// The caller's own data for this wait, for example a deposit
+    /// receipt. Opaque to this crate, like the payload.
+    pub context: Vec<u8>,
+}
+
+impl Parked {
+    /// Whether the deadline has come. The queue does not act on it; the
+    /// caller decides to unpark or to fail the item.
+    #[must_use]
+    pub fn is_past_deadline(&self, now: i64) -> bool {
+        now >= self.deadline_at
+    }
 }
 
 /// A terminally failed item, as [`Queue::dead_letters`] lists it.
