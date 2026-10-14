@@ -633,9 +633,10 @@ Test names describe behaviour; no planning ids.
 
 ## 8. Docs close-out
 
-This plan file is deleted after the slice (the project keeps only the change
-doc). So every decision and open point below must be copied into a document
-that stays. Nothing in §2 or §9 may live only in this file.
+This plan stays in the milestone folder, like the other slice plans. But C5
+and later slices read the change doc and task.md, not this plan. So every
+decision and open point that a later slice needs is copied into those docs
+below. Nothing in §2 or §9 that matters after C1 may live only in this file.
 
 - **Living docs.** No living doc describes the queue's internal states. The
   user-visible states (`pending`, `delivered`, `failed`) do not change until C5.
@@ -699,7 +700,6 @@ that stays. Nothing in §2 or §9 may live only in this file.
   anyway: two existing rows (§ around lines 310 and 323) cite
   `crates/async_queue/src/queue/mod.rs`, which no longer exists (it is
   `queue.rs`). Fix the path only; do not change the rows otherwise.
-- **This plan file**: delete it at the end, after the copies above are done.
 
 ## 9. Ambiguous or stale points found while planning
 
