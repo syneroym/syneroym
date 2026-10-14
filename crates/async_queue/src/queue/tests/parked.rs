@@ -4,7 +4,6 @@ use anyhow::anyhow;
 use rusqlite::{Connection, OptionalExtension};
 
 use super::*;
-use crate::queue::parked::MAX_PARK_CONTEXT_BYTES;
 
 #[test]
 fn a_parked_item_is_never_returned_by_claim_due() {
@@ -443,6 +442,42 @@ fn park_inside_a_transaction_commits_with_the_owners_write() {
     assert!(item1_after.parked.is_some(), "rolled back unpark must leave item parked");
 }
 
+fn index_exists(conn: &Connection, index_name: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        [index_name],
+        |_| Ok(()),
+    )
+    .optional()
+    .unwrap()
+    .is_some()
+}
+
+fn create_pre_park_outbox(conn: &Connection, queue_key: &str) {
+    conn.execute_batch(
+        "CREATE TABLE outbox (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_key   TEXT NOT NULL,
+            queue_key   TEXT NOT NULL,
+            payload     BLOB NOT NULL,
+            attempts    INTEGER NOT NULL DEFAULT 0,
+            claim_count INTEGER NOT NULL DEFAULT 0,
+            visible_at  INTEGER NOT NULL,
+            created_at  INTEGER NOT NULL
+         );
+         CREATE INDEX idx_outbox_visible_at ON outbox(visible_at);
+         CREATE INDEX idx_outbox_queue_key ON outbox(queue_key);",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO outbox (group_key, queue_key, payload, attempts, claim_count, visible_at, \
+         created_at)
+         VALUES ('g', ?1, X'010203', 0, 0, 1000, 1000)",
+        [queue_key],
+    )
+    .unwrap();
+}
+
 #[test]
 fn an_outbox_created_without_park_columns_gains_them_on_open() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -451,24 +486,7 @@ fn an_outbox_created_without_park_columns_gains_them_on_open() {
     // Open raw rusqlite connection and create old 8-column schema
     {
         let conn = Connection::open(&db_path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE outbox (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                group_key   TEXT NOT NULL,
-                queue_key   TEXT NOT NULL,
-                payload     BLOB NOT NULL,
-                attempts    INTEGER NOT NULL DEFAULT 0,
-                claim_count INTEGER NOT NULL DEFAULT 0,
-                visible_at  INTEGER NOT NULL,
-                created_at  INTEGER NOT NULL
-             );
-             CREATE INDEX idx_outbox_visible_at ON outbox(visible_at);
-             CREATE INDEX idx_outbox_queue_key ON outbox(queue_key);
-             INSERT INTO outbox (group_key, queue_key, payload, attempts, claim_count, visible_at, \
-             created_at)
-             VALUES ('g', 'k', X'010203', 0, 0, 1000, 1000);",
-        )
-        .unwrap();
+        create_pre_park_outbox(&conn, "k");
     }
 
     // First Queue::open upgrades schema
@@ -484,41 +502,14 @@ fn an_outbox_created_without_park_columns_gains_them_on_open() {
 
         // Old index idx_outbox_visible_at was dropped
         let conn = queue.conn.lock().unwrap();
-        let old_index_exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = \
-                 'idx_outbox_visible_at'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()
-            .unwrap()
-            .is_some();
-        assert!(!old_index_exists, "old index must be dropped");
+        assert!(!index_exists(&conn, "idx_outbox_visible_at"), "old index must be dropped");
 
         // Both partial indexes that replaced it must exist.
-        let idx_due: bool = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_outbox_due'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()
-            .unwrap()
-            .is_some();
-        assert!(idx_due, "idx_outbox_due must be created on upgrade");
-
-        let idx_parked_due: bool = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = \
-                 'idx_outbox_parked_due'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()
-            .unwrap()
-            .is_some();
-        assert!(idx_parked_due, "idx_outbox_parked_due must be created on upgrade");
+        assert!(index_exists(&conn, "idx_outbox_due"), "idx_outbox_due must be created on upgrade");
+        assert!(
+            index_exists(&conn, "idx_outbox_parked_due"),
+            "idx_outbox_parked_due must be created on upgrade"
+        );
     }
 
     // Second open proves the ALTER is idempotent
@@ -622,25 +613,8 @@ fn a_non_terminal_fail_on_parked_row_gives_correct_claim_count_on_next_claim() {
 #[test]
 fn from_connection_on_a_database_with_other_tables() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(
-        "CREATE TABLE unrelated (x INTEGER);
-         CREATE TABLE outbox (
-             id          INTEGER PRIMARY KEY AUTOINCREMENT,
-             group_key   TEXT NOT NULL,
-             queue_key   TEXT NOT NULL,
-             payload     BLOB NOT NULL,
-             attempts    INTEGER NOT NULL DEFAULT 0,
-             claim_count INTEGER NOT NULL DEFAULT 0,
-             visible_at  INTEGER NOT NULL,
-             created_at  INTEGER NOT NULL
-         );
-         CREATE INDEX idx_outbox_visible_at ON outbox(visible_at);
-         CREATE INDEX idx_outbox_queue_key ON outbox(queue_key);
-         INSERT INTO outbox (group_key, queue_key, payload, attempts, claim_count, visible_at, \
-         created_at)
-         VALUES ('g', 'k-old', X'010203', 0, 0, 1000, 1000);",
-    )
-    .unwrap();
+    conn.execute("CREATE TABLE unrelated (x INTEGER);", []).unwrap();
+    create_pre_park_outbox(&conn, "k-old");
 
     let queue = Queue::from_connection(Arc::new(Mutex::new(conn)), config()).unwrap();
 
@@ -657,26 +631,14 @@ fn from_connection_on_a_database_with_other_tables() {
 
     // Both new partial indexes exist
     let conn_guard = queue.conn.lock().unwrap();
-    let idx_due: bool = conn_guard
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_outbox_due'",
-            [],
-            |_| Ok(()),
-        )
-        .optional()
-        .unwrap()
-        .is_some();
-    assert!(idx_due, "idx_outbox_due must exist after upgrade via from_connection");
-    let idx_parked_due: bool = conn_guard
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_outbox_parked_due'",
-            [],
-            |_| Ok(()),
-        )
-        .optional()
-        .unwrap()
-        .is_some();
-    assert!(idx_parked_due, "idx_outbox_parked_due must exist after upgrade via from_connection");
+    assert!(
+        index_exists(&conn_guard, "idx_outbox_due"),
+        "idx_outbox_due must exist after upgrade via from_connection"
+    );
+    assert!(
+        index_exists(&conn_guard, "idx_outbox_parked_due"),
+        "idx_outbox_parked_due must exist after upgrade via from_connection"
+    );
 }
 
 #[test]

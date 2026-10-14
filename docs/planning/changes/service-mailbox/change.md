@@ -233,6 +233,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - Where is mailbox eligibility declared for a guest method: the app manifest, or the WIT interface? Find where `idempotency_key` and queued-call rules are declared. Resolve before the sender task.
 - Does the substrate know it was woken (for `pull-now`) on mobile, or does the shell call it?
 - Time-to-live, size and rate values above are starting points. Confirm after a first test.
+- Parked rows count toward `max_pending_rows` (10 000). With a 7-day mailbox time-to-live, a sender with many sleeping receivers can fill its proxy outbox with parked rows and refuse new calls. Keep this bound, or give parked rows their own limit? (Resolve before the sender task.)
 - How should the sender outbox resolve a past-deadline parked claim when a poll fails repeatedly or after expiry: should it unpark back to direct attempts, fail the row terminally, or apply the 30-day Conversation age limit on the parked path? (The async queue crate never dead-letters or unparks past-deadline parked items by itself.)
 - How should worker concurrency be fenced when polling parked rows to prevent a second claim from racing with a slow poll response and clearing parked state via non-terminal fail?
 
