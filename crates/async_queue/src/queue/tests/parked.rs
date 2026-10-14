@@ -1,7 +1,10 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::anyhow;
 use rusqlite::{Connection, OptionalExtension};
 
 use super::*;
+use crate::queue::parked::MAX_PARK_CONTEXT_BYTES;
 
 #[test]
 fn a_parked_item_is_never_returned_by_claim_due() {
@@ -44,10 +47,10 @@ fn a_parked_claim_is_hidden_for_the_visibility_timeout() {
     let claimed = queue.claim_parked_due(2_000, 10).unwrap();
     assert_eq!(claimed.len(), 1);
 
-    // Visibility timeout is 120_000 ms from config()
-    assert!(queue.claim_parked_due(2_000 + 120_000 - 1, 10).unwrap().is_empty());
+    let visibility_timeout = config().visibility_timeout_ms as i64;
+    assert!(queue.claim_parked_due(2_000 + visibility_timeout - 1, 10).unwrap().is_empty());
 
-    let reclaimed = queue.claim_parked_due(2_000 + 120_000, 10).unwrap();
+    let reclaimed = queue.claim_parked_due(2_000 + visibility_timeout, 10).unwrap();
     assert_eq!(reclaimed.len(), 1);
     assert_eq!(reclaimed[0].id, id);
 }
@@ -121,16 +124,29 @@ fn each_claim_returns_only_its_own_kind() {
     assert_eq!(due_parked.len(), 1);
     assert_eq!(due_parked[0].id, id_parked);
 
-    // Now test with two rows of each kind and limit = 1
-    let _id_pending2 = queue.enqueue("g", "k-pending-2", b"p", 3_000).unwrap();
-    let id_parked2 = queue.enqueue("g", "k-parked-2", b"p", 3_000).unwrap();
-    queue.park(id_parked2, 3_000, 500, 10_000, b"ctx").unwrap();
+    // Now test with two fresh rows of each kind, all due, and limit = 1
+    let _p1 = queue.enqueue("g", "lim-pending-1", b"p", 3_000).unwrap();
+    let _p2 = queue.enqueue("g", "lim-pending-2", b"p", 3_000).unwrap();
+    let pk1 = queue.enqueue("g", "lim-parked-1", b"p", 3_000).unwrap();
+    queue.park(pk1, 3_000, 500, 10_000, b"ctx").unwrap();
+    let pk2 = queue.enqueue("g", "lim-parked-2", b"p", 3_000).unwrap();
+    queue.park(pk2, 3_000, 500, 10_000, b"ctx").unwrap();
 
-    let lim_pending = queue.claim_due(4_000, 1).unwrap();
-    assert_eq!(lim_pending.len(), 1);
+    let lim_pending_1 = queue.claim_due(4_000, 1).unwrap();
+    assert_eq!(lim_pending_1.len(), 1);
+    let lim_pending_2 = queue.claim_due(4_000, 1).unwrap();
+    assert_eq!(lim_pending_2.len(), 1);
+    assert_ne!(lim_pending_1[0].id, lim_pending_2[0].id);
+    let remaining_pending = queue.claim_due(4_000, 1).unwrap();
+    assert!(remaining_pending.is_empty());
 
-    let lim_parked = queue.claim_parked_due(4_000, 1).unwrap();
-    assert_eq!(lim_parked.len(), 1);
+    let lim_parked_1 = queue.claim_parked_due(4_000, 1).unwrap();
+    assert_eq!(lim_parked_1.len(), 1);
+    let lim_parked_2 = queue.claim_parked_due(4_000, 1).unwrap();
+    assert_eq!(lim_parked_2.len(), 1);
+    assert_ne!(lim_parked_1[0].id, lim_parked_2[0].id);
+    let remaining_parked = queue.claim_parked_due(4_000, 1).unwrap();
+    assert!(remaining_parked.is_empty());
 }
 
 #[test]
@@ -479,6 +495,30 @@ fn an_outbox_created_without_park_columns_gains_them_on_open() {
             .unwrap()
             .is_some();
         assert!(!old_index_exists, "old index must be dropped");
+
+        // Both partial indexes that replaced it must exist.
+        let idx_due: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_outbox_due'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+        assert!(idx_due, "idx_outbox_due must be created on upgrade");
+
+        let idx_parked_due: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = \
+                 'idx_outbox_parked_due'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .unwrap()
+            .is_some();
+        assert!(idx_parked_due, "idx_outbox_parked_due must be created on upgrade");
     }
 
     // Second open proves the ALTER is idempotent
@@ -488,4 +528,166 @@ fn an_outbox_created_without_park_columns_gains_them_on_open() {
         assert_eq!(all.len(), 1);
         assert!(all[0].parked.is_some());
     }
+}
+
+#[test]
+fn park_context_above_limit_is_refused() {
+    let queue = Queue::open_in_memory(config()).unwrap();
+    let id = queue.enqueue("g", "k", b"p", 1_000).unwrap();
+    let big = vec![0u8; MAX_PARK_CONTEXT_BYTES + 1];
+    assert!(
+        queue.park(id, 1_000, 1_000, 5_000, &big).is_err(),
+        "park_context above {MAX_PARK_CONTEXT_BYTES} bytes must be refused"
+    );
+
+    // Exactly at the limit is accepted.
+    let at_limit = vec![0u8; MAX_PARK_CONTEXT_BYTES];
+    queue.park(id, 1_000, 1_000, 5_000, &at_limit).unwrap();
+}
+
+#[test]
+fn park_after_deadline_is_refused_on_an_already_parked_row() {
+    let queue = Queue::open_in_memory(config()).unwrap();
+    let id = queue.enqueue("g", "k", b"p", 1_000).unwrap();
+    queue.park(id, 1_000, 1_000, 5_000, b"ctx").unwrap();
+
+    // Claim the parked item, as a poll worker would.
+    let claimed = queue.claim_parked_due(2_000, 10).unwrap();
+    assert_eq!(claimed.len(), 1);
+    // At or past the deadline, re-parking is refused.
+    assert!(queue.park(id, 5_000, 1_000, 5_000, b"ctx").is_err());
+    assert!(queue.park(id, 6_000, 1_000, 5_000, b"ctx").is_err());
+}
+
+#[test]
+fn an_unresolved_parked_claim_past_deadline_returns_after_visibility_timeout() {
+    // Documents the current behaviour: the crate does not act at the
+    // parked deadline. A caller that leaves a past-deadline item unresolved
+    // gets it back after the visibility timeout, not at the deadline itself.
+    // The caller must resolve every past-deadline parked claim it receives.
+    let queue = Queue::open_in_memory(config()).unwrap();
+    let id = queue.enqueue("g", "k", b"p", 1_000).unwrap();
+    queue.park(id, 1_000, 1_000, 3_000, b"ctx").unwrap();
+
+    // Claim at deadline -- deadline is 3_000, poll is 1_000, visible_at = 2_000.
+    let claimed = queue.claim_parked_due(3_000, 10).unwrap();
+    assert_eq!(claimed.len(), 1);
+    let parked = claimed[0].parked.as_ref().unwrap();
+    assert!(parked.is_past_deadline(3_000));
+
+    // The caller does not resolve it. The item is invisible during the
+    // visibility window and comes back after it.
+    let visibility_ms = config().visibility_timeout_ms as i64;
+    assert!(queue.claim_parked_due(3_000 + visibility_ms - 1, 10).unwrap().is_empty());
+    let reclaimed = queue.claim_parked_due(3_000 + visibility_ms, 10).unwrap();
+    assert_eq!(
+        reclaimed.len(),
+        1,
+        "unresolved past-deadline item returns after visibility timeout"
+    );
+    assert_eq!(reclaimed[0].id, id);
+}
+
+#[test]
+fn a_non_terminal_fail_on_parked_row_gives_correct_claim_count_on_next_claim() {
+    // After park: claim_count was reduced by 1 (from the original pending
+    // claim that led to park). A non-terminal fail on the parked item
+    // clears the park and makes it pending again, without advancing
+    // claim_count further.
+    let queue = Queue::open_in_memory(config()).unwrap();
+    let id = queue.enqueue("g", "k", b"p", 1_000).unwrap();
+
+    // First pending claim: claim_count becomes 1.
+    queue.claim_due(1_000, 10).unwrap();
+    // Park: claim_count drops back to 0.
+    queue.park(id, 1_000, 1_000, 100_000, b"ctx").unwrap();
+
+    // Parked claim: claim_count stays at 0 (parked claims don't advance it).
+    queue.claim_parked_due(2_000, 10).unwrap();
+
+    // Non-terminal fail clears park and schedules retry.
+    let outcome = queue.fail(id, 2_000, "err", false).unwrap();
+    let FailOutcome::Retrying { next_attempt_at } = outcome else {
+        panic!("expected Retrying");
+    };
+
+    // Next pending claim: attempts = 1, claim_count = 1.
+    let claimed = queue.claim_due(next_attempt_at, 10).unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].attempts, 1, "fail advanced attempts");
+    assert_eq!(claimed[0].claim_count, 1, "pending claim advanced claim_count from 0 to 1");
+    assert!(claimed[0].parked.is_none(), "item must be pending after fail cleared the park");
+}
+
+#[test]
+fn from_connection_on_a_database_with_other_tables() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE unrelated (x INTEGER);
+         CREATE TABLE outbox (
+             id          INTEGER PRIMARY KEY AUTOINCREMENT,
+             group_key   TEXT NOT NULL,
+             queue_key   TEXT NOT NULL,
+             payload     BLOB NOT NULL,
+             attempts    INTEGER NOT NULL DEFAULT 0,
+             claim_count INTEGER NOT NULL DEFAULT 0,
+             visible_at  INTEGER NOT NULL,
+             created_at  INTEGER NOT NULL
+         );
+         CREATE INDEX idx_outbox_visible_at ON outbox(visible_at);
+         CREATE INDEX idx_outbox_queue_key ON outbox(queue_key);
+         INSERT INTO outbox (group_key, queue_key, payload, attempts, claim_count, visible_at, \
+         created_at)
+         VALUES ('g', 'k-old', X'010203', 0, 0, 1000, 1000);",
+    )
+    .unwrap();
+
+    let queue = Queue::from_connection(Arc::new(Mutex::new(conn)), config()).unwrap();
+
+    // The existing item was upgraded and can be claimed and parked
+    let claimed = queue.claim_due(1_000, 10).unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].queue_key, "k-old");
+    assert!(claimed[0].parked.is_none());
+
+    queue.park(claimed[0].id, 1_000, 1_000, 5_000, b"ctx").unwrap();
+    let all = queue.all().unwrap();
+    assert_eq!(all.len(), 1);
+    assert!(all[0].parked.is_some());
+
+    // Both new partial indexes exist
+    let conn_guard = queue.conn.lock().unwrap();
+    let idx_due: bool = conn_guard
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_outbox_due'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap()
+        .is_some();
+    assert!(idx_due, "idx_outbox_due must exist after upgrade via from_connection");
+    let idx_parked_due: bool = conn_guard
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_outbox_parked_due'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .unwrap()
+        .is_some();
+    assert!(idx_parked_due, "idx_outbox_parked_due must exist after upgrade via from_connection");
+}
+
+#[test]
+fn deferring_an_unclaimed_item_keeps_claim_count_at_zero() {
+    let queue = Queue::open_in_memory(config()).unwrap();
+    let id = queue.enqueue("g", "k", b"payload", 1_000).unwrap();
+
+    // Calling defer on an item that was never claimed must floor at 0
+    queue.defer(id, 2_000).unwrap();
+
+    let all = queue.all().unwrap();
+    assert_eq!(all[0].claim_count, 0, "claim_count must floor at 0 on defer");
+    assert_eq!(all[0].attempts, 0);
 }

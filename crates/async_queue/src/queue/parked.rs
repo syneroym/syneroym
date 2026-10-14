@@ -8,6 +8,12 @@ use rusqlite::{Connection, Transaction, params};
 
 use super::{CLEAR_PARK, ClaimKind, Queue, QueueItem, TxQueue};
 
+/// The maximum size of the `context` blob passed to [`Queue::park`]. The
+/// context comes from an external party (for example a mailbox deposit
+/// receipt), so a bound here limits how large a hostile or broken node
+/// can make each parked row.
+pub const MAX_PARK_CONTEXT_BYTES: usize = 4096;
+
 #[allow(clippy::expect_used)] // same lock-poisoning reasoning as queue.rs
 impl Queue {
     /// Parks an item, or updates an item that is already parked.
@@ -85,6 +91,11 @@ fn park_on(
 ) -> Result<()> {
     ensure!(poll_interval_ms > 0, "park poll interval must be above zero");
     ensure!(deadline_at > now, "park deadline {deadline_at} is not after now {now}");
+    ensure!(
+        context.len() <= MAX_PARK_CONTEXT_BYTES,
+        "park_context is {} bytes, exceeds {MAX_PARK_CONTEXT_BYTES}-byte limit",
+        context.len()
+    );
     let poll = i64::try_from(poll_interval_ms).unwrap_or(i64::MAX);
     let visible_at = now.saturating_add(poll).min(deadline_at);
     // SQLite evaluates every SET expression against the row as it was

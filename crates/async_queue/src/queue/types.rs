@@ -149,6 +149,7 @@ pub struct Parked {
     /// this. A claimed item that the caller leaves unresolved comes back
     /// only after the visibility timeout, which can be after this time.
     pub deadline_at: i64,
+    /// How long to wait before polling the item again.
     pub poll_interval_ms: u64,
     /// The caller's own data for this wait, for example a deposit
     /// receipt. Opaque to this crate, like the payload.

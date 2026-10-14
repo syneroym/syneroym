@@ -233,7 +233,8 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - Where is mailbox eligibility declared for a guest method: the app manifest, or the WIT interface? Find where `idempotency_key` and queued-call rules are declared. Resolve before the sender task.
 - Does the substrate know it was woken (for `pull-now`) on mobile, or does the shell call it?
 - Time-to-live, size and rate values above are starting points. Confirm after a first test.
-- Parked rows count toward `max_pending_rows` (10 000). With a 7-day mailbox time-to-live, a sender with many sleeping receivers can fill its proxy outbox with parked rows and refuse new calls. Keep this bound, or give parked rows their own limit? (Resolve before the sender task.)
+- How should the sender outbox resolve a past-deadline parked claim when a poll fails repeatedly or after expiry: should it unpark back to direct attempts, fail the row terminally, or apply the 30-day Conversation age limit on the parked path? (The async queue crate never dead-letters or unparks past-deadline parked items by itself.)
+- How should worker concurrency be fenced when polling parked rows to prevent a second claim from racing with a slow poll response and clearing parked state via non-terminal fail?
 
 ## Tasks
 
@@ -259,6 +260,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C1-4`: `unpark` keeps `attempts`, and there is no reset. This is what makes a proxy-outbox row that keeps getting `expired` receipts end (that outbox has no age limit).
 - `D-C1-5`: `TxQueue::park` and `TxQueue::unpark` exist. C5 must set the Conversation `deposited` state and park the row in one `Queue::transaction`, because the Conversation worker deletes any row whose message is not `Pending` (`crates/conversation/src/outbox.rs:190`). Inside that closure, C5 must not call `ConversationStore::set_state`, `set_recipient_state` or `restart_pending` (`crates/conversation/src/store/message.rs:612-665`): each one locks the connection mutex that `Queue::transaction` already holds, and a `std::sync::Mutex` locked twice by one thread hangs it forever. C5 needs versions of them that write through the `&Transaction`, as `store/message.rs:73` already does with `tx.execute`. This holds for the `expired` → `unpark` path too.
 - `D-C1-6`: the "Attempt budget" paragraph is partly stale. The Conversation outbox already calls `Queue::defer` for an unreachable peer (`crates/conversation/src/outbox.rs:227`), which charges no attempt and un-counts the claim. So for Conversation only the `Retry` path is bound by the attempt budget; an unreachable peer is bound by `conversation_max_pending_age_secs` (30 days). The parked state is still needed for S-3, its own poll interval and deadline, and S-6.
+- `D-C1-7`: the queue does not act at the parked deadline, and parked claims never advance `claim_count`. A caller that does not resolve a row past its deadline receives it again after each visibility timeout indefinitely. C5 must resolve every past-deadline claim, and must apply the Conversation age limit on the parked path.
 
 ## Close-out
 

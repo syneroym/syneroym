@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 mod parked;
 pub mod types;
 
+pub use parked::MAX_PARK_CONTEXT_BYTES;
 pub use types::{
     DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, Parked, QueueConfig, QueueItem,
 };
@@ -30,9 +31,15 @@ pub struct Queue {
 const CLEAR_PARK: &str =
     "parked_at = NULL, park_deadline = NULL, park_poll_ms = NULL, park_context = NULL";
 
+macro_rules! item_columns {
+    () => {
+        "id, queue_key, payload, attempts, claim_count, parked_at, park_deadline, park_poll_ms, \
+         park_context"
+    };
+}
+
 /// The columns every item read selects, in the order `read_item` expects.
-const ITEM_COLUMNS: &str = "id, queue_key, payload, attempts, claim_count, parked_at, \
-                            park_deadline, park_poll_ms, park_context";
+const ITEM_COLUMNS: &str = item_columns!();
 
 fn read_item(row: &Row<'_>) -> rusqlite::Result<QueueItem> {
     let parked = match row.get::<_, Option<i64>>(6)? {
@@ -63,16 +70,25 @@ enum ClaimKind {
     Parked,
 }
 
+const PENDING_SELECT: &str = concat!(
+    "SELECT ",
+    item_columns!(),
+    " FROM outbox WHERE park_deadline IS NULL AND visible_at <= ?1 ORDER BY visible_at ASC LIMIT \
+     ?2"
+);
+const PARKED_SELECT: &str = concat!(
+    "SELECT ",
+    item_columns!(),
+    " FROM outbox WHERE park_deadline IS NOT NULL AND visible_at <= ?1 ORDER BY visible_at ASC \
+     LIMIT ?2"
+);
+
 impl ClaimKind {
-    fn select_sql(self) -> String {
-        let filter = match self {
-            Self::Pending => "park_deadline IS NULL",
-            Self::Parked => "park_deadline IS NOT NULL",
-        };
-        format!(
-            "SELECT {ITEM_COLUMNS} FROM outbox WHERE {filter} AND visible_at <= ?1 ORDER BY \
-             visible_at ASC LIMIT ?2"
-        )
+    fn select_sql(self) -> &'static str {
+        match self {
+            Self::Pending => PENDING_SELECT,
+            Self::Parked => PARKED_SELECT,
+        }
     }
 
     /// A pending claim counts against `claim_count`; a parked claim does
@@ -95,10 +111,15 @@ const PARK_COLUMNS: [&str; 4] =
     ["parked_at INTEGER", "park_deadline INTEGER", "park_poll_ms INTEGER", "park_context BLOB"];
 
 /// Adds a column to a table that an older build created without it.
-/// "duplicate column name" is the normal result on every open after the
-/// first.
+/// Checks `pragma_table_info` first, and also ignores a "duplicate column name"
+/// error if another connection races to add the same column.
 fn add_column_if_missing(conn: &Connection, table: &str, column_def: &str) -> Result<()> {
-    if let Err(err) = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column_def}"), [])
+    let col_name = column_def.split_whitespace().next().unwrap_or("");
+    let mut stmt =
+        conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?;
+    let exists = stmt.exists(params![col_name])?;
+    if !exists
+        && let Err(err) = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column_def}"), [])
         && !err.to_string().contains("duplicate column name")
     {
         return Err(err.into());
@@ -284,8 +305,8 @@ impl Queue {
     pub fn defer(&self, id: i64, visible_at: i64) -> Result<()> {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         conn.execute(
-            "UPDATE outbox SET visible_at = ?1, claim_count = claim_count - 1 WHERE id = ?2 AND \
-             park_deadline IS NULL",
+            "UPDATE outbox SET visible_at = ?1, claim_count = MAX(claim_count - 1, 0) WHERE id = \
+             ?2 AND park_deadline IS NULL",
             params![visible_at, id],
         )?;
         Ok(())
@@ -388,7 +409,7 @@ impl Queue {
         let conn = self.conn.lock().expect("queue connection lock poisoned");
         let locked_until = now + self.config.visibility_timeout_ms as i64;
         let candidates: Vec<QueueItem> = {
-            let mut stmt = conn.prepare(&kind.select_sql())?;
+            let mut stmt = conn.prepare(kind.select_sql())?;
             stmt.query_map(params![now, limit], read_item)?.collect::<rusqlite::Result<_>>()?
         };
         let mut claimed = Vec::with_capacity(candidates.len());
