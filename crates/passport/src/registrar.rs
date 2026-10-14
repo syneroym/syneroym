@@ -1,0 +1,255 @@
+//! The registration checks of one service for one passport use.
+//!
+//! Registration is two calls. `check` runs every offline check and writes
+//! nothing. The service then runs the DHT revocation check on every chain
+//! edge (it needs the network, so it runs only after the cheap checks
+//! passed), and on success calls `grant`, which runs the deny check, the use
+//! limit count and the lease write under one lock.
+
+use anyhow::{Result, ensure};
+use syneroym_ucan::{Capability, CapabilityToken, ChainVerifyOpts, verify_chain};
+
+use crate::{
+    challenge_store::ChallengeStore,
+    error::RegisterError,
+    issue::{PassportId, ensure_canonical_did},
+    lease_store::{Lease, LeaseStore},
+    passport_use::PassportUse,
+    proof::{Challenge, Proof, SignerBinding},
+};
+
+/// The registration checks of one service for one use.
+#[derive(Debug)]
+pub struct Registrar {
+    use_: PassportUse,
+    host_node_did: String,
+    accepted_roots: Vec<String>,
+    challenges: ChallengeStore,
+    leases: LeaseStore,
+}
+
+/// The result of `Registrar::check`. Only `check` can make one (private
+/// fields), so `grant` never writes a lease for a token that was not checked.
+#[derive(Debug, Clone)]
+pub struct CheckedRegistration {
+    /// The presented child token, with the passport inside.
+    token: CapabilityToken,
+    /// The lease `grant` will write.
+    lease: Lease,
+    /// The use limit read from the passport.
+    limit: Option<u64>,
+}
+
+impl CheckedRegistration {
+    /// The checked token, for the revocation check of every chain edge.
+    #[must_use]
+    pub fn token(&self) -> &CapabilityToken {
+        &self.token
+    }
+
+    /// The lease `grant` will write, for logs.
+    #[must_use]
+    pub fn lease(&self) -> &Lease {
+        &self.lease
+    }
+}
+
+impl Registrar {
+    /// `accepted_roots`: the operator roots this service trusts (the host's
+    /// controller DID and/or its node DID). It must not be empty.
+    pub fn new(
+        use_: PassportUse,
+        host_node_did: String,
+        accepted_roots: Vec<String>,
+        leases: LeaseStore,
+    ) -> Result<Self> {
+        ensure!(!accepted_roots.is_empty(), "a passport service needs at least one accepted root");
+        Ok(Self {
+            use_,
+            host_node_did,
+            accepted_roots,
+            challenges: ChallengeStore::default(),
+            leases,
+        })
+    }
+
+    #[must_use]
+    pub fn passport_use(&self) -> &PassportUse {
+        &self.use_
+    }
+
+    #[must_use]
+    pub fn leases(&self) -> &LeaseStore {
+        &self.leases
+    }
+
+    /// A fresh challenge for the challenge form.
+    pub fn issue_challenge(&self, now_secs: u64) -> Result<Challenge> {
+        self.challenges.issue(now_secs)
+    }
+
+    /// Every offline check: shape, proof of possession, signer binding,
+    /// chain, and the limit value. Writes nothing, except that a challenge
+    /// is used up. The caller then runs the DHT revocation check on
+    /// `checked.token()` (it needs the network) and, if that passes, calls
+    /// `grant`.
+    pub fn check(
+        &self,
+        token: &CapabilityToken,
+        proof: &Proof,
+        binding: &SignerBinding,
+        now_secs: u64,
+    ) -> Result<CheckedRegistration, RegisterError> {
+        let chain = PassportChain::parse(token)?;
+        let proven =
+            proof.verify(&self.challenges, &self.host_node_did, &self.use_, token, now_secs)?;
+        binding.check(proven, chain.subject(), now_secs)?;
+        self.check_chain(&chain, now_secs)?;
+        let limit = chain.count_limit(&self.use_)?;
+        let passport_id =
+            PassportId::of(chain.passport).map_err(|e| RegisterError::Malformed(e.to_string()))?;
+        let lease = Lease {
+            passport_id,
+            owner_did: chain.passport.audience_did.clone(),
+            subject: chain.subject().to_string(),
+            lease_ends_at: chain
+                .leaf
+                .expires_at_secs
+                .min(chain.passport.expires_at_secs)
+                .min(now_secs.saturating_add(self.use_.max_lease_secs)),
+            registered_at: now_secs,
+            // Never the child's facts: an owner could widen a limit there.
+            limits: chain.passport.facts.clone(),
+        };
+        Ok(CheckedRegistration { token: token.clone(), lease, limit })
+    }
+
+    /// The deny check, the use limit count and the lease write, under one
+    /// lock. Call it only after the revocation check passed.
+    pub fn grant(
+        &self,
+        checked: CheckedRegistration,
+        now_secs: u64,
+    ) -> Result<Lease, RegisterError> {
+        // The revocation lookup may take seconds. A token that expired in
+        // that time is refused, so a lease never starts already ended.
+        if now_secs >= checked.lease.lease_ends_at {
+            return Err(RegisterError::Expired);
+        }
+        self.leases.grant(checked.lease.clone(), checked.limit, now_secs)?;
+        Ok(checked.lease)
+    }
+
+    fn wrong_capability(&self) -> RegisterError {
+        RegisterError::WrongCapability {
+            ability: self.use_.ability.to_string(),
+            resource: self.use_.resource(&self.host_node_did).0,
+        }
+    }
+
+    fn is_root(&self, issuer: &str) -> bool {
+        self.accepted_roots.iter().any(|r| r == issuer)
+    }
+
+    /// The chain checks. The explicit checks come before `verify_chain`,
+    /// because `verify_chain` returns an empty grant (not an error) for an
+    /// untrusted root or a broken link, and each case needs its own error.
+    fn check_chain(&self, chain: &PassportChain<'_>, now_secs: u64) -> Result<(), RegisterError> {
+        let (passport, leaf) = (chain.passport, chain.leaf);
+        if !self.is_root(&passport.issuer_did) {
+            return Err(RegisterError::UntrustedRoot);
+        }
+        if passport.audience_did != leaf.issuer_did {
+            return Err(RegisterError::BrokenChain);
+        }
+        if ![passport, leaf]
+            .iter()
+            .all(|t| self.use_.names_exactly(&t.capabilities[0], &self.host_node_did))
+        {
+            return Err(self.wrong_capability());
+        }
+        // Checked here, not left to `verify_chain`: when the owner is also
+        // an accepted root, `verify_chain` roots the child token on its own
+        // and never reads the passport's caveat.
+        if !passport.capabilities[0].can_delegate() {
+            return Err(RegisterError::InvalidChain("the passport forbids delegation".into()));
+        }
+        if now_secs >= passport.expires_at_secs || now_secs >= leaf.expires_at_secs {
+            return Err(RegisterError::Expired);
+        }
+        self.verify_signatures(chain, now_secs)
+    }
+
+    /// `verify_chain` checks every signature (the passport's too, also when
+    /// the leaf is rooted on its own), the not-before times and the anchor
+    /// rule.
+    fn verify_signatures(
+        &self,
+        chain: &PassportChain<'_>,
+        now_secs: u64,
+    ) -> Result<(), RegisterError> {
+        let is_root = |issuer: &str, cap: &Capability| {
+            self.is_root(issuer) && self.use_.names_exactly(cap, &self.host_node_did)
+        };
+        let opts = ChainVerifyOpts {
+            expected_audience_did: chain.subject(),
+            is_trusted_root: &is_root,
+            now_secs,
+        };
+        let granted = verify_chain(chain.leaf, &opts)
+            .map_err(|e| RegisterError::InvalidChain(format!("{e:#}")))?;
+        // `verify_chain` drops a capability it cannot back, so an empty
+        // result is a refusal.
+        if !granted.iter().any(|c| self.use_.names_exactly(c, &self.host_node_did)) {
+            return Err(RegisterError::InvalidChain(
+                "the passport does not back the child token's capability".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A child token with exactly one proof, the passport.
+struct PassportChain<'a> {
+    leaf: &'a CapabilityToken,
+    passport: &'a CapabilityToken,
+}
+
+impl<'a> PassportChain<'a> {
+    /// The shape check. No signature work happens here.
+    fn parse(leaf: &'a CapabilityToken) -> Result<Self, RegisterError> {
+        let malformed = |msg: &str| Err(RegisterError::Malformed(msg.to_string()));
+        let [passport] = leaf.proofs.as_slice() else {
+            return malformed("the child token must carry exactly one proof, the passport");
+        };
+        if !passport.proofs.is_empty() {
+            return malformed("the passport must not carry proofs");
+        }
+        if leaf.capabilities.len() != 1 {
+            return malformed("the child token must carry exactly one capability");
+        }
+        if passport.capabilities.len() != 1 {
+            return malformed("the passport must carry exactly one capability");
+        }
+        ensure_canonical_did(&leaf.audience_did)
+            .map_err(|e| RegisterError::Malformed(format!("the subject: {e:#}")))?;
+        Ok(Self { leaf, passport })
+    }
+
+    fn subject(&self) -> &'a str {
+        &self.leaf.audience_did
+    }
+
+    /// The use limit, read from the passport only.
+    fn count_limit(&self, use_: &PassportUse) -> Result<Option<u64>, RegisterError> {
+        match self.passport.facts.get(use_.count_key) {
+            None => Ok(use_.open_count_limit),
+            Some(v) => v.as_u64().map(Some).ok_or_else(|| {
+                RegisterError::Malformed(format!("{} is not a whole number", use_.count_key))
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

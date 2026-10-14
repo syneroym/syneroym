@@ -2,7 +2,7 @@
 
 *Reader: developers who build these three changes.*
 
-**Status: in progress (2026-10-13).** S0 and A1 to A4 are done. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-14).** S0, A1 to A4, C1 and B1 are done. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -107,6 +107,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - X4 with the shape from §2.1 to §2.3: proof of possession as an input, lease keyed on subject, binding hook. Limits read from the passport only.
 - Tests for each `P-2` error, `P-3`, `P-9`, and the `P-7` limits, with both proof forms and both binding forms.
 - `roymctl coordinator passport issue` (an offline signature; one code path with an ability parameter, so the mailbox `issue` variant is a thin wrapper).
+- Done 2026-10-14. Decisions `D-B1-1` to `D-B1-22` are in the [passport change doc](../../changes/operator-passport/change.md).
 
 **B2 — Relay use, coordinator side (M).** Needs A1, A3 (same info server) and B1.
 - `access = "passport"` (and the combined form); a run-time access function that reads the lease table.
@@ -115,6 +116,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `spawn_http_info_server` takes a ready `axum::Router`; B2 merges its passport routes into it.
 - Decide whether the coordinator's own endpoint is admitted on its own relay with passport access.
 - Leases survive a restart; deny by id; `roymctl coordinator passport deny` and `leases` (`P-4` to `P-6`, `P-8`, `H-1` to `H-3`).
+- Run the DHT revocation check between `Registrar::check` and `Registrar::grant` (`D-B1-15`); `deny` and `leases` go through the running service (`D-B1-18`); remove the "cannot use passports yet" line from the `issue` help.
 
 **B3 — Relay use, substrate side (M).** Needs A1 and B2. It does not need A4.
 - Child-token store set through the control plane; `roymctl substrate home-relay set` and `status`.
@@ -160,6 +162,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `register` with a passport, proof by transport identity, binding by instance certificate, raised quotas from facts, `max_services` (`D-1` to `D-3`).
 - Owner signs one child token for each member master at deploy (the deploy-call field reserved in S0).
 - `roymctl` mailbox `issue` variant on B1's code.
+- `register` carries the instance certificate (`D-B1-17`); quotas come from `LeaseStore::lease_for` (`D-B1-16`); the DHT revocation check runs between `Registrar::check` and `Registrar::grant` (`D-B1-15`).
 - Close out the mailbox change doc.
 
 ## 4. Order and parallel work
@@ -183,13 +186,15 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 | C7 | A2, C3 | S |
 | C8 | B1, C4, C7 | M |
 
-With one developer, a good serial order is:
-S0, A1, C1, A2, A3, B1, A4, B2, B3, C2, C3, C4, C5, C6, C7, C8.
+With one developer, the serial order in use (the owner's choice, 2026-10-13) is:
+S0, A1, A2, A3, A4, C1, B1, B2, B3, C2, C3, C4, C5, C6, C7, C8.
+One slice per PR. Each PR merges before the next slice starts.
 
 The relay work comes first. It is smaller, it makes the base for the passport,
 and it tests the curated list and the ranking helper before the mailbox reuses
-them. C1 is early because it is independent and touches the supervisor, which
-is cheaper to check while little else is changing.
+them. C1 comes before the passport and mailbox work because it is independent
+and touches the supervisor, which is cheaper to check while little else is
+changing.
 
 With two developers: one takes Track A then Track B. The other takes C1, C2,
 C3, C4, then joins for C5 and C6 (the R-7 part of C6 must merge first).

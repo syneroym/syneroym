@@ -42,15 +42,15 @@ Core. Each passport use must pass these in its own tests.
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| P-1 | The operator can issue a passport with an audience (owner DID), an ability, a resource, an expiry and use limits. | |
-| P-2 | Registration is refused when: the chain does not end at an accepted operator root; the token is expired; the ability or resource does not match; the proven key is not bound to the subject (for the relay the two are the same key; for the mailbox the instance key is bound to the member master by its service-instance certificate); the proof of possession fails (challenge form: the signature is wrong, or the challenge is old or already used); or a use limit is reached. Each case has its own error. | |
-| P-3 | A leaked passport is not enough. The caller must also prove that it holds the key bound to the subject of the owner's child token: by a challenge signature (relay) or by its transport identity (mailbox). | |
+| P-1 | The operator can issue a passport with an audience (owner DID), an ability, a resource, an expiry and use limits. | `crates/passport/src/issue/tests.rs`, `apps/roymctl/src/commands/coordinator/tests.rs` |
+| P-2 | Registration is refused when: the chain does not end at an accepted operator root; the token is expired; the ability or resource does not match; the proven key is not bound to the subject (for the relay the two are the same key; for the mailbox the instance key is bound to the member master by its service-instance certificate); the proof of possession fails (challenge form: the signature is wrong, or the challenge is old or already used); or a use limit is reached. Each case has its own error. | `crates/passport/src/registrar/tests/refusals.rs`, `crates/passport/src/registrar/tests/possession.rs` |
+| P-3 | A leaked passport is not enough. The caller must also prove that it holds the key bound to the subject of the owner's child token: by a challenge signature (relay) or by its transport identity (mailbox). | `crates/passport/src/registrar/tests/possession.rs`, `crates/passport/src/registrar/tests/refusals.rs` |
 | P-4 | A caller whose lease has ended is refused when it connects the next time. A connection that is already open is not cut. The lease never outlasts the token or the `max_lease_secs` of its use. | |
 | P-5 | After the operator's service restarts, users with a running lease keep their access. | |
 | P-6 | The operator can deny a passport by its id. A denied caller is refused when it connects the next time. | |
-| P-7 | Challenge form only. The registration endpoints accept a body of at most 16 KiB, keep at most 1,000 challenges (the oldest is dropped first), give each challenge a life of 60 seconds, do the size and shape checks before any signature check, and limit each source address to 10 requests per minute. | |
-| P-8 | `roymctl` can issue a passport, deny a passport by id, and list the running leases. | |
-| P-9 | Challenge form only. The challenge signature covers a domain tag, the node DID of the host substrate of the service being registered with, the challenge, and a hash of the token. A signature made for one service is refused by another. | |
+| P-7 | Challenge form only. The registration endpoints accept a body of at most 16 KiB, keep at most 1,000 challenges (the oldest is dropped first), give each challenge a life of 60 seconds, do the size and shape checks before any signature check, and limit each source address to 10 requests per minute. | `crates/passport/src/challenge_store/tests.rs`, `crates/passport/src/limiter/tests.rs`, `crates/passport/src/wire/tests.rs` (core parts; the HTTP routes are B2) |
+| P-8 | `roymctl` can issue a passport, deny a passport by id, and list the running leases. | issue: `apps/roymctl/src/commands/coordinator/tests.rs`, `apps/roymctl/tests/cli_args.rs`; deny and leases: B2 |
+| P-9 | Challenge form only. The challenge signature covers a domain tag, the node DID of the host substrate of the service being registered with, the challenge, and a hash of the token. A signature made for one service is refused by another. | `crates/passport/src/registrar/tests/possession.rs` |
 | P-10 | Challenge form only. The registration endpoints are served only over TLS. A service with passport access and no TLS config stops at startup. | |
 
 Home relay
@@ -138,7 +138,7 @@ The response gives `lease_ends_at`. The service allows a caller when it has a ro
 
 **roymctl.** These names are a proposal. Check them against the existing `roymctl` layout.
 
-- `roymctl coordinator passport issue --audience <did> --expires-in <duration> --max-nodes <n>` writes a passport file. Run by the operator. The mailbox use gets its own `issue` variant on the same code.
+- `roymctl coordinator passport issue (--from <name> | --node-key) --to <owner did> --expires-days <n> [--max-nodes <n>] [--out <file>]` writes a passport file and prints its id. Run by the operator. The signer is always named: `--from` is a local identity (normally the controller), `--node-key` is the node key, only for a host substrate with no controller (`D-B1-14`, `D-B1-21`). The host node DID comes from the global `--substrate` flag. The mailbox use gets its own `issue` variant on the same code.
 - `roymctl coordinator passport deny <passport-id>` and `roymctl coordinator passport leases` deny a passport and list the running leases.
 - `roymctl substrate home-relay set --coordinator <url> --passport <file>` runs on the owner's machine. It signs the child token for the node key of the substrate with the owner key, and hands it to the substrate through the control plane. The substrate registers itself.
 - `roymctl substrate home-relay status` shows the lease and the expiry.
@@ -156,7 +156,7 @@ None open. Decided 2026-10-11:
 ## Tasks
 
 - [x] Amend ADR-0015: abilities `relay/home` and `mailbox/use`, the selector resource form, reserved facts keys (A10).
-- [ ] Core module: passport issue, child token, verify, both proof forms, signer binding, challenge store, lease table keyed on subject, deny list. Tests for each error in P-2 (both proof forms) and for P-9.
+- [x] Core module: passport issue, child token, verify, both proof forms, signer binding, challenge store, lease table keyed on subject, deny list. Tests for each error in P-2 (both proof forms) and for P-9.
 - [ ] Coordinator: challenge and register endpoints, dynamic access function, strict `access` parsing.
 - [ ] Substrate: store the child token, register before first connect, renew, warn.
 - [ ] `roymctl` commands (issue, deny, leases, home-relay set and status).
@@ -164,6 +164,40 @@ None open. Decided 2026-10-11:
 - [ ] Update the living docs listed below.
 
 ## Deviations
+
+Core decisions (2026-10-14). The code is `crates/passport` (`syneroym-passport`), the `ucan` additions (`Ability::RELAY_HOME`, `Ability::MAILBOX_USE`, `CapabilityToken::token_id`, `CapabilityToken::sign`) and `roymctl coordinator passport issue`.
+
+- `D-B1-1`: **the chain has exactly two tokens.** The child token has exactly one proof, the passport. The passport has no proofs. Each token has exactly one capability. Anything else is `malformed`. An operator who wants to admit a node directly still makes a passport for an owner, and the owner makes the child token.
+- `D-B1-2`: **the core is form-agnostic.** A `PassportUse` fixes neither the proof form nor the binding form. The caller passes a `Proof` and a `SignerBinding` for each registration. The tests also run the two cross combinations.
+- `D-B1-3`: **the challenge proof names its signer.** `Proof::Challenge` carries `signer_did`, and the signature is checked against it, not against the subject. The proven key is `signer_did` (challenge form) or `verified_did` (transport form). So "the proven key is not bound to the subject" (`not_bound`) is a real error in both forms.
+- `D-B1-4`: **what the challenge signature covers.** The signer signs, with `Identity::sign_json` (RFC 8785), the object `{"domain": "syneroym-passport-challenge-v1", "service_did": <host node DID>, "ability": <ability>, "challenge": <64 hex>, "token_hash": <64 hex>}`. `token_hash` is the SHA-256 of the canonical JSON of the **whole presented child token, proofs and signatures included** (`presentation_hash`). The signed body of a token leaves out `proofs`, so a hash of the body alone would let someone place another passport under the same child token. `ability` separates the two uses on one host.
+- `D-B1-5`: **the use limit counts running leases only.** `max_nodes` (and `max_services`) counts distinct subjects with a lease still running under the passport, not counting the registering subject. An ended lease frees its place. A renewal never counts against itself.
+- `D-B1-6`: **a missing count key means no limit.** The relay has no open node limit. `PassportUse::open_count_limit` is `None` for both uses now; the mailbox use may set it.
+- `D-B1-7`: **facts are checked at issue, read loosely at registration.** `issue_passport` refuses a key that is not a use limit of the use, and a value that is not a whole number of at least 1. At registration only the count key is read; other keys are ignored. A count key that is not a whole number is `malformed`. A value of 0 admits nobody (`limit_reached`).
+- `D-B1-8`: **the lease end** is `min(child expiry, passport expiry, now + max_lease_secs)`. `verify_chain` does not check that a child ends before its parent, so the passport expiry is added. `child_token` also clamps the child expiry to the passport expiry.
+- `D-B1-9`: **deny removes the leases.** `LeaseStore::deny` stores the id and deletes every lease of that passport in one transaction. A later registration is refused with `denied`. A deny of an id with no leases is still stored (deny in advance). There is no undeny (backlog row).
+- `D-B1-10`: **one plain SQLite file per service.** The lease table holds passport ids, DIDs and times, no secret. `LeaseStore::open(dir, db_name, now)` follows `AlertStore::open`: WAL mode, `CREATE TABLE IF NOT EXISTS`, no version ladder. B2 picks the file name and directory.
+- `D-B1-11`: **the clock is a parameter.** Every check and every function that makes a token takes `now_secs`. Callers pass `syneroym_passport::now_secs()`. The one exception is `DelegationCertificate::issue`, which reads the wall clock itself; its tests keep a margin of at least 5 seconds.
+- `D-B1-12`: **the request limiter is in the core.** `RequestLimiter` is a fixed-window counter keyed by the full `IpAddr` (10 requests per minute). It tracks at most 10,000 addresses; when full it first drops ended windows, and if it is still full it refuses the new address. Grouping IPv6 by `/64` is a backlog row.
+- `D-B1-13`: **the API is synchronous.** `LeaseStore` and `Registrar` are `Send + Sync`. `LeaseStore::is_admitted` reads memory only, so the Iroh relay access function can call it directly. B2 may call `grant` inside `spawn_blocking`.
+- `D-B1-14`: **`roymctl` flag names** follow `identity issue-grant`: `--from`, `--to`, `--expires-days`, plus `--node-key`, `--max-nodes` and `--out`. The workspace has no duration parser, and a passport lives weeks or months, so the unit is days. The host node DID is the global `--substrate` (or `<dir>/substrate.key`).
+- `D-B1-15`: **the DHT revocation check runs in the service, between `Registrar::check` and `Registrar::grant`.** ADR-0015 §2 and A7 require it on every chain edge. Two edges matter: `(operator, owner)` lets the operator cut one owner, and `(owner, subject)` lets the owner cut one node or member master. The lookup needs the network, and the sender chooses the DIDs, so it runs only after every offline check passed. `check` does every offline check and writes nothing (except that it uses up the challenge). `grant` does the deny check, the use-limit count and the write under one lock. The core defines `RegisterError::Revoked` (code `revoked`), so the error set is final. A revocation stops the next registration; a running lease stays until it ends. **Requirement on B2 and C8:** run `ucan_chain_not_revoked` (`crates/router/src/route_handler/io.rs`) on `checked.token()` between the two calls, and refuse with `Revoked`. B2 makes that function reachable from the coordinator. Code review of B2 and C8 must check that the lookup is there.
+- `D-B1-16`: **the lease keeps the passport limits.** The row stores the passport facts as JSON (`limits`) and `registered_at`. `LeaseStore::lease_for(subject, now)` returns the lease that applies. With running leases under two passports, the newest registration wins (largest `registered_at`, then largest `lease_ends_at`, then smallest passport id).
+- `D-B1-17`: **requirement on C4 and C8: the mailbox `register` request carries the whole instance certificate.** The router keeps only `VerifiedIdentity { master_did, temporary_did }` and also accepts the `routing` scope. So the mailbox passes `Proof::Transport { verified_did: <temporary_did> }` and `SignerBinding::InstanceCertificate(<certificate from the request>)`. The core checks the `service-instance` scope and `cert.temporary_did == verified_did`. C8 must not add a "the transport already checked it" binding form.
+- `D-B1-18`: **requirement on B2: `deny` and `leases` go through the running service.** `LeaseStore` loads its index only at `open`, so a second process writing the file would not reach the running relay before a restart (that fails `P-6`). `roymctl coordinator passport deny` and `leases` call the process that owns the store. The core has no reload.
+- `D-B1-19`: **a passport that forbids delegation is refused explicitly** (`invalid_chain`). When the owner is also an accepted root, `verify_chain` roots the child token on its own and never reads the passport caveat. The passport signature is still verified in that case; a test pins it.
+- `D-B1-20`: **DIDs in a lease are canonical.** The z-base-32 decoder drops the 3 spare bits of the last character, so one key has several spellings (the tests find one). The core refuses a subject that is not exactly `derive_did_key` of its key (`malformed`). `issue_passport` and `child_token` refuse such an audience or subject too.
+- `D-B1-21`: **`roymctl issue` never picks the signer.** `--from <name>` or `--node-key` is required (exactly one). Which roots a service accepts is decided in B2; a default of the node key would decide it now.
+- `D-B1-22`: **the crate has its own `now_secs()`.** The coordinator and the substrate must not depend on the Roym product crate for a clock.
+- **Requirement on B2:** remove the help line "A relay cannot use passports yet ..." from `roymctl coordinator passport issue` when the coordinator accepts `access = "passport"`.
+
+Differences from the slice plan:
+
+- The test fixture is `crates/passport/src/test_support.rs` (test builds only), not `registrar/tests.rs`, because the registrar tests and the wire tests both use it. `registrar/tests.rs` only names the topic files.
+- `PassportCommands::Issue` holds a clap `Args` struct (`IssueArgs`) with the signer group on it, so `handle_issue` takes one argument instead of eight.
+- Only `require_key_present` in `roymctl`'s `identity.rs` became `pub(crate)`; `identity_key_path` was not needed.
+- The expiry boundary test uses a life of 300 seconds, not 3,600: the mailbox fixture's instance certificate lives 600 seconds and would end first.
+- A few extra tests: a zero passport life, a child token made from a token that is not a passport, ended challenges leaving the store, `with_max_lease_secs`, and the error body code.
 
 ## Close-out
 

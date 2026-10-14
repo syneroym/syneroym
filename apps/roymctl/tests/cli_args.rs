@@ -477,3 +477,37 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+/// `coordinator passport issue --help` lists every flag and says that a
+/// relay cannot use passports yet.
+#[test]
+fn test_coordinator_passport_issue_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["coordinator", "passport", "issue", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--from"))
+        .stdout(contains("--node-key"))
+        .stdout(contains("--to"))
+        .stdout(contains("--expires-days"))
+        .stdout(contains("--max-nodes"))
+        .stdout(contains("--out"))
+        .stdout(contains("A relay cannot use passports yet"));
+    Ok(())
+}
+
+/// The signer is always named: neither `--from` nor `--node-key`, or both,
+/// is a usage error.
+#[test]
+fn test_coordinator_passport_issue_needs_a_signer() -> Result<(), Box<dyn Error>> {
+    let base = ["coordinator", "passport", "issue", "--to", "did:key:hx", "--expires-days", "1"];
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base).assert().failure().stderr(contains("--from"));
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["--from", "controller", "--node-key"])
+        .assert()
+        .failure()
+        .stderr(contains("cannot be used with"));
+    Ok(())
+}

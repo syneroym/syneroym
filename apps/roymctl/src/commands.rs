@@ -21,6 +21,7 @@ use syneroym_sdk::SyneroymClient;
 use syneroym_ucan::CapabilityToken;
 
 pub mod app;
+pub mod coordinator;
 pub mod identity;
 pub mod member_identity;
 pub mod registry;
@@ -97,6 +98,11 @@ pub enum Commands {
     Registry {
         #[command(subcommand)]
         command: RegistryCommands,
+    },
+    /// Operate a coordinator (relay) you run
+    Coordinator {
+        #[command(subcommand)]
+        command: coordinator::CoordinatorCommands,
     },
     /// Manage the Key Encryption Key (KEK)
     Kek {
@@ -347,6 +353,9 @@ pub async fn run(
         }
         Commands::Registry { command } => {
             registry::handle(&command, &api_url, &dir).await?;
+        }
+        Commands::Coordinator { command } => {
+            coordinator::handle(&command, substrate_opt, &dir)?;
         }
         Commands::Kek { command } => {
             dispatch_kek(

@@ -148,8 +148,22 @@ impl CapabilityToken {
             proofs,
             signature: String::new(),
         };
-        token.signature = issuer.sign_json(&token.signing_value())?;
+        token.sign(issuer)?;
         Ok(token)
+    }
+
+    /// Sign a token built field by field. `issuer_did` must already be the
+    /// DID of `issuer`; a token signed by another key would never verify.
+    pub fn sign(&mut self, issuer: &Identity) -> Result<()> {
+        let did = substrate::derive_did_key(&issuer.public_key());
+        if did != self.issuer_did {
+            return Err(anyhow!(
+                "issuer_did {} is not the DID of the signing key {did}",
+                self.issuer_did
+            ));
+        }
+        self.signature = issuer.sign_json(&self.signing_value())?;
+        Ok(())
     }
 
     /// Per-token structural verification (signature + time bounds); does not
@@ -309,5 +323,6 @@ fn granted_capabilities(
     Ok(effective)
 }
 
+mod id;
 #[cfg(test)]
 mod tests;

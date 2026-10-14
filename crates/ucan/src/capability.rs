@@ -116,6 +116,10 @@ impl Ability {
     pub const DATA_LAYER_ADMIN: &'static str = "data-layer/admin";
     pub const DATA_LAYER_READ: &'static str = "data-layer/read";
     pub const DATA_LAYER_WRITE: &'static str = "data-layer/write";
+    /// Keep a mailbox queue at this mailbox service (ADR-0015 A10). Flat: it
+    /// entails only itself, and is entailed by `substrate/admin` like
+    /// everything else.
+    pub const MAILBOX_USE: &'static str = "mailbox/use";
     pub const MESSAGING_PUBLISH: &'static str = "messaging/publish";
     pub const MESSAGING_SUBSCRIBE: &'static str = "messaging/subscribe";
     /// Deploy/undeploy/status-check on the orchestrator interface. Flat --
@@ -124,6 +128,9 @@ impl Ability {
     pub const ORCHESTRATOR_DEPLOY: &'static str = "orchestrator/deploy";
     pub const ORCHESTRATOR_STATUS: &'static str = "orchestrator/status";
     pub const ORCHESTRATOR_UNDEPLOY: &'static str = "orchestrator/undeploy";
+    /// Use this relay as the home relay (ADR-0015 A10). Flat, like
+    /// `MAILBOX_USE`.
+    pub const RELAY_HOME: &'static str = "relay/home";
     pub const SUBSTRATE_ADMIN: &'static str = "substrate/admin";
     /// ADR-0022 §5: fetch one app instance's Tier-2 topology documents from
     /// the supervisor that holds it. Flat -- it entails only itself, and is
@@ -268,6 +275,28 @@ mod tests {
         assert!(root.entails(&ability(Ability::VAULT_REVEAL)));
         assert!(root.entails(&ability(Ability::BLOB_SIGN_URL)));
         assert!(root.entails(&root));
+    }
+
+    #[test]
+    fn passport_abilities_are_flat() {
+        let relay = ability(Ability::RELAY_HOME);
+        let mailbox = ability(Ability::MAILBOX_USE);
+        assert!(!relay.entails(&mailbox));
+        assert!(!mailbox.entails(&relay));
+        assert!(!relay.entails(&ability(Ability::DATA_LAYER_READ)));
+        assert!(!mailbox.entails(&ability(Ability::DATA_LAYER_READ)));
+        let data_admin = ability(Ability::DATA_LAYER_ADMIN);
+        assert!(!data_admin.entails(&relay));
+        assert!(!data_admin.entails(&mailbox));
+    }
+
+    /// The passport check must compare abilities exactly: through
+    /// entailment, a node admin token would pass as a passport.
+    #[test]
+    fn substrate_admin_entails_passport_abilities() {
+        let root = ability(Ability::SUBSTRATE_ADMIN);
+        assert!(root.entails(&ability(Ability::RELAY_HOME)));
+        assert!(root.entails(&ability(Ability::MAILBOX_USE)));
     }
 
     #[test]
