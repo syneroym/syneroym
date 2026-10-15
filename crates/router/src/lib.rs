@@ -26,6 +26,6 @@ pub use home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
 pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
 pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};
-pub use route_handler::{RouteHandler, RouteHandlerDeps};
+pub use route_handler::{RouteHandler, RouteHandlerDeps, io::ucan_chain_not_revoked};
 pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};
 pub use saga::SagaStore;

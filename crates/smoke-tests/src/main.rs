@@ -16,6 +16,7 @@ use syneroym_core::{
     },
     coordinator_info::CoordinatorInfo,
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
+    host_identity::HostIdentity,
     local_registry::EndpointRegistry,
     retry,
     storage::MockStorage,
@@ -114,7 +115,9 @@ async fn setup_in_process_services(
         resolve_ucan: None,
     });
 
-    let coordinator = CoordinatorIroh::init(&coord_config)
+    let node_did = derive_did_key(&Identity::generate()?.public_key());
+    let host_identity = HostIdentity::unowned(node_did);
+    let coordinator = CoordinatorIroh::init(&coord_config, &host_identity)
         .await
         .context("Failed to init in-process coordinator")?;
 

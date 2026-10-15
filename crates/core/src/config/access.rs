@@ -9,8 +9,8 @@ use serde::{
 
 /// Who may use the Iroh relay of a coordinator: `[roles.coordinator] access`.
 ///
-/// Four forms parse. A coordinator may refuse to start with a form it cannot
-/// enforce yet; parsing never widens a value to "everyone".
+/// Four forms parse. Parsing never widens a value to "everyone". The passport
+/// forms need `[tls]` (`check_tls`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum CoordinatorAccess {
     /// `access = "everyone"`: any Iroh endpoint. The default.
@@ -23,6 +23,37 @@ pub enum CoordinatorAccess {
     /// `access = { list = ["<endpoint id>", ...], passport = true }`: a listed
     /// endpoint, or one with a running passport lease.
     ListOrPassport(Vec<String>),
+}
+
+impl CoordinatorAccess {
+    /// Whether a node with a running passport lease is admitted.
+    #[must_use]
+    pub const fn accepts_passports(&self) -> bool {
+        matches!(self, Self::Passport | Self::ListOrPassport(_))
+    }
+
+    /// The listed endpoint ids. Empty for `Everyone` and `Passport`.
+    #[must_use]
+    pub fn list(&self) -> &[String] {
+        match self {
+            Self::List(ids) | Self::ListOrPassport(ids) => ids,
+            Self::Everyone | Self::Passport => &[],
+        }
+    }
+
+    /// The passport forms need `[tls]`: the passport endpoints carry the
+    /// passport and are served only over HTTPS.
+    ///
+    /// # Errors
+    /// For a passport form when `has_tls` is false.
+    pub fn check_tls(&self, has_tls: bool) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            has_tls || !self.accepts_passports(),
+            "[roles.coordinator] access accepts passports, so [tls] must be set: the passport \
+             endpoints are served only over HTTPS"
+        );
+        Ok(())
+    }
 }
 
 const EXPECTED: &str =

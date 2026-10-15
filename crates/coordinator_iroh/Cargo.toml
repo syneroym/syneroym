@@ -27,10 +27,13 @@ reqwest.workspace = true
 rand.workspace = true
 x509-parser.workspace = true
 chrono.workspace = true
-
+syneroym-passport.workspace = true
+ed25519-dalek.workspace = true
 
 [dev-dependencies]
+syneroym-core = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["test-util"] }
+tower = { workspace = true, features = ["util"] }
 iroh.workspace = true
 n0-error.workspace = true
 tracing-subscriber.workspace = true

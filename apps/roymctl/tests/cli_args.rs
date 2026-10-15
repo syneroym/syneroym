@@ -478,10 +478,11 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// `coordinator passport issue --help` lists every flag and says that a
-/// relay cannot use passports yet.
+/// `coordinator passport issue --help` lists every flag.
 #[test]
 fn test_coordinator_passport_issue_help() -> Result<(), Box<dyn Error>> {
+    use predicates::prelude::PredicateBooleanExt;
+
     let mut cmd = Command::cargo_bin("roymctl")?;
     cmd.args(["coordinator", "passport", "issue", "--help"])
         .assert()
@@ -492,7 +493,32 @@ fn test_coordinator_passport_issue_help() -> Result<(), Box<dyn Error>> {
         .stdout(contains("--expires-days"))
         .stdout(contains("--max-nodes"))
         .stdout(contains("--out"))
-        .stdout(contains("A relay cannot use passports yet"));
+        .stdout(contains("A relay cannot use passports yet").not());
+    Ok(())
+}
+
+/// `coordinator passport deny --help` and `leases --help` parse and name the
+/// `--as` hint; `deny` without an id is a usage error.
+#[test]
+fn test_coordinator_passport_deny_and_leases_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["coordinator", "passport", "deny", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--as"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["coordinator", "passport", "leases", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--as"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["coordinator", "passport", "deny"])
+        .assert()
+        .failure()
+        .stderr(contains("<PASSPORT_ID>"));
+
     Ok(())
 }
 

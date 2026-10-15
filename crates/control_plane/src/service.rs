@@ -28,6 +28,7 @@ use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;
+use syneroym_passport::LeaseStore;
 use syneroym_rpc::{
     Ability, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
     NativeService, PERMISSION_DENIED_CODE, ProxyQueueInspector, ResourceUri, RowAuthorizer,
@@ -142,6 +143,11 @@ pub struct ControlPlaneService {
     /// holds no reference back to `ControlPlaneService`, so there is no
     /// cycle to guard against with a `Weak`.
     pub(crate) endpoint_publisher: OnceLock<Arc<EndpointPublisher>>,
+    /// The lease store of this node's relay when it accepts passports. Set
+    /// after construction by the substrate's composition root, the same
+    /// two-phase way as `endpoint_publisher`: the coordinator is built before
+    /// this service, and most `init` call sites are tests with no relay.
+    pub(crate) relay_passports: OnceLock<LeaseStore>,
     /// Signals the substrate's background registry-heartbeat loop
     /// (`publish_to_community_registry` in `crates/substrate/src/runtime.rs`)
     /// to publish this node's own endpoint record and every hosted
@@ -254,6 +260,7 @@ impl ControlPlaneService {
             conversation: OnceLock::new(),
             record_signer: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
+            relay_passports: OnceLock::new(),
             republish_trigger: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
@@ -281,6 +288,13 @@ impl ControlPlaneService {
     /// `row_authorizer`'s two-phase wiring.
     pub fn set_endpoint_publisher(&self, publisher: Arc<EndpointPublisher>) {
         let _ = self.endpoint_publisher.set(publisher);
+    }
+
+    /// Wires in the lease store of this node's passport relay, so the
+    /// operator's `relay-passport-*` verbs reach the running relay. Same
+    /// two-phase, no-op-past-first-call wiring as `set_endpoint_publisher`.
+    pub fn set_relay_passports(&self, leases: LeaseStore) {
+        let _ = self.relay_passports.set(leases);
     }
 
     /// Wires in the channel that reaches the substrate's registry-heartbeat

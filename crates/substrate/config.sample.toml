@@ -173,8 +173,11 @@ http_bind_address = "0.0.0.0:7961"
 # Access control for the coordinator relay service:
 # - "everyone" (default): any peer may use this relay
 # - [ "<endpoint_id>", ... ]: admits only explicitly listed Iroh endpoint IDs
-# - "passport": reserved for operator passports; stops the coordinator today
-# - { list = [ "<endpoint_id>", ... ], passport = true }: reserved; stops the coordinator today
+# - "passport": admits only nodes holding a valid operator passport lease
+# - { list = [ "<endpoint_id>", ... ], passport = true }: admits listed endpoint IDs or valid passport leases
+# The passport forms need [tls] (the coordinator stops without it). Only nodes
+# with a lease, listed nodes, this coordinator and this node can use the relay,
+# also to reach each other.
 # Any other value is a config error and stops startup.
 access = "everyone"
 

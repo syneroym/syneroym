@@ -73,7 +73,7 @@ async fn relay_count_follows_connections_and_capacity() -> Result<()> {
         ..Default::default()
     });
 
-    let mut coord = CoordinatorIroh::init(&config).await?;
+    let mut coord = common::init_coordinator(&config).await?;
     common::wait_for_relay(&coord, Duration::from_secs(20)).await?;
 
     // Step 2: The coordinator endpoint connects to its own relay and counts as 1.
@@ -137,7 +137,7 @@ async fn coordinator_record_is_registered_under_its_did() -> Result<()> {
         ..Default::default()
     });
 
-    let mut coord = CoordinatorIroh::init(&config).await?;
+    let mut coord = common::init_coordinator(&config).await?;
     common::wait_for_relay(&coord, Duration::from_secs(20)).await?;
 
     let info = wait_for_info(&coord, Duration::from_secs(20), |info| {
@@ -151,8 +151,9 @@ async fn coordinator_record_is_registered_under_its_did() -> Result<()> {
 
     assert_eq!(lookup_res.info.service_id, reg.did);
     assert!(reg.did.starts_with("did:key:"));
-    assert_ne!(reg.did, info.substrate_id);
-    assert!(info.identity.is_none());
+    let id_info = info.identity.as_ref().context("missing identity")?;
+    assert!(id_info.did.starts_with("did:key:"));
+    assert_eq!(id_info.controller_status, "none");
 
     coord.shutdown().await?;
     registry_r.shutdown().await?;
@@ -218,7 +219,7 @@ async fn probes_do_not_call_the_registry() -> Result<()> {
         ..Default::default()
     });
 
-    let mut coord = CoordinatorIroh::init(&config).await?;
+    let mut coord = common::init_coordinator(&config).await?;
 
     wait_for_info(&coord, Duration::from_secs(10), |info| {
         info.registry.as_ref().map(|r| r.registered).unwrap_or(false)
@@ -270,11 +271,12 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
         ..Default::default()
     });
 
-    let mut coord = CoordinatorIroh::init(&config).await?;
+    let mut coord = common::init_coordinator(&config).await?;
     common::wait_for_relay(&coord, Duration::from_secs(20)).await?;
 
+    // The coordinator's own endpoint connects to its own relay and counts as 1.
     let info = wait_for_info(&coord, Duration::from_secs(5), |info| {
-        info.relay.as_ref().and_then(|r| r.clients) == Some(0)
+        info.relay.as_ref().and_then(|r| r.clients) == Some(1)
     })
     .await?;
 
@@ -289,11 +291,11 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     time::timeout(Duration::from_secs(20), allowed_client.online()).await?;
 
     wait_for_info(&coord, Duration::from_secs(10), |info| {
-        info.relay.as_ref().and_then(|r| r.clients) == Some(1)
+        info.relay.as_ref().and_then(|r| r.clients) == Some(2)
     })
     .await?;
 
-    // Connect an excluded client and verify the relay client count stays at 1.
+    // Connect an excluded client and verify the relay client count stays at 2.
     let excluded_client = Endpoint::empty_builder()
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
         .bind()
@@ -301,7 +303,7 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
 
     time::sleep(Duration::from_millis(500)).await;
     let info_after = fetch_info(&coord).await?;
-    assert_eq!(info_after.relay.as_ref().and_then(|r| r.clients), Some(1));
+    assert_eq!(info_after.relay.as_ref().and_then(|r| r.clients), Some(2));
 
     let _ = excluded_client.close().await;
     let _ = allowed_client.close().await;

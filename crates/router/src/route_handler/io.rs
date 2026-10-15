@@ -66,7 +66,7 @@ fn now_secs() -> u64 {
 /// are resolved at most once -- `verify_chain`'s `MAX_CHAIN_NODES` cap
 /// already bounds the total edge count, but de-duplicating avoids paying for
 /// the same network round trip redundantly within that bound.
-async fn ucan_chain_not_revoked(
+pub async fn ucan_chain_not_revoked(
     token: &CapabilityToken,
     resolver: &dyn MasterAnchorResolver,
 ) -> bool {

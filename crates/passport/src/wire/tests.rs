@@ -108,3 +108,30 @@ fn a_response_with_an_unknown_field_still_parses() {
             .unwrap();
     assert_eq!(error.code, "denied");
 }
+
+#[test]
+fn lease_info_round_trips_and_accepts_extra_field() {
+    let lease = Lease {
+        passport_id: "a".repeat(64).parse().unwrap(),
+        owner_did: "did:key:z6Mku".to_string(),
+        subject: "did:key:z6Mks".to_string(),
+        lease_ends_at: 1000,
+        registered_at: 500,
+        limits: Map::new(),
+    };
+    let info = LeaseInfo::from(&lease);
+    let serialized = serde_json::to_string(&info).unwrap();
+    let deserialized: LeaseInfo = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(deserialized, info);
+
+    let with_extra = json!({
+        "passport_id": info.passport_id.to_string(),
+        "owner_did": info.owner_did,
+        "subject": info.subject,
+        "lease_ends_at": info.lease_ends_at,
+        "registered_at": info.registered_at,
+        "extra_field": "ignored",
+    });
+    let parsed: LeaseInfo = serde_json::from_value(with_extra).unwrap();
+    assert_eq!(parsed, info);
+}

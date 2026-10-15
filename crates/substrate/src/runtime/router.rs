@@ -16,6 +16,7 @@ use syneroym_core::{
     config::{BlobBackend, RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
     endpoint_publisher::EndpointPublisher,
+    host_identity::HostIdentity,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     protocol_utils::{AUTH_SERVICE_ALIAS, SessionRevocationCheck},
@@ -24,8 +25,9 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, registry_store, traits::StorageProvider};
 use syneroym_data_keystore::KeyStore;
-use syneroym_identity::{Identity, substrate::SubstrateIdentityStatus};
+use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_passport::LeaseStore;
 use syneroym_router::{ConnectionRouter, RouteHandlerDeps};
 use syneroym_rpc::{
     ConversationHost, ConversationNotifier, NativeDispatchRegistry, NativeHttpRegistry,
@@ -49,11 +51,27 @@ use super::{
 };
 use crate::identity;
 
+/// The host identity, loaded before any component starts.
+pub(super) struct HostKeys {
+    pub(super) host: HostIdentity,
+    pub(super) secret_key: [u8; 32],
+}
+
+/// Load (or make) the node key and read the controller agreement. File
+/// work only, so it runs before the components that need the host DID.
+pub(super) fn load_host_identity(config: &SubstrateConfig) -> anyhow::Result<HostKeys> {
+    let state = identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
+    let secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
+    Ok(HostKeys { host: HostIdentity::new(&state), secret_key })
+}
+
 /// Sets up the connection router and its tightly coupled dependencies,
 /// including the substrate identity, data store, endpoint registry, and the
 /// native service.
 pub(super) async fn setup_connection_router(
     config: &SubstrateConfig,
+    keys: HostKeys,
+    relay_leases: Option<LeaseStore>,
 ) -> anyhow::Result<(
     ConnectionRouter,
     EndpointRegistry,
@@ -61,8 +79,6 @@ pub(super) async fn setup_connection_router(
     Arc<ConversationService>,
     Option<String>,
 )> {
-    let (service_id, secret_key, verified_controller) = setup_identity_and_storage(config).await?;
-
     // A verified `ControllerAgreement` (mutually signed by the substrate and
     // its controller, see `identity::setup_substrate_identity`) is the
     // authoritative substrate owner and takes precedence over the plain
@@ -71,8 +87,8 @@ pub(super) async fn setup_connection_router(
     // config value remains a fallback for deployments with no agreement
     // configured at all.
     let mut effective_config = config.clone();
-    if let Some(controller) = verified_controller {
-        effective_config.iam.admin_ucan_root = Some(controller);
+    if let Some(controller) = &keys.host.verified_controller {
+        effective_config.iam.admin_ucan_root = Some(controller.clone());
     }
     let config = &effective_config;
 
@@ -92,30 +108,16 @@ pub(super) async fn setup_connection_router(
     }
 
     let (router, endpoint_registry, _publisher, supervisor, conversation, auth_did) =
-        setup_router(config, &service_id, secret_key).await?;
+        setup_router(config, &keys.host.node_did, keys.secret_key, relay_leases).await?;
 
     Ok((router, endpoint_registry, supervisor, conversation, auth_did))
-}
-
-async fn setup_identity_and_storage(
-    config: &SubstrateConfig,
-) -> anyhow::Result<(String, [u8; 32], Option<String>)> {
-    let substrate_identity_state =
-        identity::setup_substrate_identity(&config.identity, &config.app_data_dir)?;
-    let substrate_secret_key = identity::get_secret(&config.identity, &config.app_data_dir)?;
-    // Only a *verified* (mutually signed) controller agreement establishes
-    // substrate ownership -- `Unverified`/`None` never grant `substrate/admin`.
-    let verified_controller = (substrate_identity_state.status
-        == SubstrateIdentityStatus::Verified)
-        .then_some(substrate_identity_state.controller)
-        .flatten();
-    Ok((substrate_identity_state.did, substrate_secret_key, verified_controller))
 }
 
 async fn setup_router(
     config: &SubstrateConfig,
     service_id: &str,
     secret_key: [u8; 32],
+    relay_leases: Option<LeaseStore>,
 ) -> anyhow::Result<(
     ConnectionRouter,
     EndpointRegistry,
@@ -142,6 +144,9 @@ async fn setup_router(
     let (route_handler_deps, shared) =
         build_route_handler_deps(config, service_id, &endpoint_registry, secret_key).await?;
     let control_plane = route_handler_deps.control_plane.clone();
+    if let (Some(control_plane), Some(leases)) = (&control_plane, relay_leases) {
+        control_plane.set_relay_passports(leases);
+    }
 
     let supervisor = register_supervisor(config, service_id, &endpoint_registry, &shared).await?;
 

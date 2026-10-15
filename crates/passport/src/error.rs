@@ -6,6 +6,10 @@ use crate::challenge_store::CHALLENGE_LIFE_SECS;
 /// puts in its HTTP or RPC error.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RegisterError {
+    #[error("this service does not accept passports")]
+    NotAccepted,
+    #[error("too many requests from this address; try again in a minute")]
+    RateLimited,
     #[error("request body is larger than {max} bytes")]
     RequestTooLarge { max: usize },
     #[error("malformed request: {0}")]
@@ -47,6 +51,8 @@ impl RegisterError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::NotAccepted => "not_accepted",
+            Self::RateLimited => "rate_limited",
             Self::RequestTooLarge { .. } => "request_too_large",
             Self::Malformed(_) => "malformed",
             Self::UnknownChallenge => "unknown_challenge",

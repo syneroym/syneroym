@@ -1,6 +1,9 @@
 //! Coordinator operator subcommands: passports for a private relay.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{Context, ensure};
 use clap::{ArgGroup, Args, Subcommand};
@@ -8,6 +11,7 @@ use serde_json::{Map, json};
 use syneroym_core::config::DEFAULT_SUBSTRATE_KEY_FILE;
 use syneroym_identity::{Identity, substrate};
 use syneroym_passport::{PassportId, RELAY_HOME, facts};
+use syneroym_sdk::SyneroymClient;
 
 use super::identity;
 
@@ -31,10 +35,20 @@ pub enum PassportCommands {
     /// options in the same second make the same passport, with one id. To
     /// give out two passports, make them differ (for example by expiry).
     ///
-    /// A relay cannot use passports yet: a coordinator with
-    /// `access = "passport"` still refuses to start. Passports issued now
-    /// will work once relays support them.
+    /// A host with a controller accepts only passports signed by the
+    /// controller.
     Issue(IssueArgs),
+    /// Deny a passport on the running relay. The relay ends its leases at
+    /// once and refuses the passport from now on. A connection that is
+    /// already open stays until it closes. Run as the substrate's owner
+    /// (`--as <name>`). There is no undo: issue a new passport instead.
+    Deny {
+        /// The passport id `issue` printed (64 hex characters).
+        passport_id: String,
+    },
+    /// List the running leases of the relay. Run as the substrate's owner
+    /// (`--as <name>`).
+    Leases,
 }
 
 /// The flags of `coordinator passport issue`. The host node DID comes from
@@ -65,17 +79,64 @@ pub struct IssueArgs {
     pub out: Option<PathBuf>,
 }
 
-pub fn handle(
+pub async fn handle(
     command: &CoordinatorCommands,
+    api_url: &str,
     substrate_opt: Option<String>,
     dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
+    let CoordinatorCommands::Passport { command } = command;
     match command {
-        CoordinatorCommands::Passport { command: PassportCommands::Issue(args) } => {
-            handle_issue(args, substrate_opt, dir)?;
+        PassportCommands::Issue(args) => handle_issue(args, substrate_opt, dir).map(|_| ()),
+        PassportCommands::Deny { passport_id } => {
+            let ended = deny(passport_id, api_url, substrate_opt, dir, run_as, ucan_path).await?;
+            println!("passport {passport_id} denied; {ended} running lease(s) ended");
+            Ok(())
+        }
+        PassportCommands::Leases => {
+            let list = leases(api_url, substrate_opt, dir, run_as, ucan_path).await?;
+            super::print_json_result(&serde_json::to_value(list)?)
         }
     }
-    Ok(())
+}
+
+pub async fn deny(
+    passport_id: &str,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<u64> {
+    let id: PassportId = passport_id.parse()?;
+    let client = online_client(api_url, substrate_opt, dir, run_as, ucan_path).await?;
+    client.relay_passport_deny(&id).await
+}
+
+pub async fn leases(
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<Vec<syneroym_passport::wire::LeaseInfo>> {
+    let client = online_client(api_url, substrate_opt, dir, run_as, ucan_path).await?;
+    client.relay_passport_leases().await
+}
+
+async fn online_client(
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<SyneroymClient> {
+    let substrate_did = super::get_substrate_did(substrate_opt, dir)?;
+    let mut client = super::client_for(substrate_did, api_url, dir, run_as, ucan_path)?;
+    client.wait_for_ready(Duration::from_secs(5)).await?;
+    Ok(client)
 }
 
 /// Sign a relay passport, write it, and print its id. The operator needs

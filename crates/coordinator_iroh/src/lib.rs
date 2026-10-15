@@ -4,6 +4,7 @@
 mod config;
 mod coordinator;
 mod info_endpoint;
+mod passport;
 mod registration;
 
 pub use coordinator::CoordinatorIroh;

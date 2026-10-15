@@ -47,3 +47,60 @@ pub async fn spawn_registry(base_path: &Path) -> Result<(EcosystemRegistry, Stri
     registry_r.spawn().await?;
     Ok((registry_r, r_url))
 }
+pub mod passport;
+
+/// A coordinator on a host with a fresh node key and no controller.
+pub async fn init_coordinator(config: &SubstrateConfig) -> Result<CoordinatorIroh> {
+    use syneroym_core::host_identity::HostIdentity;
+    CoordinatorIroh::init(config, &HostIdentity::random_unowned()).await
+}
+
+/// The relay URL of the coordinator's endpoint, if online.
+pub fn relay_url(coord: &CoordinatorIroh) -> Option<iroh::RelayUrl> {
+    coord.endpoint_addr().and_then(|a| a.relay_urls().next().cloned())
+}
+
+/// Generates a self-signed certificate for testing TLS.
+pub fn generate_self_signed_cert(cert_path: &Path, key_path: &Path, common_name: &str) {
+    let status = std::process::Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            key_path.to_str().unwrap(),
+            "-out",
+            cert_path.to_str().unwrap(),
+            "-days",
+            "1",
+            "-subj",
+            &format!("/CN=127.0.0.1/OU={common_name}"),
+            "-addext",
+            "basicConstraints = critical,CA:FALSE",
+            "-addext",
+            "extendedKeyUsage = serverAuth",
+            "-addext",
+            "subjectAltName = IP:127.0.0.1",
+        ])
+        .status()
+        .expect("Failed to execute openssl");
+    assert!(status.success(), "openssl command failed");
+}
+
+#[derive(Debug, Clone)]
+pub struct Echo;
+
+impl iroh::protocol::ProtocolHandler for Echo {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let _ = tokio::io::copy(&mut recv, &mut send).await?;
+        send.finish()?;
+        connection.closed().await;
+        Ok(())
+    }
+}

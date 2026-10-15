@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use syneroym_identity::DelegationCertificate;
+use syneroym_passport::{PassportId, wire::LeaseInfo};
 use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo, SagaInfo};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
@@ -380,5 +381,22 @@ impl SyneroymClient {
         } else {
             Err(anyhow::anyhow!("Secret setting failed: {:?}", res.result))
         }
+    }
+
+    /// Deny a passport on the substrate's relay. Returns how many running
+    /// leases ended. Node owner only.
+    pub async fn relay_passport_deny(&self, passport_id: &PassportId) -> Result<u64> {
+        let res = self
+            .request("security", "relay-passport-deny", serde_json::to_value((passport_id,))?)
+            .await?;
+        res.result
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("relay passport deny failed: {:?}", res.result))
+    }
+
+    /// The running leases of the substrate's relay. Node owner only.
+    pub async fn relay_passport_leases(&self) -> Result<Vec<LeaseInfo>> {
+        let res = self.request("security", "relay-passport-leases", serde_json::json!([])).await?;
+        Ok(serde_json::from_value(res.result)?)
     }
 }

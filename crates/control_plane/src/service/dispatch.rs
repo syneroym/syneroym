@@ -1,6 +1,8 @@
 use super::*;
 use crate::synsvc_native;
 
+mod relay_passport;
+
 #[async_trait::async_trait]
 impl NativeService for ControlPlaneService {
     async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
@@ -53,9 +55,9 @@ impl NativeService for ControlPlaneService {
 }
 
 impl ControlPlaneService {
-    /// KEK injection/rotation and vault writes are node-owner operations: a
-    /// KEK unlocks every service database on this node, so there is no
-    /// meaningful resource narrower than the node itself to scope this to.
+    /// KEK injection/rotation, vault writes, and relay passport deny/leases
+    /// are node-owner operations: a KEK unlocks every service database on
+    /// this node, and passport management configures the host's relay.
     /// The gate is `substrate/admin` on the bare `substrate:<node_did>`
     /// resource -- holdable only by a verified `ControllerAgreement`
     /// controller (or `[iam].admin_ucan_root`). No exemption for
@@ -132,6 +134,10 @@ impl ControlPlaneService {
                     .map_err(|e| RpcError::InternalError(e.to_string()))?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "secret_set"}) })
             }
+            "relay-passport-deny" => {
+                relay_passport::deny(self.relay_passports.get(), invocation.params).await
+            }
+            "relay-passport-leases" => relay_passport::leases(self.relay_passports.get()),
             _ => Err(RpcError::MethodNotFound(invocation.method)),
         }
     }

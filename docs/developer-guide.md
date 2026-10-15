@@ -1775,3 +1775,45 @@ Smoke tests can be run to verify the end-to-end functionality of the transport, 
    mise run test:smoke -- --coordinator-url https://syneroym.xyz
    ```
 
+### 5.4. Operating a Restricted Relay with Passports
+
+An operator can restrict an Iroh relay to authorized nodes holding a valid passport lease.
+
+1. **Configure the coordinator:**
+   Set `access = "passport"` (or the table form `{ list = [...], passport = true }`) under `[roles.coordinator]`. Restricted passport access requires `[tls]` to be configured (the coordinator stops at startup without it):
+   ```toml
+   [tls]
+   cert_path = "/etc/ssl/certs/fullchain.pem"
+   key_path = "/etc/ssl/private/privkey.pem"
+
+   [roles.coordinator]
+   access = "passport"
+
+   [roles.coordinator.iroh]
+   enable_relay = true
+   ```
+
+2. **Issue a passport:**
+   Issue a passport token to a user or organization DID. Passports are signed by the substrate's verified controller (via `--from`), or by the node key (via `--node-key`) on a host that has no controller:
+   ```bash
+   roymctl coordinator passport issue \
+       --from my-controller \
+       --to did:key:z6Mku... \
+       --expires-days 30 \
+       --max-nodes 5 \
+       --out passport.json
+   ```
+
+3. **Manage active leases and denials:**
+   Deny a passport or inspect running leases through the running substrate control plane (requires `--as <owner>`):
+   ```bash
+   # Deny a passport by its token ID
+   roymctl coordinator passport deny <passport-id> --as my-controller
+
+   # List running leases
+   roymctl coordinator passport leases --as my-controller
+   ```
+
+> **Closed-group rule:** A passport relay is for a group whose members all hold leases; a peer outside the group cannot reach a member through it. Because the relay access check applies to all incoming client connections and does not distinguish visitors from home clients, only endpoints with a running lease, explicitly listed endpoints, or the coordinator's own and host endpoints can communicate through the relay. Callers outside the group reach leased nodes through direct network paths, or must hold a lease on the relay as well. Substrate-side configuration (`roymctl substrate home-relay set` and automatic renewal) is added in subsequent work.
+
+

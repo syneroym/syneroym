@@ -16,16 +16,12 @@
 //!
 //!     cargo run --example echo --features=examples
 
-use iroh::{
-    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
-    endpoint::Connection,
-    protocol::{AcceptError, ProtocolHandler, Router},
-};
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, protocol::Router};
 use n0_error::{Result, StdResultExt};
-use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::config::{LogTarget, SubstrateConfig};
-use tokio::io;
 use tracing_subscriber::fmt;
+
+mod common;
 
 /// Each protocol is identified by its ALPN string.
 ///
@@ -74,7 +70,7 @@ async fn test_echo() -> anyhow::Result<()> {
         ..Default::default()
     });
 
-    let mut coord = CoordinatorIroh::init(&config).await?;
+    let mut coord = common::init_coordinator(&config).await?;
 
     tokio::select! {
         res = coord.run() => {
@@ -157,43 +153,7 @@ async fn start_accept_side() -> Result<Router> {
 
     // Build our protocol handler and add our protocol, identified by its ALPN, and
     // spawn the endpoint.
-    let router = Router::builder(endpoint).accept(ALPN, Echo).spawn();
+    let router = Router::builder(endpoint).accept(ALPN, common::Echo).spawn();
 
     Ok(router)
-}
-
-#[derive(Debug, Clone)]
-struct Echo;
-
-impl ProtocolHandler for Echo {
-    /// The `accept` method is called for each incoming connection for our ALPN.
-    ///
-    /// The returned future runs on a newly spawned tokio task, so it can run as
-    /// long as the connection lasts.
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        // We can get the remote's endpoint id from the connection.
-        let endpoint_id = connection.remote_id();
-        println!("accepted connection from {endpoint_id}");
-
-        // Our protocol is a simple request-response protocol, so we expect the
-        // connecting peer to open a single bi-directional stream.
-        let (mut send, mut recv) = connection.accept_bi().await?;
-
-        // Echo any bytes received back directly.
-        // This will keep copying until the sender signals the end of data on the
-        // stream.
-        let bytes_sent = io::copy(&mut recv, &mut send).await?;
-        println!("Copied over {bytes_sent} byte(s)");
-
-        // By calling `finish` on the send stream we signal that we will not send
-        // anything further, which makes the receive stream on the other end
-        // terminate.
-        send.finish()?;
-
-        // Wait until the remote closes the connection, which it does once it
-        // received the response.
-        connection.closed().await;
-
-        Ok(())
-    }
 }

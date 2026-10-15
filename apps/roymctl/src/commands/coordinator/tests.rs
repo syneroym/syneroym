@@ -124,3 +124,14 @@ fn issue_refuses_zero_expiry_days() {
     let err = handle_issue(&zero, Some(host), dir.path()).unwrap_err();
     assert!(err.to_string().contains("--expires-days"), "{err}");
 }
+
+#[tokio::test]
+async fn deny_refuses_malformed_passport_id_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let command = CoordinatorCommands::Passport {
+        command: PassportCommands::Deny { passport_id: "not-a-valid-id".to_string() },
+    };
+    let err =
+        handle(&command, "http://127.0.0.1:1", None, dir.path(), None, None).await.unwrap_err();
+    assert!(err.to_string().contains("64 lowercase hex"), "{err}");
+}
