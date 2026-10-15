@@ -107,7 +107,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - X4 with the shape from §2.1 to §2.3: proof of possession as an input, lease keyed on subject, binding hook. Limits read from the passport only.
 - Tests for each `P-2` error, `P-3`, `P-9`, and the `P-7` limits, with both proof forms and both binding forms.
 - `roymctl coordinator passport issue` (an offline signature; one code path with an ability parameter, so the mailbox `issue` variant is a thin wrapper).
-- Done 2026-10-14. Decisions `D-B1-1` to `D-B1-22` are in the [passport change doc](../../changes/operator-passport/change.md).
+- Done 2026-10-14. Decisions `D-B1-1` to `D-B1-28` are in the [passport change doc](../../changes/operator-passport/change.md).
 
 **B2 — Relay use, coordinator side (M).** Needs A1, A3 (same info server) and B1.
 - `access = "passport"` (and the combined form); a run-time access function that reads the lease table.
