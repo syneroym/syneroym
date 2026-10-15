@@ -78,6 +78,7 @@ syneroym-control-plane = { path = "crates/control_plane" }
 syneroym-sandbox-podman = { path = "crates/sandbox_podman" }
 syneroym-sdk = { path = "crates/sdk" }
 syneroym-ucan = { path = "crates/ucan" }
+syneroym-passport = { path = "crates/passport" }
 syneroym-fdae = { path = "crates/fdae" }
 syneroym-mqtt-broker = { path = "crates/mqtt_broker" }
 syneroym-chunk-transfer = { path = "crates/chunk_transfer" }

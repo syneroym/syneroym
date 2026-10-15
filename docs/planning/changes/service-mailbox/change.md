@@ -196,6 +196,8 @@ Ability `mailbox/use` on `substrate:<host node did>/mailbox`. Facts: `max_bytes`
 
 The owner key signs one child token for each member master at deploy time (`roymctl svc deploy` or `app deploy` with a passport file).
 
+The `register` request carries the whole instance certificate in its body, because the router keeps only the two DIDs of the connection and does not pass the certificate on. The mailbox passes the transport's verified instance DID as the proof and this certificate as the signer binding; the passport core checks its `service-instance` scope and that it names that instance DID ([operator-passport](../operator-passport/change.md) `D-B1-17`). The mailbox reads the raised quotas of a queue from `LeaseStore::lease_for`. When a member master holds running leases under two passports, the newest registration wins (`D-B1-16`).
+
 ### Registry list
 
 The registry config gets a second curated list, `[[roles.community_registry.mailboxes]]`, with `service_id` and `operator`. The endpoint is `GET /mailboxes`. It works like the coordinator list ([registry-listed-coordinators](../registry-listed-coordinators/change.md)), including the hop limit. The list uses the shared `list_max_age_secs` setting and the same forwarding and `502` rule. The ranking helper is shared. For `auto`, the key is `SHA-256` over the service id and the mailbox service id with the same layout as the coordinator ranking. Only open mailboxes are listed.

@@ -175,7 +175,7 @@ fn require_key_absent(dir: &Path, name: &str, what: &str) -> anyhow::Result<Path
 /// Resolves `name`'s key path, bailing with a `{what} '{name}' not found`
 /// error if it does not exist -- shared by every command that reads an
 /// already-created identity.
-fn require_key_present(dir: &Path, name: &str, what: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn require_key_present(dir: &Path, name: &str, what: &str) -> anyhow::Result<PathBuf> {
     let path = identity_key_path(dir, name);
     if !path.exists() {
         anyhow::bail!("{what} '{}' not found at {}", name, path.display());

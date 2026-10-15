@@ -21,6 +21,7 @@ use syneroym_sdk::SyneroymClient;
 use syneroym_ucan::CapabilityToken;
 
 pub mod app;
+pub mod coordinator;
 pub mod identity;
 pub mod member_identity;
 pub mod registry;
@@ -97,6 +98,11 @@ pub enum Commands {
     Registry {
         #[command(subcommand)]
         command: RegistryCommands,
+    },
+    /// Operate a coordinator (relay) you run
+    Coordinator {
+        #[command(subcommand)]
+        command: coordinator::CoordinatorCommands,
     },
     /// Manage the Key Encryption Key (KEK)
     Kek {
@@ -196,13 +202,17 @@ pub(crate) fn client_for(
 
 /// Write `contents` to `path`, creating it mode `0600` on Unix so a freshly
 /// written secret (an exported identity backup, a session credential) is
-/// never briefly world- or group-readable. `what` names the file in the
-/// error context if the open fails. Non-Unix has no equivalent permission
-/// bit to set.
+/// never briefly world- or group-readable. A file that already exists is
+/// set to `0600` too, before the secret is written into it. `what` names the
+/// file in the error context if the open fails. Non-Unix has no equivalent
+/// permission bit to set.
 pub(crate) fn write_secret_file(path: &Path, contents: &[u8], what: &str) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        use std::{
+            io::Write,
+            os::unix::fs::{OpenOptionsExt, PermissionsExt},
+        };
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -210,6 +220,8 @@ pub(crate) fn write_secret_file(path: &Path, contents: &[u8], what: &str) -> any
             .mode(0o600)
             .open(path)
             .with_context(|| format!("failed to create {what} at {}", path.display()))?;
+        // `mode` applies only when the file is created.
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
         file.write_all(contents)?;
     }
     #[cfg(not(unix))]
@@ -348,6 +360,9 @@ pub async fn run(
         Commands::Registry { command } => {
             registry::handle(&command, &api_url, &dir).await?;
         }
+        Commands::Coordinator { command } => {
+            coordinator::handle(&command, substrate_opt, &dir)?;
+        }
         Commands::Kek { command } => {
             dispatch_kek(
                 command,
@@ -423,5 +438,21 @@ mod tests {
         );
         let err = result.expect_err("--ucan without --as must be rejected");
         assert!(err.to_string().contains("--as"), "error must point at --as: {err}");
+    }
+
+    /// `mode(0o600)` applies only when the file is created, so an existing
+    /// group- or world-readable file must be tightened before the secret is
+    /// written into it.
+    #[cfg(unix)]
+    #[test]
+    fn write_secret_file_tightens_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.json");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        write_secret_file(&path, b"new", "test secret").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }
