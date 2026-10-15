@@ -6,7 +6,9 @@
 //! passed), and on success calls `grant`, which runs the deny check, the use
 //! limit count and the lease write under one lock.
 
-use anyhow::{Result, ensure};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use anyhow::{Context, Result, ensure};
 use syneroym_ucan::{Capability, CapabilityToken, ChainVerifyOpts, verify_chain};
 
 use crate::{
@@ -18,9 +20,13 @@ use crate::{
     proof::{Challenge, Proof, SignerBinding},
 };
 
+/// Gives each `Registrar` of the process its own id.
+static NEXT_REGISTRAR_ID: AtomicU64 = AtomicU64::new(1);
+
 /// The registration checks of one service for one use.
 #[derive(Debug)]
 pub struct Registrar {
+    id: u64,
     use_: PassportUse,
     host_node_did: String,
     accepted_roots: Vec<String>,
@@ -32,6 +38,8 @@ pub struct Registrar {
 /// fields), so `grant` never writes a lease for a token that was not checked.
 #[derive(Debug, Clone)]
 pub struct CheckedRegistration {
+    /// The `Registrar` that made this value. Only that one may grant it.
+    registrar_id: u64,
     /// The presented child token, with the passport inside.
     token: CapabilityToken,
     /// The lease `grant` will write.
@@ -56,7 +64,8 @@ impl CheckedRegistration {
 
 impl Registrar {
     /// `accepted_roots`: the operator roots this service trusts (the host's
-    /// controller DID and/or its node DID). It must not be empty.
+    /// controller DID and/or its node DID). It must not be empty. Every DID
+    /// must be canonical, and `leases` must belong to the same use.
     pub fn new(
         use_: PassportUse,
         host_node_did: String,
@@ -64,7 +73,18 @@ impl Registrar {
         leases: LeaseStore,
     ) -> Result<Self> {
         ensure!(!accepted_roots.is_empty(), "a passport service needs at least one accepted root");
+        ensure_canonical_did(&host_node_did).context("the host node DID")?;
+        for root in &accepted_roots {
+            ensure_canonical_did(root).context("an accepted root")?;
+        }
+        ensure!(
+            leases.ability() == use_.ability,
+            "the lease store belongs to {}, not to {}",
+            leases.ability(),
+            use_.ability
+        );
         Ok(Self {
+            id: NEXT_REGISTRAR_ID.fetch_add(1, Ordering::Relaxed),
             use_,
             host_node_did,
             accepted_roots,
@@ -121,7 +141,7 @@ impl Registrar {
             // Never the child's facts: an owner could widen a limit there.
             limits: chain.passport.facts.clone(),
         };
-        Ok(CheckedRegistration { token: token.clone(), lease, limit })
+        Ok(CheckedRegistration { registrar_id: self.id, token: token.clone(), lease, limit })
     }
 
     /// The deny check, the use limit count and the lease write, under one
@@ -131,6 +151,11 @@ impl Registrar {
         checked: CheckedRegistration,
         now_secs: u64,
     ) -> Result<Lease, RegisterError> {
+        if checked.registrar_id != self.id {
+            return Err(RegisterError::Store(
+                "the registration was checked by another registrar".into(),
+            ));
+        }
         // The revocation lookup may take seconds. A token that expired in
         // that time is refused, so a lease never starts already ended.
         if now_secs >= checked.lease.lease_ends_at {

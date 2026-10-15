@@ -133,6 +133,8 @@ pub fn child_token(
         "this token is not a passport"
     );
     ensure!(now_secs < passport.expires_at_secs, "the passport has expired");
+    // A token that ends when it starts can never verify.
+    ensure!(expires_in_secs > 0, "a child token must live at least one second");
     ensure_canonical_did(subject_did).context("the subject")?;
     let mut token = CapabilityToken {
         issuer_did: owner_did,

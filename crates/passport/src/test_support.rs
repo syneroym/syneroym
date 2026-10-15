@@ -89,7 +89,7 @@ impl Fixture {
             use_,
             host_node_did.clone(),
             vec![did(&operator)],
-            LeaseStore::open_in_memory().unwrap(),
+            LeaseStore::open_in_memory(&use_).unwrap(),
         )
         .unwrap();
         Self {
@@ -117,7 +117,7 @@ impl Fixture {
             *self.registrar.passport_use(),
             self.host_node_did.clone(),
             roots,
-            LeaseStore::open_in_memory().unwrap(),
+            LeaseStore::open_in_memory(&self.use_()).unwrap(),
         )
         .unwrap();
         self

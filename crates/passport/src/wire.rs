@@ -1,5 +1,14 @@
 //! The bodies of the two registration endpoints of the challenge form,
 //! `POST /v1/home-relay/challenge` and `POST /v1/home-relay/register`.
+//!
+//! A request refuses unknown fields, so a typo is an error. A response
+//! ignores unknown fields: a substrate reads responses from coordinators of
+//! other operators, and a newer coordinator may add a field.
+//!
+//! Whether a challenge that is too old gets `challenge_expired` or
+//! `unknown_challenge` depends on other traffic: the store drops an ended
+//! challenge when the next one is issued. A client must treat both codes the
+//! same way: ask for a new challenge and try again.
 
 use serde::{Deserialize, Serialize};
 use syneroym_ucan::CapabilityToken;
@@ -15,7 +24,6 @@ pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
 
 /// The body of a challenge response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct ChallengeResponse {
     /// 64 hex characters.
     pub challenge: String,
@@ -36,7 +44,6 @@ pub struct RegisterRequest {
 
 /// The body of a successful register response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct RegisterResponse {
     pub passport_id: PassportId,
     pub lease_ends_at: u64,
@@ -44,7 +51,6 @@ pub struct RegisterResponse {
 
 /// The body of a refusal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct ErrorBody {
     /// `RegisterError::code`.
     pub code: String,
@@ -70,8 +76,15 @@ impl RegisterRequest {
 }
 
 impl From<&RegisterError> for ErrorBody {
+    /// A store error carries the text of a database error. That text stays
+    /// inside the service: the body has a fixed message, and the service
+    /// must log the error itself before it converts it.
     fn from(e: &RegisterError) -> Self {
-        Self { code: e.code().to_string(), message: e.to_string() }
+        let message = match e {
+            RegisterError::Store(_) => "internal error".to_string(),
+            other => other.to_string(),
+        };
+        Self { code: e.code().to_string(), message }
     }
 }
 

@@ -27,6 +27,10 @@ pub enum PassportCommands {
     /// Issue a passport that lets one owner's substrates use this relay as
     /// their home relay. Offline: it only signs. Give the file to the owner.
     ///
+    /// The passport id comes from the signed content. Two runs with the same
+    /// options in the same second make the same passport, with one id. To
+    /// give out two passports, make them differ (for example by expiry).
+    ///
     /// A relay cannot use passports yet: a coordinator with
     /// `access = "passport"` still refuses to start. Passports issued now
     /// will work once relays support them.

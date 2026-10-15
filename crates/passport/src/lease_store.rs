@@ -7,11 +7,11 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock},
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use rusqlite::{Connection, Row, params};
 use serde_json::{Map, Value};
 
-use crate::{error::RegisterError, issue::PassportId};
+use crate::{error::RegisterError, issue::PassportId, passport_use::PassportUse};
 
 mod cache;
 
@@ -31,11 +31,13 @@ pub struct Lease {
     pub limits: Map<String, Value>,
 }
 
-/// The lease table and deny list of one service. SQLite holds them across
-/// restarts; an in-memory index answers admission checks without I/O. One
-/// process owns the file: the index is loaded only at `open`, so a write by
-/// another process is not seen until a restart. Deny and list therefore go
-/// through the running service.
+/// The lease table and deny list of one service for one use. The store is
+/// bound to the ability of that use when it is opened, and a file made for
+/// another use is refused: a lease of one use must never admit a subject
+/// under another. SQLite holds the data across restarts; an in-memory index
+/// answers admission checks without I/O. One process owns the file: the index
+/// is loaded only at `open`, so a write by another process is not seen until a
+/// restart. Deny and list therefore go through the running service.
 #[derive(Debug, Clone)]
 pub struct LeaseStore {
     inner: Arc<Inner>,
@@ -43,6 +45,8 @@ pub struct LeaseStore {
 
 #[derive(Debug)]
 struct Inner {
+    /// The ability of the use this store belongs to.
+    ability: &'static str,
     /// Also serialises writers, so the count and the insert of `grant` are
     /// one atomic step.
     conn: Mutex<Connection>,
@@ -58,30 +62,49 @@ fn to_sql_time(secs: u64) -> Result<i64, RegisterError> {
 }
 
 impl LeaseStore {
-    /// Open (or create) `<dir>/<db_name>` and load the running leases and
-    /// the deny list. Rows whose lease has ended are deleted.
-    pub fn open(dir: impl AsRef<Path>, db_name: &str, now_secs: u64) -> Result<Self> {
+    /// Open (or create) `<dir>/<db_name>` for `use_` and load the running
+    /// leases and the deny list. Rows whose lease has ended are deleted. An
+    /// existing file that was made for another use is an error.
+    pub fn open(
+        dir: impl AsRef<Path>,
+        db_name: &str,
+        use_: &PassportUse,
+        now_secs: u64,
+    ) -> Result<Self> {
         if db_name.contains('/') || db_name.contains('\\') || db_name.contains("..") {
             return Err(anyhow!("Invalid database name: {db_name}"));
         }
         let conn = Connection::open(dir.as_ref().join(db_name))?;
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        Self::from_connection(conn, now_secs)
+        Self::from_connection(conn, use_, now_secs)
     }
 
     /// A store that lives only in memory, for tests and tools.
-    pub fn open_in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?, 0)
+    pub fn open_in_memory(use_: &PassportUse) -> Result<Self> {
+        Self::from_connection(Connection::open_in_memory()?, use_, 0)
     }
 
-    fn from_connection(conn: Connection, now_secs: u64) -> Result<Self> {
+    fn from_connection(conn: Connection, use_: &PassportUse, now_secs: u64) -> Result<Self> {
         init_schema(&conn)?;
+        bind_to_use(&conn, use_.ability)?;
         conn.execute(
             "DELETE FROM passport_leases WHERE lease_ends_at <= ?1",
             [to_sql_time(now_secs)?],
         )?;
         let cache = load_cache(&conn)?;
-        Ok(Self { inner: Arc::new(Inner { conn: Mutex::new(conn), cache: RwLock::new(cache) }) })
+        Ok(Self {
+            inner: Arc::new(Inner {
+                ability: use_.ability,
+                conn: Mutex::new(conn),
+                cache: RwLock::new(cache),
+            }),
+        })
+    }
+
+    /// The ability of the use this store was opened for.
+    #[must_use]
+    pub fn ability(&self) -> &'static str {
+        self.inner.ability
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
@@ -210,11 +233,27 @@ fn init_schema(conn: &Connection) -> Result<()> {
              PRIMARY KEY (passport_id, subject)
          );
          CREATE INDEX IF NOT EXISTS idx_passport_leases_end ON passport_leases(lease_ends_at);
+         CREATE TABLE IF NOT EXISTS passport_store (
+             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+             ability   TEXT NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS passport_denied (
              passport_id TEXT PRIMARY KEY,
              denied_at   INTEGER NOT NULL
          );",
     )?;
+    Ok(())
+}
+
+/// A file keeps the ability of the use that first opened it.
+fn bind_to_use(conn: &Connection, ability: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO passport_store (singleton, ability) VALUES (1, ?1)",
+        [ability],
+    )?;
+    let stored: String =
+        conn.query_row("SELECT ability FROM passport_store WHERE singleton = 1", [], |r| r.get(0))?;
+    ensure!(stored == ability, "this lease file belongs to {stored}, not to {ability}");
     Ok(())
 }
 

@@ -82,3 +82,29 @@ fn an_error_body_carries_the_code() {
     assert_eq!(body.code, "denied");
     assert_eq!(body.message, "the passport is denied");
 }
+
+#[test]
+fn a_store_error_does_not_reach_the_error_body() {
+    let body = ErrorBody::from(&RegisterError::Store("disk I/O error at /var/db".into()));
+    assert_eq!(body.code, "internal");
+    assert_eq!(body.message, "internal error");
+}
+
+/// A newer coordinator may add a field to a response. An older substrate must
+/// still read it.
+#[test]
+fn a_response_with_an_unknown_field_still_parses() {
+    let id = "a".repeat(64);
+    let ok: RegisterResponse = serde_json::from_value(
+        json!({ "passport_id": id, "lease_ends_at": 5, "renew_after_secs": 3 }),
+    )
+    .unwrap();
+    assert_eq!(ok.lease_ends_at, 5);
+    let challenge: ChallengeResponse =
+        serde_json::from_value(json!({ "challenge": id, "expires_in_secs": 60, "x": 1 })).unwrap();
+    assert_eq!(challenge.expires_in_secs, 60);
+    let error: ErrorBody =
+        serde_json::from_value(json!({ "code": "denied", "message": "m", "retry": false }))
+            .unwrap();
+    assert_eq!(error.code, "denied");
+}

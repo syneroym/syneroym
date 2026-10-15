@@ -168,3 +168,11 @@ fn passport_id_round_trips_and_rejects_bad_hex() {
         assert!(serde_json::from_str::<PassportId>(&format!("\"{bad}\"")).is_err());
     }
 }
+
+#[test]
+fn child_token_refuses_a_zero_life() {
+    let p = parties();
+    let passport = passport(&p, Map::new()).unwrap();
+    let error = child_token(&p.owner, &passport, &new_did(), 0, NOW).unwrap_err();
+    assert!(error.to_string().contains("at least one second"), "{error:#}");
+}

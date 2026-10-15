@@ -40,7 +40,7 @@ fn register(passport: &CapabilityToken, owner: &Identity, host: &str, root: &str
         RELAY_HOME,
         host.to_string(),
         vec![root.to_string()],
-        LeaseStore::open_in_memory().unwrap(),
+        LeaseStore::open_in_memory(&RELAY_HOME).unwrap(),
     )
     .unwrap();
     let challenge = registrar.issue_challenge(now).unwrap();

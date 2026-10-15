@@ -44,4 +44,27 @@ ignore = [
     "RUSTSEC-2026-0322",
     "RUSTSEC-2026-0321",
     "RUSTSEC-2026-0324",
+
+    # Eleven more wasmtime / wasmtime-wasi 46.0.3 advisories (published
+    # 2026-10-14). Host panics from component-model edge cases: erroneous
+    # call-to-host from guest realloc (0356), async-lifted call (0353),
+    # zero-length stream writes (0357), start function yield (0358),
+    # recursive type drop (0359), cancelled call_async (0354), stream or
+    # future viewed as the wrong type (0355), calls run after a trap (0361),
+    # and the async-entrypoint requirement (0362). Also handle tables that
+    # are not charged to any limit (0363) and a filesystem sandbox escape
+    # when renaming symlinks with a trailing slash (0352, wasmtime-wasi).
+    # Fixed in wasmtime 48.0.6 / 49.0.3, so the same dedicated wasmtime
+    # upgrade clears them. Remove these entries with the ones above.
+    "RUSTSEC-2026-0352",
+    "RUSTSEC-2026-0353",
+    "RUSTSEC-2026-0354",
+    "RUSTSEC-2026-0355",
+    "RUSTSEC-2026-0356",
+    "RUSTSEC-2026-0357",
+    "RUSTSEC-2026-0358",
+    "RUSTSEC-2026-0359",
+    "RUSTSEC-2026-0361",
+    "RUSTSEC-2026-0362",
+    "RUSTSEC-2026-0363",
 ]
