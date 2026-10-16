@@ -88,11 +88,11 @@ plan.
 | C2-7 | Text forms on the wire: mailbox public and secret keys as z-base-32 (52 characters, like DIDs and signatures in this repo); deposit id as 32 lowercase hex characters (16 random bytes); message hash as 64 lowercase hex characters; sealed bytes as standard base64 with padding (new direct dependency `base64` 0.23, the newest stable, already in `Cargo.lock` as 0.23.1 through other crates; its `Engine` and `general_purpose::STANDARD` API is the same as 0.22). | Keys go into the 1000-byte BEP44 record (K-1), so the short z32 form matters. Sealed bodies are up to 64 KiB and a phone downloads them; base64 costs 33 % where hex costs 100 %. |
 | C2-8 | `MAX_SEALED_BYTES = 64 * 1024`, counted on the raw sealed bytes (32-byte HPKE `enc` + ciphertext + 16-byte tag), before base64. The same constant is S-1's "sealed size" and M-4's "message size". | One number, one place. |
 | C2-9 | The mailbox secret key is the 32-byte seed of RFC 9180 `DeriveKeyPair`. The private and public X25519 keys are derived from it when needed. | Generation needs no random-number type from the `hpke` crate (only `getrandom`), and the stored form is one fixed-size value. C3 delivers this seed in the deploy call. |
-| C2-10 | `open` runs its checks in two groups. **Group 1, before the message is known to be authentic:** sealed length, HPKE open, inner JSON parse, sender signature. A failure here returns `TooLarge`, `Undecryptable`, `Malformed` or `BadSignature`. **Group 2, on an authentic message:** sender certificate valid **at `sent_at_secs`** (`verify_at` with scope `service-instance`), then the time window `sent_at_secs + max_ttl_secs + max_clock_skew_secs >= now_secs` and `sent_at_secs <= now_secs + max_clock_skew_secs`. A failure here returns `OpenError::Refused`, which carries the code and the authentic message. | R-4. The future bound is not in R-4; it is added because Conversation has the same rule (`crates/conversation/src/transport.rs:320`) and an unbounded future time would make the age check useless. The two groups are what C2-14 needs: only an authentic message can get a signed rejection. Record the future bound as a deviation. |
+| C2-10 | `open` runs its checks in two groups. **Group 1, before the message is known to be signed by the key its certificate names:** sealed length, HPKE open, inner JSON parse, sender signature. A failure here returns `TooLarge`, `Undecryptable`, `Malformed` or `BadSignature`. **Group 2, on a message signed by the key its certificate names:** the certificate itself (the master's signature, the scope `service-instance`, and the window **at `sent_at_secs`**, all in one `verify_at`), then the time window `sent_at_secs + max_ttl_secs + max_clock_skew_secs >= now_secs` and `sent_at_secs <= now_secs + max_clock_skew_secs`. A failure here returns `OpenError::Refused`, which carries the code and the authentic message. | R-4. The future bound is not in R-4; it is added because Conversation has the same rule (`crates/conversation/src/transport.rs:320`) and an unbounded future time would make the age check useless. The two groups are what C2-14 needs. Only after the certificate verifies is the sender known: before that, the certificate may be forged, and the "sender" is a DID nobody proved. Record the future bound as a deviation. |
 | C2-11 | `open` does **not** check revocation. It returns the sender's instance DID and master DID; C6 checks the instance DID against the master's anchor (`MasterAnchorResolver`, as `crates/router/src/handshake.rs:66-75` does) and acks with a signed `rejected` with code `revoked`. | Revocation needs an async network lookup. Every function in this crate is pure. |
 | C2-12 | The age bound takes `max_ttl_secs` as a parameter (`OpenPolicy`), default `OPEN_MAX_TTL_SECS = 7 days`; `max_clock_skew_secs` default `MAX_CLOCK_SKEW_SECS = 86_400`. | A dedicated mailbox may raise the time-to-live with the passport fact `max_ttl_secs` (ADR-0015 A10). The receiver learns its queue's limit at `register` (C4, C8) and passes it in. See §4 item 3. |
-| C2-13 | **A signed receipt names the exact message.** `message_hash` = SHA-256 over the canonical JSON bytes of the message statement (C2-3). `seal` returns it to the sender inside a `SentDeposit` (deposit id, receiver service id, sender master DID, message hash), and `open` returns it to the receiver. The receipt statement, signed with the receiver's instance key, is `{"domain": "syneroym-mailbox-receipt-v1", "deposit_id", "sender", "message_hash", "state", "at_secs"}`, plus `"code"` (the raw wire string) when `state` is `"rejected"`. `sender` is the sender's member master DID. The sender checks a receipt against its own `SentDeposit` only. | Without it a dishonest mailbox can fake a delivery: drop deposit `X` of sender S2, seal **its own** new message (signed by any instance it controls) with `deposit_id = X`, let the receiver open it and sign `delivered(X)`, and show that receipt to S2. With `sender` and `message_hash` in the receipt, S2 rebuilds the statement from its own values and the signature fails. The mailbox cannot make a message with S2's hash: the hash covers the idempotency key and the payload hash, which are sealed. |
-| C2-14 | **Owner-confirmed (2026-10-16), narrowed by review.** The receiver signs a `rejected` receipt only (a) for an authentic message (it has the message hash, C2-13) and (b) for a code the **sender caused**: `bad_certificate`, `from_future`, `revoked`, `not_eligible`. For every other failure (`malformed`, `undecryptable`, `bad_signature`, `too_large`, `too_old`) the receiver acks with an **unsigned** `rejected`. The mailbox's own `rejected` after 5 claims (M-14, code `too_many_claims`) is unsigned too. `sign_*` functions refuse to sign any other code, and `verify_signed` refuses a signed rejection with any other code. | S-5 says `rejected` fails the message, and the mailbox can cause most failures itself: change one byte (`undecryptable`), relabel (`bad_signature`), or hold the message back and release it late (`too_old`). If the receiver signed those, a dishonest mailbox could still make a sender drop a message for good. The four sender-caused codes come from checks on content the sender signed, or on the receiver's own rules, so the mailbox cannot cause them. The receiver acks the others (unsigned) instead of leaving them unacked, so the mailbox closes them at once instead of after 5 claims and 25 minutes. |
+| C2-13 | **A signed receipt names the exact message.** `message_hash` = SHA-256 over the canonical JSON bytes of the message statement (C2-3). `seal` returns it to the sender inside a `SentDeposit` (deposit id, receiver service id, sender master DID, message hash), and `open` returns it to the receiver. The receipt statement, signed with the receiver's instance key, is `{"domain": "syneroym-mailbox-receipt-v1", "deposit_id", "sender", "message_hash", "state", "at_secs"}`, plus `"code"` (the raw wire string) when `state` is `"rejected"`. `sender` is the sender's member master DID. The sender checks a receipt against its own `SentDeposit` only. | Without it a dishonest mailbox can fake a delivery: drop deposit `X` of sender S2, seal **its own** new message (signed by any instance it controls) with `deposit_id = X`, let the receiver open it and sign `delivered(X)`, and show that receipt to S2. With `sender` and `message_hash` in the receipt, S2 rebuilds the statement from its own values and the signature fails. For `delivered` the real protection is the sender signature: the receiver signs `delivered` only for a message whose signature and certificate both verify, so a message with S2's hash and S2 as sender must be signed by an instance S2's master certified. That the fields are sealed does not protect a receipt: every past host of the receiver holds the mailbox private key (ADR-0026 Decision 4), so a mailbox working with a past host can read S2's message. This is why C2-14 never signs a rejection that is given before the certificate is verified. |
+| C2-14 | **Owner-confirmed (2026-10-16), narrowed by review.** The receiver signs a `rejected` receipt only (a) for a message whose signature **and** certificate both verify, so the sender in the receipt is proven (C2-10, C2-13), and (b) for one of three codes the **sender caused**: `from_future`, `revoked`, `not_eligible`. For every other failure (`malformed`, `undecryptable`, `bad_signature`, `too_large`, `bad_certificate`, `too_old`) the receiver acks with an **unsigned** `rejected`. The mailbox's own `rejected` after 5 claims (M-14, code `too_many_claims`) is unsigned too. `sign_*` functions refuse to sign any other code, and `verify_signed` refuses a signed rejection with any other code. | S-5 says `rejected` fails the message, and the mailbox can cause most failures itself: change one byte (`undecryptable`), relabel (`bad_signature`), or hold the message back and release it late (`too_old`). If the receiver signed those, a dishonest mailbox could still make a sender drop a message for good. `bad_certificate` is unsigned too: a forged certificate gives the same code, and a mailbox working with a past host of the receiver can read S2's message, sign the same statement with its own key, and attach a fake certificate that names S2's master; a signed rejection would then name S2 and the right hash. An honest sender almost never gets `bad_certificate`, because `seal` checks the certificate at the send time. The three sender-caused codes are checked only after the certificate verifies, on content the sender signed or on the receiver's own rules, so the mailbox cannot cause them. The receiver acks the others (unsigned) instead of leaving them unacked, so the mailbox closes them at once instead of after 5 claims and 25 minutes. |
 | C2-15 | **The sender rule for each receipt** (built in C5; written here because the format must support it): `delivered` that passes `verify_signed` → done. `rejected` that passes `verify_signed` → failed. `stored` → keep polling. **Everything else** → handled like `expired`, that is, back to direct attempts until the outbox's own attempt budget or age limit ends the message: `expired`, `unknown`, a state this version does not know, an unsigned `rejected`, and **any** `delivered` or `rejected` for which `verify_signed` returns an error (`Unsigned`, `NotSignable`, `WrongReceiver`, `BadCertificate`, `BadSignature`, `FromFuture`). | A receipt with a bad proof is either a bug or a dishonest mailbox. It must never count as delivered or as a final rejection. Treating it like `expired` is safe: the idempotency fence at the receiver removes a second copy. |
 | C2-16 | **A `Deposit` is used once.** Every deposit, including a second deposit after an `expired` receipt (S-4, S-5), is a fresh `seal` call with a new deposit id and a new `sent_at_secs`. C5 keeps the plaintext call (the queued call payload already stays unchanged while parked, `D-C1-4`) and stores only the `SentDeposit` and the mailbox id in the park context (`D-C1-3`), never the sealed bytes. | A stored deposit sent again later would carry an old send time. Inside Conversation's 30-day window it would fail `too_old` at the receiver. |
 | C2-17 | **Forward compatibility.** (a) Reject codes travel as plain strings; the receipt signature covers the raw string. `RejectCode` is a helper enum with `as_str`, `parse` (returns `None` for a string it does not know) and `is_sender_fault`. An unknown code is kept as text and is never sender-caused, so it is never final. (b) `Receipt` reads a `state` it does not know as `Unknown` (`#[serde(other)]`). (c) `Deposit` and the sealed inner part **ignore** unknown fields. | All three are read by nodes of other operators that may run a newer version. Ignoring an unknown field is safe in (c): every field that carries meaning is either signed (inner part) or checked by `Deposit::check` (outer part), and a change that breaks the meaning changes the `-v1` domain tags. This replaces the first version's `deny_unknown_fields` on `Deposit` and on the inner part. |
@@ -481,9 +481,10 @@ pub struct OpenedMessage {
     pub message_hash: MessageHash,
 }
 
-/// An authentic message (its sender signature is good) that failed a check
-/// on the sender's side: its certificate, or its send time. It must not be
-/// delivered. `receipt` makes the ack for it.
+/// A message signed by the key its certificate names, that failed a check
+/// on the sender's side: the certificate itself, or the send time. It must
+/// not be delivered. `receipt` makes the ack for it. Its sender is proven
+/// only when `code` is not `BadCertificate`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefusedMessage {
     pub code: RejectCode,
@@ -501,7 +502,7 @@ Methods on these types:
 | `OpenedMessage::sign_delivered(&self, instance: &Identity, certificate: &DelegationCertificate, at_secs: u64) -> Result<Receipt, ReceiptError>` | `receipt::sign(.., SignedOutcome::Delivered, ..)` over this message. |
 | `OpenedMessage::sign_rejection(&self, instance: &Identity, certificate: &DelegationCertificate, code: RejectCode, at_secs: u64) -> Result<Receipt, ReceiptError>` | For the receiver's own checks after `open` (`Revoked`, `NotEligible`). Refuses a code that is not sender-caused (`NotSignable`). |
 | `RefusedMessage::sender_master_did(&self) -> &str` | For the log. |
-| `RefusedMessage::receipt(&self, instance: &Identity, certificate: &DelegationCertificate, at_secs: u64) -> Result<Receipt, ReceiptError>` | Signed rejection if `self.code.is_sender_fault()` (`BadCertificate`, `FromFuture`); otherwise `Receipt::unsigned_rejection(self.code, at_secs)` (`TooOld`). |
+| `RefusedMessage::receipt(&self, instance: &Identity, certificate: &DelegationCertificate, at_secs: u64) -> Result<Receipt, ReceiptError>` | Signed rejection if `self.code.is_sender_fault()` (only `FromFuture` can be); otherwise `Receipt::unsigned_rejection(self.code, at_secs)` (`BadCertificate`, `TooOld`). |
 | `MessageHash`: `Display`/`FromStr` (64 lowercase hex), `as_bytes(&self) -> &[u8; 32]` | |
 
 Private inner part (the plaintext before sealing):
@@ -594,7 +595,7 @@ delivery (§4 item 4).
 **`pub fn open(key: &MailboxSecretKey, own_service_id: &str, deposit_id: &DepositId, sealed: &SealedBytes, policy: OpenPolicy, now_secs: u64) -> Result<OpenedMessage, OpenError>`**
 
 ```text
-// group 1: before the message is known to be authentic
+// group 1: until the message signature matches the certificate's key
 if sealed.len() > MAX_SEALED_BYTES: return TooLarge
 plaintext = crypto::open_with(key.seed(), sealed.as_slice())
             TooShort -> Malformed("too short"); anything else -> Undecryptable
@@ -607,7 +608,7 @@ m_hash = message_hash(&statement) else Malformed
 message = OpenedMessage { content: MessageContent { .. }, sender_certificate, sent_at_secs,
                           deposit_id: *deposit_id, message_hash: m_hash }
 
-// group 2: checks on the sender's side of an authentic message
+// group 2: the certificate itself, then the send time
 refuse(code, detail) = Err(OpenError::Refused(Box::new(RefusedMessage { code, detail, message })))
 message.sender_certificate.verify_at(&message.sender_certificate.master_did,
                                      &[SCOPE_SERVICE_INSTANCE], message.sent_at_secs)
@@ -631,6 +632,9 @@ Notes for the code comments (write the reason, not the id):
   carry an expired certificate.
 - `too_old` is refused but not sender-caused: a mailbox can hold a message
   back and release it late.
+- `bad_certificate` is refused but not sender-caused: the certificate may be
+  forged, so the sender it names is not proven. Only a code found after the
+  certificate verifies may be signed.
 - An empty idempotency key is not checked here, in `seal` or in `open`.
   Whether a call has a usable key is part of S-1 eligibility, which C5
   checks before it calls `seal`.
@@ -645,10 +649,10 @@ Split `open` into small private functions so it stays readable and under
 /// plain string, so a code from a newer version survives a round trip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RejectCode {
-    // caused by the sender: the receiver may sign these
-    BadCertificate, FromFuture, Revoked, NotEligible,
-    // could be caused by the mailbox: never signed
-    Malformed, Undecryptable, BadSignature, TooLarge, TooOld, TooManyClaims,
+    // caused by the sender, found after its certificate verified: the receiver may sign these
+    FromFuture, Revoked, NotEligible,
+    // could be caused by the mailbox, or the sender is not proven: never signed
+    Malformed, Undecryptable, BadSignature, TooLarge, BadCertificate, TooOld, TooManyClaims,
 }
 impl RejectCode {
     pub const ALL: [RejectCode; 10] = [/* every variant */];
@@ -658,10 +662,11 @@ impl RejectCode {
     pub fn as_str(self) -> &'static str;
     /// The code for exactly one of the strings above, else `None`.
     pub fn parse(s: &str) -> Option<Self>;
-    /// True only for a failure the mailbox cannot cause: a check on content
-    /// the sender signed, or on the receiver's own rules. Only these may be
-    /// signed, and only a signed one ends a message.
-    pub fn is_sender_fault(self) -> bool;  // BadCertificate | FromFuture | Revoked | NotEligible
+    /// True only for a failure the mailbox cannot cause and whose sender is
+    /// proven: a check made after the sender's certificate verified, on
+    /// content the sender signed or on the receiver's own rules. Only these
+    /// may be signed, and only a signed one ends a message.
+    pub fn is_sender_fault(self) -> bool;  // FromFuture | Revoked | NotEligible
 }
 
 /// The receiver's signature over a receipt, with the certificate that ties
@@ -703,7 +708,7 @@ pub enum SignedOutcome { Delivered, Rejected(RejectCode) }
 Do **not** add `deny_unknown_fields` to `Receipt` or `ReceiverProof`: a
 sender reads them from mailboxes of other operators, which may be newer
 (same rule as `crates/passport/src/wire.rs`). `#[serde(other)]` on a unit
-variant is allowed in an internally tagged enum; test 55 proves it works.
+variant is allowed in an internally tagged enum; test 56 proves it works.
 
 Private helpers:
 
@@ -783,12 +788,13 @@ pub enum SealError {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OpenError {
-    // the message is not known to be authentic: the ack is unsigned
+    // the signature does not match the certificate's key: the ack is unsigned
     TooLarge { bytes: usize, max: usize },
     Undecryptable,
     Malformed(String),
     BadSignature,
-    // an authentic message that failed a check on the sender's side
+    // signed by the certificate's key, but the certificate or the send time failed;
+    // the ack is signed only for a sender-caused code
     #[error("refused ({}): {}", .0.code.as_str(), .0.detail)]
     Refused(Box<RefusedMessage>),
 }
@@ -912,21 +918,22 @@ the mailbox controls is `M`.
 46. `a_delivered_receipt_signed_after_the_certificate_expired_fails` (`sign_delivered` refuses it; and a hand-built one fails `verify_signed` with `BadCertificate`)
 47. `a_delivery_of_a_mailbox_made_message_under_the_same_deposit_id_fails` — the attack in C2-13: `S2` seals to `R` and keeps its `SentDeposit`. `M` uses `seal_unchecked` to seal its own content to `R` with `S2`'s `deposit_id`. `R` opens `M`'s message (it opens) and signs `delivered`. `verify_signed` with `S2`'s `SentDeposit` → `BadSignature`.
 48. `a_signed_rejection_for_a_sender_caused_code_verifies` (`sign_rejection(Revoked)` → `verify_signed` returns `Rejected(Revoked)`; same for `NotEligible`)
-49. `a_refused_message_gets_a_signed_or_an_unsigned_receipt_by_its_code` (`RefusedMessage::receipt`: `BadCertificate` and `FromFuture` give a signed receipt that verifies; `TooOld` gives an unsigned one)
-50. `no_code_the_mailbox_could_cause_can_be_signed` (`sign_rejection` with each of `Malformed`, `Undecryptable`, `BadSignature`, `TooLarge`, `TooOld`, `TooManyClaims` → `NotSignable`)
+49. `a_refused_message_gets_a_signed_or_an_unsigned_receipt_by_its_code` (`RefusedMessage::receipt`: `FromFuture` gives a signed receipt that verifies; `BadCertificate` and `TooOld` give an unsigned one)
+50. `no_code_the_mailbox_could_cause_can_be_signed` (`sign_rejection` with each of `Malformed`, `Undecryptable`, `BadSignature`, `TooLarge`, `BadCertificate`, `TooOld`, `TooManyClaims` → `NotSignable`)
 51. `a_signed_rejection_with_a_code_the_mailbox_could_cause_is_not_final` (a hand-signed `too_old` rejection with a valid proof → `verify_signed` gives `NotSignable`)
-52. `a_rejection_with_a_changed_code_fails` (tamper `revoked` to `not_eligible` → `BadSignature`)
-53. `an_unknown_reject_code_is_kept_and_is_never_final` (a receipt with `"code":"rate_limited"` round-trips with the same text; `verify_signed` → `NotSignable`)
-54. `stored_expired_unknown_and_unsigned_rejections_are_unsigned` (`verify_signed` → `Unsigned`; the unsigned rejection made by `Receipt::unsigned_rejection`)
-55. `an_unknown_receipt_state_reads_as_unknown` (`{"state":"held","at_secs":5}` → `Receipt::Unknown`)
-56. `receipts_serialize_with_a_state_tag` — assert the exact JSON of each variant, for example `{"state":"stored","at_secs":5}`, `{"state":"rejected","at_secs":5,"code":"too_old"}` and `{"state":"unknown"}`. This test is the wire contract C4 and C5 build on.
-57. `signing_refuses_an_instance_key_that_does_not_match_the_certificate`
+52. `a_forged_certificate_cannot_get_a_signed_rejection` — the attack in C2-14: `S2` seals to `R` and keeps its `SentDeposit`. The attacker builds a certificate by hand with `master_did` = `S2`'s master, `temporary_did` = the attacker's own key and a signature made by the attacker, then uses `seal_unchecked` with `S2`'s content and `deposit_id`, its own key as signer and that certificate, so the message hash is the same as `S2`'s. `open` → `Refused` with `BadCertificate`; `RefusedMessage::receipt` → an unsigned `rejected`; `verify_signed` with `S2`'s `SentDeposit` → `Unsigned`. A hand-signed `bad_certificate` rejection with a valid receiver proof → `NotSignable`.
+53. `a_rejection_with_a_changed_code_fails` (tamper `revoked` to `not_eligible` → `BadSignature`)
+54. `an_unknown_reject_code_is_kept_and_is_never_final` (a receipt with `"code":"rate_limited"` round-trips with the same text; `verify_signed` → `NotSignable`)
+55. `stored_expired_unknown_and_unsigned_rejections_are_unsigned` (`verify_signed` → `Unsigned`; the unsigned rejection made by `Receipt::unsigned_rejection`)
+56. `an_unknown_receipt_state_reads_as_unknown` (`{"state":"held","at_secs":5}` → `Receipt::Unknown`)
+57. `receipts_serialize_with_a_state_tag` — assert the exact JSON of each variant, for example `{"state":"stored","at_secs":5}`, `{"state":"rejected","at_secs":5,"code":"too_old"}` and `{"state":"unknown"}`. This test is the wire contract C4 and C5 build on.
+58. `signing_refuses_an_instance_key_that_does_not_match_the_certificate`
 
 `error/tests.rs`:
 
-58. `every_reject_code_round_trips_through_its_string` (`parse(as_str(c)) == Some(c)` for every `RejectCode::ALL`; no two share a string; `parse("unknown_code") == None`)
-59. `only_the_four_sender_caused_codes_are_sender_faults`
-60. `every_open_error_has_its_own_reject_code` (each non-`Refused` variant maps to the code of the same name; `Refused` gives its own code)
+59. `every_reject_code_round_trips_through_its_string` (`parse(as_str(c)) == Some(c)` for every `RejectCode::ALL`; no two share a string; `parse("unknown_code") == None`)
+60. `only_the_three_sender_caused_codes_are_sender_faults` (`FromFuture`, `Revoked`, `NotEligible`; `BadCertificate` is not)
+61. `every_open_error_has_its_own_reject_code` (each non-`Refused` variant maps to the code of the same name; `Refused` gives its own code)
 
 ### Step 10 — docs in the same PR
 
@@ -954,13 +961,15 @@ list to extend.)
       against what it sent. So a mailbox cannot reuse a receipt for another
       message, and cannot make a delivery receipt for a message it put in
       the queue itself.
-   2. The receiver signs a rejection only for a failure the mailbox cannot
-      cause: the sender's certificate was not valid at the send time, the
-      send time is in the future, the sender's key is revoked, or the method
-      does not accept deferred delivery. For every other failure (a message
-      that does not open or does not verify, or one that arrives too late)
-      the receiver's rejection is unsigned. The mailbox's own rejection after
-      repeated claims is unsigned too.
+   2. The receiver signs a rejection only when the sender is proven (the
+      message signature and the sender's certificate both verify) and the
+      failure is one the mailbox cannot cause: the send time is in the
+      future, the sender's key is revoked, or the method does not accept
+      deferred delivery. For every other failure the receiver's rejection is
+      unsigned: a message that does not open or does not verify, a sender
+      certificate that does not verify (it may be forged), or a message that
+      arrives too late. The mailbox's own rejection after repeated claims is
+      unsigned too.
    3. The sender fails a message only on a signed rejection that it can
       verify. An unsigned rejection, or a receipt whose signature does not
       verify, is handled like `expired`: the sender returns to direct
@@ -991,7 +1000,9 @@ list to extend.)
        until that age limit. Each new deposit is sealed again, with a new
        deposit id and send time."
      - **R-4**: add at the end: "A rejection for a send time that is too old
-       is unsigned, because a mailbox can delay a message."
+       is unsigned, because a mailbox can delay a message. A rejection for a
+       sender certificate that does not verify is unsigned, because the
+       certificate may be forged and then the sender is not proven."
    - "Sender flow" diagram: keep the layout; replace the text
      `|--rejected--> failed` with `|--rejected (signed)--> failed`, and
      `'--expired / unknown--> pending` with
@@ -1010,8 +1021,9 @@ list to extend.)
      - `D-C2-6`: the mailbox secret key is the 32-byte `DeriveKeyPair` seed
        (C2-9).
      - `D-C2-7`: receipts and rejections, ADR-0026 A1: the receipt names
-       the sender and the message hash; only sender-caused rejections are
-       signed and final; any other receipt is handled like `expired`
+       the sender and the message hash; only rejections for `from_future`,
+       `revoked` and `not_eligible` are signed and final (`bad_certificate`
+       is not: the certificate may be forged); any other receipt is handled like `expired`
        (C2-13, C2-14, C2-15). The rows M-13, M-14, S-5, R-4 and the Sender
        flow diagram were changed to match.
      - `D-C2-8`: the `hpke` check. `hpke` 0.13 is used, not 0.14: 0.14 needs
@@ -1127,6 +1139,20 @@ list to extend.)
     window.
 13. **What a receipt with a bad proof means was not written (decided,
     C2-15).** It is handled like `expired`.
+14. **A forged sender certificate (decided, C2-14; found in the second
+    review).** The first fix signed `bad_certificate` as a sender fault. But
+    `open` checks the message signature only against the certificate's own
+    `temporary_did`; the master's signature on the certificate is checked
+    later, inside `verify_at`. A mailbox working with a past host of the
+    receiver (which holds the mailbox private key, ADR-0026 Decision 4) can
+    read a message, sign the same statement with its own key, and attach a
+    fake certificate that names the real sender's master. A signed
+    `bad_certificate` would then name the real sender and the right hash.
+    So `bad_certificate` is never signed. The other way out, signing it
+    when only the window or scope fails, needs a separate check of the
+    master's signature before `verify_at` (which runs all its checks
+    together); it is more code for a case an honest sender almost never
+    reaches, because `seal` checks the certificate at the send time.
 
 ## 5. How later slices use this crate (no change in C2)
 
