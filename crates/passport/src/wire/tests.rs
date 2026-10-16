@@ -135,3 +135,94 @@ fn lease_info_round_trips_and_accepts_extra_field() {
     let parsed: LeaseInfo = serde_json::from_value(with_extra).unwrap();
     assert_eq!(parsed, info);
 }
+
+#[test]
+fn retry_class_covers_every_register_error() {
+    let all_errors = [
+        RegisterError::RequestTooLarge { max: 10 },
+        RegisterError::Malformed("m".into()),
+        RegisterError::BadSignature,
+        RegisterError::NotBound,
+        RegisterError::UntrustedRoot,
+        RegisterError::BrokenChain,
+        RegisterError::WrongCapability { ability: "a".into(), resource: "r".into() },
+        RegisterError::Expired,
+        RegisterError::InvalidChain("i".into()),
+        RegisterError::Denied,
+        RegisterError::Revoked,
+        RegisterError::LimitReached { limit: 1 },
+        RegisterError::UnknownChallenge,
+        RegisterError::ChallengeExpired,
+        RegisterError::NotAccepted,
+        RegisterError::RateLimited,
+        RegisterError::Store("s".into()),
+    ];
+    for err in &all_errors {
+        let expected = match err {
+            RegisterError::UnknownChallenge | RegisterError::ChallengeExpired => {
+                RetryClass::NewChallenge
+            }
+            RegisterError::RateLimited | RegisterError::Store(_) => RetryClass::Backoff,
+            RegisterError::RequestTooLarge { .. }
+            | RegisterError::Malformed(_)
+            | RegisterError::BadSignature
+            | RegisterError::NotBound
+            | RegisterError::UntrustedRoot
+            | RegisterError::BrokenChain
+            | RegisterError::WrongCapability { .. }
+            | RegisterError::Expired
+            | RegisterError::InvalidChain(_)
+            | RegisterError::Denied
+            | RegisterError::Revoked
+            | RegisterError::LimitReached { .. }
+            | RegisterError::NotAccepted => RetryClass::Settled,
+        };
+        assert_eq!(
+            RetryClass::of(err.code()),
+            expected,
+            "error {} with code {} must map to {:?}",
+            err,
+            err.code(),
+            expected
+        );
+    }
+    assert_eq!(RetryClass::of("unknown_code"), RetryClass::Backoff);
+    assert_eq!(RetryClass::of(UNREACHABLE_CODE), RetryClass::Backoff);
+}
+
+#[test]
+fn home_relay_status_accepts_extra_fields() {
+    let status_json = json!({
+        "relay_url": "https://relay.example.org",
+        "info_url": "https://info.example.org",
+        "active": true,
+        "passport_id": "a".repeat(64),
+        "host_node_did": "did:key:host",
+        "owner_did": "did:key:owner",
+        "access_ends_at": 1000,
+        "lease_ends_at": 500,
+        "extra_field": "some_extra_val"
+    });
+    let status: HomeRelayStatus = serde_json::from_value(status_json).unwrap();
+    assert_eq!(status.relay_url, "https://relay.example.org");
+    assert!(status.active);
+    assert_eq!(status.lease_ends_at, Some(500));
+}
+
+#[test]
+fn home_relay_set_request_refuses_extra_field_and_parses_defaults() {
+    let f = Fixture::relay();
+    let token = f.token(Map::new());
+    let valid_json = json!({
+        "token": token,
+        "info_url": "https://info.example.org"
+    });
+    let req: HomeRelaySetRequest = serde_json::from_value(valid_json.clone()).unwrap();
+    assert_eq!(req.info_url, "https://info.example.org");
+    assert_eq!(req.relay_url, None);
+    assert_eq!(req.ca_cert_pem, None);
+
+    let mut with_extra = valid_json;
+    with_extra["extra"] = json!("unexpected");
+    assert!(serde_json::from_value::<HomeRelaySetRequest>(with_extra).is_err());
+}

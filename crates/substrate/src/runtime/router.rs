@@ -174,7 +174,10 @@ async fn setup_router(
     .await?;
 
     if let Some(handle) = router.home_relay() {
-        home_relay::connect_home_relay(handle, relay_source, service_id);
+        let passport = home_relay::connect_home_relay(handle, relay_source, service_id, secret_key);
+        if let (Some(control_plane), Some(passport)) = (&control_plane, passport) {
+            control_plane.set_home_relay(passport);
+        }
     }
 
     // `ProxyRouter` (the sole `ServiceProxy`) exists only now -- wired the

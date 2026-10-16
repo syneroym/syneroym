@@ -224,7 +224,9 @@ pub(crate) fn endpoint_of_did(did: &str) -> Result<EndpointId> {
 
 /// Whether the client `id` has a running lease.
 pub(crate) fn is_leased(leases: &LeaseStore, id: &EndpointId) -> bool {
-    endpoint_did(id).is_some_and(|did| leases.is_admitted(&did, syneroym_passport::now_secs()))
+    let did = endpoint_did(id);
+    let now = syneroym_passport::now_secs();
+    did.as_ref().is_some_and(|d| leases.is_admitted(d, now))
 }
 
 #[cfg(test)]

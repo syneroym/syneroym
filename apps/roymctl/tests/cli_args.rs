@@ -537,3 +537,50 @@ fn test_coordinator_passport_issue_needs_a_signer() -> Result<(), Box<dyn Error>
         .stderr(contains("cannot be used with"));
     Ok(())
 }
+
+/// `roymctl substrate home-relay set` and `status` parse correctly.
+#[test]
+fn test_substrate_home_relay_cli_args() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args([
+        "substrate",
+        "home-relay",
+        "set",
+        "--info-url",
+        "https://r.example:7974",
+        "--passport",
+        "p.json",
+        "--help",
+    ])
+    .assert()
+    .success();
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args([
+        "substrate",
+        "home-relay",
+        "set",
+        "--info-url",
+        "https://r.example:7974",
+        "--passport",
+        "p.json",
+        "--relay-url",
+        "http://127.0.0.1:7964",
+        "--ca-cert",
+        "ca.pem",
+        "--help",
+    ])
+    .assert()
+    .success();
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["substrate", "home-relay", "set", "--passport", "p.json"])
+        .assert()
+        .failure()
+        .stderr(contains("--info-url"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["substrate", "home-relay", "status", "--help"]).assert().success();
+
+    Ok(())
+}

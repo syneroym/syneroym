@@ -13,7 +13,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use iroh::{Endpoint, RelayConfig, RelayUrl, Watcher};
+use iroh::{Endpoint, EndpointAddr, RelayConfig, RelayUrl, Watcher};
 use tokio::{
     sync::{Mutex, watch},
     time,
@@ -77,6 +77,16 @@ impl HomeRelay {
     #[must_use]
     pub fn current_url(&self) -> Option<RelayUrl> {
         self.inner.confirmed.borrow().clone()
+    }
+
+    /// The endpoint's current address, read live from iroh. Its direct
+    /// addresses appear only after the endpoint has bound and probed its
+    /// interfaces, so a caller that needs them polls. The relay URL is never
+    /// read back from this address; use [`HomeRelay::subscribe`] or
+    /// [`HomeRelay::current_url`] for the home relay.
+    #[must_use]
+    pub fn endpoint_addr(&self) -> EndpointAddr {
+        self.inner.endpoint.addr()
     }
 
     /// Makes `url` the home relay.

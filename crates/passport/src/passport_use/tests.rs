@@ -43,3 +43,14 @@ fn with_max_lease_secs_changes_only_the_lease_limit() {
     assert_eq!(short.max_lease_secs, 60);
     assert_eq!(short.ability, RELAY_HOME.ability);
 }
+
+#[test]
+fn host_of_extracts_host_did() {
+    let res = RELAY_HOME.resource(HOST);
+    assert_eq!(RELAY_HOME.host_of(&res), Some(HOST));
+    assert_eq!(MAILBOX_USE.host_of(&MAILBOX_USE.resource(HOST)), Some(HOST));
+
+    assert_eq!(RELAY_HOME.host_of(&ResourceUri("substrate:did:key:hhost".to_string())), None);
+    assert_eq!(RELAY_HOME.host_of(&MAILBOX_USE.resource(HOST)), None);
+    assert_eq!(RELAY_HOME.host_of(&ResourceUri("substrate:/relay".to_string())), None);
+}

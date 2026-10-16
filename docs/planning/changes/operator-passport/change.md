@@ -1,6 +1,12 @@
 ---
-status: approved
+status: done
 living-docs-touched:
+  - docs/developer-guide.md
+  - docs/system-architecture.md
+  - docs/system-requirements-spec.md
+  - docs/planning/traceability-matrix.md
+  - docs/TERMINOLOGY.md
+  - docs/planning/deferred-backlog.md
 ---
 # Operator passport
 
@@ -60,10 +66,10 @@ Home relay
 | H-1 | A substrate with a valid passport can register. After that the relay lets its node id connect, with no restart. | `crates/coordinator_iroh/tests/relay_passport.rs` |
 | H-2 | `max_nodes` limits how many distinct nodes use one passport. | `crates/coordinator_iroh/tests/relay_passport.rs` |
 | H-3 | An open relay (`access = "everyone"`) refuses registration with a clear error. | `crates/coordinator_iroh/tests/relay_passport.rs` |
-| H-4 | The substrate registers again when a third of the lease is left, retries with backoff, and logs a warning and sets a metric when 7 days or less of the passport life is left. | |
-| H-5 | `roymctl` can hand a passport to a substrate and show its lease. | |
+| H-4 | The substrate registers again when a third of the lease is left, retries with backoff, and logs a warning and sets a metric when 7 days or less of the passport life is left. | `crates/substrate/src/runtime/home_relay/passport/tests/renew.rs`, `crates/substrate/src/runtime/home_relay/passport/tests/refusals.rs` |
+| H-5 | `roymctl` can hand a passport to a substrate and show its lease. | `apps/roymctl/src/commands/substrate/home_relay/tests.rs`, `apps/roymctl/tests/cli_args.rs`, `crates/substrate/tests/home_relay_passport_e2e.rs` |
 | H-6 | An unknown value of `[roles.coordinator] access` stops the coordinator at startup. Today any unknown string, including a typo, opens the relay to everyone. | `crates/core/src/config/access/tests.rs`, `crates/coordinator_iroh/tests/startup_config.rs` |
-| H-7 | The substrate registers before the endpoint first connects to the relay. | |
+| H-7 | The substrate registers before the endpoint first connects to the relay. | `crates/substrate/src/runtime/home_relay/passport/tests/boot.rs`, `crates/substrate/tests/home_relay_passport_e2e.rs` |
 
 ## Design
 
@@ -142,8 +148,8 @@ The response gives `lease_ends_at`. The service allows a caller when it has a ro
 
 - `roymctl coordinator passport issue (--from <name> | --node-key) --to <owner did> --expires-days <n> [--max-nodes <n>] [--out <file>]` writes a passport file and prints its id. Run by the operator. The signer is always named: `--from` is a local identity (normally the controller), `--node-key` is the node key, only for a host substrate with no controller (`D-B1-14`, `D-B1-21`). The host node DID comes from the global `--substrate` flag. The mailbox use gets its own `issue` variant on the same code.
 - `roymctl coordinator passport deny <passport-id>` and `roymctl coordinator passport leases` deny a passport and list the running leases.
-- `roymctl substrate home-relay set --coordinator <url> --passport <file>` runs on the owner's machine. It signs the child token for the node key of the substrate with the owner key, and hands it to the substrate through the control plane. The substrate registers itself.
-- `roymctl substrate home-relay status` shows the lease and the expiry.
+- `roymctl substrate home-relay set --info-url <url> --passport <file> [--relay-url <url>] [--ca-cert <file>] [--as <identity>]` runs on the owner's machine. It signs the child token for the node key of the substrate with the owner key, and hands it to the substrate through the control plane. `--info-url` is the coordinator's info server base URL (`https` only). `--relay-url` overrides the target relay URL if different from the node's configured relay (the bootstrap order: set the passport on the live node on an open relay, then restart the node configured with the passport relay). `--ca-cert` supplies an extra root certificate (PEM) for private or self-signed coordinator info servers.
+- `roymctl substrate home-relay status` shows the active status, relay URL, info URL, passport ID, owner DID, access expiry, running lease expiry, last registration attempt time, and any refusal error.
 
 **Which home-relay source `home-relay set` applies to.** A substrate runs one home-relay source ([registry-listed-coordinators](../registry-listed-coordinators/change.md), D-A4-1): `Fixed` (from `parent_coordinator.iroh.url`), `Registry` (a background task picks a relay from the coordinator list), or none. The `Registry` task owns the `HomeRelay` handle and would undo a manual `set`. So the passport step (register, then insert the relay) applies to the `Fixed` source. On a node whose source is `Registry` or none, `home-relay set` must either refuse with a clear error, or first stop the resolver task. If it stops the task, it uses a cancellation token that the task checks between steps, never inside `HomeRelay::set` (a dropped `set` leaves the relay map and the watch channel out of step). The registry slice builds no way to stop the task (D-A4-15).
 
@@ -160,10 +166,10 @@ None open. Decided 2026-10-11:
 - [x] Amend ADR-0015: abilities `relay/home` and `mailbox/use`, the selector resource form, reserved facts keys (A10).
 - [x] Core module: passport issue, child token, verify, both proof forms, signer binding, challenge store, lease table keyed on subject, deny list. Tests for each error in P-2 (both proof forms) and for P-9.
 - [x] Coordinator: challenge and register endpoints, dynamic access function, strict `access` parsing.
-- [ ] Substrate: store the child token, register before first connect, renew, warn.
-- [ ] `roymctl` commands (issue, deny, leases done; home-relay set and status are B3).
-- [ ] Integration test: restricted relay, registration, expiry, restart, deny, reconnect after expiry. Use `common::alloc_ports`.
-- [ ] Update the living docs listed below.
+- [x] Substrate: store the child token, register before first connect, renew, warn.
+- [x] `roymctl` commands (issue, deny, leases done; home-relay set and status are B3).
+- [x] Integration test: restricted relay, registration, expiry, restart, deny, reconnect after expiry. Use `common::alloc_ports`.
+- [x] Update the living docs listed below.
 
 ## Deviations
 
@@ -238,6 +244,15 @@ Differences from the slice plan:
 - A few extra tests: a zero passport life, a child token made from a token that is not a passport, ended challenges leaving the store, `with_max_lease_secs`, and the error body code.
 - When `enable_bep0044_dht` is enabled, the coordinator instantiates a second `RegistryClient` (and underlying `DhtClient`) for the passport registrar to query the host node's registry for revocations, which opens a second local UDP socket. Sharing the DHT client between the coordinator and the registrar is recorded in the deferred backlog.
 - A child coordinator generates a fresh, random Iroh key at each startup, so it cannot be listed in advance and cannot hold a passport lease; a list-access or passport-access parent relay always refuses it, so only an open relay (`access = "everyone"`) can serve as a parent relay today.
+
+Substrate decisions (2026-10-16). The code is `crates/substrate`, `crates/passport` (presented token, wire types), `crates/control_plane`, `crates/wit_interfaces`, and `apps/roymctl` (`substrate home-relay set`, `status`).
+
+- `D-B3-1`: **the passport state file** is `<storage.db_dir>/home_relay_passport.json`. It stores `StoredPassport` (`token`, `info_url`, `relay_url`, optional `ca_cert_pem`, and the last registration state `HomeRelayStatus`).
+- `D-B3-2`: **`home-relay set` applies to `Fixed` relay source.** If the node has no fixed relay configured (`parent_coordinator.iroh.url = None`, such as when using the community registry resolver), `security.home-relay-set` refuses with JSON-RPC error code `-32601` (`MethodNotFound`) and a message naming `parent_coordinator.iroh.url`.
+- `D-B3-3`: **client HTTP requests disable connection pooling (`pool_max_idle_per_host(0)`).** In `LiveIo`, `reqwest::Client::builder().pool_max_idle_per_host(0)` ensures client connections are not pooled across relay restarts or rebinds.
+- `D-B3-4`: **`CoordinatorIroh::shutdown` awaits the aborted `http_info_handle`.** When shutting down the coordinator, the aborted background info server task is awaited so that its socket is cleanly unbound before a subsequent restart binds the same port.
+- `D-B3-5`: **when passport access ends, `warn!` is logged and the metric gauge is cleared.** When the passport or child token expires or is denied, the substrate logs a warning and sets `substrate.home_relay.access_ends_at_secs` to 0.
+- `D-B3-6`: **`inspect_child_token` offline checks.** The substrate inspects child tokens before storage and presentation, confirming the subject, host DID from resource, token shape, and signature chain.
 
 ## Close-out
 

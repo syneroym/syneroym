@@ -644,6 +644,44 @@ interface security {
     relay-passport-deny: func(passport-id: string) -> result<u64, string>;
     /// The running leases of this node's relay. Node owner only.
     relay-passport-leases: func() -> result<list<relay-lease>, string>;
+
+    /// The params of `home-relay-set`.
+    record home-relay-set-request {
+        /// The child token JSON (a capability token with the passport as its
+        /// one proof), for this node's key.
+        token: string,
+        /// Base URL of the coordinator info server, https only.
+        info-url: string,
+        /// The relay the passport is for. None: parent_coordinator.iroh.url.
+        relay-url: option<string>,
+        /// An extra root certificate (PEM) to trust for info-url.
+        ca-cert-pem: option<string>,
+    }
+
+    /// One refusal or failure of the last registration.
+    record home-relay-error { code: string, message: string }
+
+    /// The stored home-relay passport of this node. Not named
+    /// `home-relay-status`: a record and a function in one interface share one
+    /// name space, and the function below has that name.
+    record home-relay-passport {
+        relay-url: string,
+        info-url: string,
+        active: bool,
+        passport-id: string,
+        host-node-did: string,
+        owner-did: string,
+        access-ends-at: u64,
+        lease-ends-at: option<u64>,
+        last-attempt-at: option<u64>,
+        last-error: option<home-relay-error>,
+        next-attempt-at: option<u64>,
+    }
+
+    /// Store a home-relay passport and register once. Node owner only.
+    home-relay-set: func(request: home-relay-set-request) -> result<home-relay-passport, string>;
+    /// The stored home-relay passport, if any. Node owner only.
+    home-relay-status: func() -> result<option<home-relay-passport>, string>;
 }
 
 world control-plane-service {

@@ -5,6 +5,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::Context;
@@ -200,6 +201,19 @@ pub(crate) fn client_for(
     }
 }
 
+pub(crate) async fn online_client(
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<SyneroymClient> {
+    let substrate_did = get_substrate_did(substrate_opt, dir)?;
+    let mut client = client_for(substrate_did, api_url, dir, run_as, ucan_path)?;
+    client.wait_for_ready(Duration::from_secs(5)).await?;
+    Ok(client)
+}
+
 /// Write `contents` to `path`, creating it mode `0600` on Unix so a freshly
 /// written secret (an exported identity backup, a session credential) is
 /// never briefly world- or group-readable. A file that already exists is
@@ -365,7 +379,9 @@ pub async fn run(
     let run_as = run_as.as_deref();
     let ucan = ucan_path.as_deref();
     match command {
-        Commands::Substrate { command } => substrate::handle(&command, &dir).await?,
+        Commands::Substrate { command } => {
+            substrate::handle(&command, &api_url, substrate_opt, &dir, run_as, ucan).await?
+        }
         Commands::Svc { command } => {
             dispatch_svc(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }

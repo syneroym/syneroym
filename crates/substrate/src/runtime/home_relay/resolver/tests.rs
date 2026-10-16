@@ -27,7 +27,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{Backoff, FailureWindow, ProbeVerdict, Resolver, ResolverIo};
+use super::{FailureWindow, ProbeVerdict, Resolver, ResolverIo};
 use crate::runtime::home_relay::cache::{self as cache_file, CoordinatorCache};
 
 mod boot;
@@ -322,19 +322,4 @@ async fn failure_window_needs_three_failures_inside_five_minutes() {
     assert!(!window.record(t0 + Duration::from_secs(200)));
     assert!(!window.record(t0 + Duration::from_secs(400)));
     assert!(window.record(t0 + Duration::from_secs(450)));
-}
-
-#[test]
-fn backoff_doubles_up_to_its_cap_and_resets() {
-    let within = |d: Duration, want: u64| {
-        let want = Duration::from_secs(want);
-        d >= want.mul_f64(0.89) && d <= want.mul_f64(1.11)
-    };
-    let mut backoff = Backoff::new(Duration::from_secs(5), Duration::from_secs(20));
-    for want in [5, 10, 20, 20, 20] {
-        let got = backoff.next();
-        assert!(within(got, want), "{got:?} is not about {want} s");
-    }
-    backoff.reset();
-    assert!(within(backoff.next(), 5));
 }

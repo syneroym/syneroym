@@ -107,20 +107,13 @@ impl Http {
     }
 
     pub(super) async fn probe(&self, info_url: &str) -> anyhow::Result<CoordinatorInfo> {
-        let mut response = self
+        let response = self
             .probe_client
             .get(format!("{info_url}{INFO_PATH}"))
             .send()
             .await?
             .error_for_status()?;
-        let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            anyhow::ensure!(
-                body.len() + chunk.len() <= MAX_PROBE_BODY_BYTES,
-                "the info answer is longer than {MAX_PROBE_BODY_BYTES} bytes"
-            );
-            body.extend_from_slice(&chunk);
-        }
+        let body = super::read_capped(response, MAX_PROBE_BODY_BYTES).await?;
         serde_json::from_slice(&body).context("the info answer is not valid")
     }
 }

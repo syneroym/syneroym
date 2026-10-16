@@ -1814,6 +1814,72 @@ An operator can restrict an Iroh relay to authorized nodes holding a valid passp
    roymctl coordinator passport leases --as my-controller
    ```
 
-> **Closed-group rule:** A passport relay is for a group whose members all hold leases; a peer outside the group cannot reach a member through it. Because the relay access check applies to all incoming client connections and does not distinguish visitors from home clients, only endpoints with a running lease, explicitly listed endpoints, or the coordinator's own and host endpoints can communicate through the relay. Callers outside the group reach leased nodes through direct network paths, or must hold a lease on the relay as well. Substrate-side configuration (`roymctl substrate home-relay set` and automatic renewal) is added in subsequent work.
+> **Closed-group rule:** A passport relay is for a group whose members all hold leases; a peer outside the group cannot reach a member through it. Because the relay access check applies to all incoming client connections and does not distinguish visitors from home clients, only endpoints with a running lease, explicitly listed endpoints, or the coordinator's own and host endpoints can communicate through the relay. Callers outside the group reach leased nodes through direct network paths, or must hold a lease on the relay as well.
+
+### 5.5. Use a Passport on Your Substrate
+
+A substrate node can use a restricted relay as its home relay. The node holder receives a passport file from the relay operator and applies it with `roymctl`.
+
+#### 1. The bootstrap order
+
+A substrate on a restricted relay cannot receive commands from `roymctl` through that relay until it has a lease. To set up a new node:
+
+1. Start the node with an open relay or local connectivity.
+2. Hand the passport to the running node with `roymctl substrate home-relay set`. Use `--relay-url` to name the future passport relay.
+3. Restart the node with `parent_coordinator.iroh.url` set to the passport relay.
+
+On startup, the node registers its passport before it connects to the relay.
+
+#### 2. Set the passport
+
+The substrate owner runs `home-relay set`. This command signs a child token for the node's public key with the owner key and sends it to the substrate over the control plane:
+
+```bash
+roymctl substrate home-relay set \
+    --info-url https://relay.example.com:7974 \
+    --passport /path/to/passport.json \
+    --as owner
+```
+
+Options:
+- `--info-url`: The coordinator info server URL (`https://...`).
+- `--passport`: Path to the passport JSON file.
+- `--relay-url`: The target relay URL if different from the currently configured relay.
+- `--ca-cert`: Path to an extra PEM root certificate file if the coordinator info server uses a private or self-signed TLS certificate.
+- `--as`: The owner identity name that holds the passport.
+
+The substrate saves the token in `<storage.db_dir>/home_relay_passport.json`.
+
+#### 3. Inspect status
+
+Check the current lease and passport status:
+
+```bash
+roymctl substrate home-relay status --as owner
+```
+
+The output shows:
+- Active state (`active: true` when the configured relay matches the passport relay).
+- Relay URL and Info URL.
+- Passport ID and owner DID.
+- Access expiry and running lease expiry.
+- Last registration attempt time and any error code from the relay.
+
+#### 4. Automatic renewal and warning
+
+The substrate automatically renews its lease when one third of the lease duration remains. If registration fails with a temporary error or network issue, the node retries with exponential backoff.
+
+If fewer than 7 days remain before the passport itself expires, the node logs a warning:
+`home-relay passport ends in ... days`.
+
+The substrate exports the metric gauge:
+`substrate.home_relay.access_ends_at_secs`
+This gauge holds the Unix timestamp when access ends. The value is `0` when no active passport is present or access has ended.
+
+#### 5. Operational constraints
+
+- **Relay TLS certificates:** The coordinator info server can use custom certificates through `--ca-cert`. But the Iroh relay endpoint itself must use plain HTTP or a certificate signed by a public WebPKI certificate authority. Iroh node endpoints do not trust private certificate authorities.
+- **Coordinator role on leased nodes:** A node that uses a restricted relay as its home relay should not run an Iroh coordinator role that shares that same relay as its parent relay. The coordinator role generates a random node key at startup, which is not covered by the node's passport and will be refused by the relay.
+
 
 

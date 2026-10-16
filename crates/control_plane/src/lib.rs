@@ -9,8 +9,10 @@ pub mod config_utils;
 pub mod dummy_sandbox;
 pub mod http_routes;
 
+mod home_relay;
 mod service;
 mod synsvc_native;
 
+pub use home_relay::HomeRelayControl;
 pub use service::{AUTH_RESERVED_SERVICE_ID, ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
 pub use synsvc_native::SynSvcNativeService;

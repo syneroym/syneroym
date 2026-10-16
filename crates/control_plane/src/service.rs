@@ -42,6 +42,7 @@ use tracing::info;
 
 use crate::{
     dummy_sandbox::{AppSandboxEngine, ContainerEngine},
+    home_relay::HomeRelayControl,
     synsvc_native::empty_conversation_host,
 };
 
@@ -148,6 +149,9 @@ pub struct ControlPlaneService {
     /// two-phase way as `endpoint_publisher`: the coordinator is built before
     /// this service, and most `init` call sites are tests with no relay.
     pub(crate) relay_passports: OnceLock<LeaseStore>,
+    /// The home-relay passport control of this node, when its home relay is
+    /// fixed. Set after construction by the substrate's composition root.
+    pub(crate) home_relay: OnceLock<Arc<dyn HomeRelayControl>>,
     /// Signals the substrate's background registry-heartbeat loop
     /// (`publish_to_community_registry` in `crates/substrate/src/runtime.rs`)
     /// to publish this node's own endpoint record and every hosted
@@ -261,6 +265,7 @@ impl ControlPlaneService {
             record_signer: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
             relay_passports: OnceLock::new(),
+            home_relay: OnceLock::new(),
             republish_trigger: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
@@ -295,6 +300,11 @@ impl ControlPlaneService {
     /// two-phase, no-op-past-first-call wiring as `set_endpoint_publisher`.
     pub fn set_relay_passports(&self, leases: LeaseStore) {
         let _ = self.relay_passports.set(leases);
+    }
+
+    /// Wires in the home-relay passport control. No-op after the first call.
+    pub fn set_home_relay(&self, control: Arc<dyn HomeRelayControl>) {
+        let _ = self.home_relay.set(control);
     }
 
     /// Wires in the channel that reaches the substrate's registry-heartbeat

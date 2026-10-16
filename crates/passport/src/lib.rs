@@ -8,12 +8,14 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod chain;
 mod challenge_store;
 mod error;
 mod issue;
 mod lease_store;
 mod limiter;
 mod passport_use;
+mod presented;
 mod proof;
 mod registrar;
 pub mod wire;
@@ -24,6 +26,7 @@ pub use issue::{PassportId, child_token, issue_passport};
 pub use lease_store::{Lease, LeaseStore};
 pub use limiter::{REQUESTS_PER_MINUTE, RequestLimiter};
 pub use passport_use::{MAILBOX_USE, PassportUse, RELAY_HOME, facts};
+pub use presented::{PresentedToken, inspect_child_token};
 pub use proof::{
     CHALLENGE_DOMAIN, Challenge, Proof, SignerBinding, presentation_hash, sign_challenge,
 };
