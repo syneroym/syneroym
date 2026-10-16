@@ -93,6 +93,18 @@ fn from_request_refuses_invalid_inputs() {
     let err = StoredPassport::from_request(req, &node_did, &fixed_url, START_SECS).unwrap_err();
     assert!(err.to_string().contains("ca_cert_pem"), "{err:?}");
 
+    // 4b. CA cert with valid header but invalid body
+    let req = HomeRelaySetRequest {
+        token: fixture.child.clone(),
+        info_url: INFO_URL.into(),
+        relay_url: None,
+        ca_cert_pem: Some(
+            "-----BEGIN CERTIFICATE-----\nnot valid base64!!!\n-----END CERTIFICATE-----".into(),
+        ),
+    };
+    let err = StoredPassport::from_request(req, &node_did, &fixed_url, START_SECS).unwrap_err();
+    assert!(err.to_string().contains("ca_cert_pem"), "{err:?}");
+
     // 5. CA cert over 64 KiB
     let big_cert = "A".repeat(65 * 1024);
     let req = HomeRelaySetRequest {

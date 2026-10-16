@@ -166,7 +166,9 @@ pub(super) fn write_file_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()>
         fs::create_dir_all(parent)
             .with_context(|| format!("cannot create directory {}", parent.display()))?;
     }
-    let tmp = path.with_extension("tmp");
+    let mut tmp_name = path.as_os_str().to_owned();
+    tmp_name.push(".tmp");
+    let tmp = PathBuf::from(tmp_name);
     let mut file = {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);

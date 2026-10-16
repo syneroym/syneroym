@@ -159,7 +159,7 @@ None open. Decided 2026-10-11:
 
 - The shared core is the new crate `crates/passport` (see Design, Code).
 - `access` may combine a static list with passports (see Access setting).
-- The substrate keeps the child token in a state store set by `roymctl` through the control plane. No restart and no config path.
+- The substrate keeps the child token in a state store set by `roymctl` through the control plane. Switching an existing node to a passport relay requires configuring `parent_coordinator.iroh.url` and restarting (Q2).
 
 ## Tasks
 
@@ -247,12 +247,32 @@ Differences from the slice plan:
 
 Substrate decisions (2026-10-16). The code is `crates/substrate`, `crates/passport` (presented token, wire types), `crates/control_plane`, `crates/wit_interfaces`, and `apps/roymctl` (`substrate home-relay set`, `status`).
 
-- `D-B3-1`: **the passport state file** is `<storage.db_dir>/home_relay_passport.json`. It stores `StoredPassport` (`token`, `info_url`, `relay_url`, optional `ca_cert_pem`, and the last registration state `HomeRelayStatus`).
+- `D-B3-1`: **the passport state file** is `<storage.db_dir>/home_relay_passport.json`. It stores `StoredPassport` (`token`, `info_url`, `relay_url`, and optional `ca_cert_pem`). It holds no registration status or lease state.
 - `D-B3-2`: **`home-relay set` applies to `Fixed` relay source.** If the node has no fixed relay configured (`parent_coordinator.iroh.url = None`, such as when using the community registry resolver), `security.home-relay-set` refuses with JSON-RPC error code `-32601` (`MethodNotFound`) and a message naming `parent_coordinator.iroh.url`.
 - `D-B3-3`: **client HTTP requests disable connection pooling (`pool_max_idle_per_host(0)`).** In `LiveIo`, `reqwest::Client::builder().pool_max_idle_per_host(0)` ensures client connections are not pooled across relay restarts or rebinds.
 - `D-B3-4`: **`CoordinatorIroh::shutdown` awaits the aborted `http_info_handle`.** When shutting down the coordinator, the aborted background info server task is awaited so that its socket is cleanly unbound before a subsequent restart binds the same port.
 - `D-B3-5`: **when passport access ends, `warn!` is logged and the metric gauge is cleared.** When the passport or child token expires or is denied, the substrate logs a warning and sets `substrate.home_relay.access_ends_at_secs` to 0.
 - `D-B3-6`: **`inspect_child_token` offline checks.** The substrate inspects child tokens before storage and presentation, confirming the subject, host DID from resource, token shape, and signature chain.
+- `D-B3-7`: **where the substrate registers (Q1).** `set` takes `--info-url <https url>` (required) and `--relay-url <url>` (optional; default: the node's `parent_coordinator.iroh.url`). The substrate stores both with the token. The stored passport is active only while its relay URL equals the configured `parent_coordinator.iroh.url`. Otherwise it is kept but not used, and `status` reports it as inactive.
+- `D-B3-8`: **bootstrap order to switch to a passport relay (Q2).** While the node still uses a reachable relay or local network, run `home-relay set --relay-url <passport relay> ...`. The passport is stored as inactive. Then edit `parent_coordinator.iroh.url` in config and restart the substrate. At boot the node registers before inserting the relay.
+- `D-B3-9`: **TLS trust for private info servers (Q3).** `set --ca-cert <pem file>` accepts an optional PEM certificate, validated at set time, stored alongside the passport, and added to the client root store for requests to the info server URL.
+- `D-B3-10`: **boot round retry budget and relay insertion (Q4).** At boot with an active passport, the agent tries registration up to 3 times (backoff 5 s, then 10 s) bounded by a 30-second budget (`BOOT_BUDGET`). It signals `boot_done` (inserting the relay into the router) after the first success, after a non-retriable refusal, after the 3rd failure, or when the 30 s budget expires, continuing retries in the background.
+- `D-B3-11`: **renewal scheduling near access end (Q5).** When `lease_ends_at >= access_ends_at`, the agent does not schedule a renewal since the lease cannot be extended beyond access end, but plans a wake-up at `access_ends_at` so that it resets the metric gauge, logs the access-ended warning, and updates `last_error` to `expired` once access ends. Renewal attempts are never scheduled sooner than 60 seconds after the previous attempt.
+- `D-B3-12`: **refusal classification and backoff (Q7).** Refusal codes are classified into three classes (`syneroym_passport::wire::RetryClass`): `NewChallenge` (`unknown_challenge`, `challenge_expired`) re-requests a challenge immediately (once per attempt); `Backoff` (`rate_limited`, `internal`, network errors, invalid JSON, and unknown future codes) retries with exponential backoff (5 s doubling to 10 min); `Settled` (other known codes like `denied`, `revoked`, `expired`, `limit_reached`) warns and sleeps 1 hour before rechecking, stopping completely once access has ended.
+- `D-B3-13`: **child token signing identity (Q8).** `roymctl substrate home-relay set` signs the child token using the `--as <name>` identity, which must match the passport audience DID and hold `substrate/admin` on the node. The child token's lifetime matches the passport expiry.
+- `D-B3-14`: **control-plane method names (Q9).** Two owner-only methods on the `security` interface: `home-relay-set` and `home-relay-status`, mirroring the CLI verbs.
+- `D-B3-15`: **synchronous initial attempt in `home-relay-set` (Q10).** `security.home-relay-set` validates and stores the token, runs one synchronous registration attempt (if active) bounded by HTTP request timeouts, and returns the resulting status so the caller sees success or refusals immediately.
+- `D-B3-16`: **single passport storage and deletion (Q11).** A node stores at most one home-relay passport. `home-relay set` replaces the existing passport and resets backoff. No runtime `clear` verb is provided; removing the passport requires deleting `home_relay_passport.json` and restarting.
+- `D-B3-17`: **relay certificate trust vs info server trust (Q13).** Substrate Iroh endpoints trust WebPKI roots for relay connections (`CaRootsConfig::default`). The optional `--ca-cert` applies exclusively to the HTTPS info server client. Relays with private or self-signed TLS certificates cannot be used as home relays without WebPKI trust.
+- `D-B3-18`: **coordinator role warning on passport parent relay (Q14).** If a node runs a coordinator Iroh role and its `parent_coordinator.iroh.url` points to a passport-restricted relay, the passport agent logs a warning at boot because the coordinator role's ephemeral random key will be refused by the parent relay.
+- `D-B3-19`: **expiry and renewal test separation (Q15).** The acceptance requirement "reconnect after expiry" is verified in two parts: (1) token expiry leading to lease termination, restored after setting a fresh passport (verified in multi-node integration test `home_relay_passport_e2e.rs`), and (2) lease expiration while the passport remains valid, automatically triggering renewal and reconnect (verified in paused-clock unit test `an_ended_lease_is_renewed_while_the_token_runs`).
+- `D-B3-20`: **host suspend / monotonic sleep protection.** Sleep intervals are capped at 5 minutes (`SLEEP_CAP`), with target wall-clock comparison re-evaluated on each loop iteration, ensuring renewal occurs promptly after a host resumes from suspend or clock jump.
+
+Differences from the slice plan:
+
+- `restart_in_place` shared test helper in `tests/common/node.rs` reboots a test node in place, preserving its allocated ports and directory state.
+- Atomic write temporary file naming convention `<file>.tmp` in `write_file_atomic` (`crates/substrate/src/runtime/home_relay.rs`).
+- CA certificate PEM validation test build in `from_request` (`reqwest::Certificate::from_pem`).
 
 ## Close-out
 

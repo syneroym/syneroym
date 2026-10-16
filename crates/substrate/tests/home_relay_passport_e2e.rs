@@ -205,6 +205,14 @@ async fn a_denied_passport_is_refused_on_the_next_connect() {
     let _status = admit_node(&relay, &b, &owner, &passport).await;
     let relay_url: RelayUrl = relay.relay_url().parse().expect("parse relay url");
 
+    // Positive control: peer2 with a valid passport can reach b before the deny
+    let owner2 = Identity::generate().expect("owner2");
+    let owner2_did = substrate::derive_did_key(&owner2.public_key());
+    let passport2 = relay.issue(&owner2_did, 86_400);
+    let peer2 = relay.leased_peer(&passport2, &owner2).await;
+    assert!(reaches(&peer2, &b, relay_url.clone(), Duration::from_secs(30)).await);
+    let _ = peer2.close().await;
+
     let passport_id = PassportId::of(&passport).expect("passport id");
     let mut controller_client =
         relay.relay.client_as(Identity::from_bytes(&relay.controller.to_bytes()));
@@ -214,12 +222,10 @@ async fn a_denied_passport_is_refused_on_the_next_connect() {
 
     relay.restart_relay().await;
 
-    let owner2 = Identity::generate().expect("owner2");
-    let owner2_did = substrate::derive_did_key(&owner2.public_key());
-    let passport2 = relay.issue(&owner2_did, 86_400);
-    let peer2 = relay.leased_peer(&passport2, &owner2).await;
-
-    assert!(!reaches(&peer2, &b, relay_url, Duration::from_secs(10)).await);
+    // Fresh leased peer after restart
+    let peer2_after = relay.leased_peer(&passport2, &owner2).await;
+    assert!(!reaches(&peer2_after, &b, relay_url, Duration::from_secs(10)).await);
+    let _ = peer2_after.close().await;
 
     let (_p_dir, p_path) = write_passport_file(&passport);
     let (_c_dir, c_path) = write_cert_file(&relay.cert_pem);
@@ -253,7 +259,8 @@ async fn an_expired_token_ends_access_and_a_new_passport_restores_it() {
 
     let b = boot_managed_node(&owner, &relay).await;
     let now = syneroym_passport::now_secs();
-    let short_child = syneroym_passport::child_token(&owner, &passport, b.did(), 8, now)
+    // 30 s child token life to avoid timing races on slower CI hosts
+    let short_child = syneroym_passport::child_token(&owner, &passport, b.did(), 30, now)
         .expect("short child token");
 
     let set_req = HomeRelaySetRequest {
@@ -266,20 +273,34 @@ async fn an_expired_token_ends_access_and_a_new_passport_restores_it() {
     let status = client.home_relay_set(&set_req).await.expect("home_relay_set");
     assert!(status.active);
     assert!(status.lease_ends_at.is_some());
-    assert!(status.next_attempt_at.is_none());
+    // Lease extends to the access end (30s), so next_attempt_at is the wake-up at
+    // access_ends_at
+    assert_eq!(status.next_attempt_at, Some(now + 30));
 
     let peer = relay.leased_peer(&passport, &owner).await;
     let relay_url: RelayUrl = relay.relay_url().parse().expect("parse relay url");
-    assert!(reaches(&peer, &b, relay_url.clone(), Duration::from_secs(5)).await);
+    assert!(reaches(&peer, &b, relay_url.clone(), Duration::from_secs(20)).await);
+    let _ = peer.close().await;
 
-    time::sleep(Duration::from_secs(9)).await;
+    // Wait until token expires (now + 30 s)
+    while syneroym_passport::now_secs() <= now + 30 {
+        time::sleep(Duration::from_millis(500)).await;
+    }
     relay.restart_relay().await;
 
-    assert!(!reaches(&peer, &b, relay_url.clone(), Duration::from_secs(10)).await);
-    let _ = peer.close().await;
+    // Fresh leased peer after relay restart
+    let peer_fresh = relay.leased_peer(&passport, &owner).await;
+    assert!(!reaches(&peer_fresh, &b, relay_url.clone(), Duration::from_secs(10)).await);
+    let _ = peer_fresh.close().await;
 
     let status_expired = client.home_relay_status().await.expect("status").expect("some");
     assert!(status_expired.lease_ends_at.unwrap_or(0) <= syneroym_passport::now_secs());
+    assert_eq!(status_expired.last_error.as_ref().map(|e| e.code.as_str()), Some("expired"));
+    let summary = roymctl::commands::substrate::home_relay::summary_line(
+        Some(&status_expired),
+        syneroym_passport::now_secs(),
+    );
+    assert!(summary.starts_with("not registered: expired:"), "summary was {summary}");
 
     let passport_new = relay.issue(&owner_did, 86_400);
     let status_restored = admit_node(&relay, &b, &owner, &passport_new).await;

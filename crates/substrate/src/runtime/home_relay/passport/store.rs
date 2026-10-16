@@ -61,7 +61,11 @@ impl StoredPassport {
                     "ca_cert_pem does not contain a PEM certificate".into(),
                 ));
             }
-            reqwest::Certificate::from_pem(pem.as_bytes())
+            let cert = reqwest::Certificate::from_pem(pem.as_bytes())
+                .map_err(|e| RpcError::InvalidParams(format!("ca_cert_pem: {e}")))?;
+            reqwest::Client::builder()
+                .add_root_certificate(cert)
+                .build()
                 .map_err(|e| RpcError::InvalidParams(format!("ca_cert_pem: {e}")))?;
         }
         let presented =

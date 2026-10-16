@@ -540,20 +540,25 @@ impl SubstrateNode {
         client
     }
 
+    /// Shuts down the running node and boots `builder` at the same `base_path`.
+    async fn reboot_inner(&mut self, builder: NodeBuilder) -> SubstrateNode {
+        let _ = self.substrate_client.shutdown().await;
+        let _ = self.shutdown_tx.send(()).await;
+        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle).await;
+
+        let base_path = self.base_path.clone();
+        builder.boot_at(base_path, None).await
+    }
+
     /// Like `restart`, but boots with `change(builder)`. Keeps the directory,
     /// the identity and the ports.
     pub async fn restart_with(
         mut self,
         change: impl FnOnce(NodeBuilder) -> NodeBuilder,
     ) -> SubstrateNode {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = time::timeout(Duration::from_secs(20), self.substrate_handle).await;
-
         let temp_dir = self.temp_dir.take();
-        let base_path = self.base_path.clone();
         let builder = change(self.builder.clone());
-        let mut rebooted = builder.boot_at(base_path, None).await;
+        let mut rebooted = self.reboot_inner(builder).await;
         rebooted.temp_dir = temp_dir;
         rebooted
     }
@@ -567,19 +572,9 @@ impl SubstrateNode {
 
     /// Reboots the node in-place without moving `self`.
     pub async fn restart_in_place(&mut self) {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle).await;
-
-        let base_path = self.base_path.clone();
-        let rebooted = self.builder.clone().boot_at(base_path, None).await;
-        self.registry_url = rebooted.registry_url;
-        self.relay_url = rebooted.relay_url;
-        self.owner = rebooted.owner;
-        self.home_relay = rebooted.home_relay;
-        self.substrate_client = rebooted.substrate_client;
-        self.shutdown_tx = rebooted.shutdown_tx;
-        self.substrate_handle = rebooted.substrate_handle;
+        let builder = self.builder.clone();
+        let rebooted = self.reboot_inner(builder).await;
+        *self = SubstrateNode { temp_dir: self.temp_dir.take(), ..rebooted };
     }
 
     pub async fn teardown(mut self) {

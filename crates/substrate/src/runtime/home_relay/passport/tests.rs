@@ -34,16 +34,13 @@ mod store;
 
 pub(super) const START_SECS: u64 = 1_700_000_000;
 
-fn test_now() -> u64 {
-    START_SECS
-}
-
 pub(super) const FIXED_RELAY: &str = "http://127.0.0.1:7964/";
 pub(super) const INFO_URL: &str = "https://relay.example:7974";
 
 pub(super) enum Scripted<T> {
     Answer(Result<T, Failure>),
     Hang,
+    HangNotify(Arc<tokio::sync::Notify>, Result<T, Failure>),
 }
 
 #[derive(Clone)]
@@ -56,6 +53,7 @@ struct FakeIoInner {
     recorded_registers: Mutex<Vec<RegisterRequest>>,
     closed: CancellationToken,
     started: Instant,
+    clock_offset_secs: std::sync::atomic::AtomicU64,
 }
 
 impl FakeIo {
@@ -67,7 +65,12 @@ impl FakeIo {
             recorded_registers: Mutex::new(Vec::new()),
             closed: CancellationToken::new(),
             started: Instant::now(),
+            clock_offset_secs: std::sync::atomic::AtomicU64::new(0),
         }))
+    }
+
+    pub(super) fn advance_clock(&self, secs: u64) {
+        self.0.clock_offset_secs.fetch_add(secs, Ordering::SeqCst);
     }
 
     pub(super) fn push_challenge(&self, item: Scripted<ChallengeResponse>) {
@@ -76,6 +79,14 @@ impl FakeIo {
 
     pub(super) fn push_register(&self, item: Scripted<RegisterResponse>) {
         self.0.registers.lock().unwrap().push_back(item);
+    }
+
+    pub(super) fn push_register_hanging(
+        &self,
+        notify: Arc<tokio::sync::Notify>,
+        result: Result<RegisterResponse, Failure>,
+    ) {
+        self.push_register(Scripted::HangNotify(notify, result));
     }
 
     pub(super) fn push_challenge_ok(&self, hex: &str) {
@@ -111,6 +122,12 @@ impl FakeIo {
     pub(super) fn close(&self) {
         self.0.closed.cancel();
     }
+
+    pub(super) fn now_secs(&self) -> u64 {
+        START_SECS
+            + self.0.clock_offset_secs.load(Ordering::SeqCst)
+            + self.0.started.elapsed().as_secs()
+    }
 }
 
 impl RegistrationIo for FakeIo {
@@ -126,6 +143,10 @@ impl RegistrationIo for FakeIo {
                 Some(Scripted::Hang) => {
                     future::pending::<()>().await;
                     unreachable!()
+                }
+                Some(Scripted::HangNotify(notify, res)) => {
+                    notify.notified().await;
+                    res
                 }
                 None => Err(Failure::Unreachable("no scripted challenge".into())),
             }
@@ -146,6 +167,10 @@ impl RegistrationIo for FakeIo {
                     future::pending::<()>().await;
                     unreachable!()
                 }
+                Some(Scripted::HangNotify(notify, res)) => {
+                    notify.notified().await;
+                    res
+                }
                 None => Err(Failure::Unreachable("no scripted register".into())),
             }
         }
@@ -156,7 +181,7 @@ impl RegistrationIo for FakeIo {
     }
 
     fn now_secs(&self) -> u64 {
-        START_SECS + self.0.started.elapsed().as_secs()
+        Self::now_secs(self)
     }
 }
 
@@ -249,7 +274,8 @@ pub(super) struct TestAgent {
     pub(super) status_rx: watch::Receiver<Option<HomeRelayStatus>>,
     pub(super) boot_done: Arc<AtomicBool>,
     pub(super) path: PathBuf,
-    pub(super) _dir: tempfile::TempDir,
+    pub(super) handle: tokio::task::JoinHandle<()>,
+    pub(super) _dir: Option<tempfile::TempDir>,
 }
 
 impl TestAgent {
@@ -259,6 +285,38 @@ impl TestAgent {
 
     pub(super) fn status(&self) -> Option<HomeRelayStatus> {
         self.control.status()
+    }
+
+    fn start_inner(
+        io: FakeIo,
+        fixture: &TestFixture,
+        path: PathBuf,
+        coordinator_on_parent: bool,
+        dir: Option<tempfile::TempDir>,
+    ) -> Self {
+        let (boot_tx, boot_rx) = tokio::sync::oneshot::channel();
+        let boot_done = Arc::new(AtomicBool::new(false));
+        let boot_flag = boot_done.clone();
+        tokio::spawn(async move {
+            if boot_rx.await.is_ok() {
+                boot_flag.store(true, Ordering::SeqCst);
+            }
+        });
+        let fixed_url: RelayUrl = FIXED_RELAY.parse().unwrap();
+        let io_clock = io.clone();
+        let (control, status_rx, handle) = start_agent(
+            io.clone(),
+            AgentInit {
+                fixed_url,
+                path: path.clone(),
+                node_did: fixture.node_did.clone(),
+                secret_key: fixture.node.to_bytes(),
+                coordinator_on_parent,
+                boot_done: boot_tx,
+            },
+            Arc::new(move || io_clock.now_secs()),
+        );
+        Self { io, control, status_rx, boot_done, path, handle, _dir: dir }
     }
 
     pub(super) fn start(
@@ -272,26 +330,15 @@ impl TestAgent {
         if let Some(stored) = &stored {
             super::store::save(&path, stored).unwrap();
         }
-        let (boot_tx, boot_rx) = tokio::sync::oneshot::channel();
-        let boot_done = Arc::new(AtomicBool::new(false));
-        let boot_flag = boot_done.clone();
-        tokio::spawn(async move {
-            let _ = boot_rx.await;
-            boot_flag.store(true, Ordering::SeqCst);
-        });
-        let fixed_url: RelayUrl = FIXED_RELAY.parse().unwrap();
-        let (control, status_rx) = start_agent(
-            io.clone(),
-            AgentInit {
-                fixed_url,
-                path: path.clone(),
-                node_did: fixture.node_did.clone(),
-                secret_key: fixture.node.to_bytes(),
-                coordinator_on_parent,
-                boot_done: boot_tx,
-            },
-            test_now,
-        );
-        Self { io, control, status_rx, boot_done, path, _dir: dir }
+        Self::start_inner(io, fixture, path, coordinator_on_parent, Some(dir))
+    }
+
+    pub(super) fn start_at_path(
+        io: FakeIo,
+        fixture: &TestFixture,
+        path: PathBuf,
+        coordinator_on_parent: bool,
+    ) -> Self {
+        Self::start_inner(io, fixture, path, coordinator_on_parent, None)
     }
 }

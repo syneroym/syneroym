@@ -47,6 +47,9 @@ const MIN_RENEW_DELAY_SECS: u64 = 60;
 const EXPIRY_WARNING_SECS: u64 = 7 * 24 * 3_600;
 /// The gauge of the access end, in Unix seconds.
 const ACCESS_END_GAUGE: &str = "substrate.home_relay.access_ends_at_secs";
+/// Sleep cap so wall-clock jumps or host suspend/sleep are handled within 5
+/// minutes.
+const SLEEP_CAP: Duration = Duration::from_secs(300);
 /// When the agent channel is closed.
 const STOPPED: &str = "the home-relay task has stopped (the endpoint is closed)";
 
@@ -72,7 +75,7 @@ pub(super) struct AgentInit {
 /// Spawns the agent with `LiveIo` and returns its control handle.
 pub(super) fn start(start: Start) -> Arc<dyn HomeRelayControl> {
     let io = LiveIo::new(start.home_relay);
-    let (control, _) = start_agent(
+    let (control, _, _) = start_agent(
         io,
         AgentInit {
             fixed_url: start.fixed_url,
@@ -82,7 +85,7 @@ pub(super) fn start(start: Start) -> Arc<dyn HomeRelayControl> {
             coordinator_on_parent: start.coordinator_on_parent,
             boot_done: start.boot_done,
         },
-        syneroym_passport::now_secs,
+        Arc::new(syneroym_passport::now_secs),
     );
     control
 }
@@ -90,8 +93,8 @@ pub(super) fn start(start: Start) -> Arc<dyn HomeRelayControl> {
 fn start_agent<I: RegistrationIo>(
     io: I,
     init: AgentInit,
-    now_secs: fn() -> u64,
-) -> (Arc<PassportControl>, watch::Receiver<Option<HomeRelayStatus>>) {
+    now_secs: Arc<dyn Fn() -> u64 + Send + Sync>,
+) -> (Arc<PassportControl>, watch::Receiver<Option<HomeRelayStatus>>, tokio::task::JoinHandle<()>) {
     let (commands, rx) = mpsc::channel(4);
     let (status_tx, status_rx) = watch::channel(None);
     let agent = Agent::new(
@@ -104,7 +107,7 @@ fn start_agent<I: RegistrationIo>(
         status_tx,
         rx,
     );
-    tokio::spawn(agent.run(init.boot_done));
+    let handle = tokio::spawn(agent.run(init.boot_done));
     (
         Arc::new(PassportControl {
             node_did: init.node_did,
@@ -114,6 +117,7 @@ fn start_agent<I: RegistrationIo>(
             now_secs,
         }),
         status_rx,
+        handle,
     )
 }
 
@@ -125,13 +129,21 @@ enum Command {
     },
 }
 
-#[derive(Debug)]
 pub(super) struct PassportControl {
     node_did: String,
     fixed_url: RelayUrl,
     commands: mpsc::Sender<Command>,
     status: watch::Receiver<Option<HomeRelayStatus>>,
-    now_secs: fn() -> u64,
+    now_secs: Arc<dyn Fn() -> u64 + Send + Sync>,
+}
+
+impl std::fmt::Debug for PassportControl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PassportControl")
+            .field("node_did", &self.node_did)
+            .field("fixed_url", &self.fixed_url)
+            .finish()
+    }
 }
 
 #[async_trait::async_trait]
@@ -166,6 +178,7 @@ struct Current {
     last_error: Option<ErrorBody>,
     /// Unix seconds of the next attempt. `None`: no attempt is planned.
     next_attempt_at: Option<u64>,
+    ended_reported: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -187,6 +200,7 @@ struct Agent<I> {
     current: Option<Current>,
     retry: Backoff,
     warn_retry: WarnLimiter,
+    last_ending_warn_secs: Option<u64>,
     status_tx: watch::Sender<Option<HomeRelayStatus>>,
     commands: mpsc::Receiver<Command>,
 }
@@ -213,6 +227,7 @@ impl<I: RegistrationIo> Agent<I> {
             current: None,
             retry: Backoff::new(RETRY_INITIAL, RETRY_MAX),
             warn_retry: WarnLimiter::default(),
+            last_ending_warn_secs: None,
             status_tx,
             commands,
         }
@@ -247,7 +262,13 @@ impl<I: RegistrationIo> Agent<I> {
                     }
                 },
                 () = sleep => {
-                    if self.attempt_or_close().await.is_err() {
+                    let now = self.io.now_secs();
+                    let due = self
+                        .current
+                        .as_ref()
+                        .and_then(|c| c.next_attempt_at)
+                        .is_some_and(|target| now >= target);
+                    if due && self.attempt_or_close().await.is_err() {
                         return;
                     }
                 }
@@ -256,10 +277,11 @@ impl<I: RegistrationIo> Agent<I> {
     }
 
     fn wait(&self) -> Option<Duration> {
-        self.current
-            .as_ref()
-            .and_then(|c| c.next_attempt_at)
-            .map(|t| Duration::from_secs(t.saturating_sub(self.io.now_secs())))
+        let current = self.current.as_ref()?;
+        let target = current.next_attempt_at?;
+        let now = self.io.now_secs();
+        let remaining = Duration::from_secs(target.saturating_sub(now));
+        Some(remaining.min(SLEEP_CAP))
     }
 
     async fn boot_round(&mut self) -> Result<(), Closed> {
@@ -319,8 +341,11 @@ impl<I: RegistrationIo> Agent<I> {
         }
         let now = self.io.now_secs();
         if now >= current.presented.access_ends_at {
-            if current.next_attempt_at.is_some() {
-                current.next_attempt_at = None;
+            current.next_attempt_at = None;
+            current.last_error = Some(ErrorBody::from(&RegisterError::Expired));
+            if !current.ended_reported {
+                current.ended_reported = true;
+                gauge!(ACCESS_END_GAUGE).set(0.0);
                 warn!(
                     "the home-relay passport access has ended; ask the relay operator for a new \
                      one"
@@ -382,8 +407,10 @@ impl<I: RegistrationIo> Agent<I> {
         }
         current.lease_ends_at = Some(resp.lease_ends_at);
         current.last_error = None;
-        current.next_attempt_at =
-            renew_at(now, resp.lease_ends_at, current.presented.access_ends_at);
+        let renew = renew_at(now, resp.lease_ends_at, current.presented.access_ends_at);
+        current.next_attempt_at = renew.or_else(|| {
+            (now < current.presented.access_ends_at).then_some(current.presented.access_ends_at)
+        });
         info!(lease_ends_at = resp.lease_ends_at, "home-relay lease granted");
         Outcome::Leased
     }
@@ -396,6 +423,7 @@ impl<I: RegistrationIo> Agent<I> {
         };
         if body.code == RegisterError::Denied.code() {
             current.lease_ends_at = None;
+            gauge!(ACCESS_END_GAUGE).set(0.0);
         }
         current.last_error = Some(body.clone());
         let (next, outcome) = match class {
@@ -417,7 +445,13 @@ impl<I: RegistrationIo> Agent<I> {
                 (now + delay, Outcome::Retry)
             }
         };
-        current.next_attempt_at = Some(next).filter(|t| *t < current.presented.access_ends_at);
+        current.next_attempt_at = if next < current.presented.access_ends_at {
+            Some(next)
+        } else if now < current.presented.access_ends_at {
+            Some(current.presented.access_ends_at)
+        } else {
+            None
+        };
         outcome
     }
 
@@ -460,6 +494,7 @@ impl<I: RegistrationIo> Agent<I> {
         let was_active = self.current.as_ref().is_some_and(|c| c.active);
         let now = self.io.now_secs();
         let access_ends_at = presented.access_ends_at;
+        let ended_already = active && now >= access_ends_at;
         let relay_url = stored.relay_url.clone();
         self.current = Some(Current {
             stored,
@@ -468,12 +503,14 @@ impl<I: RegistrationIo> Agent<I> {
             lease_ends_at: None,
             last_attempt_at: None,
             last_error: None,
-            next_attempt_at: active.then_some(now),
+            next_attempt_at: (active && !ended_already).then_some(now),
+            ended_reported: ended_already,
         });
         self.retry.reset();
-        if active {
+        self.last_ending_warn_secs = None;
+        if active && now < access_ends_at {
             gauge!(ACCESS_END_GAUGE).set(access_ends_at as f64);
-        } else if was_active {
+        } else if was_active || ended_already {
             gauge!(ACCESS_END_GAUGE).set(0.0);
         }
         if !active {
@@ -510,7 +547,9 @@ impl<I: RegistrationIo> Agent<I> {
                         if let Some(current) = self.current.as_mut() {
                             current.last_error = Some(ErrorBody::from(&RegisterError::Expired));
                             current.next_attempt_at = None;
+                            current.ended_reported = true;
                         }
+                        gauge!(ACCESS_END_GAUGE).set(0.0);
                         warn!(
                             "the stored home-relay passport has ended; ask the relay operator for \
                              a new one"
@@ -534,7 +573,7 @@ impl<I: RegistrationIo> Agent<I> {
         }
     }
 
-    fn warn_if_ending(&self, now: u64) {
+    fn warn_if_ending(&mut self, now: u64) {
         let Some(current) = self.current.as_ref() else {
             return;
         };
@@ -542,14 +581,22 @@ impl<I: RegistrationIo> Agent<I> {
             return;
         }
         let access_ends_at = current.presented.access_ends_at;
+        if now >= access_ends_at {
+            return;
+        }
         if ending_soon(now, access_ends_at) {
-            let days_left = access_ends_at.saturating_sub(now) / 86_400;
-            warn!(
-                access_ends_at,
-                days_left,
-                "the home-relay passport ends soon; ask the relay operator for a new one and run \
-                 `roymctl substrate home-relay set`"
-            );
+            let day_elapsed =
+                self.last_ending_warn_secs.is_none_or(|last| now.saturating_sub(last) >= 86_400);
+            if day_elapsed {
+                self.last_ending_warn_secs = Some(now);
+                let days_left = access_ends_at.saturating_sub(now) / 86_400;
+                warn!(
+                    access_ends_at,
+                    days_left,
+                    "the home-relay passport ends soon; ask the relay operator for a new one and \
+                     run `roymctl substrate home-relay set`"
+                );
+            }
         }
     }
 

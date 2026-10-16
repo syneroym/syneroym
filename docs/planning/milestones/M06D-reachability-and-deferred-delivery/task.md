@@ -124,7 +124,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - In the `Fixed` source of X1: register, then insert the relay (`H-7`). Renew when a third of the lease is left, back off, warn and set a metric at 7 days of passport life left (`H-4`, `H-5`).
 - Integration test: restricted relay, register, expiry, restart, deny, reconnect after expiry.
 - Close out the passport change doc. The mailbox use stays open in the mailbox doc.
-- Done 2026-10-16. Decisions `D-B3-1` to `D-B3-6` are in the [passport change doc](../../changes/operator-passport/change.md).
+- Done 2026-10-16. Decisions `D-B3-1` to `D-B3-20` are in the [passport change doc](../../changes/operator-passport/change.md).
 
 ### Track C — Service mailbox
 

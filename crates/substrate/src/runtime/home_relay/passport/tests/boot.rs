@@ -1,4 +1,4 @@
-use std::{fs, time::Duration};
+use std::{fs, sync::Arc, time::Duration};
 
 use syneroym_control_plane::HomeRelayControl;
 use syneroym_passport::{
@@ -32,7 +32,14 @@ async fn boot_registers_before_the_relay_is_inserted() {
     let io = FakeIo::new();
     io.push_challenge_ok(SAMPLE_CHALLENGE);
     let fixture = test_fixture(30 * 24 * 3600);
-    io.push_register_ok(&fixture.passport_id, START_SECS + 86400);
+    let notify = Arc::new(tokio::sync::Notify::new());
+    io.push_register_hanging(
+        notify.clone(),
+        Ok(syneroym_passport::wire::RegisterResponse {
+            passport_id: fixture.passport_id.clone(),
+            lease_ends_at: START_SECS + 86400,
+        }),
+    );
 
     let stored = StoredPassport {
         relay_url: FIXED_RELAY.to_owned(),
@@ -45,6 +52,13 @@ async fn boot_registers_before_the_relay_is_inserted() {
     time::sleep(Duration::from_millis(10)).await;
     assert_eq!(io.challenges_received(), 1);
     assert_eq!(io.registers_received(), 1);
+    // The register call was issued, but boot_done has not fired yet while waiting
+    // for the response.
+    assert!(!agent.boot_done());
+
+    // Release the register response
+    notify.notify_one();
+    time::sleep(Duration::from_millis(10)).await;
     assert!(agent.boot_done());
     let status = agent.status().expect("status available");
     assert!(status.active);
@@ -159,7 +173,7 @@ async fn unreadable_file_is_ignored() {
     let path = dir.path().join("home_relay_passport.json");
     fs::write(&path, b"not valid json").unwrap();
     let fixture = test_fixture(30 * 24 * 3600);
-    let agent = TestAgent::start(io.clone(), &fixture, None, false);
+    let agent = TestAgent::start_at_path(io.clone(), &fixture, path, false);
 
     time::sleep(Duration::from_millis(10)).await;
     assert!(agent.boot_done());
@@ -204,13 +218,15 @@ async fn closing_the_endpoint_stops_a_running_attempt() {
         token: fixture.child.clone(),
         ca_cert_pem: None,
     };
-    let _agent = TestAgent::start(io.clone(), &fixture, Some(stored), false);
+    let agent = TestAgent::start(io.clone(), &fixture, Some(stored), false);
 
     time::sleep(Duration::from_millis(10)).await;
     assert_eq!(io.registers_received(), 1);
 
     io.close();
-    time::sleep(Duration::from_millis(10)).await;
+    let join_res = time::timeout(Duration::from_millis(50), agent.handle).await;
+    assert!(join_res.is_ok(), "agent task did not terminate on close");
+    assert_eq!(io.registers_received(), 1);
 }
 
 #[tokio::test(start_paused = true)]

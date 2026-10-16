@@ -1870,11 +1870,11 @@ The output shows:
 The substrate automatically renews its lease when one third of the lease duration remains. If registration fails with a temporary error or network issue, the node retries with exponential backoff.
 
 If fewer than 7 days remain before the passport itself expires, the node logs a warning:
-`home-relay passport ends in ... days`.
+`the home-relay passport ends soon; ask the relay operator for a new one and run roymctl substrate home-relay set`.
 
 The substrate exports the metric gauge:
 `substrate.home_relay.access_ends_at_secs`
-This gauge holds the Unix timestamp when access ends. The value is `0` when no active passport is present or access has ended.
+This gauge holds the Unix timestamp when access ends. The value is absent or `0` when no active passport is present or access has ended.
 
 #### 5. Operational constraints
 

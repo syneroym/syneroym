@@ -69,15 +69,29 @@ async fn an_ended_lease_is_renewed_while_the_token_runs() {
     time::sleep(Duration::from_millis(10)).await;
     assert_eq!(io.registers_received(), 2);
 
-    // Lease runs out at 24 h (86400 s). Advance past it to 25 h (90000 s)
-    io.push_challenge_ok(SAMPLE_CHALLENGE);
-    io.push_register_ok(&fixture.passport_id, START_SECS + 90000 + 86400);
-
+    // Advance past lease expiry at 24 h (86400 s) to 25 h (90000 s).
+    // The fake has no scripted answers, so it responds Unreachable on backoff
+    // retries.
     time::advance(Duration::from_secs(32400)).await;
     time::sleep(Duration::from_millis(10)).await;
-    assert!(io.registers_received() >= 3);
+
+    // Check that the lease is indeed expired
+    let status_mid = agent.status().unwrap();
+    assert!(status_mid.lease_ends_at.unwrap() <= io.now_secs());
+
+    // Now push successful response after the lease has ended
+    let regs_before = io.registers_received();
+    io.push_challenge_ok(SAMPLE_CHALLENGE);
+    let new_lease = START_SECS + 90000 + 86400;
+    io.push_register_ok(&fixture.passport_id, new_lease);
+
+    // Advance by backoff duration (up to max 600 s) to trigger the next retry
+    time::advance(Duration::from_secs(600)).await;
+    time::sleep(Duration::from_millis(10)).await;
+
+    assert!(io.registers_received() > regs_before);
     let status = agent.status().unwrap();
-    assert_eq!(status.lease_ends_at, Some(START_SECS + 90000 + 86400));
+    assert_eq!(status.lease_ends_at, Some(new_lease));
 }
 
 #[tokio::test(start_paused = true)]
@@ -99,7 +113,46 @@ async fn no_renewal_when_the_lease_reaches_the_access_end() {
     time::sleep(Duration::from_millis(10)).await;
     assert_eq!(io.registers_received(), 1);
     let status = agent.status().unwrap();
+    // Wake up scheduled at access_end
+    assert_eq!(status.next_attempt_at, Some(access_end));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ended_passport_never_requests_again() {
+    let rec = MemoryRecorder::new();
+    let _ = rec.clone().install();
+
+    let io = FakeIo::new();
+    let access_end = START_SECS + 1000;
+    let fixture = test_fixture(1000);
+    io.push_challenge_ok(SAMPLE_CHALLENGE);
+    io.push_register_ok(&fixture.passport_id, access_end);
+
+    let stored = StoredPassport {
+        relay_url: FIXED_RELAY.to_owned(),
+        info_url: INFO_URL.to_owned(),
+        token: fixture.child.clone(),
+        ca_cert_pem: None,
+    };
+    let agent = TestAgent::start(io.clone(), &fixture, Some(stored), false);
+    time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(io.registers_received(), 1);
+    assert_eq!(rec.snapshot().gauges.get(ACCESS_END_GAUGE).copied(), Some(access_end as f64));
+
+    // Advance past access end
+    time::advance(Duration::from_secs(1000)).await;
+    time::sleep(Duration::from_millis(10)).await;
+
+    let status = agent.status().unwrap();
+    assert_eq!(status.last_error.as_ref().map(|e| e.code.as_str()), Some("expired"));
     assert_eq!(status.next_attempt_at, None);
+    assert_eq!(rec.snapshot().gauges.get(ACCESS_END_GAUGE).copied(), Some(0.0));
+
+    // Ensure no additional network calls are made even if more time passes
+    time::advance(Duration::from_secs(3600)).await;
+    time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(io.challenges_received(), 1);
+    assert_eq!(io.registers_received(), 1);
 }
 
 #[test]
