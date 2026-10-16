@@ -10,8 +10,9 @@ use anyhow::Result;
 use syneroym_coordinator_iroh::CoordinatorIroh;
 #[cfg(feature = "webrtc")]
 use syneroym_coordinator_webrtc::CoordinatorWebRtc;
-use syneroym_core::config::SubstrateConfig;
-use tracing::info;
+use syneroym_core::{config::SubstrateConfig, host_identity::HostIdentity};
+use syneroym_passport::LeaseStore;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 pub struct EcosystemCoordinator {
@@ -22,12 +23,34 @@ pub struct EcosystemCoordinator {
 }
 
 impl EcosystemCoordinator {
-    pub async fn init(config: &SubstrateConfig) -> Result<Self> {
+    pub async fn init(config: &SubstrateConfig, host: &HostIdentity) -> Result<Self> {
         info!("initializing coordinator and transport bridge");
+
+        // Before any coordinator is built, so a passport form without [tls]
+        // stops startup also for a role with no Iroh section (WebRTC only, or
+        // nothing): the access value must never wait unused.
+        if let Some(role) = &config.roles.coordinator {
+            role.access.check_tls(config.tls.is_some())?;
+            // With an Iroh section, `CoordinatorIroh::init` warns about a relay
+            // that is off; warn here only when there is no Iroh section at all.
+            if role.access.accepts_passports() && role.iroh.is_none() {
+                warn!(
+                    "[roles.coordinator] access accepts passports, but no Iroh relay runs; it has \
+                     no effect"
+                );
+            }
+        }
+
+        #[cfg(not(feature = "iroh"))]
+        let _ = host;
 
         #[cfg(feature = "iroh")]
         let iroh_coordinator = if let Some(role) = &config.roles.coordinator {
-            if role.iroh.is_some() { Some(CoordinatorIroh::init(config).await?) } else { None }
+            if role.iroh.is_some() {
+                Some(CoordinatorIroh::init(config, host).await?)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -45,6 +68,19 @@ impl EcosystemCoordinator {
             #[cfg(feature = "webrtc")]
             webrtc_coordinator,
         })
+    }
+
+    /// The lease store of the Iroh relay when it accepts passports.
+    #[must_use]
+    pub fn relay_leases(&self) -> Option<LeaseStore> {
+        #[cfg(feature = "iroh")]
+        {
+            self.iroh_coordinator.as_ref().and_then(CoordinatorIroh::relay_leases)
+        }
+        #[cfg(not(feature = "iroh"))]
+        {
+            None
+        }
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -115,3 +151,6 @@ impl EcosystemCoordinator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

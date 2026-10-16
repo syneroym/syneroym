@@ -49,6 +49,10 @@ async fn info_reads_state_without_network() {
         tls_cert_path: None,
         relay_metrics: Some(metrics),
         max_relay_clients: Some(2),
+        identity: IdentityInfo {
+            did: "did:key:test-host".to_string(),
+            controller_status: "none".to_string(),
+        },
         registry: Some(("did:key:test".to_string(), rx)),
     };
 
@@ -58,7 +62,8 @@ async fn info_reads_state_without_network() {
     assert!(relay.online);
     assert_eq!(relay.clients, Some(2));
     assert_eq!(relay.max_clients, Some(2));
-    assert!(info.identity.is_none());
+    assert_eq!(info.identity.as_ref().unwrap().did, "did:key:test-host");
+    assert_eq!(info.identity.as_ref().unwrap().controller_status, "none");
     let reg = info.registry.expect("registry should be present");
     assert_eq!(reg.did, "did:key:test");
     assert!(reg.registered);

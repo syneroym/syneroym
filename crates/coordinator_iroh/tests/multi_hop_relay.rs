@@ -297,7 +297,7 @@ async fn spawn_global_coordinator(
         }),
         ..Default::default()
     });
-    let c = CoordinatorIroh::init(&config_c).await?;
+    let c = common::init_coordinator(&config_c).await?;
     common::wait_for_relay(&c, Duration::from_secs(30)).await?;
     let c_info_addr = c.info_addr().unwrap();
 
@@ -334,7 +334,7 @@ async fn spawn_private_coordinator(
         ..Default::default()
     });
     config_cp.parent_coordinator.iroh.url = Some(c_relay_url.to_string());
-    let cp = CoordinatorIroh::init(&config_cp).await?;
+    let cp = common::init_coordinator(&config_cp).await?;
     common::wait_for_relay(&cp, Duration::from_secs(30)).await?;
     let cp_info_addr = cp.info_addr().unwrap();
 

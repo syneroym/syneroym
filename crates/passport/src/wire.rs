@@ -9,6 +9,9 @@
 //! `unknown_challenge` depends on other traffic: the store drops an ended
 //! challenge when the next one is issued. A client must treat both codes the
 //! same way: ask for a new challenge and try again.
+//!
+//! It also holds `LeaseInfo`, the lease list the operator reads through the
+//! running service.
 
 use serde::{Deserialize, Serialize};
 use syneroym_ucan::CapabilityToken;
@@ -16,11 +19,39 @@ use syneroym_ucan::CapabilityToken;
 use crate::{
     error::RegisterError,
     issue::PassportId,
+    lease_store::Lease,
     proof::{Challenge, Proof},
 };
 
 /// Largest accepted registration body.
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
+/// The path of the challenge endpoint on the coordinator's info server.
+pub const CHALLENGE_PATH: &str = "/v1/home-relay/challenge";
+/// The path of the register endpoint on the coordinator's info server.
+pub const REGISTER_PATH: &str = "/v1/home-relay/register";
+
+/// One running lease, as the operator lists it. Mirrors the WIT record
+/// `relay-lease` of the control-plane `security` interface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LeaseInfo {
+    pub passport_id: PassportId,
+    pub owner_did: String,
+    pub subject: String,
+    pub lease_ends_at: u64,
+    pub registered_at: u64,
+}
+
+impl From<&Lease> for LeaseInfo {
+    fn from(lease: &Lease) -> Self {
+        Self {
+            passport_id: lease.passport_id.clone(),
+            owner_did: lease.owner_did.clone(),
+            subject: lease.subject.clone(),
+            lease_ends_at: lease.lease_ends_at,
+            registered_at: lease.registered_at,
+        }
+    }
+}
 
 /// The body of a challenge response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

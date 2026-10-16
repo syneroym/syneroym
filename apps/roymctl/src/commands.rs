@@ -301,6 +301,58 @@ async fn dispatch_secret(
     security::handle_secret(&command, api_url, substrate_did, dir, run_as, ucan_path).await
 }
 
+// Resolved on demand, not eagerly: a fully-placed
+// deploy and `app reconcile` need no default substrate at all,
+// and `get_substrate_did` hard-fails when neither `--substrate`
+// nor `substrate.key` exists.
+async fn dispatch_app(
+    command: AppCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    app::handle(&command, api_url, substrate_opt, dir, run_as, ucan_path).await
+}
+
+async fn dispatch_coordinator(
+    command: coordinator::CoordinatorCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    coordinator::handle(&command, api_url, substrate_opt, dir, run_as, ucan_path).await
+}
+
+async fn dispatch_supervisor(
+    command: supervisor::SupervisorCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    supervisor::handle(&command, api_url, substrate_opt, dir, run_as, ucan_path).await
+}
+
+// `substrate_opt` is resolved on demand inside the handler: only
+// `roym address` needs a substrate to talk to, and
+// `get_substrate_did` hard-fails when neither `--substrate` nor
+// `substrate.key` is present.
+async fn dispatch_roym(
+    command: roym::RoymCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    roym::handle(&command, api_url, substrate_opt, dir, run_as, ucan_path).await
+}
+
 /// Execute the subcommands
 pub async fn run(
     command: Commands,
@@ -310,44 +362,20 @@ pub async fn run(
     run_as: Option<String>,
     ucan_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
+    let run_as = run_as.as_deref();
+    let ucan = ucan_path.as_deref();
     match command {
-        Commands::Substrate { command } => {
-            substrate::handle(&command, &dir).await?;
-        }
+        Commands::Substrate { command } => substrate::handle(&command, &dir).await?,
         Commands::Svc { command } => {
-            dispatch_svc(
-                command,
-                &api_url,
-                substrate_opt,
-                &dir,
-                run_as.as_deref(),
-                ucan_path.as_deref(),
-            )
-            .await?;
+            dispatch_svc(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
         Commands::App { command } => {
-            // Resolved on demand, not eagerly: a fully-placed
-            // deploy and `app reconcile` need no default substrate at all,
-            // and `get_substrate_did` hard-fails when neither `--substrate`
-            // nor `substrate.key` exists.
-            app::handle(
-                &command,
-                &api_url,
-                substrate_opt,
-                &dir,
-                run_as.as_deref(),
-                ucan_path.as_deref(),
-            )
-            .await?;
+            dispatch_app(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
         Commands::Identity { command } => {
-            identity::handle(&command, &api_url, &dir, run_as.as_deref(), ucan_path.as_deref())
-                .await?;
+            identity::handle(&command, &api_url, &dir, run_as, ucan).await?;
         }
-        Commands::Shorthash { input } => {
-            let hash = util::short_hash(&input);
-            println!("{hash}");
-        }
+        Commands::Shorthash { input } => println!("{}", util::short_hash(&input)),
         Commands::Alias { service_id, nickname, interface, service, domain } => {
             handle_alias(
                 &service_id,
@@ -357,62 +385,22 @@ pub async fn run(
                 &domain,
             )?;
         }
-        Commands::Registry { command } => {
-            registry::handle(&command, &api_url, &dir).await?;
-        }
+        Commands::Registry { command } => registry::handle(&command, &api_url, &dir).await?,
         Commands::Coordinator { command } => {
-            coordinator::handle(&command, substrate_opt, &dir)?;
+            dispatch_coordinator(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
         Commands::Kek { command } => {
-            dispatch_kek(
-                command,
-                &api_url,
-                substrate_opt,
-                &dir,
-                run_as.as_deref(),
-                ucan_path.as_deref(),
-            )
-            .await?;
+            dispatch_kek(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
         Commands::Secret { command } => {
-            dispatch_secret(
-                command,
-                &api_url,
-                substrate_opt,
-                &dir,
-                run_as.as_deref(),
-                ucan_path.as_deref(),
-            )
-            .await?;
+            dispatch_secret(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
         Commands::Supervisor { command } => {
-            supervisor::handle(
-                &command,
-                &api_url,
-                substrate_opt,
-                &dir,
-                run_as.as_deref(),
-                ucan_path.as_deref(),
-            )
-            .await?;
+            dispatch_supervisor(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
-        Commands::Session { command } => {
-            session::handle(&command, &dir, run_as.as_deref()).await?;
-        }
+        Commands::Session { command } => session::handle(&command, &dir, run_as).await?,
         Commands::Roym { command } => {
-            // `substrate_opt` is resolved on demand inside the handler: only
-            // `roym address` needs a substrate to talk to, and
-            // `get_substrate_did` hard-fails when neither `--substrate` nor
-            // `substrate.key` is present.
-            roym::handle(
-                &command,
-                &api_url,
-                substrate_opt,
-                &dir,
-                run_as.as_deref(),
-                ucan_path.as_deref(),
-            )
-            .await?;
+            dispatch_roym(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
     }
     Ok(())

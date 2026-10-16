@@ -21,8 +21,9 @@ pub enum CoordinatorStatus {
     Unknown,
 }
 
-/// The identity of the host substrate. Not reported yet: the field is `null`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// The identity of the host substrate: its node DID and the state of its
+/// controller agreement (`verified`, `unverified` or `none`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct IdentityInfo {
     pub did: String,
     pub controller_status: String,

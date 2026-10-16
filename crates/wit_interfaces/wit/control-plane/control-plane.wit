@@ -624,6 +624,26 @@ interface security {
     inject-kek: func(kek-hex: string) -> result<_, string>;
     rotate-kek: func(new-kek-hex: string) -> result<_, string>;
     set-secret: func(service-id: string, key: string, value: list<u8>) -> result<_, string>;
+
+    /// One running lease of this node's passport relay.
+    record relay-lease {
+        /// 64 lowercase hex characters.
+        passport-id: string,
+        owner-did: string,
+        /// The node DID admitted by this lease.
+        subject: string,
+        /// Unix seconds.
+        lease-ends-at: u64,
+        /// Unix seconds of the first registration or the last renewal.
+        registered-at: u64,
+    }
+
+    /// Deny a passport on this node's relay: its leases end now, and it is
+    /// refused from now on. Returns how many running leases ended. Node
+    /// owner (`substrate/admin`) only.
+    relay-passport-deny: func(passport-id: string) -> result<u64, string>;
+    /// The running leases of this node's relay. Node owner only.
+    relay-passport-leases: func() -> result<list<relay-lease>, string>;
 }
 
 world control-plane-service {

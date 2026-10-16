@@ -93,3 +93,31 @@ fn serialize_round_trip_for_all_variants() {
         assert_eq!(wrap, parsed);
     }
 }
+
+#[test]
+fn helper_methods_and_check_tls() {
+    let everyone = CoordinatorAccess::Everyone;
+    let passport = CoordinatorAccess::Passport;
+    let list = CoordinatorAccess::List(vec!["ep1".into(), "ep2".into()]);
+    let list_or_passport = CoordinatorAccess::ListOrPassport(vec!["ep1".into()]);
+
+    assert!(!everyone.accepts_passports());
+    assert!(passport.accepts_passports());
+    assert!(!list.accepts_passports());
+    assert!(list_or_passport.accepts_passports());
+
+    assert_eq!(everyone.list(), <&[String]>::default());
+    assert_eq!(passport.list(), <&[String]>::default());
+    assert_eq!(list.list(), &["ep1".to_string(), "ep2".to_string()]);
+    assert_eq!(list_or_passport.list(), &["ep1".to_string()]);
+
+    assert!(everyone.check_tls(false).is_ok());
+    assert!(everyone.check_tls(true).is_ok());
+    assert!(list.check_tls(false).is_ok());
+    assert!(list.check_tls(true).is_ok());
+
+    assert!(passport.check_tls(false).is_err());
+    assert!(passport.check_tls(true).is_ok());
+    assert!(list_or_passport.check_tls(false).is_err());
+    assert!(list_or_passport.check_tls(true).is_ok());
+}

@@ -28,6 +28,7 @@ pub use proof::{
     CHALLENGE_DOMAIN, Challenge, Proof, SignerBinding, presentation_hash, sign_challenge,
 };
 pub use registrar::{CheckedRegistration, Registrar};
+pub use syneroym_ucan::CapabilityToken;
 
 /// Unix seconds from the wall clock, for the `now_secs` argument of every
 /// call in this crate. Saturates to 0 before the epoch instead of failing.

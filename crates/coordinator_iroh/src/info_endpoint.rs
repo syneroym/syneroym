@@ -11,8 +11,8 @@ use axum::{Json, Router, extract::State, routing};
 use chrono::Utc;
 use iroh_relay::server::Metrics as RelayServerMetrics;
 use syneroym_core::coordinator_info::{
-    ConnectionsInfo, CoordinatorInfo, CoordinatorStatus, INFO_PATH, RegistryInfo, RelayInfo,
-    TlsInfo,
+    ConnectionsInfo, CoordinatorInfo, CoordinatorStatus, INFO_PATH, IdentityInfo, RegistryInfo,
+    RelayInfo, TlsInfo,
 };
 use tokio::{sync::watch, task};
 use x509_parser::{
@@ -34,6 +34,8 @@ pub(crate) struct InfoState {
     /// no relay server.
     pub relay_metrics: Option<Arc<RelayServerMetrics>>,
     pub max_relay_clients: Option<u64>,
+    /// The host substrate's node DID and controller status.
+    pub identity: IdentityInfo,
     /// The coordinator DID and the result of the last registration. `None`
     /// when the coordinator does not register itself.
     pub registry: Option<(String, watch::Receiver<bool>)>,
@@ -98,7 +100,7 @@ pub(crate) async fn get_info(State(state): State<Arc<InfoState>>) -> Json<Coordi
         relay_url: state.relay_url.clone(),
         parent_coordinator_url: state.parent_coordinator_url.clone(),
         status: relay_status(relay_clients, state.max_relay_clients),
-        identity: None,
+        identity: Some(state.identity.clone()),
         connections: Some(ConnectionsInfo {
             active: state.active_connections.load(Ordering::SeqCst),
             cap: state.max_connections,

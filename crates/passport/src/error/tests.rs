@@ -5,6 +5,8 @@ use super::*;
 #[test]
 fn every_code_is_distinct() {
     let all = [
+        RegisterError::NotAccepted,
+        RegisterError::RateLimited,
         RegisterError::RequestTooLarge { max: 1 },
         RegisterError::Malformed(String::new()),
         RegisterError::UnknownChallenge,

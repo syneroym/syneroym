@@ -19,6 +19,7 @@ blake3.workspace = true
 dashmap.workspace = true
 futures.workspace = true
 syneroym-core.workspace = true
+syneroym-passport.workspace = true
 syneroym-rpc.workspace = true
 syneroym-sandbox-wasm = { workspace = true, optional = true }
 syneroym-sandbox-podman = { workspace = true, optional = true }

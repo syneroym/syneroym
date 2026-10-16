@@ -22,16 +22,19 @@ use iroh_relay::server::Server;
 use reqwest::Client;
 use syneroym_core::{
     config::{CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig},
-    dht_registry::RegistryClient,
+    dht_registry::{MasterAnchorResolver, RegistryClient},
+    host_identity::HostIdentity,
     tls::TlsCertLoader,
 };
+use syneroym_passport::LeaseStore;
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle, time};
 use tracing::{debug, info, warn};
 
 use crate::{
-    config::{self, build_relay_config, relay_access},
+    config::{self, build_relay_config},
     info_endpoint::{self, InfoState},
+    passport::{self, RelayPassports},
     registration,
 };
 
@@ -42,6 +45,8 @@ pub struct CoordinatorIroh {
     /// Keeps the coordinator registered in its community registry.
     registry_registration_handle: Option<JoinHandle<()>>,
     info_addr: Option<SocketAddr>,
+    /// The lease store and registrar of a relay with passport access.
+    relay_passports: Option<Arc<RelayPassports>>,
 }
 
 impl Debug for CoordinatorIroh {
@@ -52,6 +57,7 @@ impl Debug for CoordinatorIroh {
             .field("http_info_handle", &self.http_info_handle)
             .field("registry_registration_handle", &self.registry_registration_handle)
             .field("info_addr", &self.info_addr)
+            .field("relay_passports", &self.relay_passports.is_some())
             .finish()
     }
 }
@@ -100,63 +106,121 @@ struct EndpointParts {
     registry_registration_handle: Option<JoinHandle<()>>,
 }
 
+/// Arguments passed to `start_endpoint`.
+struct EndpointArgs<'a> {
+    config: &'a SubstrateConfig,
+    iroh_cfg: &'a CoordinatorIrohConfig,
+    host: &'a HostIdentity,
+    secret_key: SecretKey,
+    parent_relay_url: Option<&'a RelayUrl>,
+    relay_server: &'a Option<Server>,
+    relay_passports: Option<Arc<RelayPassports>>,
+}
+
 impl CoordinatorIroh {
-    pub async fn init(config: &SubstrateConfig) -> Result<Self> {
+    pub async fn init(config: &SubstrateConfig, host: &HostIdentity) -> Result<Self> {
         info!("Initializing Coordinator IROH");
         let parent_relay_url = net_iroh::parent_relay_url(&config.parent_coordinator.iroh)?;
         // Note: `role.tls` (relay TLS) is intentionally independent of `config.tls`
         // (the public /v1/info HTTPS endpoint's cert). They secure different
         // surfaces and must be configured separately; a relay operator must opt in
         // explicitly by setting `role.tls`.
-        let config_roles = config.roles.coordinator.clone();
+        if let Some(role) = &config.roles.coordinator {
+            Self::start_role(config, role, host, parent_relay_url.as_ref()).await
+        } else {
+            Ok(Self {
+                relay_server: None,
+                iroh_router: None,
+                http_info_handle: None,
+                registry_registration_handle: None,
+                info_addr: None,
+                relay_passports: None,
+            })
+        }
+    }
 
-        let mut relay_server = None;
-        let mut iroh_router = None;
-        let mut http_info_handle = None;
-        let mut registry_registration_handle = None;
-        let mut info_addr = None;
+    /// The lease store of a relay with passport access, for the operator's
+    /// `deny` and lease list. `None` when the relay does not accept passports.
+    #[must_use]
+    pub fn relay_leases(&self) -> Option<LeaseStore> {
+        self.relay_passports.as_ref().map(|p| p.leases().clone())
+    }
 
-        if let Some(role) = &config_roles {
-            // Checked even when the relay is off, so a value this build cannot enforce
-            // stops the coordinator at startup instead of waiting unused.
-            relay_access(&role.access)?;
-            if let Some(iroh_cfg) = &role.iroh {
-                config::check_relay_cap(iroh_cfg, &role.access, parent_relay_url.is_some())?;
-            }
+    async fn start_role(
+        config: &SubstrateConfig,
+        role: &CoordinatorRole,
+        host: &HostIdentity,
+        parent_relay_url: Option<&RelayUrl>,
+    ) -> Result<Self> {
+        let relay_on = role.iroh.as_ref().is_some_and(|i| i.enable_relay);
+        // Checked even when the relay is off, so a value that cannot work stops
+        // the coordinator at startup instead of waiting unused.
+        config::check_access(&role.access, config.tls.is_some(), relay_on)?;
+        if let Some(iroh_cfg) = &role.iroh {
+            config::check_relay_cap(iroh_cfg, parent_relay_url.is_some())?;
+        }
 
-            // --- Architectural Note ---
-            // Syneroym Coordinators can fulfill two overlapping but distinct IROH roles:
-            //
-            // A) The standard IROH Relay Server (spawn_relay_server)
-            //    This is an infrastructure-level component that assists *other* IROH nodes
-            //    in traversing NATs and establishing peer-to-peer UDP punch-throughs.
-            //    It does not read or decrypt Syneroym application payloads.
-            //
-            // B) The Syneroym Coordinator Endpoint (build_iroh_endpoint &
-            // spawn_iroh_router)    This is an active participant in the
-            // Syneroym network. It establishes    encrypted connections with
-            // clients and other coordinators to facilitate    multi-hop E2E
-            // routing, identity verification, and service discovery.
-            //
-            // A coordinator may run A, B, or both simultaneously.
-            if role.iroh.as_ref().is_some_and(|i| i.enable_relay) {
-                relay_server = Some(Self::spawn_relay_server(role).await?);
-            }
+        // Made before the relay server, so the relay can always admit the
+        // coordinator's own endpoint.
+        let secret_key = SecretKey::generate(&mut rand::rng());
+        let relay_passports = if relay_on && role.access.accepts_passports() {
+            let resolver: Arc<dyn MasterAnchorResolver> = Arc::new(RegistryClient::new(
+                config.substrate.enable_bep0044_dht,
+                config.substrate.registry_url.clone(),
+            ));
+            Some(Arc::new(RelayPassports::open(&config.storage.db_dir, host, resolver).await?))
+        } else {
+            None
+        };
 
-            if let Some(iroh_cfg) = &role.iroh {
-                let parts = Self::start_endpoint(
+        // --- Architectural Note ---
+        // Syneroym Coordinators can fulfill two overlapping but distinct IROH roles:
+        //
+        // A) The standard IROH Relay Server (spawn_relay_server)
+        //    This is an infrastructure-level component that assists *other* IROH nodes
+        //    in traversing NATs and establishing peer-to-peer UDP punch-throughs.
+        //    It does not read or decrypt Syneroym application payloads.
+        //
+        // B) The Syneroym Coordinator Endpoint (build_iroh_endpoint &
+        // spawn_iroh_router)    This is an active participant in the
+        // Syneroym network. It establishes    encrypted connections with
+        // clients and other coordinators to facilitate    multi-hop E2E
+        // routing, identity verification, and service discovery.
+        //
+        // A coordinator may run A, B, or both simultaneously.
+        let relay_server = if relay_on {
+            let always = [secret_key.public(), passport::endpoint_of_did(&host.node_did)?];
+            let leases = relay_passports.as_ref().map(|p| p.leases().clone());
+            Some(Self::spawn_relay_server(role, &always, leases).await?)
+        } else {
+            None
+        };
+
+        let parts = match &role.iroh {
+            Some(iroh_cfg) => Some(
+                Self::start_endpoint(EndpointArgs {
                     config,
                     iroh_cfg,
-                    parent_relay_url.as_ref(),
-                    &relay_server,
-                )
-                .await?;
-                iroh_router = Some(parts.iroh_router);
-                http_info_handle = Some(parts.http_info_handle);
-                info_addr = Some(parts.info_addr);
-                registry_registration_handle = parts.registry_registration_handle;
-            }
-        }
+                    host,
+                    secret_key,
+                    parent_relay_url,
+                    relay_server: &relay_server,
+                    relay_passports: relay_passports.clone(),
+                })
+                .await?,
+            ),
+            None => None,
+        };
+
+        let (iroh_router, http_info_handle, info_addr, registry_registration_handle) = match parts {
+            Some(p) => (
+                Some(p.iroh_router),
+                Some(p.http_info_handle),
+                Some(p.info_addr),
+                p.registry_registration_handle,
+            ),
+            None => (None, None, None, None),
+        };
 
         Ok(Self {
             relay_server,
@@ -164,11 +228,16 @@ impl CoordinatorIroh {
             http_info_handle,
             registry_registration_handle,
             info_addr,
+            relay_passports,
         })
     }
 
-    async fn spawn_relay_server(role: &CoordinatorRole) -> Result<Server> {
-        let server_config = build_relay_config(role).await?;
+    async fn spawn_relay_server(
+        role: &CoordinatorRole,
+        always: &[EndpointId],
+        leases: Option<LeaseStore>,
+    ) -> Result<Server> {
+        let server_config = build_relay_config(role, always, leases).await?;
         debug!("Iroh Relay Config built: {:?}", server_config.relay.is_some());
         let server =
             Server::spawn(server_config).await.context("failed to spawn iroh relay server")?;
@@ -183,9 +252,8 @@ impl CoordinatorIroh {
     async fn build_iroh_endpoint(
         iroh_cfg: &CoordinatorIrohConfig,
         relay_url: Option<RelayUrl>,
-    ) -> Result<(Endpoint, SecretKey)> {
-        let secret_key = SecretKey::generate(&mut rand::rng());
-
+        secret_key: &SecretKey,
+    ) -> Result<Endpoint> {
         let iroh_endpoint = net_iroh::build_iroh_endpoint(
             relay_url.clone(),
             Some(secret_key.clone()),
@@ -201,7 +269,7 @@ impl CoordinatorIroh {
         let node_id = iroh_endpoint.addr().id;
         debug!("Coordinator Iroh endpoint bound: {}", node_id);
 
-        Ok((iroh_endpoint, secret_key))
+        Ok(iroh_endpoint)
     }
 
     fn spawn_iroh_router(
@@ -228,14 +296,18 @@ impl CoordinatorIroh {
         (router, active_connections)
     }
 
-    async fn start_endpoint(
-        config: &SubstrateConfig,
-        iroh_cfg: &CoordinatorIrohConfig,
-        parent_relay_url: Option<&RelayUrl>,
-        relay_server: &Option<Server>,
-    ) -> Result<EndpointParts> {
+    async fn start_endpoint(args: EndpointArgs<'_>) -> Result<EndpointParts> {
+        let EndpointArgs {
+            config,
+            iroh_cfg,
+            host,
+            secret_key,
+            parent_relay_url,
+            relay_server,
+            relay_passports,
+        } = args;
         let relay_url = resolve_relay_url(parent_relay_url, relay_server, iroh_cfg)?;
-        let (endpoint, secret_key) = Self::build_iroh_endpoint(iroh_cfg, relay_url.clone()).await?;
+        let endpoint = Self::build_iroh_endpoint(iroh_cfg, relay_url.clone(), &secret_key).await?;
         let (iroh_router, active_connections) = Self::spawn_iroh_router(
             &endpoint,
             iroh_cfg,
@@ -260,10 +332,11 @@ impl CoordinatorIroh {
             registry: registry_url
                 .is_some()
                 .then(|| (registration::coordinator_did(&secret_key), registered_rx)),
+            identity: host.identity_info(),
         };
+        let app = info_endpoint::info_router(state).merge(passport::routes(relay_passports));
         let (http_info_handle, info_addr) =
-            Self::spawn_http_info_server(config, iroh_cfg, info_endpoint::info_router(state))
-                .await?;
+            Self::spawn_http_info_server(config, iroh_cfg, app).await?;
 
         let registry_registration_handle = registry_url.map(|url| {
             registration::spawn(
@@ -316,9 +389,14 @@ impl CoordinatorIroh {
                 let server = axum_server::from_tcp_rustls(std_listener, loader.config())
                     .context("Failed to create TLS server from TcpListener")?;
 
-                server.serve(app.into_make_service()).await.context("HTTPS info server error")?;
+                server
+                    .serve(app.into_make_service_with_connect_info::<SocketAddr>())
+                    .await
+                    .context("HTTPS info server error")?;
             } else {
-                axum::serve(listener, app).await.context("HTTP info server error")?;
+                axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+                    .await
+                    .context("HTTP info server error")?;
             }
             Ok(())
         });

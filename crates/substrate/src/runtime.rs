@@ -139,10 +139,15 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     // (`KeyStore`, `StorageProvider`, `native_dispatch`, the node's own
     // identity) that only exist once the connection router's own
     // composition root has built them, is injected into `RuntimeServices`
-    // afterward instead of changing when either call runs.
-    let mut services = RuntimeServices::init(&config).await?;
+    // afterward instead of changing when either call runs. The host identity
+    // is loaded before both calls because the coordinator reports and
+    // trusts the host DID. Loading it first does not change the start
+    // order because it does file work only (no network).
+    let keys = router::load_host_identity(&config)?;
+    let mut services = RuntimeServices::init(&config, &keys.host).await?;
+    let relay_leases = services.relay_leases();
     let (connection_router, endpoint_registry, supervisor, conversation, auth_did) =
-        setup_connection_router(&config).await?;
+        setup_connection_router(&config, keys, relay_leases).await?;
     services.set_supervisor(supervisor);
     services.set_conversation(conversation);
     #[cfg(feature = "client_gateway")]

@@ -17,8 +17,11 @@ use syneroym_community_registry::EcosystemRegistry;
 use syneroym_conversation::ConversationService;
 #[cfg(feature = "coordinator")]
 use syneroym_coordinator::EcosystemCoordinator;
-use syneroym_core::{config::SubstrateConfig, local_registry::EndpointRegistry};
+use syneroym_core::{
+    config::SubstrateConfig, host_identity::HostIdentity, local_registry::EndpointRegistry,
+};
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot};
+use syneroym_passport::LeaseStore;
 use syneroym_router::ConnectionRouter;
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -104,7 +107,12 @@ impl Debug for RuntimeServices {
 }
 
 impl RuntimeServices {
-    pub(super) async fn init(config: &SubstrateConfig) -> anyhow::Result<Self> {
+    pub(super) async fn init(
+        config: &SubstrateConfig,
+        host: &HostIdentity,
+    ) -> anyhow::Result<Self> {
+        #[cfg(not(feature = "coordinator"))]
+        let _ = host;
         Ok(Self {
             #[cfg(feature = "community_registry")]
             community_registry: if config.roles.community_registry.is_some() {
@@ -114,7 +122,7 @@ impl RuntimeServices {
             },
             #[cfg(feature = "coordinator")]
             coordinator: if config.roles.coordinator.is_some() {
-                Some(EcosystemCoordinator::init(config).await?)
+                Some(EcosystemCoordinator::init(config, host).await?)
             } else {
                 None
             },
@@ -133,6 +141,18 @@ impl RuntimeServices {
             conversation_worker_join: None,
             conversation_worker_cancel: CancellationToken::new(),
         })
+    }
+
+    /// The coordinator's relay lease store, when its relay accepts passports.
+    pub(super) fn relay_leases(&self) -> Option<LeaseStore> {
+        #[cfg(feature = "coordinator")]
+        {
+            self.coordinator.as_ref().and_then(EcosystemCoordinator::relay_leases)
+        }
+        #[cfg(not(feature = "coordinator"))]
+        {
+            None
+        }
     }
 
     /// Injects the supervisor role, already constructed by

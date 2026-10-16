@@ -28,6 +28,8 @@ use tokio::{
 };
 use tracing_subscriber::EnvFilter;
 
+mod common;
+
 /// Connection cap the coordinator is configured with.
 const CAP: usize = 10;
 /// Simultaneous connection attempts. Anything over `CAP` must be rejected.
@@ -48,8 +50,6 @@ enum Verdict {
     /// failed to complete within `ATTEMPT_DEADLINE`.
     Rejected,
 }
-
-mod common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn accepts_up_to_cap_and_rejects_the_rest() -> Result<()> {
@@ -205,7 +205,7 @@ async fn start_capped_coordinator(base_path: &Path) -> Result<CoordinatorIroh> {
         }),
         ..Default::default()
     });
-    CoordinatorIroh::init(&config).await
+    common::init_coordinator(&config).await
 }
 
 /// Ask the running coordinator (over its local `/v1/info` endpoint) for the

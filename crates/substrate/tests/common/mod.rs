@@ -357,3 +357,58 @@ impl SubstrateTestContext {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
+
+/// Writes a pre-issued controller agreement and node identity key into
+/// `<dir>/user_data`, making the node boot in the `Verified` state without
+/// relying on config-level `admin_ucan_root`.
+pub fn write_claim(dir: &std::path::Path, controller: &Identity) -> Identity {
+    let data = dir.join("user_data");
+    std::fs::create_dir_all(&data).expect("create user_data");
+
+    let node_key = Identity::generate().expect("node identity");
+    node_key
+        .save_to_path(data.join(syneroym_core::config::DEFAULT_SUBSTRATE_KEY_FILE))
+        .expect("save node key");
+    let agreement =
+        syneroym_identity::substrate::ControllerAgreement::issue(&node_key, controller, None)
+            .expect("issue agreement");
+    std::fs::write(
+        data.join(syneroym_core::config::DEFAULT_CONTROLLER_AGREEMENT_FILE),
+        serde_json::to_string(&agreement).expect("serialize agreement"),
+    )
+    .expect("write agreement.json");
+    node_key
+}
+
+/// Generates a self-signed certificate for testing TLS.
+pub fn generate_self_signed_cert(
+    cert_path: &std::path::Path,
+    key_path: &std::path::Path,
+    common_name: &str,
+) {
+    let status = std::process::Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            key_path.to_str().expect("valid key path"),
+            "-out",
+            cert_path.to_str().expect("valid cert path"),
+            "-days",
+            "1",
+            "-subj",
+            &format!("/CN=127.0.0.1/OU={common_name}"),
+            "-addext",
+            "basicConstraints = critical,CA:FALSE",
+            "-addext",
+            "extendedKeyUsage = serverAuth",
+            "-addext",
+            "subjectAltName = IP:127.0.0.1",
+        ])
+        .status()
+        .expect("Failed to execute openssl");
+    assert!(status.success(), "openssl command failed");
+}

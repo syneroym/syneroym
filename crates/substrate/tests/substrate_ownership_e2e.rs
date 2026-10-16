@@ -14,15 +14,9 @@
 //! that goes through a real boot, the handshake, and both admission gates
 //! (`orchestrator/deploy` and `security`) together.
 
-use std::fs;
-
 use common::SubstrateNode;
 use rustls::crypto::ring;
-use syneroym_core::config::{DEFAULT_CONTROLLER_AGREEMENT_FILE, DEFAULT_SUBSTRATE_KEY_FILE};
-use syneroym_identity::{
-    Identity,
-    substrate::{ControllerAgreement, SubstrateIdentityStatus},
-};
+use syneroym_identity::{Identity, substrate::SubstrateIdentityStatus};
 use syneroym_rpc::{JsonRpcError, PERMISSION_DENIED_CODE};
 use syneroym_sdk::{NetworkEndpoint, Publication};
 use tempfile::TempDir;
@@ -38,18 +32,7 @@ mod common;
 /// The returned [`TempDir`] owns the directory and must outlive the node.
 async fn boot_claimed(controller: &Identity) -> (SubstrateNode, TempDir) {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
-    let data = dir.path().join("user_data");
-    fs::create_dir_all(&data).expect("create user_data");
-
-    let node_key = Identity::generate().expect("node identity");
-    node_key.save_to_path(data.join(DEFAULT_SUBSTRATE_KEY_FILE)).expect("save node key");
-    let agreement =
-        ControllerAgreement::issue(&node_key, controller, None).expect("issue agreement");
-    fs::write(
-        data.join(DEFAULT_CONTROLLER_AGREEMENT_FILE),
-        serde_json::to_string(&agreement).unwrap(),
-    )
-    .expect("write agreement.json");
+    common::write_claim(dir.path(), controller);
 
     let node = SubstrateNode::builder()
         .unowned() // ownership comes from the discovered agreement.json, not config

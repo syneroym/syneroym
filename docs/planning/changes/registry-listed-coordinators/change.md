@@ -196,7 +196,7 @@ Decided 2026-10-11:
 - D-A3-7: Coordinator registry registration uses `RegistryClient::register` with standard 10s HTTP timeout and no DHT publication.
 - D-A3-8: Coordinator `/v1/info` `status` evaluates relay connections against `max_relay_clients` only; router connections at `max_connections` do not yield `at_capacity`.
 - D-A3-9: Relay client count is calculated from iroh-relay server metrics as `accepts.saturating_sub(disconnects)`, counting open connections rather than unique endpoints.
-- D-A3-10: The coordinator's own endpoint is counted toward relay clients only when admitted by relay access (e.g. `access = "everyone"`).
+- D-A3-10: The coordinator's own endpoint is counted toward relay clients only when admitted by relay access (e.g. `access = "everyone"`). (Replaced by `D-B2-3` of the passport change doc: the coordinator's own endpoint is admitted under every access form.)
 - D-A3-11: `/v1/info` `status` is serialized as typed `CoordinatorStatus` enum (`healthy`, `at_capacity`, `unknown` fallback); added `relay.clients`, `relay.max_clients`, and `registry`.
 - D-A3-12: `/v1/info` wire types move to `crates/core::coordinator_info` so substrate resolver (Slice A4) can access them without depending on `syneroym-coordinator-iroh`.
 - D-A4-1: `HomeRelaySource` has a second variant, `Registry { registry_url, cache_path }`. `from_config` takes the whole `SubstrateConfig` and returns `Fixed` when `url` is set, `Registry` when `url` is not set, `iroh` is in `communication_interfaces` and `substrate.registry_url` is set, and `None` (degraded, nothing to retry) otherwise. A node runs one source and one task.

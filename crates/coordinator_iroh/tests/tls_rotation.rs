@@ -1,7 +1,6 @@
 #![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::{
     fs,
-    path::Path,
     process::{self, Command},
     time::Duration,
 };
@@ -9,7 +8,6 @@ use std::{
 use anyhow::Result;
 use reqwest::{Certificate, Client};
 use rustls::crypto::ring;
-use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
     config::{
         CoordinatorIrohConfig, CoordinatorRole, LogTarget, SubstrateConfig, SubstrateTlsConfig,
@@ -18,33 +16,7 @@ use syneroym_core::{
 };
 use tokio::time;
 
-fn generate_self_signed_cert(cert_path: &Path, key_path: &Path, common_name: &str) {
-    let status = Command::new("openssl")
-        .args([
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-keyout",
-            key_path.to_str().unwrap(),
-            "-out",
-            cert_path.to_str().unwrap(),
-            "-days",
-            "1",
-            "-subj",
-            &format!("/CN=127.0.0.1/OU={common_name}"),
-            "-addext",
-            "basicConstraints = critical,CA:FALSE",
-            "-addext",
-            "extendedKeyUsage = serverAuth",
-            "-addext",
-            "subjectAltName = IP:127.0.0.1",
-        ])
-        .status()
-        .expect("Failed to execute openssl");
-    assert!(status.success(), "openssl command failed");
-}
+mod common;
 
 #[tokio::test]
 async fn test_tls_rotation_sigusr1() -> Result<()> {
@@ -58,7 +30,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     let key_path = base_path.join("key.pem");
 
     // 1. Generate Cert A
-    generate_self_signed_cert(&cert_path, &key_path, "cert-a");
+    common::generate_self_signed_cert(&cert_path, &key_path, "cert-a");
     let cert_a_bytes = fs::read(&cert_path)?;
 
     // Set up coordinator config
@@ -95,7 +67,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
         ..Default::default()
     });
 
-    let mut coord = CoordinatorIroh::init(&config).await?;
+    let mut coord = common::init_coordinator(&config).await?;
     let info_addr = coord.info_addr().expect("HTTP info server address not set");
 
     // Spawn coordinator run loop
@@ -116,7 +88,7 @@ async fn test_tls_rotation_sigusr1() -> Result<()> {
     assert!(resp.status().is_success());
 
     // 2. Generate Cert B and write to the same path
-    generate_self_signed_cert(&cert_path, &key_path, "cert-b");
+    common::generate_self_signed_cert(&cert_path, &key_path, "cert-b");
     let cert_b_bytes = fs::read(&cert_path)?;
 
     // Create client B that only trusts Cert B

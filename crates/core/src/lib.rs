@@ -8,6 +8,7 @@ pub mod curated_list;
 pub mod deploy_docs;
 pub mod dht_registry;
 pub mod endpoint_publisher;
+pub mod host_identity;
 pub mod http_routes;
 pub mod local_registry;
 pub mod protocol_utils;

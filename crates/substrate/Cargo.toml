@@ -23,6 +23,7 @@ syneroym-data-blob.workspace = true
 syneroym-mqtt-broker.workspace = true
 syneroym-sandbox-podman.workspace = true
 syneroym-control-plane.workspace = true
+syneroym-passport.workspace = true
 syneroym-router.workspace = true
 syneroym-rpc.workspace = true
 syneroym-observability.workspace = true

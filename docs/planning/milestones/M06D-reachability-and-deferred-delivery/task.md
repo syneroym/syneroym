@@ -2,7 +2,7 @@
 
 *Reader: developers who build these three changes.*
 
-**Status: in progress (2026-10-14).** S0, A1 to A4, C1 and B1 are done. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-15).** S0, A1 to A4, C1, B1 and B2 are done. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -38,7 +38,7 @@ Facts checked in the code for this plan:
 - After A1 the publisher reads a `watch` channel and wakes on `relay_rx.changed()` (`crates/substrate/src/runtime/publish.rs:100`).
 - The registry already accepts a byte-identical record with the same timestamp as a refresh, and rejects an older timestamp (`crates/community_registry/src/registry.rs:243-299`, `admit_endpoint`). So the registry side of `K-4` is mostly tests. *Unverified:* the same rule on the DHT path.
 - A1 made the `access` parse strict (`crates/core/src/config/access.rs`). Both the strict parse (`H-6`) and the passport access function replace the earlier `match`.
-- `InfoState.substrate_id` (`crates/coordinator_iroh/src/info_endpoint.rs`) is the coordinator's random endpoint ID, not the host node ID. B2 must pass the host substrate's node DID and controller into the info server when building passport routes.
+- `InfoState.substrate_id` (`crates/coordinator_iroh/src/info_endpoint.rs`) is the coordinator's random endpoint ID, not the host node ID. B2 now passes the host substrate's node DID and controller into the info server when building passport routes, and reports it in `/v1/info` under `identity`.
 - X25519 is already in the build: `x25519-dalek` 2.0 comes in through `vodozemac`, which the conversation capability uses. It is not a direct workspace dependency. The router stream handshake uses `p256` ECDH and `aes-gcm` (`crates/router/src/route_handler/encryption.rs`). No crate in the workspace gives a sealed box.
 - `crates/ucan` depends only on `crates/identity`. `crates/community_registry`, `crates/router`, `crates/sdk` and `apps/roymctl` all depend on `crates/core`, so X3 in `crates/core` reaches every user.
 
@@ -117,6 +117,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Decide whether the coordinator's own endpoint is admitted on its own relay with passport access.
 - Leases survive a restart; deny by id; `roymctl coordinator passport deny` and `leases` (`P-4` to `P-6`, `P-8`, `H-1` to `H-3`).
 - Run the DHT revocation check between `Registrar::check` and `Registrar::grant` (`D-B1-15`); `deny` and `leases` go through the running service (`D-B1-18`); remove the "cannot use passports yet" line from the `issue` help.
+- Done 2026-10-15. Decisions `D-B2-1` to `D-B2-18` are in the [passport change doc](../../changes/operator-passport/change.md).
 
 **B3 — Relay use, substrate side (M).** Needs A1 and B2. It does not need A4.
 - Child-token store set through the control plane; `roymctl substrate home-relay set` and `status`.
@@ -163,6 +164,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Owner signs one child token for each member master at deploy (the deploy-call field reserved in S0).
 - `roymctl` mailbox `issue` variant on B1's code.
 - `register` carries the instance certificate (`D-B1-17`); quotas come from `LeaseStore::lease_for` (`D-B1-16`); the DHT revocation check runs between `Registrar::check` and `Registrar::grant` (`D-B1-15`).
+- Reuse `HostIdentity::passport_root` (`crates/core`) for the accepted root; do not write a second root rule (`D-B2-16`).
 - Close out the mailbox change doc.
 
 ## 4. Order and parallel work
