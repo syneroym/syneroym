@@ -66,8 +66,8 @@ Mailbox service
 | M-10 | A queue that has not been claimed for the queue lifetime (30 days) is removed. | |
 | M-11 | The mailbox stores no content, interface name, method name or parameters in clear text. | |
 | M-12 | For each queue the mailbox serves `claim` and `ack` only to the instance with the newest certificate it has seen (by `issued_at_secs`), and only if that certificate is not revoked. After a relocation, the old instance can no longer take messages. | |
-| M-13 | A `delivered` receipt carries the receiver's signature over `(deposit_id, state, time)`, made with its instance key, and the receiver's instance certificate. The sender knows only the receiver's member master DID, so it checks the certificate against that DID and then the signature. The mailbox stores the receipt as sent. The mailbox cannot make a `delivered` receipt. | |
-| M-14 | A message that was claimed 5 times without an acknowledgement is closed with the receipt `rejected`. The mailbox counts the claims. | |
+| M-13 | A `delivered` receipt carries the receiver's signature over the deposit id, the sender's member master DID, the message hash, the state and the time, made with its instance key, and the receiver's instance certificate. The sender knows only the receiver's member master DID, so it checks the certificate against that DID and then the signature. The mailbox stores the receipt as sent. The mailbox cannot make a `delivered` receipt. | |
+| M-14 | A message that was claimed 5 times without an acknowledgement is closed with the receipt `rejected`. The mailbox counts the claims. This `rejected` receipt is unsigned. | |
 
 Record and keys
 
@@ -90,7 +90,7 @@ Sender
 | S-2 | For a receiver with a mailbox, the sender makes one direct attempt with a short timeout. If it fails, the sender deposits the message. | |
 | S-3 | After a deposit, the sender sends no more direct attempts for that message. It polls `status` on its own interval. | |
 | S-4 | If the deposit fails because the mailbox is unreachable, the sender goes back to direct attempts and tries the deposit again later. | |
-| S-5 | The sender keeps the payload until it has a `delivered` receipt with a valid receiver signature, or the outbox's own age limit ends (30 days for Conversation). A `rejected` receipt fails the message. An `expired` or unknown receipt (also after the receipt time) sends the message back to direct attempts until that age limit. | |
+| S-5 | The sender keeps the payload until it has a `delivered` receipt with a valid receiver signature, or the outbox's own age limit ends (30 days for Conversation). A `rejected` receipt with a valid receiver signature fails the message (ADR-0026 A1). An `expired` or unknown receipt (also after the receipt time), an unsigned `rejected` receipt, or a receipt whose signature does not verify sends the message back to direct attempts until that age limit. Each new deposit is sealed again, with a new deposit id and send time. | |
 | S-6 | The outbox shows `deposited` as a state separate from `pending` and `delivered`. The conversation delivery state, including its WIT enum, has the same new value. | |
 | S-7 | The same code path serves the proxy outbox and the conversation outbox, including each member push of a group. | |
 | S-8 | A receiver with no mailbox keeps today's behaviour with no change. | |
@@ -103,7 +103,7 @@ Receiver
 | R-1 | For each hosted service that has a mailbox, the substrate registers (again when needed), claims, unseals, delivers and acknowledges. It runs this at start, every 60 seconds, and when asked. If the instance certificate has expired, the substrate waits for the supervisor to renew it, then registers and pulls. A service deployed with `svc deploy` has no supervisor, so nothing renews its certificate. Its pull stays blocked, with a warning in the log and a metric every hour, until a new certificate is installed. Deposits for it still wait at the mailbox until the queue lifetime ends. Use the per-member certificate lifetime (K-8) for such a service. | |
 | R-2 | The message enters the normal inbound path, including the receiver idempotency fence and admission rules. | |
 | R-3 | The caller identity of a delivered message is the original sender, taken from the sealed proof. It is never the mailbox. | |
-| R-4 | The receiver accepts a message only if the sender's certificate was valid at the sealed send time and is not revoked now. It rejects a send time older than the longest mailbox time-to-live plus 24 hours of clock skew (the same allowance as Conversation). A rejected message is acknowledged as `rejected`. | |
+| R-4 | The receiver accepts a message only if the sender's certificate was valid at the sealed send time and is not revoked now. It rejects a send time older than the longest mailbox time-to-live plus 24 hours of clock skew (the same allowance as Conversation). A rejected message is acknowledged as `rejected`. A rejection for a send time that is too old is unsigned, because a mailbox can delay a message. A rejection for a sender certificate that does not verify is unsigned, because the certificate may be forged and then the sender is not proven. | |
 | R-5 | A method that has not opted in is acknowledged as `rejected`. | |
 | R-6 | A temporary local failure is not acknowledged. The mailbox closes the message after 5 claims (M-14). | |
 | R-7 | For a service with a mailbox, the receiver idempotency memory lasts at least the longest mailbox time-to-live plus the clock skew allowance. The row limit for such a service is 100,000 (the default is 10,000). When it is reached first, the oldest-expiring rows go first, and R-4 bounds the age of a message. This extends the existing backlog row "A resent envelope can be refused after the receiver's dedup record expires". A message that arrives both direct and from the mailbox runs once. | |
@@ -206,8 +206,8 @@ The registry config gets a second curated list, `[[roles.community_registry.mail
 
 ```text
 pending --direct fails--> deposit --stored--> deposited --delivered (signed)--> delivered
-                              |                    |--rejected--> failed
-                              |                    '--expired / unknown--> pending (direct again, until the outbox age limit)
+                              |                    |--rejected (signed)--> failed
+                              |                    '--expired / unknown / unsigned rejected / bad proof--> pending (direct again, until the outbox age limit)
                               '--mailbox down--> pending (direct again, deposit later)
 ```
 
@@ -244,7 +244,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - [ ] Resolve the open questions.
 - [ ] Record field, mailbox key creation and delivery, per-member certificate lifetime, `roymctl svc deploy` and `app deploy` options.
 - [ ] Lookup change: `resolve_iroh_addr` returns the mailbox field. Sender stores the last record. Mailbox republishes the record.
-- [ ] Sealed message format with tests (tamper, wrong key, replay, old send time).
+- [x] Sealed message format with tests (tamper, wrong key, replay, old send time).
 - [ ] Mailbox role, native service, store, quotas, fair eviction, sweeps, newest-certificate rule, signed receipts.
 - [x] `async_queue`: a `deposited` state outside the attempt budget. Keep the supervisor behaviour.
 - [ ] `ProxyRouter` deposit and status poll. New state in both outboxes. New `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI.
@@ -264,6 +264,16 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C1-5`: `TxQueue::park` and `TxQueue::unpark` exist. C5 must set the Conversation `deposited` state and park the row in one `Queue::transaction`, because the Conversation worker deletes any row whose message is not `Pending` (`crates/conversation/src/outbox.rs:190`). Inside that closure, C5 must not call `ConversationStore::set_state`, `set_recipient_state` or `restart_pending` (`crates/conversation/src/store/message.rs:612-665`): each one locks the connection mutex that `Queue::transaction` already holds, and a `std::sync::Mutex` locked twice by one thread hangs it forever. C5 needs versions of them that write through the `&Transaction`, as `store/message.rs:73` already does with `tx.execute`. This holds for the `expired` → `unpark` path too.
 - `D-C1-6`: the "Attempt budget" paragraph is partly stale. The Conversation outbox already calls `Queue::defer` for an unreachable peer (`crates/conversation/src/outbox.rs:227`), which charges no attempt and un-counts the claim. So for Conversation only the `Retry` path is bound by the attempt budget; an unreachable peer is bound by `conversation_max_pending_age_secs` (30 days). The parked state is still needed for S-3, its own poll interval and deadline, and S-6.
 - `D-C1-7`: the queue does not act at the parked deadline, and parked claims never advance `claim_count`. A caller that does not resolve a row past its deadline receives it again after each visibility timeout indefinitely. C5 must resolve every past-deadline claim, and must apply the Conversation age limit on the parked path.
+- `D-C2-1`: the sender signature also covers `deposit_id`. A mailbox can then not give the receiver an existing message under another deposit id.
+- `D-C2-2`: the outer part has no `size` field. The size is the length of the decoded sealed bytes.
+- `D-C2-3`: the formats live in `crates/mailbox_format` (`syneroym-mailbox-format`). Mailbox keys are z-base-32 text, deposit ids are 32 lowercase hex characters, and sealed bytes are base64.
+- `D-C2-4`: the receiver also refuses a send time more than 24 hours in the future, like Conversation. The age limit uses the queue's own time-to-live, passed in by the caller, not a fixed 7 days.
+- `D-C2-5`: revocation of the sender's instance key is checked by the receiver after `open`, with the code `revoked`. It needs a network lookup, and the format crate has no I/O.
+- `D-C2-6`: the mailbox secret key is the 32-byte `DeriveKeyPair` seed of RFC 9180.
+- `D-C2-7`: receipts and rejections follow ADR-0026 A1. The receipt names the sender and the message hash. Only rejections for `from_future`, `revoked` and `not_eligible` are signed and final. `bad_certificate` is not: the certificate may be forged. Any other receipt is handled like `expired`. The rows M-13, M-14, S-5, R-4 and the Sender flow diagram were changed to match.
+- `D-C2-8`: the `hpke` check. `hpke` 0.13 is used, not 0.14. Version 0.14 needs stable `sha2` 0.11, which conflicts with the exact pin `sha2 = "=0.11.0-rc.2"` of iroh 0.97. Version 0.13 adds no crate besides itself: it uses `x25519-dalek` 2, `aes-gcm` 0.10, `hkdf` 0.12, `sha2` 0.10 and `rand_core` 0.9, which are already in the build. This answers the "*Unverified:*" sentence in the Design section.
+- `D-C2-9`: a deposit is sealed once and used once. A second deposit is a new `seal` call, with a new deposit id and send time.
+- `D-C2-10`: reject codes are plain strings, an unknown receipt state reads as `unknown`, and deposits and the inner part ignore unknown fields. A newer version can then talk to this one.
 
 ## Close-out
 

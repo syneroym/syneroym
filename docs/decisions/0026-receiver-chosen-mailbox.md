@@ -43,3 +43,34 @@ This fails for mobile services. A phone sleeps for long periods. The sender may 
 - **Seal to the instance key.** Messages waiting at the mailbox become unreadable when the service moves.
 - **Seal to the master key.** The substrate does not hold it, so it could never open the message.
 - **Sealed sender.** It adds cost and gives little: the mailbox sees the connection anyway.
+
+## Amendments
+
+### A1. Signed receipts name the message; only a sender-caused rejection is final
+
+**Added 2026-10-16.** Decision 6 and Decision 7 change as follows.
+
+1. A receipt the receiver signs names the deposit id, the sender's member
+   master DID and a hash of the exact message. The sender checks it
+   against what it sent. So a mailbox cannot reuse a receipt for another
+   message, and cannot make a delivery receipt for a message it put in
+   the queue itself.
+2. The receiver signs a rejection only when the sender is proven (the
+   message signature and the sender's certificate both verify) and the
+   failure is one the mailbox cannot cause: the send time is in the
+   future, the sender's key is revoked, or the method does not accept
+   deferred delivery. For every other failure the receiver's rejection is
+   unsigned: a message that does not open or does not verify, a sender
+   certificate that does not verify (it may be forged), or a message that
+   arrives too late. The mailbox's own rejection after repeated claims is
+   unsigned too.
+3. The sender fails a message only on a signed rejection that it can
+   verify. An unsigned rejection, or a receipt whose signature does not
+   verify, is handled like `expired`: the sender returns to direct
+   attempts until its own age limit, and seals the message again for the
+   next deposit.
+
+Why: a mailbox can damage, delay or relabel a message, and the receiver
+would then reject it. If such a rejection were final, a mailbox run by a
+stranger could make a sender drop any message. With this rule the worst
+a mailbox can do is delay delivery.

@@ -36,6 +36,8 @@ requires ed25519 ^3.0.0-rc.0 and pkcs8 ^0.11.0-rc.10. A plain `cargo update`
 bumps those to their stable releases, which have breaking API changes against
 the pre-release dalek. The two `--precise` commands below restore compatible
 versions. Remove these pins once iroh ships a release using stable ed25519-dalek v3.
+The `hpke` crate stays at 0.13 for the same reason (0.14 needs a stable `sha2`
+0.11, but iroh pins a pre-release), so move `hpke` up when you remove the pins.
 """
 run = [
   "cargo update",
