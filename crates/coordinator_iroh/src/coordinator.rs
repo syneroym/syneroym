@@ -468,6 +468,7 @@ impl CoordinatorIroh {
         }
         if let Some(handle) = self.http_info_handle.take() {
             handle.abort();
+            let _ = handle.await;
         }
         if let Some(router) = self.iroh_router.take() {
             let ep = router.endpoint().clone();

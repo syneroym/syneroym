@@ -38,9 +38,13 @@ use std::{
     time::Duration,
 };
 
-use syneroym_core::config::{
-    ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, LogTarget, ServiceRegistryRole,
-    SubstrateConfig, SupervisorRole,
+use iroh::{EndpointAddr, TransportAddr};
+use syneroym_core::{
+    config::{
+        ClientGatewayRole, CoordinatorIrohConfig, CoordinatorRole, LogTarget, ServiceRegistryRole,
+        SubstrateConfig, SupervisorRole,
+    },
+    dht_registry::EndpointMechanism,
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_router::HomeRelay;
@@ -492,19 +496,85 @@ impl SubstrateNode {
             .with_registry_dht(false)
     }
 
+    /// A client for this node over a direct path (no relay), acting as
+    /// `caller`. For a node whose home relay refuses visitors. Waits up to
+    /// 10 s for the endpoint to list a direct address.
+    pub async fn direct_client_as(&self, caller: Identity) -> SyneroymClient {
+        let deadline = time::Instant::now() + Duration::from_secs(10);
+        let mut last_addr = None;
+        let mut direct_addr = None;
+
+        while time::Instant::now() < deadline {
+            let addr = self.home_relay().endpoint_addr();
+            let ips: Vec<TransportAddr> =
+                addr.addrs.iter().filter(|a| matches!(a, TransportAddr::Ip(_))).cloned().collect();
+            if !ips.is_empty() {
+                direct_addr = Some(EndpointAddr::from_parts(addr.id, ips));
+                break;
+            }
+            last_addr = Some(addr);
+            time::sleep(Duration::from_millis(100)).await;
+        }
+
+        let direct_addr = direct_addr.unwrap_or_else(|| {
+            panic!("timeout waiting for direct IP address on endpoint; last addr: {last_addr:?}")
+        });
+
+        let mut client = SyneroymClient::new_with_identity(
+            self.did().to_string(),
+            self.registry_url.clone(),
+            caller,
+        )
+        .with_registry_dht(false);
+
+        let endpoint_addr_bytes =
+            serde_json::to_vec(&direct_addr).expect("serialize direct EndpointAddr");
+        client
+            .connect_with_mechanisms(vec![EndpointMechanism::Iroh {
+                endpoint_addr_bytes,
+                relay_url: None,
+            }])
+            .await
+            .expect("failed to connect via direct client");
+
+        client
+    }
+
+    /// Shuts down the running node and boots `builder` at the same `base_path`.
+    async fn reboot_inner(&mut self, builder: NodeBuilder) -> SubstrateNode {
+        let _ = self.substrate_client.shutdown().await;
+        let _ = self.shutdown_tx.send(()).await;
+        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle).await;
+
+        let base_path = self.base_path.clone();
+        builder.boot_at(base_path, None).await
+    }
+
+    /// Like `restart`, but boots with `change(builder)`. Keeps the directory,
+    /// the identity and the ports.
+    pub async fn restart_with(
+        mut self,
+        change: impl FnOnce(NodeBuilder) -> NodeBuilder,
+    ) -> SubstrateNode {
+        let temp_dir = self.temp_dir.take();
+        let builder = change(self.builder.clone());
+        let mut rebooted = self.reboot_inner(builder).await;
+        rebooted.temp_dir = temp_dir;
+        rebooted
+    }
+
     /// Stop this node and reboot it under the same on-disk identity, ports,
     /// and configuration. The directory and the owning temp dir are carried
     /// across, so the rebooted node keeps its DID and its keys.
-    pub async fn restart(mut self) -> SubstrateNode {
-        let _ = self.substrate_client.shutdown().await;
-        let _ = self.shutdown_tx.send(()).await;
-        let _ = time::timeout(Duration::from_secs(20), self.substrate_handle).await;
+    pub async fn restart(self) -> SubstrateNode {
+        self.restart_with(|b| b).await
+    }
 
-        let temp_dir = self.temp_dir.take();
-        let base_path = self.base_path.clone();
-        let mut rebooted = self.builder.clone().boot_at(base_path, None).await;
-        rebooted.temp_dir = temp_dir;
-        rebooted
+    /// Reboots the node in-place without moving `self`.
+    pub async fn restart_in_place(&mut self) {
+        let builder = self.builder.clone();
+        let rebooted = self.reboot_inner(builder).await;
+        *self = SubstrateNode { temp_dir: self.temp_dir.take(), ..rebooted };
     }
 
     pub async fn teardown(mut self) {

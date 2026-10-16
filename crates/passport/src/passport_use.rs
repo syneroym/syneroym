@@ -90,6 +90,18 @@ impl PassportUse {
         self.max_lease_secs = secs;
         self
     }
+
+    /// The host node DID named by `resource` when it is this use's selector
+    /// form `substrate:<did>/<selector>`. Not checked for canonical form.
+    #[must_use]
+    pub fn host_of<'a>(&self, resource: &'a ResourceUri) -> Option<&'a str> {
+        resource
+            .0
+            .strip_prefix("substrate:")?
+            .strip_suffix(self.selector)?
+            .strip_suffix('/')
+            .filter(|did| !did.is_empty())
+    }
 }
 
 #[cfg(test)]

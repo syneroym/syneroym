@@ -31,6 +31,7 @@ mod fixtures;
 mod deploy;
 
 pub mod conversation_fixture;
+pub mod passport;
 pub mod roym;
 pub mod roym_flow;
 pub mod roym_group;

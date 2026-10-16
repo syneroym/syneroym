@@ -45,6 +45,7 @@ neighbourhood.
 | **Passport** | A signed, time-limited UCAN token issued by an infrastructure service operator to a user or organization DID, granting an ability (such as `relay/home`) with optional signed use limits (such as `max_nodes`). | A session token or delegation certificate. |
 | **Child token** | A UCAN token signed by a passport holder that re-delegates the passport's ability to a specific subject (such as a substrate node DID). Presented during registration with proof of possession. | The parent passport token. |
 | **Lease** | A time-bounded grant recorded in a service's local database after successful registration, permitting the subject endpoint to use the restricted service until expiry. | A registry registration or permanent admission. |
+| **Info URL** | The base HTTP/HTTPS URL of a coordinator's info server (serving `/v1/info` and registration endpoints). | The Iroh relay URL (`parent_coordinator.iroh.url`). |
 
 ## Key phrasings
 

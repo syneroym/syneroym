@@ -2,7 +2,10 @@
 
 use anyhow::Result;
 use syneroym_identity::DelegationCertificate;
-use syneroym_passport::{PassportId, wire::LeaseInfo};
+use syneroym_passport::{
+    PassportId,
+    wire::{HomeRelaySetRequest, HomeRelayStatus, LeaseInfo},
+};
 use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo, SagaInfo};
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, BindingWrite, ContainerManifest, ContainerPortMapping, ContainerVolumeMapping,
@@ -397,6 +400,20 @@ impl SyneroymClient {
     /// The running leases of the substrate's relay. Node owner only.
     pub async fn relay_passport_leases(&self) -> Result<Vec<LeaseInfo>> {
         let res = self.request("security", "relay-passport-leases", serde_json::json!([])).await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// Store a home-relay passport on the substrate and register once. Node
+    /// owner only.
+    pub async fn home_relay_set(&self, request: &HomeRelaySetRequest) -> Result<HomeRelayStatus> {
+        let res =
+            self.request("security", "home-relay-set", serde_json::to_value((request,))?).await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// The stored home-relay passport, if any. Node owner only.
+    pub async fn home_relay_status(&self) -> Result<Option<HomeRelayStatus>> {
+        let res = self.request("security", "home-relay-status", serde_json::json!([])).await?;
         Ok(serde_json::from_value(res.result)?)
     }
 }

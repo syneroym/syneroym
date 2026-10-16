@@ -9,9 +9,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, ensure};
-use syneroym_ucan::{Capability, CapabilityToken, ChainVerifyOpts, verify_chain};
+use syneroym_ucan::CapabilityToken;
 
 use crate::{
+    chain::{ChainRules, PassportChain},
     challenge_store::ChallengeStore,
     error::RegisterError,
     issue::{PassportId, ensure_canonical_did},
@@ -124,7 +125,9 @@ impl Registrar {
         let proven =
             proof.verify(&self.challenges, &self.host_node_did, &self.use_, token, now_secs)?;
         binding.check(proven, chain.subject(), now_secs)?;
-        self.check_chain(&chain, now_secs)?;
+        let is_root = |issuer: &str| self.is_root(issuer);
+        ChainRules { use_: &self.use_, host_node_did: &self.host_node_did, is_root: &is_root }
+            .check(&chain, now_secs)?;
         let limit = chain.count_limit(&self.use_)?;
         let passport_id =
             PassportId::of(chain.passport).map_err(|e| RegisterError::Malformed(e.to_string()))?;
@@ -165,114 +168,8 @@ impl Registrar {
         Ok(checked.lease)
     }
 
-    fn wrong_capability(&self) -> RegisterError {
-        RegisterError::WrongCapability {
-            ability: self.use_.ability.to_string(),
-            resource: self.use_.resource(&self.host_node_did).0,
-        }
-    }
-
     fn is_root(&self, issuer: &str) -> bool {
         self.accepted_roots.iter().any(|r| r == issuer)
-    }
-
-    /// The chain checks. The explicit checks come before `verify_chain`,
-    /// because `verify_chain` returns an empty grant (not an error) for an
-    /// untrusted root or a broken link, and each case needs its own error.
-    fn check_chain(&self, chain: &PassportChain<'_>, now_secs: u64) -> Result<(), RegisterError> {
-        let (passport, leaf) = (chain.passport, chain.leaf);
-        if !self.is_root(&passport.issuer_did) {
-            return Err(RegisterError::UntrustedRoot);
-        }
-        if passport.audience_did != leaf.issuer_did {
-            return Err(RegisterError::BrokenChain);
-        }
-        if ![passport, leaf]
-            .iter()
-            .all(|t| self.use_.names_exactly(&t.capabilities[0], &self.host_node_did))
-        {
-            return Err(self.wrong_capability());
-        }
-        // Checked here, not left to `verify_chain`: when the owner is also
-        // an accepted root, `verify_chain` roots the child token on its own
-        // and never reads the passport's caveat.
-        if !passport.capabilities[0].can_delegate() {
-            return Err(RegisterError::InvalidChain("the passport forbids delegation".into()));
-        }
-        if now_secs >= passport.expires_at_secs || now_secs >= leaf.expires_at_secs {
-            return Err(RegisterError::Expired);
-        }
-        self.verify_signatures(chain, now_secs)
-    }
-
-    /// `verify_chain` checks every signature (the passport's too, also when
-    /// the leaf is rooted on its own), the not-before times and the anchor
-    /// rule.
-    fn verify_signatures(
-        &self,
-        chain: &PassportChain<'_>,
-        now_secs: u64,
-    ) -> Result<(), RegisterError> {
-        let is_root = |issuer: &str, cap: &Capability| {
-            self.is_root(issuer) && self.use_.names_exactly(cap, &self.host_node_did)
-        };
-        let opts = ChainVerifyOpts {
-            expected_audience_did: chain.subject(),
-            is_trusted_root: &is_root,
-            now_secs,
-        };
-        let granted = verify_chain(chain.leaf, &opts)
-            .map_err(|e| RegisterError::InvalidChain(format!("{e:#}")))?;
-        // `verify_chain` drops a capability it cannot back, so an empty
-        // result is a refusal.
-        if !granted.iter().any(|c| self.use_.names_exactly(c, &self.host_node_did)) {
-            return Err(RegisterError::InvalidChain(
-                "the passport does not back the child token's capability".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// A child token with exactly one proof, the passport.
-struct PassportChain<'a> {
-    leaf: &'a CapabilityToken,
-    passport: &'a CapabilityToken,
-}
-
-impl<'a> PassportChain<'a> {
-    /// The shape check. No signature work happens here.
-    fn parse(leaf: &'a CapabilityToken) -> Result<Self, RegisterError> {
-        let malformed = |msg: &str| Err(RegisterError::Malformed(msg.to_string()));
-        let [passport] = leaf.proofs.as_slice() else {
-            return malformed("the child token must carry exactly one proof, the passport");
-        };
-        if !passport.proofs.is_empty() {
-            return malformed("the passport must not carry proofs");
-        }
-        if leaf.capabilities.len() != 1 {
-            return malformed("the child token must carry exactly one capability");
-        }
-        if passport.capabilities.len() != 1 {
-            return malformed("the passport must carry exactly one capability");
-        }
-        ensure_canonical_did(&leaf.audience_did)
-            .map_err(|e| RegisterError::Malformed(format!("the subject: {e:#}")))?;
-        Ok(Self { leaf, passport })
-    }
-
-    fn subject(&self) -> &'a str {
-        &self.leaf.audience_did
-    }
-
-    /// The use limit, read from the passport only.
-    fn count_limit(&self, use_: &PassportUse) -> Result<Option<u64>, RegisterError> {
-        match self.passport.facts.get(use_.count_key) {
-            None => Ok(use_.open_count_limit),
-            Some(v) => v.as_u64().map(Some).ok_or_else(|| {
-                RegisterError::Malformed(format!("{} is not a whole number", use_.count_key))
-            }),
-        }
     }
 }
 

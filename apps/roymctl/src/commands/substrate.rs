@@ -15,6 +15,8 @@ use syneroym_identity::{
     substrate::{ControllerAgreement, SubstrateIdentityState, SubstrateIdentityStatus},
 };
 
+pub mod home_relay;
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum SubstrateCommands {
     /// Initialize local configuration and default identity for a substrate
@@ -55,6 +57,11 @@ pub enum SubstrateCommands {
         /// Overwrite an existing output file.
         #[arg(long)]
         force: bool,
+    },
+    /// Give this substrate a passport for a private home relay, or show it.
+    HomeRelay {
+        #[command(subcommand)]
+        command: home_relay::HomeRelayCommands,
     },
     /// Get the status/health of the running daemon via API (Placeholder)
     Status,
@@ -144,7 +151,14 @@ fn claim(
 }
 
 /// Handle local substrate subcommands
-pub async fn handle(command: &SubstrateCommands, dir: &Path) -> anyhow::Result<()> {
+pub async fn handle(
+    command: &SubstrateCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
     match command {
         SubstrateCommands::Init { force } => {
             if !dir.exists() {
@@ -181,6 +195,9 @@ pub async fn handle(command: &SubstrateCommands, dir: &Path) -> anyhow::Result<(
                 out_path.display(),
                 out_path.display()
             );
+        }
+        SubstrateCommands::HomeRelay { command } => {
+            home_relay::handle(command, api_url, substrate_opt, dir, run_as, ucan_path).await?;
         }
         SubstrateCommands::Status => {
             // Placeholder: Not yet implemented in SDK

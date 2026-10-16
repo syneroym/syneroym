@@ -1,9 +1,6 @@
 //! Coordinator operator subcommands: passports for a private relay.
 
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, ensure};
 use clap::{ArgGroup, Args, Subcommand};
@@ -11,7 +8,6 @@ use serde_json::{Map, json};
 use syneroym_core::config::DEFAULT_SUBSTRATE_KEY_FILE;
 use syneroym_identity::{Identity, substrate};
 use syneroym_passport::{PassportId, RELAY_HOME, facts};
-use syneroym_sdk::SyneroymClient;
 
 use super::identity;
 
@@ -111,7 +107,7 @@ pub async fn deny(
     ucan_path: Option<&Path>,
 ) -> anyhow::Result<u64> {
     let id: PassportId = passport_id.parse()?;
-    let client = online_client(api_url, substrate_opt, dir, run_as, ucan_path).await?;
+    let client = super::online_client(api_url, substrate_opt, dir, run_as, ucan_path).await?;
     client.relay_passport_deny(&id).await
 }
 
@@ -122,21 +118,8 @@ pub async fn leases(
     run_as: Option<&str>,
     ucan_path: Option<&Path>,
 ) -> anyhow::Result<Vec<syneroym_passport::wire::LeaseInfo>> {
-    let client = online_client(api_url, substrate_opt, dir, run_as, ucan_path).await?;
+    let client = super::online_client(api_url, substrate_opt, dir, run_as, ucan_path).await?;
     client.relay_passport_leases().await
-}
-
-async fn online_client(
-    api_url: &str,
-    substrate_opt: Option<String>,
-    dir: &Path,
-    run_as: Option<&str>,
-    ucan_path: Option<&Path>,
-) -> anyhow::Result<SyneroymClient> {
-    let substrate_did = super::get_substrate_did(substrate_opt, dir)?;
-    let mut client = super::client_for(substrate_did, api_url, dir, run_as, ucan_path)?;
-    client.wait_for_ready(Duration::from_secs(5)).await?;
-    Ok(client)
 }
 
 /// Sign a relay passport, write it, and print its id. The operator needs

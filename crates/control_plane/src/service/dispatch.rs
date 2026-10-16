@@ -1,6 +1,7 @@
 use super::*;
 use crate::synsvc_native;
 
+mod home_relay;
 mod relay_passport;
 
 #[async_trait::async_trait]
@@ -138,6 +139,8 @@ impl ControlPlaneService {
                 relay_passport::deny(self.relay_passports.get(), invocation.params).await
             }
             "relay-passport-leases" => relay_passport::leases(self.relay_passports.get()),
+            "home-relay-set" => home_relay::set(self.home_relay.get(), invocation.params).await,
+            "home-relay-status" => home_relay::status(self.home_relay.get()),
             _ => Err(RpcError::MethodNotFound(invocation.method)),
         }
     }

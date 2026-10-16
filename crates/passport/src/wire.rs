@@ -119,5 +119,76 @@ impl From<&RegisterError> for ErrorBody {
     }
 }
 
+/// The `code` of a client-side failure in `HomeRelayStatus::last_error`:
+/// no answer, or an answer that is not a refusal body.
+pub const UNREACHABLE_CODE: &str = "unreachable";
+
+/// How a registration client treats a refusal code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryClass {
+    /// `unknown_challenge`, `challenge_expired`: ask for a new challenge now.
+    NewChallenge,
+    /// `rate_limited`, `internal`, `unreachable`, and any code this build
+    /// does not know: try again with backoff.
+    Backoff,
+    /// Every other known code: trying again soon gives the same answer.
+    Settled,
+}
+
+impl RetryClass {
+    #[must_use]
+    pub fn of(code: &str) -> Self {
+        match code {
+            "unknown_challenge" | "challenge_expired" => Self::NewChallenge,
+            "rate_limited" | "internal" | UNREACHABLE_CODE => Self::Backoff,
+            "not_accepted" | "request_too_large" | "malformed" | "bad_signature" | "not_bound"
+            | "untrusted_root" | "broken_chain" | "wrong_capability" | "expired"
+            | "invalid_chain" | "denied" | "revoked" | "limit_reached" => Self::Settled,
+            _ => Self::Backoff,
+        }
+    }
+}
+
+/// The params of the control-plane method `security.home-relay-set`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeRelaySetRequest {
+    /// The child token for the node key, with the passport as its one proof.
+    pub token: CapabilityToken,
+    /// Base URL of the coordinator info server. `https` only.
+    pub info_url: String,
+    /// The relay the passport is for. `None`: the node's
+    /// `parent_coordinator.iroh.url`.
+    #[serde(default)]
+    pub relay_url: Option<String>,
+    /// An extra root certificate (PEM) to trust for `info_url`.
+    #[serde(default)]
+    pub ca_cert_pem: Option<String>,
+}
+
+/// The stored home-relay passport of a node, and its last registration.
+/// Accepts unknown fields, like every response type here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeRelayStatus {
+    pub relay_url: String,
+    pub info_url: String,
+    /// False when `relay_url` is not the node's `parent_coordinator.iroh.url`:
+    /// the passport is kept but not used.
+    pub active: bool,
+    pub passport_id: PassportId,
+    pub host_node_did: String,
+    pub owner_did: String,
+    pub access_ends_at: u64,
+    #[serde(default)]
+    pub lease_ends_at: Option<u64>,
+    #[serde(default)]
+    pub last_attempt_at: Option<u64>,
+    /// A refusal code, or `UNREACHABLE_CODE`.
+    #[serde(default)]
+    pub last_error: Option<ErrorBody>,
+    #[serde(default)]
+    pub next_attempt_at: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests;

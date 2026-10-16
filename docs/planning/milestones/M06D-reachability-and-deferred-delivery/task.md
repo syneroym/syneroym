@@ -2,7 +2,7 @@
 
 *Reader: developers who build these three changes.*
 
-**Status: in progress (2026-10-15).** S0, A1 to A4, C1, B1 and B2 are done. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-16).** S0, A1 to A4, C1, B1 to B3 are done. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -119,11 +119,12 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Run the DHT revocation check between `Registrar::check` and `Registrar::grant` (`D-B1-15`); `deny` and `leases` go through the running service (`D-B1-18`); remove the "cannot use passports yet" line from the `issue` help.
 - Done 2026-10-15. Decisions `D-B2-1` to `D-B2-18` are in the [passport change doc](../../changes/operator-passport/change.md).
 
-**B3 — Relay use, substrate side (M).** Needs A1 and B2. It does not need A4.
+**B3 — Relay use, substrate side (M, Done).** Needs A1 and B2. It does not need A4.
 - Child-token store set through the control plane; `roymctl substrate home-relay set` and `status`.
 - In the `Fixed` source of X1: register, then insert the relay (`H-7`). Renew when a third of the lease is left, back off, warn and set a metric at 7 days of passport life left (`H-4`, `H-5`).
 - Integration test: restricted relay, register, expiry, restart, deny, reconnect after expiry.
 - Close out the passport change doc. The mailbox use stays open in the mailbox doc.
+- Done 2026-10-16. Decisions `D-B3-1` to `D-B3-20` are in the [passport change doc](../../changes/operator-passport/change.md).
 
 ### Track C — Service mailbox
 

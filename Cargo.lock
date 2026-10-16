@@ -8264,6 +8264,7 @@ dependencies = [
  "iroh",
  "iroh-relay",
  "libc",
+ "metrics 0.23.1",
  "miniapp-demo1-web",
  "reqwest 0.13.5",
  "roymctl",

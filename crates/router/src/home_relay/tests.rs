@@ -118,3 +118,10 @@ async fn closed_returns_after_the_endpoint_closes() {
 
     time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn endpoint_addr_id_matches_endpoint_id() {
+    let ep = bind_empty().await;
+    let handle = HomeRelay::new(ep.clone(), Duration::from_secs(1));
+    assert_eq!(handle.endpoint_addr().id, ep.id());
+}

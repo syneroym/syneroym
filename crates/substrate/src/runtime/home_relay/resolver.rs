@@ -16,14 +16,13 @@ use std::{
 use syneroym_core::{
     coordinator_info::{CoordinatorInfo, CoordinatorStatus},
     curated_list::{self, CoordinatorEntry, CuratedList},
-    retry,
 };
 use syneroym_router::{HomeRelay, HomeRelayError, net_iroh};
 use tokio::time::{self, Instant};
 use tracing::{debug, info, warn};
 
 use super::{
-    WarnLimiter,
+    Backoff, WarnLimiter,
     cache::{self, CoordinatorCache},
     io::{LiveIo, ResolverIo},
 };
@@ -107,32 +106,6 @@ impl FailureWindow {
             self.times.pop_front();
         }
         self.times.len() >= FAILURE_LIMIT
-    }
-}
-
-/// A delay that doubles on every use, up to `max`, with ±10 % jitter.
-#[derive(Debug)]
-struct Backoff {
-    initial: Duration,
-    max: Duration,
-    next: Duration,
-}
-
-impl Backoff {
-    fn new(initial: Duration, max: Duration) -> Self {
-        Self { initial, max, next: initial }
-    }
-
-    /// The delay to wait now. The one after it is twice as long.
-    fn next(&mut self) -> Duration {
-        let millis = u64::try_from(self.next.as_millis()).unwrap_or(u64::MAX);
-        let delay = Duration::from_millis(retry::calculate_jittered_backoff(millis));
-        self.next = (self.next * 2).min(self.max);
-        delay
-    }
-
-    fn reset(&mut self) {
-        self.next = self.initial;
     }
 }
 

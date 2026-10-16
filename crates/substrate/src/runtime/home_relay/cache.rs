@@ -2,11 +2,7 @@
 //! relay chosen from it. It lets a restart use the old choice without asking
 //! the registry, and use an old list when the registry is down.
 
-use std::{
-    fs,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-};
+use std::{fs, io::ErrorKind, path::Path};
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -85,15 +81,8 @@ pub(super) fn load(path: &Path) -> Option<CoordinatorCache> {
 /// # Errors
 /// When the directory or the file cannot be written.
 pub(super) fn save(path: &Path, cache: &CoordinatorCache) -> anyhow::Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
     let bytes = serde_json::to_vec_pretty(cache).context("encoding the coordinator cache")?;
-    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    super::write_file_atomic(path, &bytes)
 }
 
 #[cfg(test)]
