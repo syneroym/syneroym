@@ -198,7 +198,7 @@ fn endpoint_did_round_trips_with_endpoint_of_did() {
 async fn open_with_invalid_controller_did_fails() {
     let temp = tempfile::tempdir().unwrap();
     let host = HostIdentity {
-        node_did: "did:key:zNodeValid".to_string(),
+        node_did: HostIdentity::random_unowned().node_did,
         controller_status: SubstrateIdentityStatus::Verified,
         verified_controller: Some("not_a_did".to_string()),
     };
@@ -209,6 +209,7 @@ async fn open_with_invalid_controller_did_fails() {
         err_msg.contains("[roles.coordinator] access"),
         "expected {err_msg} to name [roles.coordinator] access"
     );
+    assert!(err_msg.contains("an accepted root"), "expected {err_msg} to name an accepted root");
 }
 
 #[tokio::test]

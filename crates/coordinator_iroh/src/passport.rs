@@ -7,6 +7,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::Path,
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -30,11 +31,15 @@ use syneroym_passport::{
     SignerBinding,
     wire::{self, ChallengeResponse, ErrorBody, RegisterRequest, RegisterResponse},
 };
-use tokio::task;
-use tracing::{debug, error, info};
+use syneroym_router::ucan_chain_not_revoked;
+use tokio::{task, time};
+use tracing::{debug, error, info, warn};
 
 /// The lease file of the relay, in `storage.db_dir`.
 pub(crate) const RELAY_LEASES_DB: &str = "relay_passports.db";
+
+/// Maximum time allowed for revocation lookup across chain edges.
+const REVOCATION_LOOKUP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// What the registration endpoints of one relay need.
 #[derive(Debug)]
@@ -102,9 +107,15 @@ impl RelayPassports {
         let checked = self.registrar.check(&token, &proof, &SignerBinding::SameKey, now)?;
         // ADR-0015 §2 and A7: a revoked edge stops the registration. The
         // lookup needs the network, so it runs only after every offline
-        // check passed.
-        if !syneroym_router::ucan_chain_not_revoked(checked.token(), self.resolver.as_ref()).await {
-            return Err(RegisterError::Revoked);
+        // check passed. Bounded by a timeout; on timeout or network
+        // failure it is treated as not revoked.
+        let revocation_check = ucan_chain_not_revoked(checked.token(), self.resolver.as_ref());
+        match time::timeout(REVOCATION_LOOKUP_TIMEOUT, revocation_check).await {
+            Ok(false) => return Err(RegisterError::Revoked),
+            Ok(true) => {}
+            Err(_) => {
+                warn!("revocation lookup timed out; treating as not revoked");
+            }
         }
         let registrar = Arc::clone(&self.registrar);
         // A fresh clock: the lookup above may take seconds.

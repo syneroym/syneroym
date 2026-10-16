@@ -90,7 +90,7 @@ Home relay
 
 **ADR-0015 amendment.** Written as [ADR-0015 A10](../../../decisions/0015-ucan-capability-model.md#a10-operator-passports-two-abilities-two-selectors-signed-use-limits). It adds the abilities `relay/home` and `mailbox/use` (the ability set is closed, A2), names the two selectors (the selector form itself is A1), and reserves the facts keys for use limits of both uses.
 
-**Operator root.** The root of the chain is the controller of the substrate that hosts the service. If that substrate has no controller, it is the node DID. The service accepts a passport rooted at either one. A coordinator role has no stable DID of its own: it makes a new random Iroh key at every start (`build_iroh_endpoint` in `crates/coordinator_iroh/src/coordinator.rs`). The root is read once at startup (`D-B2-1`). Passports stop working if the `ControllerAgreement` of the host substrate expires or changes.
+**Operator root.** The root of the chain is determined from the host substrate identity at coordinator startup. When the host is owned, the verified controller DID is the root. When the host has no verified controller, the host node DID is the root (`D-B2-1`). Exactly one root is accepted, never both, and never `[iam].admin_ucan_root`. A coordinator role has no stable DID of its own: it makes a new random Iroh key at every start (`build_iroh_endpoint` in `crates/coordinator_iroh/src/coordinator.rs`). The accepted root is read once at startup; a controller agreement that expires or changes while the coordinator is running takes effect on the next restart, and no lease is dropped while the coordinator runs.
 
 **Subject.** The subject is the audience of the child token. For the relay it is the node key. For the mailbox it is the member master DID, which stays the same when the service moves. Leases and use counts are keyed on the subject, not on the key that proves possession, because an instance key changes at relocation.
 
@@ -218,6 +218,7 @@ Coordinator decisions (2026-10-15). The code is `crates/coordinator_iroh`, `crat
 - `D-B2-15`: **a passport relay is a closed-group relay.** The Iroh relay checks access for every client that connects, and a peer that sends to a node through that node's home relay connects to it as a client (a visitor). The access function sees only the endpoint id, so it cannot tell a home client from a visitor. So on a relay with passport (or list) access, only leased, listed or always-admitted endpoints can reach each other through it. Other substrates, `roymctl` and `SyneroymClient` reach a leased node only through a direct path, or if they hold a lease too. This goes beyond `H-1` (which only says the leased node may connect). Backlog row.
 - `D-B2-16`: **the root rule lives in a neutral module.** `HostIdentity` and its `passport_root()` go in `crates/core/src/host_identity.rs`, not in `coordinator_info`, because A10's per-service root rule is shared with the dedicated mailbox. C8 reuses `HostIdentity::passport_root` for `MAILBOX_USE` and must not write its own. `/v1/info` gets its `IdentityInfo` from `HostIdentity::identity_info`.
 - `D-B2-17`: **`LeaseInfo` has no `limits`.** The WIT record of the lease list has no JSON map type, and the operator issued the limits and knows them. The lease row still keeps them (`D-B1-16`) for the mailbox quota lookup.
+- `D-B2-18`: **revocation lookup overall timeout of 15 seconds.** When checking whether a passport chain is revoked, the HTTP registry lookup and DHT resolution are bounded by a 15-second timeout. If the lookup exceeds 15 seconds, it times out and is treated as not revoked (`D-B2-8`), logging a warning. This bounds registration latency under degraded DHT or network conditions.
 
 Requirements on B3:
 - (a) the substrate signs the challenge for the host node DID read from the passport's resource (`substrate:<did>/relay`), not from `/v1/info`;
@@ -226,6 +227,7 @@ Requirements on B3:
 - (d) the response types accept unknown fields;
 - (e) **the registering node must use a separate passport relay node in every B3 test**: a node is always admitted to its own relay (`D-B2-3`), so a test with one node that uses its own relay passes even when registration does nothing;
 - (f) the clients and peers in B3's tests reach the leased node only if they are leased too, or over a direct path (`D-B2-15`).
+- (g) client HTTP request timeout for `POST /v1/home-relay/register` must be set above the coordinator's 15-second revocation lookup timeout (at least 25 seconds), so the client does not abort a registration while the coordinator is still completing the lookup.
 
 Differences from the slice plan:
 
@@ -234,6 +236,8 @@ Differences from the slice plan:
 - Only `require_key_present` in `roymctl`'s `identity.rs` became `pub(crate)`; `identity_key_path` was not needed.
 - The expiry boundary test uses a life of 300 seconds, not 3,600: the mailbox fixture's instance certificate lives 600 seconds and would end first.
 - A few extra tests: a zero passport life, a child token made from a token that is not a passport, ended challenges leaving the store, `with_max_lease_secs`, and the error body code.
+- When `enable_bep0044_dht` is enabled, the coordinator instantiates a second `RegistryClient` (and underlying `DhtClient`) for the passport registrar to query the host node's registry for revocations, which opens a second local UDP socket. Sharing the DHT client between the coordinator and the registrar is recorded in the deferred backlog.
+- A child coordinator generates a fresh, random Iroh key at each startup, so it cannot be listed in advance and cannot hold a passport lease; a list-access or passport-access parent relay always refuses it, so only an open relay (`access = "everyone"`) can serve as a parent relay today.
 
 ## Close-out
 

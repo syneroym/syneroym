@@ -31,6 +31,16 @@ pub async fn passport_coordinator(
     access: CoordinatorAccess,
     host: &HostIdentity,
 ) -> Result<(CoordinatorIroh, Client)> {
+    passport_coordinator_with_relay(base, access, host, true).await
+}
+
+/// A coordinator with optional relay, `[tls]` on its info server, and `access`.
+pub async fn passport_coordinator_with_relay(
+    base: &Path,
+    access: CoordinatorAccess,
+    host: &HostIdentity,
+    enable_relay: bool,
+) -> Result<(CoordinatorIroh, Client)> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cert_path = base.join("cert.pem");
     let key_path = base.join("key.pem");
@@ -53,7 +63,7 @@ pub async fn passport_coordinator(
     config.roles.coordinator = Some(CoordinatorRole {
         access,
         iroh: Some(CoordinatorIrohConfig {
-            enable_relay: true,
+            enable_relay,
             http_bind_address: "127.0.0.1:0".to_string(),
             quic_bind_address: "127.0.0.1:0".to_string(),
             info_http_bind_address: Some("127.0.0.1:0".to_string()),
@@ -148,6 +158,7 @@ pub async fn register(
 pub async fn node_endpoint(node: &Identity, relay: RelayUrl) -> Result<Endpoint> {
     let secret_key = SecretKey::from_bytes(&node.to_bytes());
     let endpoint = Endpoint::empty_builder()
+        .clear_ip_transports()
         .secret_key(secret_key)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay)))
         .bind()
@@ -167,6 +178,7 @@ pub async fn goes_online(ep: &Endpoint, wait: Duration) -> bool {
 pub async fn accepting_node(node: &Identity, relay: RelayUrl) -> Result<Router> {
     let secret_key = SecretKey::from_bytes(&node.to_bytes());
     let endpoint = Endpoint::empty_builder()
+        .clear_ip_transports()
         .secret_key(secret_key)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay)))
         .bind()

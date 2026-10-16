@@ -52,6 +52,7 @@ async fn passport_access_needs_tls() {
         let mut config = test_config();
         config.app_local_data_dir = temp_dir.path().join("local");
         config.app_data_dir = temp_dir.path().join("data");
+        config.resolve_paths();
         config.tls = Some(SubstrateTlsConfig {
             cert_path: cert_path.clone(),
             key_path: key_path.clone(),

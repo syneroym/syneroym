@@ -9,7 +9,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use common::passport::{
     Fixture, accepting_node, echo_through_relay, goes_online, node_endpoint, passport_coordinator,
-    register,
+    passport_coordinator_with_relay, register,
 };
 use iroh::SecretKey;
 use serde_json::Map;
@@ -39,11 +39,14 @@ async fn registered_node_is_admitted_without_restart() -> anyhow::Result<()> {
     common::wait_for_relay(&coord, Duration::from_secs(20)).await?;
 
     let relay_url = common::relay_url(&coord).expect("relay url");
+    let host_id = SecretKey::from_bytes(&fixture.host_key.to_bytes()).public();
+    let host_router = accepting_node(&fixture.host_key, relay_url.clone()).await?;
+
     let node_a = Identity::generate()?;
 
-    // Before registering, the node endpoint cannot go online.
+    // Before registering, node A cannot connect through the relay.
     let ep = node_endpoint(&node_a, relay_url.clone()).await?;
-    assert!(!goes_online(&ep, Duration::from_secs(3)).await);
+    assert!(!echo_through_relay(&ep, host_id, relay_url.clone(), Duration::from_secs(3)).await);
     let _ = ep.close().await;
 
     // Register node A.
@@ -57,11 +60,12 @@ async fn registered_node_is_admitted_without_restart() -> anyhow::Result<()> {
     assert!(reg_res.lease_ends_at <= now + 86_400);
     assert!(reg_res.lease_ends_at <= child.expires_at_secs);
 
-    // After registration, a new endpoint goes online immediately.
-    let ep2 = node_endpoint(&node_a, relay_url).await?;
-    assert!(goes_online(&ep2, Duration::from_secs(10)).await);
+    // After registration, a new endpoint connects through the relay immediately.
+    let ep2 = node_endpoint(&node_a, relay_url.clone()).await?;
+    assert!(echo_through_relay(&ep2, host_id, relay_url, Duration::from_secs(5)).await);
     let _ = ep2.close().await;
 
+    drop(host_router);
     coord.shutdown().await?;
     Ok(())
 }
@@ -294,13 +298,23 @@ async fn denied_passport_is_refused_at_next_connect() -> anyhow::Result<()> {
         echo_through_relay(&host_ep, node_a_id, relay_url.clone(), Duration::from_secs(5)).await
     );
 
+    // Record open relay client count before deny (coordinator, node A, host
+    // endpoint).
+    let info_url = format!("https://{}{INFO_PATH}", coord.info_addr().unwrap());
+    let info_before: CoordinatorInfo = client.get(&info_url).send().await?.json().await?;
+    let clients_before = info_before.relay.and_then(|r| r.clients).unwrap_or(0);
+    assert_eq!(
+        clients_before, 3,
+        "relay clients should count coordinator, node A, and host endpoint"
+    );
+
     // Deny the passport in the lease store.
     let leases = coord.relay_leases().expect("lease store must be present");
     leases.deny(&passport_id, syneroym_passport::now_secs())?;
 
-    // Node B cannot establish a new connection.
+    // Node B cannot establish a new connection through the relay.
     let ep_b = node_endpoint(&node_b, relay_url.clone()).await?;
-    assert!(!goes_online(&ep_b, Duration::from_secs(3)).await);
+    assert!(!echo_through_relay(&ep_b, node_a_id, relay_url.clone(), Duration::from_secs(3)).await);
     let _ = ep_b.close().await;
 
     // Re-registration is refused with 403 denied.
@@ -314,6 +328,14 @@ async fn denied_passport_is_refused_at_next_connect() -> anyhow::Result<()> {
     // Node A's open connection is not cut: echo still succeeds.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(echo_through_relay(&host_ep, node_a_id, relay_url, Duration::from_secs(5)).await);
+
+    // After 2 s, /v1/info relay clients still counts the open connection.
+    let info_after: CoordinatorInfo = client.get(&info_url).send().await?.json().await?;
+    assert_eq!(
+        info_after.relay.and_then(|r| r.clients),
+        Some(clients_before),
+        "relay clients must still count open connection after deny"
+    );
 
     let _ = host_ep.close().await;
     drop(router_a);
@@ -335,14 +357,17 @@ async fn ended_lease_is_refused_at_next_connect() -> anyhow::Result<()> {
     let relay_url = common::relay_url(&coord).expect("relay url");
     let passport = fixture.passport(Map::new(), 86_400);
 
-    // Children living 7 seconds.
+    // Node A child token lives 86_400 seconds so its lease does not expire during
+    // test.
     let node_a = Identity::generate()?;
-    let child_a = fixture.child(&passport, &node_a, 7);
+    let child_a = fixture.child(&passport, &node_a, 86_400);
     register(&client, coord.info_addr().unwrap(), &host_did, &node_a, &child_a).await?.unwrap();
 
+    // Node B child token living 5 seconds to test lease expiry.
     let node_b = Identity::generate()?;
-    let child_b = fixture.child(&passport, &node_b, 7);
-    register(&client, coord.info_addr().unwrap(), &host_did, &node_b, &child_b).await?.unwrap();
+    let child_b = fixture.child(&passport, &node_b, 5);
+    let resp_b =
+        register(&client, coord.info_addr().unwrap(), &host_did, &node_b, &child_b).await?.unwrap();
 
     // Node A comes online and keeps its connection open.
     let router_a = accepting_node(&node_a, relay_url.clone()).await?;
@@ -355,12 +380,17 @@ async fn ended_lease_is_refused_at_next_connect() -> anyhow::Result<()> {
         echo_through_relay(&host_ep, node_a_id, relay_url.clone(), Duration::from_secs(5)).await
     );
 
-    // Wait until leases expire (6 seconds elapsed after registration).
-    tokio::time::sleep(Duration::from_secs(6)).await;
+    // Wait until B's lease expires: sleep until lease_ends_at + 1 on the wall
+    // clock.
+    let now = syneroym_passport::now_secs();
+    if resp_b.lease_ends_at >= now {
+        let wait_secs = resp_b.lease_ends_at - now + 1;
+        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+    }
 
-    // Node B cannot establish a new connection.
+    // Node B cannot establish a new connection through the relay.
     let ep_b = node_endpoint(&node_b, relay_url.clone()).await?;
-    assert!(!goes_online(&ep_b, Duration::from_secs(3)).await);
+    assert!(!echo_through_relay(&ep_b, node_a_id, relay_url.clone(), Duration::from_secs(3)).await);
     let _ = ep_b.close().await;
 
     // Node A's open connection still carries traffic.
@@ -520,7 +550,21 @@ async fn visitor_without_a_lease_is_refused() -> anyhow::Result<()> {
     register(&client, coord.info_addr().unwrap(), &host_did, &node_a, &child_a).await?.unwrap();
 
     let router_a = accepting_node(&node_a, relay_url.clone()).await?;
+    assert!(
+        goes_online(router_a.endpoint(), Duration::from_secs(10)).await,
+        "node A must go online"
+    );
     let node_a_id = SecretKey::from_bytes(&node_a.to_bytes()).public();
+
+    // Positive control: host node endpoint (always admitted) echoes node A through
+    // the relay.
+    let host_ep = node_endpoint(&fixture.host_key, relay_url.clone()).await?;
+    assert!(goes_online(&host_ep, Duration::from_secs(10)).await);
+    assert!(
+        echo_through_relay(&host_ep, node_a_id, relay_url.clone(), Duration::from_secs(5)).await,
+        "admitted host endpoint must reach node A through relay"
+    );
+    let _ = host_ep.close().await;
 
     // Visitor without lease cannot connect to node A through the relay.
     let visitor = Identity::generate()?;
@@ -529,6 +573,85 @@ async fn visitor_without_a_lease_is_refused() -> anyhow::Result<()> {
 
     let _ = visitor_ep.close().await;
     drop(router_a);
+    coord.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabled_relay_refuses_registration() -> anyhow::Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let fixture = Fixture::new();
+    let host_did = substrate::derive_did_key(&fixture.host_key.public_key());
+    let host = HostIdentity::unowned(host_did);
+
+    let (mut coord, client) =
+        passport_coordinator_with_relay(temp_dir.path(), CoordinatorAccess::Passport, &host, false)
+            .await?;
+
+    let ch_url = format!("https://{}{CHALLENGE_PATH}", coord.info_addr().unwrap());
+    let reg_url = format!("https://{}{REGISTER_PATH}", coord.info_addr().unwrap());
+
+    let ch_res = client.post(&ch_url).send().await?;
+    assert_eq!(ch_res.status(), StatusCode::FORBIDDEN);
+    let ch_body: ErrorBody = ch_res.json().await?;
+    assert_eq!(ch_body.code, "not_accepted");
+
+    let reg_res = client.post(&reg_url).send().await?;
+    assert_eq!(reg_res.status(), StatusCode::FORBIDDEN);
+    let reg_body: ErrorBody = reg_res.json().await?;
+    assert_eq!(reg_body.code, "not_accepted");
+
+    coord.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn combined_form_admits_both_listed_and_leased_nodes() -> anyhow::Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let fixture = Fixture::new();
+    let host_did = substrate::derive_did_key(&fixture.host_key.public_key());
+    let host = HostIdentity::unowned(host_did.clone());
+
+    let listed_node = Identity::generate()?;
+    let listed_ep_id = SecretKey::from_bytes(&listed_node.to_bytes()).public();
+
+    let (mut coord, client) = passport_coordinator(
+        temp_dir.path(),
+        CoordinatorAccess::ListOrPassport(vec![listed_ep_id.to_string()]),
+        &host,
+    )
+    .await?;
+    common::wait_for_relay(&coord, Duration::from_secs(20)).await?;
+    let relay_url = common::relay_url(&coord).expect("relay url");
+
+    // 1. Listed endpoint goes online without registration.
+    let listed_ep = node_endpoint(&listed_node, relay_url.clone()).await?;
+    assert!(
+        goes_online(&listed_ep, Duration::from_secs(10)).await,
+        "listed endpoint must go online"
+    );
+
+    // 2. Leased endpoint registers and goes online.
+    let leased_node = Identity::generate()?;
+    let passport = fixture.passport(Map::new(), 86_400);
+    let child = fixture.child(&passport, &leased_node, 86_400);
+    register(&client, coord.info_addr().unwrap(), &host_did, &leased_node, &child).await?.unwrap();
+
+    let router_leased = accepting_node(&leased_node, relay_url.clone()).await?;
+    assert!(
+        goes_online(router_leased.endpoint(), Duration::from_secs(10)).await,
+        "leased endpoint must go online"
+    );
+    let leased_ep_id = SecretKey::from_bytes(&leased_node.to_bytes()).public();
+
+    // 3. Listed endpoint echoes leased endpoint through the relay.
+    assert!(
+        echo_through_relay(&listed_ep, leased_ep_id, relay_url, Duration::from_secs(5)).await,
+        "listed endpoint must reach leased endpoint through relay"
+    );
+
+    let _ = listed_ep.close().await;
+    drop(router_leased);
     coord.shutdown().await?;
     Ok(())
 }

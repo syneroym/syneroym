@@ -117,7 +117,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Decide whether the coordinator's own endpoint is admitted on its own relay with passport access.
 - Leases survive a restart; deny by id; `roymctl coordinator passport deny` and `leases` (`P-4` to `P-6`, `P-8`, `H-1` to `H-3`).
 - Run the DHT revocation check between `Registrar::check` and `Registrar::grant` (`D-B1-15`); `deny` and `leases` go through the running service (`D-B1-18`); remove the "cannot use passports yet" line from the `issue` help.
-- Done 2026-10-15. Decisions `D-B2-1` to `D-B2-17` are in the [passport change doc](../../changes/operator-passport/change.md).
+- Done 2026-10-15. Decisions `D-B2-1` to `D-B2-18` are in the [passport change doc](../../changes/operator-passport/change.md).
 
 **B3 — Relay use, substrate side (M).** Needs A1 and B2. It does not need A4.
 - Child-token store set through the control plane; `roymctl substrate home-relay set` and `status`.

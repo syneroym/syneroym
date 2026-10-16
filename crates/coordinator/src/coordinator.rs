@@ -151,3 +151,6 @@ impl EcosystemCoordinator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

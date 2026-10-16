@@ -301,6 +301,10 @@ async fn dispatch_secret(
     security::handle_secret(&command, api_url, substrate_did, dir, run_as, ucan_path).await
 }
 
+// Resolved on demand, not eagerly: a fully-placed
+// deploy and `app reconcile` need no default substrate at all,
+// and `get_substrate_did` hard-fails when neither `--substrate`
+// nor `substrate.key` exists.
 async fn dispatch_app(
     command: AppCommands,
     api_url: &str,
@@ -334,6 +338,10 @@ async fn dispatch_supervisor(
     supervisor::handle(&command, api_url, substrate_opt, dir, run_as, ucan_path).await
 }
 
+// `substrate_opt` is resolved on demand inside the handler: only
+// `roym address` needs a substrate to talk to, and
+// `get_substrate_did` hard-fails when neither `--substrate` nor
+// `substrate.key` is present.
 async fn dispatch_roym(
     command: roym::RoymCommands,
     api_url: &str,
