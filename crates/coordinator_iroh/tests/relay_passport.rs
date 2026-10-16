@@ -9,7 +9,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use common::passport::{
     Fixture, accepting_node, echo_through_relay, goes_online, node_endpoint, passport_coordinator,
-    passport_coordinator_with_relay, register,
+    passport_coordinator_with_relay, register, wait_for_info,
 };
 use iroh::SecretKey;
 use serde_json::Map;
@@ -299,14 +299,12 @@ async fn denied_passport_is_refused_at_next_connect() -> anyhow::Result<()> {
     );
 
     // Record open relay client count before deny (coordinator, node A, host
-    // endpoint).
-    let info_url = format!("https://{}{INFO_PATH}", coord.info_addr().unwrap());
-    let info_before: CoordinatorInfo = client.get(&info_url).send().await?.json().await?;
-    let clients_before = info_before.relay.and_then(|r| r.clients).unwrap_or(0);
-    assert_eq!(
-        clients_before, 3,
-        "relay clients should count coordinator, node A, and host endpoint"
-    );
+    // endpoint). Poll until the count reaches 3.
+    let info_before = wait_for_info(&client, &coord, Duration::from_secs(10), |info| {
+        info.relay.as_ref().and_then(|r| r.clients) == Some(3)
+    })
+    .await?;
+    let clients_before = info_before.relay.and_then(|r| r.clients).unwrap();
 
     // Deny the passport in the lease store.
     let leases = coord.relay_leases().expect("lease store must be present");
@@ -330,12 +328,10 @@ async fn denied_passport_is_refused_at_next_connect() -> anyhow::Result<()> {
     assert!(echo_through_relay(&host_ep, node_a_id, relay_url, Duration::from_secs(5)).await);
 
     // After 2 s, /v1/info relay clients still counts the open connection.
-    let info_after: CoordinatorInfo = client.get(&info_url).send().await?.json().await?;
-    assert_eq!(
-        info_after.relay.and_then(|r| r.clients),
-        Some(clients_before),
-        "relay clients must still count open connection after deny"
-    );
+    let _ = wait_for_info(&client, &coord, Duration::from_secs(10), |info| {
+        info.relay.as_ref().and_then(|r| r.clients) == Some(clients_before)
+    })
+    .await?;
 
     let _ = host_ep.close().await;
     drop(router_a);

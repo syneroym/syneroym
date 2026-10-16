@@ -1,8 +1,13 @@
 //! Helpers for relay passport integration tests.
 
-use std::{fs, net::SocketAddr, path::Path, time::Duration};
+use std::{
+    fs,
+    net::SocketAddr,
+    path::Path,
+    time::{Duration, Instant},
+};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
     protocol::Router,
@@ -15,6 +20,7 @@ use syneroym_core::{
         CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole, SubstrateConfig,
         SubstrateTlsConfig,
     },
+    coordinator_info::{CoordinatorInfo, INFO_PATH},
     host_identity::HostIdentity,
 };
 use syneroym_identity::{Identity, substrate};
@@ -22,6 +28,7 @@ use syneroym_passport::{
     CapabilityToken, Challenge, RELAY_HOME,
     wire::{ChallengeResponse, ErrorBody, RegisterRequest, RegisterResponse},
 };
+use tokio::time;
 
 pub const TEST_ALPN: &[u8] = b"syneroym-test/passport-echo";
 
@@ -168,7 +175,7 @@ pub async fn node_endpoint(node: &Identity, relay: RelayUrl) -> Result<Endpoint>
 
 /// Whether `ep` goes online within `wait`.
 pub async fn goes_online(ep: &Endpoint, wait: Duration) -> bool {
-    tokio::time::timeout(wait, ep.online()).await.is_ok()
+    time::timeout(wait, ep.online()).await.is_ok()
 }
 
 /// Like `node_endpoint`, but behind an `iroh::protocol::Router` that
@@ -207,5 +214,31 @@ pub async fn echo_through_relay(
         ensure!(&buf == b"ping", "mismatched echo");
         Ok::<(), anyhow::Error>(())
     };
-    tokio::time::timeout(wait, fut).await.is_ok_and(|res| res.is_ok())
+    time::timeout(wait, fut).await.is_ok_and(|res| res.is_ok())
+}
+
+/// Polls `/v1/info` using the TLS client until `pred` holds, or fails after
+/// `timeout`.
+pub async fn wait_for_info(
+    client: &Client,
+    coord: &CoordinatorIroh,
+    timeout: Duration,
+    pred: impl Fn(&CoordinatorInfo) -> bool,
+) -> Result<CoordinatorInfo> {
+    let addr = coord.info_addr().context("no info address")?;
+    let info_url = format!("https://{addr}{INFO_PATH}");
+    let start = Instant::now();
+    let mut last = None;
+    while start.elapsed() < timeout {
+        if let Ok(res) = client.get(&info_url).send().await
+            && let Ok(info) = res.json::<CoordinatorInfo>().await
+        {
+            if pred(&info) {
+                return Ok(info);
+            }
+            last = Some(info);
+        }
+        time::sleep(Duration::from_millis(50)).await;
+    }
+    bail!("timed out waiting for info condition; last response: {last:?}")
 }
