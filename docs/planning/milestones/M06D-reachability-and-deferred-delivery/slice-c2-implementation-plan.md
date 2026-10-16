@@ -65,15 +65,15 @@ the crate yet; C3 to C6 do.
 
 ## 2. Decisions this plan makes (check them before you start)
 
-Each fills a gap in task.md or the change doc. Items marked **owner** need a
-yes from the owner before the step that uses them; the plan gives the default
-to use if the owner does not answer.
+Each fills a gap in task.md or the change doc. All of them are decided; the
+implementer does not need to ask anyone. C2-14 was confirmed by the owner on
+2026-10-16.
 
 | # | Decision | Why |
 | --- | --- | --- |
 | C2-1 | New crate `crates/mailbox_format`, package `syneroym-mailbox-format`. Depends on `syneroym-identity` only (no `core`, no `rpc`, no SQLite). | Four slices use it from four crates: `core` (C3 record field), `router` (C5 sender), `substrate` (C6 receiver), the mailbox service (C4). A crate with only identity below it can be used by all four with no cycle. It must not go in `signed_record`: that crate compiles for `wasm32-wasip2` guests and promises to expose nothing that needs a private key. It must not go in the C4 service crate: the router would then link the mailbox store. |
-| C2-2 | HPKE base mode, `DHKEM(X25519, HKDF-SHA256)`, `HKDF-SHA256`, `AES-256-GCM`, `info = b"syneroym-mailbox-v1"`, **empty `aad`**, through the `hpke` crate. All HPKE calls live in one private module (`src/crypto.rs`), so the fallback in Step 1 changes one file. | Fixed by task.md §2.5 and the change doc. The empty `aad` is explained in C2-4. |
-| C2-3 | The sender's signature covers this JSON object (canonical JSON, signed with `Identity::sign_json`): `{"domain": "syneroym-mailbox-message-v1", "destination", "deposit_id", "idempotency_key", "payload_hash", "sent_at_secs"}`. **`deposit_id` is added** to the list in the change doc. | Without it, a dishonest mailbox can relabel: give the receiver message A (from sender 1) under the deposit id of message B (from sender 2), receive the receiver's signed `delivered` for B, drop B, and show sender 2 a valid `delivered` receipt for a message that never arrived. With `deposit_id` in the signed object, the receiver rebuilds the object from the deposit id the mailbox claims and the signature fails. Record as a deviation (Step 9). |
+| C2-2 | HPKE base mode, `DHKEM(X25519, HKDF-SHA256)`, `HKDF-SHA256`, `AES-256-GCM`, `info = b"syneroym-mailbox-v1"`, **empty `aad`**, through the `hpke` crate, version 0.13 (Step 1 says why not 0.14). All HPKE calls live in one private module (`src/crypto.rs`), so a later move to `hpke` 0.14 changes one file. | Fixed by task.md §2.5 and the change doc. The empty `aad` is explained in C2-4. |
+| C2-3 | The sender's signature covers this JSON object (canonical JSON, signed with `Identity::sign_json`): `{"domain": "syneroym-mailbox-message-v1", "destination", "deposit_id", "idempotency_key", "payload_hash", "sent_at_secs"}`. **`deposit_id` is added** to the list in the change doc. | Without it, a dishonest mailbox can relabel: give the receiver message A (from sender 1) under the deposit id of message B (from sender 2), receive the receiver's signed `delivered` for B, drop B, and show sender 2 a valid `delivered` receipt for a message that never arrived. With `deposit_id` in the signed object, the receiver rebuilds the object from the deposit id the mailbox claims and the signature fails. Record as a deviation (Step 10). |
 | C2-4 | The receiver never reads `destination` or `deposit_id` from inside the sealed part. It rebuilds the signed object from its **own** service id (the member master DID it pulls for) and the **deposit id the mailbox gave at claim**. A wrong value shows as `bad_signature`. So the HPKE `aad` adds nothing and stays empty. | One binding mechanism, not two. |
 | C2-5 | `payload_hash` = lowercase hex of SHA-256 over `serde_json::to_vec(&canonicalize_json_value(&json!({"interface": i, "method": m, "params": p})))`. | Binds interface and method as well as params. The receiver recomputes it from the parsed inner part, so the form must survive a JSON round trip; a test proves it (Step 6, test `payload_hash_is_stable_across_a_json_round_trip`). |
 | C2-6 | The outer part has **no `size` field** (the change doc lists one). Size is the length of the decoded sealed bytes. | A field that repeats a derived value is one more thing to check and to get wrong. Record as a deviation. |
@@ -84,102 +84,63 @@ to use if the owner does not answer.
 | C2-11 | `open` does **not** check revocation. It returns the sender's instance DID and master DID; C6 checks the instance DID against the master's anchor (`MasterAnchorResolver`, as `crates/router/src/handshake.rs:66-75` does) and acks `rejected` with code `revoked`. | Revocation needs an async network lookup. Every function in this crate is pure. |
 | C2-12 | The age bound takes `max_ttl_secs` as a parameter (`OpenPolicy`), default `OPEN_MAX_TTL_SECS = 7 days`; `max_clock_skew_secs` default `MAX_CLOCK_SKEW_SECS = 86_400`. | A dedicated mailbox may raise the time-to-live with the passport fact `max_ttl_secs` (ADR-0015 A10). The receiver learns its queue's limit at `register` (C4, C8) and passes it in. See §4 item 3. |
 | C2-13 | A `delivered` receipt signature covers `{"domain": "syneroym-mailbox-receipt-v1", "deposit_id", "state": "delivered", "at_secs"}`, signed with the receiver's instance key. The sender checks: the certificate's `master_did` equals the receiver service id it deposited to, the certificate has scope `service-instance` and was valid at `at_secs`, the signature verifies with the certificate's `temporary_did`, and `at_secs <= now_secs + max_clock_skew_secs`. | M-13 as written, plus a domain tag and the same future bound as C2-10. |
-| C2-14 | **owner.** A `rejected` receipt made by the receiver is signed too, with the same object plus `"code"`. A `rejected` receipt made by the mailbox (5 claims, M-14) has no signature. The format carries the signature as optional. How the sender treats an unsigned `rejected` is decided in C5. **Default if no answer: build it as described.** | S-5 says `rejected` fails the message. `rejected` is then the one answer by which a dishonest mailbox can make a sender drop a message for good (`expired` only sends it back to direct attempts). With an optional signature in the format now, C5 can choose "fail only on a signed rejection; treat an unsigned one like `expired`" without a format change. If the owner says no, drop `proof` from `Receipt::Rejected` and the `AckOutcome::Rejected` signing path; nothing else changes. See §4 item 1. |
+| C2-14 | **Owner-confirmed (2026-10-16).** A `rejected` receipt made by the receiver is signed too, with the same object plus `"code"`. A `rejected` receipt made by the mailbox (5 claims, M-14) has no signature. The format carries the signature as optional. The sender rule, for C5: a **signed** `rejected` fails the message; an **unsigned** `rejected` is handled like `expired` (back to direct attempts, until the outbox's own attempt budget or age limit ends the message). C2 builds only the format and `verify_signed`; C5 builds the rule. | S-5 says `rejected` fails the message. `rejected` is then the one answer by which a dishonest mailbox can make a sender drop a message for good (`expired` only sends it back to direct attempts). A message that really fails every time still ends, through the sender's own limits. See §4 item 1. |
 
 ## 3. Step-by-step changes
 
-### Step 1 — dependency check, with a stop gate
+### Step 1 — the `hpke` dependency (checked, use exactly this)
 
 The S0 check that `hpke` fits the workspace pins was never recorded (see §4
-item 6). Do it first.
+item 6). It was done on 2026-10-16, on this branch at `6351a1d1`, by adding
+`hpke` to the workspace for a moment and reverting. Results:
 
-1. Find the latest stable `hpke` on crates.io (0.13.x is expected; take the
-   newest non-pre-release). Read its `Cargo.toml` in
-   `~/.cargo/registry/src/*/hpke-<ver>/` after the first `cargo fetch`
-   (network needs the sandbox off or `index.crates.io`,
-   `static.crates.io` allowed). Record: its feature names, and which
-   `rand_core`, `x25519-dalek`, `aes-gcm`, `hkdf`, `sha2` versions it uses.
-2. Add to the root `Cargo.toml` `[workspace.dependencies]`, in the
-   alphabetical place of each:
+- **`hpke` 0.14.1 (the newest) does not resolve.** It is built on the new
+  RustCrypto line (`sha2` 0.11, `hkdf` 0.13, `aes-gcm` 0.11,
+  `x25519-dalek` 3, `rand_core` 0.10). iroh 0.97 pins
+  `sha2 = "=0.11.0-rc.2"` exactly (through `iroh-base`), and `hpke` 0.14
+  needs a stable `sha2` 0.11. Cargo stops with "failed to select a version
+  for `sha2`".
+- **`hpke` 0.13.0 fits.** It uses `x25519-dalek` 2, `aes-gcm` 0.10,
+  `hkdf` 0.12, `sha2` 0.10 and `rand_core` 0.9, all already in
+  `Cargo.lock`. With it, the only new entry in `Cargo.lock` was
+  `hpke 0.13.0`. `cargo deny check licenses` passed (MIT/Apache-2.0) and
+  `cargo audit` reported nothing.
+- **The API names in Step 3 were compiled and run** in a throwaway test:
+  `derive_keypair` from a 32-byte seed, `single_shot_seal` and
+  `single_shot_open` with `AesGcm256` / `HkdfSha256` / `X25519HkdfSha256`,
+  `EncappedKey::from_bytes` on 32 bytes, a ciphertext of plaintext + 16
+  bytes, and a failed open with another key.
+- **Random-number type:** `hpke` 0.13 re-exports `rand_core` 0.9, the same
+  version as the workspace `rand = "0.9"`.
+  `rand::rand_core::UnwrapErr(rand::rngs::OsRng)` compiles and works. It
+  panics only if the OS random source fails. `Identity::generate` depends on
+  the same source, so the node cannot run without it anyway; write that
+  reason in the comment.
+
+What to do:
+
+1. Add to the root `Cargo.toml` `[workspace.dependencies]`, each in its
+   alphabetical place:
 
    ```toml
    base64 = "0.22"
-   hpke = { version = "<latest 0.13.x>", default-features = false, features = ["alloc", "x25519"] }
+   # 0.14 needs stable sha2 0.11, which conflicts with iroh's exact
+   # pre-release pin; move up when iroh moves to the stable crypto line.
+   hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
    ```
 
-   Use the feature names you read in 1. The goal: X25519 KEM and the
-   `single_shot_*` functions, no P-256/P-384/P-521, no `std` unless the
-   `single_shot` functions need it.
-3. Create the crate skeleton (Step 2), then run:
+   `alloc` gives `single_shot_seal` and `single_shot_open`. `x25519` gives
+   the KEM. The default `p256` feature is not wanted. AES-GCM is always
+   built in 0.13 (no feature). `rand` is already a workspace dependency.
+2. After Step 2, compare `Cargo.lock` with `main`:
 
    ```bash
-   cargo tree -p syneroym-mailbox-format -e normal > target/c2-tree.txt
-   cargo tree --workspace -d -e normal > target/c2-dupes-after.txt
+   git diff main -- Cargo.lock | grep -E '^\+name = '
    ```
 
-   Compare `-d` output with the same command on `main`. **Pass** if the only
-   new crates in the whole graph are `hpke` and `base64` 0.22 is not new
-   (it is already in `Cargo.lock`), and no new *version* of
-   `curve25519-dalek`, `x25519-dalek`, `rand_core`, `aes-gcm`, `hkdf`,
-   `sha2`, `digest` or `generic-array` appears. Today `Cargo.lock` has
-   `curve25519-dalek` 4.1.3 (and 5.0.0-pre.1 for iroh), `x25519-dalek`
-   2.0.1, `rand_core` 0.6.4 / 0.9.5 / 0.10.1, `aes-gcm` 0.10.3, `hkdf`
-   0.12.4, `sha2` 0.10.9, so any `hpke` built on the stable 0.10/0.12/0.14
-   RustCrypto line passes.
-4. Run `cargo deny check licenses` and `cargo audit` (sandbox off for audit).
-5. **Random-number type for `single_shot_seal`.** It takes `&mut R` where
-   `R: rand_core::CryptoRng + rand_core::RngCore` of the `rand_core` version
-   `hpke` depends on. Use that version's OS generator:
-   - `rand_core` 0.6: `rand_core::OsRng` with feature `getrandom` (add
-     `rand_core = { version = "0.6", features = ["getrandom"] }` to the
-     crate, not the workspace, unless a workspace entry exists).
-   - `rand_core` 0.9: `rand_core::OsRng` with feature `os_rng`, or
-     `rand::rngs::OsRng` from the workspace `rand = "0.9"`, whichever
-     compiles without a new crate. Prefer the workspace `rand`.
-   If `hpke` re-exports `rand_core` (check its `lib.rs`), use the re-export
-   and add no dependency.
-
-**Stop gate.** If 3 or 4 fails (a new curve or RNG version, an advisory, or a
-license problem), do not add `hpke`. Use the fallback below and record it as
-a deviation. Do not pick another sealing algorithm.
-
-**Fallback: RFC 9180 base mode written by hand in `src/crypto.rs`**, on
-`x25519-dalek` 2 (feature `static_secrets`), `hkdf` 0.12, `sha2` 0.10,
-`aes-gcm` 0.10 (all already in the lock). Suite ids: KEM `0x0020`, KDF
-`0x0001`, AEAD `0x0002`.
-
-```text
-I2OSP(n, w)            = n as w big-endian bytes
-kem_suite              = "KEM"  || I2OSP(0x0020, 2)
-hpke_suite             = "HPKE" || I2OSP(0x0020, 2) || I2OSP(0x0001, 2) || I2OSP(0x0002, 2)
-LabeledExtract(suite, salt, label, ikm)      = HKDF-Extract(salt, "HPKE-v1" || suite || label || ikm)
-LabeledExpand(suite, prk, label, info, L)    = HKDF-Expand(prk, I2OSP(L, 2) || "HPKE-v1" || suite || label || info, L)
-
-DeriveKeyPair(seed):   dkp_prk = LabeledExtract(kem_suite, "", "dkp_prk", seed)
-                       sk = LabeledExpand(kem_suite, dkp_prk, "sk", "", 32); pk = X25519(sk, 9)
-Encap(pkR):            skE = 32 bytes from getrandom; pkE = X25519(skE, 9); dh = X25519(skE, pkR)
-                       if dh is all zero -> error
-                       kem_context = pkE || pkR
-                       eae_prk = LabeledExtract(kem_suite, "", "eae_prk", dh)
-                       shared = LabeledExpand(kem_suite, eae_prk, "shared_secret", kem_context, 32)
-                       return (shared, enc = pkE)
-Decap(enc, skR):       dh = X25519(skR, enc); same steps with kem_context = enc || pk(skR)
-KeySchedule(shared, info), mode 0x00, no psk:
-                       psk_id_hash = LabeledExtract(hpke_suite, "", "psk_id_hash", "")
-                       info_hash   = LabeledExtract(hpke_suite, "", "info_hash", info)
-                       ctx         = 0x00 || psk_id_hash || info_hash
-                       secret      = LabeledExtract(hpke_suite, shared, "secret", "")
-                       key         = LabeledExpand(hpke_suite, secret, "key", ctx, Nk)   (Nk = 32)
-                       base_nonce  = LabeledExpand(hpke_suite, secret, "base_nonce", ctx, 12)
-Seal (one message, seq 0): ct = AES-256-GCM(key, nonce = base_nonce, aad = "", pt)
-```
-
-Make `Nk` and the AEAD a private generic parameter so a test can run the
-same code with `AES-128-GCM` (`Nk = 16`, AEAD id `0x0001`) against the
-RFC 9180 Appendix A.1.1 vector (DHKEM(X25519, HKDF-SHA256), HKDF-SHA256,
-AES-128-GCM, base mode). Copy that vector from the RFC text; do not
-invent values. The public API of `src/crypto.rs` stays the same as in the
-`hpke` version.
+   Expected: only `+name = "hpke"`. If anything else appears (for example
+   after a `cargo update`), stop and ask the owner. Do not change the
+   sealing algorithm, and do not write HPKE by hand.
 
 ### Step 2 — the crate skeleton
 
@@ -220,13 +181,13 @@ base64.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 hpke.workspace = true
+rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 z32.workspace = true
 zeroize.workspace = true
-# plus the rand_core line from Step 1.5, only if needed
 ```
 
 Every listed dependency must be used (`cargo shear` gate). Do not add
@@ -317,8 +278,12 @@ pub(crate) fn seal_to(public_key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>
 pub(crate) fn open_with(seed: &[u8; 32], sealed: &[u8]) -> Result<Vec<u8>, CryptoError>;
 ```
 
-Pseudo-code (check every `hpke` name against the fetched source; the names
-below are from `hpke` 0.12/0.13 and may differ slightly):
+Pseudo-code. These `hpke` 0.13 names were compiled and run (Step 1). The
+traits come from the crate root: `use hpke::{Deserializable, OpModeR,
+OpModeS, Serializable};`. The trait `hpke::Kem` and the local type alias
+`Kem` must not clash: name the alias `MailboxKem` (and use it everywhere
+below where `Kem` is the type), or import the trait as
+`use hpke::Kem as KemTrait;`.
 
 ```text
 public_key_from_seed(seed):
@@ -327,7 +292,9 @@ public_key_from_seed(seed):
 
 seal_to(pk_bytes, plaintext):
     pk = <Kem as hpke::Kem>::PublicKey::from_bytes(pk_bytes)  -> map_err BadPublicKey
-    rng = OS generator from Step 1.5
+    rng = rand::rand_core::UnwrapErr(rand::rngs::OsRng)
+          // comment: panics only if the OS random source fails; the node's
+          // own key generation needs the same source
     (enc, ct) = hpke::single_shot_seal::<Aead, Kdf, Kem, _>(&OpModeS::Base, &pk, HPKE_INFO, plaintext, b"", &mut rng)
                 -> map_err Seal(e.to_string())
     return enc.to_bytes() ++ ct
@@ -379,9 +346,9 @@ Methods:
 stored, and a derive would make it too easy to log.
 
 Whether `from_bytes` must reject the all-zero or low-order X25519 points:
-`hpke` rejects an all-zero shared secret at seal time, which is enough;
-`seal` maps it to `SealError::Crypto`. The fallback (Step 1) must do the
-same check.
+`hpke` 0.13 rejects an all-zero shared secret at seal time
+(`src/dhkex/x25519.rs`, checked in the source), which is enough; `seal`
+maps it to `SealError::Crypto`.
 
 ### Step 5 — `src/deposit.rs` (the outer part)
 
@@ -773,7 +740,7 @@ marked.
 4. `two_seals_of_the_same_plaintext_differ`
 5. `input_shorter_than_the_overhead_is_refused`
 6. `a_stored_sealed_vector_still_opens` — a fixed seed (32 bytes of `0x42`), a fixed plaintext, and a sealed hex string you generate **once** with the final code and paste in. It fails if anyone changes the suite, the `info` tag or the key derivation.
-7. Fallback only: `rfc9180_a_1_1_vector_matches` (Step 1).
+7. `a_fixed_seed_gives_a_fixed_public_key` — `public_key_from_seed(&[0x42; 32])` must equal hex `ae3bf1cd87c2d2ed25af4a1a239eed04a990f00e7403e4c8065927de010fd17a`. This value was computed with `hpke` 0.13.0 `derive_keypair` during the Step 1 check. It fails if the key derivation changes, which would make every published mailbox key wrong.
 
 `keys/tests.rs`:
 
@@ -835,8 +802,6 @@ marked.
 
 52. `every_open_error_has_its_own_reject_code` (each variant maps to the code of the same name; no two variants share a code).
 
-If the owner says no to C2-14, drop tests 46, 47 and the "mailbox rejection" half of 48.
-
 ### Step 10 — docs in the same PR
 
 No living doc changes in this slice: no user, operator or developer can
@@ -859,11 +824,15 @@ list to extend.)
    - `D-C2-6`: the mailbox secret key is the 32-byte `DeriveKeyPair` seed
      (C2-9).
    - `D-C2-7`: receiver-made `rejected` receipts are signed; mailbox-made
-     ones are not (C2-14, or the owner's answer).
-   - `D-C2-8`: the result of the Step 1 check (the `hpke` version, the
-     `rand_core` version it uses, and "no new crypto versions"), or that
-     the fallback was used and why. Replace nothing in the Design section;
-     its "*Unverified:*" sentence is answered here.
+     ones are not. The sender fails a message only on a signed `rejected`
+     and treats an unsigned one like `expired` (C2-14, confirmed by the
+     owner 2026-10-16; C5 builds the sender rule). This changes S-5.
+   - `D-C2-8`: the `hpke` check. `hpke` 0.13 is used, not 0.14: 0.14 needs
+     stable `sha2` 0.11, which conflicts with iroh 0.97's exact pin
+     `sha2 = "=0.11.0-rc.2"`. 0.13 adds no crate besides itself (it uses
+     `x25519-dalek` 2, `aes-gcm` 0.10, `hkdf` 0.12, `sha2` 0.10 and
+     `rand_core` 0.9, already in the build). Replace nothing in the Design
+     section; its "*Unverified:*" sentence is answered here.
    - Tick `- [x] Sealed message format with tests ...` in `## Tasks`.
 2. `task.md`: header status line ("C2 is done"), and under slice C2 add
    "Done <date>. Decisions `D-C2-1` to `D-C2-n` are in the
@@ -871,19 +840,25 @@ list to extend.)
 3. `status.md`: replace the `C2 to C8` row with a `C2` row (with evidence:
    the test files and counts, and the verify result) and a `C3 to C8 | Not
    started` row.
-4. `docs/planning/deferred-backlog.md`: add a row only for what this slice
-   defers. Expected: none, unless the owner answers "no" to C2-14 — then add
-   "A mailbox can fail a message for good with an unsigned `rejected`"
-   under the mailbox theme, target `TBD`.
+4. `docs/planning/deferred-backlog.md`: add one row under the mailbox
+   theme: "`hpke` is held at 0.13" — 0.14 conflicts with iroh's exact
+   pre-release `sha2` pin; move to 0.14 when iroh uses the stable crypto
+   line (the same time the `deps:update` pins in `mise.toml` go away).
+   Target `TBD`. Source: the root `Cargo.toml` `hpke` line. Add any other
+   row only for something this slice really defers.
+5. `mise.toml` `deps:update` description: add one sentence that `hpke`
+   stays at 0.13 for the same reason, so the person who removes the iroh
+   pins also moves `hpke`.
 
 ## 4. Things that are ambiguous or stale in task.md and the change docs
 
-1. **`rejected` can be forged by the mailbox (owner decision, C2-14).**
+1. **`rejected` can be forged by the mailbox (decided, C2-14).**
    S-5 makes `rejected` final. M-14 lets the mailbox produce `rejected`
    itself, so any mailbox can end a message for good without the receiver.
    ADR-0026 says the mailbox "cannot invent a delivery"; it does not say
-   whether it may invent a rejection. The plan adds an optional receiver
-   signature to the format and leaves the sender rule to C5.
+   whether it may invent a rejection. The owner confirmed (2026-10-16):
+   receiver rejections are signed, and the sender fails a message only on a
+   signed one. C2 builds the format; C5 builds the sender rule.
 2. **Relabel attack (decided here, C2-3).** The change doc's list of signed
    fields lets a dishonest mailbox turn the receiver's `delivered` for one
    message into a receipt for another. Fixed by signing `deposit_id`.
@@ -909,9 +884,10 @@ list to extend.)
 6. **S0 is marked done, but the `hpke` version check was never recorded.**
    task.md §2.5 says "Check in S0", status.md says S0 is done, and the
    change doc still says "*Unverified:*". Nothing in the repo mentions
-   `hpke` outside these two docs, and `hpke` is not in `Cargo.lock`. Step 1
-   does the check. (When this plan was written the network was not
-   available, so the check could not be done here.)
+   `hpke` outside these two docs, and `hpke` is not in `Cargo.lock`. The
+   check was done for this plan (Step 1). Result: task.md's expectation
+   ("`hpke` fits") holds only for `hpke` 0.13; the newest, 0.14, does not
+   resolve against iroh's pins.
 7. **"Outer: ... size" (change doc, Sealed message).** Dropped (C2-6).
 8. **No future bound on the send time in R-4.** Added (C2-10).
 9. **The change doc says the receiver checks "not revoked now".** That
