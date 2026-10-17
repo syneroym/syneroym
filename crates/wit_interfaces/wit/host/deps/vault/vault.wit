@@ -9,7 +9,8 @@ interface vault {
 
     /// Names that start with `syneroym.` are reserved for the substrate.
     /// `reveal` always answers `not-found` for them, even when the entry
-    /// exists. Guest SQL cannot read or change the vault table, and an
+    /// exists. Guest SQL cannot read or change the vault table (guest DDL
+    /// cannot create triggers either), and an
     /// entry cannot be copied to another name: the name is part of what
     /// the entry is encrypted with.
     reveal: func(key: string) -> result<list<u8>, vault-error>;

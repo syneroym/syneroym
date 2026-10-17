@@ -85,6 +85,16 @@ mod publication_split_tests {
     }
 
     #[test]
+    fn the_debug_text_of_split_parts_does_not_show_the_mailbox_key() {
+        let key = MailboxSecretKey::generate().unwrap();
+        let public =
+            Publication::Public { record: sample_record(), mailbox_key: Some(key.clone()) };
+        let parts = public.split().unwrap();
+        assert!(parts.mailbox.is_some());
+        assert!(!format!("{parts:?}").contains(key.to_z32().as_str()));
+    }
+
+    #[test]
     fn a_public_mailbox_key_splits_to_credentials_in_its_text_form() {
         let key = MailboxSecretKey::generate().unwrap();
         let public =

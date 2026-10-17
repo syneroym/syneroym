@@ -399,6 +399,20 @@ async fn set_secret_refuses_a_reserved_vault_name() {
     assert!(service.dispatch(call("ordinary")).await.is_ok());
 }
 
+// -- one limit for the certificate lifetime ----------------------------------
+
+/// The manifest and the command line accept up to
+/// `MAX_INSTANCE_CERT_EXPIRES_HOURS`; the substrate refuses a longer
+/// certificate at install. If the two differ, a value one side accepts fails
+/// at the other.
+#[test]
+fn the_manifest_limit_for_the_certificate_lifetime_is_the_substrate_limit() {
+    assert_eq!(
+        u64::from(syneroym_app_orchestration::MAX_INSTANCE_CERT_EXPIRES_HOURS) * 3600,
+        MAX_INSTANCE_CERT_LIFETIME_SECS
+    );
+}
+
 // -- no database is made just to clear a key --------------------------------
 
 #[tokio::test]

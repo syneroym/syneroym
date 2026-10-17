@@ -6,7 +6,7 @@ use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use syneroym_identity::Identity;
-use zeroize::{ZeroizeOnDrop, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::crypto;
 
@@ -19,9 +19,11 @@ pub struct MailboxPublicKey([u8; 32]);
 /// The private half: the 32-byte seed the X25519 key pair is derived from.
 /// The deployer makes it with the member master and gives it to each
 /// instance; it is never logged.
-#[derive(Clone, ZeroizeOnDrop)]
+#[derive(Clone)]
 pub struct MailboxSecretKey {
-    seed: [u8; 32],
+    /// Cleared when the key is dropped. It is moved, never copied, between
+    /// the places that make a key, so no stack copy is left behind.
+    seed: Zeroizing<[u8; 32]>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -59,12 +61,12 @@ impl MailboxSecretKey {
     pub fn generate() -> Result<Self, getrandom::Error> {
         let mut seed = Zeroizing::new([0u8; 32]);
         getrandom::fill(&mut *seed)?;
-        Ok(Self { seed: *seed })
+        Ok(Self { seed })
     }
 
     #[must_use]
     pub fn from_seed(seed: [u8; 32]) -> Self {
-        Self { seed }
+        Self { seed: Zeroizing::new(seed) }
     }
 
     /// The mailbox key of the member whose master is `master`. Every holder
@@ -81,7 +83,7 @@ impl MailboxSecretKey {
         Hkdf::<Sha256>::new(None, ikm.as_slice())
             .expand(MASTER_DERIVATION_INFO, seed.as_mut_slice())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
-        Self::from_seed(*seed)
+        Self { seed }
     }
 
     pub(crate) fn seed(&self) -> &[u8; 32] {
@@ -92,7 +94,7 @@ impl MailboxSecretKey {
     /// clears the copy when it is dropped.
     #[must_use]
     pub fn to_seed(&self) -> Zeroizing<[u8; 32]> {
-        Zeroizing::new(self.seed)
+        self.seed.clone()
     }
 
     #[must_use]
@@ -104,11 +106,11 @@ impl MailboxSecretKey {
     /// it is dropped.
     #[must_use]
     pub fn to_z32(&self) -> Zeroizing<String> {
-        Zeroizing::new(z32::encode(&self.seed))
+        Zeroizing::new(z32::encode(self.seed.as_slice()))
     }
 
     pub fn from_z32(text: &str) -> Result<Self, KeyParseError> {
-        decode_key(text).map(|seed| Self::from_seed(*seed))
+        decode_key(text).map(|seed| Self { seed })
     }
 }
 

@@ -8,7 +8,7 @@ use tokio::runtime::Builder;
 
 use crate::commands::app::settings::{apply_mailbox_overrides, refuse_settings_without_masters};
 
-const HOST: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+const HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
 
 fn manifest(extra: &str) -> SynAppManifest {
     SynAppManifest::from_toml(&format!(

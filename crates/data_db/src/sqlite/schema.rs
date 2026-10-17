@@ -99,8 +99,20 @@ pub(super) fn touches_vault(action: &AuthAction<'_>) -> bool {
     table.eq_ignore_ascii_case(VAULT_TABLE)
 }
 
+/// Guest DDL may not touch the vault table, and may not create a trigger.
+/// SQLite checks the body of a trigger only when a later statement fires it,
+/// and that statement is the host's own write, which runs with no
+/// authorizer. A trigger could then change the vault from there.
 fn deny_vault_access(ctx: AuthContext<'_>) -> Authorization {
-    if touches_vault(&ctx.action) { Authorization::Deny } else { Authorization::Allow }
+    let is_trigger = matches!(
+        ctx.action,
+        AuthAction::CreateTrigger { .. } | AuthAction::CreateTempTrigger { .. }
+    );
+    if is_trigger || touches_vault(&ctx.action) {
+        Authorization::Deny
+    } else {
+        Authorization::Allow
+    }
 }
 
 /// Clears the authorizer when dropped, so the writer connection's own

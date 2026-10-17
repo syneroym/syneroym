@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+use syneroym_identity::substrate;
 
 use super::identifiers::{
     AppBlueprintId, AppInstanceId, InterfaceName, LogicalServiceName, PlacementSelector, ServiceId,
@@ -328,9 +329,13 @@ impl FromStr for MailboxChoice {
         if text == AUTO_MAILBOX {
             return Ok(Self::Auto);
         }
-        ServiceId::try_new(text)
-            .map(Self::Service)
-            .map_err(|e| anyhow::anyhow!("a mailbox is 'auto' or a node DID (did:key:...): {e}"))
+        let host = ServiceId::try_new(text)
+            .map_err(|e| anyhow::anyhow!("a mailbox is 'auto' or a node DID (did:key:...): {e}"))?;
+        // `ServiceId` checks only the `did:key:` prefix. A mailbox host that
+        // cannot be decoded could never be reached, so refuse it here.
+        substrate::resolve_did_key(text)
+            .map_err(|e| anyhow::anyhow!("mailbox host '{text}' is not a valid node DID: {e}"))?;
+        Ok(Self::Service(host))
     }
 }
 

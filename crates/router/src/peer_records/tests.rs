@@ -224,3 +224,21 @@ async fn concurrent_calls_never_leave_an_older_record_behind() {
         assert_eq!(kept.pkarr_packet_hex, newer.pkarr_packet_hex);
     }
 }
+
+/// `recall` decides to forget a row from what it read. A newer record stored
+/// in between must not be deleted with it.
+#[tokio::test]
+async fn forgetting_a_row_that_was_replaced_since_the_read_keeps_the_newer_record() {
+    let store = PeerRecordStore::open_in_memory().unwrap();
+    let master = Identity::generate().unwrap();
+    let older = record(&master, true);
+    let older_json = serde_json::to_string(&older).unwrap();
+    store.remember(&older).await.unwrap();
+    let newer = newer_record(&master, true).await;
+    store.remember(&newer).await.unwrap();
+
+    store.forget(&older.info.service_id, older_json).await;
+
+    let kept = store.recall(&older.info.service_id).await.unwrap();
+    assert_eq!(kept.pkarr_packet_hex, newer.pkarr_packet_hex);
+}

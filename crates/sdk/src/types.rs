@@ -1,6 +1,8 @@
 //! Data models for SDK client communication, service status, and deployment
 //! options.
 
+use std::fmt;
+
 use anyhow::Result;
 use syneroym_core::dht_registry::SignedEndpointInfo;
 use syneroym_identity::DelegationCertificate;
@@ -54,12 +56,22 @@ pub enum Publication {
     Internal(SignedEndpointInfo),
 }
 
-/// What a [`Publication`] puts into a `DeployManifest`.
-#[derive(Debug)]
+/// What a [`Publication`] puts into a `DeployManifest`. `Debug` hides the
+/// mailbox key.
 pub struct PublicationParts {
     pub visibility: Visibility,
     pub registry_certificate: Option<String>,
     pub mailbox: Option<MailboxCredentials>,
+}
+
+impl fmt::Debug for PublicationParts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublicationParts")
+            .field("visibility", &self.visibility)
+            .field("registry_certificate", &self.registry_certificate)
+            .field("mailbox", &self.mailbox.as_ref().map(|_| "<hidden>"))
+            .finish()
+    }
 }
 
 impl Publication {

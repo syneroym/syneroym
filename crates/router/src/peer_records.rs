@@ -166,19 +166,22 @@ impl PeerRecordStore {
             .ok()
             .filter(|record| record.info.service_id == service_id && record.verify().is_ok());
         if record.is_none() {
-            self.forget(service_id).await;
+            self.forget(service_id, json).await;
         }
         record
     }
 
-    async fn forget(&self, service_id: &str) {
+    /// Deletes the row only while it still holds `json`: a newer record
+    /// stored since the read must not be lost.
+    async fn forget(&self, service_id: &str, json: String) {
         let (conn, known, id) = (self.conn.clone(), self.known.clone(), service_id.to_string());
         let _ = task::spawn_blocking(move || {
             let guard = lock(&conn);
-            let deleted = guard
-                .execute("DELETE FROM peer_records WHERE service_id = ?1", params![id])
-                .is_ok();
-            if deleted {
+            let deleted = guard.execute(
+                "DELETE FROM peer_records WHERE service_id = ?1 AND record_json = ?2",
+                params![id, json],
+            );
+            if deleted.is_ok_and(|rows| rows > 0) {
                 known.remove(&id);
             }
         })

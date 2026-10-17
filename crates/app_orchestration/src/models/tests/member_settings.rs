@@ -2,7 +2,7 @@
 
 use super::*;
 
-const HOST: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+const HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
 
 #[test]
 fn a_manifest_with_a_mailbox_and_a_certificate_lifetime_parses() {
@@ -40,6 +40,14 @@ fn a_mailbox_choice_round_trips_through_its_text_form() {
 #[test]
 fn a_mailbox_that_is_neither_auto_nor_a_did_is_refused() {
     for text in ["", "Auto", "not-a-did", "did:web:example.com"] {
+        assert!(text.parse::<MailboxChoice>().is_err(), "{text}");
+    }
+}
+
+#[test]
+fn a_mailbox_that_is_a_did_prefix_with_garbage_is_refused() {
+    // `ServiceId` accepts anything after `did:key:`; a mailbox host must decode.
+    for text in ["did:key:", "did:key:nonsense", "did:key:z6MkExample"] {
         assert!(text.parse::<MailboxChoice>().is_err(), "{text}");
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
 
-const HOST: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+const HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
 
 #[test]
 fn a_service_mailbox_splits_on_the_first_equals_sign() {

@@ -4,7 +4,7 @@ use semver::Version;
 
 use super::{visibility::planned_service, *};
 
-const HOST: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+const HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
 
 async fn compile_service(extra: &str) -> Result<CompiledDeployment> {
     let toml = format!(

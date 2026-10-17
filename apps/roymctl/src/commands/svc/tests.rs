@@ -477,7 +477,7 @@ fn a_record_out_file_round_trips_through_new_with_record() {
     assert_eq!(client.service_id(), svc_id);
 }
 
-const MAILBOX_HOST: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+const MAILBOX_HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
 
 fn host_choice() -> MailboxChoice {
     MAILBOX_HOST.parse().unwrap()
@@ -574,4 +574,42 @@ fn an_auto_mailbox_is_refused_for_now() {
         check_mailbox_args(Some(&MailboxChoice::Auto), Visibility::Public, true, false, false)
             .unwrap_err();
     assert!(err.to_string().contains("not supported yet"), "{err}");
+}
+
+/// The command line accepts exactly what the manifest accepts. Clap takes a
+/// literal range, so this test keeps it equal to the shared limit.
+#[test]
+fn cert_expires_hours_accepts_up_to_the_manifest_limit_and_no_more() {
+    let max = syneroym_app_orchestration::MAX_INSTANCE_CERT_EXPIRES_HOURS;
+    let parse = |hours: u32| {
+        Wrapper::try_parse_from([
+            "svc",
+            "deploy",
+            "--svc-id",
+            "did:key:zTest",
+            "--interfaces",
+            "default",
+            "--tcp",
+            "localhost:1",
+            "--master",
+            "m",
+            "--cert-expires-hours",
+            &hours.to_string(),
+        ])
+    };
+    assert!(parse(max).is_ok());
+    assert!(parse(max + 1).is_err());
+    assert!(parse(0).is_err());
+}
+
+#[test]
+fn cert_expires_hours_is_refused_without_master_and_not_required_by_default() {
+    let base = ["svc", "deploy", "--svc-id", "did:key:zTest", "--interfaces", "default", "--tcp"];
+    let err = Wrapper::try_parse_from(
+        [&base[..], &["localhost:1", "--cert-expires-hours", "48"]].concat(),
+    )
+    .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    // The default value does not make `--master` required.
+    assert!(Wrapper::try_parse_from([&base[..], &["localhost:1"]].concat()).is_ok());
 }

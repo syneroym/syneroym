@@ -85,6 +85,29 @@ async fn guest_ddl_cannot_touch_the_vault_table() {
     assert_eq!(store.reveal_secret("api_key").await.unwrap(), Some(b"token".to_vec()));
 }
 
+/// A trigger body is checked only when a later statement fires it, which is
+/// the host's own write. So guest DDL may not create a trigger at all.
+#[tokio::test]
+async fn guest_ddl_cannot_create_a_trigger_that_changes_the_vault() {
+    let dir = tempdir().unwrap();
+    let store = plain_store(dir.path(), "vault-trigger").await;
+    store.write_secret(vault_names::MAILBOX_SECRET, b"seed").await.unwrap();
+    store.execute_ddl("CREATE TABLE notes (id TEXT PRIMARY KEY)").await.unwrap();
+
+    for sql in [
+        "CREATE TRIGGER wipe AFTER INSERT ON notes BEGIN DELETE FROM _vault; END",
+        "CREATE TEMP TRIGGER wipe AFTER INSERT ON notes BEGIN DELETE FROM _vault; END",
+    ] {
+        assert!(store.execute_ddl(sql).await.is_err(), "{sql}");
+    }
+
+    store.execute_ddl("INSERT INTO notes VALUES ('a')").await.unwrap();
+    assert_eq!(
+        store.reveal_secret(vault_names::MAILBOX_SECRET).await.unwrap(),
+        Some(b"seed".to_vec())
+    );
+}
+
 #[tokio::test]
 async fn guest_raw_queries_cannot_read_the_vault_table() {
     let dir = tempdir().unwrap();

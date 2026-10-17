@@ -141,7 +141,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `EndpointInfo.mailbox` (`K-1`). Mailbox key made with the member master, delivered with the instance certificate, carried at relocation (`K-2`). Per-member certificate lifetime (`K-8`).
 - `roymctl svc deploy` and `app deploy` with `--mailbox <service-id>`. `auto` waits for C7.
 - `resolve_iroh_addr` returns the mailbox field without following the substrate record (`K-5`). Durable last-record store on the sender (`K-6`). Private services get no field (`K-7`).
-- Done 2026-10-17. Decisions `D-C3-1` to `D-C3-17` are in the [mailbox change doc](../../changes/service-mailbox/change.md), with [ADR-0026 A2](../../../decisions/0026-receiver-chosen-mailbox.md#amendments).
+- Done 2026-10-17. Decisions `D-C3-1` to `D-C3-19` are in the [mailbox change doc](../../changes/service-mailbox/change.md), with [ADR-0026 A2](../../../decisions/0026-receiver-chosen-mailbox.md#amendments).
 
 **C4 — Mailbox service (L).** Needs C2 and C3.
 - `[roles.mailbox]`, native service, SQLite store, all seven methods, quotas, fair eviction, sweeps, newest-certificate rule, receipts, hourly record publish (`M-1` to `M-14`, `K-4`).
