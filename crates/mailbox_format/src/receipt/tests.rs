@@ -378,3 +378,39 @@ fn signing_refuses_an_instance_key_that_does_not_match_the_certificate() {
     let result = x.opened.sign_delivered(&other, &x.receiver.cert, x.now);
     assert_eq!(result, Err(ReceiptError::SignerMismatch));
 }
+
+#[test]
+fn a_receipt_signed_before_the_send_time_fails() {
+    // A past host of the receiver still holds an old instance key whose
+    // certificate ended before the message was sent.
+    let sender = Member::new(3 * DAY);
+    let old_host = Member::new(5);
+    let sent_at = old_host.cert.expires_at_secs + DAY + 10;
+    let id = old_host.service_id();
+    let sealed = seal_unchecked(
+        &content(),
+        old_host.recipient(&id),
+        sender.sender(),
+        DepositId::random().unwrap(),
+        TTL_SECS,
+        sent_at,
+    )
+    .unwrap();
+    let opened = open_for(&old_host, &sealed, sent_at).unwrap();
+    let old_time = old_host.cert.issued_at_secs + 2;
+    let receipt = opened.sign_delivered(&old_host.instance, &old_host.cert, old_time).unwrap();
+    assert_eq!(verify(&receipt, &sealed.sent, sent_at), Err(ReceiptError::BeforeSend));
+}
+
+#[test]
+fn a_known_state_with_a_missing_field_does_not_parse() {
+    // The caller treats such an answer like `expired`; see the `Receipt`
+    // doc comment.
+    for text in [
+        r#"{"state":"delivered","at_secs":5}"#,
+        r#"{"state":"stored"}"#,
+        r#"{"state":"rejected","at_secs":5}"#,
+    ] {
+        assert!(serde_json::from_str::<Receipt>(text).is_err(), "{text}");
+    }
+}

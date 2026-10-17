@@ -27,19 +27,32 @@ pub enum KeyParseError {
     NotZ32,
     #[error("a mailbox key is 32 bytes, not {0}")]
     WrongLength(usize),
+    #[error("a mailbox key has one text form: 52 characters with zero spare bits")]
+    NotCanonical,
 }
 
-fn decode_key(text: &str) -> Result<[u8; 32], KeyParseError> {
-    let bytes = z32::decode(text.as_bytes()).map_err(|_| KeyParseError::NotZ32)?;
-    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| KeyParseError::WrongLength(bytes.len()))
+/// The decoded bytes may be a secret seed, so every copy is cleared on drop.
+fn decode_key(text: &str) -> Result<Zeroizing<[u8; 32]>, KeyParseError> {
+    let bytes = Zeroizing::new(z32::decode(text.as_bytes()).map_err(|_| KeyParseError::NotZ32)?);
+    let key = Zeroizing::new(
+        <[u8; 32]>::try_from(bytes.as_slice())
+            .map_err(|_| KeyParseError::WrongLength(bytes.len()))?,
+    );
+    // The decoder ignores the spare bits of the last character and reads a
+    // missing last character as zero, so several texts give one key. The key
+    // is stored and compared as text, so only the exact form is accepted.
+    if *Zeroizing::new(z32::encode(&*key)) != *text {
+        return Err(KeyParseError::NotCanonical);
+    }
+    Ok(key)
 }
 
 impl MailboxSecretKey {
     /// A new random key.
     pub fn generate() -> Result<Self, getrandom::Error> {
-        let mut seed = [0u8; 32];
-        getrandom::fill(&mut seed)?;
-        Ok(Self { seed })
+        let mut seed = Zeroizing::new([0u8; 32]);
+        getrandom::fill(&mut *seed)?;
+        Ok(Self { seed: *seed })
     }
 
     #[must_use]
@@ -64,7 +77,7 @@ impl MailboxSecretKey {
     }
 
     pub fn from_z32(text: &str) -> Result<Self, KeyParseError> {
-        decode_key(text).map(Self::from_seed)
+        decode_key(text).map(|seed| Self::from_seed(*seed))
     }
 }
 
@@ -96,7 +109,7 @@ impl FromStr for MailboxPublicKey {
     type Err = KeyParseError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        decode_key(text).map(Self)
+        decode_key(text).map(|key| Self(*key))
     }
 }
 

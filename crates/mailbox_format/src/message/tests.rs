@@ -252,8 +252,14 @@ fn inner_content_with_an_unknown_field_still_opens() {
     let deposit_id = DepositId::random().unwrap();
     let c = content();
     let p_hash = payload_hash(&c.interface, &c.method, &c.params).unwrap();
-    let statement =
-        message_statement(&receiver.service_id(), &deposit_id, &c.idempotency_key, &p_hash, now);
+    let statement = message_statement(
+        &receiver.service_id(),
+        &sender.service_id(),
+        &deposit_id,
+        &c.idempotency_key,
+        &p_hash,
+        now,
+    );
     let inner = json!({
         "interface": c.interface,
         "method": c.method,
@@ -315,4 +321,85 @@ fn a_message_hash_has_one_lowercase_text_form() {
     assert_eq!(text.parse::<MessageHash>().unwrap(), sealed.sent.message_hash);
     assert!(text.to_uppercase().parse::<MessageHash>().is_err());
     assert!("ab".parse::<MessageHash>().is_err());
+}
+
+/// Floats from a fixed generator: latitudes, fractions and price times rate.
+/// Many of these change by one bit through a parser that is not exact.
+fn sample_floats() -> Vec<f64> {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut floats = vec![0.01 * 1.07];
+    for _ in 0..200 {
+        floats.push(next());
+        floats.push(next() * 180.0 - 90.0);
+        floats.push(next() * 100.0 * 1.0725);
+    }
+    floats
+}
+
+#[test]
+fn payload_hash_is_stable_for_floats_that_change_in_an_inexact_parser() {
+    for value in sample_floats() {
+        let params = json!({ "value": value });
+        let parsed: Value = serde_json::from_str(&serde_json::to_string(&params).unwrap()).unwrap();
+        assert_eq!(
+            payload_hash("conversation", "deliver", &params).unwrap(),
+            payload_hash("conversation", "deliver", &parsed).unwrap(),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn a_message_with_computed_floats_in_its_params_opens() {
+    let (sender, receiver) = (Member::new(CERT_LIFE_SECS), Member::new(CERT_LIFE_SECS));
+    let mut computed = content();
+    computed.params = json!({ "values": sample_floats() });
+    let now = common_now(&[&sender, &receiver]);
+    let id = receiver.service_id();
+    let sealed = seal(&computed, receiver.recipient(&id), sender.sender(), TTL_SECS, now).unwrap();
+    let opened = open_default(&receiver, &sealed, now).unwrap();
+    assert_eq!(opened.content, computed);
+}
+
+#[test]
+fn a_certificate_from_another_master_for_the_same_key_fails() {
+    // Any master can issue a valid certificate for any instance key. The
+    // mailbox swaps the certificate and keeps the signature.
+    let (sender, receiver) = (Member::new(CERT_LIFE_SECS), Member::new(CERT_LIFE_SECS));
+    let other_master = Identity::generate().unwrap();
+    let swapped = DelegationCertificate::issue(
+        &other_master,
+        sender.instance.public_key(),
+        CERT_LIFE_SECS,
+        SCOPE_SERVICE_INSTANCE.to_string(),
+    )
+    .unwrap();
+    let now = common_now(&[&sender, &receiver]);
+    let deposit_id = DepositId::random().unwrap();
+    let honest = seal_at(sender.sender(), &receiver, deposit_id, now);
+    let by_other = Sender { instance: &sender.instance, certificate: &swapped };
+    let relabelled = seal_at(by_other, &receiver, deposit_id, now);
+    assert_ne!(relabelled.sent.message_hash, honest.sent.message_hash);
+
+    // The mailbox keeps the honest signature and puts the other certificate
+    // in the inner part. `seal_unchecked` signs again, so build the inner
+    // part by hand from the honest one.
+    let plaintext =
+        crypto::open_with(receiver.mailbox.seed(), honest.deposit.sealed.as_slice()).unwrap();
+    let mut inner: Value = serde_json::from_slice(&plaintext).unwrap();
+    inner["sender_certificate"] = serde_json::to_value(&swapped).unwrap();
+    let bytes =
+        crypto::seal_to(receiver.mailbox_public.as_bytes(), &serde_json::to_vec(&inner).unwrap())
+            .unwrap();
+    let swapped_sealed = Sealed {
+        deposit: Deposit { sealed: SealedBytes::new(bytes), ..honest.deposit.clone() },
+        sent: honest.sent.clone(),
+    };
+    assert_eq!(open_default(&receiver, &swapped_sealed, now), Err(OpenError::BadSignature));
 }

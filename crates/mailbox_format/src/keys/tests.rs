@@ -42,3 +42,30 @@ fn public_key_serializes_as_a_z32_string() {
     assert_eq!(serde_json::from_str::<MailboxPublicKey>(&json).unwrap(), key);
     assert!(serde_json::from_str::<MailboxPublicKey>("\"abc\"").is_err());
 }
+
+#[test]
+fn a_mailbox_key_has_one_text_form() {
+    let key = MailboxSecretKey::generate().unwrap().public_key();
+    let text = key.to_string();
+    let bytes = z32::decode(text.as_bytes()).unwrap();
+    // The last of the 52 characters holds 1 bit of the key and 4 spare bits.
+    // Another last character can change that 1 bit, and then it is the text
+    // of a different key. Take one that decodes to the same 32 bytes.
+    let alphabet = "ybndrfg8ejkmcpqxot1uwisza345h769";
+    let head = &text[..text.len() - 1];
+    let other_spelling = alphabet
+        .chars()
+        .map(|c| format!("{head}{c}"))
+        .find(|candidate| {
+            candidate != &text
+                && z32::decode(candidate.as_bytes()).ok().as_deref() == Some(bytes.as_slice())
+        })
+        .unwrap();
+    assert_eq!(other_spelling.parse::<MailboxPublicKey>(), Err(KeyParseError::NotCanonical));
+    assert_eq!(
+        MailboxSecretKey::from_z32(&other_spelling).unwrap_err(),
+        KeyParseError::NotCanonical
+    );
+    // A text with the last character missing reads as zero bits.
+    assert_eq!(text[..51].parse::<MailboxPublicKey>(), Err(KeyParseError::NotCanonical));
+}

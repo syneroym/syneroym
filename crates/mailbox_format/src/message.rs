@@ -65,6 +65,8 @@ pub struct SentDeposit {
     pub receiver_service_id: String,
     pub sender_master_did: String,
     pub message_hash: MessageHash,
+    /// The send time. A receipt cannot be older than this (`verify_signed`).
+    pub sent_at_secs: u64,
 }
 
 /// The result of `seal`: what goes to the mailbox, and what the sender keeps.
@@ -241,8 +243,13 @@ fn payload_hash(
 
 /// The statement the sender signs. `deposit_id` is in it so that the mailbox
 /// cannot give the receiver an existing message under another deposit id.
+/// `sender` (the member master DID) is in it so that the mailbox cannot swap
+/// the certificate for one from another master: any master can issue a
+/// valid certificate for any instance key, so the signature alone would not
+/// say whose message this is.
 fn message_statement(
     destination: &str,
+    sender: &str,
     deposit_id: &DepositId,
     idempotency_key: &str,
     payload_hash: &str,
@@ -251,6 +258,7 @@ fn message_statement(
     json!({
         "domain": MESSAGE_DOMAIN,
         "destination": destination,
+        "sender": sender,
         "deposit_id": deposit_id.to_string(),
         "idempotency_key": idempotency_key,
         "payload_hash": payload_hash,
@@ -307,6 +315,7 @@ pub(crate) fn seal_unchecked(
         payload_hash(&content.interface, &content.method, &content.params).map_err(json_err)?;
     let statement = message_statement(
         recipient.service_id,
+        &sender.certificate.master_did,
         &deposit_id,
         &content.idempotency_key,
         &p_hash,
@@ -343,6 +352,7 @@ pub(crate) fn seal_unchecked(
             receiver_service_id: recipient.service_id.to_string(),
             sender_master_did: sender.certificate.master_did.clone(),
             message_hash: m_hash,
+            sent_at_secs,
         },
     })
 }
@@ -397,6 +407,7 @@ fn check_signature(
     let p_hash = payload_hash(&inner.interface, &inner.method, &inner.params).map_err(malformed)?;
     let statement = message_statement(
         own_service_id,
+        &inner.sender_certificate.master_did,
         deposit_id,
         &inner.idempotency_key,
         &p_hash,

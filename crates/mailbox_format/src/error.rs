@@ -70,6 +70,8 @@ pub enum ReceiptError {
     BadCertificate(String),
     #[error("the receipt time is in the future")]
     FromFuture,
+    #[error("the receipt is older than the message it answers")]
+    BeforeSend,
     #[error("the instance key does not match the certificate")]
     SignerMismatch,
     #[error("json: {0}")]

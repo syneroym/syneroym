@@ -101,6 +101,10 @@ pub struct ReceiverProof {
 ///
 /// There is no `deny_unknown_fields`: a sender reads receipts from mailboxes
 /// of other operators, which may run a newer version.
+///
+/// `Unknown` covers an unknown `state` only. A known state whose body is
+/// missing a field does not parse at all. The caller treats an answer that
+/// does not parse like `expired`: back to direct attempts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Receipt {
@@ -254,6 +258,12 @@ impl Receipt {
             .map_err(|_| ReceiptError::BadSignature)?;
         if at_secs > now_secs.saturating_add(max_clock_skew_secs) {
             return Err(ReceiptError::FromFuture);
+        }
+        // A receipt is signed after the message was sent. Without this bound,
+        // an old receiver key whose certificate window has long ended could
+        // still sign a receipt for a message it never delivered.
+        if at_secs.saturating_add(max_clock_skew_secs) < sent.sent_at_secs {
+            return Err(ReceiptError::BeforeSend);
         }
         Ok(outcome)
     }
