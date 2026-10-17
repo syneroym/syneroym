@@ -9,16 +9,21 @@ use std::{
 };
 
 use clap::{ArgAction, Subcommand};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use syneroym_core::{
-    dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, RegistryClient},
+    dht_registry::{
+        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, RegistryClient,
+        SignedEndpointInfo,
+    },
     util,
 };
 use syneroym_identity::{Identity, substrate};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum RegistryCommands {
-    /// Register a service DID against a substrate DID
+    /// Register a service DID against a substrate DID. The record this signs
+    /// has no mailbox. It refuses a service whose current record names one:
+    /// the record of a service with a mailbox is published by its deploy.
     Register {
         /// The name of the local identity to register (from identities/
         /// directory)
@@ -46,6 +51,45 @@ pub enum RegistryCommands {
         #[arg(long)]
         dht: bool,
     },
+}
+
+/// The record the registry holds for `service_id` now, if any.
+async fn current_record(
+    client: &Client,
+    api_url: &str,
+    service_id: &str,
+) -> anyhow::Result<Option<SignedEndpointInfo>> {
+    let response = client.get(format!("{api_url}/lookup/{service_id}")).send().await?;
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        anyhow::bail!("registry returned {status} for the current record of {service_id}");
+    }
+    Ok(Some(response.json::<SignedEndpointInfo>().await?))
+}
+
+/// A fresh record from this command has no mailbox, so on a service that
+/// has one it would remove the mailbox for senders while the service still
+/// pulls from it. A record that is for another service or does not verify is
+/// ignored: a wrong or hostile registry must not be able to block or allow
+/// this by lying.
+fn refuse_if_mailbox(service_id: &str, current: Option<&SignedEndpointInfo>) -> anyhow::Result<()> {
+    let names_a_mailbox = current.is_some_and(|record| {
+        record.verify().is_ok()
+            && record.info.service_id == service_id
+            && record.info.mailbox.is_some()
+    });
+    if names_a_mailbox {
+        anyhow::bail!(
+            "service {service_id} has a mailbox; its record is published by its deploy (svc \
+             deploy, app deploy or the supervisor). Registering here would remove the mailbox for \
+             senders while the service still pulls from it. Redeploy the service to change its \
+             record."
+        );
+    }
+    Ok(())
 }
 
 /// Handle community registry subcommands
@@ -76,11 +120,16 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
                 ttl: None,
                 not_after,
                 generation: 0,
+                mailbox: None,
             };
 
             let signed_info = info.sign(&identity)?;
 
             let client = Client::new();
+            refuse_if_mailbox(
+                &service_id,
+                current_record(&client, api_url, &service_id).await?.as_ref(),
+            )?;
             let url = format!("{api_url}/register");
             let response = client.post(&url).json(&signed_info).send().await?;
 
@@ -111,3 +160,6 @@ pub async fn handle(command: &RegistryCommands, api_url: &str, dir: &Path) -> an
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

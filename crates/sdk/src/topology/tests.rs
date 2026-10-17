@@ -143,6 +143,7 @@ fn signed_tier1_record(
         ttl: None,
         not_after: now_secs() + 3600,
         generation: 0,
+        mailbox: None,
     }
     .sign(master)
     .unwrap()

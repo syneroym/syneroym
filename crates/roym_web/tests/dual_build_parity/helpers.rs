@@ -928,8 +928,8 @@ impl ServiceProxy for TestNativeServiceProxy {
 }
 
 pub(crate) fn wasm_deploy_manifest(bytes: Vec<u8>, iface: &str) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -941,14 +941,12 @@ pub(crate) fn wasm_deploy_manifest(bytes: Vec<u8>, iface: &str) -> DeployManifes
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
             interfaces: vec![iface.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 pub(crate) fn test_conversation_service(

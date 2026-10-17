@@ -2,7 +2,10 @@
 
 use std::{fmt, str::FromStr};
 
+use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use syneroym_identity::Identity;
 use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 use crate::crypto;
@@ -47,6 +50,10 @@ fn decode_key(text: &str) -> Result<Zeroizing<[u8; 32]>, KeyParseError> {
     Ok(key)
 }
 
+/// The HKDF `info` for the mailbox key of a member master. A new version
+/// string gives a new, unrelated key.
+const MASTER_DERIVATION_INFO: &[u8] = b"syneroym:mailbox-key:v1";
+
 impl MailboxSecretKey {
     /// A new random key.
     pub fn generate() -> Result<Self, getrandom::Error> {
@@ -60,8 +67,32 @@ impl MailboxSecretKey {
         Self { seed }
     }
 
+    /// The mailbox key of the member whose master is `master`. Every holder
+    /// of the master gets the same key, so a member keeps one mailbox key on
+    /// every deploy and every substrate. HKDF is one-way: the key tells
+    /// nothing about the master.
+    #[must_use]
+    pub fn derive_from_master(master: &Identity) -> Self {
+        let ikm = Zeroizing::new(master.to_bytes());
+        let mut seed = Zeroizing::new([0u8; 32]);
+        // A 32-byte output is always a valid HKDF-SHA256 length; the same
+        // expect-and-allow pairing is used by `Identity::derive_service_identity`.
+        #[allow(clippy::expect_used)]
+        Hkdf::<Sha256>::new(None, ikm.as_slice())
+            .expand(MASTER_DERIVATION_INFO, seed.as_mut_slice())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
+        Self::from_seed(*seed)
+    }
+
     pub(crate) fn seed(&self) -> &[u8; 32] {
         &self.seed
+    }
+
+    /// The raw 32-byte seed, for a store that keeps it as bytes. The wrapper
+    /// clears the copy when it is dropped.
+    #[must_use]
+    pub fn to_seed(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.seed)
     }
 
     #[must_use]

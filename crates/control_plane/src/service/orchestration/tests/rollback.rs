@@ -163,8 +163,8 @@ async fn test_undeploy_removes_fdae_policy() {
     let policy_filename = format!("test_fdae_undeploy_policy_{}.json", std::process::id());
     fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -176,10 +176,8 @@ async fn test_undeploy_removes_fdae_policy() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let caller = node_wide_caller("test-caller");
     service.deploy("undeploy_fdae_svc".to_string(), manifest, &caller).await.unwrap();
@@ -246,8 +244,8 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
     fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
 
     let caller = node_wide_caller("test-caller");
-    let with_policy = DeployManifest {
-        config: ServiceConfig {
+    let with_policy = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -259,17 +257,15 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy("redeploy_fdae_svc".to_string(), with_policy, &caller).await.unwrap();
     let _ = fs::remove_file(&policy_filename);
     assert!(storage_provider.load_fdae_policy("redeploy_fdae_svc").await.unwrap().is_some());
 
     // Re-deploy the same service_id with no `fdae` block at all.
-    let without_policy = DeployManifest {
-        config: ServiceConfig {
+    let without_policy = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -281,10 +277,8 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy("redeploy_fdae_svc".to_string(), without_policy, &caller).await.unwrap();
     assert_eq!(
         storage_provider.load_fdae_policy("redeploy_fdae_svc").await.unwrap(),
@@ -294,7 +288,6 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
     );
 }
 
-#[expect(clippy::too_many_lines, reason = "linear deployment rollback scenario")]
 #[tokio::test]
 async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -348,8 +341,8 @@ async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
     // First, a successful deploy with policy P1.
     let policy_1_filename = format!("test_fdae_rollback_p1_{}.json", std::process::id());
     fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
-    let first = DeployManifest {
-        config: ServiceConfig {
+    let first = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -361,10 +354,8 @@ async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy("rollback_fdae_svc".to_string(), first, &caller).await.unwrap();
     let _ = fs::remove_file(&policy_1_filename);
     assert_eq!(
@@ -379,8 +370,8 @@ async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
     let policy_2_filename = format!("test_fdae_rollback_p2_{}.json", std::process::id());
     fs::write(&policy_2_filename, r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#)
         .unwrap();
-    let second = DeployManifest {
-        config: ServiceConfig {
+    let second = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -392,14 +383,12 @@ async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let result = service.deploy("rollback_fdae_svc".to_string(), second, &caller).await;
     let _ = fs::remove_file(&policy_2_filename);
     assert!(result.is_err(), "the WASM deploy must fail: {result:?}");
@@ -466,8 +455,8 @@ async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
     // First, a successful deploy with a policy.
     let policy_filename = format!("test_fdae_dropped_rollback_{}.json", std::process::id());
     fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
-    let first = DeployManifest {
-        config: ServiceConfig {
+    let first = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -479,10 +468,8 @@ async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy("dropped_rollback_svc".to_string(), first, &caller).await.unwrap();
     let _ = fs::remove_file(&policy_filename);
     assert_eq!(
@@ -498,8 +485,8 @@ async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
     // that was there before this deploy attempt, not leave the row
     // deleted -- an already-running previous version must not lose its
     // policy to an unrelated failed re-deploy.
-    let second = DeployManifest {
-        config: ServiceConfig {
+    let second = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -511,14 +498,12 @@ async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let result = service.deploy("dropped_rollback_svc".to_string(), second, &caller).await;
     assert!(result.is_err(), "the WASM deploy must fail: {result:?}");
 
@@ -595,8 +580,8 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
     // baseline config generation and policy for the same service_id.
     let policy_1_filename = format!("test_fdae_endpoint_reg_p1_{}.json", std::process::id());
     fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
-    let first = DeployManifest {
-        config: ServiceConfig {
+    let first = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -608,10 +593,8 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy("endpoint_reg_svc".to_string(), first, &caller).await.unwrap();
     let _ = fs::remove_file(&policy_1_filename);
     let (gen_before, _) =
@@ -638,8 +621,8 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
     let policy_2_filename = format!("test_fdae_endpoint_reg_p2_{}.json", std::process::id());
     fs::write(&policy_2_filename, r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#)
         .unwrap();
-    let second = DeployManifest {
-        config: ServiceConfig {
+    let second = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -651,14 +634,12 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
             hash: None,
             interfaces: vec!["fails-to-register".to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let result = service.deploy("endpoint_reg_svc".to_string(), second, &caller).await;
     let _ = fs::remove_file(&policy_2_filename);
     assert!(result.is_err(), "endpoint registration must fail: {result:?}");
@@ -747,8 +728,8 @@ async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy
     // name the registry accepts.
     let policy_1_filename = format!("test_tcp_rollback_p1_{}.json", std::process::id());
     fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
-    let first = DeployManifest {
-        config: ServiceConfig {
+    let first = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -760,16 +741,14 @@ async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest {
+        WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "safe-interface".to_string(),
                 host: "127.0.0.1".to_string(),
                 port: 9000,
             }],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     service.deploy("tcp_rollback_svc".to_string(), first, &caller).await.unwrap();
     let _ = fs::remove_file(&policy_1_filename);
     assert_eq!(
@@ -784,8 +763,8 @@ async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy
     let policy_2_filename = format!("test_tcp_rollback_p2_{}.json", std::process::id());
     fs::write(&policy_2_filename, r#"{"version": "fdae/v1", "strict": true, "definitions": {}}"#)
         .unwrap();
-    let second = DeployManifest {
-        config: ServiceConfig {
+    let second = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -797,16 +776,14 @@ async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest {
+        WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "fails-to-register".to_string(),
                 host: "127.0.0.1".to_string(),
                 port: 9001,
             }],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let result = service.deploy("tcp_rollback_svc".to_string(), second, &caller).await;
     let _ = fs::remove_file(&policy_2_filename);
     assert!(result.is_err(), "TCP endpoint registration must fail: {result:?}");
@@ -878,8 +855,8 @@ async fn test_deploy_fdae_policy_schema_invalid_rejected_and_not_persisted() {
     // Missing required "definitions" key -- fails JSON-Schema validation.
     fs::write(&policy_filename, r#"{"version": "fdae/v1"}"#).unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -891,10 +868,8 @@ async fn test_deploy_fdae_policy_schema_invalid_rejected_and_not_persisted() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let result = service
         .deploy("fdae_bad_service".to_string(), manifest, &node_wide_caller("test-caller"))

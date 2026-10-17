@@ -34,7 +34,7 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_rpc::{Ability, Capability, CapabilityToken, ResourceUri};
 use syneroym_sdk::{
     BindingWrite, BindingWriteOutcome, DependencyBinding, SyneroymClient, TopologyMode,
-    deploy::{self, ApplyRequest, DeployTarget, apply_plan, certify_instance},
+    deploy::{self, ApplyRequest, CertifiedMembers, DeployTarget, apply_plan, certify_instance},
 };
 
 mod common;
@@ -107,6 +107,8 @@ fn two_service_manifest() -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     services.insert(
@@ -134,6 +136,8 @@ fn two_service_manifest() -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     SynAppManifest {
@@ -255,6 +259,7 @@ async fn certify_and_publish(
             ttl: None,
             not_after: far_future_not_after(),
             generation: 0,
+            mailbox: None,
         }
         .sign(master)
         .unwrap();
@@ -307,8 +312,10 @@ async fn deploy_two_service_app(
             plan: &new_plan,
             targets: &targets,
             fallback: None,
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers::without_mailboxes(
+                instance_certs.clone(),
+                registry_certs.clone(),
+            ),
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),

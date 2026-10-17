@@ -453,6 +453,7 @@ impl ControlPlaneService {
         if let Err(e) = self.registry.remove_deploy_facts(service_id).await {
             tracing::warn!("Failed to remove deploy facts for {}: {}", service_id, e);
         }
+        self.clear_mailbox_key(service_id).await;
         self.probe_cache.remove(service_id);
     }
 

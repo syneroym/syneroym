@@ -149,6 +149,8 @@ impl SupervisorService {
         actor: &Arc<dyn SubstrateActor>,
         generation: u64,
     ) -> Result<(), RenewalFailure> {
+        let planned =
+            plan.services.iter().find(|svc| svc.member_ref().to_string() == candidate.member_ref);
         let master = keys::master_for_member(
             &self.vault,
             &plan.app_instance_id.to_string(),
@@ -161,11 +163,16 @@ impl SupervisorService {
             other => RenewalFailure::Step { step: "master lookup", error: other.to_string() },
         })?;
 
+        // The same lifetime the first mint used: the service's own setting,
+        // else this node's default.
+        let expires_hours = planned.map_or(self.renewed_cert_expires_hours, |svc| {
+            deploy::member_cert_hours(svc, self.renewed_cert_expires_hours)
+        });
         let cert = deploy::certify_instance_via_actor(
             actor,
             &master,
             &candidate.service_id,
-            self.renewed_cert_expires_hours,
+            expires_hours,
         )
         .await
         .map_err(|e| RenewalFailure::Step { step: "mint", error: e.to_string() })?;
@@ -181,11 +188,7 @@ impl SupervisorService {
         // The one place `RotationPolicy` is read. The substrate never sees
         // it: the supervisor holds the stored plan, so this is a local
         // decision made once the new certificate is known to be installed.
-        let rotation = plan
-            .services
-            .iter()
-            .find(|svc| svc.member_ref().to_string() == candidate.member_ref)
-            .map(|svc| svc.config.rotation_policy);
+        let rotation = planned.map(|svc| svc.config.rotation_policy);
         if rotation == Some(RotationPolicy::RestartOnRotation) {
             actor
                 .restart(candidate.service_id.clone(), generation)

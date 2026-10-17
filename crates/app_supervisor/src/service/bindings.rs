@@ -213,7 +213,7 @@ impl SupervisorService {
             None => (plan, record_plan),
         };
 
-        let (instance_certs, registry_certs) = deploy::certify_placed_members(
+        let members = deploy::certify_placed_members(
             plan,
             masters,
             clients,
@@ -236,8 +236,7 @@ impl SupervisorService {
                 plan,
                 targets: &targets,
                 fallback: None,
-                instance_certificates: &instance_certs,
-                registry_certificates: &registry_certs,
+                members: &members,
                 // Always true on the supervisor's apply path: the
                 // supervisor holds masters by construction, so the
                 // condition `roymctl app deploy` ties this flag to is
@@ -616,8 +615,7 @@ impl SupervisorService {
         let wit_plan = map_deployment_plan_to_wit(
             plan,
             &[svc],
-            &BTreeMap::new(),
-            &BTreeMap::new(),
+            &CertifiedMembers::default(),
             true,
             generation,
             &binding_epochs,

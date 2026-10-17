@@ -168,8 +168,8 @@ impl<D: Driver> Driver for Mutant<'_, D> {
 }
 
 pub(crate) fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -181,14 +181,12 @@ pub(crate) fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
             interfaces: vec![FIXTURE_INTERFACE.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// The identity the *other* stack's `ConversationService` answers under

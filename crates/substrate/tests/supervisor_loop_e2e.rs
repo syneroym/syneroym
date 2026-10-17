@@ -78,6 +78,8 @@ fn two_service_manifest() -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     services.insert(
@@ -105,6 +107,8 @@ fn two_service_manifest() -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     SynAppManifest {

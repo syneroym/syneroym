@@ -149,6 +149,7 @@ impl Registration {
             ttl: None,
             not_after,
             generation: 0,
+            mailbox: None,
         };
         self.registry.register(&info.sign(&identity)?, false).await
     }

@@ -171,8 +171,8 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
     };
 
     let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
-    let manifest = Arc::new(DeployManifest {
-        config: ServiceConfig {
+    let manifest = Arc::new(DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -184,14 +184,12 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    });
+    ));
 
     // Benchmark: WASM init() hook (first deploy of a fresh service). Uses
     // `iter_custom` (not `iter_batched`) so that per-iteration setup

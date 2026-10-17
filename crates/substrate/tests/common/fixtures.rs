@@ -138,6 +138,8 @@ pub fn one_service_manifest(id: &str) -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     SynAppManifest {

@@ -91,8 +91,8 @@ const MESSAGING_TEST_DRIVER_INTERFACE: &str =
     "syneroym-test:messaging-pubsub-test/test-driver@0.1.0";
 
 fn messaging_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -104,14 +104,12 @@ fn messaging_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
             interfaces: vec![MESSAGING_TEST_DRIVER_INTERFACE.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 async fn call_test_driver(
@@ -435,8 +433,8 @@ async fn test_native_dispatch_data_layer_and_blob_store_round_trip() {
     .unwrap();
 
     let service_id = "native-test-svc".to_string();
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -448,10 +446,8 @@ async fn test_native_dispatch_data_layer_and_blob_store_round_trip() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     let test_caller = node_wide_caller("test-caller");
     service.deploy(service_id.clone(), manifest, &test_caller).await.unwrap();
 
@@ -703,8 +699,8 @@ async fn test_native_dispatch_create_collection_with_indexes_and_batch_mutate() 
     .unwrap();
 
     let service_id = "native-mutation-test-svc".to_string();
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -716,10 +712,8 @@ async fn test_native_dispatch_create_collection_with_indexes_and_batch_mutate() 
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy(service_id.clone(), manifest, &node_wide_caller("test-caller")).await.unwrap();
 
     let native = service
@@ -843,8 +837,8 @@ async fn test_native_dispatch_blob_store_errors_preserve_fidelity() {
     .unwrap();
 
     let service_id = "native-blob-error-test-svc".to_string();
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -856,10 +850,8 @@ async fn test_native_dispatch_blob_store_errors_preserve_fidelity() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy(service_id.clone(), manifest, &node_wide_caller("test-caller")).await.unwrap();
     let native_dispatch = service.native_dispatch.upgrade().unwrap();
     let native = native_dispatch.get(&service_id).unwrap();
@@ -1205,8 +1197,8 @@ const STREAM_TEST_DRIVER_INTERFACE: &str = "syneroym-test:stream-test/test-drive
 const STREAM_PROTOCOL: &str = "file-transfer";
 
 fn stream_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -1218,14 +1210,12 @@ fn stream_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
             interfaces: vec![STREAM_TEST_DRIVER_INTERFACE.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// `ControlPlaneService::undeploy` already iterates every registered

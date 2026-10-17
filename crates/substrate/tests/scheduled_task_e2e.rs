@@ -109,6 +109,8 @@ fn scheduled_manifest() -> SynAppManifest {
                 timeout_ms: 10_000,
             }),
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     SynAppManifest {

@@ -657,6 +657,8 @@ mod tests {
             schedule: None,
             sharding_strategy: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         }
     }
 

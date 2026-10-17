@@ -41,8 +41,8 @@ const STREAM_TEST_DRIVER_INTERFACE: &str = test_constants::STREAM_TEST_DRIVER_IN
 const STREAM_PROTOCOL: &str = "file-transfer";
 
 fn tcp_deploy_manifest(http_routes: serde_json::Value) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(http_routes.to_string()),
@@ -54,10 +54,8 @@ fn tcp_deploy_manifest(http_routes: serde_json::Value) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Tcp(syneroym_sdk::TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+        ServiceType::Tcp(syneroym_sdk::TcpManifest { endpoints: vec![] }),
+    )
 }
 
 fn wasm_deploy_manifest(
@@ -65,8 +63,8 @@ fn wasm_deploy_manifest(
     interfaces: Vec<String>,
     http_routes: serde_json::Value,
 ) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(http_routes.to_string()),
@@ -78,14 +76,12 @@ fn wasm_deploy_manifest(
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces,
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// One parsed raw HTTP/1.1 response.

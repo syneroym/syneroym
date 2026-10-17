@@ -4,8 +4,9 @@
 use anyhow::Result;
 use syneroym_core::dht_registry::SignedEndpointInfo;
 use syneroym_identity::DelegationCertificate;
+use syneroym_mailbox_format::MailboxSecretKey;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    AssetBundle, Visibility,
+    AssetBundle, MailboxCredentials, Visibility,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,37 +35,59 @@ pub struct SigningIdentityInfo {
 /// Publication policy for a service deployment (ADR-0018 §4). One type rather
 /// than two loose fields, so the three legal pairings are the only ones a
 /// caller can express -- the substrate still validates independently.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Publication {
     /// Never registered. The default.
     #[default]
     Private,
     /// Registered, and propagated to parent registries. The record's own
     /// `is_private` must be `false`.
-    Public(SignedEndpointInfo),
+    Public {
+        record: SignedEndpointInfo,
+        /// The member's mailbox key, when the record names a mailbox. Only
+        /// a `Public` service can have one. The substrate checks that the
+        /// key is the one the record names.
+        mailbox_key: Option<MailboxSecretKey>,
+    },
     /// Registered with the local registry only. The record's own
     /// `is_private` must be `true`.
     Internal(SignedEndpointInfo),
 }
 
+/// What a [`Publication`] puts into a `DeployManifest`.
+#[derive(Debug)]
+pub struct PublicationParts {
+    pub visibility: Visibility,
+    pub registry_certificate: Option<String>,
+    pub mailbox: Option<MailboxCredentials>,
+}
+
 impl Publication {
-    /// `(visibility, serialized certificate)` for a `DeployManifest`.
-    pub fn split(self) -> Result<(Visibility, Option<String>)> {
-        match self {
-            Self::Private => Ok((Visibility::Private, None)),
-            Self::Public(record) => {
-                let serialized = serde_json::to_string(&record).map_err(|e| {
-                    anyhow::anyhow!("Failed to serialize registry certificate: {e}")
-                })?;
-                Ok((Visibility::Public, Some(serialized)))
+    /// The visibility, serialized certificate and mailbox credentials for a
+    /// `DeployManifest`.
+    pub fn split(self) -> Result<PublicationParts> {
+        let (visibility, record, mailbox) = match self {
+            Self::Private => {
+                return Ok(PublicationParts {
+                    visibility: Visibility::Private,
+                    registry_certificate: None,
+                    mailbox: None,
+                });
             }
-            Self::Internal(record) => {
-                let serialized = serde_json::to_string(&record).map_err(|e| {
-                    anyhow::anyhow!("Failed to serialize registry certificate: {e}")
-                })?;
-                Ok((Visibility::Internal, Some(serialized)))
+            Self::Public { record, mailbox_key } => {
+                let mailbox = mailbox_key
+                    .map(|key| MailboxCredentials { secret_key: key.to_z32().to_string() });
+                (Visibility::Public, record, mailbox)
             }
-        }
+            Self::Internal(record) => (Visibility::Internal, record, None),
+        };
+        let registry_certificate = serde_json::to_string(&record)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize registry certificate: {e}"))?;
+        Ok(PublicationParts {
+            visibility,
+            registry_certificate: Some(registry_certificate),
+            mailbox,
+        })
     }
 }
 

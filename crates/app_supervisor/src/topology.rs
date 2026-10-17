@@ -242,6 +242,8 @@ mod tests {
             schedule: None,
             sharding_strategy,
             topology_visibility,
+            mailbox: None,
+            instance_cert_expires_hours: None,
         }
     }
 

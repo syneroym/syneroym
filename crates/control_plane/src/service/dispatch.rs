@@ -124,6 +124,11 @@ impl ControlPlaneService {
                     serde_json::from_value(invocation.params).map_err(|e| {
                         RpcError::InvalidParams(format!("Failed to parse set-secret params: {e}"))
                     })?;
+                if vault_names::is_reserved(&key) {
+                    return Err(RpcError::InvalidParams(format!(
+                        "vault name '{key}' is reserved for the substrate"
+                    )));
+                }
                 let store = self
                     .storage_provider
                     .open_service_db(&service_id, &self.key_store)

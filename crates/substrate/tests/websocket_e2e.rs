@@ -26,8 +26,8 @@ mod common;
 use common::{SubstrateTestContext, alloc_ports};
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(http_routes.to_string()),
@@ -39,14 +39,12 @@ fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> D
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec!["syneroym:http/websocket-handler@0.1.0".to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 #[tokio::test]

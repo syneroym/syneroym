@@ -7,13 +7,17 @@ use std::{
 
 use clap::Subcommand;
 use syneroym_app_orchestration::{
-    AlertStore, DeploymentJournal, models::SubstrateAlias, substrate_inventory::SubstrateEntry,
+    AlertStore, DeploymentJournal, MailboxChoice, models::SubstrateAlias,
+    substrate_inventory::SubstrateEntry,
 };
+
+use super::mailbox_arg::parse_service_mailbox;
 
 pub mod deploy;
 pub mod health;
 pub mod reconcile;
 pub mod resolve;
+pub(crate) mod settings;
 
 #[cfg(test)]
 mod tests;
@@ -157,6 +161,13 @@ pub enum AppCommands {
         /// a service by alias.
         #[arg(long)]
         inventory: Option<PathBuf>,
+        /// Mailbox for one service of the manifest, as
+        /// `<service-name>=<mailbox-host-node-did>`. Repeat for more
+        /// services. Overrides the manifest's `mailbox` for that service.
+        /// Needs `--mint-masters`. A `.wasm` path manifest has one service,
+        /// named `main`.
+        #[arg(long = "mailbox", value_parser = parse_service_mailbox, requires = "mint_masters")]
+        mailboxes: Vec<(String, MailboxChoice)>,
     },
     /// Reconcile a deployment to recover or compute updates
     Reconcile {
@@ -261,6 +272,7 @@ pub async fn handle(
             mint_masters,
             registry_url,
             inventory,
+            mailboxes,
         } => {
             deploy::handle_deploy(
                 instance_id.clone(),
@@ -269,6 +281,7 @@ pub async fn handle(
                 *mint_masters,
                 registry_url.clone(),
                 inventory.clone(),
+                mailboxes,
                 api_url,
                 substrate_opt,
                 dir,

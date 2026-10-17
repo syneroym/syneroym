@@ -7,6 +7,9 @@ interface vault {
         internal(string),
     }
 
+    /// Names that start with `syneroym.` are reserved for the substrate.
+    /// `reveal` always answers `not-found` for them, even when the entry
+    /// exists.
     reveal: func(key: string) -> result<list<u8>, vault-error>;
 }
 

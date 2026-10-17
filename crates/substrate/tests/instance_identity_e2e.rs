@@ -77,6 +77,7 @@ fn bare_tcp_manifest(port: u16, instance_certificate: Option<String>) -> DeployM
         }),
         registry_certificate: None,
         instance_certificate,
+        mailbox: None,
     }
 }
 

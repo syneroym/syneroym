@@ -41,7 +41,8 @@ use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, ServiceConfig as WitServiceConfig,
     ServiceType as WitServiceType, SyneroymClient, TcpManifest, Visibility as WitVisibility,
     deploy::{
-        self, ApplyRequest, DeployTarget, apply_plan, certify_instance, member_registry_record,
+        self, ApplyRequest, CertifiedMembers, DeployTarget, apply_plan, certify_instance,
+        member_registry_record,
     },
 };
 
@@ -87,72 +88,66 @@ fn far_future_not_after() -> u64 {
         .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS)
 }
 
-/// `frontend` (placed on `edge-a`) depends on `backend` (placed on
-/// `edge-b`) -- the reference scenario's own topology.
-fn two_service_manifest() -> SynAppManifest {
-    let mut services = BTreeMap::new();
-    services.insert(
-        LogicalServiceName::new("backend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41301".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Visibility::Internal,
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
+/// A `tcp` service placed on `alias`.
+fn tcp_service(
+    source: &str,
+    visibility: Visibility,
+    depends_on: Vec<LogicalServiceName>,
+    alias: &str,
+) -> ServiceSpec {
+    ServiceSpec {
+        config: ServiceConfig {
+            service_type: ServiceType::Tcp,
+            source: source.to_string(),
+            hash: None,
+            interfaces: vec![],
+            env: BTreeMap::new(),
+            args: vec![],
+            custom_config: None,
+            quota: None,
+            schema: None,
+            rotation_policy: Default::default(),
+            fdae: None,
+            health_check: None,
+            assets: None,
+            visibility,
         },
-    );
-    services.insert(
-        LogicalServiceName::new("frontend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41302".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Visibility::Internal,
-            },
-            depends_on: vec![LogicalServiceName::new("backend")],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(FRONTEND_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
+        depends_on,
+        placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(alias))),
+        replicas: 1,
+        sharding_strategy: None,
+        schedule: None,
+        topology_visibility: Default::default(),
+        mailbox: None,
+        instance_cert_expires_hours: None,
+    }
+}
+
+fn manifest_of(id: &str, services: Vec<(&str, ServiceSpec)>) -> SynAppManifest {
     SynAppManifest {
-        id: AppBlueprintId::new("syneroym:a3-test-app"),
+        id: AppBlueprintId::new(id),
         version: Version::new(0, 1, 0),
         description: None,
         placement: None,
-        services,
+        services: services
+            .into_iter()
+            .map(|(name, spec)| (LogicalServiceName::new(name), spec))
+            .collect(),
         dependencies: BTreeMap::new(),
     }
+}
+
+/// `frontend` (placed on `edge-a`) depends on `backend` (placed on
+/// `edge-b`) -- the reference scenario's own topology.
+fn two_service_manifest() -> SynAppManifest {
+    let backend = tcp_service("127.0.0.1:41301", Visibility::Internal, vec![], BACKEND_ALIAS);
+    let frontend = tcp_service(
+        "127.0.0.1:41302",
+        Visibility::Internal,
+        vec![LogicalServiceName::new("backend")],
+        FRONTEND_ALIAS,
+    );
+    manifest_of("syneroym:a3-test-app", vec![("backend", backend), ("frontend", frontend)])
 }
 
 /// Two independent (no `depends_on`) services, both placed on
@@ -163,69 +158,9 @@ fn two_service_manifest() -> SynAppManifest {
 /// attempted, which would prove the compiler's refusal rather than the
 /// "undeclared = unpublished" consequence this test is actually about.
 fn two_service_manifest_same_alias_private() -> SynAppManifest {
-    let mut services = BTreeMap::new();
-    services.insert(
-        LogicalServiceName::new("backend"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41304".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Visibility::Private,
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
-    services.insert(
-        LogicalServiceName::new("sibling"),
-        ServiceSpec {
-            config: ServiceConfig {
-                service_type: ServiceType::Tcp,
-                source: "127.0.0.1:41305".to_string(),
-                hash: None,
-                interfaces: vec![],
-                env: BTreeMap::new(),
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: Default::default(),
-                fdae: None,
-                health_check: None,
-                assets: None,
-                visibility: Visibility::Private,
-            },
-            depends_on: vec![],
-            placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(BACKEND_ALIAS))),
-            replicas: 1,
-            sharding_strategy: None,
-            schedule: None,
-            topology_visibility: Default::default(),
-        },
-    );
-    SynAppManifest {
-        id: AppBlueprintId::new("syneroym:a3-undeclared-app"),
-        version: Version::new(0, 1, 0),
-        description: None,
-        placement: None,
-        services,
-        dependencies: BTreeMap::new(),
-    }
+    let backend = tcp_service("127.0.0.1:41304", Visibility::Private, vec![], BACKEND_ALIAS);
+    let sibling = tcp_service("127.0.0.1:41305", Visibility::Private, vec![], BACKEND_ALIAS);
+    manifest_of("syneroym:a3-undeclared-app", vec![("backend", backend), ("sibling", sibling)])
 }
 
 /// Mints one member master per planned service and substitutes each
@@ -354,6 +289,7 @@ async fn certify_and_publish(
             client.service_id(),
             master,
             far_future_not_after(),
+            None,
         )
         .unwrap()
         {
@@ -407,8 +343,10 @@ async fn a_two_substrate_app_deploys_each_service_to_its_placed_node() {
             plan: &new_plan,
             targets: &targets,
             fallback: None,
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers::without_mailboxes(
+                instance_certs.clone(),
+                registry_certs.clone(),
+            ),
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -471,8 +409,10 @@ async fn a_placed_members_endpoint_record_resolves_to_its_own_substrate() {
             plan: &new_plan,
             targets: &targets,
             fallback: None,
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers::without_mailboxes(
+                instance_certs.clone(),
+                registry_certs.clone(),
+            ),
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -548,8 +488,10 @@ async fn an_app_deployed_with_no_visibility_declaration_publishes_no_member_reco
             plan: &new_plan,
             targets: &targets,
             fallback: None,
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers::without_mailboxes(
+                instance_certs.clone(),
+                registry_certs.clone(),
+            ),
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -621,6 +563,7 @@ async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
+        mailbox: None,
     }
     .sign(&master)
     .unwrap();
@@ -647,6 +590,7 @@ async fn a_certificate_minted_against_one_substrate_is_rejected_by_another() {
         }),
         registry_certificate: Some(serde_json::to_string(&record).unwrap()),
         instance_certificate: Some(cert.to_json().unwrap()),
+        mailbox: None,
     };
     let params = serde_json::to_value((master_did.clone(), manifest)).unwrap();
     let err = client_b.request("orchestrator", "deploy", params).await.unwrap_err();
@@ -690,8 +634,10 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
             plan: &new_plan,
             targets: &targets,
             fallback: None,
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers::without_mailboxes(
+                instance_certs.clone(),
+                registry_certs.clone(),
+            ),
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -746,8 +692,10 @@ async fn an_unreachable_substrate_leaves_the_deployment_degraded_and_retryable()
             plan: &new_plan,
             targets: &targets_again,
             fallback: None,
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers::without_mailboxes(
+                instance_certs.clone(),
+                registry_certs.clone(),
+            ),
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -792,8 +740,10 @@ async fn a_dependencys_record_resolves_through_the_dependents_own_registry() {
             plan: &new_plan,
             targets: &targets,
             fallback: None,
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers::without_mailboxes(
+                instance_certs.clone(),
+                registry_certs.clone(),
+            ),
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),

@@ -186,6 +186,7 @@ pub async fn sign_tier1_record(
         ttl: Some(ttl_secs),
         not_after,
         generation,
+        mailbox: None,
     };
     info.sign(&master).map_err(|e| Tier1SignError::Vault(VaultError::Storage(e)))
 }

@@ -9,6 +9,7 @@ use std::{
         Arc, Weak,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -46,6 +47,7 @@ use tracing::{debug, error};
 use crate::{
     call_dedup::CallDedupGuard,
     net_iroh::IrohStream,
+    peer_records::PeerRecordStore,
     proxy::{IrohHop, ProxyRouter},
     proxy_outbox::ProxyOutbox,
     saga::SagaStore,
@@ -283,22 +285,38 @@ impl RouteHandler {
             SagaConfig::from(&config.roles.app_sandbox.clone().unwrap_or_default()),
         ));
 
-        let proxy = Arc::new(
-            ProxyRouter::new(
-                registry.clone(),
-                registry_client.clone(),
-                Arc::downgrade(&deps.native_dispatch),
-                Arc::downgrade(&deps.app_sandbox_engine),
-                Arc::new(IrohHop::new(iroh_endpoint.cloned(), config.retry.clone())),
-                identity.clone(),
-                config.retry.clone(),
-            )
-            .with_dedup_guard(dedup_guard.clone())
-            .with_outbox(outbox.clone())
-            .with_sagas(sagas.clone()),
-        );
+        let mut proxy = ProxyRouter::new(
+            registry.clone(),
+            registry_client.clone(),
+            Arc::downgrade(&deps.native_dispatch),
+            Arc::downgrade(&deps.app_sandbox_engine),
+            Arc::new(IrohHop::new(iroh_endpoint.cloned(), config.retry.clone())),
+            identity.clone(),
+            config.retry.clone(),
+        )
+        .with_dedup_guard(dedup_guard.clone())
+        .with_outbox(outbox.clone())
+        .with_sagas(sagas.clone());
+        if let Some(store) = Self::open_peer_records(config) {
+            proxy = proxy.with_peer_records(store);
+        }
 
-        (proxy, dedup_guard)
+        (Arc::new(proxy), dedup_guard)
+    }
+
+    /// The peer record store under the node's database directory. A node
+    /// still starts without it: it only helps find peers that are offline.
+    fn open_peer_records(config: &SubstrateConfig) -> Option<Arc<PeerRecordStore>> {
+        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_secs) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(e) => {
+                tracing::warn!(
+                    "peer record store unavailable, offline peers cannot be found by mailbox: {e}"
+                );
+                None
+            }
+        }
     }
 
     /// Wires `AppSandboxEngine` as the row-authorizer `ControlPlaneService`'s

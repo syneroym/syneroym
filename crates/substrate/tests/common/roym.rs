@@ -25,8 +25,8 @@ use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::{
     SyneroymClient,
     deploy::{
-        self, ApplyRequest, DeployTarget, SubstrateActor, apply_plan, certify_instance,
-        member_registry_record,
+        self, ApplyRequest, CertifiedMembers, DeployTarget, SubstrateActor, apply_plan,
+        certify_instance, member_registry_record,
     },
 };
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
@@ -152,6 +152,7 @@ pub async fn certify_and_publish(
             client.service_id(),
             master,
             far_future_not_after(),
+            None,
         )
         .unwrap()
         {
@@ -403,8 +404,11 @@ impl RoymNode {
                 plan: &new_plan,
                 targets: &targets,
                 fallback: Some(&targets[&alias]),
-                instance_certificates: &instance_certs,
-                registry_certificates: &registry_certs,
+                members: &CertifiedMembers {
+                    instance_certificates: instance_certs,
+                    registry_certificates: registry_certs,
+                    mailbox_keys: BTreeMap::new(),
+                },
                 emit_bindings: true,
                 generation,
                 binding_epochs: &BTreeMap::new(),
@@ -592,6 +596,7 @@ impl RoymNode {
                 &self.substrate_did(),
                 master,
                 far_future_not_after(),
+                None,
             ) {
                 let _ = http
                     .post(format!("{}/register", self.registry_url))

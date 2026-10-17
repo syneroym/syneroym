@@ -110,8 +110,8 @@ fn app_grantee(did: &str, service_id: &str) -> CallerContext {
 }
 
 fn tcp_manifest(port: u16) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -123,16 +123,14 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Tcp(TcpManifest {
+        ServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "default".to_string(),
                 host: "127.0.0.1".to_string(),
                 port,
             }],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 async fn test_service(temp_dir: &Path) -> ControlPlaneService {

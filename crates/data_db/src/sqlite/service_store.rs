@@ -37,6 +37,10 @@ pub(super) enum DbCommand {
         key: String,
         resp: oneshot::Sender<anyhow::Result<Option<Vec<u8>>>>,
     },
+    DeleteSecret {
+        key: String,
+        resp: oneshot::Sender<anyhow::Result<()>>,
+    },
     CreateCollection {
         schema: host_store::CollectionSchema,
         resp: oneshot::Sender<Result<(), host_store::DataLayerError>>,
@@ -109,6 +113,9 @@ pub(super) fn run_writer_loop(
             }
             DbCommand::RevealSecret { key, resp } => {
                 let _ = resp.send(do_reveal_secret(&conn, &dek, &key));
+            }
+            DbCommand::DeleteSecret { key, resp } => {
+                let _ = resp.send(do_delete_secret(&conn, &key));
             }
             DbCommand::CreateCollection { schema, resp } => {
                 let _ = resp.send(do_create_collection(&conn, &schema));
@@ -232,6 +239,11 @@ fn do_reveal_secret(
     }
 }
 
+fn do_delete_secret(conn: &Connection, key: &str) -> anyhow::Result<()> {
+    conn.execute(&format!("DELETE FROM {VAULT_TABLE} WHERE key = ?1"), rusqlite::params![key])?;
+    Ok(())
+}
+
 pub struct SqliteServiceStore {
     pub(super) reader_pool: Pool,
     pub(super) writer_tx: mpsc::Sender<DbCommand>,
@@ -277,6 +289,15 @@ impl ServiceStore for SqliteServiceStore {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.writer_tx
             .send(DbCommand::RevealSecret { key: key.to_string(), resp: resp_tx })
+            .await
+            .map_err(|_| anyhow::anyhow!("Writer task disconnected"))?;
+        resp_rx.await?
+    }
+
+    async fn delete_secret(&self, key: &str) -> anyhow::Result<()> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.writer_tx
+            .send(DbCommand::DeleteSecret { key: key.to_string(), resp: resp_tx })
             .await
             .map_err(|_| anyhow::anyhow!("Writer task disconnected"))?;
         resp_rx.await?
@@ -593,6 +614,10 @@ impl ServiceStore for Arc<SqliteServiceStore> {
 
     async fn reveal_secret(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         self.as_ref().reveal_secret(key).await
+    }
+
+    async fn delete_secret(&self, key: &str) -> anyhow::Result<()> {
+        self.as_ref().delete_secret(key).await
     }
 
     async fn create_collection(

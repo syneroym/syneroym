@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::Instant};
 
 use syneroym_app_orchestration::{
     ActionState, DeploymentJournal,
-    models::{AppBlueprintId, LogicalServiceRef, TopologyMode},
+    models::{AppBlueprintId, TopologyMode},
 };
 
 use super::{super::*, helpers::*};
@@ -520,19 +520,8 @@ async fn a_needs_work_redeploy_and_a_failing_push_in_the_same_pass_leaves_the_re
     let s = service();
     let old_frontend = dependent_service("frontend", "backend");
     let backend = PlannedService {
-        service_id: ServiceId::new("did:key:hbackend"),
-        logical_ref: LogicalServiceRef {
-            app_instance_id: AppInstanceId::new("inst-1"),
-            service_name: LogicalServiceName::new("backend"),
-        },
-        substrate: Some(SubstrateAlias::new("edge-1")),
-        config: dummy_config(),
         resolved_dependencies: BTreeMap::new(),
-        topology_mode: TopologyMode::Singleton,
-        member_index: 0,
-        schedule: None,
-        sharding_strategy: None,
-        topology_visibility: Default::default(),
+        ..dependent_service("backend", "unused")
     };
     let old_plan = DeploymentPlan {
         app_instance_id: AppInstanceId::new("inst-1"),

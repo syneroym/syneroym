@@ -436,6 +436,8 @@ pub(super) fn dependent_service(name: &str, dep_name: &str) -> PlannedService {
         schedule: None,
         sharding_strategy: None,
         topology_visibility: Default::default(),
+        mailbox: None,
+        instance_cert_expires_hours: None,
     }
 }
 
@@ -904,12 +906,6 @@ pub(super) fn enqueue_test_item(
 pub(super) fn scheduled_service(name: &str, member_index: u32, cron: &str) -> PlannedService {
     PlannedService {
         service_id: ServiceId::new(format!("did:key:h{name}{member_index}")),
-        logical_ref: LogicalServiceRef {
-            app_instance_id: AppInstanceId::new("inst-1"),
-            service_name: LogicalServiceName::new(name),
-        },
-        substrate: Some(SubstrateAlias::new("edge-1")),
-        config: dummy_config(),
         resolved_dependencies: BTreeMap::new(),
         topology_mode: if member_index > 0 {
             TopologyMode::Redundant
@@ -924,8 +920,7 @@ pub(super) fn scheduled_service(name: &str, member_index: u32, cron: &str) -> Pl
             params: None,
             timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
         }),
-        sharding_strategy: None,
-        topology_visibility: Default::default(),
+        ..dependent_service(name, "unused")
     }
 }
 

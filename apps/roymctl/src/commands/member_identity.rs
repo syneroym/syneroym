@@ -23,7 +23,7 @@ use syneroym_app_orchestration::models::{
 };
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{Identity, substrate};
-use syneroym_sdk::{SyneroymClient, deploy};
+use syneroym_sdk::{SyneroymClient, deploy, deploy::CertifiedMembers};
 
 /// The attended posture's default certificate lifetime for a plan-deploy-time
 /// certification -- `identity certify-instance` is the dedicated renewal
@@ -164,7 +164,7 @@ pub async fn substitute_and_certify_members(
     // `None` when every service is placed by alias.
     fallback: Option<&Arc<SyneroymClient>>,
     registry_url: Option<&str>,
-) -> Result<(DeploymentPlan, BTreeMap<ServiceId, String>, BTreeMap<ServiceId, String>)> {
+) -> Result<(DeploymentPlan, CertifiedMembers)> {
     let mut substitution: BTreeMap<ServiceId, ServiceId> = BTreeMap::new();
     let mut masters: BTreeMap<ServiceId, Identity> = BTreeMap::new();
     for svc in &plan.services {
@@ -200,7 +200,7 @@ pub async fn substitute_and_certify_members(
             .collect::<Result<BTreeMap<_, _>>>()?;
     }
 
-    let (instance_certs, registry_certs) = deploy::certify_placed_members(
+    let members = deploy::certify_placed_members(
         &new_plan,
         &masters,
         clients,
@@ -216,7 +216,7 @@ pub async fn substitute_and_certify_members(
         refresh_anchor_or_warn(registry_url, master).await?;
     }
 
-    Ok((new_plan, instance_certs, registry_certs))
+    Ok((new_plan, members))
 }
 
 #[cfg(test)]
@@ -312,6 +312,8 @@ mod tests {
             schedule: None,
             sharding_strategy: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         }
     }
 

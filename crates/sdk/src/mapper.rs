@@ -7,8 +7,7 @@ use syneroym_app_orchestration::{
     DEFAULT_BINDING_CACHE_TTL_MS,
     models::{
         AssetBundle, DeploymentPlan, DocumentRef, HealthCheck, LogicalServiceName, MemberRef,
-        PlannedService, RotationPolicy, ServiceId, ServiceType, TopologyMode,
-        Visibility as ModelVisibility,
+        PlannedService, RotationPolicy, ServiceType, TopologyMode, Visibility as ModelVisibility,
     },
 };
 use syneroym_core::{deploy_docs, util};
@@ -16,12 +15,15 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     AppContext as WitAppContext, ArtifactSource, AssetBundle as WitAssetBundle, ContainerManifest,
     ContainerPortMapping, ContainerVolumeFile, ContainerVolumeMapping,
     DependencyBinding as WitDependencyBinding, DeployManifest, DeploymentPlan as WitDeploymentPlan,
-    DocumentSource, HealthCheck as WitHealthCheck, HttpProbe as WitHttpProbe, NetworkEndpoint,
-    PlannedService as WitPlannedService, ResourceQuota, RotationPolicy as WitRotationPolicy,
-    RpcProbe as WitRpcProbe, ServiceConfig as WitServiceConfig, ServiceType as WitServiceType,
-    TcpManifest, TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode,
-    Visibility as WitVisibility, WasmManifest,
+    DocumentSource, HealthCheck as WitHealthCheck, HttpProbe as WitHttpProbe, MailboxCredentials,
+    NetworkEndpoint, PlannedService as WitPlannedService, ResourceQuota,
+    RotationPolicy as WitRotationPolicy, RpcProbe as WitRpcProbe,
+    ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest,
+    TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode, Visibility as WitVisibility,
+    WasmManifest,
 };
+
+use crate::deploy::CertifiedMembers;
 
 /// Marks a `ServiceConfig.source` value as hex-encoded artifact bytes
 /// rather than a URL or a local path: a plan applied by the App
@@ -330,8 +332,7 @@ fn map_service_type(svc: &PlannedService) -> anyhow::Result<WitServiceType> {
 struct PlanMappingContext<'a> {
     plan_instance_id: &'a str,
     target_modes: &'a BTreeMap<LogicalServiceName, TopologyMode>,
-    instance_certificates: &'a BTreeMap<ServiceId, String>,
-    registry_certificates: &'a BTreeMap<ServiceId, String>,
+    members: &'a CertifiedMembers,
     emit_bindings: bool,
     generation: u64,
     binding_epochs: &'a BTreeMap<MemberRef, u64>,
@@ -384,8 +385,13 @@ fn map_planned_service(
 ) -> anyhow::Result<WitPlannedService> {
     let wit_config = map_service_config(svc)?;
     let service_type = map_service_type(svc)?;
-    let instance_certificate = ctx.instance_certificates.get(&svc.service_id).cloned();
-    let registry_certificate = ctx.registry_certificates.get(&svc.service_id).cloned();
+    let instance_certificate = ctx.members.instance_certificates.get(&svc.service_id).cloned();
+    let registry_certificate = ctx.members.registry_certificates.get(&svc.service_id).cloned();
+    let mailbox = ctx
+        .members
+        .mailbox_keys
+        .get(&svc.service_id)
+        .map(|key| MailboxCredentials { secret_key: key.to_z32().to_string() });
     let app_context = Some(map_app_context(svc, ctx));
     Ok(WitPlannedService {
         service_id: svc.service_id.to_string(),
@@ -395,6 +401,7 @@ fn map_planned_service(
             service_type,
             registry_certificate,
             instance_certificate,
+            mailbox,
         },
         app_context,
     })
@@ -408,14 +415,13 @@ fn map_planned_service(
 /// `services`. Deriving modes from the subset would silently default every
 /// cross-substrate dependency to `Singleton`.
 ///
-/// `instance_certificates` maps a `PlannedService.service_id` (post
-/// member-master substitution, if any) to the JSON-serialized
-/// `DelegationCertificate` to install for it, and `registry_certificates` the
-/// same key to the JSON-serialized, master-signed `SignedEndpointInfo` to
-/// publish. Both are empty for a plan run without member masters -- every
-/// service then maps to `None` for both fields, exactly as before either
-/// parameter existed. The mapper only *translates* values that already
-/// exist; it never mints or signs anything itself.
+/// `members` maps a `PlannedService.service_id` (post member-master
+/// substitution, if any) to the JSON-serialized `DelegationCertificate` to
+/// install for it, to the JSON-serialized, master-signed `SignedEndpointInfo`
+/// to publish, and, for a service with a mailbox, to the member's mailbox
+/// key. It is empty for a plan run without member masters -- every service
+/// then maps to `None` for all three fields. The mapper only *translates*
+/// values that already exist; it never mints or signs anything itself.
 ///
 /// `PlannedService.substrate` is not mapped onto the wire: a substrate has no
 /// use for the placement of services it is not hosting, and publishing it
@@ -427,8 +433,7 @@ fn map_planned_service(
 pub fn map_deployment_plan_to_wit(
     plan: &DeploymentPlan,
     services: &[&PlannedService],
-    instance_certificates: &BTreeMap<ServiceId, String>,
-    registry_certificates: &BTreeMap<ServiceId, String>,
+    members: &CertifiedMembers,
     emit_bindings: bool,
     generation: u64,
     binding_epochs: &BTreeMap<MemberRef, u64>,
@@ -438,8 +443,7 @@ pub fn map_deployment_plan_to_wit(
     let ctx = PlanMappingContext {
         plan_instance_id: &plan_instance_id,
         target_modes: &target_modes,
-        instance_certificates,
-        registry_certificates,
+        members,
         emit_bindings,
         generation,
         binding_epochs,

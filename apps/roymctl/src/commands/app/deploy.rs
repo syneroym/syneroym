@@ -12,9 +12,9 @@ use anyhow::Context;
 use semver::Version;
 use syneroym_app_orchestration::{
     ActionRecord, AppInstanceId, DeploymentJournal, DeploymentPlan, DeploymentState,
-    LocalFilesystemCatalog, SynAppManifest, compile,
+    LocalFilesystemCatalog, MailboxChoice, SynAppManifest, compile,
     models::{
-        AppBlueprintId, LogicalServiceName, PlannedService, ServiceConfig, ServiceId, ServiceSpec,
+        AppBlueprintId, LogicalServiceName, PlannedService, ServiceConfig, ServiceSpec,
         ServiceType, SubstrateAlias,
     },
     substrate_inventory::{SubstrateInventory, check_placement, placement_demand},
@@ -22,10 +22,10 @@ use syneroym_app_orchestration::{
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_sdk::{
     SyneroymClient,
-    deploy::{self, ApplyReport, ApplyRequest, DeployTarget},
+    deploy::{self, ApplyReport, ApplyRequest, CertifiedMembers, DeployTarget},
 };
 
-use super::{PREFLIGHT_TIMEOUT, resolve_credentials};
+use super::{PREFLIGHT_TIMEOUT, resolve_credentials, settings};
 use crate::commands::{self, member_identity};
 
 /// Retries `f` until it succeeds or `budget` elapses, returning the last
@@ -239,6 +239,8 @@ fn resolve_manifest(manifest_path: &Path) -> anyhow::Result<SynAppManifest> {
                 sharding_strategy: None,
                 schedule: None,
                 topology_visibility: Default::default(),
+                mailbox: None,
+                instance_cert_expires_hours: None,
             },
         );
         Ok(SynAppManifest {
@@ -487,8 +489,8 @@ async fn build_deploy_plan(
     fallback_client: Option<&Arc<SyneroymClient>>,
     registry_url: Option<&str>,
     mint_masters: bool,
-) -> anyhow::Result<(DeploymentPlan, BTreeMap<ServiceId, String>, BTreeMap<ServiceId, String>)> {
-    let (deploy_plan, instance_certs, registry_certs) = if mint_masters {
+) -> anyhow::Result<(DeploymentPlan, CertifiedMembers)> {
+    let (deploy_plan, members) = if mint_masters {
         member_identity::substitute_and_certify_members(
             dir,
             target_plan,
@@ -498,10 +500,10 @@ async fn build_deploy_plan(
         )
         .await?
     } else {
-        (target_plan.clone(), BTreeMap::new(), BTreeMap::new())
+        (target_plan.clone(), CertifiedMembers::default())
     };
     refuse_unmastered_dependencies(&deploy_plan, mint_masters)?;
-    Ok((deploy_plan, instance_certs, registry_certs))
+    Ok((deploy_plan, members))
 }
 
 /// Resume the in-flight record for `target_plan` if one is `Applying` or
@@ -613,6 +615,7 @@ pub(super) async fn handle_deploy(
     mint_masters: bool,
     registry_url: Option<String>,
     inventory: Option<PathBuf>,
+    mailboxes: &[(String, MailboxChoice)],
     api_url: &str,
     substrate_opt: Option<String>,
     dir: &Path,
@@ -621,7 +624,9 @@ pub(super) async fn handle_deploy(
 ) -> anyhow::Result<()> {
     let instance_id = AppInstanceId::try_new(instance_id.clone())?;
 
-    let manifest = resolve_manifest(&manifest_path)?;
+    let mut manifest = resolve_manifest(&manifest_path)?;
+    settings::apply_mailbox_overrides(&mut manifest, mailboxes)?;
+    settings::refuse_settings_without_masters(&manifest, mint_masters)?;
     let target_plan = compile_target_plan(&instance_id, &manifest, &manifest_path).await?;
 
     // `app deploy` has no supervisor behind it, and
@@ -666,7 +671,7 @@ pub(super) async fn handle_deploy(
     check_no_placement_change(dir, &placed, &landed)?;
 
     // --- masters -------------------------------------------------
-    let (deploy_plan, instance_certs, registry_certs) = build_deploy_plan(
+    let (deploy_plan, members) = build_deploy_plan(
         dir,
         &target_plan,
         &preflight.clients,
@@ -689,8 +694,7 @@ pub(super) async fn handle_deploy(
             plan: &deploy_plan,
             targets: &targets,
             fallback: fallback_target.as_ref(),
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &members,
             emit_bindings: mint_masters,
             // Unmanaged: `roymctl app deploy` is the operator path;
             // a supervisor's own `submit` presents whatever `adopt`

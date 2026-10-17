@@ -43,8 +43,8 @@ mod common;
 use common::{SubstrateTestContext, alloc_ports};
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(http_routes.to_string()),
@@ -56,14 +56,12 @@ fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> D
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![test_constants::HTTP_GUEST_TEST_DRIVER_INTERFACE.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 fn guest_wasm_manifest_with_assets(
@@ -370,6 +368,7 @@ async fn test_through_the_gateway_a_non_public_route_is_reached_and_reports_self
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     let signed = info.sign(&app_identity).expect("failed to sign endpoint info");
     let http = reqwest::Client::new();

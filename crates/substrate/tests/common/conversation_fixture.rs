@@ -50,6 +50,7 @@ pub async fn publish_endpoint(
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     let signed = info.sign(signer).unwrap();
     let res = Client::new()

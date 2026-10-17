@@ -10,14 +10,19 @@ use anyhow::{Context, Result};
 use ed25519_dalek::VerifyingKey;
 use syneroym_app_orchestration::{
     Visibility,
-    models::{DeploymentPlan, LogicalServiceRef, ServiceId, SubstrateAlias},
+    models::{
+        DeploymentPlan, LogicalServiceRef, MailboxChoice, PlannedService, ServiceId, SubstrateAlias,
+    },
 };
-use syneroym_core::dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType};
+use syneroym_core::dht_registry::{
+    DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMailbox, EndpointType,
+};
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
+use syneroym_mailbox_format::MailboxSecretKey;
 
-use super::SubstrateActor;
+use super::{CertifiedMembers, SubstrateActor};
 use crate::{InstanceIdentity, SyneroymClient};
 /// The attended posture's default certificate lifetime for a plan-deploy-time
 /// certification.
@@ -145,13 +150,25 @@ fn certificate_over_instance_identity(
 /// is the one piece of [`certify_placed_members`] directly unit testable
 /// without a live substrate, and the one both it and any test harness
 /// building the same shape by hand should share rather than re-derive.
+///
+/// Only a `public` member may name a `mailbox`: a mailbox republishes the
+/// record, which a `private` or `internal` one must never leave its
+/// registry for.
 pub fn member_registry_record(
     visibility: Visibility,
     service_id: &str,
     substrate_id: &str,
     master: &Identity,
     not_after: u64,
+    mailbox: Option<EndpointMailbox>,
 ) -> Result<Option<String>> {
+    if mailbox.is_some() && visibility != Visibility::Public {
+        anyhow::bail!(
+            "service {service_id} has visibility '{}', but only a 'public' service can have a \
+             mailbox",
+            visibility.as_str()
+        );
+    }
     let is_private = match visibility {
         Visibility::Private => return Ok(None),
         Visibility::Internal => true,
@@ -167,24 +184,54 @@ pub fn member_registry_record(
         ttl: None,
         not_after,
         generation: 0,
+        mailbox,
     }
     .sign(master)?;
     Ok(Some(serde_json::to_string(&record)?))
 }
 
+/// The instance certificate lifetime of one member: the service's own
+/// setting, else the deployer's default.
+#[must_use]
+pub fn member_cert_hours(svc: &PlannedService, default_expires_hours: u64) -> u64 {
+    svc.instance_cert_expires_hours.map_or(default_expires_hours, u64::from)
+}
+
+/// The mailbox key of a member and the record field that names its key, if
+/// the member's service chose a mailbox. The key is derived from the member
+/// master, so every deploy of the member gets the same one.
+fn member_mailbox(
+    svc: &PlannedService,
+    master: &Identity,
+) -> Result<Option<(MailboxSecretKey, EndpointMailbox)>> {
+    match &svc.mailbox {
+        None => Ok(None),
+        Some(MailboxChoice::Auto) => {
+            anyhow::bail!("service '{}' has an unresolved `auto` mailbox", svc.logical_ref)
+        }
+        Some(MailboxChoice::Service(host)) => {
+            let key = MailboxSecretKey::derive_from_master(master);
+            let route = EndpointMailbox { service_id: host.to_string(), key: key.public_key() };
+            Ok(Some((key, route)))
+        }
+    }
+}
+
 /// Mints, per placed member, the instance certificate its hosting substrate
-/// will accept and the endpoint record that points at that substrate.
+/// will accept, the endpoint record that points at that substrate, and, for a
+/// service that names a mailbox, the member's mailbox key.
 ///
-/// Returns `(instance_certificates, registry_certificates)`, both keyed by
-/// the member master `ServiceId`, ready for `ApplyRequest`.
+/// The result is keyed by the member master `ServiceId`, ready for
+/// `ApplyRequest`. `default_expires_hours` is the certificate lifetime of a
+/// service that sets none of its own.
 pub async fn certify_placed_members(
     plan: &DeploymentPlan,
     masters: &BTreeMap<ServiceId, Identity>,
     clients: &BTreeMap<SubstrateAlias, Arc<SyneroymClient>>,
     // `None` when every service is placed by alias.
     fallback: Option<&Arc<SyneroymClient>>,
-    expires_hours: u64,
-) -> Result<(BTreeMap<ServiceId, String>, BTreeMap<ServiceId, String>)> {
+    default_expires_hours: u64,
+) -> Result<CertifiedMembers> {
     // Two services sharing one master would need two endpoint records under
     // one service_id pointing at different substrates -- a permanent
     // compare-and-swap fight at the registry. Impossible from today's
@@ -202,8 +249,7 @@ pub async fn certify_placed_members(
         }
     }
 
-    let mut certs = BTreeMap::new();
-    let mut records = BTreeMap::new();
+    let mut members = CertifiedMembers::default();
     for svc in &plan.services {
         let master = masters.get(&svc.service_id).ok_or_else(|| {
             anyhow::anyhow!("no member master resolved for service {}", svc.service_id)
@@ -219,24 +265,33 @@ pub async fn certify_placed_members(
             ),
         };
 
+        let expires_hours = member_cert_hours(svc, default_expires_hours);
         let cert = certify_instance(client, master, svc.service_id.as_str(), expires_hours).await?;
-        certs.insert(svc.service_id.clone(), cert.to_json()?);
+        members.instance_certificates.insert(svc.service_id.clone(), cert.to_json()?);
 
         let not_after = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0)
             .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS);
+        let (key, route) = match member_mailbox(svc, master)? {
+            Some((key, route)) => (Some(key), Some(route)),
+            None => (None, None),
+        };
         if let Some(record_json) = member_registry_record(
             svc.config.visibility,
             svc.service_id.as_str(),
             client.service_id(),
             master,
             not_after,
+            route,
         )? {
-            records.insert(svc.service_id.clone(), record_json);
+            members.registry_certificates.insert(svc.service_id.clone(), record_json);
+        }
+        if let Some(key) = key {
+            members.mailbox_keys.insert(svc.service_id.clone(), key);
         }
     }
 
-    Ok((certs, records))
+    Ok(members)
 }

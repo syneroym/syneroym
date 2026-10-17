@@ -110,7 +110,7 @@ pub enum IdentityCommands {
         /// DID of the substrate to query for its derived instance key.
         #[arg(long)]
         substrate: String,
-        #[arg(long, default_value_t = 24)]
+        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..=720))]
         expires_hours: u64,
         /// Community registry URL to publish/refresh this master's anchor at.
         /// Without it, the certificate this command mints is

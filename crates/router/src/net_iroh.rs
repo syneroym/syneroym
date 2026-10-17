@@ -19,12 +19,17 @@ use iroh::{
 };
 use syneroym_core::{
     config::{IrohParentConfig, RetryPolicy},
-    dht_registry::{EndpointMechanism, RegistryClient},
+    dht_registry::{
+        EndpointMailbox, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
+    },
     retry::retry_with_backoff,
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    time,
+};
 
-use crate::stop_signal::StopSignal;
+use crate::{peer_records::PeerRecordStore, stop_signal::StopSignal};
 
 pub struct IrohStream {
     send: SendStream,
@@ -147,6 +152,108 @@ pub async fn build_iroh_endpoint(
     Ok(endpoint)
 }
 
+/// How long a sender waits for the address of a peer that has a mailbox
+/// before it treats the peer as asleep. A receiver that sleeps has no
+/// substrate record, so the registry lookup falls back to the DHT, which
+/// can take many seconds; the sender must reach the mailbox quickly instead.
+pub const MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// What a sender learns about a peer from its records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPeer {
+    /// How to reach the peer now. `None` when its substrate record cannot
+    /// be found, which is normal for a receiver that sleeps.
+    pub addr: Option<EndpointAddr>,
+    /// The peer's mailbox, from its own signed record.
+    pub mailbox: Option<EndpointMailbox>,
+}
+
+/// The Iroh address in `mechanisms`, if any. An Iroh entry that cannot be
+/// parsed is an error.
+fn iroh_addr_from_mechanisms(
+    mechanisms: Vec<EndpointMechanism>,
+) -> anyhow::Result<Option<EndpointAddr>> {
+    for mech in mechanisms {
+        if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mech {
+            let mut addr: EndpointAddr = serde_json::from_slice(&endpoint_addr_bytes)?;
+            if let Some(r_url_str) = relay_url
+                && let Ok(relay_url) = r_url_str.parse::<RelayUrl>()
+            {
+                addr = addr.with_relay_url(relay_url);
+            }
+            return Ok(Some(addr));
+        }
+    }
+    Ok(None)
+}
+
+/// The service record of `service_id`: from the registry, which is also
+/// remembered, else from the peer record store. `lookup` gives the same
+/// error for "registry down" and "not found", and a stored record is the
+/// right answer to both.
+async fn record_of(
+    registry_client: &RegistryClient,
+    peer_records: Option<&PeerRecordStore>,
+    service_id: &str,
+) -> anyhow::Result<SignedEndpointInfo> {
+    match registry_client.lookup(service_id, false).await {
+        Ok(record) => {
+            if let Some(store) = peer_records
+                && let Err(e) = store.remember(&record).await
+            {
+                tracing::warn!("could not keep the record of '{service_id}': {e}");
+            }
+            Ok(record)
+        }
+        Err(e) => match peer_records {
+            Some(store) => store.recall(service_id).await.ok_or(e),
+            None => Err(e),
+        },
+    }
+}
+
+/// The mechanisms of the substrate that hosts `record`'s service. For a peer
+/// with a mailbox the lookup is bounded and a failure gives no mechanisms:
+/// the peer may be asleep, and the sender can still deposit.
+async fn substrate_mechanisms(
+    registry_client: &RegistryClient,
+    record: SignedEndpointInfo,
+) -> anyhow::Result<Vec<EndpointMechanism>> {
+    if record.info.endpoint_type == EndpointType::Substrate {
+        return Ok(record.info.mechanisms);
+    }
+    let lookup = registry_client.lookup(&record.info.substrate_id, false);
+    if record.info.mailbox.is_none() {
+        return Ok(lookup.await?.info.mechanisms);
+    }
+    match time::timeout(MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT, lookup).await {
+        Ok(Ok(substrate)) => Ok(substrate.info.mechanisms),
+        Ok(Err(e)) => {
+            tracing::debug!("no substrate record for a peer with a mailbox: {e}");
+            Ok(Vec::new())
+        }
+        Err(_) => {
+            tracing::debug!("substrate lookup for a peer with a mailbox timed out");
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// Resolves a service or substrate DID. Unlike a full lookup, it keeps the
+/// service record's mailbox, and a missing substrate record is not an error
+/// when the service has a mailbox: the sender can still deposit. A stored
+/// record (`peer_records`) answers when the registry cannot be reached.
+pub async fn resolve_peer(
+    registry_client: &RegistryClient,
+    peer_records: Option<&PeerRecordStore>,
+    service_id: &str,
+) -> anyhow::Result<ResolvedPeer> {
+    let record = record_of(registry_client, peer_records, service_id).await?;
+    let mailbox = record.info.mailbox.clone();
+    let mechanisms = substrate_mechanisms(registry_client, record).await?;
+    Ok(ResolvedPeer { addr: iroh_addr_from_mechanisms(mechanisms)?, mailbox })
+}
+
 /// Resolves a service's Iroh `EndpointAddr` via the community registry / DHT.
 /// Factored out of `route_handler/io.rs`'s registry-miss relay path so
 /// `ProxyRouter::invoke_remote`'s outbound hop can share the exact same
@@ -155,19 +262,9 @@ pub async fn resolve_iroh_addr(
     registry_client: &RegistryClient,
     service_id: &str,
 ) -> anyhow::Result<EndpointAddr> {
-    let info = registry_client.lookup(service_id, true).await?;
-    for mech in info.info.mechanisms {
-        if let EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } = mech {
-            let mut addr: EndpointAddr = serde_json::from_slice(&endpoint_addr_bytes)?;
-            if let Some(r_url_str) = relay_url
-                && let Ok(relay_url) = r_url_str.parse::<RelayUrl>()
-            {
-                addr = addr.with_relay_url(relay_url);
-            }
-            return Ok(addr);
-        }
-    }
-    Err(anyhow::anyhow!("No valid Iroh mechanism found for service '{service_id}' in registry"))
+    resolve_peer(registry_client, None, service_id).await?.addr.ok_or_else(|| {
+        anyhow::anyhow!("No valid Iroh mechanism found for service '{service_id}' in registry")
+    })
 }
 
 /// Connects to an Iroh endpoint with exponential backoff retries.
@@ -188,58 +285,4 @@ pub async fn connect_with_retry(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn relay_mode_without_url_is_an_empty_custom_map() {
-        let mode = relay_mode(None);
-        assert!(matches!(mode, RelayMode::Custom(_)));
-        assert_eq!(mode.relay_map().len(), 0);
-    }
-
-    #[test]
-    fn relay_mode_with_url_has_only_that_relay() {
-        let url: RelayUrl = "http://127.0.0.1:7964".parse().unwrap();
-        let mode = relay_mode(Some(url.clone()));
-        assert!(matches!(mode, RelayMode::Custom(_)));
-        assert_eq!(mode.relay_map().len(), 1);
-        assert!(mode.relay_map().contains(&url));
-    }
-
-    #[test]
-    fn parse_relay_url_accepts_http_and_https() {
-        let http = parse_relay_url("test", "http://example.org:7964").unwrap();
-        assert_eq!(http.as_str(), "http://example.org:7964/");
-
-        let https = parse_relay_url("test", "https://example.org:7964").unwrap();
-        assert_eq!(https.as_str(), "https://example.org:7964/");
-    }
-
-    #[test]
-    fn parse_relay_url_rejects_a_value_without_scheme() {
-        let err = parse_relay_url("parent_coordinator.iroh.url", "localhost:7964")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("parent_coordinator.iroh.url"), "expected setting name: {err}");
-        assert!(err.contains("localhost:7964"), "expected bad value: {err}");
-    }
-
-    #[test]
-    fn parse_relay_url_rejects_other_schemes() {
-        let err = parse_relay_url("test", "ftp://x").unwrap_err().to_string();
-        assert!(err.contains("must be an http:// or https:// URL"), "expected error: {err}");
-    }
-
-    #[test]
-    fn parse_relay_url_rejects_garbage() {
-        let err = parse_relay_url("test", "not a url").unwrap_err().to_string();
-        assert!(err.contains("test = \"not a url\""), "expected error: {err}");
-    }
-
-    #[test]
-    fn parent_relay_url_is_none_without_url() {
-        let config = IrohParentConfig { url: None };
-        assert_eq!(parent_relay_url(&config).unwrap(), None);
-    }
-}
+mod tests;

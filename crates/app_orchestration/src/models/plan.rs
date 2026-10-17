@@ -10,8 +10,8 @@ use super::{
         SubstrateAlias,
     },
     service::{
-        ScheduleSpec, ServiceConfig, ShardingStrategy, TopologyMode, TopologyVisibility,
-        is_restricted,
+        MailboxChoice, ScheduleSpec, ServiceConfig, ShardingStrategy, TopologyMode,
+        TopologyVisibility, is_restricted,
     },
 };
 
@@ -70,6 +70,14 @@ pub struct PlannedService {
     /// stored plan is the only place it can read it from.
     #[serde(default, skip_serializing_if = "is_restricted")]
     pub topology_visibility: TopologyVisibility,
+    /// Cloned from `ServiceSpec.mailbox`; the supervisor holds no manifest,
+    /// so the plan is where it reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailbox: Option<MailboxChoice>,
+    /// Cloned from `ServiceSpec.instance_cert_expires_hours`; the supervisor
+    /// holds no manifest, so the plan is where it reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_cert_expires_hours: Option<u32>,
 }
 
 impl PlannedService {

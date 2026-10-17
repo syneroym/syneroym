@@ -1,0 +1,358 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use syneroym_core::dht_registry::{EndpointInfo, EndpointMailbox, EndpointType};
+use syneroym_identity::Identity;
+use syneroym_rpc::{NativeInvocation, RpcError};
+
+use super::{super::*, helpers::*};
+
+/// A service member for these tests: its master, the service id that master
+/// names, and the node identity of the substrate that will host it.
+struct Member {
+    master: Identity,
+    service_id: String,
+    node_identity: Arc<Identity>,
+}
+
+impl Member {
+    fn new() -> Self {
+        let master = Identity::generate().unwrap();
+        let service_id = derive_did_key(&master.public_key());
+        Self { master, service_id, node_identity: Arc::new(Identity::generate().unwrap()) }
+    }
+
+    fn mailbox_key(&self) -> MailboxSecretKey {
+        MailboxSecretKey::derive_from_master(&self.master)
+    }
+
+    fn mailbox_route(&self, key: &MailboxSecretKey) -> EndpointMailbox {
+        EndpointMailbox {
+            service_id: derive_did_key(&Identity::generate().unwrap().public_key()),
+            key: key.public_key(),
+        }
+    }
+
+    fn record(&self, mailbox: Option<EndpointMailbox>, is_private: bool) -> String {
+        let not_after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 86_400;
+        let signed = EndpointInfo {
+            service_id: self.service_id.clone(),
+            substrate_id: "did:key:zTestNode".to_string(),
+            endpoint_type: EndpointType::Service,
+            mechanisms: vec![],
+            nickname: None,
+            is_private,
+            ttl: None,
+            not_after,
+            generation: 0,
+            mailbox,
+        }
+        .sign(&self.master)
+        .unwrap();
+        serde_json::to_string(&signed).unwrap()
+    }
+
+    /// A public manifest whose record names `route` and whose credentials
+    /// carry `key` (either may be `None`).
+    fn manifest(
+        &self,
+        caller: &CallerContext,
+        route: Option<EndpointMailbox>,
+        key: Option<&MailboxSecretKey>,
+    ) -> DeployManifest {
+        let cert = instance_cert_for(
+            &self.node_identity,
+            &self.master,
+            &caller.caller_did,
+            &self.service_id,
+            3600,
+        );
+        let mut manifest = owner_test_manifest();
+        manifest.config.visibility = Some(WitVisibility::Public);
+        manifest.registry_certificate = Some(self.record(route, false));
+        manifest.instance_certificate = Some(cert.to_json().unwrap());
+        manifest.mailbox =
+            key.map(|key| MailboxCredentials { secret_key: key.to_z32().to_string() });
+        manifest
+    }
+}
+
+fn caller() -> CallerContext {
+    node_wide_caller("did:key:zOwner")
+}
+
+async fn host_of(member: &Member, dir: &std::path::Path) -> ControlPlaneService {
+    service_with_node_identity(dir, member.node_identity.clone()).await.0
+}
+
+fn credentials_for(key: &MailboxSecretKey) -> MailboxCredentials {
+    MailboxCredentials { secret_key: key.to_z32().to_string() }
+}
+
+// -- validate_mailbox ------------------------------------------------------
+
+#[test]
+fn no_mailbox_in_the_record_or_the_manifest_is_fine() {
+    let member = Member::new();
+    let record = member.record(None, false);
+    let result =
+        validate_mailbox(&member.service_id, None, AppVisibility::Public, Some(&record), true);
+    assert!(result.unwrap().is_none());
+}
+
+#[test]
+fn a_record_with_a_mailbox_and_no_key_is_refused() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let record = member.record(Some(member.mailbox_route(&key)), false);
+    let err =
+        validate_mailbox(&member.service_id, None, AppVisibility::Public, Some(&record), true)
+            .unwrap_err();
+    assert!(err.contains("no mailbox key was supplied"), "{err}");
+}
+
+#[test]
+fn a_key_with_a_record_that_names_no_mailbox_is_refused() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let record = member.record(None, false);
+    let err = validate_mailbox(
+        &member.service_id,
+        Some(&credentials_for(&key)),
+        AppVisibility::Public,
+        Some(&record),
+        true,
+    )
+    .unwrap_err();
+    assert!(err.contains("names no mailbox"), "{err}");
+}
+
+#[test]
+fn only_a_public_service_can_have_a_mailbox() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let record = member.record(Some(member.mailbox_route(&key)), true);
+    for visibility in [AppVisibility::Internal, AppVisibility::Private] {
+        let err = validate_mailbox(
+            &member.service_id,
+            Some(&credentials_for(&key)),
+            visibility,
+            Some(&record),
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("only a public service"), "{err}");
+    }
+}
+
+#[test]
+fn a_mailbox_needs_an_instance_certificate() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let record = member.record(Some(member.mailbox_route(&key)), false);
+    let err = validate_mailbox(
+        &member.service_id,
+        Some(&credentials_for(&key)),
+        AppVisibility::Public,
+        Some(&record),
+        false,
+    )
+    .unwrap_err();
+    assert!(err.contains("needs an instance certificate"), "{err}");
+}
+
+#[test]
+fn a_key_that_does_not_parse_is_refused_without_showing_it() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let record = member.record(Some(member.mailbox_route(&key)), false);
+    let bad = MailboxCredentials { secret_key: "not-a-key-but-secret".to_string() };
+    let err = validate_mailbox(
+        &member.service_id,
+        Some(&bad),
+        AppVisibility::Public,
+        Some(&record),
+        true,
+    )
+    .unwrap_err();
+    assert!(err.contains("does not parse"), "{err}");
+    assert!(!err.contains("not-a-key-but-secret"), "{err}");
+}
+
+#[test]
+fn a_key_that_differs_from_the_record_is_refused_without_showing_it() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let record = member.record(Some(member.mailbox_route(&key)), false);
+    let other = MailboxSecretKey::generate().unwrap();
+    let err = validate_mailbox(
+        &member.service_id,
+        Some(&credentials_for(&other)),
+        AppVisibility::Public,
+        Some(&record),
+        true,
+    )
+    .unwrap_err();
+    assert!(err.contains("does not match"), "{err}");
+    assert!(!err.contains(other.to_z32().as_str()), "{err}");
+}
+
+#[test]
+fn the_matching_key_is_accepted() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let record = member.record(Some(member.mailbox_route(&key)), false);
+    let accepted = validate_mailbox(
+        &member.service_id,
+        Some(&credentials_for(&key)),
+        AppVisibility::Public,
+        Some(&record),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(accepted.public_key(), key.public_key());
+}
+
+// -- deploy and undeploy ---------------------------------------------------
+
+#[tokio::test]
+async fn a_deploy_with_a_mailbox_stores_the_key_in_the_vault() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let service = host_of(&member, dir.path()).await;
+    let caller = caller();
+    let key = member.mailbox_key();
+    let manifest = member.manifest(&caller, Some(member.mailbox_route(&key)), Some(&key));
+
+    service.deploy(member.service_id.clone(), manifest, &caller).await.unwrap();
+
+    let stored = service.mailbox_key(&member.service_id).await.unwrap().unwrap();
+    assert_eq!(stored.public_key(), key.public_key());
+}
+
+#[tokio::test]
+async fn a_redeploy_without_a_mailbox_clears_the_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let service = host_of(&member, dir.path()).await;
+    let caller = caller();
+    let key = member.mailbox_key();
+    let with = member.manifest(&caller, Some(member.mailbox_route(&key)), Some(&key));
+    service.deploy(member.service_id.clone(), with, &caller).await.unwrap();
+    assert!(service.mailbox_key(&member.service_id).await.unwrap().is_some());
+
+    let without = member.manifest(&caller, None, None);
+    service.deploy(member.service_id.clone(), without, &caller).await.unwrap();
+    assert!(service.mailbox_key(&member.service_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn undeploy_clears_the_mailbox_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let service = host_of(&member, dir.path()).await;
+    let caller = caller();
+    let key = member.mailbox_key();
+    let manifest = member.manifest(&caller, Some(member.mailbox_route(&key)), Some(&key));
+    service.deploy(member.service_id.clone(), manifest, &caller).await.unwrap();
+
+    service.undeploy(member.service_id.clone(), 0, &caller).await.unwrap();
+
+    assert!(service.mailbox_key(&member.service_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_deploy_with_a_mismatched_mailbox_key_is_refused_and_stores_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let (service, registry) =
+        service_with_node_identity(dir.path(), member.node_identity.clone()).await;
+    let caller = caller();
+    let key = member.mailbox_key();
+    let other = MailboxSecretKey::generate().unwrap();
+    let manifest = member.manifest(&caller, Some(member.mailbox_route(&key)), Some(&other));
+
+    let err = service.deploy(member.service_id.clone(), manifest, &caller).await.unwrap_err();
+
+    assert!(err.contains("does not match"), "{err}");
+    assert!(service.mailbox_key(&member.service_id).await.unwrap().is_none());
+    assert_eq!(registry.owner_of(&member.service_id), None);
+}
+
+#[tokio::test]
+async fn a_redeploy_that_changes_only_the_mailbox_is_not_a_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let service = host_of(&member, dir.path()).await;
+    let caller = caller();
+    let first = member.mailbox_key();
+    let manifest = member.manifest(&caller, Some(member.mailbox_route(&first)), Some(&first));
+    service.deploy(member.service_id.clone(), manifest, &caller).await.unwrap();
+
+    // Same member, same everything else; only the mailbox key differs.
+    let second = MailboxSecretKey::generate().unwrap();
+    let manifest = member.manifest(&caller, Some(member.mailbox_route(&second)), Some(&second));
+    service.deploy(member.service_id.clone(), manifest, &caller).await.unwrap();
+
+    let stored = service.mailbox_key(&member.service_id).await.unwrap().unwrap();
+    assert_eq!(stored.public_key(), second.public_key());
+}
+
+#[tokio::test]
+async fn the_same_member_on_two_substrates_stores_the_same_key() {
+    let member = Member::new();
+    let caller = caller();
+    let mut stored = Vec::new();
+    for _ in 0..2 {
+        let dir = tempfile::tempdir().unwrap();
+        // Each substrate has its own node identity.
+        let node_identity = Arc::new(Identity::generate().unwrap());
+        let host = Member {
+            master: Identity::from_bytes(&member.master.to_bytes()),
+            service_id: member.service_id.clone(),
+            node_identity: node_identity.clone(),
+        };
+        let service = host_of(&host, dir.path()).await;
+        let key = host.mailbox_key();
+        let manifest = host.manifest(&caller, Some(host.mailbox_route(&key)), Some(&key));
+        service.deploy(host.service_id.clone(), manifest, &caller).await.unwrap();
+        stored.push(service.mailbox_key(&host.service_id).await.unwrap().unwrap().public_key());
+    }
+    assert_eq!(stored[0], stored[1]);
+}
+
+// -- the operator door -----------------------------------------------------
+
+#[tokio::test]
+async fn set_secret_refuses_a_reserved_vault_name() {
+    use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+
+    let dir = tempfile::tempdir().unwrap();
+    let node_identity = Arc::new(Identity::generate().unwrap());
+    let (service, _registry) = service_with_node_identity(dir.path(), node_identity).await;
+    let admin = CallerContext {
+        caller_did: "did:key:zAdmin".to_string(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: "did:key:zAdmin".to_string(),
+            capabilities: vec![Capability {
+                with: ResourceUri::substrate("did:key:zTestNode"),
+                can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+                caveats: None,
+            }],
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: None,
+    };
+    let call = |name: &str| NativeInvocation {
+        caller: admin.clone(),
+        interface: "security".to_string(),
+        method: "set-secret".to_string(),
+        params: serde_json::to_value(("svc".to_string(), name.to_string(), b"v".to_vec())).unwrap(),
+    };
+
+    let refused = service.dispatch(call("syneroym.mailbox-secret")).await.unwrap_err();
+    assert!(matches!(refused, RpcError::InvalidParams(m) if m.contains("reserved")));
+    assert!(service.dispatch(call("ordinary")).await.is_ok());
+}

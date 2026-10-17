@@ -120,6 +120,8 @@ fn manifest(backend_replicas: u32) -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     services.insert(
@@ -147,6 +149,8 @@ fn manifest(backend_replicas: u32) -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     SynAppManifest {

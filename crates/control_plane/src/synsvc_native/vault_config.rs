@@ -1,4 +1,5 @@
 use serde_json::Value;
+use syneroym_data_db::vault_names;
 use syneroym_mqtt_broker::namespace_topic_for_publish;
 use syneroym_rpc::{NativeInvocation, NativeResponse, RpcError, RpcResult};
 use syneroym_wit_interfaces::host::syneroym::{
@@ -20,6 +21,9 @@ impl SynSvcNativeService {
                     key: String,
                 }
                 let req: Req = parse_params(&invocation)?;
+                if vault_names::is_reserved(&req.key) {
+                    return Err(internal(VaultError::NotFound.to_string()));
+                }
                 let store = self
                     .storage_provider
                     .open_service_db(&self.service_id, &self.key_store)

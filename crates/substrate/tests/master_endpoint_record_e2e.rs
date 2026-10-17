@@ -94,6 +94,7 @@ fn bare_tcp_manifest(
         }),
         registry_certificate,
         instance_certificate,
+        mailbox: None,
     }
 }
 
@@ -182,6 +183,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
+        mailbox: None,
     }
     .sign(&member_master)
     .expect("failed to sign the member's endpoint record with its master key");
@@ -294,6 +296,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
+        mailbox: None,
     }
     .sign(&member_master)
     .expect("failed to sign the relocated record with the same master key");
@@ -356,6 +359,7 @@ async fn a_member_master_did_resolves_to_an_address_and_follows_the_member_acros
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
+        mailbox: None,
     }
     .sign(&uncertified)
     .expect("failed to sign forged record");

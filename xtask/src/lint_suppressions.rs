@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 ///
 /// This is a ratchet: it moves down only. The intent is to cap existing
 /// suppressions and ratchet down as oversized functions are decomposed.
-pub const MAX_TOO_MANY_LINES_SUPPRESSIONS: usize = 40;
+pub const MAX_TOO_MANY_LINES_SUPPRESSIONS: usize = 39;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ParsedAttribute {

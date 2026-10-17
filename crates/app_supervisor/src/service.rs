@@ -29,7 +29,7 @@ use syneroym_app_orchestration::{
         AppDid, AppInstanceId, DeploymentPlan, LogicalServiceName, LogicalServiceRef, MAX_REPLICAS,
         MemberRef, PlannedService, RotationPolicy, ScheduleSpec, ServiceId, SubstrateAlias,
     },
-    topology_fingerprint, validate_plan_visibility,
+    topology_fingerprint, validate_plan_member_settings, validate_plan_visibility,
 };
 use syneroym_async_queue::{FailOutcome, QueueItem};
 use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
@@ -46,7 +46,8 @@ use syneroym_rpc::{
 use syneroym_sdk::{
     BindingWrite, BindingWriteOutcome, SyneroymClient,
     deploy::{
-        self, ApplyRequest, DeployTarget, SubstrateActor, WriteBindingsAttempt, WriteBindingsOutbox,
+        self, ApplyRequest, CertifiedMembers, DeployTarget, SubstrateActor, WriteBindingsAttempt,
+        WriteBindingsOutbox,
     },
     health::{self, ExpectedService, HealthTarget, Signal, StatusQuery},
     mapper::map_deployment_plan_to_wit,

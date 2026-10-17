@@ -214,6 +214,7 @@ mod tests {
             ttl: None,
             not_after,
             generation: 0,
+            mailbox: None,
         }
     }
 

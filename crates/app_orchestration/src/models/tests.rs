@@ -206,6 +206,8 @@ fn test_deployment_plan_serialization() {
             schedule: None,
             sharding_strategy: None,
             topology_visibility: TopologyVisibility::Restricted,
+            mailbox: None,
+            instance_cert_expires_hours: None,
         }],
     };
 
@@ -318,47 +320,9 @@ fn an_app_instance_id_that_could_never_be_backed_up_is_refused_at_construction()
     assert!(AppInstanceId::try_new("inst-1").is_ok());
 }
 
-#[test]
-fn a_planned_services_member_ref_combines_its_logical_ref_and_index() {
-    let svc = PlannedService {
-        service_id: ServiceId::new("did:key:h123"),
-        logical_ref: LogicalServiceRef {
-            app_instance_id: AppInstanceId::new("inst-1"),
-            service_name: LogicalServiceName::new("backend"),
-        },
-        substrate: None,
-        config: ServiceConfig {
-            service_type: ServiceType::Tcp,
-            source: "127.0.0.1:9000".to_string(),
-            hash: None,
-            interfaces: vec![],
-            env: BTreeMap::new(),
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: RotationPolicy::RestartOnRotation,
-            fdae: None,
-            health_check: None,
-            assets: None,
-            visibility: Visibility::Private,
-        },
-        resolved_dependencies: BTreeMap::new(),
-        topology_mode: TopologyMode::Singleton,
-        member_index: 3,
-        schedule: None,
-        sharding_strategy: None,
-        topology_visibility: TopologyVisibility::Restricted,
-    };
-    assert_eq!(svc.member_ref().to_string(), "inst-1/backend#3");
-}
-
-/// An unscaled plan's JSON must stay byte-for-byte what it was before
-/// `member_index` existed -- the field is skip-if-zero, so an older
-/// stored plan and a fresh single-member one serialize identically.
-#[test]
-fn member_index_zero_emits_no_key_in_serialized_output() {
-    let svc = PlannedService {
+/// A single-member `tcp` service of `inst-1`, for tests that vary one field.
+fn backend_member() -> PlannedService {
+    PlannedService {
         service_id: ServiceId::new("did:key:h123"),
         logical_ref: LogicalServiceRef {
             app_instance_id: AppInstanceId::new("inst-1"),
@@ -387,7 +351,23 @@ fn member_index_zero_emits_no_key_in_serialized_output() {
         schedule: None,
         sharding_strategy: None,
         topology_visibility: TopologyVisibility::Restricted,
-    };
+        mailbox: None,
+        instance_cert_expires_hours: None,
+    }
+}
+
+#[test]
+fn a_planned_services_member_ref_combines_its_logical_ref_and_index() {
+    let svc = PlannedService { member_index: 3, ..backend_member() };
+    assert_eq!(svc.member_ref().to_string(), "inst-1/backend#3");
+}
+
+/// An unscaled plan's JSON must stay byte-for-byte what it was before
+/// `member_index` existed -- the field is skip-if-zero, so an older
+/// stored plan and a fresh single-member one serialize identically.
+#[test]
+fn member_index_zero_emits_no_key_in_serialized_output() {
+    let svc = backend_member();
     let toml = toml::to_string(&svc).unwrap();
     assert!(!toml.contains("member_index"));
 }
@@ -471,6 +451,8 @@ fn test_toml_env_serialization() {
             schedule: None,
             sharding_strategy: None,
             topology_visibility: TopologyVisibility::Restricted,
+            mailbox: None,
+            instance_cert_expires_hours: None,
         }],
     };
 
@@ -593,6 +575,8 @@ fn a_planned_service_round_trips_its_substrate() {
         schedule: None,
         sharding_strategy: None,
         topology_visibility: TopologyVisibility::Restricted,
+        mailbox: None,
+        instance_cert_expires_hours: None,
     };
 
     let toml_round = toml::to_string(&svc).unwrap();
@@ -928,6 +912,8 @@ fn more_than_the_cap_of_scheduled_services_is_refused_at_validation() {
                     timeout_ms: DEFAULT_SCHEDULE_TIMEOUT_MS,
                 }),
                 topology_visibility: TopologyVisibility::Restricted,
+                mailbox: None,
+                instance_cert_expires_hours: None,
             },
         );
     }
@@ -1012,3 +998,5 @@ fn a_range_sharding_strategy_is_refused_at_validation() {
     let err = SynAppManifest::from_toml(toml_str).unwrap_err();
     assert!(err.to_string().contains("range_sharding"), "{err}");
 }
+
+mod member_settings;

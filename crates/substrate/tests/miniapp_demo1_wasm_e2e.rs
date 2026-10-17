@@ -35,8 +35,8 @@ fn miniapp_manifest_with_assets(
     http_routes: serde_json::Value,
     archive: Vec<u8>,
 ) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(http_routes.to_string()),
@@ -52,7 +52,7 @@ fn miniapp_manifest_with_assets(
             }),
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![
@@ -62,9 +62,7 @@ fn miniapp_manifest_with_assets(
                 "syneroym:messaging/stream-types@0.1.0".to_string(),
             ],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 fn make_asset_archive(files: &[(&str, &[u8])]) -> Vec<u8> {

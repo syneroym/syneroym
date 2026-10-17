@@ -74,7 +74,8 @@ struct Harness {
 
 async fn harness() -> Harness {
     let dir = tempdir().unwrap();
-    let config = SubstrateConfig::default();
+    let mut config = SubstrateConfig::default();
+    config.storage.db_dir = dir.path().to_path_buf();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =

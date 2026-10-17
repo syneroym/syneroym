@@ -77,8 +77,8 @@ fn node_identity(node: &SubstrateNode) -> Identity {
 /// about the `data-layer` native capability every deployed service gets
 /// regardless of `service_type`) carrying an optional inline FDAE policy.
 fn deploy_manifest(policy_json: Option<String>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -90,10 +90,8 @@ fn deploy_manifest(policy_json: Option<String>) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+        ServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    )
 }
 
 /// An app-scoped `orchestrator/{deploy,undeploy,status}` grant, issued by
@@ -154,6 +152,7 @@ async fn register_service(
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     let signed_info = info.sign(service_identity).expect("failed to sign endpoint info");
     let res = HttpClient::new()

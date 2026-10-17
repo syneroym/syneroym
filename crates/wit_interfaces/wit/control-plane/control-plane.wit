@@ -175,6 +175,14 @@ interface orchestrator {
         tcp(tcp-manifest),
     }
 
+    /// What an instance needs to use its member's mailbox (ADR-0026).
+    /// The substrate keeps it in the service's vault, where the guest
+    /// cannot read it. Never log a manifest that carries this record.
+    record mailbox-credentials {
+        /// The member's mailbox secret key: z-base-32 of its 32-byte seed.
+        secret-key: string,
+    }
+
     /// A comprehensive manifest for deploying a service on the substrate.
     record deploy-manifest {
         /// Base configuration applied to the service
@@ -188,6 +196,9 @@ interface orchestrator {
         /// receipt; absent leaves the service its own master (ADR-0020 §1
         /// fallback).
         instance-certificate: option<string>,
+        /// Present exactly when the registry certificate names a mailbox.
+        /// Requires visibility `public` and an instance certificate.
+        mailbox: option<mailbox-credentials>,
     }
 
     record deployed-service {

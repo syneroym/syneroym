@@ -165,6 +165,7 @@ async fn a_forged_tier1_record_is_rejected_at_the_registry() {
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     }
     .sign(&uncertified)
     .expect("failed to sign forged record");

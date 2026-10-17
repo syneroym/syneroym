@@ -8,8 +8,8 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 /// Builds a [`DeployManifest`] for a WASM component with the specified byte
 /// payload and exposed interfaces.
 pub fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -21,12 +21,10 @@ pub fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployMa
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
             interfaces,
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }

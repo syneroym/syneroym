@@ -202,6 +202,7 @@ fn create_signed_info_with_full_addr(
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     info.sign(identity).unwrap()
 }
@@ -210,8 +211,8 @@ fn create_signed_info_with_full_addr(
 /// cross-node proxy test) -- no `custom_config`/quota, matching
 /// `lifecycle_hooks.rs`'s own `wasm_deploy_manifest` helper.
 fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -223,14 +224,12 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// Polls `ep.addr()` until it carries at least one direct address (the
@@ -267,6 +266,7 @@ fn create_signed_info(
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
 
     info.sign(identity).unwrap()

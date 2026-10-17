@@ -154,8 +154,7 @@ pub async fn apply_plan(
         let outcome: Result<(), String> = match map_deployment_plan_to_wit(
             req.plan,
             &[svc],
-            req.instance_certificates,
-            req.registry_certificates,
+            req.members,
             req.emit_bindings,
             req.generation,
             req.binding_epochs,

@@ -1,6 +1,10 @@
 ---
 status: approved
 living-docs-touched:
+  - docs/system-architecture.md
+  - docs/system-requirements-spec.md
+  - docs/developer-guide.md
+  - docs/TERMINOLOGY.md
 ---
 # Service mailbox
 
@@ -73,14 +77,14 @@ Record and keys
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| K-1 | `EndpointInfo` has an optional `mailbox` field: the mailbox `service_id` and the service's mailbox public key. It is covered by the existing signature. The field adds about 140 bytes. | |
-| K-2 | The deployer creates the mailbox key with the member master. The private half is delivered to each instance with its certificate. After a relocation the new instance can open messages sent before the move. | |
-| K-3 | `roymctl svc deploy` and `roymctl app deploy` accept a mailbox: a service id, or `auto`. `auto` picks one entry from the registry's open list by the same ranking helper as the coordinator list. `app deploy` takes a mailbox for each member. | |
+| K-1 | `EndpointInfo` has an optional `mailbox` field: the mailbox `service_id` and the service's mailbox public key. It is covered by the existing signature. The field adds about 140 bytes. | `dht_registry/tests.rs` (`a_record_with_a_mailbox_signs_and_verifies`, `a_service_record_with_a_mailbox_fits_the_dht_size_limit`, and 3 more), `mailbox_record_e2e.rs` |
+| K-2 | The deployer derives the mailbox key from the member master. The private half is delivered to each instance with its certificate. Every later deploy of the member, on any substrate, gets the same key, so a new instance can open messages sent before the move. | `keys/tests.rs` (derivation tests), `orchestration/tests/mailbox.rs` (`the_same_member_on_two_substrates_stores_the_same_key`), `mailbox_record_e2e.rs` |
+| K-3 | `roymctl svc deploy` and `roymctl app deploy` accept a mailbox: a service id, or `auto`. `auto` picks one entry from the registry's open list by the same ranking helper as the coordinator list. `app deploy` takes a mailbox for each service (all members of a service share the mailbox host; each has its own key). `auto` is parsed but refused until the registry list exists. | `cli_args.rs`, `svc/tests.rs`, `app/tests/settings.rs`, `mailbox_arg/tests.rs`, `registry/tests.rs`. `auto`: open |
 | K-4 | At `register` the receiver gives the mailbox its current signed service record. While the queue lives, the mailbox publishes that record to the registry every hour. The registry takes an unchanged record as a refresh. A record with an older timestamp is rejected, so a stale copy never overwrites a newer record. | |
-| K-5 | A sender that reads a service record does not follow it on to the substrate record. It needs only the `mailbox` field. A deposit works after the receiver has slept longer than 2 hours (the registry lifetime of a record). | |
-| K-6 | A sender stores, durably, the last signed record it saw for each peer, until the `not_after` of that record. A sender with a stored record deposits when the registry cannot be reached. | |
-| K-7 | A private service publishes no record, so it has no mailbox field. A record exported with `--record-out` carries the field like any other record. | |
-| K-8 | The instance certificate lifetime can be set for each member (for example 7 days on a mobile substrate). Revocation stays the main control. | |
+| K-5 | A sender that reads a service record does not follow it on to the substrate record. It needs only the `mailbox` field. A deposit works after the receiver has slept longer than 2 hours (the registry lifetime of a record). | `net_iroh/tests.rs` (`resolve_peer`), `mailbox_record_e2e.rs` (`a_peer_with_a_mailbox_but_no_substrate_record_still_resolves`) |
+| K-6 | A sender stores, durably, the last signed record it saw for each peer, until the `not_after` of that record. A sender with a stored record deposits when the registry cannot be reached. | `peer_records/tests.rs`, `net_iroh/tests.rs` (`an_unreachable_registry_falls_back_to_the_stored_record`), `proxy/tests/remote_dispatch.rs`, `mailbox_record_e2e.rs` (`a_stored_record_routes_a_direct_call_when_the_registry_has_none`) |
+| K-7 | A private service publishes no record, so it has no mailbox field. A public record exported with `--record-out` carries the field like any other record. | `compiler/tests/member_settings.rs`, `orchestration/tests/mailbox.rs` (`validate_mailbox`), `svc/tests.rs`, `mailbox_record_e2e.rs` (`a_mailbox_on_a_service_that_is_not_public_is_refused`) |
+| K-8 | The instance certificate lifetime can be set for each service (for example 7 days on a mobile substrate). Revocation stays the main control. | `compiler/tests/member_settings.rs` (range), `deploy/tests/mailbox.rs` (`member_cert_hours`), `tests/member_settings.rs` (supervisor renewal), `mailbox_record_e2e.rs` |
 
 Sender
 
@@ -130,7 +134,7 @@ It sees: the destination service, the sender service, the size, the deposit time
 mailbox: Option<{ service_id, key }>
 ```
 
-`service_id` is the mailbox service. A sender finds it with the normal registry lookup. `key` is the public mailbox key of the receiving service (X25519). The deployer signs the record, so the choice is made at deploy time. Changing it means signing a new record. Size: service records carry empty `mechanisms` and stay near 400 bytes. The field adds about 140 bytes, well inside the 1000-byte BEP44 limit. (Checked in the review, `crates/sdk/src/deploy/certify.rs:164`.)
+`service_id` is the mailbox service: the node DID of the mailbox host, reached on interface `mailbox`. A sender finds it with the normal registry lookup. `key` is the public mailbox key of the receiving service (X25519). The deployer signs the record, so the choice is made at deploy time. Changing it means signing a new record. Size: service records carry empty `mechanisms` and stay near 400 bytes. The field adds about 140 bytes, well inside the 1000-byte BEP44 limit. (Checked in the review, `crates/sdk/src/deploy/certify.rs:164`.)
 
 **Why the record needs help.** Only the hosting substrate publishes the record, once an hour. The registry removes it after 2 hours (`crates/community_registry/src/registry.rs`), and the DHT copy expires after 1 hour. A phone that sleeps for 3 hours has no record. A sender then gets `ServiceNotFound` and never reaches the mailbox. Two measures fix this:
 
@@ -139,11 +143,11 @@ mailbox: Option<{ service_id, key }>
 
 The sender must read the service record without following it on to the substrate record, because the substrate record has expired as well. The lookup (`resolve_iroh_addr`) drops the record today. It changes to return the `mailbox` field.
 
-**Private and internal services.** Under [ADR-0018](../../../decisions/0018-service-record-visibility.md) a private member publishes no record, and an internal one is marked private. They have no mailbox field and use direct delivery only. A record exported with `--record-out` carries the field like any other record.
+**Private and internal services.** Under [ADR-0018](../../../decisions/0018-service-record-visibility.md) a private member publishes no record, and an internal one is marked private. They have no mailbox field and use direct delivery only. A mailbox needs a public record: a mailbox republishes the record, which a private or internal service must keep to itself.
 
 ### Mailbox key
 
-The deployer creates one decrypt-only key pair for each service member, at the same time as the member master. The public half goes in the record. The private half goes to each instance in the deploy call, with the instance certificate, and is kept in the service's key store. When the supervisor relocates a member, it sends the private half to the new instance. The master key never reaches a hosting substrate, so a stolen host cannot sign as the member. But ADR-0020 §3 lets the supervisor hold master keys for unattended relocation. So whoever relocates a member also holds its mailbox private key. *Unverified:* which part of the control-plane deploy call carries the private half, and whether the vault interface is the right place to keep it.
+The deployer derives one decrypt-only key pair for each service member from the member master: HKDF-SHA256 over the master key with the fixed `info` string `syneroym:mailbox-key:v1` ([ADR-0026](../../../decisions/0026-receiver-chosen-mailbox.md), amendment A2). Every holder of the master gets the same key, so roymctl and the supervisor need no new key storage, and every later deploy of the member, on any substrate, gets the same key. The public half goes in the record. The private half goes to the substrate in the `mailbox` field of the deploy manifest (`mailbox-credentials`), with the instance certificate. The substrate checks that it matches the record, and keeps it in the service's own encrypted vault under the reserved name `syneroym.mailbox-secret`. Guests cannot read names that start with `syneroym.`. The master key never reaches a hosting substrate, so a stolen host cannot sign as the member. But ADR-0020 §3 lets the supervisor hold master keys. So whoever deploys a member also holds its mailbox private key.
 
 ### Instance certificate lifetime
 
@@ -231,7 +235,6 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 
 ## Open questions
 
-- Which part of the control-plane deploy call carries the mailbox private key, and is the vault the right place to keep it? Resolve before the record-and-keys task. Design the field with room for the owner's child token of a dedicated mailbox, so that task does not change the deploy call again.
 - Where is mailbox eligibility declared for a guest method: the app manifest, or the WIT interface? Find where `idempotency_key` and queued-call rules are declared. Resolve before the sender task.
 - Does the substrate know it was woken (for `pull-now`) on mobile, or does the shell call it?
 - Time-to-live, size and rate values above are starting points. Confirm after a first test.
@@ -242,8 +245,8 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 ## Tasks
 
 - [ ] Resolve the open questions.
-- [ ] Record field, mailbox key creation and delivery, per-member certificate lifetime, `roymctl svc deploy` and `app deploy` options.
-- [ ] Lookup change: `resolve_iroh_addr` returns the mailbox field. Sender stores the last record. Mailbox republishes the record.
+- [x] Record field, mailbox key creation and delivery, per-service certificate lifetime, `roymctl svc deploy` and `app deploy` options. (`auto` waits for the registry list.)
+- [ ] Lookup change: `resolve_peer` returns the mailbox field (done). Sender stores the last record (done). Mailbox republishes the record (open).
 - [x] Sealed message format with tests (tamper, wrong key, replay, old send time).
 - [ ] Mailbox role, native service, store, quotas, fair eviction, sweeps, newest-certificate rule, signed receipts.
 - [x] `async_queue`: a `deposited` state outside the attempt budget. Keep the supervisor behaviour.
@@ -276,6 +279,20 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C2-10`: reject codes are plain strings, an unknown receipt state reads as `unknown`, and deposits and the inner part ignore unknown fields. A newer version can then talk to this one.
 - `D-C2-11`: a receipt must not be older than the message it answers. `SentDeposit` keeps the send time, and `verify_signed` refuses a receipt more than the clock skew before it (`BeforeSend`). Without this, an old receiver key with an expired certificate could still sign a receipt for a message it never delivered.
 - `D-C2-12`: the workspace turns on the `float_roundtrip` feature of `serde_json`. The receiver hashes the parsed call parameters, and without this feature many floats change by one bit through serialize and parse, so the signature check fails.
+- `D-C3-1`: the mailbox key is derived from the member master (HKDF-SHA256, `info` `syneroym:mailbox-key:v1`), not generated at random. K-2 needs the same key at every later deploy; the master is already stored and backed up by roymctl and the supervisor, so no new key file or backup duty is needed. HKDF is one-way, so a substrate that holds the mailbox key learns nothing about the master. Rotation means a new `info` version and a new signed record. See ADR-0026 amendment A2.
+- `D-C3-2`: the deploy-call field is `deploy-manifest.mailbox: option<mailbox-credentials>`, a record with `secret-key` (z-base-32 seed). The record leaves room for the owner's child token of a dedicated mailbox. That token lives as long as the owner's passport, so it is renewed by an ordinary deploy, or by a new control-plane call; `deploy-manifest` and `renew-cert` do not change again.
+- `D-C3-3`: the substrate keeps the key in the service's vault under the reserved name `syneroym.mailbox-secret`. Every vault name that starts with `syneroym.` is reserved: the WASM and native guest `reveal` answer `not-found`, and `security/set-secret` refuses it. This answers the open question about where the key is kept: the vault storage, not the guest vault interface.
+- `D-C3-4`: only a `public` service may have a mailbox. The manifest compiler, `roymctl svc deploy`, `roymctl app deploy` and the substrate's deploy check all refuse the others. A mailbox republishes the record, which a private or internal record must never leave its registry for. Mailboxes for private and internal services are a backlog item.
+- `D-C3-5`: the substrate checks the pair at deploy. The mailbox key must parse and must match the key in the record, the visibility must be `public`, and an instance certificate must be present. A record that names a mailbox without a key is refused too. The error text never contains the key.
+- `D-C3-6`: the mailbox and the certificate lifetime are per service, not per member. The manifest has no per-member level: every member of a service comes from one `ServiceSpec`. The range is 1 to 720 hours, the substrate's install limit. `identity certify-instance --expires-hours` has the same range. The supervisor uses the same per-service value at renewal.
+- `D-C3-7`: `resolve_peer` is new, and `resolve_iroh_addr` keeps its signature as a thin wrapper. `resolve_peer` reads the service record without following it to the substrate record. For a peer with a mailbox, the substrate lookup is bounded (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s): a sleeping receiver has no substrate record, and the lookup would otherwise fall back to the DHT and wait many seconds.
+- `D-C3-8`: the peer record store (`<storage.db_dir>/peer_records.db`) keeps only service records that have a mailbox. It is plaintext. A newer record without a mailbox deletes the stored one. A stored record may route a direct call when the registry lookup fails: the record is signed and inside its `not_after`, and the connection handshake still checks the receiver's certificate.
+- `D-C3-9`: `MailboxChoice` is `auto` or a node DID. `auto` is parsed everywhere and refused until the registry list exists, at three places: the plan check, `svc deploy`, and `certify_placed_members`.
+- `D-C3-10`: the `service_id` in a record's mailbox field is the node DID of the mailbox host. The mailbox service is on interface `mailbox` of that node, like `orchestrator` and the supervisor.
+- `D-C3-11`: ADR-0026 amendment A2 records the key derivation.
+- `D-C3-12`: `roymctl registry register` refuses a service whose current record in the registry names a mailbox. It signs a fresh, newer record without a mailbox, which would remove the mailbox for senders while the service still pulls from it. It has no `--mailbox` flag: it sends no key to the substrate and skips the deploy-time check.
+- `D-C3-13`: "relocation" in K-2 means any later deploy of the member. The supervisor does not move a running member (`refuse_placement_change`); the only way to move one is undeploy, forget and deploy again.
+- `D-C3-14`: the per-service checks (mailbox needs `public`, `auto` refused, lifetime range) run on the compiled **plan** (`validate_plan_member_settings`), not on the manifest. The supervisor receives a plan through `submit` and never sees a manifest, so a manifest check would leave that path silent. This is the same reason `validate_plan_visibility` reads the plan.
 
 ## Close-out
 

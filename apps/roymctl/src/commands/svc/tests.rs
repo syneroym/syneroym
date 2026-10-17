@@ -1,7 +1,8 @@
 #![allow(clippy::cognitive_complexity)]
 
 use clap::{Parser, error::ErrorKind};
-use syneroym_sdk::SyneroymClient;
+use syneroym_mailbox_format::MailboxSecretKey;
+use syneroym_sdk::{Publication, SyneroymClient};
 
 use super::*;
 
@@ -428,9 +429,16 @@ fn signed_export_record_sets_is_private_from_visibility() {
     for (v, expect_private) in
         [(Visibility::Private, true), (Visibility::Internal, true), (Visibility::Public, false)]
     {
-        let record =
-            signed_export_record(v, &svc_id, "did:key:zSubstrate", None, 9_999_999_999, &identity)
-                .unwrap();
+        let record = signed_export_record(
+            v,
+            &svc_id,
+            "did:key:zSubstrate",
+            None,
+            9_999_999_999,
+            &identity,
+            None,
+        )
+        .unwrap();
         assert_eq!(record.info.is_private, expect_private, "{v:?}");
     }
 }
@@ -456,6 +464,7 @@ fn a_record_out_file_round_trips_through_new_with_record() {
         Some("my-private-svc".to_string()),
         9_999_999_999,
         &identity,
+        None,
     )
     .unwrap();
 
@@ -466,4 +475,103 @@ fn a_record_out_file_round_trips_through_new_with_record() {
     let client =
         SyneroymClient::new_with_record(read_back, "http://127.0.0.1:9999".to_string()).unwrap();
     assert_eq!(client.service_id(), svc_id);
+}
+
+const MAILBOX_HOST: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+
+fn host_choice() -> MailboxChoice {
+    MAILBOX_HOST.parse().unwrap()
+}
+
+/// A mailbox record written with `--record-out` carries the mailbox field,
+/// and the key in it is the one derived from the signer.
+#[test]
+fn a_public_record_out_file_carries_the_mailbox_and_the_derived_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("svc.record.json");
+    let identity = Identity::generate().unwrap();
+    let svc_id = substrate::derive_did_key(&identity.public_key());
+
+    let publication = build_publication(
+        Visibility::Public,
+        Some(&identity),
+        &svc_id,
+        "did:key:zSubstrate",
+        None,
+        9_999_999_999,
+        Some(&path),
+        Some(&host_choice()),
+    )
+    .unwrap();
+
+    let read_back: SignedEndpointInfo =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(read_back.verify().is_ok());
+    let mailbox = read_back.info.mailbox.clone().expect("record names a mailbox");
+    assert_eq!(mailbox.service_id, MAILBOX_HOST);
+    let derived = MailboxSecretKey::derive_from_master(&identity);
+    assert_eq!(mailbox.key, derived.public_key());
+    match publication {
+        Publication::Public { mailbox_key: Some(key), .. } => {
+            assert_eq!(key.public_key(), derived.public_key());
+        }
+        other => panic!("expected a public publication with a key, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_deploy_without_a_mailbox_publishes_a_record_without_one() {
+    let identity = Identity::generate().unwrap();
+    let svc_id = substrate::derive_did_key(&identity.public_key());
+    let publication = build_publication(
+        Visibility::Public,
+        Some(&identity),
+        &svc_id,
+        "did:key:zSubstrate",
+        None,
+        9_999_999_999,
+        None,
+        None,
+    )
+    .unwrap();
+    match publication {
+        Publication::Public { record, mailbox_key } => {
+            assert!(record.info.mailbox.is_none());
+            assert!(mailbox_key.is_none());
+        }
+        other => panic!("expected a public publication, got {other:?}"),
+    }
+}
+
+#[test]
+fn mailbox_args_without_a_mailbox_are_always_fine() {
+    assert!(check_mailbox_args(None, Visibility::Private, false, false, false).is_ok());
+}
+
+#[test]
+fn a_mailbox_needs_a_master_or_an_identity_with_a_certificate() {
+    let host = host_choice();
+    let public = Visibility::Public;
+    assert!(check_mailbox_args(Some(&host), public, true, false, false).is_ok());
+    assert!(check_mailbox_args(Some(&host), public, false, true, true).is_ok());
+    let identity_alone = check_mailbox_args(Some(&host), public, false, true, false);
+    assert!(identity_alone.unwrap_err().to_string().contains("--instance-certificate"));
+    assert!(check_mailbox_args(Some(&host), public, false, false, false).is_err());
+}
+
+#[test]
+fn a_mailbox_needs_visibility_public() {
+    let host = host_choice();
+    for visibility in [Visibility::Internal, Visibility::Private] {
+        let err = check_mailbox_args(Some(&host), visibility, true, false, false).unwrap_err();
+        assert!(err.to_string().contains("--visibility public"), "{err}");
+    }
+}
+
+#[test]
+fn an_auto_mailbox_is_refused_for_now() {
+    let err =
+        check_mailbox_args(Some(&MailboxChoice::Auto), Visibility::Public, true, false, false)
+            .unwrap_err();
+    assert!(err.to_string().contains("not supported yet"), "{err}");
 }

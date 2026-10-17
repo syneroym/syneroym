@@ -76,8 +76,8 @@ async fn test_deploy_plan_path_traversal() {
         services: vec![PlannedService {
             service_id: "did:key:test".to_string(),
             logical_ref: "test/main".to_string(),
-            manifest: DeployManifest {
-                config: ServiceConfig {
+            manifest: DeployManifest::unpublished(
+                ServiceConfig {
                     env: vec![],
                     args: vec![],
                     custom_config: None,
@@ -89,14 +89,12 @@ async fn test_deploy_plan_path_traversal() {
                     assets: None,
                     visibility: None,
                 },
-                service_type: WitServiceType::Wasm(WasmManifest {
+                WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
                     hash: None,
                     interfaces: vec![],
                 }),
-                registry_certificate: None,
-                instance_certificate: None,
-            },
+            ),
             app_context: None,
         }],
     };
@@ -161,8 +159,8 @@ async fn test_deploy_plan_absolute_path() {
         services: vec![PlannedService {
             service_id: "did:key:test".to_string(),
             logical_ref: "test/main".to_string(),
-            manifest: DeployManifest {
-                config: ServiceConfig {
+            manifest: DeployManifest::unpublished(
+                ServiceConfig {
                     env: vec![],
                     args: vec![],
                     custom_config: None,
@@ -174,14 +172,12 @@ async fn test_deploy_plan_absolute_path() {
                     assets: None,
                     visibility: None,
                 },
-                service_type: WitServiceType::Wasm(WasmManifest {
+                WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Url("/etc/passwd".to_string()),
                     hash: None,
                     interfaces: vec![],
                 }),
-                registry_certificate: None,
-                instance_certificate: None,
-            },
+            ),
             app_context: None,
         }],
     };
@@ -251,8 +247,8 @@ async fn test_deploy_config_schema_rejection() {
     )
     .unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(r#"{"port": "8080"}"#.to_string()), // string instead of int
@@ -264,10 +260,8 @@ async fn test_deploy_config_schema_rejection() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let result = service
         .deploy("test_service".to_string(), manifest, &node_wide_caller("test-caller"))
@@ -340,8 +334,8 @@ async fn test_deploy_schema_symlink_escape_rejected() {
     let symlink_name = format!("test_schema_symlink_{}.json", std::process::id());
     std::os::unix::fs::symlink(&outside_schema, &symlink_name).unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(r#"{"port": 8080}"#.to_string()),
@@ -353,10 +347,8 @@ async fn test_deploy_schema_symlink_escape_rejected() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let result = service
         .deploy("symlink_schema_service".to_string(), manifest, &node_wide_caller("test-caller"))
@@ -422,8 +414,8 @@ async fn test_deploy_config_generation_rollback() {
     .unwrap();
 
     // Deliberately malformed WasmManifest source to cause a deployment failure
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(r#"{"key": "value"}"#.to_string()),
@@ -435,14 +427,12 @@ async fn test_deploy_config_generation_rollback() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
 
     let result = service
         .deploy("rollback_service".to_string(), manifest, &node_wide_caller("test-caller"))
@@ -549,8 +539,8 @@ async fn an_identical_redeploy_of_a_stopped_service_still_reinstalls_it() {
     let service = service_for_inline_tests(temp_dir.path()).await;
     let owner = node_wide_caller("owner");
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -562,14 +552,12 @@ async fn an_identical_redeploy_of_a_stopped_service_still_reinstalls_it() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     service.deploy("greeter-svc".to_string(), manifest.clone(), &owner).await.unwrap();
     let gen_after_first =
         service.storage_provider.get_latest_config_generation("greeter-svc").await.unwrap();
@@ -773,8 +761,8 @@ async fn a_half_failed_deploy_does_not_record_a_manifest_hash() {
     let service = service_for_inline_tests(temp_dir.path()).await;
     let owner = node_wide_caller("owner");
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -786,14 +774,12 @@ async fn a_half_failed_deploy_does_not_record_a_manifest_hash() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let result = service.deploy("half-failed-svc".to_string(), manifest, &owner).await;
     assert!(result.is_err());
 
@@ -814,8 +800,8 @@ async fn a_deploy_that_fails_after_the_gate_still_recorded_its_writer() {
     let service = service_for_inline_tests(temp_dir.path()).await;
     let owner = node_wide_caller("owner");
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -827,14 +813,12 @@ async fn a_deploy_that_fails_after_the_gate_still_recorded_its_writer() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let ctx = app_context("app-1", "frontend", vec![]);
     let result = service
         .deploy_with_context(
@@ -864,8 +848,8 @@ async fn restart_reloads_a_wasm_component_from_disk() {
     let service = service_for_inline_tests(temp_dir.path()).await;
     let owner = node_wide_caller("owner");
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -877,14 +861,12 @@ async fn restart_reloads_a_wasm_component_from_disk() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     service.deploy("greeter-restart-svc".to_string(), manifest, &owner).await.unwrap();
     assert!(service.app_sandbox_engine.is_deployed("greeter-restart-svc"));
 
