@@ -14,7 +14,7 @@ Read these before you change anything:
   simple English in comments, the 800-line file cap, the 100-line function
   cap, the module layout rule (`foo.rs` beside `foo/`, never `mod.rs` under
   `src/`), and no hard-coded ports in substrate tests.
-  **This plan names its decisions `C3-1` to `C3-14`. Those ids are for this
+  **This plan names its decisions `C3-1` to `C3-17`. Those ids are for this
   plan only. When a step says to write a comment "for the reason in C3-n",
   write the reason itself in the comment, never the id.**
 - `task.md` in this folder: §1 (shared parts), §2 items 5 and 6, §3 slice C3
@@ -51,12 +51,8 @@ Read these before you change anything:
   - `crates/app_orchestration/src/models/{service.rs,plan.rs}`,
     `compiler.rs`.
 
-**Branch.** C3 needs C2 (`crates/mailbox_format`). Today C2 is on
-`feat/m06d-c2-implementation` (pushed) and local `main` is still at
-`cec9f26b` (B3). Cut `feat/m06d-c3-implementation` from `main` **after** the
-C2 PR has merged (the serial order in task.md §4: one slice per PR, each PR
-merges before the next starts). If the owner wants to start earlier, cut it
-from `feat/m06d-c2-implementation` and rebase after the merge.
+**Branch.** Work on `feat/m06d-c3-implementation`. It was cut from `main` at
+`51421feb` (C2 merged, #310) and holds only this plan.
 
 ## 1. What C3 builds, in one paragraph
 
@@ -75,30 +71,37 @@ sender side, a new `resolve_peer` returns the record's mailbox field even
 when the receiver's substrate record has expired (K-5), and a small durable
 **peer record store** keeps the last signed record of each peer that has a
 mailbox, used when the registry cannot be reached (K-6). Nothing deposits,
-pulls or runs a mailbox yet: C4 to C6 do. The behaviour of every existing
-call stays the same.
+pulls or runs a mailbox yet: C4 to C6 do. No record has a mailbox before
+this slice, so the behaviour of every existing call stays the same. For a
+peer with a mailbox, a stored record may also route a direct call when the
+registry is down (C3-12).
 
 ## 2. Decisions this plan makes (check them before you start)
 
 Each fills a gap in task.md or the change doc (the gaps are listed in §6).
-None of them needs the owner, except where §6 says "owner check".
+The owner confirmed C3-1, C3-5 and C3-8 on 2026-10-17. C3-15 to C3-17 and
+the changes to C3-2, C3-8, C3-9, C3-11, C3-12 and C3-14 come from a review
+of the first version of this plan (§8).
 
 | # | Decision | Why |
 | --- | --- | --- |
 | C3-1 | **The mailbox secret is derived from the member master key**, not generated at random: `seed = HKDF-SHA256(salt = none, ikm = master.to_bytes(), info = b"syneroym:mailbox-key:v1")`, 32 bytes, then `MailboxSecretKey::from_seed(seed)`. New function `MailboxSecretKey::derive_from_master(master: &Identity) -> Self` in `crates/mailbox_format/src/keys.rs`. `MailboxSecretKey::generate` stays (tests use it). | K-2 needs the same key at every later deploy of a member. The master is already stored and backed up by both deployers (roymctl `identities/<name>.key`, supervisor `MasterVault`), so derivation needs **no new key file, no new vault row on the deployer side, and no new backup duty**, and members minted before C3 get a key too. "Made with the member master" (K-2) holds literally. HKDF is one-way, so a substrate that holds the mailbox secret learns nothing about the master. It is the same pattern as `derive_service_identity`. Cost: rotating the mailbox key needs a new `info` version (`v2`) and a new record; rotation is already deferred (backlog "Service mailbox: later improvements"). Record as a deviation (`D-C3-1`). |
-| C3-2 | **The deploy-call field.** WIT `deploy-manifest` gets `mailbox: option<mailbox-credentials>`, with `record mailbox-credentials { secret-key: string }` (z-base-32 seed, the `MailboxSecretKey::to_z32` form). C8 adds `child-token: option<string>` **to this record**. It is not added now. | A record, not a bare string, is the "room for the owner's child token" task.md asks for: C8 then changes only the few places that build `mailbox-credentials` (§3 Step 6 lists them), not the 82 places that build a `DeployManifest`. An unused field now would be dead code. It is in `deploy-manifest`, so `deploy` and `deploy-plan` both carry it. `renew-cert` does not: the key never changes. |
+| C3-2 | **The deploy-call field.** WIT `deploy-manifest` gets `mailbox: option<mailbox-credentials>`, with `record mailbox-credentials { secret-key: string }` (z-base-32 seed, the `MailboxSecretKey::to_z32` form). C8 adds `child-token: option<string>` **to this record**. It is not added now. **Child-token renewal (written down now for C8):** the owner signs the child token for the passport's whole remaining life, so a new token is needed only with a new passport, and it reaches the instance by an ordinary deploy (C8 adds the token to the deploy hash, so that deploy is not a no-op). If C8 finds it needs a renewal without a deploy, it adds a **new** control-plane call; it does not change `deploy-manifest` or `renew-cert`. | A record, not a bare string, is the "room for the owner's child token" task.md asks for: C8 then changes only the few places that build `mailbox-credentials` (§3 Step 7), not the 82 places that build a `DeployManifest`. An unused field now would be dead code. It is in `deploy-manifest`, so `deploy` and `deploy-plan` both carry it. `renew-cert` does not carry the mailbox key: that key never changes. The child token does expire (it never outlives the passport, task.md §2.6), hence the renewal rule, so the deploy call does not change twice (task.md §5). |
 | C3-3 | **Where the instance keeps the secret:** the service's own vault (`ServiceStore::write_secret`, AES-256-GCM under the service DEK, in the SQLCipher `state.db`), under the fixed name `syneroym.mailbox-secret`. Every name that starts with `syneroym.` is **reserved for the substrate**: the guest `vault.reveal` (WASM host and native host) and the operator RPC `security/set-secret` refuse it. New trait method `ServiceStore::delete_secret`. | It is the only encrypted per-service secret store (`endpoints.db`, which holds the instance certificate, is plaintext; §6 item 4). Today a guest can `reveal` **any** vault name, so without the reserved prefix a guest could read its own mailbox secret and a guest bug could leak it. The prefix also stops an operator from overwriting the key by hand. The change doc's "*Unverified:* ... whether the vault interface is the right place" is answered: the vault **storage** yes, the guest vault **interface** no. |
 | C3-4 | `EndpointInfo` gets `#[serde(default, skip_serializing_if = "Option::is_none")] pub mailbox: Option<EndpointMailbox>`, with `pub struct EndpointMailbox { pub service_id: String, pub key: MailboxPublicKey }` in `crates/core/src/dht_registry/types.rs`. `syneroym-core` gains a dependency on `syneroym-mailbox-format`. | `skip_serializing_if` keeps every record without a mailbox byte-identical. A typed key makes a malformed key a parse error at the signer, not at C5. `core` is not compiled into any guest (only `roym_web` uses it, as a dev-dependency), and `mailbox_format` depends only on `identity`, so there is no cycle and no guest cost. |
 | C3-5 | **Only a `public` member may have a mailbox.** `private` and `internal` are refused at four places: the manifest compiler, `roymctl svc deploy`, `roymctl app deploy`, and the substrate's deploy admission. Confirmed by the owner on 2026-10-17; mailboxes for private and internal services are a backlog item (§5 item 6). | K-7 says a private service has no mailbox field. An `internal` record is marked `is_private` (ADR-0018 §4) and must stay in the local registry, but the mailbox republishes the record (K-4, C4) to **its own** registry. That would leak it. So `internal` is refused too (the change doc says so in "Private and internal services"). See §6 item 3 for the `--record-out` sentence. |
 | C3-6 | **The substrate checks the pair at deploy.** With `manifest.mailbox = Some(c)`: `c.secret_key` parses; visibility is `public`; a registry certificate is present and its `info.mailbox` is `Some(m)` with `m.key == secret.public_key()`; an instance certificate is present. With `info.mailbox = Some` but `manifest.mailbox = None`: refused. | Each refused case is a deploy that cannot work: senders would seal to a key the instance cannot open, or the receiver could not `register` (M-3 needs the instance certificate). Failing at deploy is cheaper than a silent loss later. |
 | C3-7 | The deploy idempotency hash needs **no new input**: `stable_registry_certificate_for_hash` adds `&signed.info.mailbox`, and C3-6 makes the record's key equal to the secret's public key. The secret itself never enters the hash input. | A redeploy that changes the mailbox changes the record, so it is not skipped as a no-op. Hashing the secret would put a function of it into `service_deploy_facts.manifest_hash` for no gain. |
-| C3-8 | **Per-service manifest settings, outside `ServiceConfig`:** `ServiceSpec.mailbox: Option<ServiceId>` and `ServiceSpec.instance_cert_lifetime_hours: Option<u32>`, copied by the compiler to the same two fields on `PlannedService`. Both `#[serde(default, skip_serializing_if = "Option::is_none")]`. | Same reason as `schedule` (`service.rs:327-334`): `ServiceConfig` maps onto the substrate deploy manifest and its dedup hash, and the substrate needs neither value (the mailbox reaches it inside the signed record). They must be on the **plan** because the supervisor holds no manifest. Per service, not per member index: the manifest has no per-member level (§6 item 5). |
-| C3-9 | **Certificate lifetime (K-8).** Allowed range 1 to 720 hours (720 = the substrate's `MAX_INSTANCE_CERT_LIFETIME_SECS`, 30 days, `cert.rs:10`). roymctl `svc deploy --cert-lifetime-hours <N>` (default 24, the current value). `app deploy` and the supervisor use `svc.instance_cert_lifetime_hours`, else their current default (roymctl 24; supervisor `renewed_cert_expires_hours`, default 4). The supervisor renewal uses the same per-service value. | One lifetime source per member, read at first mint and at every renewal, so the two cannot disagree. The renewal moment already scales with the lifetime (last 25 %, `delegation.rs:36-46`). |
+| C3-8 | **Per-service manifest settings, outside `ServiceConfig`:** `ServiceSpec.mailbox: Option<MailboxChoice>` and `ServiceSpec.instance_cert_expires_hours: Option<u32>`, copied by the compiler to the same two fields on `PlannedService`. Both `#[serde(default, skip_serializing_if = "Option::is_none")]`. `MailboxChoice` is `Auto` or `Service(ServiceId)`, text form `"auto"` or a `did:key:` id (C3-14). **Per service, not per member: confirmed by the owner on 2026-10-17.** Step 11 changes the text of K-3 and K-8 to say "for each service". | Same reason as `schedule` (`service.rs:327-334`): `ServiceConfig` maps onto the substrate deploy manifest and its dedup hash, and the substrate needs neither value (the mailbox reaches it inside the signed record). They must be on the **plan** because the supervisor holds no manifest. The manifest has no per-member level (§6 item 5). `MailboxChoice` fixes the manifest and stored-plan format once, before C7 adds `auto`. The name `expires_hours` is the one the code already uses (`renewed_cert_expires_hours`, `identity certify-instance --expires-hours`, the SDK's `expires_hours`). |
+| C3-9 | **Certificate lifetime (K-8).** Allowed range 1 to 720 hours (720 = the substrate's `MAX_INSTANCE_CERT_LIFETIME_SECS`, 30 days, `cert.rs:10`). roymctl `svc deploy --cert-expires-hours <N>` (default 24, the current value). `identity certify-instance --expires-hours` gets the same 1-720 range. `app deploy` and the supervisor use `svc.instance_cert_expires_hours`, else their current default (roymctl 24; supervisor `renewed_cert_expires_hours`, default 4). The supervisor renewal uses the same per-service value. | One lifetime source per member, read at first mint and at every renewal, so the two cannot disagree. The renewal moment already scales with the lifetime (last 25 %, `delegation.rs:36-46`). One range for every command that issues an instance certificate: a value above 720 only fails later, at install. |
 | C3-10 | `certify_placed_members` returns a struct `CertifiedMembers { instance_certificates, registry_certificates, mailbox_keys }`; `ApplyRequest` and `map_deployment_plan_to_wit` take `members: &CertifiedMembers` in place of the two certificate maps. | One value instead of three parallel maps on every call. Each `ApplyRequest` literal changes two lines into one. `CertifiedMembers` derives `Default` for the "no masters" path. |
-| C3-11 | **`resolve_peer` is new; `resolve_iroh_addr` keeps its signature** and becomes a thin wrapper. `resolve_peer` reads the service record **without** `resolve = true`, keeps its `mailbox`, then looks up the substrate record. A failed substrate lookup is an error only when the record has no mailbox. | K-5. The relay path (`route_handler/io.rs:484`) and the four tests never need the mailbox, so they stay unchanged. `RegistryClient::lookup` is not changed. |
-| C3-12 | **Peer record store (K-6):** `crates/router/src/peer_records.rs`, one SQLite file `<storage.db_dir>/peer_records.db`, plaintext, one row per peer. It keeps **only service records that have a mailbox**. A newer record of that peer **without** a mailbox deletes the row. Rows past `not_after` are deleted when read and at open. A newer pkarr timestamp replaces an older one, never the reverse. | A stored record helps only to deposit; without a mailbox field it has no use, so storing every peer would grow the file for nothing. The timestamp rule is the registry's own rule (ADR-0020 §6), so a stale copy never wins. Plaintext like `endpoints.db`: records are public data. The contact list it reveals is noted in the backlog (§5). |
+| C3-11 | **`resolve_peer` is new; `resolve_iroh_addr` keeps its signature** and becomes a thin wrapper. `resolve_peer` reads the service record **without** `resolve = true`, keeps its `mailbox`, then looks up the substrate record. A failed substrate lookup is an error only when the record has no mailbox. **When the record has a mailbox, the substrate lookup is bounded** by `MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT` (3 s); on timeout `addr` is `None`. Without a mailbox, the lookup is not bounded (today's behaviour). | K-5. The relay path (`route_handler/io.rs:484`) and the four tests never need the mailbox, so they stay unchanged. `RegistryClient::lookup` is not changed. The bound: for a sleeping receiver the substrate record is gone, so the HTTP lookup fails and `lookup` falls back to the DHT (`client.rs:226-251`). With a 10 s HTTP timeout (`registry_http.rs:12`) and a DHT resolve, that can take many seconds on every call, and C5's "one direct attempt with a short timeout" (S-2) would wait behind it. C5 may tune the value. |
+| C3-12 | **Peer record store (K-6):** `crates/router/src/peer_records.rs`, one SQLite file `<storage.db_dir>/peer_records.db`, plaintext, one row per peer. It keeps **only service records that have a mailbox**. A newer record of that peer **without** a mailbox deletes the row. Rows past `not_after` are deleted when read and at open. A newer pkarr timestamp replaces an older one, never the reverse. **A stored record may route a direct call**: when the registry lookup fails, `resolve_peer` continues with the stored record's `substrate_id` like a fresh one. | A stored record helps mainly to deposit; without a mailbox field it has no use there, so storing every peer would grow the file for nothing. The timestamp rule is the registry's own rule (ADR-0020 §6), so a stale copy never wins. Routing a direct call from it is safe: the record is signed and inside its `not_after`, the substrate lookup still gives the address, and the connection handshake still checks the receiver's instance certificate; a substrate the member left refuses the call. Refusing it would make a reachable peer unreachable only because the registry is down. Plaintext like `endpoints.db`: records are public data. The contact list it reveals is noted in the backlog (§5). |
 | C3-13 | `ProxyRouter` gets the store through a new builder `with_peer_records(Arc<PeerRecordStore>)` (like `with_outbox`), built in `RouteHandler::build_proxy` from `config.storage.db_dir`. A failure to open it logs a warning and leaves it `None`. | No constructor change (16+ test sites). The store helps only offline peers; it must not stop a node from starting. |
-| C3-14 | `roymctl svc deploy --mailbox auto` and `app deploy --mailbox <name>=auto` fail with "`auto` is not supported yet; give the mailbox service id". Any other value must be a `did:key:` id. | `auto` needs the registry list (C7). Parsing the word now gives a clear message instead of "not a DID". |
+| C3-14 | **`auto` is parsed everywhere, refused until C7.** `MailboxChoice::from_str("auto")` is `Auto`; any other value must be a `did:key:` id. In C3 `Auto` is refused with "`auto` is not supported yet; give the mailbox host's node DID" at three places: the manifest compiler, `roymctl svc deploy`, and `certify_placed_members` (defence in depth). | `auto` needs the registry list (C7). The manifest needs it too: the supervisor has no command line. With the type in place now, C7 changes no stored format and no clap type; it removes the refusals and adds the resolution. Task.md C7 gets the rule that `auto` is resolved once and pinned in the stored plan (§3 Step 11). |
+| C3-15 | **The record's `mailbox.service_id` is the mailbox host's node DID.** The mailbox service is reached on interface `mailbox` of that node. | Node-level native interfaces are registered under the node's own DID (`orchestrator`, `security`, the supervisor; `crates/router/src/call_dedup.rs:170-190`), and ADR-0015 A10 names the passport resource `substrate:<host node did>/mailbox`. Deciding it now fixes the record format before C4, which task.md requires, and lets the CLI help say what to type. C4 must register its native service so. |
+| C3-16 | **ADR-0026 amendment A2** records the key derivation: the mailbox key is derived from the member master with HKDF-SHA256 and the fixed `info` `syneroym:mailbox-key:v1`; any holder of the master can derive it again; rotation means a new `info` version and a new signed record. The reserved vault prefix goes into the guest contract (`vault.wit` doc comment) and the architecture doc, not into an ADR. | The derivation is pinned forever and changes ADR-0026 Decision 4 ("the deployer creates a decrypt-only key"), like C2's lasting decision went into A1. The reserved prefix is an interface rule; its home is the interface it limits. |
+| C3-17 | `roymctl registry register` gets `--mailbox <node-did>` (key derived from the signing identity, as in `svc deploy`). Its help says that a record signed without `--mailbox` has no mailbox, and that publishing it replaces a record that had one. | The command signs a fresh, newer record (`registry.rs:69`). Without the flag, an operator could not re-register a service that has a mailbox without removing it, and senders would then delete their stored row (C3-12). A lookup-and-warn would need a registry round trip in an offline signing tool. |
 
 ## 3. Step-by-step changes
 
@@ -205,9 +208,9 @@ pub struct EndpointMailbox {
    `crates/control_plane/src/service/orchestration/tests/helpers.rs:1004`,
    `crates/community_registry/src/registry/tests.rs` (8),
    `crates/coordinator_iroh/tests/multi_hop_relay.rs` (2).
-   `tests/perf` is outside the workspace build graph only if the root
-   `Cargo.toml` excludes it; check, and update it either way so it still
-   builds.
+   `tests/perf` is a workspace member (root `Cargo.toml:3`), so its five
+   sites must be updated. A second count by the plan review found 57
+   literals, not 53: the grep is the source of truth, update every hit.
 4. `crates/control_plane/src/service/orchestration/types.rs:38-55`
    (`stable_registry_certificate_for_hash`): add `&signed.info.mailbox` as
    the last tuple element, and add one sentence to its doc: the mailbox is
@@ -257,8 +260,8 @@ records by name, re-export `MailboxCredentials` the same way.
 **Every `DeployManifest { .. }` literal gets `mailbox: None`** (82 literals
 in 33 files; find with
 `grep -rn 'DeployManifest {' --include='*.rs' crates apps | grep -v '\-> DeployManifest {'`).
-Production: `crates/sdk/src/client/orchestrator.rs:60,102,142` (the wasm
-one changes for real in Step 8), `crates/sdk/src/mapper.rs:393` (changes
+Production: `crates/sdk/src/client/orchestrator.rs:60,102,142` (all
+three change for real in Step 8.6, through `Publication::split`), `crates/sdk/src/mapper.rs:393` (changes
 for real in Step 7), `crates/sandbox_wasm/benches/{data_layer_bench.rs,abac_bench.rs}`.
 Tests: `crates/control_plane/src/service/orchestration/tests/*.rs` and
 `crates/control_plane/src/service/tests.rs` (52), and 20 integration-test
@@ -467,26 +470,45 @@ match validated.mailbox_key:
 
 ### Step 6 — per-service settings in the app model (`crates/app_orchestration`)
 
-1. `models/service.rs` `ServiceSpec` (:298-343), after `topology_visibility`:
+1. `models/service.rs`: a new type, before `ServiceSpec`:
 
 ```rust
-    /// The mailbox service of every member of this service (ADR-0026).
-    /// Each member still has its own mailbox key, derived from its own
-    /// master. Only a `public` service may have one. Lives here and on
+/// Which mailbox a service uses (ADR-0026). Text form: `"auto"`, or the
+/// mailbox host's node DID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub enum MailboxChoice {
+    /// Pick one from the registry's list of open mailboxes.
+    Auto,
+    /// This mailbox host.
+    Service(ServiceId),
+}
+```
+
+   with `FromStr` (`"auto"` → `Auto`, else `ServiceId::try_new`),
+   `Display`, `From<MailboxChoice> for String` and `TryFrom<String>`, the
+   same pattern as `MailboxPublicKey` in `crates/mailbox_format/src/keys.rs`.
+   Re-export it where `ServiceSpec` is re-exported. Then in `ServiceSpec`
+   (:298-343), after `topology_visibility`:
+
+```rust
+    /// The mailbox of every member of this service (ADR-0026). Each
+    /// member still has its own mailbox key, derived from its own master.
+    /// Only a `public` service may have one. Lives here and on
     /// `PlannedService`, not in `ServiceConfig`: the substrate learns the
     /// mailbox from the signed record, not from its deploy manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mailbox: Option<ServiceId>,
+    pub mailbox: Option<MailboxChoice>,
     /// Lifetime of each issued instance certificate, in hours, for every
     /// member of this service. Absent means the deployer's default. A long
     /// value suits a substrate that sleeps (a phone); revocation stays the
     /// main control. 1 to 720.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_cert_lifetime_hours: Option<u32>,
+    pub instance_cert_expires_hours: Option<u32>,
 ```
 
    Add a constant in the same file:
-   `pub const MAX_INSTANCE_CERT_LIFETIME_HOURS: u32 = 720;` with a doc line
+   `pub const MAX_INSTANCE_CERT_EXPIRES_HOURS: u32 = 720;` with a doc line
    that it equals the substrate's install limit (30 days).
 2. `models/plan.rs` `PlannedService` (:22-73): the same two fields, with
    docs "Cloned from `ServiceSpec.<field>`; the supervisor holds no
@@ -496,20 +518,22 @@ match validated.mailbox_key:
    (`compiler.rs:67-112`), add a check over the manifest services:
    - `mailbox.is_some()` and `config.visibility != Visibility::Public` →
      error naming the service and its visibility.
-   - `instance_cert_lifetime_hours` outside `1..=MAX_INSTANCE_CERT_LIFETIME_HOURS`
+   - `mailbox == Some(MailboxChoice::Auto)` → the C3-14 error.
+   - `instance_cert_expires_hours` outside `1..=MAX_INSTANCE_CERT_EXPIRES_HOURS`
      → error naming the service and the range.
    Call it wherever `validate_plan_visibility` is called.
 5. **Every `ServiceSpec { .. }` and `PlannedService { .. }` literal gets
-   `mailbox: None, instance_cert_lifetime_hours: None`.** `ServiceSpec`:
-   about 23 literals in 14 files (`grep -rn 'ServiceSpec {' crates apps`).
-   `PlannedService`: about 37 in 17 files (`grep -rn 'PlannedService {' crates apps`).
+   `mailbox: None, instance_cert_expires_hours: None`.** `ServiceSpec`:
+   22 literals (`grep -rn 'ServiceSpec {' crates apps`).
+   `PlannedService`: 36 literals (`grep -rn 'PlannedService {' crates apps`).
 6. Tests in `crates/app_orchestration/src/compiler/tests.rs`:
    - both fields reach every member of a `replicas = 2` service;
    - a manifest without them compiles to a plan whose JSON has neither key;
    - `mailbox` on an `internal` and on a `private` service is refused;
+   - `mailbox = "auto"` parses but is refused by the compiler;
    - lifetime `0` and `721` are refused, `720` is accepted;
    - a TOML manifest with `mailbox = "did:key:..."` and
-     `instance_cert_lifetime_hours = 168` parses (in `models/tests.rs`).
+     `instance_cert_expires_hours = 168` parses (in `models/tests.rs`).
 
 ### Step 7 — SDK: records, certificates and keys per member (`crates/sdk`)
 
@@ -545,14 +569,18 @@ pub struct CertifiedMembers {
      Per service:
 
 ```text
-expires_hours = svc.instance_cert_lifetime_hours.map_or(default_expires_hours, u64::from)
+expires_hours = svc.instance_cert_expires_hours.map_or(default_expires_hours, u64::from)
 cert = certify_instance(client, master, svc.service_id, expires_hours)
-mailbox = svc.mailbox.as_ref().map(|mailbox_id| {
-    let key = MailboxSecretKey::derive_from_master(master);
-    let route = EndpointMailbox { service_id: mailbox_id.to_string(), key: key.public_key() };
-    members.mailbox_keys.insert(svc.service_id.clone(), key);
-    route
-})
+mailbox = match &svc.mailbox {
+    None => None,
+    Some(MailboxChoice::Auto) => bail!("service '{}' has an unresolved `auto` mailbox", svc.logical_ref),
+    Some(MailboxChoice::Service(host)) => {
+        let key = MailboxSecretKey::derive_from_master(master);
+        let route = EndpointMailbox { service_id: host.to_string(), key: key.public_key() };
+        members.mailbox_keys.insert(svc.service_id.clone(), key);
+        Some(route)
+    }
+}
 record = member_registry_record(visibility, service_id, substrate_id, master, not_after, mailbox)
 ```
 
@@ -600,58 +628,79 @@ mailbox: ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredenti
 1. New args in `SvcCommands::Deploy`:
 
 ```rust
-        /// Mailbox service for this service (ADR-0026). Needs
-        /// `--visibility public` and `--master` or `--identity`.
-        #[arg(long, value_parser = parse_mailbox_choice)]
-        mailbox: Option<ServiceId>,
+        /// The mailbox host's node DID (ADR-0026). Needs
+        /// `--visibility public`, and `--master` (or `--identity` with
+        /// `--instance-certificate`).
+        #[arg(long)]
+        mailbox: Option<MailboxChoice>,
         /// Lifetime of the instance certificate `--master` issues, in
         /// hours (1 to 720). Use a long value for a substrate that sleeps.
         #[arg(long, default_value_t = 24, conflicts_with = "instance_certificate",
               value_parser = clap::value_parser!(u32).range(1..=720))]
-        cert_lifetime_hours: u32,
+        cert_expires_hours: u32,
 ```
 
-   `parse_mailbox_choice(s: &str) -> Result<ServiceId, String>`: `"auto"` →
-   the C3-14 message; else `ServiceId::try_new(s)` with its error text.
-   Put it in `commands/svc/deploy.rs` (or a small shared
-   `commands/mailbox_arg.rs` if `app deploy` uses it too — it does, so
-   make it shared: `apps/roymctl/src/commands/mailbox_arg.rs`, declared in
-   `commands.rs`).
+   clap parses `MailboxChoice` through its `FromStr`. `svc deploy` refuses
+   `Auto` with the C3-14 message in its checks (8.3). The `app deploy`
+   parser (8.7) lives in a new `apps/roymctl/src/commands/mailbox_arg.rs`,
+   declared in `commands.rs`.
+   **`identity certify-instance`** (`commands/identity.rs:113-114`): add
+   `value_parser = clap::value_parser!(u64).range(1..=720)` to its
+   `expires_hours` (C3-9). `certify-signing` (:130-131) is a different
+   certificate scope; leave it.
 2. `handle_deploy` already takes 20 parameters with
    `#[allow(clippy::too_many_arguments)]`. Do not add two more: group the
    publication-related ones that `build_publication` and
    `resolve_instance_cert` use (`nickname`, `visibility`, `record_out`,
    `master`, `instance_certificate`, plus the new `mailbox` and
-   `cert_lifetime_hours`) into a `struct PublicationArgs` built in
+   `cert_expires_hours`) into a `struct PublicationArgs` built in
    `svc.rs` at the dispatch. If that grows the change too much, add the two
    parameters and keep the existing `allow` — but no new suppression.
-3. `require_stated_visibility_if_signable` (:67-86) or a new check right
-   after it: `--mailbox` without a signer → error "--mailbox needs
-   --master or --identity: the mailbox key is derived from the service's
-   master"; `--mailbox` with a visibility other than `public` → error
-   (C3-5 reason, shortened).
+3. A new check right after `require_stated_visibility_if_signable`
+   (:67-86), `fn check_mailbox_args(...) -> anyhow::Result<()>`:
+   - `Auto` → the C3-14 error.
+   - `--mailbox` needs **both** a signer and an instance certificate,
+     because the substrate refuses a mailbox without a certificate (C3-6)
+     and the key is derived from the signer. Accept `--master` (it gives
+     both), or `--identity` **with** `--instance-certificate`. Anything
+     else → error "--mailbox needs --master, or --identity with
+     --instance-certificate: the mailbox key is derived from the
+     service's master, and the receiver needs an instance certificate".
+   - `--mailbox` with a visibility other than `public` → error (C3-5
+     reason, shortened).
 4. `signed_export_record` (:435-455) gains `mailbox: Option<EndpointMailbox>`
    and sets the field. `build_publication` (:102-154) computes, when
    `--mailbox` is given:
    `key = MailboxSecretKey::derive_from_master(signer)`,
    `route = EndpointMailbox { service_id, key: key.public_key() }`,
-   passes `Some(route)` to `signed_export_record`, and returns the key with
-   the publication so `handle_deploy` can put it into the manifest. The
+   passes `Some(route)` to `signed_export_record`, and returns
+   `Publication::Public { record, mailbox_key: Some(key) }` (8.6). The
    `--record-out` file therefore carries the field (K-7, last sentence).
-5. `resolve_instance_cert` (:159-195): use `cert_lifetime_hours` in place
+5. `resolve_instance_cert` (:159-195): use `cert_expires_hours` in place
    of the private `DEFAULT_INSTANCE_CERT_EXPIRES_HOURS` const (:25); delete
    the const if nothing else uses it.
-6. SDK client: `DeploySvcOptions` (`crates/sdk/src/types.rs`) gains
-   `pub mailbox: Option<MailboxSecretKey>`; `deploy_svc_wasm_with_options`
-   (`crates/sdk/src/client/orchestrator.rs:54-79`) maps it into
-   `DeployManifest.mailbox`. `deploy_svc_tcp` (:97-117) and
-   `deploy_container` (:137-163) take no options struct today: give both
-   the same `mailbox` handling **only if** their signatures can take it
-   without a new positional parameter chain; otherwise make roymctl
-   refuse `--mailbox` with `--tcp` and `--image` ("not supported for tcp
-   and container services yet") and record that in the backlog (§5).
-   Prefer supporting all three; check how `--master` reaches tcp and
-   container deploys today and follow the same path.
+6. SDK client: **the key travels inside `Publication`**, which all three
+   deploy functions already take (`crates/sdk/src/client/orchestrator.rs:23-79`
+   wasm, :90-117 tcp, :128-163 container). So wasm, tcp and container
+   services all get the mailbox with no new parameter. In
+   `crates/sdk/src/types.rs:38-69`:
+   - `Publication::Public(SignedEndpointInfo)` becomes
+     `Publication::Public { record: SignedEndpointInfo, mailbox_key: Option<MailboxSecretKey> }`.
+     Only `Public` gets it (C3-5). Construction sites (4 files):
+     `apps/roymctl/src/commands/svc/deploy.rs`,
+     `crates/sdk/src/tests.rs`, `crates/substrate/tests/service_visibility_e2e.rs`,
+     `crates/substrate/tests/record_signing_e2e.rs` (`grep -rn 'Publication::Public'`).
+   - `split()` returns a small struct in place of the tuple:
+     `PublicationParts { visibility, registry_certificate: Option<String>, mailbox: Option<MailboxCredentials> }`.
+     Its three callers are the three deploy functions; each sets
+     `DeployManifest.mailbox` from it.
+   - `Publication` derives `PartialEq, Eq`, and `MailboxSecretKey` has
+     neither. Check with `grep -rn 'Publication' crates apps` whether
+     anything but tests compares two `Publication`s. If only tests do,
+     drop the two derives and fix those tests to match on the variant.
+     If production code does, implement `PartialEq` by hand, comparing
+     `mailbox_key` by its public key.
+   `DeploySvcOptions` does not change.
 
 **`app deploy`** (`commands/app.rs:131-160`, dispatch :257-279,
 `app/deploy.rs:609-725`):
@@ -664,11 +713,13 @@ mailbox: ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredenti
         /// Overrides the manifest's `mailbox` for that service. Needs
         /// `--mint-masters`.
         #[arg(long = "mailbox", value_parser = parse_service_mailbox, requires = "mint_masters")]
-        mailboxes: Vec<(String, ServiceId)>,
+        mailboxes: Vec<(String, MailboxChoice)>,
 ```
 
    `parse_service_mailbox` in `commands/mailbox_arg.rs`: split once on
-   `=`, empty name → error, value through `parse_mailbox_choice`.
+   `=`, empty name → error, value through `MailboxChoice::from_str`. `auto`
+   passes the parser and is refused by the compiler (C3-14), so C7 changes
+   nothing here.
 8. Apply the overrides to the parsed manifest **before** compiling: in
    `app/deploy.rs`, where the manifest is loaded or auto-generated
    (:214-272), set `manifest.services[name].mailbox = Some(id)`; an unknown
@@ -676,6 +727,12 @@ mailbox: ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredenti
    applies C3-5. A `.wasm` path manifest has one service: its generated
    name is the one to use; say so in the arg help if the name is not
    obvious (read `deploy.rs:214-256`).
+   **Without `--mint-masters`, refuse a manifest that names a mailbox or a
+   certificate lifetime** for any service: nothing would sign the record
+   or issue the certificate, so the value would be silently unused. Error:
+   "the manifest sets `mailbox` (or `instance_cert_expires_hours`) for
+   '<name>'; deploy with --mint-masters". Check after the overrides are
+   applied and before compiling.
 9. `member_identity.rs:160-220` `substitute_and_certify_members`: call
    `certify_placed_members(..., DEFAULT_INSTANCE_CERT_EXPIRES_HOURS)` and
    return `(DeploymentPlan, CertifiedMembers)`. Its callers
@@ -685,9 +742,9 @@ mailbox: ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredenti
 10. `ApplyRequest` at `app/deploy.rs:687-708`: `members: &members`.
 11. Tests:
     - `apps/roymctl/tests/cli_args.rs`: `svc deploy --help` lists
-      `--mailbox` and `--cert-lifetime-hours`; `svc deploy --mailbox auto`
-      fails with "not supported yet"; `--mailbox not-a-did` fails;
-      `--cert-lifetime-hours 0` and `721` fail; `app deploy --help` lists
+      `--mailbox` and `--cert-expires-hours`; `svc deploy --mailbox auto`
+      (with the other required flags) fails with "not supported yet"; `--mailbox not-a-did` fails;
+      `--cert-expires-hours 0` and `721` fail; `app deploy --help` lists
       `--mailbox`; `app deploy --mailbox x=did:key:...` without
       `--mint-masters` fails (clap `requires`).
     - `apps/roymctl/src/commands/svc/tests.rs`: `signed_export_record`
@@ -697,7 +754,25 @@ mailbox: ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredenti
     - `apps/roymctl/src/commands/mailbox_arg.rs` sibling tests for both
       parsers.
     - `apps/roymctl/src/commands/app/tests.rs`: an override for an unknown
-      service name is refused; an override reaches the compiled plan.
+      service name is refused; an override reaches the compiled plan; a
+      manifest `mailbox` without `--mint-masters` is refused; a manifest
+      `instance_cert_expires_hours` without `--mint-masters` is refused.
+    - `svc/tests.rs` for `check_mailbox_args`: `--identity` alone is
+      refused; `--identity` with `--instance-certificate` is accepted;
+      `--master` is accepted; no signer is refused; `auto` is refused.
+    - `cli_args.rs`: `identity certify-instance --expires-hours 721` fails.
+
+**`registry register`** (`commands/registry.rs:55-95`, C3-17):
+
+12. Add `#[arg(long)] mailbox: Option<MailboxChoice>` with help "The
+    mailbox host's node DID. A record signed without it has no mailbox;
+    publishing it replaces a record that had one." Refuse `Auto` (C3-14)
+    and refuse it with `--private` (C3-5). With a value, set
+    `mailbox: Some(EndpointMailbox { service_id, key:
+    MailboxSecretKey::derive_from_master(&identity).public_key() })` in the
+    literal at :69. A unit test for the record it builds, if the command
+    body can be split into a pure "build record" function (do so; keep the
+    HTTP post in the handler).
 
 ### Step 9 — supervisor (`crates/app_supervisor`)
 
@@ -710,14 +785,14 @@ mailbox: ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredenti
    `PlannedService` once (the rotation lookup at :184-188 already does
    `plan.services.iter().find(...)`; move that lookup to the top and reuse
    it), then
-   `let hours = svc.and_then(|s| s.instance_cert_lifetime_hours).map_or(self.renewed_cert_expires_hours, u64::from);`
+   `let hours = svc.and_then(|s| s.instance_cert_expires_hours).map_or(self.renewed_cert_expires_hours, u64::from);`
    and pass `hours` to `certify_instance_via_actor`.
 3. The node-wide `renewed_cert_expires_hours` test that requires it to be
    below 24 (`crates/core/src/config/tests.rs:105-108`) stays: it is about
    the default. A per-service value above it is allowed by design (C3-9).
 4. Tests:
    - `service/tests/renewal.rs`: a member whose plan entry has
-     `instance_cert_lifetime_hours = Some(168)` is renewed with a 168-hour
+     `instance_cert_expires_hours = Some(168)` is renewed with a 168-hour
      certificate (read `expires_at_secs - issued_at_secs` from the
      certificate the fake actor received in `renew_cert`); a member
      without it keeps `renewed_cert_expires_hours`.
@@ -832,16 +907,27 @@ record = match registry_client.lookup(service_id, false).await {
 mailbox = record.info.mailbox.clone()
 mechanisms = match record.info.endpoint_type {
     Substrate => record.info.mechanisms,
-    Service   => match registry_client.lookup(&record.info.substrate_id, false).await {
-        Ok(sub)                     => sub.info.mechanisms,
-        Err(e) if mailbox.is_some() => { debug!(..); Vec::new() }
-        Err(e)                      => return Err(e),
-    },
+    Service if mailbox.is_none() => registry_client.lookup(&record.info.substrate_id, false).await?.info.mechanisms,
+    Service => {
+        // A receiver with a mailbox may be asleep, and then its substrate
+        // record is gone and the lookup falls back to the DHT. Bound it,
+        // so a sender reaches the mailbox quickly.
+        match time::timeout(MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT,
+                            registry_client.lookup(&record.info.substrate_id, false)).await {
+            Ok(Ok(sub)) => sub.info.mechanisms,
+            Ok(Err(e))  => { debug!(..); Vec::new() }
+            Err(_)      => { debug!("substrate lookup timed out"); Vec::new() }
+        }
+    }
 }
 addr = iroh_addr_from_mechanisms(mechanisms)?   // Option; Err only for a bad Iroh entry
 Ok(ResolvedPeer { addr, mailbox })
 ```
 
+   `pub const MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);`
+   in `net_iroh.rs`, with a doc line: how long a sender waits for the
+   address of a peer that has a mailbox before it treats the peer as
+   asleep.
    `iroh_addr_from_mechanisms(Vec<EndpointMechanism>) -> anyhow::Result<Option<EndpointAddr>>`
    is the current loop body of `resolve_iroh_addr` (:158-170) moved into a
    private function. `resolve_iroh_addr` becomes:
@@ -890,15 +976,24 @@ self.invoke_remote_at(&addr, req).await
    `peer.mailbox` is not used yet. Do not write a comment that names a
    later slice; if a comment is needed, say "a peer with a mailbox but no
    address cannot be called directly".
-5. `crates/router/src/route_handler.rs:229` `build_proxy`: after the
-   `ProxyRouter::new(..)` at :287,
+5. `crates/router/src/route_handler.rs:229` `build_proxy`. The builder
+   chain is inside `Arc::new(...)` (:286-299), so the store cannot be added
+   after it. Build the `ProxyRouter` first, then wrap it:
 
 ```text
+let mut proxy = ProxyRouter::new(..same seven arguments..)
+    .with_dedup_guard(dedup_guard.clone())
+    .with_outbox(outbox.clone())
+    .with_sagas(sagas.clone());
 match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_secs()) {
     Ok(store) => proxy = proxy.with_peer_records(Arc::new(store)),
     Err(e)    => warn!("peer record store unavailable, offline peers cannot be found by mailbox: {e}"),
 }
+let proxy = Arc::new(proxy);
 ```
+
+   Put the `match` in a small helper (`fn open_peer_records(config) ->
+   Option<Arc<PeerRecordStore>>`) if `build_proxy` gets long.
 
    Use the existing "now in seconds" helper of the router if there is one
    (`grep -rn 'fn now_secs\|fn unix_now' crates/router/src`).
@@ -918,6 +1013,17 @@ match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_
      `http://127.0.0.1:<port>` from a `TcpListener::bind("127.0.0.1:0")`
      that is dropped before the call) returns the stored record's mailbox
      and `addr: None`; with no store it errs.
+   - The bound: `resolve_peer` for a record with a mailbox whose substrate
+     lookup hangs returns `addr: None` within about
+     `MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`. The registry for this test is a
+     small `tokio` task on a `TcpListener::bind("127.0.0.1:0")` (no new
+     dependency: it reads the request line and, for `GET /lookup/<service
+     id>`, writes a plain `HTTP/1.1 200 OK` response with
+     `Content-Type: application/json`, `Content-Length` and the signed
+     record; for `GET /lookup/<substrate id>` it keeps the socket open and
+     never answers). Assert the call returns within 6 s (the HTTP client
+     timeout is 10 s, so a missing bound fails the test). Do not use
+     `tokio::time::pause`: the HTTP client's own timer may not follow it.
    - Substrate integration test (new file
      `crates/substrate/tests/mailbox_record_e2e.rs`, using
      `SubstrateTestContext` / `common::alloc_ports`, nothing hard-coded):
@@ -932,9 +1038,24 @@ match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_
         `addr: None` and the mailbox; `resolve_iroh_addr` errs (K-5).
      4. A deploy of a `private` service with a mailbox key is refused
         (K-7).
-     5. `--cert-lifetime-hours 168`-equivalent deploy: the service's
+     5. `--cert-expires-hours 168`-equivalent deploy: the service's
         status reports `instance_certificate_expires_at - issued_at ==
         168 * 3600` (K-8).
+     6. **A stored record routes a direct call** (C3-12): fill a
+        `PeerRecordStore` with `remember` of a service record whose
+        `substrate_id` is the running node and that has a mailbox, but
+        that was **never registered**. `resolve_peer(&client, Some(&store), id)`
+        returns `addr: Some(<the node's address>)`; with `None` for the
+        store it errs.
+   - **Wiring** (a second substrate test in the same file, two nodes,
+     reusing the two-node proxied-call setup of
+     `crates/substrate/tests/multi_substrate_placement_e2e.rs` or
+     `proxy_outbox_e2e.rs`): node B hosts a public service with a mailbox;
+     node A makes one proxied call to it. Afterwards
+     `PeerRecordStore::open(<node A db_dir>/peer_records.db).recall(id)`
+     returns that record. This proves `build_proxy` attaches the store and
+     `invoke_remote` remembers records. (Opening the file while node A
+     runs is fine: SQLite WAL allows a second reader.)
 
 ### Step 11 — docs in the same PR
 
@@ -945,14 +1066,25 @@ match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_
      check (C3-6); per-service, not per-member, settings and the 1-720
      range (C3-8, C3-9); `resolve_peer` beside an unchanged
      `resolve_iroh_addr` (C3-11); the store keeps only records with a
-     mailbox, plaintext (C3-12); "relocation" means any later deploy of the
-     member, because the supervisor does not relocate (§6 item 1).
+     mailbox, plaintext, and may route a direct call (C3-12); the bounded
+     substrate lookup (C3-11); `MailboxChoice` with `auto` refused (C3-14);
+     the mailbox `service_id` is the host node DID (C3-15); ADR-0026 A2
+     (C3-16); `registry register --mailbox` (C3-17); "relocation" means
+     any later deploy of the member, because the supervisor does not
+     relocate (§6 item 1).
    - Design "Mailbox key": replace the "*Unverified:*" sentence with the
      answer (deploy field `mailbox`, service vault under a reserved name).
    - `## Open questions`: remove the first item (answered); keep the rest.
    - K-7: change the last sentence to "A public record exported with
      `--record-out` carries the field like any other record." The Design
      paragraph "Private and internal services" stays as it is.
+   - K-3: "`app deploy` takes a mailbox for each member" becomes "for each
+     service (all members of a service share the mailbox; each has its
+     own key)". K-8: "for each member" becomes "for each service". The
+     owner approved this on 2026-10-17 (C3-8). Without these edits the
+     criteria would be closed while not met as written.
+   - Design "Service record and its life": the `service_id` of the
+     mailbox field is the mailbox host's node DID (C3-15).
    - `## Tasks`: tick "Record field, mailbox key creation and delivery,
      per-member certificate lifetime, `roymctl svc deploy` and `app deploy`
      options" (note "`auto` waits for the registry list" after it), and in
@@ -965,15 +1097,27 @@ match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_
    Decisions `D-C3-1` to `D-C3-n` are in the mailbox change doc." line;
    in §5 the row "The deploy call changes twice ..." says "designed in
    S0"; change it to "designed in C3 (`mailbox-credentials` record)". Add
-   to C4: "the mailbox service id in a record is a `did:key` resolvable by
-   an ordinary lookup (decide whether it is the host node DID, see the
-   `substrate:<node did>/mailbox` resource of ADR-0015 A10)". Add to C6:
+   to C4: "the mailbox service id in a record is the mailbox host's node
+   DID (`D-C3-n`); register the native service on interface `mailbox`
+   under the node DID, like `orchestrator` and the supervisor". Add to C5:
+   "`resolve_peer` bounds the substrate lookup of a peer with a mailbox
+   (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s); the 'one direct attempt with
+   a short timeout' of S-2 comes after it; tune both together". Add to
+   C7: "`MailboxChoice::Auto` already parses in the manifest, `svc deploy`
+   and `app deploy`; remove the three refusals. Resolve `auto` **once** and
+   pin the result in the stored plan (roymctl before `apply_plan`; the
+   supervisor at `submit`), because a different mailbox later means a new
+   record, and messages waiting at the old mailbox are lost". Add to C6:
    "read the key with `ControlPlaneService::mailbox_key`; pull only for a
    service whose stored record names a mailbox **and** whose key is
    present; the vault needs the KEK, so the pull waits for it after a
    restart". Add to C8: "add `child-token: option<string>` to the WIT
    record `mailbox-credentials`; the only builders are `map_planned_service`
-   and `deploy_svc_*` in `crates/sdk`".
+   and `Publication::split` in `crates/sdk`. Renewal: the child token
+   lives as long as the passport; a new one arrives by an ordinary deploy,
+   with the token in the deploy hash; a renewal without a deploy would be
+   a new control-plane call, not a change to `deploy-manifest` or
+   `renew-cert` (C3-2)".
 3. `status.md`: C3 row with evidence (test files and counts, verify
    result), like the C2 row.
 4. Living docs (the AGENTS.md close-out): 
@@ -983,14 +1127,37 @@ match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_
      `syneroym.` are not visible); the sender lookup (stored peer records
      in `peer_records.db`).
    - `docs/developer-guide.md`: the manifest fields `mailbox` and
-     `instance_cert_lifetime_hours`; the new roymctl flags; the new file
-     `peer_records.db` under `storage.db_dir`.
+     `instance_cert_expires_hours`; the new roymctl flags
+     (`svc deploy --mailbox --cert-expires-hours`, `app deploy --mailbox`,
+     `registry register --mailbox`, the range of `identity certify-instance
+     --expires-hours`); the new file `peer_records.db` under
+     `storage.db_dir`. **Fix `developer-guide.md:703-704`**: it says
+     `renewed_cert_expires_hours` is the lifetime of "EVERY" certificate
+     the supervisor mints; it becomes the default for services without
+     `instance_cert_expires_hours`.
+   - `crates/wit_interfaces/wit/host/deps/vault/vault.wit:10`: a doc
+     comment on `reveal`: names that start with `syneroym.` are reserved
+     for the substrate and always answer `not-found` (C3-16). This is the
+     guest contract.
+   - `docs/system-requirements-spec.md`, the vault section (:897 and
+     :955-956): state the reserved prefix; the planned Podman secret
+     injection must skip reserved names (backlog row, §5 item 7).
+   - `docs/planning/traceability-matrix.md`: the rows for the mailbox
+     criteria this slice meets (K-1, K-2, K-5 to K-8, and K-3 without
+     `auto`) with their test evidence. Read its header first for the row
+     format and status words.
    - `docs/TERMINOLOGY.md`: "mailbox key" (derived from the member master).
    - The user guide for roymctl, if one exists for `svc deploy` / `app
      deploy` (`grep -rln 'record-out' docs`): document both flags.
    Add each file you touch to `living-docs-touched` in the change doc's
    front matter. Keep `status: approved` (the change is not done until C8).
 5. Deferred backlog (`docs/planning/deferred-backlog.md`), see §5.
+6. **ADR-0026 amendment A2** (C3-16), in the same form as A1: added date,
+   what changes in Decision 4 (the key is derived from the member master
+   with HKDF-SHA256, `info` `syneroym:mailbox-key:v1`), and why (one key
+   for every deploy of a member with no new storage or backup; rotation
+   needs a new `info` version and a new signed record). Link it from the
+   change doc's deviation `D-C3-1`.
 
 ## 4. Test list (summary)
 
@@ -998,9 +1165,9 @@ match PeerRecordStore::open(&config.storage.db_dir.join("peer_records.db"), now_
 | --- | --- |
 | K-1 | core `dht_registry/tests.rs` (2); SDK record tests (7); e2e step 2 (10) |
 | K-2 | `keys/tests.rs` derivation tests (1); control-plane `mailbox.rs` incl. two substrates (5); supervisor bindings test (9); e2e step 2 (10) |
-| K-3 | `cli_args.rs`, `svc/tests.rs`, `app/tests.rs`, `mailbox_arg` tests (8). `auto`: open until C7 |
-| K-5 | `net_iroh` tests and e2e step 3 (10) |
-| K-6 | `peer_records/tests.rs` and the unreachable-registry `resolve_peer` test (10) |
+| K-3 | `cli_args.rs`, `svc/tests.rs` (incl. `check_mailbox_args`), `app/tests.rs` (incl. the `--mint-masters` refusals), `mailbox_arg` tests, `registry register` record test (8). `auto`: parsed, refused until C7 |
+| K-5 | `net_iroh` tests, the bounded-lookup test, and e2e step 3 (10) |
+| K-6 | `peer_records/tests.rs`, the unreachable-registry `resolve_peer` test, the stored-record direct-call test (e2e step 6) and the two-node wiring test (10) |
 | K-7 | compiler tests (6); `validate_mailbox` tests (5); roymctl refusal (8); e2e step 4 (10) |
 | K-8 | compiler range tests (6); lifetime choice (7); supervisor renewal (9); e2e step 5 (10) |
 | Vault safety | `delete_secret`, `is_reserved`, guest `reveal` refused on both hosts, `set-secret` refused (4) |
@@ -1024,8 +1191,8 @@ Each with reason, target and a link to the code:
 4. **A mailbox deploy needs the vault unlocked.** With storage encryption
    on, a deploy with a mailbox fails until the operator injects the KEK.
    Target: TBD (same as the other KEK-at-boot rows; link them).
-5. Only if Step 8.6 ends with a refusal: **`svc deploy --mailbox` is not
-   supported for tcp and container services.**
+5. (Removed: tcp and container services get the mailbox through
+   `Publication`, Step 8.6.)
 6. **A mailbox for a private or internal service.** A mailbox does not need
    the registry: a sender needs only the mailbox id and the key, which an
    explicitly given signed record carries (like a fixed relay URL). Not
@@ -1039,6 +1206,12 @@ Each with reason, target and a link to the code:
    question; (d) ADR-0026 Decision 1 and K-7 need an amendment. Target:
    TBD. Link: `control-plane.wit` (`mailbox-credentials`),
    `crates/router/src/peer_records.rs`, ADR-0026.
+7. **Podman secret injection must skip reserved vault names.** The
+   requirements plan to inject vault secrets into containers
+   (`system-requirements-spec.md:956`). When that is built it must skip
+   names that start with `syneroym.`, or a container gets the mailbox
+   secret. Target: with that feature. Link:
+   `crates/data_db/src/vault_names.rs`.
 
 Also update the existing row "Service mailbox: later improvements": key
 rotation now means a new HKDF `info` version and a new signed record
@@ -1087,7 +1260,8 @@ rotation now means a new HKDF `info` version and a new signed record
    substrate inventory entry (it is the substrate that sleeps), needs the
    field on two inventory types (`SupervisorInventoryEntry`,
    `SubstrateEntry`) and does nothing for `svc deploy`. Recorded as a
-   backlog row (§5 item 3).
+   backlog row (§5 item 3). **Confirmed by the owner (2026-10-17)**; Step
+   11 changes the K-8 text to match.
 6. **"`resolve_iroh_addr` returns the mailbox field" (task.md C3).**
    Changing its return type would touch the relay path, which never needs
    it. C3-11 adds `resolve_peer` and keeps `resolve_iroh_addr`. Same
@@ -1107,7 +1281,8 @@ rotation now means a new HKDF `info` version and a new signed record
    names that resolve to the node DID (`SUPERVISOR_RESERVED_SERVICE_ID`).
    ADR-0015 A10 names the resource `substrate:<host node did>/mailbox`, so
    the record's `service_id` is likely the host node DID. C3 only requires
-   a `did:key:` id (`ServiceId`). Step 11 adds this to C4 in task.md.
+   a `did:key:` id (`ServiceId`). **Decided in C3 (C3-15):** the host node
+   DID. Step 11 adds this to C4 in task.md.
 10. **K-4 is in C4, not C3.** The change doc's task line "Lookup change: ...
     Mailbox republishes the record" mixes C3 and C4 work; task.md puts K-4
     in C4. C3 ticks only its own part.
@@ -1117,14 +1292,15 @@ rotation now means a new HKDF `info` version and a new signed record
 12. **`app deploy` "takes a mailbox for each member" (K-3).** Members of one
     service share the manifest entry, so they share the mailbox service
     (each member still has its own key from its own master). The CLI
-    override is per service name (Step 8.7).
-13. **`mailbox` and `instance_cert_lifetime_hours` need a master.** A plain
+    override is per service name (Step 8.7). **Confirmed by the owner
+    (2026-10-17)**; Step 11 changes the K-3 text to match.
+13. **`mailbox` and `instance_cert_expires_hours` need a master.** A plain
     `app deploy` without `--mint-masters` signs no record and issues no
     certificate, so a mailbox cannot work; the clap `requires` makes the
     CLI refuse it, and the compiler does not check it (the supervisor
-    always has masters). A manifest `mailbox` with no `--mint-masters` is
-    silently unused: Step 8.8 should also refuse that case ("the manifest
-    names a mailbox for '<name>'; deploy with --mint-masters").
+    always has masters). A manifest `mailbox` or
+    `instance_cert_expires_hours` with no `--mint-masters` would be
+    silently unused, so Step 8.8 refuses it (with tests in 8.11).
 14. **The record size.** The change doc says the field adds about 140
     bytes and the record stays well inside 1000 bytes. The nickname has no
     length limit in the record type; a long nickname plus a mailbox could
@@ -1154,3 +1330,25 @@ rotation now means a new HKDF `info` version and a new signed record
 10. Commit on `feat/m06d-c3-implementation`, for example
     `feat(mailbox): add mailbox record field and key`, body of one or two
     sentences. Open the PR with the CLA line from `AGENTS.md`.
+
+## 8. Review of the first version of this plan
+
+A review on 2026-10-17 found 14 gaps. All were checked against the code.
+Outcome of each:
+
+| # | Finding | Outcome |
+| --- | --- | --- |
+| 1 | `--mailbox --identity` passes roymctl, then the substrate refuses it (no instance certificate). | Accepted. Step 8.3 `check_mailbox_args` requires `--master`, or `--identity` with `--instance-certificate`; tests in 8.11. |
+| 2 | Step 8.6 left tcp and container undecided; all three SDK functions take `Publication`. | Accepted. The key travels in `Publication::Public` (Step 8.6); backlog row 5 removed. |
+| 3 | A manifest `mailbox` without `--mint-masters` is silently ignored; same for the lifetime. | Accepted. Step 8.8 refuses both; tests in 8.11. |
+| 4 | `roymctl registry register` silently removes a mailbox. | Accepted, as a flag rather than a refusal: C3-17 and Step 8.12. A refusal would need a registry lookup in an offline signing command. |
+| 5 | Nothing proves the store is wired; the builder chain sits inside `Arc::new`. | Accepted. Step 10.5 builds the router before wrapping it; Step 10.6 adds a two-node wiring test. |
+| 6 | K-3 and K-8 narrowed to "each service" without sign-off; criteria text unchanged. | Accepted in part. The owner did approve per-service settings on 2026-10-17 (C3-8, §6 items 5 and 12 now say so). Step 11 changes the K-3 and K-8 text, so no criterion is closed while unmet as written. |
+| 7 | A stored record can route a direct call; §1 said no behaviour changes. | Accepted. Decided that it may (C3-12, with the reason), §1 corrected (no existing record has a mailbox, so existing calls are unchanged), e2e step 6 tests it. |
+| 8 | C7 `auto` would change stored formats and the clap type. | Accepted. `MailboxChoice { Auto, Service }` now (C3-8, C3-14), `Auto` refused until C7; task.md C7 gets "resolve once, pin in the stored plan, roymctl before apply, supervisor at submit". Where C7 resolves is C7's decision; this plan only records the constraint. |
+| 9 | The C8 child token expires; its renewal could change the deploy call again. | Accepted. C3-2 writes the renewal rule down (token lives as long as the passport, renewed by deploy, or a new call; never a change to `deploy-manifest` or `renew-cert`); task.md C8 gets it. |
+| 10 | A sleeping peer's substrate lookup can take seconds (DHT), before C5's short direct attempt. | Accepted. C3-11 bounds it at 3 s for peers with a mailbox; test in Step 10.6; task.md C5 gets the constraint. |
+| 11 | The mailbox `service_id` shape should be fixed in C3. | Accepted. C3-15: the mailbox host's node DID. |
+| 12 | Living docs missing: developer guide line 703-704, `vault.wit`, the requirements vault section and its Podman plan, the traceability matrix. | Accepted. All in Step 11.4; Podman as backlog row 7. |
+| 13 | Lasting decisions live only as deviations; maybe ADR-0026 A2. | Accepted in part. A2 records the key derivation (C3-16, Step 11.6). The reserved vault prefix goes into the `vault.wit` contract and the architecture doc instead: it is an interface rule, and its home is the interface. |
+| 14 | Stale details: the branch paragraph, `tests/perf` is a workspace member, two flag names for one value. | Accepted. Branch paragraph updated; `tests/perf` must be updated (Step 2.3); the names follow the code's existing `expires_hours` (`--cert-expires-hours`, `instance_cert_expires_hours`), and `identity certify-instance --expires-hours` gets the same 1-720 range (C3-9). |
