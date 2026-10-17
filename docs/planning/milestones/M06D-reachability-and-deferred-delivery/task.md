@@ -141,7 +141,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `EndpointInfo.mailbox` (`K-1`). Mailbox key made with the member master, delivered with the instance certificate, carried at relocation (`K-2`). Per-member certificate lifetime (`K-8`).
 - `roymctl svc deploy` and `app deploy` with `--mailbox <service-id>`. `auto` waits for C7.
 - `resolve_iroh_addr` returns the mailbox field without following the substrate record (`K-5`). Durable last-record store on the sender (`K-6`). Private services get no field (`K-7`).
-- Done 2026-10-17. Decisions `D-C3-1` to `D-C3-14` are in the [mailbox change doc](../../changes/service-mailbox/change.md), with [ADR-0026 A2](../../../decisions/0026-receiver-chosen-mailbox.md#amendments).
+- Done 2026-10-17. Decisions `D-C3-1` to `D-C3-17` are in the [mailbox change doc](../../changes/service-mailbox/change.md), with [ADR-0026 A2](../../../decisions/0026-receiver-chosen-mailbox.md#amendments).
 
 **C4 — Mailbox service (L).** Needs C2 and C3.
 - `[roles.mailbox]`, native service, SQLite store, all seven methods, quotas, fair eviction, sweeps, newest-certificate rule, receipts, hourly record publish (`M-1` to `M-14`, `K-4`).
@@ -153,7 +153,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Needs R-7 (C6) in `main` first, or carries R-7 itself. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver.
 - First: decide where a guest method declares that it is mailbox-eligible (app manifest or WIT interface).
 - Eligibility (`S-1`) also needs a valid instance certificate: a `SealError::BadCertificate` or `SealError::TooLarge` from `seal` keeps the call on direct delivery. Each deposit is a new `seal` call; keep the plaintext call and store only the `SentDeposit` and the mailbox id in the park context (`D-C2-9`). Handle receipts by the rule in ADR-0026 A1: only a `verify_signed` result fails or completes a message; everything else goes back to direct attempts, including a `status` answer that does not parse. Before it accepts a receipt, check the receiver certificate's `temporary_did` against the receiver master's revoked keys, as C6 does for the sender (`D-C2-11` only bounds the receipt time).
-- `resolve_peer` bounds the substrate lookup of a peer with a mailbox (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s). The "one direct attempt with a short timeout" of `S-2` comes after it. Tune both together.
+- `resolve_peer` bounds the substrate lookup of a peer with a mailbox (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s). The "one direct attempt with a short timeout" of `S-2` comes after it. Tune both together. The lookup of the **service** record is not bounded: the stored record (`record_of` in `net_iroh.rs`) is used only after `lookup` fails, which with a registry that does not answer takes the 10 s HTTP timeout and a DHT try. Bound that lookup too, or the wait adds to the short direct attempt.
 - Eligibility check (`S-1`), one direct attempt then deposit, `status` polling, `ProxyRouter` hook below both outboxes (`S-2` to `S-5`, `S-7`, `S-8`).
 - `deposited` state in both outboxes on X6 (`S-6`, `S-9`), the `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI. Group pushes.
 

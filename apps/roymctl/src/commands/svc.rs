@@ -160,8 +160,9 @@ pub enum SvcCommands {
         #[arg(long)]
         mailbox: Option<MailboxChoice>,
         /// Lifetime of the instance certificate `--master` issues, in
-        /// hours (1 to 720). Use a long value for a substrate that sleeps.
-        #[arg(long, default_value_t = 24, conflicts_with = "instance_certificate",
+        /// hours (1 to 720). Needs `--master`: no other flag issues a
+        /// certificate. Use a long value for a substrate that sleeps.
+        #[arg(long, default_value_t = 24, conflicts_with = "instance_certificate", requires = "master",
               value_parser = clap::value_parser!(u32).range(1..=720))]
         cert_expires_hours: u32,
     },

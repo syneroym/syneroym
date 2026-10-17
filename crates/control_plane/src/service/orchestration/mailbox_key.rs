@@ -19,7 +19,19 @@ impl ControlPlaneService {
     /// Removes it. A vault that cannot be opened is only a warning here: a
     /// key left behind is never used, because a service is pulled for only
     /// while its record names a mailbox.
+    ///
+    /// A service without a database never stored a key, so nothing is opened
+    /// or created for it: a deploy of a tcp or container service, or the
+    /// undeploy of a service that never ran, leaves no new files behind.
     pub(super) async fn clear_mailbox_key(&self, service_id: &str) {
+        match self.storage_provider.service_exists(service_id).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                tracing::warn!("Could not check the database of service {service_id}: {e}");
+                return;
+            }
+        }
         let result = async {
             let store = self.storage_provider.open_service_db(service_id, &self.key_store).await?;
             store.delete_secret(vault_names::MAILBOX_SECRET).await

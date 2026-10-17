@@ -265,6 +265,31 @@ pub(crate) struct ValidatedDeploy {
     pub(super) mailbox_key: Option<MailboxSecretKey>,
 }
 
+/// The mailbox the record names. When either the record names one or a key
+/// was supplied, the record must verify: only `verify` binds the JSON
+/// `info` to the signed packet, and the receiver later pulls from the
+/// mailbox of this stored record. A record that names no mailbox, with no
+/// key supplied, is not this check's business.
+fn verified_record_mailbox(
+    service_id: &str,
+    credentials: Option<&MailboxCredentials>,
+    registry_certificate: Option<&str>,
+) -> Result<Option<EndpointMailbox>, String> {
+    let Some(signed) =
+        registry_certificate.and_then(|json| serde_json::from_str::<SignedEndpointInfo>(json).ok())
+    else {
+        return Ok(None);
+    };
+    if credentials.is_some() || signed.info.mailbox.is_some() {
+        signed.verify().map_err(|e| {
+            format!(
+                "registry certificate of '{service_id}' names a mailbox but does not verify: {e}"
+            )
+        })?;
+    }
+    Ok(signed.info.mailbox)
+}
+
 /// A mailbox needs a public record that names it with this key, and an
 /// instance certificate the receiver can show at registration.
 ///
@@ -279,9 +304,7 @@ pub(crate) fn validate_mailbox(
     registry_certificate: Option<&str>,
     has_instance_certificate: bool,
 ) -> Result<Option<MailboxSecretKey>, String> {
-    let record_mailbox = registry_certificate
-        .and_then(|json| serde_json::from_str::<SignedEndpointInfo>(json).ok())
-        .and_then(|signed| signed.info.mailbox);
+    let record_mailbox = verified_record_mailbox(service_id, credentials, registry_certificate)?;
     match (credentials, record_mailbox) {
         (None, None) => Ok(None),
         (None, Some(_)) => Err(format!(

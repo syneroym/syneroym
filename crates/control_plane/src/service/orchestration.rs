@@ -27,7 +27,7 @@ use syneroym_app_orchestration::{
 use syneroym_core::{
     asset_manifest::ServiceAssets,
     deploy_docs,
-    dht_registry::SignedEndpointInfo,
+    dht_registry::{EndpointMailbox, SignedEndpointInfo},
     http_routes::HttpRoute,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     storage::AppInstanceManagement,

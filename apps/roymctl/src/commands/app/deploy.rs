@@ -257,20 +257,20 @@ fn resolve_manifest(manifest_path: &Path) -> anyhow::Result<SynAppManifest> {
     }
 }
 
-/// Compile `manifest` and return its last (target) deployment plan.
-async fn compile_target_plan(
+/// Compile `manifest` into its deployment plans: the plans of the apps it
+/// spawns first, the target plan last.
+async fn compile_plans(
     instance_id: &AppInstanceId,
     manifest: &SynAppManifest,
     manifest_path: &Path,
-) -> anyhow::Result<DeploymentPlan> {
+) -> anyhow::Result<Vec<DeploymentPlan>> {
     let catalog =
         LocalFilesystemCatalog::new(manifest_path.parent().unwrap_or(Path::new(".")).to_path_buf());
     let compiled = compile(instance_id.clone(), manifest, &catalog).await?;
-    compiled
-        .plans
-        .last()
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("Compiled deployment contains no plans"))
+    if compiled.plans.is_empty() {
+        anyhow::bail!("Compiled deployment contains no plans");
+    }
+    Ok(compiled.plans)
 }
 
 /// Everything `handle_deploy`'s preflight learns about the substrates a
@@ -626,8 +626,9 @@ pub(super) async fn handle_deploy(
 
     let mut manifest = resolve_manifest(&manifest_path)?;
     settings::apply_mailbox_overrides(&mut manifest, mailboxes)?;
-    settings::refuse_settings_without_masters(&manifest, mint_masters)?;
-    let target_plan = compile_target_plan(&instance_id, &manifest, &manifest_path).await?;
+    let plans = compile_plans(&instance_id, &manifest, &manifest_path).await?;
+    settings::refuse_settings_without_masters(&plans, mint_masters)?;
+    let target_plan = plans.last().cloned().context("Compiled deployment contains no plans")?;
 
     // `app deploy` has no supervisor behind it, and
     // the supervisor is the scheduler (ADR-0023 §6) -- a schedule

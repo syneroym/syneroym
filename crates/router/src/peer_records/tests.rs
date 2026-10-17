@@ -1,4 +1,7 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use syneroym_core::dht_registry::{EndpointInfo, EndpointMailbox};
 use syneroym_identity::{Identity, substrate};
@@ -164,4 +167,60 @@ async fn the_store_survives_reopening_the_file_and_drops_expired_rows_at_open() 
 
     assert!(reopened.recall(&live.info.service_id).await.is_some());
     assert!(reopened.recall(&stale.info.service_id).await.is_none());
+}
+
+#[tokio::test]
+async fn an_older_record_with_a_mailbox_does_not_bring_back_a_removed_mailbox() {
+    let store = PeerRecordStore::open_in_memory().unwrap();
+    let master = Identity::generate().unwrap();
+    let older_with = record(&master, true);
+    let without = newer_record(&master, false).await;
+    store.remember(&older_with).await.unwrap();
+    store.remember(&without).await.unwrap();
+
+    // The older record arrives late, for example from the DHT fallback.
+    store.remember(&older_with).await.unwrap();
+
+    assert!(store.recall(&older_with.info.service_id).await.is_none());
+}
+
+#[tokio::test]
+async fn a_removed_mailbox_stays_removed_after_reopening_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peer_records.db");
+    let master = Identity::generate().unwrap();
+    let older_with = record(&master, true);
+    let without = newer_record(&master, false).await;
+    {
+        let store = PeerRecordStore::open(&path, now_secs()).unwrap();
+        store.remember(&older_with).await.unwrap();
+        store.remember(&without).await.unwrap();
+    }
+
+    let reopened = PeerRecordStore::open(&path, now_secs()).unwrap();
+    reopened.remember(&older_with).await.unwrap();
+
+    assert!(reopened.recall(&older_with.info.service_id).await.is_none());
+}
+
+/// Calls to one peer are concurrent, and the store may see the older record
+/// last. The newer one must win whichever order the writes land in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_calls_never_leave_an_older_record_behind() {
+    for _ in 0..40 {
+        let store = Arc::new(PeerRecordStore::open_in_memory().unwrap());
+        let master = Identity::generate().unwrap();
+        let older = record(&master, true);
+        let newer = newer_record(&master, true).await;
+
+        let (a, b) = (store.clone(), store.clone());
+        let (older_copy, newer_copy) = (older.clone(), newer.clone());
+        let first = tokio::spawn(async move { a.remember(&older_copy).await });
+        let second = tokio::spawn(async move { b.remember(&newer_copy).await });
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+
+        let kept = store.recall(&older.info.service_id).await.unwrap();
+        assert_eq!(kept.pkarr_packet_hex, newer.pkarr_packet_hex);
+    }
 }

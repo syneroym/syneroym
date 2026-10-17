@@ -213,6 +213,48 @@ fn the_matching_key_is_accepted() {
     assert_eq!(accepted.public_key(), key.public_key());
 }
 
+/// A record whose JSON `info` was changed after signing: the signed packet
+/// does not name the mailbox, so a deploy must not trust it.
+#[test]
+fn a_record_whose_mailbox_was_added_after_signing_is_refused() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let mut signed: SignedEndpointInfo = serde_json::from_str(&member.record(None, false)).unwrap();
+    signed.info.mailbox = Some(member.mailbox_route(&key));
+    let record = serde_json::to_string(&signed).unwrap();
+
+    for credentials in [Some(credentials_for(&key)), None] {
+        let err = validate_mailbox(
+            &member.service_id,
+            credentials.as_ref(),
+            AppVisibility::Public,
+            Some(&record),
+            true,
+        )
+        .unwrap_err();
+        assert!(err.contains("does not verify"), "{err}");
+    }
+}
+
+#[test]
+fn a_key_with_a_record_that_does_not_verify_and_names_no_mailbox_is_refused() {
+    let member = Member::new();
+    let key = member.mailbox_key();
+    let mut signed: SignedEndpointInfo = serde_json::from_str(&member.record(None, false)).unwrap();
+    signed.info.nickname = Some("changed after signing".to_string());
+    let record = serde_json::to_string(&signed).unwrap();
+
+    let err = validate_mailbox(
+        &member.service_id,
+        Some(&credentials_for(&key)),
+        AppVisibility::Public,
+        Some(&record),
+        true,
+    )
+    .unwrap_err();
+    assert!(err.contains("does not verify"), "{err}");
+}
+
 // -- deploy and undeploy ---------------------------------------------------
 
 #[tokio::test]
@@ -355,4 +397,22 @@ async fn set_secret_refuses_a_reserved_vault_name() {
     let refused = service.dispatch(call("syneroym.mailbox-secret")).await.unwrap_err();
     assert!(matches!(refused, RpcError::InvalidParams(m) if m.contains("reserved")));
     assert!(service.dispatch(call("ordinary")).await.is_ok());
+}
+
+// -- no database is made just to clear a key --------------------------------
+
+#[tokio::test]
+async fn a_deploy_and_undeploy_without_a_mailbox_make_no_service_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let node_identity = Arc::new(Identity::generate().unwrap());
+    let (service, _registry) = service_with_node_identity(dir.path(), node_identity).await;
+    let caller = caller();
+    let service_id = "no-mailbox-tcp".to_string();
+    let database = dir.path().join("services").join(&service_id).join("state.db");
+
+    service.deploy(service_id.clone(), owner_test_manifest(), &caller).await.unwrap();
+    assert!(!database.exists(), "a deploy without a mailbox must not create the database");
+
+    service.undeploy(service_id.clone(), 0, &caller).await.unwrap();
+    assert!(!database.exists(), "an undeploy must not create the database");
 }

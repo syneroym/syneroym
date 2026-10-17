@@ -1,6 +1,9 @@
 use std::{fmt, sync::Arc};
 
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce, aead::Aead};
+use aes_gcm::{
+    Aes256Gcm, Key, KeyInit, Nonce,
+    aead::{Aead, Payload},
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
@@ -192,8 +195,10 @@ fn do_write_secret(
     rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
+    // The entry name is the associated data, so a ciphertext copied to
+    // another row name (for example by guest SQL) does not decrypt there.
     let ciphertext = cipher
-        .encrypt(nonce, secret_bytes)
+        .encrypt(nonce, Payload { msg: secret_bytes, aad: key.as_bytes() })
         .map_err(|e| anyhow::anyhow!("Encryption failure: {e}"))?;
 
     let now = Utc::now().timestamp_millis();
@@ -230,7 +235,7 @@ fn do_reveal_secret(
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let decrypted = cipher
-            .decrypt(nonce, ciphertext.as_slice())
+            .decrypt(nonce, Payload { msg: ciphertext.as_slice(), aad: key.as_bytes() })
             .map_err(|e| anyhow::anyhow!("Decryption failure: {e}"))?;
 
         Ok(Some(decrypted))

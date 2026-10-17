@@ -653,3 +653,23 @@ fn test_certify_instance_lifetime_is_limited_to_720_hours() -> Result<(), Box<dy
     .stderr(contains("721"));
     Ok(())
 }
+
+/// `--cert-expires-hours` only matters when `--master` issues a certificate,
+/// so clap refuses it alone. The default value does not trigger this.
+#[test]
+fn test_cert_expires_hours_needs_master() -> Result<(), Box<dyn Error>> {
+    let base = ["svc", "deploy", "--svc-id", "did:key:zTest", "--interfaces", "default", "--tcp"];
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["localhost:1", "--cert-expires-hours", "48"])
+        .assert()
+        .failure()
+        .stderr(contains("--master"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["localhost:1", "--cert-expires-hours", "48", "--master", "m", "--help"])
+        .assert()
+        .success();
+    Ok(())
+}
