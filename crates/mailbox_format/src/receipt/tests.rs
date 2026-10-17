@@ -135,8 +135,9 @@ fn a_receipt_from_the_future_fails() {
 
 #[test]
 fn a_delivery_of_a_mailbox_made_message_under_the_same_deposit_id_fails() {
-    // S2 deposits; the mailbox drops it, seals its own message under S2's
-    // deposit id, lets the receiver deliver it, and shows S2 the receipt.
+    // An honest sender deposits; the mailbox drops it, seals its own message under
+    // that sender's deposit id, lets the receiver deliver it, and shows the sender
+    // the receipt.
     let x = exchange();
     let mailbox_member = Member::new(CERT_LIFE_SECS);
     let now = common_now(&[&x.receiver, &mailbox_member]);
@@ -250,8 +251,8 @@ fn a_signed_rejection_with_a_code_the_mailbox_could_cause_is_not_final() {
 #[test]
 fn a_forged_certificate_cannot_get_a_signed_rejection() {
     // The mailbox works with a past host of the receiver, so it can read
-    // S2's message. It signs the same statement with its own key and
-    // attaches a certificate that names S2's master.
+    // the honest sender's message. It signs the same statement with its own key and
+    // attaches a certificate that names the honest sender's master.
     let x = exchange();
     let sent_at = x.sender.cert.issued_at_secs + 60;
     let id = x.receiver.service_id();
