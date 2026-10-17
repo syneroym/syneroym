@@ -2,7 +2,7 @@
 
 *Reader: developers who build these three changes.*
 
-**Status: in progress (2026-10-16).** S0, A1 to A4, C1, B1 to B3 are done. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-16).** S0, A1 to A4, C1, B1 to B3, C2 are done. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -134,6 +134,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 **C2 — Sealed message and receipt formats (S).** Needs the key decision in S0.
 - Outer and inner parts, sender signature over destination, idempotency key, payload hash and send time; signed `delivered` receipt (`M-13`).
 - Tests: tamper, wrong key, replay, old send time.
+- Done 2026-10-16. Decisions `D-C2-1` to `D-C2-12` are in the [mailbox change doc](../../changes/service-mailbox/change.md), with [ADR-0026 A1](../../../decisions/0026-receiver-chosen-mailbox.md#amendments).
 
 **C3 — Record, keys and lookup (L).** Needs C2.
 - First: decide which part of the control-plane deploy call carries the mailbox private key, and where the instance keeps it. Design the field with room for the owner's child token, which C8 adds.
@@ -144,16 +145,19 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 **C4 — Mailbox service (L).** Needs C2 and C3.
 - `[roles.mailbox]`, native service, SQLite store, all seven methods, quotas, fair eviction, sweeps, newest-certificate rule, receipts, hourly record publish (`M-1` to `M-14`, `K-4`).
 - Open limits only. `register` takes no passport yet.
+- Key receipts on `(sender, deposit_id)`, or refuse a `deposit_id` that already exists: the sender picks the id, so a second sender could reuse it. Store a receiver's ack as it came: the mailbox cannot check the proof, because it does not know the message hash. Its own rejection after 5 claims is `Receipt::unsigned_rejection(TooManyClaims, ..)`.
 
 **C5 — Sender path (L).** Needs C1, C3, C4 and R-7 of C6. Parallel with C6, but the R-7 part of C6 must merge first.
 - Needs R-7 (C6) in `main` first, or carries R-7 itself. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver.
 - First: decide where a guest method declares that it is mailbox-eligible (app manifest or WIT interface).
+- Eligibility (`S-1`) also needs a valid instance certificate: a `SealError::BadCertificate` or `SealError::TooLarge` from `seal` keeps the call on direct delivery. Each deposit is a new `seal` call; keep the plaintext call and store only the `SentDeposit` and the mailbox id in the park context (`D-C2-9`). Handle receipts by the rule in ADR-0026 A1: only a `verify_signed` result fails or completes a message; everything else goes back to direct attempts, including a `status` answer that does not parse. Before it accepts a receipt, check the receiver certificate's `temporary_did` against the receiver master's revoked keys, as C6 does for the sender (`D-C2-11` only bounds the receipt time).
 - Eligibility check (`S-1`), one direct attempt then deposit, `status` polling, `ProxyRouter` hook below both outboxes (`S-2` to `S-5`, `S-7`, `S-8`).
 - `deposited` state in both outboxes on X6 (`S-6`, `S-9`), the `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI. Group pushes.
 
 **C6 — Receiver path (L).** Needs C3 and C4. Parallel with C5.
 - Pull worker, unseal, `dispatch_json_rpc_once` with the sender's identity, signed ack, waiting for a renewed certificate, `mailbox.pull-now` (`R-1` to `R-6`).
 - Longer idempotency memory and a larger row limit for services with a mailbox (`R-7`).
+- Check revocation after `open` and ack with `OpenedMessage::sign_rejection(Revoked, ..)` (`D-C2-5`). Ack every `open` failure: `RefusedMessage::receipt` for `OpenError::Refused`, `Receipt::unsigned_rejection(e.reject_code(), ..)` for the rest. Pass the queue's own `max_ttl_secs` from `register` in `OpenPolicy`, and size the idempotency memory (`R-7`) from the same value, not from a 7-day constant. A signed `from_future` rejection is decided by the receiver's own clock: log a warning on it, so a receiver whose clock is slow by more than 24 hours is noticed.
 
 **C7 — Open mailbox list and `auto` (S).** Needs A2 and C3.
 - `[[roles.community_registry.mailboxes]]` and `GET /mailboxes` as the second instance of X2.
@@ -166,6 +170,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `roymctl` mailbox `issue` variant on B1's code.
 - `register` carries the instance certificate (`D-B1-17`); quotas come from `LeaseStore::lease_for` (`D-B1-16`); the DHT revocation check runs between `Registrar::check` and `Registrar::grant` (`D-B1-15`).
 - Reuse `HostIdentity::passport_root` (`crates/core`) for the accepted root; do not write a second root rule (`D-B2-16`).
+- Cap the passport fact `max_ttl_secs`: the receiver's idempotency memory (`R-7`) grows with it.
 - Close out the mailbox change doc.
 
 ## 4. Order and parallel work
