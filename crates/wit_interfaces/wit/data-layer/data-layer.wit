@@ -188,8 +188,10 @@ interface store {
     /// Privileged raw-SQL escape hatch (ADR-0011). Gated by the
     /// `data-layer/admin` capability (same trust boundary as `execute-ddl`);
     /// returns `permission-denied` otherwise. Read-only: a statement that
-    /// would mutate the DB is rejected. `params` are bound via `?`
-    /// placeholders in order.
+    /// would mutate the DB is rejected. A statement that touches the
+    /// substrate's vault table (`_vault`) is refused with
+    /// `permission-denied`. `params` are bound via `?` placeholders in
+    /// order.
     query-raw: func(sql: string, params: list<sql-value>) -> result<raw-query-result, data-layer-error>;
 
     /// Mode A point-in-time authorization check (ADR-0017 §4). Whether the
