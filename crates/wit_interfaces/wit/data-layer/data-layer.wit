@@ -179,6 +179,10 @@ interface store {
     /// SECURITY: The host must strictly validate that the caller holds the
     /// `data-layer/admin` capability (ADR-0015/0016) on this service's own
     /// resource and reject execution otherwise.
+    ///
+    /// The statements may not touch the substrate's vault table (`_vault`),
+    /// and may not create a trigger (`CREATE TRIGGER`, `CREATE TEMP TRIGGER`).
+    /// Such a statement fails with `internal`.
     execute-ddl: func(sql: string) -> result<_, data-layer-error>;
 
     /// Privileged raw-SQL escape hatch (ADR-0011). Gated by the
