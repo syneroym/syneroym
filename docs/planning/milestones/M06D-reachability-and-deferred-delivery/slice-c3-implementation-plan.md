@@ -101,13 +101,13 @@ of the first version of this plan (§8).
 | C3-14 | **`auto` is parsed everywhere, refused until C7.** `MailboxChoice::from_str("auto")` is `Auto`; any other value must be a `did:key:` id. In C3 `Auto` is refused with "`auto` is not supported yet; give the mailbox host's node DID" at three places: the manifest compiler, `roymctl svc deploy`, and `certify_placed_members` (defence in depth). | `auto` needs the registry list (C7). The manifest needs it too: the supervisor has no command line. With the type in place now, C7 changes no stored format and no clap type; it removes the refusals and adds the resolution. Task.md C7 gets the rule that `auto` is resolved once and pinned in the stored plan (§3 Step 11). |
 | C3-15 | **The record's `mailbox.service_id` is the mailbox host's node DID.** The mailbox service is reached on interface `mailbox` of that node. | Node-level native interfaces are registered under the node's own DID (`orchestrator`, `security`, the supervisor; `crates/router/src/call_dedup.rs:170-190`), and ADR-0015 A10 names the passport resource `substrate:<host node did>/mailbox`. Deciding it now fixes the record format before C4, which task.md requires, and lets the CLI help say what to type. C4 must register its native service so. |
 | C3-16 | **ADR-0026 amendment A2** records the key derivation: the mailbox key is derived from the member master with HKDF-SHA256 and the fixed `info` `syneroym:mailbox-key:v1`; any holder of the master can derive it again; rotation means a new `info` version and a new signed record. The reserved vault prefix goes into the guest contract (`vault.wit` doc comment) and the architecture doc, not into an ADR. | The derivation is pinned forever and changes ADR-0026 Decision 4 ("the deployer creates a decrypt-only key"), like C2's lasting decision went into A1. The reserved prefix is an interface rule; its home is the interface it limits. |
-| C3-17 | `roymctl registry register` gets `--mailbox <node-did>` (key derived from the signing identity, as in `svc deploy`). Its help says that a record signed without `--mailbox` has no mailbox, and that publishing it replaces a record that had one. | The command signs a fresh, newer record (`registry.rs:69`). Without the flag, an operator could not re-register a service that has a mailbox without removing it, and senders would then delete their stored row (C3-12). A lookup-and-warn would need a registry round trip in an offline signing tool. |
+| C3-17 | **`roymctl registry register` refuses a service that has a mailbox.** Before it posts, it reads the current record from the same registry (`GET {api_url}/lookup/{service_id}`). If that record verifies and names a mailbox, it stops: the record of a service with a mailbox is published by its deploy. A `404` lets it continue. The command gets **no** `--mailbox` flag. Its help says that the record it signs has no mailbox. | The command signs a fresh, newer record (`registry.rs:69`), so on a service with a mailbox it would silently remove the mailbox for senders (and senders would delete their stored row, C3-12). A `--mailbox` flag (the first version of this plan) is worse: the command sends no key to the substrate and skips the deploy-time check (C3-6), so it could publish a mailbox the receiver never pulls from, or one it has no key for. The command already talks to the registry over HTTP, so the read costs one request. The remaining case, a record that already expired from the registry, is covered by the help text and by the C6 warning (Step 11.2). |
 
 ## 3. Step-by-step changes
 
 Do the steps in order. Each step names every file and call site. Counts were
-taken on `feat/m06d-c2-implementation` at `8d8533b2`; re-run the given
-`grep` before you edit, in case `main` moved.
+taken on `main` at `51421feb`; re-run the given `grep` before you edit, in
+case `main` moved. The grep is the source of truth.
 
 ### Step 1 — `MailboxSecretKey::derive_from_master` (`crates/mailbox_format`)
 
@@ -188,7 +188,7 @@ pub struct EndpointMailbox {
    Re-export `EndpointMailbox` wherever `EndpointInfo` is re-exported
    (`crates/core/src/dht_registry.rs`; check with
    `grep -n 'EndpointInfo' crates/core/src/dht_registry.rs crates/core/src/lib.rs`).
-3. **Every `EndpointInfo { .. }` literal gets `mailbox: None`** (53 sites, no
+3. **Every `EndpointInfo { .. }` literal gets `mailbox: None`** (57 sites, no
    site uses `..base`). Find them with
    `grep -rn 'EndpointInfo {' --include='*.rs' crates apps tests | grep -v 'pub struct'`.
    Non-test (12): `crates/sdk/src/deploy/certify.rs:160` (changed for real
@@ -764,15 +764,32 @@ mailbox: ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredenti
 
 **`registry register`** (`commands/registry.rs:55-95`, C3-17):
 
-12. Add `#[arg(long)] mailbox: Option<MailboxChoice>` with help "The
-    mailbox host's node DID. A record signed without it has no mailbox;
-    publishing it replaces a record that had one." Refuse `Auto` (C3-14)
-    and refuse it with `--private` (C3-5). With a value, set
-    `mailbox: Some(EndpointMailbox { service_id, key:
-    MailboxSecretKey::derive_from_master(&identity).public_key() })` in the
-    literal at :69. A unit test for the record it builds, if the command
-    body can be split into a pure "build record" function (do so; keep the
-    HTTP post in the handler).
+12. Before the `POST {api_url}/register`, read the current record:
+
+```text
+resp = client.get(format!("{api_url}/lookup/{service_id}")).send().await?
+match resp.status():
+  404     -> continue
+  success -> current = resp.json::<SignedEndpointInfo>()?
+             // verify, so a wrong or hostile registry cannot block or allow by lying
+             if current.verify().is_ok() && current.info.service_id == service_id
+                && current.info.mailbox.is_some():
+                 bail!("service {service_id} has a mailbox; its record is published by its \
+                        deploy (svc deploy, app deploy or the supervisor). Registering here \
+                        would remove the mailbox for senders while the service still pulls \
+                        from it. Redeploy the service to change its record.")
+             continue
+  other   -> bail!("registry returned {status} for the current record of {service_id}")
+```
+
+    Add to the command's help: "The record this signs has no mailbox. It
+    refuses a service whose current record names one." Split the decision
+    into a pure function
+    `fn refuse_if_mailbox(service_id: &str, current: Option<&SignedEndpointInfo>) -> anyhow::Result<()>`
+    and unit-test it: no record → ok; record without a mailbox → ok; record
+    with a mailbox → refused; a record for another `service_id` or one that
+    does not verify → ok (ignored). The literal at :69 gets
+    `mailbox: None` (Step 2.3).
 
 ### Step 9 — supervisor (`crates/app_supervisor`)
 
@@ -1069,7 +1086,8 @@ let proxy = Arc::new(proxy);
      mailbox, plaintext, and may route a direct call (C3-12); the bounded
      substrate lookup (C3-11); `MailboxChoice` with `auto` refused (C3-14);
      the mailbox `service_id` is the host node DID (C3-15); ADR-0026 A2
-     (C3-16); `registry register --mailbox` (C3-17); "relocation" means
+     (C3-16); `registry register` refuses a service with a mailbox
+     (C3-17); "relocation" means
      any later deploy of the member, because the supervisor does not
      relocate (§6 item 1).
    - Design "Mailbox key": replace the "*Unverified:*" sentence with the
@@ -1104,14 +1122,20 @@ let proxy = Arc::new(proxy);
    (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s); the 'one direct attempt with
    a short timeout' of S-2 comes after it; tune both together". Add to
    C7: "`MailboxChoice::Auto` already parses in the manifest, `svc deploy`
-   and `app deploy`; remove the three refusals. Resolve `auto` **once** and
+   and `app deploy`; remove the three refusals (the manifest compiler,
+   `svc deploy`'s `check_mailbox_args`, `certify_placed_members`). Resolve `auto` **once** and
    pin the result in the stored plan (roymctl before `apply_plan`; the
    supervisor at `submit`), because a different mailbox later means a new
    record, and messages waiting at the old mailbox are lost". Add to C6:
    "read the key with `ControlPlaneService::mailbox_key`; pull only for a
    service whose stored record names a mailbox **and** whose key is
    present; the vault needs the KEK, so the pull waits for it after a
-   restart". Add to C8: "add `child-token: option<string>` to the WIT
+   restart. The pull always follows the **stored deploy record**: it is the
+   only record whose mailbox matches the key the substrate holds (C3-6).
+   If the record the registry serves names another mailbox or none (only
+   the master holder can sign one, for example by an old `registry
+   register` over an expired record), keep pulling from the stored one and
+   log a warning, once an hour, naming both". Add to C8: "add `child-token: option<string>` to the WIT
    record `mailbox-credentials`; the only builders are `map_planned_service`
    and `Publication::split` in `crates/sdk`. Renewal: the child token
    lives as long as the passport; a new one arrives by an ordinary deploy,
@@ -1129,8 +1153,8 @@ let proxy = Arc::new(proxy);
    - `docs/developer-guide.md`: the manifest fields `mailbox` and
      `instance_cert_expires_hours`; the new roymctl flags
      (`svc deploy --mailbox --cert-expires-hours`, `app deploy --mailbox`,
-     `registry register --mailbox`, the range of `identity certify-instance
-     --expires-hours`); the new file `peer_records.db` under
+     the new `registry register` refusal, the range of `identity
+     certify-instance --expires-hours`); the new file `peer_records.db` under
      `storage.db_dir`. **Fix `developer-guide.md:703-704`**: it says
      `renewed_cert_expires_hours` is the lifetime of "EVERY" certificate
      the supervisor mints; it becomes the default for services without
@@ -1142,10 +1166,13 @@ let proxy = Arc::new(proxy);
    - `docs/system-requirements-spec.md`, the vault section (:897 and
      :955-956): state the reserved prefix; the planned Podman secret
      injection must skip reserved names (backlog row, §5 item 7).
-   - `docs/planning/traceability-matrix.md`: the rows for the mailbox
-     criteria this slice meets (K-1, K-2, K-5 to K-8, and K-3 without
-     `auto`) with their test evidence. Read its header first for the row
-     format and status words.
+   - `docs/planning/traceability-matrix.md`: **no row changes in C3.** The
+     matrix has one row per requirement id, not per K-* criterion. The
+     mailbox is evidence for `[PRD-OFF]` (line 12) and `[PLT-ASY]` (line
+     45) only once a message is delivered through a mailbox end to end;
+     C7 adds that evidence after C5 and C6, with the full integration
+     list. Say so in the PR text, so the close-out check does not look
+     skipped.
    - `docs/TERMINOLOGY.md`: "mailbox key" (derived from the member master).
    - The user guide for roymctl, if one exists for `svc deploy` / `app
      deploy` (`grep -rln 'record-out' docs`): document both flags.
@@ -1165,7 +1192,7 @@ let proxy = Arc::new(proxy);
 | --- | --- |
 | K-1 | core `dht_registry/tests.rs` (2); SDK record tests (7); e2e step 2 (10) |
 | K-2 | `keys/tests.rs` derivation tests (1); control-plane `mailbox.rs` incl. two substrates (5); supervisor bindings test (9); e2e step 2 (10) |
-| K-3 | `cli_args.rs`, `svc/tests.rs` (incl. `check_mailbox_args`), `app/tests.rs` (incl. the `--mint-masters` refusals), `mailbox_arg` tests, `registry register` record test (8). `auto`: parsed, refused until C7 |
+| K-3 | `cli_args.rs`, `svc/tests.rs` (incl. `check_mailbox_args`), `app/tests.rs` (incl. the `--mint-masters` refusals), `mailbox_arg` tests, `refuse_if_mailbox` tests (8). `auto`: parsed, refused until C7 |
 | K-5 | `net_iroh` tests, the bounded-lookup test, and e2e step 3 (10) |
 | K-6 | `peer_records/tests.rs`, the unreachable-registry `resolve_peer` test, the stored-record direct-call test (e2e step 6) and the two-node wiring test (10) |
 | K-7 | compiler tests (6); `validate_mailbox` tests (5); roymctl refusal (8); e2e step 4 (10) |
@@ -1276,7 +1303,7 @@ rotation now means a new HKDF `info` version and a new signed record
    Also: `lookup(.., true)` returns a record whose `mechanisms` were
    replaced, so it no longer verifies (`client.rs:263-267`). `resolve_peer`
    does not use `resolve = true`, so the stored copy always verifies.
-9. **What the mailbox `service_id` names is decided in C4.** A mailbox is a
+9. **What the mailbox `service_id` names (decided in C3, C3-15).** A mailbox is a
    native service under `[roles.mailbox]`; native services use reserved
    names that resolve to the node DID (`SUPERVISOR_RESERVED_SERVICE_ID`).
    ADR-0015 A10 names the resource `substrate:<host node did>/mailbox`, so
@@ -1341,7 +1368,7 @@ Outcome of each:
 | 1 | `--mailbox --identity` passes roymctl, then the substrate refuses it (no instance certificate). | Accepted. Step 8.3 `check_mailbox_args` requires `--master`, or `--identity` with `--instance-certificate`; tests in 8.11. |
 | 2 | Step 8.6 left tcp and container undecided; all three SDK functions take `Publication`. | Accepted. The key travels in `Publication::Public` (Step 8.6); backlog row 5 removed. |
 | 3 | A manifest `mailbox` without `--mint-masters` is silently ignored; same for the lifetime. | Accepted. Step 8.8 refuses both; tests in 8.11. |
-| 4 | `roymctl registry register` silently removes a mailbox. | Accepted, as a flag rather than a refusal: C3-17 and Step 8.12. A refusal would need a registry lookup in an offline signing command. |
+| 4 | `roymctl registry register` silently removes a mailbox. | Accepted. First answered with a `--mailbox` flag; the second review (row 15) showed that flag was unsafe, so C3-17 now refuses the command for a service whose current record names a mailbox. (The first answer also said the command was offline; it is not, it posts to the registry.) |
 | 5 | Nothing proves the store is wired; the builder chain sits inside `Arc::new`. | Accepted. Step 10.5 builds the router before wrapping it; Step 10.6 adds a two-node wiring test. |
 | 6 | K-3 and K-8 narrowed to "each service" without sign-off; criteria text unchanged. | Accepted in part. The owner did approve per-service settings on 2026-10-17 (C3-8, §6 items 5 and 12 now say so). Step 11 changes the K-3 and K-8 text, so no criterion is closed while unmet as written. |
 | 7 | A stored record can route a direct call; §1 said no behaviour changes. | Accepted. Decided that it may (C3-12, with the reason), §1 corrected (no existing record has a mailbox, so existing calls are unchanged), e2e step 6 tests it. |
@@ -1352,3 +1379,12 @@ Outcome of each:
 | 12 | Living docs missing: developer guide line 703-704, `vault.wit`, the requirements vault section and its Podman plan, the traceability matrix. | Accepted. All in Step 11.4; Podman as backlog row 7. |
 | 13 | Lasting decisions live only as deviations; maybe ADR-0026 A2. | Accepted in part. A2 records the key derivation (C3-16, Step 11.6). The reserved vault prefix goes into the `vault.wit` contract and the architecture doc instead: it is an interface rule, and its home is the interface. |
 | 14 | Stale details: the branch paragraph, `tests/perf` is a workspace member, two flag names for one value. | Accepted. Branch paragraph updated; `tests/perf` must be updated (Step 2.3); the names follow the code's existing `expires_hours` (`--cert-expires-hours`, `instance_cert_expires_hours`), and `identity certify-instance --expires-hours` gets the same 1-720 range (C3-9). |
+
+A second review on 2026-10-17 found four more gaps:
+
+| # | Finding | Outcome |
+| --- | --- | --- |
+| 15 | `registry register --mailbox` could publish a mailbox that differs from the deployed one, or one the substrate has no key for. | Accepted. The flag is dropped; the command refuses a service whose current record names a mailbox (C3-17, Step 8.12). task.md C6 gets the rule that the pull follows the stored deploy record and warns when the published record differs (Step 11.2). |
+| 16 | The traceability-matrix step asked for K-* rows the matrix does not have. | Accepted. No row changes in C3; C7 adds evidence to `[PRD-OFF]` and `[PLT-ASY]` once delivery works end to end (Step 11.4). |
+| 17 | `auto` refusals miscounted (the flag in row 15 was a fourth). | Resolved by row 15: with the flag gone, there are three refusals again (compiler, `svc deploy`, `certify_placed_members`). |
+| 18 | Stale text: the counts base, "53 sites", the §6 item 9 heading. | Accepted. All three fixed. |
