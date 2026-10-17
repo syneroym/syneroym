@@ -39,6 +39,7 @@ mod frame_size_tests {
 mod publication_split_tests {
     use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
     use syneroym_identity::Identity;
+    use syneroym_mailbox_format::MailboxSecretKey;
 
     use super::*;
 
@@ -55,6 +56,7 @@ mod publication_split_tests {
             ttl: None,
             not_after: 9999999999,
             generation: 0,
+            mailbox: None,
         }
         .sign(&identity)
         .unwrap()
@@ -62,20 +64,43 @@ mod publication_split_tests {
 
     #[test]
     fn private_splits_to_no_certificate() {
-        let (visibility, cert) = Publication::Private.split().unwrap();
-        assert_eq!(visibility, Visibility::Private);
-        assert!(cert.is_none());
+        let parts = Publication::Private.split().unwrap();
+        assert_eq!(parts.visibility, Visibility::Private);
+        assert!(parts.registry_certificate.is_none());
+        assert!(parts.mailbox.is_none());
     }
 
     #[test]
     fn public_and_internal_split_to_a_serialized_certificate() {
-        let (visibility, cert) = Publication::Public(sample_record()).split().unwrap();
-        assert_eq!(visibility, Visibility::Public);
-        assert!(cert.is_some());
+        let public = Publication::Public { record: sample_record(), mailbox_key: None };
+        let parts = public.split().unwrap();
+        assert_eq!(parts.visibility, Visibility::Public);
+        assert!(parts.registry_certificate.is_some());
+        assert!(parts.mailbox.is_none());
 
-        let (visibility, cert) = Publication::Internal(sample_record()).split().unwrap();
-        assert_eq!(visibility, Visibility::Internal);
-        assert!(cert.is_some());
+        let parts = Publication::Internal(sample_record()).split().unwrap();
+        assert_eq!(parts.visibility, Visibility::Internal);
+        assert!(parts.registry_certificate.is_some());
+        assert!(parts.mailbox.is_none());
+    }
+
+    #[test]
+    fn the_debug_text_of_split_parts_does_not_show_the_mailbox_key() {
+        let key = MailboxSecretKey::generate().unwrap();
+        let public =
+            Publication::Public { record: sample_record(), mailbox_key: Some(key.clone()) };
+        let parts = public.split().unwrap();
+        assert!(parts.mailbox.is_some());
+        assert!(!format!("{parts:?}").contains(key.to_z32().as_str()));
+    }
+
+    #[test]
+    fn a_public_mailbox_key_splits_to_credentials_in_its_text_form() {
+        let key = MailboxSecretKey::generate().unwrap();
+        let public =
+            Publication::Public { record: sample_record(), mailbox_key: Some(key.clone()) };
+        let credentials = public.split().unwrap().mailbox.unwrap();
+        assert_eq!(credentials.secret_key, key.to_z32().as_str());
     }
 }
 
@@ -104,6 +129,7 @@ mod new_with_record_tests {
             ttl: None,
             not_after: 9999999999,
             generation: 0,
+            mailbox: None,
         }
         .sign(&identity)
         .unwrap();

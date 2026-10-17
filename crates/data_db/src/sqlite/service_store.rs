@@ -1,6 +1,9 @@
 use std::{fmt, sync::Arc};
 
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce, aead::Aead};
+use aes_gcm::{
+    Aes256Gcm, Key, KeyInit, Nonce,
+    aead::{Aead, Payload},
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
@@ -36,6 +39,10 @@ pub(super) enum DbCommand {
     RevealSecret {
         key: String,
         resp: oneshot::Sender<anyhow::Result<Option<Vec<u8>>>>,
+    },
+    DeleteSecret {
+        key: String,
+        resp: oneshot::Sender<anyhow::Result<()>>,
     },
     CreateCollection {
         schema: host_store::CollectionSchema,
@@ -109,6 +116,9 @@ pub(super) fn run_writer_loop(
             }
             DbCommand::RevealSecret { key, resp } => {
                 let _ = resp.send(do_reveal_secret(&conn, &dek, &key));
+            }
+            DbCommand::DeleteSecret { key, resp } => {
+                let _ = resp.send(do_delete_secret(&conn, &key));
             }
             DbCommand::CreateCollection { schema, resp } => {
                 let _ = resp.send(do_create_collection(&conn, &schema));
@@ -185,8 +195,10 @@ fn do_write_secret(
     rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
+    // The entry name is the associated data, so a ciphertext copied to
+    // another row name (for example by guest SQL) does not decrypt there.
     let ciphertext = cipher
-        .encrypt(nonce, secret_bytes)
+        .encrypt(nonce, Payload { msg: secret_bytes, aad: key.as_bytes() })
         .map_err(|e| anyhow::anyhow!("Encryption failure: {e}"))?;
 
     let now = Utc::now().timestamp_millis();
@@ -223,13 +235,18 @@ fn do_reveal_secret(
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let decrypted = cipher
-            .decrypt(nonce, ciphertext.as_slice())
+            .decrypt(nonce, Payload { msg: ciphertext.as_slice(), aad: key.as_bytes() })
             .map_err(|e| anyhow::anyhow!("Decryption failure: {e}"))?;
 
         Ok(Some(decrypted))
     } else {
         Ok(None)
     }
+}
+
+fn do_delete_secret(conn: &Connection, key: &str) -> anyhow::Result<()> {
+    conn.execute(&format!("DELETE FROM {VAULT_TABLE} WHERE key = ?1"), rusqlite::params![key])?;
+    Ok(())
 }
 
 pub struct SqliteServiceStore {
@@ -277,6 +294,15 @@ impl ServiceStore for SqliteServiceStore {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.writer_tx
             .send(DbCommand::RevealSecret { key: key.to_string(), resp: resp_tx })
+            .await
+            .map_err(|_| anyhow::anyhow!("Writer task disconnected"))?;
+        resp_rx.await?
+    }
+
+    async fn delete_secret(&self, key: &str) -> anyhow::Result<()> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.writer_tx
+            .send(DbCommand::DeleteSecret { key: key.to_string(), resp: resp_tx })
             .await
             .map_err(|_| anyhow::anyhow!("Writer task disconnected"))?;
         resp_rx.await?
@@ -593,6 +619,10 @@ impl ServiceStore for Arc<SqliteServiceStore> {
 
     async fn reveal_secret(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
         self.as_ref().reveal_secret(key).await
+    }
+
+    async fn delete_secret(&self, key: &str) -> anyhow::Result<()> {
+        self.as_ref().delete_secret(key).await
     }
 
     async fn create_collection(

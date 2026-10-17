@@ -323,6 +323,7 @@ mod tests {
             ttl: None,
             not_after: now_secs() + 3600,
             generation: 0,
+            mailbox: None,
         }
         .sign(&substrate_identity)
         .unwrap();
@@ -340,6 +341,7 @@ mod tests {
             ttl: None,
             not_after: now_secs() + 3600,
             generation: 0,
+            mailbox: None,
         }
         .sign(&member_identity)
         .unwrap();
@@ -396,6 +398,7 @@ mod tests {
                 ttl: None,
                 not_after: now_secs() + 3600,
                 generation: 0,
+                mailbox: None,
             },
             pkarr_packet_hex: String::new(),
         };
@@ -444,6 +447,7 @@ mod tests {
                 ttl: None,
                 not_after: now_secs() + 3600,
                 generation: 0,
+                mailbox: None,
             },
             pkarr_packet_hex: String::new(),
         };
@@ -538,6 +542,7 @@ mod tests {
                 ttl: None,
                 not_after: now_secs() + 3600,
                 generation: 0,
+                mailbox: None,
             },
             pkarr_packet_hex: String::new(),
         };
@@ -569,6 +574,7 @@ mod tests {
                 ttl: None,
                 not_after: now_secs() + 3600,
                 generation: 0,
+                mailbox: None,
             },
             pkarr_packet_hex: String::new(),
         };

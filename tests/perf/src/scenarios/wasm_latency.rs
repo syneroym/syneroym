@@ -212,6 +212,7 @@ pub async fn run_scenario() -> Result<()> {
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     let signed_info = info.sign(&app_identity)?;
 

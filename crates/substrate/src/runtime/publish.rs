@@ -243,6 +243,7 @@ pub(super) fn build_signed_endpoint_info(
         ttl: None,
         not_after,
         generation: 0,
+        mailbox: None,
     };
 
     let identity = Identity::from_bytes(secret_key);

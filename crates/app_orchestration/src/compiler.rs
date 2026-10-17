@@ -7,8 +7,9 @@ use crate::{
     catalog::ManifestCatalog,
     models::{
         AppBlueprintId, AppDependencySpec, AppInstanceId, DeploymentPlan, LogicalServiceName,
-        LogicalServiceRef, PlacementSelector, PlannedService, ServiceId, ServiceSpec,
-        SynAppManifest, TopologyMode, TopologyVisibility, Visibility,
+        LogicalServiceRef, MAX_INSTANCE_CERT_EXPIRES_HOURS, MailboxChoice, PlacementSelector,
+        PlannedService, ServiceId, ServiceSpec, SynAppManifest, TopologyMode, TopologyVisibility,
+        Visibility,
     },
 };
 
@@ -45,6 +46,8 @@ pub async fn compile(
     for plan in &plans {
         validate_plan_visibility(plan)
             .map_err(|errs| anyhow!("Plan visibility validation failed: {}", errs.join("; ")))?;
+        validate_plan_member_settings(plan)
+            .map_err(|errs| anyhow!("Plan settings validation failed: {}", errs.join("; ")))?;
     }
 
     Ok(CompiledDeployment { plans })
@@ -115,6 +118,77 @@ pub fn validate_plan_visibility(plan: &DeploymentPlan) -> Result<(), Vec<String>
     }
 
     if errors.is_empty() { Ok(()) } else { Err(errors) }
+}
+
+/// Refuses a plan whose per-service mailbox or certificate lifetime cannot
+/// work. Like `validate_plan_visibility`, it reads the **plan**, so the
+/// supervisor's `submit` path (which never sees a manifest) gets the same
+/// checks.
+///
+/// - A mailbox needs visibility `public`. A `private` record is never
+///   published. An `internal` record must stay in the local registry, but a
+///   mailbox republishes the record to its own registry.
+/// - `auto` needs the registry's list of open mailboxes, which a deploy cannot
+///   read yet.
+/// - A certificate lifetime outside `1..=MAX_INSTANCE_CERT_EXPIRES_HOURS` would
+///   be refused by the substrate at install.
+pub fn validate_plan_member_settings(plan: &DeploymentPlan) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    for service in &plan.services {
+        let name = &service.logical_ref.service_name;
+        match &service.mailbox {
+            None => {}
+            Some(MailboxChoice::Auto) => errors.push(format!(
+                "'{name}' sets mailbox 'auto', which is not supported yet; give the mailbox \
+                 host's node DID"
+            )),
+            Some(MailboxChoice::Service(_)) if service.config.visibility != Visibility::Public => {
+                errors.push(format!(
+                    "'{name}' sets a mailbox but declares visibility '{}'; only a 'public' \
+                     service can have a mailbox",
+                    service.config.visibility.as_str()
+                ));
+            }
+            Some(MailboxChoice::Service(_)) => {}
+        }
+        if let Some(hours) = service.instance_cert_expires_hours
+            && !(1..=MAX_INSTANCE_CERT_EXPIRES_HOURS).contains(&hours)
+        {
+            errors.push(format!(
+                "'{name}' sets instance_cert_expires_hours {hours}; it must be from 1 to \
+                 {MAX_INSTANCE_CERT_EXPIRES_HOURS}"
+            ));
+        }
+    }
+    if errors.is_empty() { Ok(()) } else { Err(errors) }
+}
+
+/// One `PlannedService` per member of `spec`: every member carries the same
+/// settings and differs only in its ordinal and the id derived from it.
+fn planned_members(
+    spec: &ServiceSpec,
+    logical_ref: &LogicalServiceRef,
+    default_placement: Option<&PlacementSelector>,
+    topology_mode: TopologyMode,
+    resolved_dependencies: &BTreeMap<LogicalServiceName, Vec<ServiceId>>,
+) -> Vec<PlannedService> {
+    (0..spec.replicas)
+        .map(|member_index| PlannedService {
+            // Deterministic ServiceId generation via sha2 + z32
+            service_id: derive_deterministic_service_id(logical_ref, member_index),
+            logical_ref: logical_ref.clone(),
+            substrate: spec.placement.as_ref().or(default_placement).map(|p| p.alias().clone()),
+            config: spec.config.clone(),
+            resolved_dependencies: resolved_dependencies.clone(),
+            topology_mode,
+            member_index,
+            schedule: spec.schedule.clone(),
+            sharding_strategy: spec.sharding_strategy.clone(),
+            topology_visibility: spec.topology_visibility,
+            mailbox: spec.mailbox.clone(),
+            instance_cert_expires_hours: spec.instance_cert_expires_hours,
+        })
+        .collect()
 }
 
 fn compile_recursive<'a>(
@@ -223,26 +297,13 @@ fn compile_recursive<'a>(
                 })
                 .collect();
 
-            for member_index in 0..spec.replicas {
-                // Deterministic ServiceId generation via sha2 + z32
-                let service_id = derive_deterministic_service_id(&logical_ref, member_index);
-                services.push(PlannedService {
-                    service_id,
-                    logical_ref: logical_ref.clone(),
-                    substrate: spec
-                        .placement
-                        .as_ref()
-                        .or(default_placement)
-                        .map(|p| p.alias().clone()),
-                    config: spec.config.clone(),
-                    resolved_dependencies: resolved_dependencies.clone(),
-                    topology_mode,
-                    member_index,
-                    schedule: spec.schedule.clone(),
-                    sharding_strategy: spec.sharding_strategy.clone(),
-                    topology_visibility: spec.topology_visibility,
-                });
-            }
+            services.extend(planned_members(
+                spec,
+                &logical_ref,
+                default_placement,
+                topology_mode,
+                &resolved_dependencies,
+            ));
         }
 
         plans.push(DeploymentPlan {

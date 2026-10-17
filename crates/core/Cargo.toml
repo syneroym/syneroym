@@ -22,6 +22,7 @@ tls-parser.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
 syneroym-identity.workspace = true
+syneroym-mailbox-format.workspace = true
 syneroym-signed-record.workspace = true
 thiserror.workspace = true
 pkarr.workspace = true

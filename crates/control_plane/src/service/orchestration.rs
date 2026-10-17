@@ -27,7 +27,7 @@ use syneroym_app_orchestration::{
 use syneroym_core::{
     asset_manifest::ServiceAssets,
     deploy_docs,
-    dht_registry::SignedEndpointInfo,
+    dht_registry::{EndpointMailbox, SignedEndpointInfo},
     http_routes::HttpRoute,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
     storage::AppInstanceManagement,
@@ -37,6 +37,7 @@ use syneroym_fdae::Policy;
 use syneroym_identity::{
     DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE, substrate::derive_did_key,
 };
+use syneroym_mailbox_format::MailboxSecretKey;
 use syneroym_rpc::{
     Ability, CallOrigin, CallerContext, DeadLetterInfo, JsonRpcRequest, NativeService,
     ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri, SagaInfo,
@@ -45,8 +46,8 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     AppContext, AppInstanceManagement as AppInstanceManagementWire, ArtifactSource, AssetBundle,
     BindingWrite, BindingWriteOutcome as BindingWriteOutcomeWire, ContainerManifest,
     DependencyBinding, DeployManifest, DeployedService, DeploymentPlan, DocumentSource,
-    HealthCheck as WitHealthCheck, InstanceIdentity, InstancePhase, NodeFacts, ProbeStatus,
-    ServiceStatus, ServiceType as WitServiceType, SubstrateStatus, TcpManifest,
+    HealthCheck as WitHealthCheck, InstanceIdentity, InstancePhase, MailboxCredentials, NodeFacts,
+    ProbeStatus, ServiceStatus, ServiceType as WitServiceType, SubstrateStatus, TcpManifest,
     TopologyMode as WitTopologyMode, Visibility as WitVisibility, WasmManifest,
 };
 use tokio::task;
@@ -60,6 +61,7 @@ pub(super) mod backends;
 pub(super) mod cert;
 pub(super) mod deploy;
 pub(super) mod lifecycle;
+mod mailbox_key;
 pub(super) mod proxy_queue;
 pub(super) mod status;
 pub(super) mod types;

@@ -15,10 +15,9 @@ impl ControlPlaneService {
         caller: &CallerContext,
         new_gen: u64,
         previous_fdae_policy: &Option<String>,
-        installed_instance_cert: Option<DelegationCertificate>,
+        validated: ValidatedDeploy,
         manifest: &DeployManifest,
         incoming_hash: &str,
-        validated_visibility: AppVisibility,
     ) -> Result<(), String> {
         let service_type = app_service_type(&manifest.service_type);
         if let Err(e) =
@@ -43,7 +42,7 @@ impl ControlPlaneService {
         // WIT contract's "absent leaves the service its own master"
         // (control-plane.wit) must hold on every deploy, not only the
         // first.
-        let cert_result = match installed_instance_cert {
+        let cert_result = match validated.instance_cert {
             Some(cert) => self.registry.set_instance_cert(service_id.to_string(), cert).await,
             None => self.registry.remove_instance_cert(service_id).await,
         };
@@ -58,6 +57,30 @@ impl ControlPlaneService {
             )
             .await;
             return Err(format!("Instance certificate installation failed: {e}"));
+        }
+
+        // The key is kept next to the certificate it needs: a receiver
+        // registers with the certificate and opens messages with the key.
+        // A deploy without a mailbox clears a key an earlier deploy stored.
+        match &validated.mailbox_key {
+            Some(key) => {
+                if let Err(e) = self.store_mailbox_key(service_id, key).await {
+                    self.undeploy_and_rollback_late_failure(
+                        service_id,
+                        generation,
+                        caller,
+                        new_gen,
+                        previous_fdae_policy,
+                        "mailbox-key installation",
+                    )
+                    .await;
+                    return Err(format!(
+                        "Mailbox key installation failed: {e}. With storage encryption on, inject \
+                         the KEK before deploying a service with a mailbox."
+                    ));
+                }
+            }
+            None => self.clear_mailbox_key(service_id).await,
         }
 
         // What this deploy said the service is, and its declared probe if
@@ -79,7 +102,7 @@ impl ControlPlaneService {
                 service_type_str(service_type).to_string(),
                 health_check_json,
                 Some(incoming_hash.to_string()),
-                Some(validated_visibility.as_str().to_string()),
+                Some(validated.visibility.as_str().to_string()),
             )
             .await
         {
@@ -97,7 +120,7 @@ impl ControlPlaneService {
 
         info!(
             "service '{service_id}' deployed with visibility '{}'",
-            validated_visibility.as_str()
+            validated.visibility.as_str()
         );
         Ok(())
     }

@@ -1,6 +1,6 @@
 use rusqlite::{Connection, types::Value as SqlValue};
 
-use super::MAX_QUERY_PAGE_SIZE;
+use super::{MAX_QUERY_PAGE_SIZE, schema::touches_vault};
 use crate::{errors::map_rusqlite_error, host_store};
 
 fn wit_to_rusqlite_value(v: &host_store::SqlValue) -> SqlValue {
@@ -53,6 +53,9 @@ fn rusqlite_to_wit_value(
 /// scoped to this service's own database (ADR-0011).
 fn deny_query_raw_escapes(ctx: rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization {
     use rusqlite::hooks::{AuthAction, Authorization};
+    if touches_vault(&ctx.action) {
+        return Authorization::Deny;
+    }
     match ctx.action {
         AuthAction::Attach { .. } | AuthAction::Detach { .. } | AuthAction::Transaction { .. } => {
             Authorization::Deny

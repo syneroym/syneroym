@@ -72,8 +72,8 @@ async fn test_no_http_routes_entry_when_custom_config_has_none() {
     .unwrap();
 
     let service_id = "no-http-routes-svc".to_string();
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -85,10 +85,8 @@ async fn test_no_http_routes_entry_when_custom_config_has_none() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     service.deploy(service_id.clone(), manifest, &node_wide_caller("test-caller")).await.unwrap();
 
     assert!(http_routes.get(&service_id).is_none());
@@ -178,6 +176,7 @@ async fn test_asset_bundle_populated_on_deploy_and_cleared_on_undeploy() {
         }),
         registry_certificate: None,
         instance_certificate: None,
+        mailbox: None,
     };
     let caller = node_wide_caller("test-caller");
     service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
@@ -258,30 +257,30 @@ async fn test_asset_bundle_redeploy_keeps_shared_blobs_and_drops_removed_ones() 
     let service_id = "asset-redeploy-svc".to_string();
     let caller = node_wide_caller("test-caller");
 
-    let bundle = |archive: Vec<u8>| DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: Some(WitAssetBundle {
-                archive: ArtifactSource::Binary(archive),
+    let bundle = |archive: Vec<u8>| {
+        DeployManifest::unpublished(
+            ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+                visibility: None,
+            },
+            WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
                 hash: None,
-                visibility: Some(WitVisibility::Public),
+                interfaces: vec!["asset-redeploy-svc-interface".to_string()],
             }),
-            visibility: None,
-        },
-        service_type: WitServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(minimal_wasm_component()),
-            hash: None,
-            interfaces: vec!["asset-redeploy-svc-interface".to_string()],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
+        )
     };
 
     let first_archive =
@@ -384,30 +383,30 @@ async fn test_asset_bundle_rollback_on_a_real_deploy_failure_keeps_the_old_gener
     let service_id = "asset-wasm-rollback-svc".to_string();
     let caller = node_wide_caller("test-caller");
 
-    let manifest = |archive: Vec<u8>, interface_name: &str| DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: Some(WitAssetBundle {
-                archive: ArtifactSource::Binary(archive),
+    let manifest = |archive: Vec<u8>, interface_name: &str| {
+        DeployManifest::unpublished(
+            ServiceConfig {
+                env: vec![],
+                args: vec![],
+                custom_config: None,
+                quota: None,
+                schema: None,
+                rotation_policy: None,
+                fdae_policy: None,
+                health_check: None,
+                assets: Some(WitAssetBundle {
+                    archive: ArtifactSource::Binary(archive),
+                    hash: None,
+                    visibility: Some(WitVisibility::Public),
+                }),
+                visibility: None,
+            },
+            WitServiceType::Wasm(WasmManifest {
+                source: ArtifactSource::Binary(minimal_wasm_component()),
                 hash: None,
-                visibility: Some(WitVisibility::Public),
+                interfaces: vec![interface_name.to_string()],
             }),
-            visibility: None,
-        },
-        service_type: WitServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(minimal_wasm_component()),
-            hash: None,
-            interfaces: vec![interface_name.to_string()],
-        }),
-        registry_certificate: None,
-        instance_certificate: None,
+        )
     };
 
     // First deploy succeeds: generation 0's asset bundle is live.
@@ -531,8 +530,8 @@ async fn test_asset_bundle_is_rejected_for_a_tcp_service() {
 
     let service_id = "tcp-with-assets-svc".to_string();
     let archive = make_asset_archive(&[("index.html", b"unreachable")]);
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -548,10 +547,8 @@ async fn test_asset_bundle_is_rejected_for_a_tcp_service() {
             }),
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     let caller = node_wide_caller("test-caller");
     let err = service
         .deploy(service_id.clone(), manifest, &caller)
@@ -621,8 +618,8 @@ async fn test_asset_bundle_is_rejected_for_a_container_service() {
 
     let service_id = "container-with-assets-svc".to_string();
     let archive = make_asset_archive(&[("index.html", b"unreachable")]);
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -638,16 +635,14 @@ async fn test_asset_bundle_is_rejected_for_a_container_service() {
             }),
             visibility: None,
         },
-        service_type: WitServiceType::Container(ContainerManifest {
+        WitServiceType::Container(ContainerManifest {
             source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
             hash: None,
             image: "docker.io/library/nginx:1.27".to_string(),
             ports: vec![],
             volumes: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let caller = node_wide_caller("test-caller");
     let err = service
         .deploy(service_id.clone(), manifest, &caller)
@@ -712,8 +707,8 @@ async fn test_guest_route_is_rejected_for_a_tcp_service() {
     .unwrap();
 
     let service_id = "tcp-with-guest-route-svc".to_string();
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(guest_route_custom_config()),
@@ -725,10 +720,8 @@ async fn test_guest_route_is_rejected_for_a_tcp_service() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     let caller = node_wide_caller("test-caller");
     let err = service
         .deploy(service_id.clone(), manifest, &caller)
@@ -795,8 +788,8 @@ async fn test_guest_route_is_rejected_for_a_container_service() {
     .unwrap();
 
     let service_id = "container-with-guest-route-svc".to_string();
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(guest_route_custom_config()),
@@ -808,16 +801,14 @@ async fn test_guest_route_is_rejected_for_a_container_service() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Container(ContainerManifest {
+        WitServiceType::Container(ContainerManifest {
             source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
             hash: None,
             image: "docker.io/library/nginx:1.27".to_string(),
             ports: vec![],
             volumes: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let caller = node_wide_caller("test-caller");
     let err = service
         .deploy(service_id.clone(), manifest, &caller)
@@ -884,8 +875,8 @@ async fn test_guest_route_without_the_export_fails_deploy_and_rolls_back() {
 
     let service_id = "guest-route-missing-export-svc".to_string();
     let archive = make_asset_archive(&[("index.html", b"hi")]);
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(guest_route_custom_config()),
@@ -901,14 +892,12 @@ async fn test_guest_route_without_the_export_fails_deploy_and_rolls_back() {
             }),
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let caller = node_wide_caller("test-caller");
     let err = service
         .deploy(service_id.clone(), manifest, &caller)
@@ -987,8 +976,8 @@ async fn test_websocket_route_without_the_export_fails_deploy_and_rolls_back() {
     })
     .to_string();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(custom_config),
@@ -1000,14 +989,12 @@ async fn test_websocket_route_without_the_export_fails_deploy_and_rolls_back() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let caller = node_wide_caller("test-caller");
     let err = service.deploy(service_id.clone(), manifest, &caller).await.expect_err(
         "a component without the websocket export must not deploy with a websocket route",

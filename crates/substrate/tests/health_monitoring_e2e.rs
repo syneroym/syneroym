@@ -100,8 +100,8 @@ async fn deploy_tcp(
     port: u16,
     health_check: Option<WitHealthCheck>,
 ) {
-    let manifest = DeployManifest {
-        config: WitServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        WitServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -113,16 +113,14 @@ async fn deploy_tcp(
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest {
+        WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "main".to_string(),
                 host: "127.0.0.1".to_string(),
                 port,
             }],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     let params = serde_json::to_value((service_id.to_string(), manifest)).unwrap();
     let res = client.request("orchestrator", "deploy", params).await.unwrap();
     assert!(res.result.get("status").is_some(), "deploy of {service_id} failed: {res:?}");

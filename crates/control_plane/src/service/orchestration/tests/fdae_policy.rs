@@ -71,8 +71,8 @@ async fn test_stage4_policy_without_the_export_fails_deploy() {
     .await
     .unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -84,14 +84,12 @@ async fn test_stage4_policy_without_the_export_fails_deploy() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
 
     let result = service
         .deploy("stage4_missing_export_svc".to_string(), manifest, &node_wide_caller("test-caller"))
@@ -156,8 +154,8 @@ async fn test_stage4_policy_on_a_tcp_service_fails_deploy() {
     .await
     .unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -169,10 +167,8 @@ async fn test_stage4_policy_on_a_tcp_service_fails_deploy() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let result = service
         .deploy("stage4_tcp_svc".to_string(), manifest, &node_wide_caller("test-caller"))
@@ -237,8 +233,8 @@ async fn test_stage4_policy_rejection_rolls_back_the_policy_row() {
     .await
     .unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -250,14 +246,12 @@ async fn test_stage4_policy_rejection_rolls_back_the_policy_row() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec()),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
 
     let result = service
         .deploy("stage4_rollback_svc".to_string(), manifest, &node_wide_caller("test-caller"))
@@ -329,8 +323,8 @@ async fn test_deploy_fdae_policy_error_does_not_echo_file_contents() {
     let secret = "SUPER_SECRET_API_KEY_abc123";
     fs::write(&policy_filename, format!("\"{secret}\"")).unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -342,10 +336,8 @@ async fn test_deploy_fdae_policy_error_does_not_echo_file_contents() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let result = service
         .deploy("fdae_leak_service".to_string(), manifest, &node_wide_caller("test-caller"))
@@ -407,8 +399,8 @@ async fn test_deploy_fdae_policy_traversal_and_absolute_rejected() {
     .unwrap();
 
     for bad_path in ["../../../../etc/fdae-policy.json", "/etc/fdae-policy.json"] {
-        let manifest = DeployManifest {
-            config: ServiceConfig {
+        let manifest = DeployManifest::unpublished(
+            ServiceConfig {
                 env: vec![],
                 args: vec![],
                 custom_config: None,
@@ -420,10 +412,8 @@ async fn test_deploy_fdae_policy_traversal_and_absolute_rejected() {
                 assets: None,
                 visibility: None,
             },
-            service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-            registry_certificate: None,
-            instance_certificate: None,
-        };
+            WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+        );
 
         let result = service
             .deploy("fdae_traversal_service".to_string(), manifest, &node_wide_caller("t"))
@@ -495,8 +485,8 @@ async fn test_deploy_fdae_policy_symlink_escape_rejected() {
     let symlink_name = format!("test_fdae_policy_symlink_{}.json", std::process::id());
     std::os::unix::fs::symlink(&outside_policy, &symlink_name).unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -508,10 +498,8 @@ async fn test_deploy_fdae_policy_symlink_escape_rejected() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let result = service
         .deploy(
@@ -752,8 +740,8 @@ async fn test_http_routes_populated_on_deploy_and_cleared_on_undeploy() {
         ]
     })
     .to_string();
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(custom_config),
@@ -765,10 +753,8 @@ async fn test_http_routes_populated_on_deploy_and_cleared_on_undeploy() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
     let caller = node_wide_caller("test-caller");
     service.deploy(service_id.clone(), manifest, &caller).await.unwrap();
 

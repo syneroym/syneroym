@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use syneroym_app_orchestration::models::{DeploymentPlan, MemberRef, ServiceId, SubstrateAlias};
+use syneroym_mailbox_format::MailboxSecretKey;
 
 use super::SubstrateActor;
 /// A connected deploy target: the alias it was named by (`None` for the
@@ -15,6 +16,27 @@ pub struct DeployTarget {
     pub actor: Arc<dyn SubstrateActor>,
 }
 
+/// What `certify_placed_members` made for each placed member, keyed by
+/// member master `ServiceId`. Empty for a deploy without masters.
+#[derive(Debug, Default)]
+pub struct CertifiedMembers {
+    pub instance_certificates: BTreeMap<ServiceId, String>,
+    pub registry_certificates: BTreeMap<ServiceId, String>,
+    /// Only members whose service names a mailbox.
+    pub mailbox_keys: BTreeMap<ServiceId, MailboxSecretKey>,
+}
+
+impl CertifiedMembers {
+    /// Certificates and records made without any mailbox key.
+    #[must_use]
+    pub fn without_mailboxes(
+        instance_certificates: BTreeMap<ServiceId, String>,
+        registry_certificates: BTreeMap<ServiceId, String>,
+    ) -> Self {
+        Self { instance_certificates, registry_certificates, mailbox_keys: BTreeMap::new() }
+    }
+}
+
 #[derive(Debug)]
 pub struct ApplyRequest<'a> {
     pub plan: &'a DeploymentPlan,
@@ -24,8 +46,7 @@ pub struct ApplyRequest<'a> {
     /// fully-placed app must not require a default substrate it never
     /// touches.
     pub fallback: Option<&'a DeployTarget>,
-    pub instance_certificates: &'a BTreeMap<ServiceId, String>,
-    pub registry_certificates: &'a BTreeMap<ServiceId, String>,
+    pub members: &'a CertifiedMembers,
     pub emit_bindings: bool,
     /// The generation this apply writes at (ADR-0021 §4). `0` for an
     /// unmanaged deploy; a managing supervisor stamps its adopted

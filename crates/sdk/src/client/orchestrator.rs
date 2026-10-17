@@ -16,7 +16,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use super::SyneroymClient;
 use crate::types::{
     BindingWriteOutcome, DeploySvcOptions, DeployedService, NodeFacts, Publication,
-    SigningIdentityInfo, SubstrateStatus,
+    PublicationParts, SigningIdentityInfo, SubstrateStatus,
 };
 
 impl SyneroymClient {
@@ -51,7 +51,8 @@ impl SyneroymClient {
         wasm_bytes: Vec<u8>,
         options: DeploySvcOptions,
     ) -> Result<()> {
-        let (visibility, registry_certificate) = options.publication.split()?;
+        let PublicationParts { visibility, registry_certificate, mailbox } =
+            options.publication.split()?;
         let instance_certificate = options
             .instance_certificate
             .map(|c| c.to_json())
@@ -77,6 +78,7 @@ impl SyneroymClient {
             }),
             registry_certificate,
             instance_certificate,
+            mailbox,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -94,7 +96,7 @@ impl SyneroymClient {
         publication: Publication,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
-        let (visibility, registry_certificate) = publication.split()?;
+        let PublicationParts { visibility, registry_certificate, mailbox } = publication.split()?;
         let instance_certificate = instance_certificate
             .map(|c| c.to_json())
             .transpose()
@@ -115,6 +117,7 @@ impl SyneroymClient {
             service_type: ServiceType::Tcp(TcpManifest { endpoints }),
             registry_certificate,
             instance_certificate,
+            mailbox,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;
@@ -134,7 +137,7 @@ impl SyneroymClient {
         publication: Publication,
         instance_certificate: Option<DelegationCertificate>,
     ) -> Result<()> {
-        let (visibility, registry_certificate) = publication.split()?;
+        let PublicationParts { visibility, registry_certificate, mailbox } = publication.split()?;
         let instance_certificate = instance_certificate
             .map(|c| c.to_json())
             .transpose()
@@ -161,6 +164,7 @@ impl SyneroymClient {
             }),
             registry_certificate,
             instance_certificate,
+            mailbox,
         };
         let params = serde_json::to_value((service_id, manifest))?;
         let res = self.request("orchestrator", "deploy", params).await?;

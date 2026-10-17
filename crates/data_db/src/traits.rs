@@ -138,6 +138,10 @@ pub trait ServiceStore: Send + Sync {
     /// Retrieves a secret value from the service's private vault.
     async fn reveal_secret(&self, key: &str) -> anyhow::Result<Option<Vec<u8>>>;
 
+    /// Removes a secret from the service's private vault. Removing a name
+    /// that does not exist is not an error.
+    async fn delete_secret(&self, key: &str) -> anyhow::Result<()>;
+
     /// Creates a collection (table) plus any requested field indexes.
     async fn create_collection(
         &self,

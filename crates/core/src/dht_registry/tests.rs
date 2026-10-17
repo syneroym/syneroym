@@ -1,6 +1,7 @@
 #![allow(clippy::cognitive_complexity)]
 
 use syneroym_identity::Identity;
+use syneroym_mailbox_format::MailboxSecretKey;
 
 use super::*;
 
@@ -15,6 +16,7 @@ fn sample_endpoint_info(service_id: &str) -> EndpointInfo {
         ttl: None,
         not_after: u64::MAX / 2, // far future -- not what these tests are about
         generation: 0,
+        mailbox: None,
     }
 }
 
@@ -319,4 +321,86 @@ fn test_master_anchor_payload_expired() {
     // We can't easily manipulate pkarr SignedPacket timestamp since it's signed.
     // But verify() works on the signed pkarr packet timestamp.
     assert!(signed.verify().is_ok());
+}
+
+fn sample_mailbox(master: &Identity) -> EndpointMailbox {
+    EndpointMailbox {
+        service_id: substrate::derive_did_key(&Identity::generate().unwrap().public_key()),
+        key: MailboxSecretKey::derive_from_master(master).public_key(),
+    }
+}
+
+#[test]
+fn a_record_with_a_mailbox_signs_and_verifies() {
+    let identity = Identity::generate().unwrap();
+    let did = substrate::derive_did_key(&identity.public_key());
+    let mut info = sample_endpoint_info(&did);
+    info.mailbox = Some(sample_mailbox(&identity));
+
+    let signed = info.clone().sign(&identity).unwrap();
+    assert!(signed.verify().is_ok());
+
+    let wire = serde_json::to_string(&signed).unwrap();
+    let parsed: SignedEndpointInfo = serde_json::from_str(&wire).unwrap();
+    assert_eq!(parsed.info.mailbox, info.mailbox);
+    assert!(parsed.verify().is_ok());
+}
+
+#[test]
+fn a_record_without_a_mailbox_has_no_mailbox_key_in_its_json() {
+    let identity = Identity::generate().unwrap();
+    let did = substrate::derive_did_key(&identity.public_key());
+    let json = serde_json::to_string(&sample_endpoint_info(&did)).unwrap();
+    assert!(!json.contains("mailbox"));
+}
+
+#[test]
+fn a_record_signed_before_the_mailbox_field_still_parses() {
+    let identity = Identity::generate().unwrap();
+    let did = substrate::derive_did_key(&identity.public_key());
+    let json = serde_json::to_string(&sample_endpoint_info(&did)).unwrap();
+    let parsed: EndpointInfo = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.mailbox, None);
+}
+
+#[test]
+fn a_changed_mailbox_does_not_verify_against_the_signed_packet() {
+    let identity = Identity::generate().unwrap();
+    let did = substrate::derive_did_key(&identity.public_key());
+    let mut info = sample_endpoint_info(&did);
+    info.mailbox = Some(sample_mailbox(&identity));
+    let mut signed = info.sign(&identity).unwrap();
+
+    signed.info.mailbox = Some(sample_mailbox(&Identity::generate().unwrap()));
+    assert!(signed.verify().is_err());
+    signed.info.mailbox = None;
+    assert!(signed.verify().is_err());
+}
+
+#[test]
+fn a_service_record_with_a_mailbox_fits_the_dht_size_limit() {
+    let identity = Identity::generate().unwrap();
+    let did = substrate::derive_did_key(&identity.public_key());
+    let info = EndpointInfo {
+        nickname: Some("n".repeat(64)),
+        mailbox: Some(sample_mailbox(&identity)),
+        ..sample_endpoint_info(&did)
+    };
+
+    // `SignedPacket::new` refuses a packet over 1000 bytes.
+    let signed = info.sign(&identity).unwrap();
+    let pubkey = substrate::resolve_did_key(&did).unwrap();
+    let key = PublicKey::try_from(pubkey.as_bytes()).unwrap();
+    let payload = Bytes::from(hex::decode(&signed.pkarr_packet_hex).unwrap());
+    let packet = SignedPacket::from_relay_payload(&key, &payload).unwrap();
+    assert!(packet.encoded_packet().len() <= 1000);
+}
+
+#[test]
+fn a_record_with_a_malformed_mailbox_key_does_not_parse() {
+    let identity = Identity::generate().unwrap();
+    let did = substrate::derive_did_key(&identity.public_key());
+    let mut value = serde_json::to_value(sample_endpoint_info(&did)).unwrap();
+    value["mailbox"] = serde_json::json!({"service_id": did, "key": "not a key"});
+    assert!(serde_json::from_value::<EndpointInfo>(value).is_err());
 }

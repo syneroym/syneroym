@@ -35,6 +35,7 @@ fn sample_service_info_for(service_id: &str) -> EndpointInfo {
         ttl: None,
         not_after: far_future(),
         generation: 0,
+        mailbox: None,
     }
 }
 
@@ -111,6 +112,7 @@ async fn test_register_and_lookup_success() {
         ttl: None,
         not_after: far_future(),
         generation: 0,
+        mailbox: None,
     };
 
     let signed_info = create_signed_info(&identity, info);
@@ -144,6 +146,7 @@ async fn test_register_invalid_signature() {
         ttl: None,
         not_after: far_future(),
         generation: 0,
+        mailbox: None,
     };
 
     // Sign with OTHER identity
@@ -169,6 +172,7 @@ async fn test_register_invalid_did() {
         ttl: None,
         not_after: far_future(),
         generation: 0,
+        mailbox: None,
     };
 
     let signed_info = create_signed_info(&identity, info);
@@ -199,6 +203,7 @@ async fn test_indirect_lookup() {
             ttl: None,
             not_after: far_future(),
             generation: 0,
+            mailbox: None,
         },
         pkarr_packet_hex: "mock-hex".to_string(),
     };
@@ -216,6 +221,7 @@ async fn test_indirect_lookup() {
             ttl: None,
             not_after: far_future(),
             generation: 0,
+            mailbox: None,
         },
         pkarr_packet_hex: "mock-hex".to_string(),
     };
@@ -246,6 +252,7 @@ async fn test_lookup_by_shorthash_no_nickname() {
         ttl: None,
         not_after: far_future(),
         generation: 0,
+        mailbox: None,
     };
 
     let signed_info = create_signed_info(&identity, info);
@@ -276,6 +283,7 @@ async fn test_lookup_by_shorthash_fails_if_nickname_present() {
         ttl: None,
         not_after: far_future(),
         generation: 0,
+        mailbox: None,
     };
 
     let signed_info = create_signed_info(&identity, info);

@@ -24,6 +24,7 @@ syneroym-roym-core.workspace = true
 syneroym-ucan.workspace = true
 syneroym-passport.workspace = true
 syneroym-app-orchestration.workspace = true
+syneroym-mailbox-format.workspace = true
 syneroym-app-supervisor.workspace = true
 serde.workspace = true
 serde_json.workspace = true

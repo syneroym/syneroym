@@ -62,6 +62,8 @@ fn bound_app_manifest() -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     services.insert(
@@ -89,6 +91,8 @@ fn bound_app_manifest() -> SynAppManifest {
             sharding_strategy: None,
             schedule: None,
             topology_visibility: Default::default(),
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     SynAppManifest {

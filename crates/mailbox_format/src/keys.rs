@@ -2,8 +2,11 @@
 
 use std::{fmt, str::FromStr};
 
+use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
-use zeroize::{ZeroizeOnDrop, Zeroizing};
+use sha2::Sha256;
+use syneroym_identity::Identity;
+use zeroize::Zeroizing;
 
 use crate::crypto;
 
@@ -16,9 +19,11 @@ pub struct MailboxPublicKey([u8; 32]);
 /// The private half: the 32-byte seed the X25519 key pair is derived from.
 /// The deployer makes it with the member master and gives it to each
 /// instance; it is never logged.
-#[derive(Clone, ZeroizeOnDrop)]
+#[derive(Clone)]
 pub struct MailboxSecretKey {
-    seed: [u8; 32],
+    /// Cleared when the key is dropped. It is moved, never copied, between
+    /// the places that make a key, so no stack copy is left behind.
+    seed: Zeroizing<[u8; 32]>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -47,21 +52,49 @@ fn decode_key(text: &str) -> Result<Zeroizing<[u8; 32]>, KeyParseError> {
     Ok(key)
 }
 
+/// The HKDF `info` for the mailbox key of a member master. A new version
+/// string gives a new, unrelated key.
+const MASTER_DERIVATION_INFO: &[u8] = b"syneroym:mailbox-key:v1";
+
 impl MailboxSecretKey {
     /// A new random key.
     pub fn generate() -> Result<Self, getrandom::Error> {
         let mut seed = Zeroizing::new([0u8; 32]);
         getrandom::fill(&mut *seed)?;
-        Ok(Self { seed: *seed })
+        Ok(Self { seed })
     }
 
     #[must_use]
     pub fn from_seed(seed: [u8; 32]) -> Self {
+        Self { seed: Zeroizing::new(seed) }
+    }
+
+    /// The mailbox key of the member whose master is `master`. Every holder
+    /// of the master gets the same key, so a member keeps one mailbox key on
+    /// every deploy and every substrate. HKDF is one-way: the key tells
+    /// nothing about the master.
+    #[must_use]
+    pub fn derive_from_master(master: &Identity) -> Self {
+        let ikm = Zeroizing::new(master.to_bytes());
+        let mut seed = Zeroizing::new([0u8; 32]);
+        // A 32-byte output is always a valid HKDF-SHA256 length; the same
+        // expect-and-allow pairing is used by `Identity::derive_service_identity`.
+        #[allow(clippy::expect_used)]
+        Hkdf::<Sha256>::new(None, ikm.as_slice())
+            .expand(MASTER_DERIVATION_INFO, seed.as_mut_slice())
+            .expect("32 bytes is a valid HKDF-SHA256 output length");
         Self { seed }
     }
 
     pub(crate) fn seed(&self) -> &[u8; 32] {
         &self.seed
+    }
+
+    /// The raw 32-byte seed, for a store that keeps it as bytes. The wrapper
+    /// clears the copy when it is dropped.
+    #[must_use]
+    pub fn to_seed(&self) -> Zeroizing<[u8; 32]> {
+        self.seed.clone()
     }
 
     #[must_use]
@@ -73,11 +106,11 @@ impl MailboxSecretKey {
     /// it is dropped.
     #[must_use]
     pub fn to_z32(&self) -> Zeroizing<String> {
-        Zeroizing::new(z32::encode(&self.seed))
+        Zeroizing::new(z32::encode(self.seed.as_slice()))
     }
 
     pub fn from_z32(text: &str) -> Result<Self, KeyParseError> {
-        decode_key(text).map(|seed| Self::from_seed(*seed))
+        decode_key(text).map(|seed| Self { seed })
     }
 }
 

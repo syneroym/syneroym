@@ -29,6 +29,7 @@ use syneroym_data_blob::{
 use syneroym_data_db::{
     QueryAuth, auth,
     traits::{ServiceStore, StorageProvider},
+    vault_names,
 };
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{Mode, Policy};

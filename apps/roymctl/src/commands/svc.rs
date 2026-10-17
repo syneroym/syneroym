@@ -9,6 +9,7 @@ use std::{
 };
 
 use clap::Subcommand;
+use syneroym_app_orchestration::MailboxChoice;
 
 pub mod deploy;
 pub mod lifecycle;
@@ -23,8 +24,9 @@ pub(crate) use std::fs;
 
 #[cfg(test)]
 pub(crate) use deploy::{
-    parse_container_port_mapping, parse_container_volume_mapping, parse_interfaces,
-    parse_visibility, signed_export_record, validate_container_flags, validate_container_ports,
+    build_publication, check_mailbox_args, parse_container_port_mapping,
+    parse_container_volume_mapping, parse_interfaces, parse_visibility, signed_export_record,
+    validate_container_flags, validate_container_ports,
 };
 #[cfg(test)]
 pub(crate) use lifecycle::format_expiry;
@@ -149,6 +151,20 @@ pub enum SvcCommands {
         /// whoever should be able to reach a `private` service.
         #[arg(long)]
         record_out: Option<PathBuf>,
+        /// The mailbox host's node DID (ADR-0026): where a sender deposits a
+        /// message when this service cannot be reached. The host serves it
+        /// on interface `mailbox`. Needs `--visibility public`, and
+        /// `--master` (or `--identity` with `--instance-certificate`): the
+        /// mailbox key is derived from the service's master. `auto` is not
+        /// supported yet.
+        #[arg(long)]
+        mailbox: Option<MailboxChoice>,
+        /// Lifetime of the instance certificate `--master` issues, in
+        /// hours (1 to 720). Needs `--master`: no other flag issues a
+        /// certificate. Use a long value for a substrate that sleeps.
+        #[arg(long, default_value_t = 24, conflicts_with = "instance_certificate", requires = "master",
+              value_parser = clap::value_parser!(u32).range(1..=720))]
+        cert_expires_hours: u32,
     },
     /// Remove an installed `SynSvc` via API
     Remove {
@@ -233,6 +249,8 @@ pub async fn handle(
             custom_config,
             visibility,
             record_out,
+            mailbox,
+            cert_expires_hours,
         } => {
             deploy::handle_deploy(
                 &mut client,
@@ -254,6 +272,8 @@ pub async fn handle(
                 custom_config,
                 visibility,
                 record_out,
+                mailbox,
+                *cert_expires_hours,
                 dir,
             )
             .await

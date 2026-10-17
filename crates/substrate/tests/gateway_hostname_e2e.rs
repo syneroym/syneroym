@@ -101,6 +101,8 @@ fn service_manifest_with_vis(
             sharding_strategy: None,
             schedule: None,
             topology_visibility,
+            mailbox: None,
+            instance_cert_expires_hours: None,
         },
     );
     SynAppManifest {

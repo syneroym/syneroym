@@ -31,6 +31,7 @@ async fn record_signing_e2e_service_and_delegated_flow() {
         ttl: None,
         not_after: now + DEFAULT_ENDPOINT_NOT_AFTER_SECS,
         generation: 0,
+        mailbox: None,
     }
     .sign(&service_identity)
     .unwrap();
@@ -40,7 +41,7 @@ async fn record_signing_e2e_service_and_delegated_flow() {
             service_id.clone(),
             vec!["greeter".to_string()],
             wasm_bytes,
-            syneroym_sdk::Publication::Public(record),
+            syneroym_sdk::Publication::Public { record, mailbox_key: None },
             None,
         )
         .await

@@ -46,7 +46,8 @@ use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_sdk::{
     SyneroymClient,
     deploy::{
-        self, ApplyRequest, DeployTarget, apply_plan, certify_instance, member_registry_record,
+        self, ApplyRequest, CertifiedMembers, DeployTarget, apply_plan, certify_instance,
+        member_registry_record,
     },
 };
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
@@ -116,6 +117,7 @@ async fn certify_and_publish(
             client.service_id(),
             master,
             far_future_not_after(),
+            None,
         )
         .unwrap()
         {
@@ -247,8 +249,11 @@ async fn deploy_roym_app() -> RoymDeployment {
             plan: &new_plan,
             targets: &targets,
             fallback: Some(&targets[&alias]),
-            instance_certificates: &instance_certs,
-            registry_certificates: &registry_certs,
+            members: &CertifiedMembers {
+                instance_certificates: instance_certs,
+                registry_certificates: registry_certs,
+                mailbox_keys: BTreeMap::new(),
+            },
             emit_bindings: true,
             generation: 0,
             binding_epochs: &BTreeMap::new(),

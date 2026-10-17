@@ -298,9 +298,17 @@ impl ProxyRouter {
     /// Resolves `req.target_service`'s Iroh address via the community
     /// registry / DHT and dispatches the call over [`RemoteHop`].
     pub(super) async fn invoke_remote(&self, req: &ProxyRequest) -> Result<Value, ProxyError> {
-        let addr = net_iroh::resolve_iroh_addr(&self.registry_client, &req.target_service)
-            .await
-            .map_err(|_| ProxyError::ServiceNotFound(req.target_service.clone()))?;
+        let peer = net_iroh::resolve_peer(
+            &self.registry_client,
+            self.peer_records.as_deref(),
+            &req.target_service,
+        )
+        .await
+        .map_err(|_| ProxyError::ServiceNotFound(req.target_service.clone()))?;
+        // A peer with a mailbox but no address cannot be called directly.
+        let Some(addr) = peer.addr else {
+            return Err(ProxyError::ServiceNotFound(req.target_service.clone()));
+        };
         self.invoke_remote_at(&addr, req).await
     }
 

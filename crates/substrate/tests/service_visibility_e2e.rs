@@ -69,6 +69,7 @@ fn tcp_manifest(
         }),
         registry_certificate,
         instance_certificate: None,
+        mailbox: None,
     }
 }
 
@@ -143,6 +144,7 @@ async fn declaring_public_with_a_matching_certificate_publishes_and_resolves() {
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
+        mailbox: None,
     }
     .sign(&svc_identity)
     .unwrap();
@@ -198,6 +200,7 @@ async fn a_public_service_redeployed_private_is_recorded_as_private() {
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
+        mailbox: None,
     }
     .sign(&svc_identity)
     .unwrap();
@@ -276,6 +279,7 @@ async fn list_distinguishes_a_private_service_from_a_public_one() {
         ttl: None,
         not_after: far_future_not_after(),
         generation: 0,
+        mailbox: None,
     }
     .sign(&public_identity)
     .unwrap();
@@ -287,7 +291,7 @@ async fn list_distinguishes_a_private_service_from_a_public_one() {
                 host: "127.0.0.1".to_string(),
                 port: 45006,
             }],
-            Publication::Public(record),
+            Publication::Public { record, mailbox_key: None },
             None,
         )
         .await

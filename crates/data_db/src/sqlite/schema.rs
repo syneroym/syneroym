@@ -1,7 +1,10 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use rusqlite::Connection;
+use rusqlite::{
+    Connection,
+    hooks::{AuthAction, AuthContext, Authorization},
+};
 
 use crate::{errors::map_rusqlite_error, host_store};
 
@@ -18,8 +21,11 @@ static IDENTIFIER_REGEX: LazyLock<Regex> =
 /// field name) before it is formatted into SQL text. Table and column names
 /// cannot be bound as SQL parameters, so this allow-list is what stands in
 /// for parameterization at the DDL boundary.
+///
+/// The vault table's name is refused: a guest must not create, drop or fill
+/// a collection with that name.
 pub(crate) fn validate_identifier(name: &str) -> Result<(), host_store::DataLayerError> {
-    if IDENTIFIER_REGEX.is_match(name) {
+    if IDENTIFIER_REGEX.is_match(name) && !name.eq_ignore_ascii_case(VAULT_TABLE) {
         Ok(())
     } else {
         Err(host_store::DataLayerError::SchemaViolation(format!("invalid identifier: {name}")))
@@ -66,10 +72,65 @@ pub(super) fn do_drop_collection(
     Ok(())
 }
 
+/// Whether `action` reads or changes the vault table. Guest SQL is not
+/// allowed to touch it: the vault holds the secrets of the service and the
+/// ones the substrate keeps for itself (`vault_names`).
+pub(super) fn touches_vault(action: &AuthAction<'_>) -> bool {
+    use AuthAction::{
+        AlterTable, Analyze, CreateIndex, CreateTrigger, CreateVtable, Delete, DropIndex,
+        DropTable, DropTrigger, DropVtable, Insert, Read, Update,
+    };
+    let table = match action {
+        Read { table_name, .. }
+        | Update { table_name, .. }
+        | Insert { table_name }
+        | Delete { table_name }
+        | DropTable { table_name }
+        | AlterTable { table_name, .. }
+        | CreateIndex { table_name, .. }
+        | DropIndex { table_name, .. }
+        | CreateTrigger { table_name, .. }
+        | DropTrigger { table_name, .. }
+        | CreateVtable { table_name, .. }
+        | DropVtable { table_name, .. }
+        | Analyze { table_name } => table_name,
+        _ => return false,
+    };
+    table.eq_ignore_ascii_case(VAULT_TABLE)
+}
+
+/// Guest DDL may not touch the vault table, and may not create a trigger.
+/// SQLite checks the body of a trigger only when a later statement fires it,
+/// and that statement is the host's own write, which runs with no
+/// authorizer. A trigger could then change the vault from there.
+fn deny_vault_access(ctx: AuthContext<'_>) -> Authorization {
+    let is_trigger = matches!(
+        ctx.action,
+        AuthAction::CreateTrigger { .. } | AuthAction::CreateTempTrigger { .. }
+    );
+    if is_trigger || touches_vault(&ctx.action) {
+        Authorization::Deny
+    } else {
+        Authorization::Allow
+    }
+}
+
+/// Clears the authorizer when dropped, so the writer connection's own
+/// statements (vault writes included) are never checked by it.
+struct DdlAuthorizer<'c>(&'c Connection);
+
+impl Drop for DdlAuthorizer<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.authorizer::<fn(AuthContext<'_>) -> Authorization>(None);
+    }
+}
+
 pub(super) fn do_execute_ddl(
     conn: &Connection,
     sql: &str,
 ) -> Result<(), host_store::DataLayerError> {
+    conn.authorizer(Some(deny_vault_access)).map_err(map_rusqlite_error)?;
+    let _authorizer = DdlAuthorizer(conn);
     // Syntax-check first via a plain `prepare` (compiles without stepping the
     // statement, so nothing is mutated), then run the real statement(s).
     // NOTE: only the leading statement of a multi-statement `sql` is checked

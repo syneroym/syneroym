@@ -334,6 +334,8 @@ impl SupervisorService {
         Self::refuse_unrunnable_schedules(plan).map_err(RpcError::InternalError)?;
         Self::refuse_unshardable_plan(plan).map_err(RpcError::InternalError)?;
         validate_plan_visibility(plan).map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
+        validate_plan_member_settings(plan)
+            .map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
         Ok(())
     }
 

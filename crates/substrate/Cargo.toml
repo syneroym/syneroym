@@ -120,6 +120,7 @@ tempfile.workspace = true
 iroh.workspace = true
 syneroym-wit-interfaces.workspace = true
 syneroym-sdk.workspace = true
+syneroym-mailbox-format.workspace = true
 miniapp-demo1-web.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

@@ -69,7 +69,8 @@ fn raw_pipeline(service_id: &str) -> RoutePipeline {
 /// own helper) with a single `data-layer`-capable native service registered.
 async fn test_route_handler(service_id: &str) -> RouteHandler {
     let temp_dir = tempdir().unwrap();
-    let config = SubstrateConfig::default();
+    let mut config = SubstrateConfig::default();
+    config.storage.db_dir = temp_dir.path().to_path_buf();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =

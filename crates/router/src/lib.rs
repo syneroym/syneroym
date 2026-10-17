@@ -10,6 +10,7 @@ pub mod handshake;
 mod home_relay;
 pub mod net_iroh;
 pub mod net_webrtc;
+pub mod peer_records;
 mod preamble;
 mod proxy;
 mod proxy_outbox;
@@ -18,6 +19,8 @@ mod routing;
 mod saga;
 mod service_async_db;
 mod stop_signal;
+#[cfg(test)]
+mod test_support;
 
 pub use call_dedup::{ASYNC_DB_NAME, CallDedupGuard, DedupClaim, GuardOutcome, replay_as_result};
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};

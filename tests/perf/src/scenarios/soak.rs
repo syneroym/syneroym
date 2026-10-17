@@ -122,6 +122,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     let signed_info = info_reg.sign(&app_identity)?;
 
@@ -329,6 +330,7 @@ pub async fn run_scenario(duration_secs: u64) -> Result<()> {
                         ttl: None,
                         not_after: u64::MAX / 2,
                         generation: 0,
+                        mailbox: None,
                     };
                     let signed_info = match info_reg.sign(&churn_identity) {
                         Ok(s) => s,

@@ -1,8 +1,13 @@
 #![allow(clippy::cognitive_complexity)]
 
 use syneroym_core::record_signer::SigningPrincipal;
-use syneroym_rpc::PERMISSION_DENIED_CODE;
-use syneroym_wit_interfaces::host::syneroym::data_layer::store::DataLayerError;
+use syneroym_data_blob::ObjectStoreBlobProvider;
+use syneroym_data_db::{SqliteStorageProvider, vault_names};
+use syneroym_mqtt_broker::MqttBrokerConfig;
+use syneroym_rpc::{CallerContext, PERMISSION_DENIED_CODE};
+use syneroym_wit_interfaces::host::syneroym::{
+    data_layer::store::DataLayerError, vault::vault::VaultError,
+};
 
 use super::*;
 
@@ -116,4 +121,50 @@ fn signing_error_maps_every_variant_to_expected_rpc_error() {
         signing_error(SE::Internal("internal err".to_string())),
         RpcError::InternalError(_)
     ));
+}
+
+/// The substrate keeps some vault names for itself. The native guest door
+/// answers `not-found` for them even when the row exists, and still reveals
+/// an ordinary name.
+#[tokio::test]
+async fn vault_reveal_refuses_reserved_names_even_when_the_row_exists() {
+    let service_id = "did:key:zTestSvc";
+    let ks = Arc::new(KeyStore::new());
+    let tmp = tempfile::tempdir().unwrap();
+    let sp: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(tmp.path(), false).unwrap());
+    let store = sp.open_service_db(service_id, &ks).await.unwrap();
+    store.write_secret(vault_names::MAILBOX_SECRET, b"seed").await.unwrap();
+    store.write_secret("ordinary", b"visible").await.unwrap();
+    let bp: Arc<dyn BlobProvider> = Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    let mb = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let svc = SynSvcNativeService::new(
+        service_id.to_string(),
+        ks,
+        sp,
+        bp,
+        mb,
+        None,
+        Arc::new(Identity::generate().unwrap()),
+        "did:key:zOwner",
+        empty_service_proxy(),
+        syneroym_rpc::empty_row_authorizer(),
+        None,
+    );
+    let reveal = |key: &'static str| {
+        svc.dispatch_vault(NativeInvocation {
+            caller: CallerContext::service_system(service_id),
+            interface: "vault".to_string(),
+            method: "reveal".to_string(),
+            params: serde_json::json!({ "key": key }),
+        })
+    };
+
+    let reserved = reveal(vault_names::MAILBOX_SECRET).await.unwrap_err();
+    assert!(
+        matches!(&reserved, RpcError::InternalError(m) if m == &VaultError::NotFound.to_string()),
+        "{reserved:?}"
+    );
+    let ordinary = reveal("ordinary").await.unwrap();
+    assert_eq!(serde_json::from_value::<Vec<u8>>(ordinary.payload).unwrap(), b"visible".to_vec());
 }

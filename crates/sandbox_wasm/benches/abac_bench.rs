@@ -99,8 +99,8 @@ async fn deployed_engine() -> Option<AppSandboxEngine> {
     .await
     .unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -112,14 +112,12 @@ async fn deployed_engine() -> Option<AppSandboxEngine> {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     engine.deploy_wasm(SERVICE_ID, &manifest).await.unwrap();
     // `temp_dir` must outlive the engine's own use of it; leaked
     // deliberately for the benchmark's process lifetime, same tradeoff

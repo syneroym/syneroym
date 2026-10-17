@@ -354,8 +354,8 @@ async fn an_rpc_probe_permanently_fails_for_a_method_that_takes_a_required_argum
     let service = service_for_inline_tests(temp_dir.path()).await;
     let owner = node_wide_caller("owner");
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -371,14 +371,12 @@ async fn an_rpc_probe_permanently_fails_for_a_method_that_takes_a_required_argum
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     service.deploy("greeter-svc".to_string(), manifest, &owner).await.unwrap();
 
     let status = service.status(vec!["greeter-svc".to_string()], &owner).await.unwrap();
@@ -404,8 +402,8 @@ async fn an_rpc_probe_passes_for_a_method_that_takes_no_arguments() {
     let service = service_for_inline_tests(temp_dir.path()).await;
     let owner = node_wide_caller("owner");
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -421,14 +419,12 @@ async fn an_rpc_probe_passes_for_a_method_that_takes_no_arguments() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![STREAM_TEST_DRIVER_INTERFACE.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     service.deploy("stream-test-svc".to_string(), manifest, &owner).await.unwrap();
 
     let status = service.status(vec!["stream-test-svc".to_string()], &owner).await.unwrap();
@@ -481,8 +477,8 @@ async fn a_steady_state_sweep_of_twenty_services_stays_within_the_poll_budget() 
     let mut service_ids = Vec::new();
     for i in 0..20 {
         let id = format!("budget-svc-{i}");
-        let manifest = DeployManifest {
-            config: ServiceConfig {
+        let manifest = DeployManifest::unpublished(
+            ServiceConfig {
                 env: vec![],
                 args: vec![],
                 custom_config: None,
@@ -498,14 +494,12 @@ async fn a_steady_state_sweep_of_twenty_services_stays_within_the_poll_budget() 
                 assets: None,
                 visibility: None,
             },
-            service_type: WitServiceType::Wasm(WasmManifest {
+            WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(wasm_bytes.clone()),
                 hash: None,
                 interfaces: vec![STREAM_TEST_DRIVER_INTERFACE.to_string()],
             }),
-            registry_certificate: None,
-            instance_certificate: None,
-        };
+        );
         service.deploy(id.clone(), manifest, &owner).await.unwrap();
         service_ids.push(id);
     }

@@ -20,7 +20,7 @@ impl ControlPlaneService {
     ) -> Result<(), String> {
         self.validate_deploy_admission(&service_id, caller)?;
 
-        let (installed_instance_cert, validated_visibility) =
+        let validated =
             self.validate_deploy_certs_and_visibility(&service_id, caller, &manifest)?;
 
         let prepared_app_context =
@@ -38,7 +38,7 @@ impl ControlPlaneService {
         let incoming_hash = self::manifest::compute_deploy_idempotency_hash(
             &manifest,
             app_context.as_ref(),
-            installed_instance_cert.as_ref(),
+            validated.instance_cert.as_ref(),
         )?;
         if self.deploy_is_redundant_noop(&service_id, caller, service_type, &incoming_hash).await {
             // A retry after a lost response: nothing changed and the
@@ -102,7 +102,7 @@ impl ControlPlaneService {
             &service_id,
             &caller.caller_did,
             &fdae_policy,
-            installed_instance_cert.as_ref(),
+            validated.instance_cert.as_ref(),
         );
         self.commit_routes_and_gc_old_assets(
             &service_id,
@@ -112,8 +112,8 @@ impl ControlPlaneService {
         )
         .await;
 
-        // Owner attribution, instance-certificate install, and deploy-facts
-        // recording -- the three registry writes that commit the deploy
+        // Owner attribution, instance-certificate and mailbox-key install,
+        // and deploy-facts recording -- the registry writes that commit the deploy
         // after every earlier fallible step has succeeded. Every earlier
         // failure path above either never reached this line, or calls
         // `undeploy` itself (whose rollback is safe -- see
@@ -125,10 +125,9 @@ impl ControlPlaneService {
             caller,
             new_gen,
             &previous_fdae_policy,
-            installed_instance_cert,
+            validated,
             &manifest,
             &incoming_hash,
-            validated_visibility,
         )
         .await?;
 

@@ -10,6 +10,7 @@ use pkarr::{
 };
 use serde::{Deserialize, Serialize};
 use syneroym_identity::{Identity, substrate};
+use syneroym_mailbox_format::MailboxPublicKey;
 
 /// Default time-to-live for registry entries, aligned with BEP 0044 DHT expiry
 /// defaults.
@@ -63,6 +64,19 @@ pub enum EndpointMechanism {
     },
 }
 
+/// The mailbox a service member chose at deploy (ADR-0026): where a sender
+/// deposits a message when the member cannot be reached, and the key the
+/// message is sealed to. Signed with the rest of the record, so only the
+/// holder of the member master can set or change it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointMailbox {
+    /// The mailbox service: the node DID of the mailbox host. A sender
+    /// finds it with an ordinary registry lookup.
+    pub service_id: String,
+    /// The member's mailbox public key.
+    pub key: MailboxPublicKey,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointInfo {
     pub service_id: String,   // e.g. substrate did:key
@@ -88,6 +102,11 @@ pub struct EndpointInfo {
     /// reading: "no generation claimed".
     #[serde(default)]
     pub generation: u64,
+    /// The member's mailbox, if it chose one. Absent on every substrate
+    /// record and on every service without a mailbox; omitted from the
+    /// signed JSON when absent, so those records are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailbox: Option<EndpointMailbox>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

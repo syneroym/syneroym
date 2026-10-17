@@ -74,3 +74,25 @@ Why: a mailbox can damage, delay or relabel a message, and the receiver
 would then reject it. If such a rejection were final, a mailbox run by a
 stranger could make a sender drop any message. With this rule the worst
 a mailbox can do is delay delivery.
+
+### A2. The mailbox key is derived from the member master
+
+**Added 2026-10-17.** Decision 4 changes as follows.
+
+The deployer does not create a random key. The mailbox key of a service
+member is derived from the member master: HKDF-SHA256, no salt, the
+32-byte master key as input, and the fixed `info` string
+`syneroym:mailbox-key:v1`. The 32-byte output is the seed of the X25519
+key pair. Anyone who holds the master can derive the key again. Both
+deployers hold the master already: roymctl in its identity file, and the
+supervisor in its master vault.
+
+Why: a member needs the same mailbox key at every deploy, on any
+substrate. With a derived key there is no new key file to store or back
+up, and members created before this change get a key too. HKDF is
+one-way, so a substrate that holds the mailbox key learns nothing about
+the master.
+
+Rotation needs a new `info` version (`v2`) and a new signed record. It is
+not built yet. The substrate keeps the private half in the service's own
+vault under a name reserved for the substrate (see the vault interface).

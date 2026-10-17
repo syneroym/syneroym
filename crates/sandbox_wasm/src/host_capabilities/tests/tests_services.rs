@@ -235,3 +235,40 @@ async fn test_vault_reveal_not_found_at_host_boundary() {
     let result = vault::Host::reveal(&mut host_state, "does-not-exist".to_string()).await;
     assert!(matches!(result, Err(VaultError::NotFound)));
 }
+
+/// A name the substrate keeps for itself answers `not-found` even when the
+/// row exists, so a guest cannot read it or learn that it is there.
+#[tokio::test]
+async fn test_vault_reveal_refuses_reserved_names_even_when_the_row_exists() {
+    let key_store = Arc::new(KeyStore::new());
+    key_store.inject_kek([4u8; 32]).unwrap();
+    let temp_dir = tempfile::tempdir().unwrap();
+    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), true).unwrap());
+    let service_id = "vault-reserved-svc";
+    let store = storage_provider.open_service_db(service_id, &key_store).await.unwrap();
+    store.write_secret(vault_names::MAILBOX_SECRET, b"seed").await.unwrap();
+    store.write_secret("ordinary", b"visible").await.unwrap();
+    let mut host_state = HostState::new(
+        service_id.to_string(),
+        None,
+        key_store,
+        storage_provider,
+        test_blob_provider(),
+        CallerContext::service_system("test-caller"),
+        0,
+        test_messaging_context(),
+        test_streaming_context(),
+        test_service_proxy(),
+        None,
+        false,
+        syneroym_rpc::empty_row_authorizer(),
+        None,
+        syneroym_app_orchestration::empty_resolver(),
+    );
+
+    let reserved =
+        vault::Host::reveal(&mut host_state, vault_names::MAILBOX_SECRET.to_string()).await;
+    assert!(matches!(reserved, Err(VaultError::NotFound)));
+    let ordinary = vault::Host::reveal(&mut host_state, "ordinary".to_string()).await;
+    assert_eq!(ordinary.unwrap(), b"visible".to_vec());
+}

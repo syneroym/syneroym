@@ -95,8 +95,8 @@ impl ControlPlaneService {
         service_id: &str,
         caller: &CallerContext,
         manifest: &DeployManifest,
-    ) -> Result<(Option<DelegationCertificate>, AppVisibility), String> {
-        let installed_instance_cert = match &manifest.instance_certificate {
+    ) -> Result<ValidatedDeploy, String> {
+        let instance_cert = match &manifest.instance_certificate {
             Some(cert_json) => Some(self.verify_installed_instance_cert(
                 &caller.caller_did,
                 service_id,
@@ -104,12 +104,19 @@ impl ControlPlaneService {
             )?),
             None => None,
         };
-        let validated_visibility = validate_publication(
+        let visibility = validate_publication(
             service_id,
             manifest.config.visibility,
             manifest.registry_certificate.as_deref(),
         )?;
-        Ok((installed_instance_cert, validated_visibility))
+        let mailbox_key = validate_mailbox(
+            service_id,
+            manifest.mailbox.as_ref(),
+            visibility,
+            manifest.registry_certificate.as_deref(),
+            instance_cert.is_some(),
+        )?;
+        Ok(ValidatedDeploy { instance_cert, visibility, mailbox_key })
     }
 
     /// ADR-0021 §2: validates and prepares `app_context`'s bindings, and

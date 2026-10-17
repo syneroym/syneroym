@@ -38,8 +38,8 @@ fn wasm_asset_manifest(
     visibility: Visibility,
     custom_config: Option<serde_json::Value>,
 ) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: custom_config.map(|v| v.to_string()),
@@ -55,19 +55,17 @@ fn wasm_asset_manifest(
             }),
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 fn wasm_manifest_without_assets(wasm_bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -79,14 +77,12 @@ fn wasm_manifest_without_assets(wasm_bytes: Vec<u8>) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// A minimal gzip-compressed tar archive, one entry per `(path, bytes)`

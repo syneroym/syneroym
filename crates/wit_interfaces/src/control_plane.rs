@@ -9,7 +9,9 @@ wit_bindgen::generate!({
     additional_derives: [serde::Serialize, serde::Deserialize]
 });
 
-use exports::syneroym::control_plane::orchestrator::Visibility;
+use exports::syneroym::control_plane::orchestrator::{
+    DeployManifest, ServiceConfig, ServiceType, Visibility,
+};
 
 impl Visibility {
     /// The wire/display form (ADR-0018), matching how `roymctl` parses and
@@ -21,6 +23,21 @@ impl Visibility {
             Self::Public => "public",
             Self::Internal => "internal",
             Self::Private => "private",
+        }
+    }
+}
+
+impl DeployManifest {
+    /// A manifest with no registry certificate, no instance certificate and
+    /// no mailbox: the service keeps its own identity and is not published.
+    #[must_use]
+    pub const fn unpublished(config: ServiceConfig, service_type: ServiceType) -> Self {
+        Self {
+            config,
+            service_type,
+            registry_certificate: None,
+            instance_certificate: None,
+            mailbox: None,
         }
     }
 }

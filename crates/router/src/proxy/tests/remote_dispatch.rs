@@ -497,3 +497,39 @@ async fn a_native_origin_call_with_an_expired_certificate_falls_back_to_the_node
     );
     assert!(preamble.delegation.is_none());
 }
+
+// -- remote dispatch: peer records ---------------------------------------
+
+#[tokio::test]
+async fn a_remote_call_keeps_the_record_of_a_peer_with_a_mailbox() {
+    use crate::{
+        peer_records::PeerRecordStore,
+        test_support::{Substrate, registry_serving_only, sleeping_peer_record},
+    };
+
+    let record = sleeping_peer_record();
+    let url = registry_serving_only(&record, Substrate::Missing).await;
+    let store = Arc::new(PeerRecordStore::open_in_memory().unwrap());
+    let hop = Arc::new(MockHop::with_outcomes(vec![]));
+    let identity = Arc::new(Identity::generate().unwrap());
+    let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+    let router = ProxyRouter::new(
+        empty_registry(),
+        Arc::new(RegistryClient::new(false, Some(url))),
+        Arc::downgrade(&native_dispatch),
+        Weak::new(),
+        hop.clone(),
+        identity,
+        RetryPolicy::default(),
+    )
+    .with_peer_records(store.clone());
+
+    let req = base_request(&record.info.service_id, "greet");
+    let result = router.invoke_remote(&req).await;
+
+    // The peer has a mailbox but no address, so it cannot be called directly.
+    assert!(matches!(result, Err(ProxyError::ServiceNotFound(_))));
+    assert_eq!(hop.call_count(), 0);
+    let kept = store.recall(&record.info.service_id).await.unwrap();
+    assert_eq!(kept.pkarr_packet_hex, record.pkarr_packet_hex);
+}

@@ -5,6 +5,7 @@ pub mod filter;
 pub mod registry_store;
 pub mod sqlite;
 pub mod traits;
+pub mod vault_names;
 
 pub use auth::{QueryAuth, ReadOutcome};
 pub use sqlite::SqliteStorageProvider;
@@ -22,6 +23,8 @@ mod tests_create;
 mod tests_crud;
 #[cfg(test)]
 mod tests_fdae;
+#[cfg(test)]
+mod tests_vault;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]

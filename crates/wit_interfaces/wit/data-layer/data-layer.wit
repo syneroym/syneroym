@@ -179,13 +179,19 @@ interface store {
     /// SECURITY: The host must strictly validate that the caller holds the
     /// `data-layer/admin` capability (ADR-0015/0016) on this service's own
     /// resource and reject execution otherwise.
+    ///
+    /// The statements may not touch the substrate's vault table (`_vault`),
+    /// and may not create a trigger (`CREATE TRIGGER`, `CREATE TEMP TRIGGER`).
+    /// Such a statement fails with `internal`.
     execute-ddl: func(sql: string) -> result<_, data-layer-error>;
 
     /// Privileged raw-SQL escape hatch (ADR-0011). Gated by the
     /// `data-layer/admin` capability (same trust boundary as `execute-ddl`);
     /// returns `permission-denied` otherwise. Read-only: a statement that
-    /// would mutate the DB is rejected. `params` are bound via `?`
-    /// placeholders in order.
+    /// would mutate the DB is rejected. A statement that touches the
+    /// substrate's vault table (`_vault`) is refused with
+    /// `permission-denied`. `params` are bound via `?` placeholders in
+    /// order.
     query-raw: func(sql: string, params: list<sql-value>) -> result<raw-query-result, data-layer-error>;
 
     /// Mode A point-in-time authorization check (ADR-0017 §4). Whether the

@@ -248,8 +248,8 @@ pub(super) async fn saga_gate_test_service(
 }
 
 pub(super) fn saga_gate_manifest(wat: &str, interfaces: Vec<String>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -261,14 +261,12 @@ pub(super) fn saga_gate_manifest(wat: &str, interfaces: Vec<String>) -> DeployMa
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
             hash: None,
             interfaces,
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// Exports `saga-undo-reserve` with no `reserve` beside it -- the
@@ -489,8 +487,8 @@ pub(super) fn guest_route_custom_config() -> String {
 }
 
 pub(super) fn owner_test_manifest() -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -502,16 +500,14 @@ pub(super) fn owner_test_manifest() -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest {
+        WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "default".to_string(),
                 host: "127.0.0.1".to_string(),
                 port: 9100,
             }],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// Like `node_wide_caller`, plus `orchestrator/status` -- needed by the
@@ -795,8 +791,8 @@ pub(super) fn inline_manifest(
     schema: Option<DocumentSource>,
     fdae_policy: Option<DocumentSource>,
 ) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: custom_config.map(str::to_string),
@@ -808,15 +804,13 @@ pub(super) fn inline_manifest(
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    )
 }
 
 pub(super) fn tcp_manifest_with(port: u16, health_check: Option<WitHealthCheck>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -828,21 +822,19 @@ pub(super) fn tcp_manifest_with(port: u16, health_check: Option<WitHealthCheck>)
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest {
+        WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "main".to_string(),
                 host: "127.0.0.1".to_string(),
                 port,
             }],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 pub(super) fn container_manifest_with(health_check: Option<WitHealthCheck>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -854,21 +846,19 @@ pub(super) fn container_manifest_with(health_check: Option<WitHealthCheck>) -> D
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Container(ContainerManifest {
+        WitServiceType::Container(ContainerManifest {
             source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
             hash: None,
             image: "docker.io/library/nginx:1.27".to_string(),
             ports: vec![],
             volumes: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 pub(super) fn wasm_manifest_with(health_check: Option<WitHealthCheck>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -880,14 +870,12 @@ pub(super) fn wasm_manifest_with(health_check: Option<WitHealthCheck>) -> Deploy
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(vec![]),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// Stands in for the router's outbox, which this crate cannot depend
@@ -1011,6 +999,7 @@ pub(super) fn test_signed_record(service_id: &str, is_private: bool) -> String {
             ttl: None,
             not_after: 0,
             generation: 0,
+            mailbox: None,
         },
         pkarr_packet_hex: "abcd".to_string(),
     })

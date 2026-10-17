@@ -24,7 +24,7 @@ use syneroym_core::{
     record_signer::NodeRecordSigner,
 };
 use syneroym_data_blob::BlobProvider;
-use syneroym_data_db::traits::StorageProvider;
+use syneroym_data_db::{traits::StorageProvider, vault_names};
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;

@@ -44,6 +44,7 @@ use tracing::{debug, info, warn};
 use crate::{
     call_dedup::{self, CallDedupGuard, GuardOutcome},
     net_iroh,
+    peer_records::PeerRecordStore,
     preamble::RoutePreamble,
     proxy_outbox::{self, Disposition, ProxyOutbox},
     saga::SagaStore,
@@ -154,6 +155,10 @@ pub struct ProxyRouter {
     /// The durable saga step log behind `syneroym:proxy/saga`, one log per
     /// driving service. Same `None` reasoning as `outbox`.
     sagas: Option<Arc<SagaStore>>,
+    /// The last signed record of each peer that has a mailbox, so a peer the
+    /// registry no longer lists can still be found. `None` when the store
+    /// could not be opened: it only helps peers that are offline.
+    peer_records: Option<Arc<PeerRecordStore>>,
     /// Services the saga sweep saw absent from the registry on the
     /// *previous* tick -- one tick's grace before their saga log is
     /// dropped. Undeploy removes a service's endpoints one interface at a
@@ -201,6 +206,7 @@ impl ProxyRouter {
             dedup_guard: None,
             outbox: None,
             sagas: None,
+            peer_records: None,
             saga_undeploy_candidates: Mutex::new(BTreeSet::new()),
             proxy_state: None,
         }
@@ -219,6 +225,14 @@ impl ProxyRouter {
     pub fn with_outbox(mut self, outbox: Arc<ProxyOutbox>) -> Self {
         self.outbox = Some(outbox);
         self.rebuild_proxy_state();
+        self
+    }
+
+    /// The store `invoke_remote` keeps peer records in, so a peer that
+    /// cannot be reached can still be found by its mailbox.
+    #[must_use]
+    pub fn with_peer_records(mut self, store: Arc<PeerRecordStore>) -> Self {
+        self.peer_records = Some(store);
         self
     }
 

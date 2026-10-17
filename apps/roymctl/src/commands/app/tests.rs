@@ -13,6 +13,7 @@ mod deploy;
 mod health;
 mod reconcile;
 mod resolve;
+mod settings;
 mod shared;
 
 #[derive(Parser)]
@@ -100,6 +101,8 @@ fn planned_service(
         schedule: None,
         sharding_strategy: None,
         topology_visibility: Default::default(),
+        mailbox: None,
+        instance_cert_expires_hours: None,
     }
 }
 

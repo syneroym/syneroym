@@ -13,6 +13,7 @@
 
 use std::{
     fs,
+    path::Path,
     sync::{Arc, Weak},
 };
 
@@ -24,7 +25,7 @@ use syneroym_app_orchestration::{
 };
 use syneroym_control_plane::SynSvcNativeService;
 use syneroym_core::{
-    config::{AppSandboxRole, RolesConfig, SubstrateConfig},
+    config::{AppSandboxRole, RolesConfig, StorageConfig, SubstrateConfig},
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     storage::MockStorage,
@@ -78,8 +79,9 @@ impl NativeService for NoopControlPlane {
 /// fields (100 each, chosen to reproduce Wasmtime's pool-wide default
 /// unchanged for any config that doesn't know its own component shape) --
 /// this test file does know its shape, so it uses it.
-fn test_substrate_config() -> SubstrateConfig {
+fn test_substrate_config(db_dir: &Path) -> SubstrateConfig {
     SubstrateConfig {
+        storage: StorageConfig { db_dir: db_dir.to_path_buf(), ..Default::default() },
         roles: RolesConfig {
             app_sandbox: Some(AppSandboxRole {
                 max_concurrent_instances: 4,
@@ -97,8 +99,8 @@ fn test_substrate_config() -> SubstrateConfig {
 }
 
 fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -110,14 +112,12 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
             interfaces: vec![],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 /// Builds a `RouteHandler` (mirroring `native_dispatch_identity.rs`'s own
@@ -130,7 +130,7 @@ async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = test_substrate_config();
+    let config = test_substrate_config(temp_dir.path());
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
@@ -230,7 +230,7 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = test_substrate_config();
+    let config = test_substrate_config(temp_dir.path());
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =
@@ -557,7 +557,7 @@ async fn test_route_handler_with_self_native_data_layer(
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = test_substrate_config();
+    let config = test_substrate_config(temp_dir.path());
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
@@ -684,7 +684,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
     let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
 
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = test_substrate_config();
+    let config = test_substrate_config(temp_dir.path());
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
         Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());

@@ -7,10 +7,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use syneroym_app_orchestration::MailboxChoice;
 use syneroym_core::dht_registry::{
-    DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointType, SignedEndpointInfo,
+    DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMailbox, EndpointType,
+    SignedEndpointInfo,
 };
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
+use syneroym_mailbox_format::MailboxSecretKey;
 use syneroym_sdk::{
     ArtifactSource, AssetBundle, ContainerPortMapping, ContainerVolumeMapping, DeploySvcOptions,
     NetworkEndpoint, Publication, SyneroymClient, Visibility, deploy,
@@ -18,11 +21,6 @@ use syneroym_sdk::{
 };
 
 use crate::commands::member_identity;
-
-/// The attended posture's default certificate lifetime for a deploy-time
-/// certification via `svc deploy --master` -- `identity certify-instance`
-/// is the dedicated renewal command for a longer- or shorter-lived one.
-const DEFAULT_INSTANCE_CERT_EXPIRES_HOURS: u64 = 24;
 
 /// Resolve `--identity`/`--master` into the (at most one relevant) local
 /// keys `svc deploy` may need to sign an endpoint record: `--identity`
@@ -85,6 +83,36 @@ fn require_stated_visibility_if_signable(
     Ok(stated_visibility.unwrap_or(Visibility::Private))
 }
 
+/// `--mailbox` needs a public service, a signer to derive the mailbox key
+/// from, and an instance certificate: the substrate refuses a mailbox
+/// without one, and a receiver cannot register without it.
+pub(crate) fn check_mailbox_args(
+    mailbox: Option<&MailboxChoice>,
+    visibility: Visibility,
+    has_master: bool,
+    has_identity: bool,
+    has_instance_certificate: bool,
+) -> anyhow::Result<()> {
+    let Some(mailbox) = mailbox else { return Ok(()) };
+    if *mailbox == MailboxChoice::Auto {
+        anyhow::bail!("--mailbox auto is not supported yet; give the mailbox host's node DID");
+    }
+    if !(has_master || (has_identity && has_instance_certificate)) {
+        anyhow::bail!(
+            "--mailbox needs --master, or --identity with --instance-certificate: the mailbox key \
+             is derived from the service's master, and the receiver needs an instance certificate"
+        );
+    }
+    if visibility != Visibility::Public {
+        anyhow::bail!(
+            "--mailbox needs --visibility public (this deploy is '{}'): a mailbox republishes the \
+             record, which a private or internal service must keep to itself",
+            visibility.as_str()
+        );
+    }
+    Ok(())
+}
+
 /// Write `record` to `--record-out`'s path, if given, and print
 /// confirmation -- shared by both signable arms of [`build_publication`].
 fn write_record_out(record_out: Option<&Path>, record: &SignedEndpointInfo) -> anyhow::Result<()> {
@@ -97,9 +125,11 @@ fn write_record_out(record_out: Option<&Path>, record: &SignedEndpointInfo) -> a
 
 /// Builds the `Publication` a deploy call presents, signing and (if
 /// `--record-out` is given) exporting an endpoint record whenever there is
-/// a key to sign one with.
+/// a key to sign one with. With a `mailbox` host, the record names the
+/// mailbox and the key derived from the signer travels with the
+/// publication.
 #[allow(clippy::too_many_arguments)]
-fn build_publication(
+pub(crate) fn build_publication(
     parsed_visibility: Visibility,
     signing_identity: Option<&Identity>,
     svc_id: &str,
@@ -107,6 +137,7 @@ fn build_publication(
     nickname: Option<&str>,
     not_after: u64,
     record_out: Option<&Path>,
+    mailbox: Option<&MailboxChoice>,
 ) -> anyhow::Result<Publication> {
     match (parsed_visibility, signing_identity) {
         (Visibility::Private, Some(id)) if record_out.is_some() => {
@@ -117,6 +148,7 @@ fn build_publication(
                 nickname.map(str::to_string),
                 not_after,
                 id,
+                None,
             )?;
             write_record_out(record_out, &record)?;
             Ok(Publication::Private)
@@ -135,6 +167,15 @@ fn build_publication(
             );
         }
         (v, Some(id)) => {
+            let (route, mailbox_key) = match mailbox {
+                Some(MailboxChoice::Service(host)) => {
+                    let key = MailboxSecretKey::derive_from_master(id);
+                    let route =
+                        EndpointMailbox { service_id: host.to_string(), key: key.public_key() };
+                    (Some(route), Some(key))
+                }
+                Some(MailboxChoice::Auto) | None => (None, None),
+            };
             let record = signed_export_record(
                 v,
                 svc_id,
@@ -142,10 +183,11 @@ fn build_publication(
                 nickname.map(str::to_string),
                 not_after,
                 id,
+                route,
             )?;
             write_record_out(record_out, &record)?;
             Ok(if v == Visibility::Public {
-                Publication::Public(record)
+                Publication::Public { record, mailbox_key }
             } else {
                 Publication::Internal(record)
             })
@@ -163,6 +205,7 @@ async fn resolve_instance_cert(
     svc_id: &str,
     instance_certificate: Option<&Path>,
     registry_url: Option<&str>,
+    cert_expires_hours: u32,
 ) -> anyhow::Result<Option<DelegationCertificate>> {
     match (master_identity, instance_certificate) {
         (Some(resolved_master), _) => {
@@ -178,7 +221,7 @@ async fn resolve_instance_cert(
                 client,
                 resolved_master,
                 svc_id,
-                DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
+                u64::from(cert_expires_hours),
             )
             .await?;
             member_identity::refresh_anchor_or_warn(registry_url, resolved_master).await?;
@@ -320,6 +363,8 @@ pub(super) async fn handle_deploy(
     custom_config: &Option<PathBuf>,
     visibility: &Option<String>,
     record_out: &Option<PathBuf>,
+    mailbox: &Option<MailboxChoice>,
+    cert_expires_hours: u32,
     dir: &Path,
 ) -> anyhow::Result<()> {
     validate_container_flags(image, ports, volumes)?;
@@ -352,6 +397,14 @@ pub(super) async fn handle_deploy(
         nickname.as_deref(),
     )?;
 
+    check_mailbox_args(
+        mailbox.as_ref(),
+        parsed_visibility,
+        master_identity.is_some(),
+        named_identity.is_some(),
+        instance_certificate.is_some(),
+    )?;
+
     let not_after = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -366,6 +419,7 @@ pub(super) async fn handle_deploy(
         nickname.as_deref(),
         not_after,
         record_out.as_deref(),
+        mailbox.as_ref(),
     )?;
 
     let instance_cert = resolve_instance_cert(
@@ -375,6 +429,7 @@ pub(super) async fn handle_deploy(
         svc_id,
         instance_certificate.as_deref(),
         registry_url.as_deref(),
+        cert_expires_hours,
     )
     .await?;
 
@@ -439,6 +494,7 @@ pub(crate) fn signed_export_record(
     nickname: Option<String>,
     not_after: u64,
     identity: &Identity,
+    mailbox: Option<EndpointMailbox>,
 ) -> anyhow::Result<SignedEndpointInfo> {
     EndpointInfo {
         service_id: svc_id.to_string(),
@@ -450,6 +506,7 @@ pub(crate) fn signed_export_record(
         ttl: None,
         not_after,
         generation: 0,
+        mailbox,
     }
     .sign(identity)
 }

@@ -1356,8 +1356,8 @@ async fn test_deploy_fdae_policy_validates_persists_and_is_loadable() {
     let policy_filename = format!("test_fdae_policy_{}.json", std::process::id());
     fs::write(&policy_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -1369,10 +1369,8 @@ async fn test_deploy_fdae_policy_validates_persists_and_is_loadable() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+        WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
+    );
 
     let result = service
         .deploy("fdae_test_service".to_string(), manifest, &node_wide_caller("test-caller"))

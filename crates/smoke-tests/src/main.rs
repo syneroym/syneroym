@@ -197,6 +197,7 @@ async fn test_registry_registration(registry_url: &str, info: &CoordinatorInfo) 
         ttl: Some(300),
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
 
     let signed_info = endpoint_info.sign(&identity).context("Failed to sign endpoint info")?;

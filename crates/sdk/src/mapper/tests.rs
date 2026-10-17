@@ -8,6 +8,7 @@ use syneroym_app_orchestration::models::{
     LogicalServiceRef, PlannedService, RpcProbe, ServiceConfig, ServiceId, ServiceType, TcpProbe,
     TopologyMode, TopologyVisibility,
 };
+use syneroym_mailbox_format::MailboxSecretKey;
 
 use super::*;
 
@@ -49,6 +50,8 @@ fn plan_with_config(config: ServiceConfig) -> DeploymentPlan {
             schedule: None,
             sharding_strategy: None,
             topology_visibility: TopologyVisibility::Restricted,
+            mailbox: None,
+            instance_cert_expires_hours: None,
         }],
     }
 }
@@ -56,8 +59,7 @@ fn plan_with_config(config: ServiceConfig) -> DeploymentPlan {
 /// Whole-plan mapping, which is what every test but the subset one wants.
 fn map_all(
     plan: &DeploymentPlan,
-    instance_certificates: &BTreeMap<ServiceId, String>,
-    registry_certificates: &BTreeMap<ServiceId, String>,
+    members: &CertifiedMembers,
     emit_bindings: bool,
 ) -> anyhow::Result<WitDeploymentPlan> {
     let all: Vec<&PlannedService> = plan.services.iter().collect();
@@ -66,15 +68,7 @@ fn map_all(
     // concern to unit-test. Epoch defaults to empty (every binding maps
     // at 0) for the same reason -- the epoch map is its own test's
     // concern.
-    map_deployment_plan_to_wit(
-        plan,
-        &all,
-        instance_certificates,
-        registry_certificates,
-        emit_bindings,
-        0,
-        &BTreeMap::new(),
-    )
+    map_deployment_plan_to_wit(plan, &all, members, emit_bindings, 0, &BTreeMap::new())
 }
 
 /// The point of the whole change: a bare manifest path is resolved here,
@@ -90,8 +84,7 @@ fn local_document_ref_is_read_and_shipped_inline() {
     config.fdae =
         Some(FdaeManifest { policy: DocumentRef::Local(policy.to_string_lossy().into_owned()) });
 
-    let wit_plan =
-        map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+    let wit_plan = map_all(&plan_with_config(config), &CertifiedMembers::default(), true).unwrap();
     match &wit_plan.services[0].manifest.config.fdae_policy {
         Some(DocumentSource::Inline(content)) => {
             assert_eq!(content, r#"{"version":"fdae/v1"}"#);
@@ -107,8 +100,7 @@ fn remote_document_ref_passes_through_for_the_substrate_to_resolve() {
         policy: DocumentRef::Remote { remote_path: "policies/shared.json".to_string() },
     });
 
-    let wit_plan =
-        map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+    let wit_plan = map_all(&plan_with_config(config), &CertifiedMembers::default(), true).unwrap();
     match &wit_plan.services[0].manifest.config.fdae_policy {
         Some(DocumentSource::Path(path)) => assert_eq!(path, "policies/shared.json"),
         other => panic!("expected a host path, got {other:?}"),
@@ -121,22 +113,20 @@ fn local_document_ref_missing_file_fails_the_deploy() {
     config.fdae =
         Some(FdaeManifest { policy: DocumentRef::Local("does-not-exist.json".to_string()) });
 
-    assert!(map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true,).is_err());
+    assert!(map_all(&plan_with_config(config), &CertifiedMembers::default(), true,).is_err());
 }
 
 #[test]
 fn map_deployment_plan_to_wit_maps_absent_fdae_to_none() {
     let wit_plan =
-        map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
-            .unwrap();
+        map_all(&plan_with_config(base_config()), &CertifiedMembers::default(), true).unwrap();
     assert!(wit_plan.services[0].manifest.config.fdae_policy.is_none());
 }
 
 #[test]
 fn no_health_check_maps_to_none() {
     let wit_plan =
-        map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
-            .unwrap();
+        map_all(&plan_with_config(base_config()), &CertifiedMembers::default(), true).unwrap();
     assert!(wit_plan.services[0].manifest.config.health_check.is_none());
 }
 
@@ -147,8 +137,7 @@ fn no_health_check_maps_to_none() {
 #[test]
 fn a_tcp_service_with_no_declared_interfaces_gets_the_shared_default_name() {
     let wit_plan =
-        map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
-            .unwrap();
+        map_all(&plan_with_config(base_config()), &CertifiedMembers::default(), true).unwrap();
     match &wit_plan.services[0].manifest.service_type {
         WitServiceType::Tcp(m) => {
             assert_eq!(m.endpoints.len(), 1);
@@ -164,8 +153,7 @@ fn a_tcp_service_with_no_declared_interfaces_gets_the_shared_default_name() {
 fn a_tcp_services_declared_interface_name_is_used_verbatim() {
     let mut config = base_config();
     config.interfaces = vec![InterfaceName::new("admin")];
-    let wit_plan =
-        map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+    let wit_plan = map_all(&plan_with_config(config), &CertifiedMembers::default(), true).unwrap();
     match &wit_plan.services[0].manifest.service_type {
         WitServiceType::Tcp(m) => {
             assert_eq!(m.endpoints.len(), 1);
@@ -183,7 +171,7 @@ fn a_health_check_maps_onto_the_wire() {
         timeout_ms: 1234,
     }));
     let wit_plan =
-        map_all(&plan_with_config(tcp_config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+        map_all(&plan_with_config(tcp_config), &CertifiedMembers::default(), true).unwrap();
     match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
         WitHealthCheck::TcpConnect(p) => {
             assert_eq!(p.interface_name, "main");
@@ -200,7 +188,7 @@ fn a_health_check_maps_onto_the_wire() {
         timeout_ms: 1500,
     }));
     let wit_plan =
-        map_all(&plan_with_config(http_config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+        map_all(&plan_with_config(http_config), &CertifiedMembers::default(), true).unwrap();
     match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
         WitHealthCheck::HttpGet(p) => {
             assert_eq!(p.interface_name, "http");
@@ -218,7 +206,7 @@ fn a_health_check_maps_onto_the_wire() {
         timeout_ms: 2000,
     }));
     let wit_plan =
-        map_all(&plan_with_config(rpc_config), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+        map_all(&plan_with_config(rpc_config), &CertifiedMembers::default(), true).unwrap();
     match wit_plan.services[0].manifest.config.health_check.as_ref().unwrap() {
         WitHealthCheck::Rpc(p) => {
             assert_eq!(p.interface_name, "rpc");
@@ -258,13 +246,9 @@ fn container_volume_files_are_parsed_and_inlined() {
         serde_json::to_string(&conf.to_string_lossy().into_owned()).unwrap()
     );
 
-    let wit_plan = map_all(
-        &plan_with_config(container_config(&custom)),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        true,
-    )
-    .expect("volumes should parse");
+    let wit_plan =
+        map_all(&plan_with_config(container_config(&custom)), &CertifiedMembers::default(), true)
+            .expect("volumes should parse");
     let volumes = &container_manifest_of(&wit_plan).volumes;
 
     assert_eq!(volumes.len(), 1);
@@ -283,13 +267,9 @@ fn container_volume_files_are_parsed_and_inlined() {
 #[test]
 fn container_volume_without_files_still_parses() {
     let custom = r#"{"volumes":[{"host_path":"data","container_path":"/data"}]}"#;
-    let wit_plan = map_all(
-        &plan_with_config(container_config(custom)),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        true,
-    )
-    .unwrap();
+    let wit_plan =
+        map_all(&plan_with_config(container_config(custom)), &CertifiedMembers::default(), true)
+            .unwrap();
     let volumes = &container_manifest_of(&wit_plan).volumes;
 
     assert_eq!(volumes.len(), 1);
@@ -303,8 +283,7 @@ fn malformed_volumes_and_ports_both_fail_the_deploy() {
     let bad_volumes = r#"{"volumes":[{"host_path":"data"}]}"#;
     let err = map_all(
         &plan_with_config(container_config(bad_volumes)),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
+        &CertifiedMembers::default(),
         true,
     )
     .unwrap_err()
@@ -312,14 +291,10 @@ fn malformed_volumes_and_ports_both_fail_the_deploy() {
     assert!(err.contains("invalid container volumes"), "{err}");
 
     let bad_ports = r#"{"ports":[{"interface_name":"default","port":80,"protocol":"tcp"}]}"#;
-    let err = map_all(
-        &plan_with_config(container_config(bad_ports)),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        true,
-    )
-    .unwrap_err()
-    .to_string();
+    let err =
+        map_all(&plan_with_config(container_config(bad_ports)), &CertifiedMembers::default(), true)
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("invalid container ports"), "{err}");
 }
 
@@ -333,7 +308,7 @@ fn oversize_local_document_fails_before_the_deploy_call() {
     config.fdae =
         Some(FdaeManifest { policy: DocumentRef::Local(big.to_string_lossy().into_owned()) });
 
-    let err = map_all(&plan_with_config(config), &BTreeMap::new(), &BTreeMap::new(), true)
+    let err = map_all(&plan_with_config(config), &CertifiedMembers::default(), true)
         .unwrap_err()
         .to_string();
     assert!(err.contains("exceeding the"), "{err}");
@@ -370,6 +345,8 @@ fn plan_with_a_dependency() -> DeploymentPlan {
                 schedule: None,
                 sharding_strategy: None,
                 topology_visibility: TopologyVisibility::Restricted,
+                mailbox: None,
+                instance_cert_expires_hours: None,
             },
             PlannedService {
                 service_id: ServiceId::new("did:key:hFrontend"),
@@ -388,6 +365,8 @@ fn plan_with_a_dependency() -> DeploymentPlan {
                 schedule: None,
                 sharding_strategy: None,
                 topology_visibility: TopologyVisibility::Restricted,
+                mailbox: None,
+                instance_cert_expires_hours: None,
             },
         ],
     }
@@ -395,8 +374,7 @@ fn plan_with_a_dependency() -> DeploymentPlan {
 
 #[test]
 fn the_app_context_carries_one_binding_per_depends_on_entry_with_the_targets_mode() {
-    let wit_plan =
-        map_all(&plan_with_a_dependency(), &BTreeMap::new(), &BTreeMap::new(), true).unwrap();
+    let wit_plan = map_all(&plan_with_a_dependency(), &CertifiedMembers::default(), true).unwrap();
 
     let frontend = wit_plan.services.iter().find(|s| s.logical_ref.ends_with("frontend")).unwrap();
     let ctx = frontend.app_context.as_ref().expect("frontend has an app context");
@@ -439,8 +417,7 @@ fn mapping_one_service_resolves_a_dependencys_mode_from_the_whole_plan() {
     let wit_plan = map_deployment_plan_to_wit(
         &plan,
         &frontend_only,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
+        &CertifiedMembers::default(),
         true,
         0,
         &BTreeMap::new(),
@@ -466,16 +443,9 @@ fn a_plan_mapped_at_a_nonzero_epoch_emits_that_epoch_on_every_binding() {
     let epochs = BTreeMap::from([(frontend_member_ref, 7u64)]);
 
     let all: Vec<&PlannedService> = plan.services.iter().collect();
-    let wit_plan = map_deployment_plan_to_wit(
-        &plan,
-        &all,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        true,
-        0,
-        &epochs,
-    )
-    .unwrap();
+    let wit_plan =
+        map_deployment_plan_to_wit(&plan, &all, &CertifiedMembers::default(), true, 0, &epochs)
+            .unwrap();
 
     let frontend = wit_plan.services.iter().find(|s| s.logical_ref.ends_with("frontend")).unwrap();
     let ctx = frontend.app_context.as_ref().unwrap();
@@ -492,8 +462,7 @@ fn a_plan_mapped_at_a_nonzero_epoch_emits_that_epoch_on_every_binding() {
 #[test]
 fn a_plan_with_no_dependencies_emits_an_empty_binding_list() {
     let wit_plan =
-        map_all(&plan_with_config(base_config()), &BTreeMap::new(), &BTreeMap::new(), true)
-            .unwrap();
+        map_all(&plan_with_config(base_config()), &CertifiedMembers::default(), true).unwrap();
     assert!(wit_plan.services[0].app_context.as_ref().unwrap().bindings.is_empty());
 }
 
@@ -506,8 +475,7 @@ fn a_plan_with_no_dependencies_emits_an_empty_binding_list() {
 /// fabricated ones.
 #[test]
 fn emit_bindings_false_publishes_no_fabricated_member_dids() {
-    let wit_plan =
-        map_all(&plan_with_a_dependency(), &BTreeMap::new(), &BTreeMap::new(), false).unwrap();
+    let wit_plan = map_all(&plan_with_a_dependency(), &CertifiedMembers::default(), false).unwrap();
 
     for svc in &wit_plan.services {
         assert!(
@@ -516,4 +484,30 @@ fn emit_bindings_false_publishes_no_fabricated_member_dids() {
             svc.logical_ref
         );
     }
+}
+
+/// The mailbox key reaches the manifest of exactly the members that have
+/// one, in the text form of the deploy call.
+#[test]
+fn a_members_mailbox_key_is_mapped_into_its_manifest_only() {
+    let plan = plan_with_a_dependency();
+    let (with, without) = (&plan.services[0], &plan.services[1]);
+    let key = MailboxSecretKey::generate().unwrap();
+    let mut members = CertifiedMembers::default();
+    members.mailbox_keys.insert(with.service_id.clone(), key.clone());
+
+    let wit_plan = map_all(&plan, &members, true).unwrap();
+
+    let mapped = |svc: &PlannedService| {
+        wit_plan
+            .services
+            .iter()
+            .find(|s| s.service_id == svc.service_id.to_string())
+            .unwrap()
+            .manifest
+            .mailbox
+            .clone()
+    };
+    assert_eq!(mapped(with).unwrap().secret_key, key.to_z32().as_str());
+    assert!(mapped(without).is_none());
 }

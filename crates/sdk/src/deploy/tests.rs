@@ -90,6 +90,8 @@ fn service(name: &str, substrate: Option<&str>) -> PlannedService {
         schedule: None,
         sharding_strategy: None,
         topology_visibility: TopologyVisibility::Restricted,
+        mailbox: None,
+        instance_cert_expires_hours: None,
     }
 }
 
@@ -111,9 +113,15 @@ fn target(did: &str, alias: Option<&str>, actor: Arc<dyn SubstrateActor>) -> Dep
 #[test]
 fn member_registry_record_mints_nothing_for_a_private_member() {
     let master = Identity::generate().unwrap();
-    let record =
-        member_registry_record(Visibility::Private, "did:key:zSvc", "did:key:zSub", &master, 0)
-            .unwrap();
+    let record = member_registry_record(
+        Visibility::Private,
+        "did:key:zSvc",
+        "did:key:zSub",
+        &master,
+        0,
+        None,
+    )
+    .unwrap();
     assert!(record.is_none());
 }
 
@@ -132,6 +140,7 @@ fn member_registry_record_sets_is_private_from_the_declared_visibility() {
         "did:key:zSub",
         &master,
         9_999_999_999,
+        None,
     )
     .unwrap()
     .expect("internal must mint a record");
@@ -145,6 +154,7 @@ fn member_registry_record_sets_is_private_from_the_declared_visibility() {
         "did:key:zSub",
         &master,
         9_999_999_999,
+        None,
     )
     .unwrap()
     .expect("public must mint a record");
@@ -185,8 +195,7 @@ async fn apply_plan_deploys_each_service_to_its_own_target() {
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &BTreeMap::new(),
-            registry_certificates: &BTreeMap::new(),
+            members: &CertifiedMembers::default(),
             emit_bindings: false,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -220,8 +229,7 @@ async fn apply_plan_records_one_action_row_per_service_and_substrate() {
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &BTreeMap::new(),
-            registry_certificates: &BTreeMap::new(),
+            members: &CertifiedMembers::default(),
             emit_bindings: false,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -256,8 +264,7 @@ async fn apply_plan_continues_past_a_failure_and_reports_it() {
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &BTreeMap::new(),
-            registry_certificates: &BTreeMap::new(),
+            members: &CertifiedMembers::default(),
             emit_bindings: false,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -301,8 +308,7 @@ async fn apply_plan_skips_a_service_already_completed_on_the_same_substrate() {
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &BTreeMap::new(),
-            registry_certificates: &BTreeMap::new(),
+            members: &CertifiedMembers::default(),
             emit_bindings: false,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -346,8 +352,7 @@ async fn apply_plan_does_not_skip_when_the_alias_now_resolves_to_a_different_did
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &BTreeMap::new(),
-            registry_certificates: &BTreeMap::new(),
+            members: &CertifiedMembers::default(),
             emit_bindings: false,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -409,8 +414,7 @@ async fn apply_plan_redeploys_a_service_whose_most_recent_row_is_remove() {
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &BTreeMap::new(),
-            registry_certificates: &BTreeMap::new(),
+            members: &CertifiedMembers::default(),
             emit_bindings: false,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -447,8 +451,7 @@ async fn a_mapping_error_fails_only_its_own_service() {
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &BTreeMap::new(),
-            registry_certificates: &BTreeMap::new(),
+            members: &CertifiedMembers::default(),
             emit_bindings: false,
             generation: 0,
             binding_epochs: &BTreeMap::new(),
@@ -483,15 +486,14 @@ fn apply_plan_returns_a_send_future() {
         target("did:key:zA", Some("edge-1"), applier),
     )]);
 
-    let no_certs = BTreeMap::new();
     let no_epochs = BTreeMap::new();
+    let members = CertifiedMembers::default();
     let fut = apply_plan(
         ApplyRequest {
             plan: &p,
             targets: &targets,
             fallback: None,
-            instance_certificates: &no_certs,
-            registry_certificates: &no_certs,
+            members: &members,
             emit_bindings: false,
             generation: 0,
             binding_epochs: &no_epochs,
@@ -752,3 +754,5 @@ async fn a_failed_apply_plan_and_renew_cert_are_never_enqueued() {
     assert!(actor.renew_cert("svc".to_string(), 0, "cert".to_string()).await.is_err());
     assert!(outbox.enqueued.lock().unwrap().is_empty());
 }
+
+mod mailbox;

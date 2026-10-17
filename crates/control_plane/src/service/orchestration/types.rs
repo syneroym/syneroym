@@ -32,7 +32,9 @@ pub(crate) const fn app_service_type(t: &WitServiceType) -> AppServiceType {
 /// record today passes `0`, so its absence is latent, not yet a wrong
 /// answer -- but a real generation change is a real content change, and
 /// omitting it here would let this dedup treat two different generations
-/// as identical the day one publisher's does. Falls back to hashing the raw
+/// as identical the day one publisher's does. The mailbox is part of what the
+/// service is: a redeploy that changes it must not be skipped as a no-op.
+/// Falls back to hashing the raw
 /// string on a parse failure -- that can only make the dedup *more*
 /// conservative (a parse failure never equals anything, including itself
 /// byte-for-byte reapplied), never less safe.
@@ -47,6 +49,7 @@ pub(crate) fn stable_registry_certificate_for_hash(json: &str) -> String {
             signed.info.is_private,
             &signed.info.ttl,
             signed.info.generation,
+            &signed.info.mailbox,
         ))
         .unwrap_or_else(|_| json.to_string()),
         Err(_) => json.to_string(),
@@ -252,6 +255,88 @@ pub(crate) struct PreparedAppContext {
     /// (`dependency_name` as sent on the wire, the validated
     /// `LogicalServiceName`, the resolved `TopologyEntry`) per binding.
     pub(super) bindings: Vec<(String, LogicalServiceName, TopologyEntry)>,
+}
+
+/// What `validate_deploy_certs_and_visibility` checked and the commit step
+/// installs.
+pub(crate) struct ValidatedDeploy {
+    pub(super) instance_cert: Option<DelegationCertificate>,
+    pub(super) visibility: AppVisibility,
+    pub(super) mailbox_key: Option<MailboxSecretKey>,
+}
+
+/// The mailbox the record names. When either the record names one or a key
+/// was supplied, the record must verify: only `verify` binds the JSON
+/// `info` to the signed packet, and the receiver later pulls from the
+/// mailbox of this stored record. A record that names no mailbox, with no
+/// key supplied, is not this check's business.
+fn verified_record_mailbox(
+    service_id: &str,
+    credentials: Option<&MailboxCredentials>,
+    registry_certificate: Option<&str>,
+) -> Result<Option<EndpointMailbox>, String> {
+    let Some(signed) =
+        registry_certificate.and_then(|json| serde_json::from_str::<SignedEndpointInfo>(json).ok())
+    else {
+        return Ok(None);
+    };
+    if credentials.is_some() || signed.info.mailbox.is_some() {
+        signed.verify().map_err(|e| {
+            format!(
+                "registry certificate of '{service_id}' names a mailbox but does not verify: {e}"
+            )
+        })?;
+    }
+    Ok(signed.info.mailbox)
+}
+
+/// A mailbox needs a public record that names it with this key, and an
+/// instance certificate the receiver can show at registration.
+///
+/// The record is signed by the member master, so it is the one place the
+/// mailbox choice is fixed. The substrate only checks that the key it was
+/// given is the one the record names; senders seal to the record's key, so a
+/// different key here would make every message unreadable.
+pub(crate) fn validate_mailbox(
+    service_id: &str,
+    credentials: Option<&MailboxCredentials>,
+    visibility: AppVisibility,
+    registry_certificate: Option<&str>,
+    has_instance_certificate: bool,
+) -> Result<Option<MailboxSecretKey>, String> {
+    let record_mailbox = verified_record_mailbox(service_id, credentials, registry_certificate)?;
+    match (credentials, record_mailbox) {
+        (None, None) => Ok(None),
+        (None, Some(_)) => Err(format!(
+            "record of '{service_id}' names a mailbox, but no mailbox key was supplied; the \
+             service could not open its messages"
+        )),
+        (Some(_), None) => Err(format!(
+            "a mailbox key was supplied for '{service_id}', but its record names no mailbox"
+        )),
+        (Some(credentials), Some(mailbox)) => {
+            if visibility != AppVisibility::Public {
+                return Err(format!(
+                    "only a public service can have a mailbox ('{service_id}' is '{}')",
+                    visibility.as_str()
+                ));
+            }
+            if !has_instance_certificate {
+                return Err(format!(
+                    "service '{service_id}' has a mailbox, so it needs an instance certificate"
+                ));
+            }
+            // The error carries the parse error only, never the key text.
+            let key = MailboxSecretKey::from_z32(&credentials.secret_key)
+                .map_err(|e| format!("mailbox key for '{service_id}' does not parse: {e}"))?;
+            if key.public_key() != mailbox.key {
+                return Err(format!(
+                    "mailbox key for '{service_id}' does not match the key in its record"
+                ));
+            }
+            Ok(Some(key))
+        }
+    }
 }
 
 /// Resolves a manifest document to its content. `Inline` arrives with the

@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+use syneroym_identity::substrate;
 
 use super::identifiers::{
-    AppBlueprintId, AppInstanceId, InterfaceName, LogicalServiceName, PlacementSelector,
+    AppBlueprintId, AppInstanceId, InterfaceName, LogicalServiceName, PlacementSelector, ServiceId,
 };
 pub use crate::{resolver::ShardingStrategy, schedule::ScheduleSpec};
 
@@ -294,6 +295,64 @@ fn is_one_u32(n: &u32) -> bool {
     *n == 1
 }
 
+/// Longest lifetime of an instance certificate a manifest may ask for, in
+/// hours. It equals the substrate's install limit (30 days): a larger value
+/// would only fail later, at install.
+pub const MAX_INSTANCE_CERT_EXPIRES_HOURS: u32 = 720;
+
+/// Which mailbox a service uses (ADR-0026). Text form: `"auto"`, or the
+/// mailbox host's node DID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub enum MailboxChoice {
+    /// Pick one from the registry's list of open mailboxes.
+    Auto,
+    /// This mailbox host.
+    Service(ServiceId),
+}
+
+const AUTO_MAILBOX: &str = "auto";
+
+impl fmt::Display for MailboxChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => f.write_str(AUTO_MAILBOX),
+            Self::Service(id) => f.write_str(id.as_str()),
+        }
+    }
+}
+
+impl FromStr for MailboxChoice {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if text == AUTO_MAILBOX {
+            return Ok(Self::Auto);
+        }
+        let host = ServiceId::try_new(text)
+            .map_err(|e| anyhow::anyhow!("a mailbox is 'auto' or a node DID (did:key:...): {e}"))?;
+        // `ServiceId` checks only the `did:key:` prefix. A mailbox host that
+        // cannot be decoded could never be reached, so refuse it here.
+        substrate::resolve_did_key(text)
+            .map_err(|e| anyhow::anyhow!("mailbox host '{text}' is not a valid node DID: {e}"))?;
+        Ok(Self::Service(host))
+    }
+}
+
+impl TryFrom<String> for MailboxChoice {
+    type Error = anyhow::Error;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        text.parse()
+    }
+}
+
+impl From<MailboxChoice> for String {
+    fn from(choice: MailboxChoice) -> Self {
+        choice.to_string()
+    }
+}
+
 /// Represents the spec of a service in the application manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceSpec {
@@ -340,6 +399,19 @@ pub struct ServiceSpec {
     /// written before this field already means.
     #[serde(default, skip_serializing_if = "is_restricted")]
     pub topology_visibility: TopologyVisibility,
+    /// The mailbox of every member of this service (ADR-0026). Each member
+    /// still has its own mailbox key, derived from its own master. Only a
+    /// `public` service may have one. Lives here and on `PlannedService`,
+    /// not in `ServiceConfig`: the substrate learns the mailbox from the
+    /// signed record, not from its deploy manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailbox: Option<MailboxChoice>,
+    /// Lifetime of each issued instance certificate, in hours, for every
+    /// member of this service. Absent means the deployer's default. A long
+    /// value suits a substrate that sleeps (a phone); revocation stays the
+    /// main control. 1 to 720.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_cert_expires_hours: Option<u32>,
 }
 
 /// Defines a dependency on another application.

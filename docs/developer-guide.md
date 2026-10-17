@@ -267,7 +267,7 @@ Copy these items. Paths in the table are the defaults. If your config sets diffe
 | Node key | `<app_data_dir>/substrate.key` | The node DID. Service record-signing keys are derived from it, so a new key breaks old signatures and agreements. |
 | Controller agreement | `<app_data_dir>/agreement.json` | Ownership of the node. Without it the node is unowned and refuses all control calls. |
 | Identities | `<app_data_dir>/identities/` | Includes the owner identity and the member master keys (`member-<app-instance>#<service>-0.key`). A member master is a service's address. Losing it cannot be undone. |
-| Database directory | `<app_local_data_dir>/db/` (`storage.db_dir`) | `substrate.db` (catalog and wrapped data keys), `coordinators.json` (the saved coordinator list and relay choice; a cache, safe to delete), and `services/<service-id>/state.db` and `conversation.db` for every service. Copy it as a whole. The wrapped data keys live inside `substrate.db`, so a partial copy cannot be opened. |
+| Database directory | `<app_local_data_dir>/db/` (`storage.db_dir`) | `substrate.db` (catalog and wrapped data keys), `coordinators.json` (the saved coordinator list and relay choice; a cache, safe to delete), `peer_records.db` (the last signed record of each peer with a mailbox that this node called; a cache, safe to delete, plaintext), and `services/<service-id>/state.db` and `conversation.db` for every service. Copy it as a whole. The wrapped data keys live inside `substrate.db`, so a partial copy cannot be opened. |
 | Blobs | `<app_local_data_dir>/blobs/` and `blob_objects/` | Blob data, if the node uses it. |
 | Hosted app certificates | `<app_local_data_dir>/hosted_apps/` | Instance certificates. |
 | Config file | your `--config` path | Ports, roles, TLS and storage settings. |
@@ -409,6 +409,20 @@ whether to publish it is refused rather than silently deploying unpublished.
 well as) handing it to the substrate, for sharing a `private` service's
 record out of band with `SyneroymClient::new_with_record`.
 
+**A mailbox.** `--mailbox <node-did>` names a mailbox for the service
+([ADR-0026](decisions/0026-receiver-chosen-mailbox.md)): the node DID of the
+mailbox host, which serves it on interface `mailbox`. The record then
+carries the mailbox and a mailbox key derived from the service master, and
+the deploy call carries the private half to the substrate. It needs
+`--visibility public`, and `--master` (or `--identity` together with
+`--instance-certificate`). `auto` is not supported yet. `--cert-expires-hours
+<N>` (1 to 720, default 24) sets the lifetime of the instance certificate
+`--master` issues; use a long one for a substrate that sleeps. It cannot be
+combined with `--instance-certificate`. `roymctl registry register` signs a
+record without a mailbox, so it refuses a service whose current record in the
+registry names one: redeploy the service to change its record.
+`roymctl identity certify-instance --expires-hours` accepts 1 to 720 too.
+
 An app deployed through a `SynAppManifest` declares the same thing per
 service, in TOML (`ServiceSpec`'s `config` is flattened, so `visibility`
 sits directly under the service, like `fdae` above):
@@ -421,6 +435,15 @@ never published, and a cross-node call to it fails to resolve. A logical
 service's `topology_visibility = "open"` (ADR-0022 §5, below) still needs a
 registered `visibility` for an outside caller to actually reach any of its
 members.
+
+Two more per-service settings sit next to `visibility` and apply to every
+member of the service. `mailbox` is a node DID (`auto` is parsed, but refused
+for now), and only a `public` service may set it. `instance_cert_expires_hours`
+is the lifetime of each instance certificate, from 1 to 720. Both need
+`app deploy --mint-masters` (or the supervisor): nothing else signs the record
+or issues the certificate, so `app deploy` refuses a manifest that sets them
+without it. `app deploy --mailbox <service>=<node-did>` sets or overrides the
+mailbox of one service from the command line.
 
 ##### Declaring an FDAE Policy (Row/Column-Level Security)
 
@@ -700,8 +723,9 @@ restart_backoff_secs = 30     # minimum wait between two restart attempts for on
                                # service is restarted at most once per pass, deliberately
 alert_topic = "supervisor/alerts"  # MQTT topic prefix; see "Alerts over MQTT" below
 master_backup_dir = "master-backups"  # relative to app_data_dir; see below
-renewed_cert_expires_hours = 4        # lifetime of EVERY instance certificate this supervisor
-                                      # mints -- the first one and every renewal; see below
+renewed_cert_expires_hours = 4        # default lifetime of the instance certificates this supervisor
+                                      # mints -- the first one and every renewal -- for a service
+                                      # without its own `instance_cert_expires_hours`; see below
 max_renewals_per_pass = 5             # ceiling on renewals attempted in one pass
 master_anchor_refresh_interval_secs = 43200   # 12h; anchors stop verifying after 24h
 topology_document_not_after_secs = 3600       # 1h; how long a signed Tier-2 topology
@@ -781,9 +805,11 @@ to the next pass. The near-expiry window is hours wide against a 30-second
 tick, so there is a lot of room.
 
 **Two different certificate lifetimes, for two different purposes.**
-`renewed_cert_expires_hours` (4 hours) is what the *supervisor* mints, for
-its first certificate and every renewal alike, so a managed member has one
-lifetime for its whole life. Short is affordable precisely because renewal
+`renewed_cert_expires_hours` (4 hours) is what the *supervisor* mints by
+default, for its first certificate and every renewal alike, so a managed
+member has one lifetime for its whole life. A service can set its own with
+`instance_cert_expires_hours` in the manifest (1 to 720); the supervisor then
+uses that value for the first certificate and every renewal of its members. Short is affordable precisely because renewal
 is automated, and it bounds what a leaked instance key is worth. Separately,
 every substrate enforces a **30-day ceiling** on any instance certificate
 offered to it, on `deploy` and `renew-cert` alike. That is a backstop

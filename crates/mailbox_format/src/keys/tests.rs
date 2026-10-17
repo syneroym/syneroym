@@ -1,4 +1,10 @@
+use syneroym_identity::Identity;
+
 use super::*;
+use crate::{
+    OpenPolicy, open,
+    test_support::{CERT_LIFE_SECS, Member, content, seal_between},
+};
 
 #[test]
 fn public_key_round_trips_through_its_text_form() {
@@ -68,4 +74,55 @@ fn a_mailbox_key_has_one_text_form() {
     );
     // A text with the last character missing reads as zero bits.
     assert_eq!(text[..51].parse::<MailboxPublicKey>(), Err(KeyParseError::NotCanonical));
+}
+
+#[test]
+fn the_same_master_gives_the_same_mailbox_key() {
+    let master = Identity::generate().unwrap();
+    let first = MailboxSecretKey::derive_from_master(&master);
+    let second = MailboxSecretKey::derive_from_master(&master);
+    assert_eq!(first.public_key(), second.public_key());
+    assert_eq!(first.seed(), second.seed());
+}
+
+#[test]
+fn different_masters_give_different_mailbox_keys() {
+    let one = MailboxSecretKey::derive_from_master(&Identity::generate().unwrap());
+    let other = MailboxSecretKey::derive_from_master(&Identity::generate().unwrap());
+    assert_ne!(one.public_key(), other.public_key());
+}
+
+#[test]
+fn the_derived_key_is_not_the_master_key() {
+    let master = Identity::from_bytes(&[7u8; 32]);
+    let key = MailboxSecretKey::derive_from_master(&master);
+    assert_ne!(*key.seed(), master.to_bytes());
+}
+
+#[test]
+fn the_derived_key_has_a_fixed_value() {
+    // This value pins the derivation. Never change it: a changed value
+    // means every deployed member would get a new mailbox key.
+    let master = Identity::from_bytes(&[7u8; 32]);
+    let key = MailboxSecretKey::derive_from_master(&master).public_key();
+    assert_eq!(key.to_string(), "dnsbyd8idm96xbpyjo4b8zgtp14rg77hrnp6pwqs437cprjg1fio");
+}
+
+#[test]
+fn a_derived_key_opens_what_was_sealed_to_it() {
+    let sender = Member::new(CERT_LIFE_SECS);
+    let mut receiver = Member::new(CERT_LIFE_SECS);
+    receiver.mailbox = MailboxSecretKey::derive_from_master(&receiver.master);
+    receiver.mailbox_public = receiver.mailbox.public_key();
+    let (sealed, now) = seal_between(&sender, &receiver);
+    let opened = open(
+        &receiver.mailbox,
+        &receiver.service_id(),
+        &sealed.deposit.deposit_id,
+        &sealed.deposit.sealed,
+        OpenPolicy::default(),
+        now,
+    )
+    .unwrap();
+    assert_eq!(opened.content, content());
 }

@@ -135,7 +135,8 @@ pub(crate) fn admin_caller(did: &str) -> CallerContext {
 /// `http_routes` tables the test populates itself.
 pub(crate) async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
     let temp_dir = tempfile::tempdir().unwrap();
-    let config = SubstrateConfig::default();
+    let mut config = SubstrateConfig::default();
+    config.storage.db_dir = temp_dir.path().to_path_buf();
     let key_store = Arc::new(KeyStore::new());
     let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
     let blob_provider: Arc<dyn BlobProvider> =

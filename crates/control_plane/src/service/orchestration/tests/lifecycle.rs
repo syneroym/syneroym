@@ -79,8 +79,8 @@ async fn restart_by_a_node_wide_deploy_grantee_ignores_the_service_owner() {
     let service = service_for_inline_tests(temp_dir.path()).await;
     let alice = node_wide_caller("did:key:zAlice");
 
-    let manifest = DeployManifest {
-        config: ServiceConfig {
+    let manifest = DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: None,
@@ -92,14 +92,12 @@ async fn restart_by_a_node_wide_deploy_grantee_ignores_the_service_owner() {
             assets: None,
             visibility: None,
         },
-        service_type: WitServiceType::Wasm(WasmManifest {
+        WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![GREETER_INTERFACE_NAME.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    };
+    );
     service.deploy("owned-wasm-svc".to_string(), manifest, &alice).await.unwrap();
     assert_eq!(service.registry.owner_of("owned-wasm-svc"), Some("did:key:zAlice".to_string()));
 

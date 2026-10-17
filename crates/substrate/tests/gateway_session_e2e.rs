@@ -71,8 +71,8 @@ use common::SubstrateTestContext;
 static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: Value) -> DeployManifest {
-    DeployManifest {
-        config: ServiceConfig {
+    DeployManifest::unpublished(
+        ServiceConfig {
             env: vec![],
             args: vec![],
             custom_config: Some(http_routes.to_string()),
@@ -84,14 +84,12 @@ fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: Value) -> DeployManifes
             assets: None,
             visibility: None,
         },
-        service_type: ServiceType::Wasm(WasmManifest {
+        ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
             interfaces: vec![test_constants::HTTP_GUEST_TEST_DRIVER_INTERFACE.to_string()],
         }),
-        registry_certificate: None,
-        instance_certificate: None,
-    }
+    )
 }
 
 async fn setup_gateway_test_node(
@@ -147,6 +145,7 @@ async fn setup_gateway_test_node(
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     let signed = info.sign(&service_identity).expect("failed to sign endpoint info");
     let http = Client::new();
@@ -235,6 +234,7 @@ async fn setup_gateway_test_node_with_mode(
         ttl: None,
         not_after: u64::MAX / 2,
         generation: 0,
+        mailbox: None,
     };
     let signed = info.sign(&service_identity).expect("failed to sign endpoint info");
     let http = Client::new();

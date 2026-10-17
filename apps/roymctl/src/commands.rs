@@ -24,6 +24,7 @@ use syneroym_ucan::CapabilityToken;
 pub mod app;
 pub mod coordinator;
 pub mod identity;
+pub(crate) mod mailbox_arg;
 pub mod member_identity;
 pub mod registry;
 pub mod roym;

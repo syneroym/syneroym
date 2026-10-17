@@ -19,6 +19,10 @@ impl Host for HostState {
 
 impl vault::Host for HostState {
     async fn reveal(&mut self, key: String) -> Result<Vec<u8>, VaultError> {
+        // A guest must not learn that a substrate-owned name exists.
+        if vault_names::is_reserved(&key) {
+            return Err(VaultError::NotFound);
+        }
         let provider = self.storage_provider.clone();
         let key_store = self.key_store.clone();
         let service_id = self.component_id.clone();

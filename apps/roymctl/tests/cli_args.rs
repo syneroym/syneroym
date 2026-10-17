@@ -584,3 +584,94 @@ fn test_substrate_home_relay_cli_args() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+const MAILBOX_HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
+
+/// `svc deploy` lists the mailbox and certificate lifetime flags, and clap
+/// rejects values the deploy could never use.
+#[test]
+fn test_svc_deploy_mailbox_and_cert_lifetime_flags() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["svc", "deploy", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--mailbox"))
+        .stdout(contains("--cert-expires-hours"));
+
+    let base = ["svc", "deploy", "--svc-id", "did:key:zTest", "--interfaces", "default", "--tcp"];
+    // With `--master`, so the range is what is refused and not a missing flag.
+    for hours in ["0", "721"] {
+        let mut cmd = Command::cargo_bin("roymctl")?;
+        cmd.args(base)
+            .args(["localhost:1", "--master", "m", "--cert-expires-hours", hours])
+            .assert()
+            .failure()
+            .stderr(contains("not in 1..=720"));
+    }
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["localhost:1", "--mailbox", "not-a-did"])
+        .assert()
+        .failure()
+        .stderr(contains("mailbox"));
+
+    // `auto` passes the parser and is refused by the deploy's own checks
+    // before any connection is made.
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["localhost:1", "--mailbox", "auto", "--visibility", "public"])
+        .assert()
+        .failure();
+    Ok(())
+}
+
+#[test]
+fn test_app_deploy_mailbox_flag_needs_mint_masters() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["app", "deploy", "--help"]).assert().success().stdout(contains("--mailbox"));
+
+    let override_arg = format!("web={MAILBOX_HOST}");
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["app", "deploy", "inst-1", "app.toml", "--mailbox", &override_arg])
+        .assert()
+        .failure()
+        .stderr(contains("--mint-masters"));
+    Ok(())
+}
+
+#[test]
+fn test_certify_instance_lifetime_is_limited_to_720_hours() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args([
+        "identity",
+        "certify-instance",
+        "--master",
+        "m",
+        "--substrate",
+        "did:key:zSub",
+        "--expires-hours",
+        "721",
+    ])
+    .assert()
+    .failure()
+    .stderr(contains("721"));
+    Ok(())
+}
+
+/// `--cert-expires-hours` only matters when `--master` issues a certificate,
+/// so clap refuses it alone. The default value does not trigger this. That the
+/// flag is accepted with `--master` is checked in `svc/tests.rs` by parsing the
+/// arguments without `--help` (clap prints help before it checks `requires`).
+#[test]
+fn test_cert_expires_hours_needs_master() -> Result<(), Box<dyn Error>> {
+    let base = ["svc", "deploy", "--svc-id", "did:key:zTest", "--interfaces", "default", "--tcp"];
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["localhost:1", "--cert-expires-hours", "48"])
+        .assert()
+        .failure()
+        .stderr(contains("--master"));
+
+    Ok(())
+}
