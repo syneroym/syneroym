@@ -188,9 +188,11 @@ pub struct EndpointMailbox {
    Re-export `EndpointMailbox` wherever `EndpointInfo` is re-exported
    (`crates/core/src/dht_registry.rs`; check with
    `grep -n 'EndpointInfo' crates/core/src/dht_registry.rs crates/core/src/lib.rs`).
-3. **Every `EndpointInfo { .. }` literal gets `mailbox: None`** (57 sites, no
-   site uses `..base`). Find them with
-   `grep -rn 'EndpointInfo {' --include='*.rs' crates apps tests | grep -v 'pub struct'`.
+3. **Every `EndpointInfo { .. }` literal gets `mailbox: None`** (53 sites, no
+   site uses `..base`). Find them with this grep, which prints exactly the
+   53 struct literals (it skips `SignedEndpointInfo {` literals, `impl`
+   blocks and `-> EndpointInfo {` signatures):
+   `grep -rnE '(^|[^A-Za-z_])EndpointInfo \{' --include='*.rs' crates apps tests | grep -v 'pub struct\|impl EndpointInfo\|-> EndpointInfo {'`.
    Non-test (12): `crates/sdk/src/deploy/certify.rs:160` (changed for real
    in Step 7), `apps/roymctl/src/commands/svc/deploy.rs:443` (changed for
    real in Step 8), `apps/roymctl/src/commands/registry.rs:69`,
@@ -209,8 +211,7 @@ pub struct EndpointMailbox {
    `crates/community_registry/src/registry/tests.rs` (8),
    `crates/coordinator_iroh/tests/multi_hop_relay.rs` (2).
    `tests/perf` is a workspace member (root `Cargo.toml:3`), so its five
-   sites must be updated. A second count by the plan review found 57
-   literals, not 53: the grep is the source of truth, update every hit.
+   sites must be updated.
 4. `crates/control_plane/src/service/orchestration/types.rs:38-55`
    (`stable_registry_certificate_for_hash`): add `&signed.info.mailbox` as
    the last tuple element, and add one sentence to its doc: the mailbox is
@@ -1387,4 +1388,5 @@ A second review on 2026-10-17 found four more gaps:
 | 15 | `registry register --mailbox` could publish a mailbox that differs from the deployed one, or one the substrate has no key for. | Accepted. The flag is dropped; the command refuses a service whose current record names a mailbox (C3-17, Step 8.12). task.md C6 gets the rule that the pull follows the stored deploy record and warns when the published record differs (Step 11.2). |
 | 16 | The traceability-matrix step asked for K-* rows the matrix does not have. | Accepted. No row changes in C3; C7 adds evidence to `[PRD-OFF]` and `[PLT-ASY]` once delivery works end to end (Step 11.4). |
 | 17 | `auto` refusals miscounted (the flag in row 15 was a fourth). | Resolved by row 15: with the flag gone, there are three refusals again (compiler, `svc deploy`, `certify_placed_members`). |
-| 18 | Stale text: the counts base, "53 sites", the §6 item 9 heading. | Accepted. All three fixed. |
+| 18 | Stale text: the counts base, "53 sites", the §6 item 9 heading. | Accepted. The counts base and the heading are fixed. The "53 sites" part was itself wrong (row 19). |
+| 19 | (Third review) The `EndpointInfo` count is 53, not 57: the earlier review's grep also counted two signatures, one `impl` block and one helper. The grep in Step 2.3 printed 72 lines, including `SignedEndpointInfo {` literals. | Accepted. Step 2.3 says 53 again, the "found 57" note is gone, and it uses a grep that prints only the 53 literals (checked on `51421feb`). Row 14's "57" claim is withdrawn. |
