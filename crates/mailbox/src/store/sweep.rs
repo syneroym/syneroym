@@ -1,6 +1,6 @@
 //! Sweep passes for expired messages, dead queues, and record publishing.
 
-use rusqlite::Transaction;
+use rusqlite::{Transaction, TransactionBehavior};
 use syneroym_core::dht_registry::SignedEndpointInfo;
 use syneroym_mailbox_format::Receipt;
 use tracing::warn;
@@ -38,7 +38,7 @@ impl MailboxStore {
     /// receipts.
     pub(crate) fn sweep(&self, now: u64) -> Result<SweepReport, MailboxError> {
         let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let expired = sweep_expired_messages(&tx, self.limits.receipt_keep_secs, now)?;
         let over_claimed = close_over_claimed(&tx, None, self.limits.receipt_keep_secs, now)?;
@@ -100,6 +100,17 @@ impl MailboxStore {
         Ok(())
     }
 
+    /// Marks a stored service record as superseded so it is never republished
+    /// again.
+    pub(crate) fn mark_superseded(&self, service_id: &str) -> Result<(), MailboxError> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE queues SET next_publish_at = ?1 WHERE service_id = ?2",
+            rusqlite::params![to_sql(u64::MAX), service_id],
+        )?;
+        Ok(())
+    }
+
     /// Returns aggregate storage counts across all active queues.
     pub(crate) fn totals(&self) -> Result<Totals, MailboxError> {
         let conn = self.lock();
@@ -132,21 +143,37 @@ fn sweep_dead_queues(
 ) -> Result<u32, MailboxError> {
     let cutoff = now.saturating_sub(lifetime_secs);
     let mut stmt =
-        tx.prepare("SELECT service_id FROM queues WHERE last_active_at <= ?1 LIMIT 1000")?;
+        tx.prepare("SELECT service_id FROM queues WHERE last_active_at <= ?1 LIMIT 100")?;
     let dead_services: Vec<String> =
         stmt.query_map([to_sql(cutoff)], |r| r.get(0))?.collect::<Result<_, _>>()?;
     drop(stmt);
 
-    let count = dead_services.len() as u32;
-    for sid in dead_services {
-        let mut stmt = tx.prepare("SELECT seq FROM messages WHERE service_id = ?1")?;
-        let seqs: Vec<i64> = stmt.query_map([&sid], |r| r.get(0))?.collect::<Result<_, _>>()?;
-        drop(stmt);
+    let mut deleted_queues = 0u32;
+    let mut message_budget = 1000usize;
 
-        for seq in seqs {
-            remove_message(tx, seq, &Receipt::Expired { at_secs: now }, keep_secs, now)?;
+    for sid in dead_services {
+        if message_budget > 0 {
+            let mut stmt =
+                tx.prepare("SELECT seq FROM messages WHERE service_id = ?1 ORDER BY seq LIMIT ?2")?;
+            let seqs: Vec<i64> = stmt
+                .query_map(rusqlite::params![&sid, message_budget as i64], |r| r.get(0))?
+                .collect::<Result<_, _>>()?;
+            drop(stmt);
+
+            for seq in &seqs {
+                remove_message(tx, *seq, &Receipt::Expired { at_secs: now }, keep_secs, now)?;
+            }
+            message_budget = message_budget.saturating_sub(seqs.len());
         }
-        tx.execute("DELETE FROM queues WHERE service_id = ?1", [&sid])?;
+
+        let mut check_stmt = tx.prepare("SELECT 1 FROM messages WHERE service_id = ?1 LIMIT 1")?;
+        let has_remaining = check_stmt.exists([&sid])?;
+        drop(check_stmt);
+
+        if !has_remaining {
+            tx.execute("DELETE FROM queues WHERE service_id = ?1", [&sid])?;
+            deleted_queues = deleted_queues.saturating_add(1);
+        }
     }
-    Ok(count)
+    Ok(deleted_queues)
 }

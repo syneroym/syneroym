@@ -1,9 +1,8 @@
-//! Background maintenance worker for sweeps and record republishing.
+use std::{fmt, sync::Arc, time::Duration};
 
-use std::{sync::Arc, time::Duration};
-
+use futures::stream::{self, StreamExt};
 use metrics::{counter, gauge};
-use syneroym_core::dht_registry::RegistryClient;
+use syneroym_core::dht_registry::{RegisterError, RegistryClient};
 use tokio::{
     select,
     sync::Notify,
@@ -12,7 +11,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::{error::MailboxError, store::MailboxStore};
+use crate::store::{MailboxStore, blocking};
 
 #[cfg(test)]
 mod tests;
@@ -27,8 +26,8 @@ pub struct MailboxWorker {
     republish_every_secs: u64,
 }
 
-impl std::fmt::Debug for MailboxWorker {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for MailboxWorker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MailboxWorker")
             .field("sweep_every", &self.sweep_every)
             .field("republish_every_secs", &self.republish_every_secs)
@@ -102,36 +101,51 @@ impl MailboxWorker {
             }
         };
 
-        for r in due {
-            let reg_fut = self.registry.register(&r.record, false);
-            let result = select! {
-                () = cancel.cancelled() => return,
-                res = reg_fut => res,
-            };
+        let republish_every_secs = self.republish_every_secs;
+        let store = self.store.clone();
+        let registry = self.registry.clone();
 
-            let next = if result.is_ok() {
-                now.saturating_add(self.republish_every_secs)
-            } else {
-                counter!("substrate.mailbox.republish_failures").increment(1);
-                now.saturating_add(300)
-            };
+        let republish_stream = stream::iter(due)
+            .map(|r| {
+                let store = store.clone();
+                let registry = registry.clone();
+                async move {
+                    let result = registry.register(&r.record, false).await;
+                    let service_id = r.service_id;
+                    match result {
+                        Ok(()) => {
+                            let next = now.saturating_add(republish_every_secs);
+                            if let Err(e) =
+                                blocking(&store, move |s| s.mark_published(&service_id, next)).await
+                            {
+                                warn!(error = %e, "failed to mark record publish deadline");
+                            }
+                        }
+                        Err(RegisterError::Conflict) => {
+                            counter!("substrate.mailbox.republish_conflicts").increment(1);
+                            if let Err(e) =
+                                blocking(&store, move |s| s.mark_superseded(&service_id)).await
+                            {
+                                warn!(error = %e, "failed to mark record superseded");
+                            }
+                        }
+                        Err(_) => {
+                            counter!("substrate.mailbox.republish_failures").increment(1);
+                            let next = now.saturating_add(300);
+                            if let Err(e) =
+                                blocking(&store, move |s| s.mark_published(&service_id, next)).await
+                            {
+                                warn!(error = %e, "failed to mark record publish deadline");
+                            }
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(8);
 
-            let service_id = r.service_id;
-            if let Err(e) =
-                blocking(&self.store, move |s| s.mark_published(&service_id, next)).await
-            {
-                warn!(error = %e, "failed to mark record publish deadline");
-            }
+        select! {
+            () = cancel.cancelled() => {}
+            _ = time::timeout(Duration::from_secs(30), republish_stream.collect::<Vec<_>>()) => {}
         }
     }
-}
-
-async fn blocking<T: Send + 'static>(
-    store: &Arc<MailboxStore>,
-    f: impl FnOnce(&MailboxStore) -> Result<T, MailboxError> + Send + 'static,
-) -> Result<T, MailboxError> {
-    let s = store.clone();
-    tokio::task::spawn_blocking(move || f(&s))
-        .await
-        .map_err(|e| MailboxError::Internal(format!("blocking worker task failed: {e}")))?
 }

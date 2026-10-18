@@ -71,6 +71,24 @@ pub(crate) fn extract_verified_endpoint_from_packet(
     candidate.verify().ok().map(|_| candidate)
 }
 
+/// An error encountered when registering an endpoint record to the registry.
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterError {
+    /// The registry already holds a newer or equal-timestamp record (HTTP 409
+    /// Conflict).
+    #[error("registry conflict: newer or equally-recent endpoint record exists (HTTP 409)")]
+    Conflict,
+    /// HTTP registry returned an error status.
+    #[error("HTTP registry returned error status: {0}")]
+    HttpStatus(reqwest::StatusCode),
+    /// Failed to connect to HTTP registry.
+    #[error("failed to connect to HTTP registry: {0}")]
+    Connection(#[source] reqwest::Error),
+    /// Any other error.
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
 impl RegistryClient {
     pub fn new(enable_dht: bool, registry_url: Option<String>) -> Self {
         let dht_client = if enable_dht { Client::builder().build().ok() } else { None };
@@ -100,7 +118,7 @@ impl RegistryClient {
         &self,
         signed_info: &SignedEndpointInfo,
         sync_dht: bool,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), RegisterError> {
         let mut http_success = self.registry_url.is_none();
         let mut published = false;
 
@@ -114,17 +132,27 @@ impl RegistryClient {
                     http_success = true;
                     published = true;
                 }
+                Ok(response) if response.status() == reqwest::StatusCode::CONFLICT => {
+                    tracing::warn!(
+                        "HTTP registry returned conflict (409): newer or equal record exists"
+                    );
+                    return Err(RegisterError::Conflict);
+                }
                 Ok(response) => {
                     tracing::warn!("HTTP registry returned error status: {}", response.status());
+                    return Err(RegisterError::HttpStatus(response.status()));
                 }
                 Err(e) => {
                     tracing::warn!("Failed to connect to HTTP registry: {}", e);
+                    return Err(RegisterError::Connection(e));
                 }
             }
         }
 
         if !http_success {
-            return Err(anyhow::anyhow!("Failed to register endpoint via HTTP registry"));
+            return Err(RegisterError::Other(anyhow::anyhow!(
+                "Failed to register endpoint via HTTP registry"
+            )));
         }
 
         // Publish to DHT (fire-and-forget in background) if HTTP succeeded or
@@ -141,11 +169,15 @@ impl RegistryClient {
             && !signed_info.info.is_private
         {
             tracing::debug!("Publishing to Mainline DHT (background)");
-            let packet_bytes = hex::decode(&signed_info.pkarr_packet_hex)?;
+            let packet_bytes = hex::decode(&signed_info.pkarr_packet_hex)
+                .map_err(|e| RegisterError::Other(e.into()))?;
             let bytes_obj = Bytes::from(packet_bytes);
-            let pubkey = substrate::resolve_did_key(&signed_info.info.service_id)?;
-            let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())?;
-            let signed_packet = SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)?;
+            let pubkey = substrate::resolve_did_key(&signed_info.info.service_id)
+                .map_err(RegisterError::Other)?;
+            let pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())
+                .map_err(|e| RegisterError::Other(e.into()))?;
+            let signed_packet = SignedPacket::from_relay_payload(&pkarr_pubkey, &bytes_obj)
+                .map_err(|e| RegisterError::Other(e.into()))?;
 
             // When `sync_dht` is false, `publish_dht_packet` only *starts*
             // the publish (`tokio::spawn`, fire-and-forget) and returns
@@ -158,7 +190,7 @@ impl RegistryClient {
         }
 
         if !published {
-            return Err(if signed_info.info.is_private {
+            return Err(RegisterError::Other(if signed_info.info.is_private {
                 anyhow::anyhow!(
                     "nothing published for '{}': this node has no HTTP registry configured, and a \
                      record marked private is deliberately not published to the DHT. Configure \
@@ -172,9 +204,22 @@ impl RegistryClient {
                      `substrate.enable_bep0044_dht`",
                     signed_info.info.service_id
                 )
-            });
+            }));
         }
 
+        Ok(())
+    }
+
+    /// Deletes an endpoint record from the HTTP registry.
+    pub async fn delete_endpoint(&self, service_id: &str) -> Result<(), RegisterError> {
+        if let Some(registry_url) = &self.registry_url {
+            let url = format!("{}/register/{}", registry_url.trim_end_matches('/'), service_id);
+            let resp =
+                self.http_client.delete(&url).send().await.map_err(RegisterError::Connection)?;
+            if !resp.status().is_success() {
+                return Err(RegisterError::HttpStatus(resp.status()));
+            }
+        }
         Ok(())
     }
 

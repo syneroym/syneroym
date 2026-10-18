@@ -42,6 +42,9 @@ impl CheckedRecord {
                 ));
             }
         }
+        if info.not_after <= syneroym_passport::now_secs() {
+            return Err(MailboxError::BadRecord("the record has expired".to_string()));
+        }
         let json = serde_json::to_string(record)
             .map_err(|e| MailboxError::BadRecord(format!("unserializable record: {e}")))?;
         if json.len() > MAX_RECORD_JSON_BYTES {

@@ -67,26 +67,61 @@ impl From<MailboxError> for RpcError {
                     "kind": "ttl_too_long",
                     "max_ttl_secs": max_secs,
                 });
-                RpcError::Custom(code, e.to_string(), Some(data))
+                RpcError::Custom(code, "ttl_too_long".to_string(), Some(data))
             }
-            _ => {
-                let code = match e {
-                    MailboxError::Unauthenticated => codes::UNAUTHENTICATED,
-                    MailboxError::NotAnInstance(_) => codes::NOT_AN_INSTANCE,
-                    MailboxError::UnknownDestination(_) => codes::UNKNOWN_DESTINATION,
-                    MailboxError::TooLarge { .. } => codes::TOO_LARGE,
-                    MailboxError::QueueFull(_) => codes::QUEUE_FULL,
-                    MailboxError::RateLimited => codes::RATE_LIMITED,
-                    MailboxError::MailboxFull => codes::MAILBOX_FULL,
-                    MailboxError::StaleInstance(_) => codes::STALE_INSTANCE,
-                    MailboxError::BadRecord(_) => codes::BAD_RECORD,
-                    MailboxError::DuplicateDeposit(_) => codes::DUPLICATE_DEPOSIT,
-                    MailboxError::TtlTooLong { .. }
-                    | MailboxError::InvalidParams(_)
-                    | MailboxError::Internal(_) => unreachable!(),
-                };
-                let data = json!({ "kind": e.kind() });
-                RpcError::Custom(code, e.to_string(), Some(data))
+            MailboxError::Unauthenticated => {
+                let code = codes::UNAUTHENTICATED;
+                let data = json!({ "kind": "unauthenticated" });
+                RpcError::Custom(code, "unauthenticated".to_string(), Some(data))
+            }
+            MailboxError::NotAnInstance(ref msg) => {
+                let code = codes::NOT_AN_INSTANCE;
+                let data = json!({ "kind": "not_an_instance" });
+                RpcError::Custom(code, msg.clone(), Some(data))
+            }
+            MailboxError::UnknownDestination(ref d) => {
+                let code = codes::UNKNOWN_DESTINATION;
+                let data = json!({ "kind": "unknown_destination" });
+                RpcError::Custom(code, format!("unknown destination {d}"), Some(data))
+            }
+            MailboxError::TooLarge { bytes, max } => {
+                let code = codes::TOO_LARGE;
+                let data = json!({ "kind": "too_large" });
+                RpcError::Custom(
+                    code,
+                    format!("payload is {bytes} bytes; max is {max}"),
+                    Some(data),
+                )
+            }
+            MailboxError::QueueFull(ref q) => {
+                let code = codes::QUEUE_FULL;
+                let data = json!({ "kind": "queue_full" });
+                RpcError::Custom(code, format!("queue is full for {q}"), Some(data))
+            }
+            MailboxError::RateLimited => {
+                let code = codes::RATE_LIMITED;
+                let data = json!({ "kind": "rate_limited" });
+                RpcError::Custom(code, "rate limit exceeded".to_string(), Some(data))
+            }
+            MailboxError::MailboxFull => {
+                let code = codes::MAILBOX_FULL;
+                let data = json!({ "kind": "mailbox_full" });
+                RpcError::Custom(code, "mailbox storage is full".to_string(), Some(data))
+            }
+            MailboxError::StaleInstance(ref d) => {
+                let code = codes::STALE_INSTANCE;
+                let data = json!({ "kind": "stale_instance" });
+                RpcError::Custom(code, format!("instance certificate is stale for {d}"), Some(data))
+            }
+            MailboxError::BadRecord(ref msg) => {
+                let code = codes::BAD_RECORD;
+                let data = json!({ "kind": "bad_record" });
+                RpcError::Custom(code, msg.clone(), Some(data))
+            }
+            MailboxError::DuplicateDeposit(ref id) => {
+                let code = codes::DUPLICATE_DEPOSIT;
+                let data = json!({ "kind": "duplicate_deposit" });
+                RpcError::Custom(code, format!("deposit {id} already exists"), Some(data))
             }
         }
     }

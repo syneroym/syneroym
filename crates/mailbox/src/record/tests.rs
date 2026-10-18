@@ -86,3 +86,31 @@ fn tampered_record_fails_verification() {
     let err = CheckedRecord::check(&rec, &owner, mailbox_did).unwrap_err();
     assert!(matches!(err, MailboxError::BadRecord(_)));
 }
+
+#[test]
+fn expired_record_is_refused() {
+    let member = Member::new(3600);
+    let owner = member.instance();
+    let mailbox_did = "did:key:zMailboxNode";
+    let mut rec = record(&member, mailbox_did);
+    rec.info.not_after = syneroym_passport::now_secs().saturating_sub(60);
+    let resigned = rec.info.sign(&member.master).unwrap();
+
+    let err = CheckedRecord::check(&resigned, &owner, mailbox_did).unwrap_err();
+    assert!(matches!(err, MailboxError::BadRecord(_)));
+}
+
+#[test]
+fn record_too_large_is_refused() {
+    let member = Member::new(3600);
+    let owner = member.instance();
+    let mailbox_did = "did:key:zMailboxNode";
+    let mut rec = record(&member, mailbox_did);
+    rec.pkarr_packet_hex = "00".repeat(5000);
+
+    let err = CheckedRecord::check(&rec, &owner, mailbox_did).unwrap_err();
+    match err {
+        MailboxError::BadRecord(msg) => assert!(msg.contains("too large")),
+        other => panic!("expected BadRecord too large, got {other:?}"),
+    }
+}

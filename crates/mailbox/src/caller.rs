@@ -100,12 +100,12 @@ pub(crate) async fn check_not_revoked(
     Ok(())
 }
 
-/// Extracts and verifies the sender DID from `caller`.
-pub(crate) fn sender_of(caller: &CallerContext) -> Result<String, MailboxError> {
-    if !matches!(caller.auth, AuthLevel::Delegated | AuthLevel::Ucan) {
-        return Err(MailboxError::Unauthenticated);
-    }
-    Ok(caller.caller_did.clone())
+/// Extracts and verifies the sender identity from `caller`.
+///
+/// Senders must present a service-instance certificate proving their master
+/// DID.
+pub(crate) fn sender_of(caller: &CallerContext, now_secs: u64) -> Result<Instance, MailboxError> {
+    instance_of(caller, now_secs)
 }
 
 #[cfg(test)]

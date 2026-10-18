@@ -14,7 +14,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use dashmap::{DashMap, Entry};
 use oneshot::Sender;
@@ -132,6 +132,7 @@ impl EcosystemRegistry {
 
         let app = Router::new()
             .route("/register", post(register_endpoint))
+            .route("/register/{service_id}", delete(delete_endpoint))
             .route("/lookup/{service_id}", get(lookup_endpoint))
             .route("/register_master", post(register_master_endpoint))
             .route("/lookup_master/{master_id}", get(lookup_master_endpoint))
@@ -231,6 +232,15 @@ async fn register_endpoint(
     }
 
     Ok(StatusCode::OK)
+}
+
+async fn delete_endpoint(
+    State(state): State<Arc<RegistryState>>,
+    Path(service_id): Path<String>,
+) -> StatusCode {
+    state.endpoints.remove(&service_id);
+    state.aliases.retain(|_, id| *id != service_id);
+    StatusCode::OK
 }
 
 fn verify_endpoint_signature(payload: &SignedEndpointInfo) -> Result<u64, (StatusCode, String)> {

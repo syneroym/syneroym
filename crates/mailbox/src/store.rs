@@ -1,13 +1,16 @@
 //! SQLite storage for queues, messages, and receipts.
 
 use std::{
+    fs,
     path::Path,
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
+use blake3::Hasher;
 use rusqlite::{Connection, Transaction};
 use syneroym_core::mailbox::QueueLimits;
 use syneroym_mailbox_format::Receipt;
+use tokio::task;
 
 use crate::{error::MailboxError, limits::Limits};
 
@@ -27,7 +30,7 @@ pub(crate) struct MailboxStore {
 impl MailboxStore {
     pub(crate) fn open(path: &Path, limits: Limits) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -88,12 +91,38 @@ fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
         CREATE TABLE IF NOT EXISTS receipts (
             sender       TEXT NOT NULL,
             deposit_id   TEXT NOT NULL,
+            destination  TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            deposited_at INTEGER NOT NULL,
+            ttl_secs     INTEGER NOT NULL,
             receipt_json TEXT NOT NULL,
             expires_at   INTEGER NOT NULL,
             PRIMARY KEY (sender, deposit_id)
         );
         CREATE INDEX IF NOT EXISTS receipts_expiry ON receipts (expires_at);",
     )
+}
+
+/// Runs a blocking closure against the mailbox store on Tokio's blocking thread
+/// pool.
+pub(crate) async fn blocking<T: Send + 'static>(
+    store: &Arc<MailboxStore>,
+    f: impl FnOnce(&MailboxStore) -> Result<T, MailboxError> + Send + 'static,
+) -> Result<T, MailboxError> {
+    let s = store.clone();
+    task::spawn_blocking(move || f(&s))
+        .await
+        .map_err(|e| MailboxError::Internal(format!("blocking storage task failed: {e}")))?
+}
+
+/// Computes a deterministic content hash of the destination DID and sealed
+/// ciphertext.
+pub(super) fn compute_content_hash(destination: &str, sealed: &str) -> String {
+    let mut hasher = Hasher::new();
+    hasher.update(destination.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(sealed.as_bytes());
+    hasher.finalize().to_hex().to_string()
 }
 
 pub(super) fn to_sql(value: u64) -> i64 {
@@ -113,8 +142,6 @@ pub(super) struct QueueRow {
     pub(super) limits: QueueLimits,
     pub(super) bytes: u64,
     pub(super) messages: u64,
-    #[allow(dead_code)]
-    pub(super) last_active_at: u64,
 }
 
 pub(super) fn queue_row(
@@ -123,8 +150,7 @@ pub(super) fn queue_row(
 ) -> Result<Option<QueueRow>, MailboxError> {
     let mut stmt = tx.prepare(
         "SELECT service_id, record_signed_at, newest_issued_at, newest_instance_did, max_bytes, \
-         max_messages, max_ttl_secs, bytes, messages, last_active_at FROM queues WHERE service_id \
-         = ?1",
+         max_messages, max_ttl_secs, bytes, messages FROM queues WHERE service_id = ?1",
     )?;
     let mut rows = stmt.query([service_id])?;
     if let Some(r) = rows.next()? {
@@ -137,7 +163,6 @@ pub(super) fn queue_row(
         let max_ttl_secs: i64 = r.get(6)?;
         let bytes: i64 = r.get(7)?;
         let messages: i64 = r.get(8)?;
-        let last_active_at: i64 = r.get(9)?;
         Ok(Some(QueueRow {
             service_id: sid,
             record_signed_at: from_sql(record_signed_at),
@@ -150,7 +175,6 @@ pub(super) fn queue_row(
             },
             bytes: from_sql(bytes),
             messages: from_sql(messages),
-            last_active_at: from_sql(last_active_at),
         }))
     } else {
         Ok(None)
@@ -164,18 +188,22 @@ pub(super) fn remove_message(
     keep_secs: u64,
     now: u64,
 ) -> Result<(), MailboxError> {
-    let mut stmt =
-        tx.prepare("SELECT service_id, sender, deposit_id, size FROM messages WHERE seq = ?1")?;
+    let mut stmt = tx.prepare(
+        "SELECT service_id, sender, deposit_id, sealed, deposited_at, expires_at, size FROM \
+         messages WHERE seq = ?1",
+    )?;
     let mut rows = stmt.query([seq])?;
-    let info: Option<(String, String, String, i64)> = if let Some(r) = rows.next()? {
-        Some((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-    } else {
-        None
-    };
+    let info: Option<(String, String, String, String, i64, i64, i64)> =
+        if let Some(r) = rows.next()? {
+            Some((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
+        } else {
+            None
+        };
     drop(rows);
     drop(stmt);
 
-    let Some((service_id, sender, deposit_id, size)) = info else {
+    let Some((service_id, sender, deposit_id, sealed, deposited_at, expires_at, size)) = info
+    else {
         return Ok(());
     };
 
@@ -185,24 +213,53 @@ pub(super) fn remove_message(
          service_id = ?2",
         rusqlite::params![size, service_id],
     )?;
-    put_receipt(tx, &sender, &deposit_id, receipt, now.saturating_add(keep_secs))?;
+    let content_hash = compute_content_hash(&service_id, &sealed);
+    let ttl_secs = from_sql(expires_at).saturating_sub(from_sql(deposited_at));
+    put_receipt(
+        tx,
+        ReceiptEntry {
+            sender: &sender,
+            deposit_id: &deposit_id,
+            destination: &service_id,
+            content_hash: &content_hash,
+            deposited_at: from_sql(deposited_at),
+            ttl_secs,
+            receipt,
+            expires_at: now.saturating_add(keep_secs),
+        },
+    )?;
     Ok(())
 }
 
-pub(super) fn put_receipt(
-    tx: &Transaction,
-    sender: &str,
-    deposit_id: &str,
-    receipt: &Receipt,
-    expires_at: u64,
-) -> Result<(), MailboxError> {
-    let json = serde_json::to_string(receipt)
+pub(super) struct ReceiptEntry<'a> {
+    pub(super) sender: &'a str,
+    pub(super) deposit_id: &'a str,
+    pub(super) destination: &'a str,
+    pub(super) content_hash: &'a str,
+    pub(super) deposited_at: u64,
+    pub(super) ttl_secs: u64,
+    pub(super) receipt: &'a Receipt,
+    pub(super) expires_at: u64,
+}
+
+pub(super) fn put_receipt(tx: &Transaction, entry: ReceiptEntry<'_>) -> Result<(), MailboxError> {
+    let json = serde_json::to_string(entry.receipt)
         .map_err(|e| MailboxError::Internal(format!("failed to serialize receipt: {e}")))?;
     tx.execute(
-        "INSERT INTO receipts (sender, deposit_id, receipt_json, expires_at) VALUES (?1, ?2, ?3, \
-         ?4) ON CONFLICT (sender, deposit_id) DO UPDATE SET receipt_json = excluded.receipt_json, \
-         expires_at = excluded.expires_at",
-        rusqlite::params![sender, deposit_id, json, to_sql(expires_at)],
+        "INSERT INTO receipts (sender, deposit_id, destination, content_hash, deposited_at, \
+         ttl_secs, receipt_json, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT \
+         (sender, deposit_id) DO UPDATE SET receipt_json = excluded.receipt_json, expires_at = \
+         excluded.expires_at",
+        rusqlite::params![
+            entry.sender,
+            entry.deposit_id,
+            entry.destination,
+            entry.content_hash,
+            to_sql(entry.deposited_at),
+            to_sql(entry.ttl_secs),
+            json,
+            to_sql(entry.expires_at)
+        ],
     )?;
     Ok(())
 }

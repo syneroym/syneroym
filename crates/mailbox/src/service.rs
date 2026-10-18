@@ -30,7 +30,7 @@ use crate::{
     error::MailboxError,
     limits::Limits,
     record::CheckedRecord,
-    store::MailboxStore,
+    store::{MailboxStore, blocking},
     worker::MailboxWorker,
 };
 
@@ -44,6 +44,8 @@ pub struct MailboxService {
     anchors: Arc<dyn MasterAnchorResolver>,
     per_sender: RequestLimiter<String>,
     total: RequestLimiter<()>,
+    per_master_register: RequestLimiter<String>,
+    total_register: RequestLimiter<()>,
     wake: Arc<Notify>,
     sweep_every: Duration,
     republish_every_secs: u64,
@@ -68,6 +70,8 @@ impl MailboxService {
         let store = Arc::new(MailboxStore::open(&db_path, limits)?);
         let per_sender = RequestLimiter::new(role.deposits_per_minute_per_sender, 10_000);
         let total = RequestLimiter::new(role.deposits_per_minute_total, 1);
+        let per_master_register = RequestLimiter::new(role.register_per_minute_per_master, 10_000);
+        let total_register = RequestLimiter::new(role.register_per_minute_total, 1);
         let wake = Arc::new(Notify::new());
         let sweep_every = Duration::from_secs(role.sweep_interval_secs);
         let republish_every_secs = role.republish_interval_secs;
@@ -78,6 +82,8 @@ impl MailboxService {
             anchors,
             per_sender,
             total,
+            per_master_register,
+            total_register,
             wake,
             sweep_every,
             republish_every_secs,
@@ -102,6 +108,11 @@ impl MailboxService {
         Ok(who)
     }
 
+    fn sender(&self, caller: &CallerContext, now: u64) -> Result<String, MailboxError> {
+        let who = sender_of(caller, now)?;
+        Ok(who.master_did)
+    }
+
     fn info(&self) -> Result<Value, MailboxError> {
         let limits = self.store.limits();
         answer(&InfoAnswer {
@@ -123,6 +134,12 @@ impl MailboxService {
         now: u64,
     ) -> Result<Value, MailboxError> {
         let who = self.instance(caller, now).await?;
+        if !self.per_master_register.allow_key(who.master_did.clone(), now)
+            || !self.total_register.allow_key((), now)
+        {
+            counter!("substrate.mailbox.register_refused", "kind" => "rate_limited").increment(1);
+            return Err(MailboxError::RateLimited);
+        }
         let p: RegisterParams = parse(params)?;
         let record = CheckedRecord::check(&p.record, &who, &self.node_did)?;
         let r = blocking(&self.store, move |s| s.register(&who, &record, now)).await?;
@@ -144,7 +161,7 @@ impl MailboxService {
         params: Value,
         now: u64,
     ) -> Result<Value, MailboxError> {
-        let sender = sender_of(caller)?;
+        let sender = self.sender(caller, now)?;
         let deposit = parse_deposit(params)?;
         if !self.per_sender.allow_key(sender.clone(), now) || !self.total.allow_key((), now) {
             counter!("substrate.mailbox.deposits_refused", "kind" => "rate_limited").increment(1);
@@ -198,7 +215,7 @@ impl MailboxService {
         params: Value,
         now: u64,
     ) -> Result<Value, MailboxError> {
-        let sender = sender_of(caller)?;
+        let sender = self.sender(caller, now)?;
         let p: StatusParams = parse(params)?;
         let receipts =
             blocking(&self.store, move |s| s.status(&sender, &p.deposit_ids, now)).await?;
@@ -262,14 +279,4 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, MailboxError> {
 fn answer<T: Serialize>(value: &T) -> Result<Value, MailboxError> {
     serde_json::to_value(value)
         .map_err(|e| MailboxError::Internal(format!("failed to serialize answer: {e}")))
-}
-
-async fn blocking<T: Send + 'static>(
-    store: &Arc<MailboxStore>,
-    f: impl FnOnce(&MailboxStore) -> Result<T, MailboxError> + Send + 'static,
-) -> Result<T, MailboxError> {
-    let s = store.clone();
-    tokio::task::spawn_blocking(move || f(&s))
-        .await
-        .map_err(|e| MailboxError::Internal(format!("blocking storage task failed: {e}")))?
 }

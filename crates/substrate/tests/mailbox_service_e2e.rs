@@ -5,6 +5,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::SubstrateNode;
+use rusqlite::Connection;
 use rustls::crypto::ring;
 use serde_json::{Value, from_value, json};
 use syneroym_core::{
@@ -27,6 +28,7 @@ use syneroym_mailbox_format::{
 };
 use syneroym_rpc::JsonRpcError;
 use syneroym_sdk::SyneroymClient;
+use tokio::time;
 
 mod common;
 
@@ -53,22 +55,7 @@ impl Member {
     async fn new(node: &SubstrateNode) -> Self {
         let master = Identity::generate().unwrap();
         let instance = Identity::generate().unwrap();
-        let master_did = did_of(&master);
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        let mailbox_key = MailboxSecretKey::derive_from_master(&master);
-        common::conversation_fixture::publish_master_anchor(
-            &master_did,
-            &master,
-            node.registry_url(),
-        )
-        .await;
-        Self { master, instance, cert, mailbox_key }
+        Self::with_master_and_instance(node, master, instance).await
     }
 
     async fn with_master_and_instance(
@@ -201,7 +188,7 @@ async fn a_registered_record_is_published_by_the_mailbox() {
             lookup_result = Some(signed);
             break;
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        time::sleep(Duration::from_millis(500)).await;
     }
     let looked_up = lookup_result.expect("record was not published to the registry");
     assert_eq!(looked_up.info.service_id, master_did);
@@ -222,17 +209,38 @@ async fn a_stale_republish_never_replaces_a_newer_record() {
     let master_did = did_of(&receiver.master);
 
     // Sleep briefly so the second record's signed_at timestamp is strictly newer
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    time::sleep(Duration::from_millis(100)).await;
     let mut info2 = rec1.info.clone();
     info2.nickname = Some("newer-nickname".to_string());
     let rec2 = info2.sign(&receiver.master).unwrap();
     registry.register(&rec2, false).await.expect("direct register failed");
 
     // Wait two republish intervals plus buffer
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    time::sleep(Duration::from_secs(5)).await;
 
     let current = registry.lookup(&master_did, false).await.expect("lookup failed");
     assert_eq!(current.info.nickname, Some("newer-nickname".to_string()));
+
+    // Delete rec2 from the registry so the registry entry is empty
+    registry.delete_endpoint(&master_did).await.expect("delete failed");
+    assert!(registry.lookup(&master_did, false).await.is_err());
+
+    // Wait another republish interval: rec1 was marked superseded on 409,
+    // so the mailbox must NOT republish it even though the registry is now empty
+    time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        registry.lookup(&master_did, false).await.is_err(),
+        "superseded record R1 must not be republished after R2 leaves the registry"
+    );
+
+    let db_path = node.base_path().join("data/db/mailbox.db");
+    let conn = Connection::open(&db_path).unwrap();
+    let next_publish: i64 = conn
+        .query_row("SELECT next_publish_at FROM queues WHERE service_id = ?1", [&master_did], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(next_publish, i64::MAX);
 }
 
 #[tokio::test]
@@ -327,7 +335,7 @@ async fn a_moved_service_takes_the_queue_from_its_old_instance() {
     call(&r_client_a, METHOD_REGISTER, json!({ "record": rec_a })).await.unwrap();
 
     // Sleep so certificate issued_at is strictly in the next second
-    tokio::time::sleep(Duration::from_millis(1100)).await;
+    time::sleep(Duration::from_millis(1100)).await;
 
     let receiver_b = Member::with_master_and_instance(
         &node,
@@ -545,7 +553,7 @@ async fn an_unclaimed_message_returns_after_its_visibility_time() {
     assert!(claim2_ans.messages.is_empty());
 
     // Wait for visibility timeout (visibility_secs = 2s, wait 3s)
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    time::sleep(Duration::from_secs(3)).await;
 
     // Third claim receives the message again with claim_count == 2
     let claim3_val = call(&r_client, METHOD_CLAIM, json!({})).await.unwrap();

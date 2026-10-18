@@ -288,6 +288,10 @@ http_port = 7960
 # deposits_per_minute_per_sender = 60
 # Maximum deposits per minute across all senders on this node.
 # deposits_per_minute_total = 6000
+# Maximum registrations per minute from one master DID.
+# register_per_minute_per_master = 10
+# Maximum registrations per minute across all masters on this node.
+# register_per_minute_total = 120
 # Interval between background sweeps, in seconds.
 # sweep_interval_secs = 60
 # Interval between republishing stored service records, in seconds.

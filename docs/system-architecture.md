@@ -2075,54 +2075,58 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 
 | Method | Who may call | What it does and answers |
 |---|---|---|
-| `info` | Any caller (anonymous or verified). | Answers open limits and version: `max_message_bytes`, `max_queue_messages`, `max_queue_bytes`, `max_ttl_secs`, `min_ttl_secs`, and `version`. |
-| `register` | Destination service instance with a verified instance certificate for that service. | Creates or refreshes the queue. Takes the service's current signed record. Answers active queue limits and queue lifetime deadline. |
-| `unregister` | Destination service instance with a verified instance certificate for that service. | Removes the queue, all pending messages, and all stored receipts. |
-| `deposit` | Any caller with a verified identity. | Deposits a sealed message into the destination queue. Runs fair eviction if full. Answers `Receipt::Stored`. |
-| `claim` | The destination service instance with the newest certificate seen for that queue. | Claims up to N messages (default 10). Hides claimed messages for the visibility time. Answers a list of `ClaimedMessage`. |
+| `info` | Any caller (anonymous or verified). | Answers open limits and version: `version`, `mailbox` node DID, `limits` (`max_bytes`, `max_messages`, `max_ttl_secs`), `max_sealed_bytes`, `receipt_keep_secs`, `visibility_secs`, `queue_lifetime_secs`, and `max_claims`. |
+| `register` | Destination service instance with a verified instance certificate for that service. | Creates or refreshes the queue. Takes the service's current signed record. Answers `RegisterAnswer` with active queue limits and queue lifetime deadline. |
+| `unregister` | Destination service instance with a verified instance certificate for that service. | Removes the queue and expires its stored messages. Answers `UnregisterAnswer` (`removed: bool`). |
+| `deposit` | A service instance with a verified instance certificate. | Deposits a sealed message into the destination queue. Runs fair eviction if full, evicting unclaimed messages before in-flight claimed ones. Answers `Receipt::Stored`. |
+| `claim` | The destination service instance with the newest certificate seen for that queue. | Claims up to N messages (bounded by 32, default 32). Hides claimed messages for the visibility time. Answers `ClaimAnswer` with a list of `ClaimedMessage` and `visible_again_at_secs`. |
 | `ack` | The destination service instance with the newest certificate seen for that queue. | Acknowledges claimed messages as `delivered` (carrying the receiver's signature) or `rejected`. Removes the message body and retains the receipt. Answers `AckAnswer`. |
-| `status` | The original depositor of each requested deposit id. | Returns receipts for requested deposit ids. Non-depositors see an empty receipt list. Answers `StatusAnswer`. |
+| `status` | The original depositor of each requested deposit id (service instance). | Returns receipts for requested deposit ids (`Receipt::Unknown` for requested ids not deposited by this sender). Answers `StatusAnswer`. |
 
 **Store.** The mailbox stores its state in `<storage.db_dir>/mailbox.db`, an SQLite database in WAL mode. The store is plaintext. It tracks:
-- `queues`: destination DID, limits, queue lifetime deadline, newest instance certificate seen, and the signed endpoint record.
-- `messages`: deposit id, destination DID, sender DID, size, sealed ciphertext body, deposit time, expiry time, visibility timeout, and claim count.
-- `receipts`: deposit id, sender DID, state (`stored`, `delivered`, `rejected`, `expired`), optional receiver signature, and expiry time.
+- `queues`: destination DID, limits, queue lifetime deadline, newest instance certificate seen, signed endpoint record, and next republish deadline.
+- `messages`: seq, destination DID, sender DID, deposit id, size, sealed ciphertext body, deposit time, expiry time, visibility timeout, and claim count.
+- `receipts`: sender DID, deposit id, destination DID, content hash, deposit time, TTL, receipt JSON, and expiry time.
 
 **Limits and defaults.** Open mailbox settings in `[roles.mailbox]`:
-- `max_message_bytes`: maximum sealed message size (default 65,536 bytes / 64 KiB).
-- `max_queue_messages`: maximum messages per queue (default 500).
-- `max_queue_bytes`: maximum total bytes per queue (default 5,242,880 bytes / 5 MiB).
-- `max_ttl_secs`: maximum message time-to-live (default 604,800 seconds / 7 days).
-- `min_ttl_secs`: minimum message time-to-live (default 60 seconds).
-- `max_mailbox_bytes`: total storage cap across all queues on the node (default 104,857,600 bytes / 100 MiB).
-- `deposit_rate_limit_per_sender_per_minute`: maximum deposits per sender DID per minute (default 60).
-- `deposit_rate_limit_node_total_per_minute`: maximum deposits across all senders per minute (default 600).
-- `visibility_timeout_secs`: duration an unclaimed message remains hidden after claim (default 300 seconds / 5 minutes).
-- `queue_lifetime_secs`: idle time without a registration or claim before a queue and its messages are swept (default 2,592,000 seconds / 30 days).
-- `receipt_retention_secs`: retention period for receipts after message completion or expiry (default 1,209,600 seconds / 14 days).
+- `db_name`: SQLite file name under `storage.db_dir` (default: `"mailbox.db"`).
+- `max_queue_bytes`: maximum total bytes per queue (default: 5,242,880 bytes / 5 MiB).
+- `max_queue_messages`: maximum messages per queue (default: 500).
+- `max_ttl_secs`: maximum message time-to-live (default: 604,800 seconds / 7 days).
+- `receipt_keep_secs`: how long receipts are kept after message completion or expiry (default: 1,209,600 seconds / 14 days).
+- `visibility_secs`: duration a claimed message remains hidden after claim (default: 300 seconds / 5 minutes).
+- `queue_lifetime_secs`: idle time without a registration or claim before a queue and its messages are swept (default: 2,592,000 seconds / 30 days).
+- `max_total_bytes`: total storage cap across all queues on the node (default: 1,073,741,824 bytes / 1 GiB).
+- `max_queues`: maximum number of queues on this node (default: 10,000).
+- `deposits_per_minute_per_sender`: maximum deposits per sender DID per minute (default: 60).
+- `deposits_per_minute_total`: maximum deposits across all senders per minute (default: 6,000).
+- `register_per_minute_per_master`: maximum registrations per minute from one master DID (default: 10).
+- `register_per_minute_total`: maximum registrations per minute across all masters on this node (default: 120).
+- `sweep_interval_secs`: interval between background sweeps, in seconds (default: 60).
+- `republish_interval_secs`: interval between republishing stored service records, in seconds (default: 3,600).
 
-**Fair eviction and mailbox cap.** When a queue exceeds its message or byte limits, the mailbox evicts messages from the sender that currently holds the most bytes in that queue. An evicted message is marked as an unsigned `expired` receipt. If the depositor itself holds the most bytes, the new deposit is refused with `queue_full` (`-32042`). When the node-wide `max_mailbox_bytes` cap is reached, new deposits are refused with `mailbox_full` (`-32044`) without cross-queue eviction.
+**Fair eviction and mailbox cap.** When a queue exceeds its message or byte limits, the mailbox evicts messages from the sender that currently holds the most bytes in that queue. Unclaimed messages are evicted first before claimed in-flight messages. An evicted message is marked as an unsigned `Receipt::Expired`. If the depositor itself holds the most bytes, the new deposit is refused with `queue_full` (`-32042`). When the node-wide `max_total_bytes` cap is reached, new deposits are refused with `mailbox_full` (`-32044`) without cross-queue eviction.
 
-**Newest-certificate rule.** The mailbox accepts `claim` and `ack` only from the instance holding the newest valid certificate seen for that queue (highest `issued_at_secs`). If two instances have identical `issued_at_secs`, the one whose `temporary_did` matches the recorded newest certificate is accepted; if neither matches, the first to arrive wins. If an instance certificate is revoked in the master anchor, requests are refused with `permission_denied`.
+**Newest-certificate rule.** The mailbox accepts `claim` and `ack` only from the instance holding the newest valid certificate seen for that queue (highest `issued_at_secs`). If two instances have identical `issued_at_secs`, the one whose `temporary_did` matches the recorded newest certificate is accepted; if neither matches, the first to arrive wins. If an instance certificate is revoked in the master anchor, requests are refused with `not_an_instance` (`-32045`). If a caller presents a certificate older than the newest seen, requests are refused with `stale_instance` (`-32046`).
 
-**Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `rejected` receipt (`TooManyClaims`).
+**Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `Receipt::Expired` (reason `too_many_claims`).
 
-**Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour. The registry rejects records with older timestamps, ensuring that a stale record cannot overwrite a newer record.
+**Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour. The registry rejects records with older timestamps with HTTP 409 Conflict. On conflict, the mailbox marks the stored record as superseded and stops republishing it until a newer record is registered.
 
 **Error codes.** Mailbox JSON-RPC 2.0 error codes:
 
 | Code | Name | Meaning |
 |---|---|---|
 | `-32040` | `unknown_destination` | The destination queue does not exist. |
-| `-32041` | `message_too_large` | The sealed message exceeds `max_message_bytes`. |
+| `-32041` | `too_large` | The sealed message exceeds 64 KiB (`MAX_SEALED_BYTES`). |
 | `-32042` | `queue_full` | The queue is full after fair eviction. |
-| `-32043` | `rate_limited` | Sender or node deposit rate limit exceeded. |
-| `-32044` | `mailbox_full` | Total mailbox storage cap reached. |
-| `-32045` | `invalid_record` | The signed endpoint record is malformed or invalid. |
-| `-32046` | `record_mismatch` | The record does not match the registering service. |
-| `-32047` | `record_expired` | The endpoint record timestamp has expired. |
-| `-32048` | `not_eligible` | The method or operation is not eligible for mailbox delivery. |
-| `-32049` | `ttl_too_short` | Message TTL is below `min_ttl_secs`. |
+| `-32043` | `rate_limited` | Sender or node deposit or register rate limit exceeded. |
+| `-32044` | `mailbox_full` | Total mailbox storage cap (`max_total_bytes`) reached. |
+| `-32045` | `not_an_instance` | Caller did not present a valid, unrevoked service instance certificate. |
+| `-32046` | `stale_instance` | A newer service instance certificate already holds the queue. |
+| `-32047` | `bad_record` | The service record is malformed, names another service, names another mailbox, is private, or has expired. |
+| `-32048` | `duplicate_deposit` | Deposit ID was already used with different destination, content, or TTL. |
+| `-32049` | `unauthenticated` | Caller context lacks required authentication level. |
 | `-32050` | `ttl_too_long` | Message TTL exceeds the queue's `max_ttl_secs`. |
 
 ---

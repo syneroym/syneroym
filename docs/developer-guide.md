@@ -267,7 +267,7 @@ Copy these items. Paths in the table are the defaults. If your config sets diffe
 | Node key | `<app_data_dir>/substrate.key` | The node DID. Service record-signing keys are derived from it, so a new key breaks old signatures and agreements. |
 | Controller agreement | `<app_data_dir>/agreement.json` | Ownership of the node. Without it the node is unowned and refuses all control calls. |
 | Identities | `<app_data_dir>/identities/` | Includes the owner identity and the member master keys (`member-<app-instance>#<service>-0.key`). A member master is a service's address. Losing it cannot be undone. |
-| Database directory | `<app_local_data_dir>/db/` (`storage.db_dir`) | `substrate.db` (catalog and wrapped data keys), `coordinators.json` (the saved coordinator list and relay choice; a cache, safe to delete), `peer_records.db` (the last signed record of each peer with a mailbox that this node called; a cache, safe to delete, plaintext), `mailbox.db` (deferred message queues and receipts when running the mailbox role; plaintext, safe to delete), and `services/<service-id>/state.db` and `conversation.db` for every service. Copy it as a whole. The wrapped data keys live inside `substrate.db`, so a partial copy cannot be opened. |
+| Database directory | `<app_local_data_dir>/db/` (`storage.db_dir`) | `substrate.db` (catalog and wrapped data keys), `coordinators.json` (the saved coordinator list and relay choice; a cache, safe to delete), `peer_records.db` (the last signed record of each peer with a mailbox that this node called; a cache, safe to delete, plaintext), `mailbox.db` (deferred message queues and receipts when running the mailbox role; plaintext, not a cache — deleting it loses queued messages and receipts), and `services/<service-id>/state.db` and `conversation.db` for every service. Copy it as a whole. The wrapped data keys live inside `substrate.db`, so a partial copy cannot be opened. |
 | Blobs | `<app_local_data_dir>/blobs/` and `blob_objects/` | Blob data, if the node uses it. |
 | Hosted app certificates | `<app_local_data_dir>/hosted_apps/` | Instance certificates. |
 | Config file | your `--config` path | Ports, roles, TLS and storage settings. |
@@ -1704,28 +1704,36 @@ session_ttl_secs = 28800
 nonce_ttl_secs = 60
 
 [roles.mailbox]
-# Maximum allowed size for a single sealed message in bytes (default: 65536 = 64 KiB)
-max_message_bytes = 65536
+# SQLite file name under storage.db_dir (default: "mailbox.db")
+db_name = "mailbox.db"
+# Maximum bytes held across all messages in one queue (default: 5242880 = 5 MiB)
+max_queue_bytes = 5242880
 # Maximum number of stored messages per destination queue (default: 500)
 max_queue_messages = 500
-# Maximum total message bytes per destination queue (default: 5242880 = 5 MiB)
-max_queue_bytes = 5242880
 # Maximum time-to-live for a message in seconds (default: 604800 = 7 days)
 max_ttl_secs = 604800
-# Minimum time-to-live for a message in seconds (default: 60 = 1 minute)
-min_ttl_secs = 60
-# Node-wide storage cap across all queues in bytes (default: 104857600 = 100 MiB)
-max_mailbox_bytes = 104857600
-# Deposit rate limit per sender DID per minute (default: 60)
-deposit_rate_limit_per_sender_per_minute = 60
-# Total deposit rate limit across all senders per minute (default: 600)
-deposit_rate_limit_node_total_per_minute = 600
-# Duration in seconds a message remains hidden after claim (default: 300 = 5 minutes)
-visibility_timeout_secs = 300
+# How long receipts are kept after message completion or expiry in seconds (default: 1209600 = 14 days)
+receipt_keep_secs = 1209600
+# How long a claimed message is hidden from other claims in seconds (default: 300 = 5 minutes)
+visibility_secs = 300
 # Idle time in seconds before an unclaimed queue is swept (default: 2592000 = 30 days)
 queue_lifetime_secs = 2592000
-# Duration in seconds completed or expired receipts are kept (default: 1209600 = 14 days)
-receipt_retention_secs = 1209600
+# Node-wide storage cap across all queues in bytes (default: 1073741824 = 1 GiB)
+max_total_bytes = 1073741824
+# Maximum number of queues on this node (default: 10000)
+max_queues = 10000
+# Maximum deposits per minute from one sender DID (default: 60)
+deposits_per_minute_per_sender = 60
+# Maximum deposits per minute across all senders on this node (default: 6000)
+deposits_per_minute_total = 6000
+# Maximum registrations per minute from one master DID (default: 10)
+register_per_minute_per_master = 10
+# Maximum registrations per minute across all masters on this node (default: 120)
+register_per_minute_total = 120
+# Interval between background sweeps in seconds (default: 60)
+sweep_interval_secs = 60
+# Interval between republishing stored service records in seconds (default: 3600)
+republish_interval_secs = 3600
 ```
 
 
@@ -1742,12 +1750,17 @@ curl http://localhost:7967/metrics
 ```
 
 When the mailbox role is active, the endpoint exposes these Prometheus metrics:
-- `syneroym_mailbox_queues_total`: Gauge of active destination queues.
-- `syneroym_mailbox_messages_total`: Gauge of current stored messages across all queues.
-- `syneroym_mailbox_receipts_total`: Gauge of retained receipts across all queues.
-- `syneroym_mailbox_swept_messages_total`: Counter of expired or closed messages swept.
-- `syneroym_mailbox_swept_receipts_total`: Counter of expired receipts swept.
-- `syneroym_mailbox_evicted_messages_total`: Counter of messages evicted due to fair queue limits.
+- `substrate.mailbox.queues`: Gauge of active destination queues.
+- `substrate.mailbox.messages`: Gauge of current stored messages across all queues.
+- `substrate.mailbox.bytes`: Gauge of total message bytes stored across all queues.
+- `substrate.mailbox.deposits`: Counter of successfully stored deposits.
+- `substrate.mailbox.deposits_refused`: Counter of refused deposits labeled by refusal `kind` (`mailbox_full`, `queue_full`, `rate_limited`, `ttl_too_long`, `too_large`, `duplicate_deposit`).
+- `substrate.mailbox.register_refused`: Counter of refused registrations labeled by refusal `kind` (`rate_limited`).
+- `substrate.mailbox.evictions`: Counter of messages evicted due to queue limits.
+- `substrate.mailbox.expired`: Counter of expired messages swept.
+- `substrate.mailbox.closed_unacked`: Counter of messages closed after reaching the maximum claim count (5) without an acknowledgment.
+- `substrate.mailbox.republish_failures`: Counter of failed attempts to republish service records to the registry.
+- `substrate.mailbox.republish_conflicts`: Counter of republish attempts refused by the registry due to newer records (409 Conflict).
 
 ---
 

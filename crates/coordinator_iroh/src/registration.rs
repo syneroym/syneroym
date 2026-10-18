@@ -151,7 +151,8 @@ impl Registration {
             generation: 0,
             mailbox: None,
         };
-        self.registry.register(&info.sign(&identity)?, false).await
+        self.registry.register(&info.sign(&identity)?, false).await?;
+        Ok(())
     }
 }
 

@@ -166,11 +166,12 @@ async fn unreadable_anchor_returns_internal_error() {
 fn sender_of_checks_auth_level() {
     let member = Member::new(3600);
     let mut caller = member.caller();
-    assert_eq!(sender_of(&caller).unwrap(), member.service_id());
+    let now = member.cert.issued_at_secs + 10;
+    assert_eq!(sender_of(&caller, now).unwrap().master_did, member.service_id());
 
     caller.auth = AuthLevel::Ucan;
-    assert_eq!(sender_of(&caller).unwrap(), member.service_id());
+    assert_eq!(sender_of(&caller, now).unwrap().master_did, member.service_id());
 
     caller.auth = AuthLevel::System;
-    assert_eq!(sender_of(&caller).unwrap_err(), MailboxError::Unauthenticated);
+    assert_eq!(sender_of(&caller, now).unwrap_err(), MailboxError::Unauthenticated);
 }

@@ -1,3 +1,4 @@
+use base64::{Engine, engine::general_purpose::STANDARD};
 use syneroym_core::mailbox::{AckEntry, QueueLimits};
 use syneroym_mailbox_format::{DepositId, Receipt, SealedBytes, open};
 
@@ -124,7 +125,14 @@ fn a_used_id_is_a_duplicate_after_delivery() {
         )
         .unwrap();
 
-    let res = store.deposit(&sender.service_id(), &sealed.deposit, now + 10);
+    // An identical retry after delivery returns the original Stored receipt
+    let retry = store.deposit(&sender.service_id(), &sealed.deposit, now + 10).unwrap();
+    assert_eq!(retry.receipt, Receipt::Stored { at_secs: now });
+
+    // But reusing the same id with a different deposit is refused as duplicate
+    let mut different_deposit = sealed.deposit.clone();
+    different_deposit.ttl_secs += 60;
+    let res = store.deposit(&sender.service_id(), &different_deposit, now + 10);
     assert!(matches!(res, Err(MailboxError::DuplicateDeposit(_))));
 }
 
@@ -197,11 +205,7 @@ fn a_full_queue_evicts_the_largest_sender_first() {
 
     let mut d3 = sealed_deposit(&s3, &receiver, 3600, now).deposit;
     let padded = vec![42u8; 8500];
-    d3.sealed = SealedBytes::try_from(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        padded,
-    ))
-    .unwrap();
+    d3.sealed = SealedBytes::try_from(STANDARD.encode(padded)).unwrap();
 
     let out = store.deposit(&s3.service_id(), &d3, now + 10).unwrap();
     assert!(out.evicted >= 1);
@@ -226,20 +230,12 @@ fn a_full_queue_refuses_the_largest_sender_itself() {
 
     let mut d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
     let padded = vec![42u8; 8000];
-    d1.sealed = SealedBytes::try_from(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        padded,
-    ))
-    .unwrap();
+    d1.sealed = SealedBytes::try_from(STANDARD.encode(padded)).unwrap();
     store.deposit(&s1.service_id(), &d1, now).unwrap();
 
     let mut d2 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
     let padded2 = vec![42u8; 3000];
-    d2.sealed = SealedBytes::try_from(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        padded2,
-    ))
-    .unwrap();
+    d2.sealed = SealedBytes::try_from(STANDARD.encode(padded2)).unwrap();
 
     let res = store.deposit(&s1.service_id(), &d2, now + 5);
     assert!(matches!(res, Err(MailboxError::QueueFull(_))));
@@ -291,11 +287,7 @@ fn the_mailbox_cap_refuses_and_evicts_nothing() {
 
     let mut d2 = sealed_deposit(&s2, &receiver, 3600, now).deposit;
     let padded = vec![42u8; 800];
-    d2.sealed = SealedBytes::try_from(base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        padded,
-    ))
-    .unwrap();
+    d2.sealed = SealedBytes::try_from(STANDARD.encode(padded)).unwrap();
 
     let res = store.deposit(&s2.service_id(), &d2, now + 10);
     assert_eq!(res, Err(MailboxError::MailboxFull));
@@ -325,4 +317,47 @@ fn status_shows_only_the_callers_own_receipts() {
     let random_id = DepositId::random().unwrap();
     let st_unknown = store.status(&s1.service_id(), &[random_id], now + 10).unwrap();
     assert_eq!(st_unknown[0].receipt, Receipt::Unknown);
+}
+
+#[test]
+fn unclaimed_messages_are_evicted_before_claimed_in_flight_messages() {
+    let mut limits = small_limits();
+    // Allow at most 2 messages in the queue
+    limits.queue = QueueLimits { max_bytes: 10_000, max_messages: 2, max_ttl_secs: 86400 };
+    let store = store_with(limits);
+
+    let s1 = Member::new(3600);
+    let s2 = Member::new(3600);
+    let receiver = Member::new(3600);
+    let now = receiver.cert.issued_at_secs + 10;
+
+    let rec = record(&receiver, NODE_DID);
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    store.register(&receiver.instance(), &checked, now).unwrap();
+
+    let d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
+    let d2 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
+
+    // s1 deposits d1, then d2
+    store.deposit(&s1.service_id(), &d1, now).unwrap();
+    store.deposit(&s1.service_id(), &d2, now + 1).unwrap();
+
+    // Receiver claims 1 message: d1 is claimed (in-flight with claimed_until > now)
+    let claim_res = store.claim(&receiver.instance(), 1, now + 2).unwrap();
+    assert_eq!(claim_res.messages.len(), 1);
+    assert_eq!(claim_res.messages[0].deposit_id, d1.deposit_id);
+
+    // s2 deposits d3, filling queue and forcing eviction of 1 message from largest
+    // sender (s1)
+    let d3 = sealed_deposit(&s2, &receiver, 3600, now).deposit;
+    let out = store.deposit(&s2.service_id(), &d3, now + 3).unwrap();
+    assert_eq!(out.evicted, 1);
+
+    // Unclaimed message d2 was evicted, while claimed in-flight message d1 was
+    // preserved!
+    let st_d1 = store.status(&s1.service_id(), &[d1.deposit_id], now + 4).unwrap();
+    assert_eq!(st_d1[0].receipt, Receipt::Stored { at_secs: now });
+
+    let st_d2 = store.status(&s1.service_id(), &[d2.deposit_id], now + 4).unwrap();
+    assert_eq!(st_d2[0].receipt, Receipt::Expired { at_secs: now + 3 });
 }

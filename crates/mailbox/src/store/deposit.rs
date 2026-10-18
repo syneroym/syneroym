@@ -1,13 +1,16 @@
 //! Storage operations for deposits and receipt status.
 
-use rusqlite::Transaction;
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
 use syneroym_core::mailbox::{MAX_STATUS_BATCH, StatusEntry};
 use syneroym_mailbox_format::{Deposit, DepositError, DepositId, Receipt};
 use tracing::warn;
 
 use crate::{
     error::MailboxError,
-    store::{MailboxStore, QueueRow, from_sql, put_receipt, queue_row, remove_message, to_sql},
+    store::{
+        MailboxStore, QueueRow, ReceiptEntry, compute_content_hash, from_sql, put_receipt,
+        queue_row, remove_message, to_sql,
+    },
 };
 
 /// The outcome of storing a deposit: the receipt and how many messages were
@@ -28,7 +31,7 @@ impl MailboxStore {
         now: u64,
     ) -> Result<DepositOutcome, MailboxError> {
         let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let row = queue_row(&tx, &deposit.destination)?
             .ok_or_else(|| MailboxError::UnknownDestination(deposit.destination.clone()))?;
@@ -43,10 +46,13 @@ impl MailboxStore {
 
         let id = deposit.deposit_id.to_string();
         let size = deposit.sealed.len();
+        let sealed_text = String::from(deposit.sealed.clone());
+        let content_hash = compute_content_hash(&deposit.destination, &sealed_text);
 
         if let Some(existing) = check_existing_message(&tx, sender, &id)? {
             if existing.destination == deposit.destination
-                && existing.sealed == String::from(deposit.sealed.clone())
+                && existing.sealed == sealed_text
+                && existing.ttl_secs == deposit.ttl_secs
             {
                 return Ok(DepositOutcome {
                     receipt: Receipt::Stored { at_secs: existing.at },
@@ -56,7 +62,16 @@ impl MailboxStore {
             return Err(MailboxError::DuplicateDeposit(id));
         }
 
-        if check_existing_receipt(&tx, sender, &id)? {
+        if let Some(receipt_row) = check_existing_receipt(&tx, sender, &id)? {
+            if receipt_row.destination == deposit.destination
+                && receipt_row.content_hash == content_hash
+                && receipt_row.ttl_secs == deposit.ttl_secs
+            {
+                return Ok(DepositOutcome {
+                    receipt: Receipt::Stored { at_secs: receipt_row.deposited_at },
+                    evicted: 0,
+                });
+            }
             return Err(MailboxError::DuplicateDeposit(id));
         }
 
@@ -69,7 +84,6 @@ impl MailboxStore {
         }
 
         let expires = now.saturating_add(deposit.ttl_secs);
-        let sealed_text = String::from(deposit.sealed.clone());
         tx.execute(
             "INSERT INTO messages (service_id, sender, deposit_id, sealed, size, deposited_at, \
              expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -89,10 +103,16 @@ impl MailboxStore {
         )?;
         put_receipt(
             &tx,
-            sender,
-            &id,
-            &Receipt::Stored { at_secs: now },
-            expires.saturating_add(self.limits.receipt_keep_secs),
+            ReceiptEntry {
+                sender,
+                deposit_id: &id,
+                destination: &deposit.destination,
+                content_hash: &content_hash,
+                deposited_at: now,
+                ttl_secs: deposit.ttl_secs,
+                receipt: &Receipt::Stored { at_secs: now },
+                expires_at: expires.saturating_add(self.limits.receipt_keep_secs),
+            },
         )?;
 
         tx.commit()?;
@@ -143,6 +163,7 @@ impl MailboxStore {
 struct ExistingMessage {
     destination: String,
     sealed: String,
+    ttl_secs: u64,
     at: u64,
 }
 
@@ -152,33 +173,50 @@ fn check_existing_message(
     deposit_id: &str,
 ) -> Result<Option<ExistingMessage>, MailboxError> {
     let mut stmt = tx.prepare(
-        "SELECT service_id, sealed, deposited_at FROM messages WHERE sender = ?1 AND deposit_id = \
-         ?2",
+        "SELECT service_id, sealed, deposited_at, expires_at FROM messages WHERE sender = ?1 AND \
+         deposit_id = ?2",
     )?;
     let mut rows = stmt.query(rusqlite::params![sender, deposit_id])?;
     if let Some(r) = rows.next()? {
         let dest: String = r.get(0)?;
         let sealed: String = r.get(1)?;
         let at: i64 = r.get(2)?;
-        Ok(Some(ExistingMessage { destination: dest, sealed, at: from_sql(at) }))
+        let exp: i64 = r.get(3)?;
+        let ttl_secs = from_sql(exp).saturating_sub(from_sql(at));
+        Ok(Some(ExistingMessage { destination: dest, sealed, ttl_secs, at: from_sql(at) }))
     } else {
         Ok(None)
     }
+}
+
+struct ExistingReceipt {
+    destination: String,
+    content_hash: String,
+    deposited_at: u64,
+    ttl_secs: u64,
 }
 
 fn check_existing_receipt(
     tx: &Transaction,
     sender: &str,
     deposit_id: &str,
-) -> Result<bool, MailboxError> {
-    let in_receipts = tx
+) -> Result<Option<ExistingReceipt>, MailboxError> {
+    let res = tx
         .query_row(
-            "SELECT 1 FROM receipts WHERE sender = ?1 AND deposit_id = ?2",
+            "SELECT destination, content_hash, deposited_at, ttl_secs FROM receipts WHERE sender \
+             = ?1 AND deposit_id = ?2",
             rusqlite::params![sender, deposit_id],
-            |_| Ok(()),
+            |r| {
+                Ok(ExistingReceipt {
+                    destination: r.get(0)?,
+                    content_hash: r.get(1)?,
+                    deposited_at: from_sql(r.get(2)?),
+                    ttl_secs: from_sql(r.get(3)?),
+                })
+            },
         )
-        .is_ok();
-    Ok(in_receipts)
+        .optional()?;
+    Ok(res)
 }
 
 fn make_room(
@@ -204,7 +242,7 @@ fn make_room(
                 return Err(MailboxError::QueueFull(row.service_id.clone()));
             }
             Some((s, _)) => {
-                let (seq, vsize) = select_oldest_message_from_sender(tx, &row.service_id, &s)?
+                let (seq, vsize) = select_oldest_message_from_sender(tx, &row.service_id, &s, now)?
                     .ok_or_else(|| MailboxError::QueueFull(row.service_id.clone()))?;
 
                 remove_message(tx, seq, &Receipt::Expired { at_secs: now }, keep_secs, now)?;
@@ -233,10 +271,12 @@ fn select_oldest_message_from_sender(
     tx: &Transaction,
     service_id: &str,
     sender: &str,
+    now: u64,
 ) -> Result<Option<(i64, i64)>, MailboxError> {
     let mut stmt = tx.prepare(
-        "SELECT seq, size FROM messages WHERE service_id = ?1 AND sender = ?2 ORDER BY seq LIMIT 1",
+        "SELECT seq, size FROM messages WHERE service_id = ?1 AND sender = ?2 ORDER BY \
+         (claimed_until > ?3) ASC, seq ASC LIMIT 1",
     )?;
-    let mut rows = stmt.query(rusqlite::params![service_id, sender])?;
+    let mut rows = stmt.query(rusqlite::params![service_id, sender, to_sql(now)])?;
     if let Some(r) = rows.next()? { Ok(Some((r.get(0)?, r.get(1)?))) } else { Ok(None) }
 }

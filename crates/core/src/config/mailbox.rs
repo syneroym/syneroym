@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MailboxRole {
     /// SQLite file under `storage.db_dir`.
     pub db_name: String,
@@ -29,6 +29,10 @@ pub struct MailboxRole {
     pub deposits_per_minute_per_sender: u32,
     /// Maximum deposits per minute across all senders on this node.
     pub deposits_per_minute_total: u32,
+    /// Maximum registrations per minute from one master DID.
+    pub register_per_minute_per_master: u32,
+    /// Maximum registrations per minute across all masters on this node.
+    pub register_per_minute_total: u32,
     /// Interval between background sweeps, in seconds.
     pub sweep_interval_secs: u64,
     /// Interval between republishing stored service records, in seconds.
@@ -49,6 +53,8 @@ impl Default for MailboxRole {
             max_queues: 10_000,
             deposits_per_minute_per_sender: 60,
             deposits_per_minute_total: 6_000,
+            register_per_minute_per_master: 10,
+            register_per_minute_total: 120,
             sweep_interval_secs: 60,
             republish_interval_secs: 3_600,
         }

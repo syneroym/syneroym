@@ -17,7 +17,9 @@ syneroym-passport = { workspace = true }
 syneroym-rpc = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+blake3 = { workspace = true }
 ed25519-dalek = { workspace = true }
+futures = { workspace = true }
 hex = { workspace = true }
 metrics = { workspace = true }
 rusqlite = { workspace = true }

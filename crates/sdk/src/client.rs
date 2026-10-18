@@ -532,20 +532,21 @@ impl SyneroymClient {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, recv) = conn.open_bi().await?;
 
-                // Every stream must start with a RoutePreamble identifying the target service.
-                // A self-asserted pubkey (no delegation) is set so this
-                // connection is not anonymous (ADR-0016 §0.5)
-                // -- see `SyneroymClient::identity`'s doc comment.
-                let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
-                preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
-                preamble.ucan = self.caller_ucan.clone();
-                preamble.delegation = self.caller_delegation.clone();
+                let preamble = self.build_preamble(interface_name);
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
                 framing::write_frame(&mut send, &req_bytes).await?;
                 Ok((send, recv))
             }
         }
+    }
+
+    pub(crate) fn build_preamble(&self, interface_name: &str) -> RoutePreamble {
+        let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
+        preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
+        preamble.ucan = self.caller_ucan.clone();
+        preamble.delegation = self.caller_delegation.clone();
+        preamble
     }
 
     pub async fn request_raw(

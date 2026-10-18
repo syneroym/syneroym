@@ -4,13 +4,19 @@ use serde_json::json;
 use syneroym_core::{
     config::MailboxRole,
     mailbox::{
-        METHOD_ACK, METHOD_CLAIM, METHOD_DEPOSIT, METHOD_INFO, METHOD_REGISTER, METHOD_STATUS,
-        codes,
+        AckAnswer, AckOutcome, ClaimAnswer, InfoAnswer, METHOD_ACK, METHOD_CLAIM, METHOD_DEPOSIT,
+        METHOD_INFO, METHOD_REGISTER, METHOD_STATUS, METHOD_UNREGISTER, PROTOCOL_VERSION,
+        StatusAnswer, UnregisterAnswer, codes,
     },
 };
-use syneroym_identity::{DelegationCertificate, Identity};
+use syneroym_identity::{
+    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
+};
 use syneroym_mailbox_format::{Receipt, open};
-use syneroym_rpc::{CallerContext, NativeInvocation, NativeService, RpcError};
+use syneroym_rpc::{
+    AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeService, RpcError,
+    SessionContext,
+};
 use tempfile::tempdir;
 
 use crate::{
@@ -100,8 +106,7 @@ async fn register_deposit_claim_ack_status_round_trip() {
 
     let claim_inv = invocation(METHOD_CLAIM, json!({ "max": 10 }), receiver.caller());
     let claim_res = service.dispatch(claim_inv).await.unwrap();
-    let claim_ans: syneroym_core::mailbox::ClaimAnswer =
-        serde_json::from_value(claim_res.payload).unwrap();
+    let claim_ans: ClaimAnswer = serde_json::from_value(claim_res.payload).unwrap();
     assert_eq!(claim_ans.messages.len(), 1);
 
     let claimed_msg = &claim_ans.messages[0];
@@ -129,14 +134,12 @@ async fn register_deposit_claim_ack_status_round_trip() {
         receiver.caller(),
     );
     let ack_res = service.dispatch(ack_inv).await.unwrap();
-    let ack_ans: syneroym_core::mailbox::AckAnswer =
-        serde_json::from_value(ack_res.payload).unwrap();
-    assert_eq!(ack_ans.results, vec![syneroym_core::mailbox::AckOutcome::Stored]);
+    let ack_ans: AckAnswer = serde_json::from_value(ack_res.payload).unwrap();
+    assert_eq!(ack_ans.results, vec![AckOutcome::Stored]);
 
     let st_inv = invocation(METHOD_STATUS, json!({ "deposit_ids": [dep_id] }), sender.caller());
     let st_res = service.dispatch(st_inv).await.unwrap();
-    let st_ans: syneroym_core::mailbox::StatusAnswer =
-        serde_json::from_value(st_res.payload).unwrap();
+    let st_ans: StatusAnswer = serde_json::from_value(st_res.payload).unwrap();
     assert_eq!(st_ans.receipts.len(), 1);
     assert!(st_ans.receipts[0].receipt.verify_signed(&sealed.sent, 3600, now).is_ok());
 }
@@ -265,8 +268,8 @@ async fn info_reports_the_limits() {
     let (_dir, service, _anchors) = test_service(MailboxRole::default());
     let member = Member::new(3600);
     let res = service.dispatch(invocation(METHOD_INFO, json!({}), member.caller())).await.unwrap();
-    let info: syneroym_core::mailbox::InfoAnswer = serde_json::from_value(res.payload).unwrap();
-    assert_eq!(info.version, syneroym_core::mailbox::PROTOCOL_VERSION);
+    let info: InfoAnswer = serde_json::from_value(res.payload).unwrap();
+    assert_eq!(info.version, PROTOCOL_VERSION);
     assert_eq!(info.mailbox, NODE_DID);
 }
 
@@ -320,11 +323,11 @@ async fn a_revoked_instance_is_refused() {
         &receiver.master,
         instance2.public_key(),
         3600,
-        syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+        SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
     let mut caller2 = receiver.caller();
-    caller2.proof = Some(syneroym_rpc::CallerProof {
+    caller2.proof = Some(CallerProof {
         pubkey_hex: hex::encode(instance2.public_key().to_bytes()),
         delegation_json: Some(cert2.to_json().unwrap()),
     });
@@ -367,4 +370,118 @@ async fn an_unreadable_master_anchor_refuses_receiver_calls() {
         ))
         .await;
     assert!(st_res.is_ok());
+}
+
+#[tokio::test]
+async fn unregister_of_no_queue_answers_false() {
+    let (_dir, service, anchors) = test_service(MailboxRole::default());
+    let member = Member::new(3600);
+    anchors.publish(&member.service_id());
+
+    let inv = invocation(METHOD_UNREGISTER, json!({}), member.caller());
+    let res = service.dispatch(inv).await.unwrap();
+    let ans: UnregisterAnswer = serde_json::from_value(res.payload).unwrap();
+    assert!(!ans.removed);
+}
+
+#[tokio::test]
+async fn raw_key_caller_with_no_delegation_is_refused_on_deposit_and_status() {
+    let (_dir, service, anchors) = test_service(MailboxRole::default());
+    let receiver = Member::new(3600);
+    anchors.publish(&receiver.service_id());
+
+    let rec = record(&receiver, NODE_DID);
+    service
+        .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
+        .await
+        .unwrap();
+
+    let raw_key = Identity::generate().unwrap();
+    let raw_key_did = substrate::derive_did_key(&raw_key.public_key());
+    let raw_caller = CallerContext {
+        caller_did: raw_key_did.clone(),
+        app_instance: None,
+        session: SessionContext {
+            subject_did: raw_key_did,
+            capabilities: Vec::new(),
+            ..Default::default()
+        },
+        auth: AuthLevel::Delegated,
+        proof: Some(CallerProof {
+            pubkey_hex: hex::encode(raw_key.public_key().to_bytes()),
+            delegation_json: None,
+        }),
+    };
+
+    let now = syneroym_passport::now_secs();
+    let sender = Member::new(3600);
+    let dep = sealed_deposit(&sender, &receiver, 3600, now).deposit;
+
+    let dep_res =
+        service.dispatch(invocation(METHOD_DEPOSIT, json!(dep), raw_caller.clone())).await;
+    match dep_res {
+        Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::NOT_AN_INSTANCE),
+        other => panic!("expected NOT_AN_INSTANCE on deposit, got {other:?}"),
+    }
+
+    let st_res = service
+        .dispatch(invocation(METHOD_STATUS, json!({ "deposit_ids": [dep.deposit_id] }), raw_caller))
+        .await;
+    match st_res {
+        Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::NOT_AN_INSTANCE),
+        other => panic!("expected NOT_AN_INSTANCE on status, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn register_above_rate_limits_is_refused() {
+    let role = MailboxRole {
+        register_per_minute_per_master: 2,
+        register_per_minute_total: 3,
+        ..Default::default()
+    };
+    let (_dir, service, anchors) = test_service(role);
+    let m1 = Member::new(3600);
+    let m2 = Member::new(3600);
+    let m3 = Member::new(3600);
+    anchors.publish(&m1.service_id());
+    anchors.publish(&m2.service_id());
+    anchors.publish(&m3.service_id());
+
+    let rec1 = record(&m1, NODE_DID);
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec1 }), m1.caller()))
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec1 }), m1.caller()))
+            .await
+            .is_ok()
+    );
+
+    let res_m1 =
+        service.dispatch(invocation(METHOD_REGISTER, json!({ "record": rec1 }), m1.caller())).await;
+    match res_m1 {
+        Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
+        other => panic!("expected RATE_LIMITED for m1, got {other:?}"),
+    }
+
+    let rec2 = record(&m2, NODE_DID);
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec2 }), m2.caller()))
+            .await
+            .is_ok()
+    );
+
+    let rec3 = record(&m3, NODE_DID);
+    let res_m3 =
+        service.dispatch(invocation(METHOD_REGISTER, json!({ "record": rec3 }), m3.caller())).await;
+    match res_m3 {
+        Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
+        other => panic!("expected RATE_LIMITED for total register, got {other:?}"),
+    }
 }
