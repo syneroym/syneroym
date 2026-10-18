@@ -15,7 +15,7 @@ use serde::Deserialize;
 /// `DUPLICATION_SLACK` below it. Then the ceiling must be lowered in the same
 /// change, so quality that was gained cannot be given back later. Below
 /// `DUPLICATION_FLOOR` the ceiling stops moving.
-const MAX_EXACT_DUPLICATE_PERCENT: f64 = 7.7;
+const MAX_EXACT_DUPLICATE_PERCENT: f64 = 7.6;
 const DUPLICATION_SLACK: f64 = 0.3;
 const DUPLICATION_FLOOR: f64 = 5.0;
 

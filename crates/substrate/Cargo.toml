@@ -32,6 +32,7 @@ syneroym-coordinator = { workspace = true, optional = true, default-features = f
 syneroym-client-gateway = { workspace = true, optional = true }
 syneroym-auth = { workspace = true, optional = true }
 syneroym-app-supervisor = { workspace = true, optional = true }
+syneroym-mailbox = { workspace = true, optional = true }
 syneroym-sandbox-wasm.workspace = true
 syneroym-conversation.workspace = true
 syneroym-async-queue.workspace = true
@@ -63,12 +64,14 @@ default = [
     "client_gateway",
     "auth",
     "supervisor",
+    "mailbox",
 ]
 minimal = ["client_gateway", "auth"]
 community_registry = ["dep:syneroym-community-registry"]
 client_gateway = ["dep:syneroym-client-gateway"]
 auth = ["dep:syneroym-auth"]
 supervisor = ["dep:syneroym-app-supervisor"]
+mailbox = ["dep:syneroym-mailbox"]
 coordinator = ["dep:syneroym-coordinator"]
 coordinator_iroh = ["coordinator", "syneroym-coordinator/iroh"]
 coordinator_webrtc = ["coordinator", "syneroym-coordinator/webrtc"]

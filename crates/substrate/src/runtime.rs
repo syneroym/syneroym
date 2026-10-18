@@ -18,6 +18,7 @@ mod auth;
 mod dual_build_fixture;
 mod handles;
 mod home_relay;
+mod mailbox;
 mod publish;
 mod router;
 mod roym;
@@ -146,12 +147,17 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     let keys = router::load_host_identity(&config)?;
     let mut services = RuntimeServices::init(&config, &keys.host).await?;
     let relay_leases = services.relay_leases();
-    let (connection_router, endpoint_registry, supervisor, conversation, auth_did) =
-        setup_connection_router(&config, keys, relay_leases).await?;
-    services.set_supervisor(supervisor);
-    services.set_conversation(conversation);
+    let setup = setup_connection_router(&config, keys, relay_leases).await?;
+    services.set_supervisor(setup.supervisor);
+    services.set_conversation(setup.conversation);
+    services.set_mailbox(setup.mailbox);
     #[cfg(feature = "client_gateway")]
-    services.set_gateway_auth_did(auth_did);
+    services.set_gateway_auth_did(setup.auth_did);
 
-    Ok(InitializedRuntime { observability, services, connection_router, endpoint_registry })
+    Ok(InitializedRuntime {
+        observability,
+        services,
+        connection_router: setup.router,
+        endpoint_registry: setup.endpoint_registry,
+    })
 }

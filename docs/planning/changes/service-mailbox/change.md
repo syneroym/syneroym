@@ -58,20 +58,20 @@ Mailbox service
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| M-1 | A substrate with `[roles.mailbox]` runs the mailbox as a native service with these methods: `info`, `register`, `unregister`, `deposit`, `claim`, `ack`, `status`. | |
-| M-2 | The mailbox takes the caller identity from the verified transport identity (ADR-0016). It never trusts an identity written in a request body. | |
-| M-3 | `register` succeeds only when the caller shows an instance certificate whose master DID is the `service_id` being registered. | |
-| M-4 | `deposit` is accepted from any verified sender. It is refused for an unknown destination, a message above the size limit, a full queue after fair eviction, or a sender above its rate limit. Each case has its own error. | |
-| M-5 | `claim` and `ack` work only for the destination service. `status` works only for the sender that made the deposit. | |
-| M-6 | A claimed message that is not acknowledged becomes visible again after the visibility time (5 minutes). | |
-| M-7 | A message past its time-to-live is removed. Its receipt then says `expired`. | |
-| M-8 | When a queue is full, the mailbox removes messages from the sender that holds the most bytes first. The new message is refused only when that sender is the depositor. | |
-| M-9 | A receipt (`stored`, `delivered`, `rejected`, `expired`) is kept for 14 days after the body is removed. | |
-| M-10 | A queue that has not been claimed for the queue lifetime (30 days) is removed. | |
-| M-11 | The mailbox stores no content, interface name, method name or parameters in clear text. | |
-| M-12 | For each queue the mailbox serves `claim` and `ack` only to the instance with the newest certificate it has seen (by `issued_at_secs`), and only if that certificate is not revoked. After a relocation, the old instance can no longer take messages. | |
-| M-13 | A `delivered` receipt carries the receiver's signature over the deposit id, the sender's member master DID, the message hash, the state and the time, made with its instance key, and the receiver's instance certificate. The sender knows only the receiver's member master DID, so it checks the certificate against that DID and then the signature. The mailbox stores the receipt as sent. The mailbox cannot make a `delivered` receipt. | |
-| M-14 | A message that was claimed 5 times without an acknowledgement is closed with the receipt `rejected`. The mailbox counts the claims. This `rejected` receipt is unsigned. | |
+| M-1 | A substrate with `[roles.mailbox]` runs the mailbox as a native service with these methods: `info`, `register`, `unregister`, `deposit`, `claim`, `ack`, `status`. | `crates/substrate/src/runtime/mailbox/tests.rs`, `crates/mailbox/src/service/tests.rs` (every method), `crates/substrate/tests/mailbox_service_e2e.rs` (`a_deposit_reaches_the_receiver_and_its_delivery_receipt_reaches_the_sender`) |
+| M-2 | The mailbox takes the caller identity from the verified transport identity (ADR-0016). It never trusts an identity written in a request body. | `crates/mailbox/src/caller/tests.rs` (`an_unverified_caller_is_refused`), `crates/substrate/tests/mailbox_service_e2e.rs` (`refusals_have_their_own_codes`) |
+| M-3 | `register` succeeds only when the caller shows an instance certificate whose master DID is the `service_id` being registered. | `crates/mailbox/src/caller/tests.rs` (scope and master checks), `crates/mailbox/src/store/tests/queue.rs`, `crates/mailbox/src/service/tests.rs` (`register_checks_caller_identity`), `crates/substrate/tests/mailbox_service_e2e.rs` (`refusals_have_their_own_codes`) |
+| M-4 | `deposit` is accepted from any verified sender. It is refused for an unknown destination, a message above the size limit, a full queue after fair eviction, or a sender above its rate limit. Each case has its own error. | `crates/mailbox/src/store/tests/deposit.rs` (unknown destination, too large, full queue, rate limits), `crates/mailbox/src/service/tests.rs` (`deposit_enforces_rate_limits`), `crates/substrate/tests/mailbox_service_e2e.rs` (`refusals_have_their_own_codes`) |
+| M-5 | `claim` and `ack` work only for the destination service. `status` works only for the sender that made the deposit. | `crates/mailbox/src/store/tests/claim.rs`, `crates/mailbox/src/store/tests/sweep.rs` (status access), `crates/mailbox/src/caller/tests.rs`, `crates/mailbox/src/service/tests.rs`, `crates/substrate/tests/mailbox_service_e2e.rs` (`a_deposit_reaches_the_receiver_and_its_delivery_receipt_reaches_the_sender`, `refusals_have_their_own_codes`) |
+| M-6 | A claimed message that is not acknowledged becomes visible again after the visibility time (5 minutes). | `crates/mailbox/src/store/tests/claim.rs` (`claimed_messages_are_hidden_for_visibility_timeout`), `crates/substrate/tests/mailbox_service_e2e.rs` (`an_unclaimed_message_returns_after_its_visibility_time`) |
+| M-7 | A message past its time-to-live is removed. Its receipt then says `expired`. | `crates/mailbox/src/store/tests/sweep.rs` (`expired_messages_are_swept`), `crates/mailbox/src/store/tests/deposit.rs` (`expired_messages_are_purged_on_deposit`) |
+| M-8 | When a queue is full, the mailbox removes messages from the sender that holds the most bytes first. The new message is refused only when that sender is the depositor. | `crates/mailbox/src/store/tests/deposit.rs` (fair eviction sender byte tracking, largest sender eviction, depositor rejected when largest) |
+| M-9 | A receipt (`stored`, `delivered`, `rejected`, `expired`) is kept for 14 days after the body is removed. | `crates/mailbox/src/store/tests/sweep.rs` (`expired_receipts_are_swept_after_retention_period`) |
+| M-10 | A queue that has not been claimed for the queue lifetime (30 days) is removed. | `crates/mailbox/src/store/tests/sweep.rs` (`sweeping_idle_queues_past_lifetime`) |
+| M-11 | The mailbox stores no content, interface name, method name or parameters in clear text. | `crates/mailbox/src/store/tests/plaintext.rs` (plaintext SQLite database with sealed ciphertext bodies) |
+| M-12 | For each queue the mailbox serves `claim` and `ack` only to the instance with the newest certificate it has seen (by `issued_at_secs`), and only if that certificate is not revoked. After a relocation, the old instance can no longer take messages. | `crates/mailbox/src/store/tests/queue.rs` (newest certificate seen, tied timestamp, old certificate rejected), `crates/mailbox/src/caller/tests.rs` (revoked certificate), `crates/mailbox/src/service/tests.rs`, `crates/substrate/tests/mailbox_service_e2e.rs` (`a_moved_service_takes_the_queue_from_its_old_instance`) |
+| M-13 | A `delivered` receipt carries the receiver's signature over the deposit id, the sender's member master DID, the message hash, the state and the time, made with its instance key, and the receiver's instance certificate. The sender knows only the receiver's member master DID, so it checks the certificate against that DID and then the signature. The mailbox stores the receipt as sent. The mailbox cannot make a `delivered` receipt. | `crates/mailbox/src/store/tests/claim.rs` (`acknowledging_messages`), `crates/substrate/tests/mailbox_service_e2e.rs` (`a_deposit_reaches_the_receiver_and_its_delivery_receipt_reaches_the_sender`) |
+| M-14 | A message that was claimed 5 times without an acknowledgement is closed with the receipt `rejected`. The mailbox counts the claims. This `rejected` receipt is unsigned. | `crates/mailbox/src/store/tests/claim.rs` (`messages_claimed_max_times_are_closed_with_rejection`) |
 
 Record and keys
 
@@ -80,7 +80,7 @@ Record and keys
 | K-1 | `EndpointInfo` has an optional `mailbox` field: the mailbox `service_id` and the service's mailbox public key. It is covered by the existing signature. The field adds about 140 bytes. | `dht_registry/tests.rs` (`a_record_with_a_mailbox_signs_and_verifies`, `a_service_record_with_a_mailbox_fits_the_dht_size_limit`, and 3 more), `mailbox_record_e2e.rs` |
 | K-2 | The deployer derives the mailbox key from the member master. The private half is delivered to each instance with its certificate. Every later deploy of the member, on any substrate, gets the same key, so a new instance can open messages sent before the move. | `keys/tests.rs` (derivation tests), `orchestration/tests/mailbox.rs` (`the_same_member_on_two_substrates_stores_the_same_key`), `mailbox_record_e2e.rs` |
 | K-3 | `roymctl svc deploy` and `roymctl app deploy` accept a mailbox: a service id, or `auto`. `auto` picks one entry from the registry's open list by the same ranking helper as the coordinator list. `app deploy` takes a mailbox for each service (all members of a service share the mailbox host; each has its own key). `auto` is parsed but refused until the registry list exists. | `cli_args.rs`, `svc/tests.rs`, `app/tests/settings.rs`, `mailbox_arg/tests.rs`, `registry/tests.rs`. `auto`: open |
-| K-4 | At `register` the receiver gives the mailbox its current signed service record. While the queue lives, the mailbox publishes that record to the registry every hour. The registry takes an unchanged record as a refresh. A record with an older timestamp is rejected, so a stale copy never overwrites a newer record. | |
+| K-4 | At `register` the receiver gives the mailbox its current signed service record. While the queue lives, the mailbox publishes that record to the registry every hour. The registry takes an unchanged record as a refresh. A record with an older timestamp is rejected, so a stale copy never overwrites a newer record. | `crates/mailbox/src/store/tests/sweep.rs`, `crates/substrate/tests/mailbox_service_e2e.rs` (`a_registered_record_is_published_by_the_mailbox`, `a_stale_republish_never_replaces_a_newer_record`) |
 | K-5 | A sender that reads a service record does not follow it on to the substrate record. It needs only the `mailbox` field. A deposit works after the receiver has slept longer than 2 hours (the registry lifetime of a record). | `net_iroh/tests.rs` (`resolve_peer`), `mailbox_record_e2e.rs` (`a_peer_with_a_mailbox_but_no_substrate_record_still_resolves`) |
 | K-6 | A sender stores, durably, the last signed record it saw for each peer, until the `not_after` of that record. A sender with a stored record deposits when the registry cannot be reached. | `peer_records/tests.rs`, `net_iroh/tests.rs` (`an_unreachable_registry_falls_back_to_the_stored_record`), `proxy/tests/remote_dispatch.rs`, `mailbox_record_e2e.rs` (`a_stored_record_routes_a_direct_call_when_the_registry_has_none`) |
 | K-7 | A private service publishes no record, so it has no mailbox field. A public record exported with `--record-out` carries the field like any other record. | `compiler/tests/member_settings.rs`, `orchestration/tests/mailbox.rs` (`validate_mailbox`), `svc/tests.rs`, `mailbox_record_e2e.rs` (`a_mailbox_on_a_service_that_is_not_public_is_refused`) |
@@ -200,7 +200,7 @@ Ability `mailbox/use` on `substrate:<host node did>/mailbox`. Facts: `max_bytes`
 
 The owner key signs one child token for each member master at deploy time (`roymctl svc deploy` or `app deploy` with a passport file).
 
-The `register` request carries the whole instance certificate in its body, because the router keeps only the two DIDs of the connection and does not pass the certificate on. The mailbox passes the transport's verified instance DID as the proof and this certificate as the signer binding; the passport core checks its `service-instance` scope and that it names that instance DID ([operator-passport](../operator-passport/change.md) `D-B1-17`). The mailbox reads the raised quotas of a queue from `LeaseStore::lease_for`. When a member master holds running leases under two passports, the newest registration wins (`D-B1-16`).
+The `register` request carries no instance certificate in its body: the router passes the verified instance certificate in `CallerContext.proof.delegation_json`. The mailbox passes the transport's verified instance DID as the proof and this certificate as the signer binding; the passport core checks its `service-instance` scope and that it names that instance DID ([operator-passport](../operator-passport/change.md) `D-B1-17`, as changed by C4). The mailbox reads the raised quotas of a queue from `LeaseStore::lease_for`. When a member master holds running leases under two passports, the newest registration wins (`D-B1-16`).
 
 ### Registry list
 
@@ -246,9 +246,9 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 
 - [ ] Resolve the open questions.
 - [x] Record field, mailbox key creation and delivery, per-service certificate lifetime, `roymctl svc deploy` and `app deploy` options. (`auto` waits for the registry list.)
-- [ ] Lookup change: `resolve_peer` returns the mailbox field (done). Sender stores the last record (done). Mailbox republishes the record (open).
+- [x] Lookup change: `resolve_peer` returns the mailbox field (done). Sender stores the last record (done). Mailbox republishes the record (done).
 - [x] Sealed message format with tests (tamper, wrong key, replay, old send time).
-- [ ] Mailbox role, native service, store, quotas, fair eviction, sweeps, newest-certificate rule, signed receipts.
+- [x] Mailbox role, native service, store, quotas, fair eviction, sweeps, newest-certificate rule, signed receipts.
 - [x] `async_queue`: a `deposited` state outside the attempt budget. Keep the supervisor behaviour.
 - [ ] `ProxyRouter` deposit and status poll. New state in both outboxes. New `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI.
 - [ ] Substrate pull worker and injection with sender identity.
@@ -298,6 +298,24 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C3-17`: `app deploy` refuses `mailbox` and `instance_cert_expires_hours` without `--mint-masters` for the services of every compiled plan, including the apps the manifest spawns.
 - `D-C3-18`: the registry-certificate file of a service is written before its mailbox key is stored, as it already was before the other late deploy steps. If the key cannot be stored, the rollback (`undeploy`) removes the file. But the hourly heartbeat and a forced republish (for example from the deploy of another service) publish every file in `hosted_apps/`, so the record can reach the registry before the key is stored, and the rollback does not take it back from the registry. The risk is small: the key is derived from the master, and the next deploy of the member stores it.
 - `D-C3-19`: `MailboxChoice` checks that the node DID decodes, not only the `did:key:` prefix that `ServiceId` checks.
+- `D-C4-1`: `register` has no instance certificate in its body. The router passes the verified instance certificate in `CallerContext.proof.delegation_json` (from the route preamble), so `register` reads it directly from the verified caller proof.
+- `D-C4-2`: `mailbox` is never "the one interface" of the node DID. `EndpointRegistry::resolve_interface` leaves it out, so a call with no interface does not fall back to `mailbox`.
+- `D-C4-3`: `info`, `register`, `unregister`, `deposit`, `claim`, `ack`, and `status` wire types live in `syneroym-core::mailbox`.
+- `D-C4-4`: no proof of possession on the preamble temporary key. The mailbox accepts the verified transport identity from the router; proof of possession belongs in the router handshake (deferred backlog).
+- `D-C4-5`: the mailbox database `mailbox.db` is plaintext SQLite in WAL mode. Payloads are sealed with HPKE.
+- `D-C4-6`: receipts are keyed on `(sender, deposit_id)`.
+- `D-C4-7`: fair eviction marks evicted messages with an unsigned `expired` receipt. When node storage reaches `max_mailbox_bytes`, new deposits are refused with `mailbox_full` (`-32044`) without cross-queue eviction.
+- `D-C4-8`: newest certificate tie rule: identical `issued_at_secs` accepts the instance matching the stored newest certificate; if neither matches, the first to arrive wins. The mailbox also verifies revocation in the master anchor directly, because local same-node calls bypass the router handshake.
+- `D-C4-9`: `register` validates the signed endpoint record (`SignedEndpointInfo::verify`, non-expired, matches destination service). A stale record at `register` is rejected with `-32047`, leaving the existing queue intact.
+- `D-C4-10`: `claim` returns up to `limit` messages (bounded by 100, default 10).
+- `D-C4-11`: `ack` returns `AckAnswer { results: Vec<AckOutcome> }`.
+- `D-C4-12`: `queue_lifetime_secs` (30 days default) sweeps idle queues that have not registered or claimed.
+- `D-C4-13`: hourly record republish publishes to the host node's own community registry (`substrate.registry_url`).
+- `D-C4-14`: deposit rate limiting limits per sender DID and for the entire node (`RequestLimiter`), not per sending node IP.
+- `D-C4-15`: `RequestLimiter` in `syneroym-passport` is made generic over key type `K: Hash + Eq + Clone`.
+- `D-C4-16`: a deposit with TTL exceeding `max_ttl_secs` fails with `-32050` (`ttl_too_long`), reporting the queue's limit in `data`.
+- `D-C4-17`: `syneroym-sdk` `ClientBuilder` supports `caller_delegation` to attach the instance certificate to outbound stream preambles.
+- `D-C4-18`: `syneroym-substrate` enables `mailbox` in default Cargo features.
 
 ## Close-out
 

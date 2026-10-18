@@ -14,5 +14,8 @@ mod service;
 mod synsvc_native;
 
 pub use home_relay::HomeRelayControl;
-pub use service::{AUTH_RESERVED_SERVICE_ID, ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
+pub use service::{
+    AUTH_RESERVED_SERVICE_ID, ControlPlaneService, MAILBOX_RESERVED_SERVICE_ID,
+    SUPERVISOR_RESERVED_SERVICE_ID,
+};
 pub use synsvc_native::SynSvcNativeService;

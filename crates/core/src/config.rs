@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod access;
 pub mod base;
+pub mod mailbox;
 pub mod roles;
 pub mod sandbox;
 
@@ -14,6 +15,7 @@ mod tests;
 
 pub use access::*;
 pub use base::*;
+pub use mailbox::*;
 pub use roles::*;
 pub use sandbox::*;
 

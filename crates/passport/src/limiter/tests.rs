@@ -83,3 +83,12 @@ fn an_ipv4_mapped_address_counts_as_the_ipv4_address() {
     }
     assert!(!limiter.allow(A, NOW));
 }
+
+#[test]
+fn a_limiter_keyed_by_text_counts_each_key_apart() {
+    let limiter = RequestLimiter::<String>::new(2, 10);
+    assert!(limiter.allow_key("a".to_string(), NOW));
+    assert!(limiter.allow_key("a".to_string(), NOW));
+    assert!(!limiter.allow_key("a".to_string(), NOW));
+    assert!(limiter.allow_key("b".to_string(), NOW));
+}

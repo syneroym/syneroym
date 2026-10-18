@@ -11,6 +11,7 @@ pub mod endpoint_publisher;
 pub mod host_identity;
 pub mod http_routes;
 pub mod local_registry;
+pub mod mailbox;
 pub mod protocol_utils;
 pub mod record_signer;
 pub mod registry_http;

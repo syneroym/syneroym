@@ -149,3 +149,35 @@ mod new_with_record_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod delegation_preamble_tests {
+    use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE};
+    use syneroym_router::RoutePreamble;
+
+    use super::*;
+
+    #[test]
+    fn client_with_delegation_writes_delegation_on_preamble() {
+        let master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+
+        let client = SyneroymClient::new("did:key:z6MkTarget".to_string(), String::new())
+            .with_delegation(cert.clone());
+
+        let mut preamble = RoutePreamble::binary_json_rpc("did:key:z6MkTarget", "test_iface");
+        preamble.delegation = client.caller_delegation().cloned();
+        let line = preamble.to_preamble_line();
+
+        let parsed = RoutePreamble::parse(&line).unwrap();
+
+        assert_eq!(parsed.delegation, Some(cert));
+    }
+}

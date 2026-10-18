@@ -7894,6 +7894,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-mailbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "metrics 0.23.1",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "syneroym-core",
+ "syneroym-identity",
+ "syneroym-mailbox-format",
+ "syneroym-passport",
+ "syneroym-rpc",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "syneroym-mailbox-format"
 version = "0.1.0"
 dependencies = [
@@ -8332,6 +8357,7 @@ dependencies = [
  "syneroym-data-db",
  "syneroym-data-keystore",
  "syneroym-identity",
+ "syneroym-mailbox",
  "syneroym-mailbox-format",
  "syneroym-mqtt-broker",
  "syneroym-observability",

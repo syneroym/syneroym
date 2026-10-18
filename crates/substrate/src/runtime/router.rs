@@ -46,10 +46,21 @@ use super::roym::init_roym;
 use super::{
     handles::SharedNodeHandles,
     home_relay::{self, HomeRelaySource},
+    mailbox::{MailboxParts, init_mailbox},
     publish,
     supervisor::{SUPERVISOR_DISPATCH_ID, SupervisorHandle, init_supervisor},
 };
 use crate::identity;
+
+/// What `setup_connection_router` builds for the rest of the runtime.
+pub(super) struct RouterSetup {
+    pub(super) router: ConnectionRouter,
+    pub(super) endpoint_registry: EndpointRegistry,
+    pub(super) supervisor: Option<Arc<SupervisorHandle>>,
+    pub(super) conversation: Arc<ConversationService>,
+    pub(super) auth_did: Option<String>,
+    pub(super) mailbox: Option<MailboxParts>,
+}
 
 /// The host identity, loaded before any component starts.
 pub(super) struct HostKeys {
@@ -72,13 +83,7 @@ pub(super) async fn setup_connection_router(
     config: &SubstrateConfig,
     keys: HostKeys,
     relay_leases: Option<LeaseStore>,
-) -> anyhow::Result<(
-    ConnectionRouter,
-    EndpointRegistry,
-    Option<Arc<SupervisorHandle>>,
-    Arc<ConversationService>,
-    Option<String>,
-)> {
+) -> anyhow::Result<RouterSetup> {
     // A verified `ControllerAgreement` (mutually signed by the substrate and
     // its controller, see `identity::setup_substrate_identity`) is the
     // authoritative substrate owner and takes precedence over the plain
@@ -107,10 +112,7 @@ pub(super) async fn setup_connection_router(
         );
     }
 
-    let (router, endpoint_registry, _publisher, supervisor, conversation, auth_did) =
-        setup_router(config, &keys.host.node_did, keys.secret_key, relay_leases).await?;
-
-    Ok((router, endpoint_registry, supervisor, conversation, auth_did))
+    setup_router(config, &keys.host.node_did, keys.secret_key, relay_leases).await
 }
 
 async fn setup_router(
@@ -118,14 +120,7 @@ async fn setup_router(
     service_id: &str,
     secret_key: [u8; 32],
     relay_leases: Option<LeaseStore>,
-) -> anyhow::Result<(
-    ConnectionRouter,
-    EndpointRegistry,
-    Option<Arc<EndpointPublisher>>,
-    Option<Arc<SupervisorHandle>>,
-    Arc<ConversationService>,
-    Option<String>,
-)> {
+) -> anyhow::Result<RouterSetup> {
     let relay_source = HomeRelaySource::from_config(config)?;
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
@@ -149,6 +144,7 @@ async fn setup_router(
     }
 
     let supervisor = register_supervisor(config, service_id, &endpoint_registry, &shared).await?;
+    let mailbox = init_mailbox(config, service_id, &shared, &endpoint_registry).await?;
 
     #[cfg(feature = "dual_build_fixture")]
     let fixture_factory = init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
@@ -240,7 +236,14 @@ async fn setup_router(
         .get(AUTH_SERVICE_ALIAS)
         .and_then(|svc| NativeHttpService::service_id(&**svc.value()).map(ToString::to_string));
 
-    Ok((router, endpoint_registry, publisher, supervisor, shared.conversation().clone(), auth_did))
+    Ok(RouterSetup {
+        router,
+        endpoint_registry,
+        supervisor,
+        conversation: shared.conversation().clone(),
+        auth_did,
+        mailbox,
+    })
 }
 
 /// Registers the supervisor role's two reserved endpoints (`supervisor`,

@@ -68,6 +68,9 @@ pub(super) const SECURITY_INTERFACE: &str = "security";
 /// every later `supervisor://` call.
 pub const SUPERVISOR_RESERVED_SERVICE_ID: &str = "supervisor";
 pub const AUTH_RESERVED_SERVICE_ID: &str = syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS;
+/// The `native_dispatch` key the mailbox role registers under. A deploy
+/// under this name would take over every `mailbox` call to this node.
+pub const MAILBOX_RESERVED_SERVICE_ID: &str = syneroym_core::mailbox::MAILBOX_INTERFACE;
 
 /// The Substrate Service (The Control Plane Orchestrator)
 /// This service handles the deployment and lifecycle of applications

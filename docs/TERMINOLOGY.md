@@ -48,6 +48,9 @@ neighbourhood.
 | **Info URL** | The base HTTP/HTTPS URL of a coordinator's info server (serving `/v1/info` and registration endpoints). | The Iroh relay URL (`parent_coordinator.iroh.url`). |
 | **Mailbox key** | The decrypt-only X25519 key pair of one service member. It is derived from the member master (HKDF-SHA256), so every deploy of the member gets the same key. The public half is in the signed service record, and senders seal messages to it. The private half is in the service's vault under a name only the substrate can read. See [ADR-0026](decisions/0026-receiver-chosen-mailbox.md). | The member master key, which signs the record and never reaches a hosting substrate. |
 | **Reserved vault name** | A vault entry name that starts with `syneroym.`. The substrate keeps these for itself. A guest cannot read them: the vault interface answers `not-found`. | A guest's own secrets. |
+| **Mailbox** | A substrate role running a native store-and-forward service (`mailbox`) that holds sealed messages for sleeping or offline receivers. The mailbox cannot read or tamper with message contents. See [ADR-0026](decisions/0026-receiver-chosen-mailbox.md). | An ordinary message broker or MQTT queue. |
+| **Queue lifetime** | The duration a destination queue stays active at a mailbox without a receiver registration or claim. Past this duration, the queue and its stored messages are swept. | Visibility timeout or message time-to-live. |
+| **Sealed message** | An authenticated, HPKE-encrypted message envelope sealed to the receiver member's mailbox public key with the sender's instance certificate and signature inside. | Transport-level stream encryption or plaintext RPC payloads. |
 
 ## Key phrasings
 

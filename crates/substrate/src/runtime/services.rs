@@ -27,7 +27,9 @@ use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use super::{publish::instance_cert_expiry_sweep_loop, supervisor::SupervisorHandle};
+use super::{
+    mailbox::MailboxParts, publish::instance_cert_expiry_sweep_loop, supervisor::SupervisorHandle,
+};
 
 pub struct RuntimeServices {
     #[cfg(feature = "community_registry")]
@@ -80,6 +82,14 @@ pub struct RuntimeServices {
     /// queue exists to survive, so shutdown must not wait for it.
     conversation_worker_join: Option<JoinHandle<()>>,
     conversation_worker_cancel: CancellationToken,
+    /// The mailbox service parts (worker) injected by router setup.
+    mailbox: Option<MailboxParts>,
+    /// The mailbox worker task handle, spawned by `spawn_background_workers`.
+    /// Awaited in `shutdown` because its loop stops at the token and does only
+    /// local work and short registry calls.
+    mailbox_join: Option<JoinHandle<()>>,
+    /// Cancels the mailbox worker loop on shutdown.
+    mailbox_cancel: CancellationToken,
 }
 
 impl Debug for RuntimeServices {
@@ -101,6 +111,7 @@ impl Debug for RuntimeServices {
         debug_struct.field("supervisor", &self.supervisor.as_ref().map(|_| "SupervisorService"));
         debug_struct
             .field("conversation", &self.conversation.as_ref().map(|_| "ConversationService"));
+        debug_struct.field("mailbox", &self.mailbox.as_ref().map(|_| "MailboxService"));
 
         debug_struct.finish()
     }
@@ -140,6 +151,9 @@ impl RuntimeServices {
             conversation: None,
             conversation_worker_join: None,
             conversation_worker_cancel: CancellationToken::new(),
+            mailbox: None,
+            mailbox_join: None,
+            mailbox_cancel: CancellationToken::new(),
         })
     }
 
@@ -166,6 +180,12 @@ impl RuntimeServices {
     /// `set_supervisor`.
     pub(super) fn set_conversation(&mut self, conversation: Arc<ConversationService>) {
         self.conversation = Some(conversation);
+    }
+
+    /// Injects the mailbox role parts, constructed by
+    /// `setup_connection_router`.
+    pub(super) fn set_mailbox(&mut self, mailbox: Option<MailboxParts>) {
+        self.mailbox = mailbox;
     }
 
     /// Passes the auth service DID to the client gateway so it can route
@@ -215,6 +235,13 @@ impl RuntimeServices {
             let cancel = self.conversation_worker_cancel.clone();
             tokio::spawn(async move { svc.run_worker(tick, cancel).await })
         });
+        #[cfg(feature = "mailbox")]
+        {
+            self.mailbox_join = self.mailbox.take().map(|parts| {
+                let cancel = self.mailbox_cancel.clone();
+                tokio::spawn(parts.worker.run(cancel))
+            });
+        }
     }
 
     pub(super) async fn run_until_shutdown<F>(
@@ -292,6 +319,8 @@ impl RuntimeServices {
             self.conversation_worker_join.as_mut(),
             "conversation outbox worker"
         ));
+        let mut mailbox_fut =
+            pin::pin!(join_unit_or_pending(self.mailbox_join.as_mut(), "mailbox worker"));
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -306,6 +335,7 @@ impl RuntimeServices {
             res = &mut queue_worker_fut => log_component_exit("queue worker", res),
             res = &mut proxy_outbox_fut => log_component_exit("proxy outbox worker", res),
             res = &mut conversation_outbox_fut => log_component_exit("conversation outbox worker", res),
+            res = &mut mailbox_fut => log_component_exit("mailbox worker", res),
             () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
@@ -347,6 +377,13 @@ impl RuntimeServices {
         // queue exists for.
         self.conversation_worker_cancel.cancel();
         drop(self.conversation_worker_join.take());
+
+        self.mailbox_cancel.cancel();
+        if let Some(h) = self.mailbox_join.take()
+            && let Err(e) = h.await
+        {
+            error!(error = %e, "mailbox worker task panicked during shutdown");
+        }
 
         #[cfg(feature = "client_gateway")]
         if let Some(service) = self.client_gateway.as_mut()

@@ -143,11 +143,12 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `resolve_iroh_addr` returns the mailbox field without following the substrate record (`K-5`). Durable last-record store on the sender (`K-6`). Private services get no field (`K-7`).
 - Done 2026-10-17. Decisions `D-C3-1` to `D-C3-19` are in the [mailbox change doc](../../changes/service-mailbox/change.md), with [ADR-0026 A2](../../../decisions/0026-receiver-chosen-mailbox.md#amendments).
 
-**C4 — Mailbox service (L).** Needs C2 and C3.
+**C4 — Mailbox service (L, Done).** Needs C2 and C3.
 - `[roles.mailbox]`, native service, SQLite store, all seven methods, quotas, fair eviction, sweeps, newest-certificate rule, receipts, hourly record publish (`M-1` to `M-14`, `K-4`).
 - The `service_id` in the mailbox field of a record is the mailbox host's node DID (`D-C3-10`). Register the native service on interface `mailbox` under the node DID, like `orchestrator` and the supervisor.
 - Open limits only. `register` takes no passport yet.
 - Key receipts on `(sender, deposit_id)`, or refuse a `deposit_id` that already exists: the sender picks the id, so a second sender could reuse it. Store a receiver's ack as it came: the mailbox cannot check the proof, because it does not know the message hash. Its own rejection after 5 claims is `Receipt::unsigned_rejection(TooManyClaims, ..)`.
+- Done 2026-10-18. Decisions `D-C4-1` to `D-C4-18` are in the [mailbox change doc](../../changes/service-mailbox/change.md).
 
 **C5 — Sender path (L).** Needs C1, C3, C4 and R-7 of C6. Parallel with C6, but the R-7 part of C6 must merge first.
 - Needs R-7 (C6) in `main` first, or carries R-7 itself. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver.
@@ -156,25 +157,29 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `resolve_peer` bounds the substrate lookup of a peer with a mailbox (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s). The "one direct attempt with a short timeout" of `S-2` comes after it. Tune both together. The lookup of the **service** record is not bounded: the stored record (`record_of` in `net_iroh.rs`) is used only after `lookup` fails, which with a registry that does not answer takes the 10 s HTTP timeout and a DHT try. Bound that lookup too, or the wait adds to the short direct attempt.
 - Eligibility check (`S-1`), one direct attempt then deposit, `status` polling, `ProxyRouter` hook below both outboxes (`S-2` to `S-5`, `S-7`, `S-8`).
 - `deposited` state in both outboxes on X6 (`S-6`, `S-9`), the `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI. Group pushes.
+- **Forward note from C4:** Import wire types and error codes from `syneroym_core::mailbox`. A `deposit` answer is `Receipt::Stored`. Poll `status` with at most 100 ids per call. A sender on the mailbox host itself must present a `CallerContext` with its instance proof. How C5 reacts to each refusal is C5's decision; S-4 covers only "the mailbox is unreachable". Facts C4 gives: may succeed later without change: transport failure, `-32603`, `rate_limited` (`-32043`), `queue_full` (`-32042`), `mailbox_full` (`-32044`), `unknown_destination` (`-32040`); will fail again for same payload: `message_too_large` (`-32041`), `ttl_too_long` (`-32050`, a new deposit with ttl <= `data.max_ttl_secs` can succeed); bug in sender: `-32602`, `duplicate_deposit` (`-32048`), `not_eligible` (`-32048`).
 
 **C6 — Receiver path (L).** Needs C3 and C4. Parallel with C5.
 - Read the key with `ControlPlaneService::mailbox_key`. Pull only for a service whose stored record names a mailbox **and** whose key is present. The vault needs the KEK, so the pull waits for it after a restart. The pull always follows the **stored deploy record**: it is the only record whose mailbox matches the key the substrate holds. If the record the registry serves names another mailbox or none (only the master holder can sign one, for example by an old `registry register` over an expired record), keep pulling from the stored one and log a warning, once an hour, naming both.
 - Pull worker, unseal, `dispatch_json_rpc_once` with the sender's identity, signed ack, waiting for a renewed certificate, `mailbox.pull-now` (`R-1` to `R-6`).
 - Longer idempotency memory and a larger row limit for services with a mailbox (`R-7`).
 - Check revocation after `open` and ack with `OpenedMessage::sign_rejection(Revoked, ..)` (`D-C2-5`). Ack every `open` failure: `RefusedMessage::receipt` for `OpenError::Refused`, `Receipt::unsigned_rejection(e.reject_code(), ..)` for the rest. Pass the queue's own `max_ttl_secs` from `register` in `OpenPolicy`, and size the idempotency memory (`R-7`) from the same value, not from a 7-day constant. A signed `from_future` rejection is decided by the receiver's own clock: log a warning on it, so a receiver whose clock is slow by more than 24 hours is noticed.
+- **Forward note from C4:** Register with the stored deploy record; use `limits.max_ttl_secs` from the answer for `OpenPolicy` and for the idempotency memory (R-7). Ack by `(sender, deposit_id)` from the claim answer, at most 32 per call. Re-register when `claim` answers `-32040` (queue was removed). `-32046` means a newer instance holds the queue: stop pulling for that service and log it. `-32045` at `register` or `claim` means the instance key is revoked: stop pulling and wait for a renewed certificate. `-32047` at `register` for an existing queue means the stored record is past `not_after`: keep claiming, use limits from last successful `register` (or `info`), and log a warning once an hour that owner must deploy again to renew record (mailbox stops republishing at `not_after`). A receiver on the mailbox host must present its instance proof in `CallerContext`.
 
-**C7 — Open mailbox list and `auto` (S).** Needs A2 and C3.
+**C7 — Open mailbox list and `auto` (S).** Needs A2 and C3, and the router check that a caller holds the instance key (backlog).
 - `[[roles.community_registry.mailboxes]]` and `GET /mailboxes` as the second instance of X2.
 - `--mailbox auto` with X3. `MailboxChoice::Auto` already parses in the manifest, `svc deploy` and `app deploy`. Remove the three refusals (`validate_plan_member_settings`, `check_mailbox_args` in `svc deploy`, `certify_placed_members`). Resolve `auto` **once** and pin the result in the stored plan (roymctl before `apply_plan`; the supervisor at `submit`): a different mailbox later means a new record, and messages waiting at the old mailbox are lost.
 - After C5, C6 and C7: run the full integration list from the mailbox doc and close out its living docs, except the dedicated-mailbox criteria.
+- **Forward note from C4:** Before the registry lists open mailboxes for strangers, the router must check that a caller holds the instance key of its certificate (backlog row "Router does not check that the caller holds the temporary key"). The C4-4 risk decision holds only until then. If the fix has not landed when C7 starts, C7 carries it.
 
 **C8 — Dedicated mailbox (M).** Needs B1, C4 and C7. Last.
 - `register` with a passport, proof by transport identity, binding by instance certificate, raised quotas from facts, `max_services` (`D-1` to `D-3`).
 - Owner signs one child token for each member master at deploy. Add `child-token: option<string>` to the WIT record `mailbox-credentials`; the only builders are `map_planned_service` and `Publication::split` in `crates/sdk`. The child token lives as long as the passport; a new one arrives by an ordinary deploy, with the token in the deploy hash. A renewal without a deploy would be a new control-plane call, not a change to `deploy-manifest` or `renew-cert` (`D-C3-2`).
 - `roymctl` mailbox `issue` variant on B1's code.
-- `register` carries the instance certificate (`D-B1-17`); quotas come from `LeaseStore::lease_for` (`D-B1-16`); the DHT revocation check runs between `Registrar::check` and `Registrar::grant` (`D-B1-15`).
+- `register` takes the instance certificate from the verified caller proof, not its body (`D-B1-17`, as changed by C4); quotas come from `LeaseStore::lease_for` (`D-B1-16`); the DHT revocation check runs between `Registrar::check` and `Registrar::grant` (`D-B1-15`).
 - Reuse `HostIdentity::passport_root` (`crates/core`) for the accepted root; do not write a second root rule (`D-B2-16`).
 - Cap the passport fact `max_ttl_secs`: the receiver's idempotency memory (`R-7`) grows with it.
+- **Forward note from C4:** Add `passport: Option<String>` to `RegisterParams`; raise the queue's `max_bytes`, `max_messages`, `max_ttl_secs` from the validated passport facts.
 - Close out the mailbox change doc.
 
 ## 4. Order and parallel work

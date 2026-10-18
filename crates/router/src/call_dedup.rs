@@ -32,7 +32,7 @@ use syneroym_async_queue::{
     CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
     DedupDecision, DedupStore, FirstOutcome,
 };
-use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
+use syneroym_control_plane::{MAILBOX_RESERVED_SERVICE_ID, SUPERVISOR_RESERVED_SERVICE_ID};
 use syneroym_core::local_registry::{EndpointRegistry, NODE_NATIVE_INTERFACES};
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -177,15 +177,16 @@ pub fn replay_as_result(outcome: FirstOutcome) -> Result<serde_json::Value, Prox
 /// the hash is an unsalted prefix a guest can compute for itself.
 pub(crate) fn is_node_level_interface(interface: &str) -> bool {
     // `NODE_NATIVE_INTERFACES` covers `orchestrator` and `security`. The
-    // supervisor's own interface is the third of the same kind -- it is
+    // supervisor's and the mailbox's interfaces are of the same kind -- they are
     // registered under the node's own service id, not a deployed
-    // service's -- and it is *not* in that list, so it has to be named
-    // here. Left out, a keyed call aimed at it would sail past this check
+    // service's -- and they are *not* in that list, so they have to be named
+    // here. Left out, a keyed call aimed at them would sail past this check
     // and mint a DEK and a database for the node's own id: precisely the
     // pseudo-service database this refusal exists to prevent.
     NODE_NATIVE_INTERFACES
         .iter()
         .chain(std::iter::once(&SUPERVISOR_RESERVED_SERVICE_ID))
+        .chain(std::iter::once(&MAILBOX_RESERVED_SERVICE_ID))
         .any(|name| *name == interface || syneroym_core::util::short_hash(name) == interface)
 }
 
