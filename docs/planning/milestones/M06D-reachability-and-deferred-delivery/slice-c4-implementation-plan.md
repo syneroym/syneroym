@@ -89,26 +89,28 @@ worker is C6, passports are C8, and the registry list and `auto` are C7.
 ## 2. Decisions this plan makes (check them before you start)
 
 Each fills a gap in task.md or the change doc (the gaps are listed in §6).
-The owner confirmed C4-4 (Option A) on 2026-10-18 (§6 item 1).
+The owner confirmed C4-4 (Option A) on 2026-10-18 (§6 item 1). A review
+on the same day changed C4-2, C4-3, C4-8, C4-9 and C4-16, decided §6 item
+2, and added §6 items 15 to 17 and the C7 note in §7.
 
 | # | Decision | Why |
 | --- | --- | --- |
 | C4-1 | **Crate homes.** New crate `crates/mailbox` (`syneroym-mailbox`): the native service, the store and the background worker. The **wire types, method names, the interface name and the error codes** go in `syneroym-core`, new module `crates/core/src/mailbox.rs`. The role config goes in `crates/core/src/config/mailbox.rs`. | C5 (in `crates/router`) and C6 (in `crates/substrate`) must build requests, read answers and classify errors. They must not link the store (the same reason C2-1 kept the formats out of this crate). `core` already depends on `syneroym-mailbox-format` (C3) and has `SignedEndpointInfo`, so the wire types can use both. `roles.rs` is 561 lines; a sibling file keeps it small. |
-| C4-2 | **Registration.** At boot, when `[roles.mailbox]` is set: `endpoint_registry.register(node_did, "mailbox", NativeHostChannel { service_id: "mailbox" })` and `native_dispatch.insert("mailbox", service)`. New `pub const MAILBOX_RESERVED_SERVICE_ID: &str = syneroym_core::mailbox::MAILBOX_INTERFACE;` in `crates/control_plane/src/service.rs`; deploy admission refuses it; `call_dedup::is_node_level_interface` also matches it. When the role is **not** set and a stored `(node_did, "mailbox")` endpoint exists from an earlier boot, remove it (`EndpointRegistry::remove`). New substrate Cargo feature `mailbox`, in `default`. `mailbox` is **not** added to `NODE_NATIVE_INTERFACES`. | Same shape as the supervisor (`runtime/supervisor.rs`, `router.rs:251-285`). The `"mailbox"` dispatch key must be reserved, or a deploy under that name takes over every mailbox call. A keyed call (one with an `idempotency_key`) aimed at a node-level interface must be refused, or it mints a DEK and a database for a service that does not exist (`call_dedup.rs:170-190`). The registry persists endpoints, so a node that drops the role would otherwise keep routing `mailbox` calls to a dispatch key nobody serves. `NODE_NATIVE_INTERFACES` blocks guest proxy calls to owner-only interfaces; the mailbox is open to every verified caller by design, so it does not belong there. |
-| C4-3 | **Who the caller is.** Receiver methods (`register`, `unregister`, `claim`, `ack`) need an **instance caller**: `auth` is `Delegated` or `Ucan`; `proof.delegation_json` is present and parses; its `scope` is `service-instance`; its `master_did` equals `caller.caller_did`; the DID of `proof.pubkey_hex` equals its `temporary_did`; `verify_at(master, [service-instance], now)` passes. Sender methods (`deposit`, `status`) need `auth` `Delegated` or `Ucan`; the sender is `caller.caller_did`. `info` admits any caller that dispatch admits. **No request body carries a certificate.** | M-2 and M-3. The router already verified the certificate and put it, verbatim, in `CallerContext.proof` (`build_caller`). Checking scope is needed: the transport also admits `routing` (person-device) certificates (`TRANSPORT_SCOPES`). The other checks repeat the router's on purpose: a same-node call (`ProxyRouter::invoke_local`) passes `req.caller` with no handshake, so the mailbox must not assume one ran. A `System` or `LocalElevated` caller (a local guest's `service_system`) is refused. The change doc says `register` "carries the whole instance certificate in its body, because the router keeps only the two DIDs"; that is stale (§6 item 2). |
+| C4-2 | **Registration.** At boot, when `[roles.mailbox]` is set: `endpoint_registry.register(node_did, "mailbox", NativeHostChannel { service_id: "mailbox" })` and `native_dispatch.insert("mailbox", service)`. New `pub const MAILBOX_RESERVED_SERVICE_ID: &str = syneroym_core::mailbox::MAILBOX_INTERFACE;` in `crates/control_plane/src/service.rs`; deploy admission refuses it; `call_dedup::is_node_level_interface` also matches it. When the role is **not** set and a stored `(node_did, "mailbox")` endpoint exists from an earlier boot, remove it (`EndpointRegistry::remove`). New substrate Cargo feature `mailbox`, in `default`. `mailbox` is **not** added to `NODE_NATIVE_INTERFACES`, but `EndpointRegistry::resolve_interface` leaves `mailbox` out when the caller names no interface (Step 3.4). | Same shape as the supervisor (`runtime/supervisor.rs`, `router.rs:251-285`). The `"mailbox"` dispatch key must be reserved, or a deploy under that name takes over every mailbox call. A keyed call (one with an `idempotency_key`) aimed at a node-level interface must be refused, or it mints a DEK and a database for a service that does not exist (`call_dedup.rs:170-190`). The registry persists endpoints, so a node that drops the role would otherwise keep routing `mailbox` calls to a dispatch key nobody serves. `NODE_NATIVE_INTERFACES` blocks guest proxy calls to owner-only interfaces; the mailbox is open to every verified caller by design, so it does not belong there. But a call with no interface picks "the one interface" of the target, with only `NATIVE_CAPABILITY_INTERFACES` and `NODE_NATIVE_INTERFACES` left out. On a node without the supervisor role, `mailbox` would become that one interface of the node DID, and a call with no interface would reach the mailbox. With the supervisor role, the node DID would have two, so a call with no interface that reaches the supervisor today would be refused as ambiguous. Leaving `mailbox` out of that one choice changes neither case. The supervisor has the same issue on its own; C4 does not change it (backlog, §5 item 8). |
+| C4-3 | **Who the caller is.** Receiver methods (`register`, `unregister`, `claim`, `ack`) need an **instance caller**: `auth` is `Delegated` or `Ucan`; `proof.delegation_json` is present and parses; its `scope` is `service-instance`; its `master_did` equals `caller.caller_did`; the DID of `proof.pubkey_hex` equals its `temporary_did`; `verify_at(master, [service-instance], now)` passes; the master anchor does not list the instance DID in `revoked_keys` (C4-8). Sender methods (`deposit`, `status`) need `auth` `Delegated` or `Ucan`; the sender is `caller.caller_did`. `info` admits any caller that dispatch admits. **No request body carries a certificate.** | M-2 and M-3. The router already verified the certificate and put it, verbatim, in `CallerContext.proof` (`build_caller`). Checking scope is needed: the transport also admits `routing` (person-device) certificates (`TRANSPORT_SCOPES`). The other checks, revocation included, repeat the router's on purpose: a same-node call (`ProxyRouter::invoke_local`) passes `req.caller` with no handshake, so the mailbox must not assume one ran. A `System` or `LocalElevated` caller (a local guest's `service_system`) is refused. The change doc says `register` "carries the whole instance certificate in its body, because the router keeps only the two DIDs"; that is stale (§6 item 2). |
 | C4-4 | **C4 relies on the transport identity, although the router does not check that the caller holds the instance key.** No extra proof is added in C4. The backlog row "Router does not check that the caller holds the temporary key" gets the mailbox consequences (§5). Confirmed by the owner on 2026-10-18. | The router checks the certificate but not possession of its key (`handshake.rs`; backlog). Instance certificates are not secret: a sender gets the receiver's certificate in every `delivered` receipt, and an open mailbox lets anyone deposit. So a stranger can call `register`, `unregister`, `claim` and `ack` as a receiver it has received a receipt from, and can deposit as a sender whose certificate it holds. **The risk is denial of service, not loss of secrecy or of messages.** Bodies stay sealed. A fake `delivered` receipt does not verify at the sender (A1). An `unknown` or `expired` receipt sends the sender back to direct attempts with the payload kept (S-5). But an attacker who calls `unregister` again and again turns the mailbox off for one chosen receiver; and deposits made in a sender's name make fair eviction remove that sender's real messages. The proper fix is in the router, and it helps every native interface. **Rejected alternative:** a per-request signature by the instance key on the receiver methods (`{domain, mailbox did, method, master did, at_secs, params hash}`, ±5 minutes; `deposit` too, to stop sender spoofing). It closes the gap for the mailbox only, adds a format C5 and C6 must also sign, and would be removed when the router fix lands. |
 | C4-5 | **Store.** One SQLite file `<storage.db_dir>/<db_name>` (default `mailbox.db`), WAL, **plaintext**, three tables (§3 Step 4.6). Each queue row keeps its own `bytes` and `messages` counters and its own limits. Every removal of a message goes through **one** helper (`remove_message`), which writes the receipt and updates the counters in the same transaction. | The change doc asks to use the encrypted open helper "if it costs little". It needs the KEK, which arrives after boot by `inject-kek`; a mailbox must serve from boot. Bodies are already ciphertext; the metadata (who writes to whom) is the part left in clear, which the backlog records (§5). Per-queue counters make the global total a sum over at most `max_queues` rows, not over all messages. One removal helper is how the counters cannot drift. Limits per queue are where C8 puts the raised quotas. No `async_queue`: the change doc's reason holds (attempts and backoff are unused; the work is metadata queries). |
 | C4-6 | **Deposits and receipts are keyed on `(sender, deposit_id)`.** A repeat with the same key and byte-identical `sealed` and the same destination answers `stored` with the first time (a safe retry). A repeat with other content, or one whose key already has a receipt with no message (the message was delivered, rejected or removed), is refused with `duplicate_deposit`. Another sender may use the same `deposit_id`. | task.md C4. The sender picks the id, so keying on the id alone lets one sender block another's id. A sealed deposit is used once (`D-C2-9`), so a second, different deposit under an old id is a bug or an attack. |
 | C4-7 | **Fair eviction (M-8).** While the new message does not fit (`messages + 1 > max_messages` or `bytes + size > max_bytes`): take the sender with the most bytes **in this queue** (ties: the smaller sender DID text); if it is the depositor, refuse with `queue_full`; else remove that sender's oldest message (lowest `seq`, claimed or not) with the receipt `expired`. **Global cap:** after eviction, if the node total plus the new size is above `max_total_bytes`, refuse with `mailbox_full`; the transaction rolls back, so nothing was evicted. No eviction across queues. | M-8 names the queue rule but no receipt for an evicted message. `expired` needs no new state or code, and the sender then does what S-5 says for `expired`: back to direct attempts. A new reject code would also work (an unknown code is treated like `expired`), but adds a wire string for no gain. The global cap has no stated rule; refusing is the simple, safe choice (§6 item 5). |
-| C4-8 | **Newest certificate (M-12).** A queue keeps `(newest_issued_at, newest_instance_did)`. An instance caller is admitted when its `instance_did` equals the stored one (its `issued_at` replaces the stored one if newer), or when its `issued_at_secs` is **strictly** greater (it becomes the newest). Otherwise `stale_instance`. `register`, `unregister`, `claim` and `ack` all apply the rule. Revocation is left to the transport. | Same instance key = same instance, so a renewed certificate (newer `issued_at`) or a call still in flight with the previous one both work. Two instances whose certificates have the same `issued_at` second cannot both win; the first one seen keeps the queue. Revocation: the router refuses a revoked instance key at every new stream (`verify_preamble` reads the master anchor), so a revoked newest instance cannot call, and older instances are stale: the queue waits for a newer certificate, which is what M-12 asks. |
-| C4-9 | **`register` (M-3, K-4).** Params `{ record: SignedEndpointInfo }`. Checks, cheap ones first: `record.info.service_id == instance.master_did` (M-3); `endpoint_type == Service`; not `is_private`; `info.mailbox` is `Some` and its `service_id` is **this node's DID**; the record JSON is at most 4 KiB; `record.verify()` passes (signature and `not_after`). A new queue is refused with `mailbox_full` when `max_queues` queues exist. For an existing queue, the stored record is replaced only by one with a **newer** pkarr timestamp; an older or equal one is kept silently (no error). A new or replaced record is due for publishing now, and the worker is woken. No `passport` field yet; an unknown field is ignored (C8 adds it). Answer `{ limits, queue_ends_at_secs }`. | A record that does not name this mailbox would make it a free republisher for any record. A private record must never leave its registry (`D-C3-4`). The registry's own rule is newer-timestamp-wins (`admit_endpoint`); the mailbox keeps the same rule, so it never republishes an older copy than it has. Answering instead of refusing an older record keeps a slow receiver working. The receiver needs `limits.max_ttl_secs` for `OpenPolicy` and for its idempotency memory (C6). |
+| C4-8 | **Newest certificate (M-12).** A queue keeps `(newest_issued_at, newest_instance_did)`. An instance caller is admitted when its `instance_did` equals the stored one (its `issued_at` replaces the stored one if newer), or when its `issued_at_secs` is **strictly** greater (it becomes the newest). Otherwise `stale_instance`. `register`, `unregister`, `claim` and `ack` all apply the rule. **Revocation is checked by the mailbox too:** before the rule, each of these four methods reads the master's anchor (`MasterAnchorResolver::resolve_master_anchor`, 5-second timeout, the same call and bound as `verify_preamble`) and refuses an instance DID listed in `revoked_keys` with `not_an_instance`. An anchor that cannot be read refuses the call with `-32603` (the receiver tries again at its next pull). | Same instance key = same instance, so a renewed certificate (newer `issued_at`) or a call still in flight with the previous one both work. Two instances whose certificates have the same `issued_at` second cannot both win; the first one seen keeps the queue. Revocation: the router refuses a revoked instance key at every new stream, but a same-node call (C6 receiver on the mailbox host) runs no handshake (C4-3). M-12 admits the newest certificate "only if that certificate is not revoked", so the mailbox cannot leave this to the transport. A revoked newest instance is refused, and older instances are stale: the queue waits for a newer certificate, which is what M-12 asks. Cost: one anchor read per receiver call. A wire call already pays one in the router, so this doubles it for receivers only. There is no cache: a cache would let a revoked key work until its entry ends. |
+| C4-9 | **`register` (M-3, K-4).** Params `{ record: SignedEndpointInfo }`. Checks, cheap ones first: `record.info.service_id == instance.master_did` (M-3); `endpoint_type == Service`; not `is_private`; `info.mailbox` is `Some` and its `service_id` is **this node's DID**; the record JSON is at most 4 KiB; `record.verify()` passes (signature and `not_after`). An expired record is refused also for an existing queue; the queue, its record and its messages stay, and `claim` keeps working. A new queue is refused with `mailbox_full` when `max_queues` queues exist. For an existing queue, the stored record is replaced only by one with a **newer** pkarr timestamp; an older or equal one is kept silently (no error). A new or replaced record is due for publishing now, and the worker is woken. No `passport` field yet; an unknown field is ignored (C8 adds it). Answer `{ limits, queue_ends_at_secs }`. | A record that does not name this mailbox would make it a free republisher for any record. A private record must never leave its registry (`D-C3-4`). The registry's own rule is newer-timestamp-wins (`admit_endpoint`); the mailbox keeps the same rule, so it never republishes an older copy than it has. Answering instead of refusing an older record keeps a slow receiver working. The receiver needs `limits.max_ttl_secs` for `OpenPolicy` and for its idempotency memory (C6). An expired record cannot be republished (`records_due` skips it, and the registry would refuse it), so keeping it would only hide the problem; only the master holder can sign a new one (by a new deploy). C6 handles the refusal (§7). |
 | C4-10 | **`claim` and `ack` shapes.** `claim { max? }` returns up to `min(max, 32)` visible messages of the caller's own queue, oldest first, at most 4 MiB of sealed bytes (always at least one message), each `{ sender, deposit_id, sealed, deposited_at_secs, expires_at_secs, claim_count }`, plus `visible_again_at_secs`. `ack { acks: [{ sender, deposit_id, receipt }] }` (at most 32) answers one outcome per entry, in order: `stored`, `not_found` or `refused`. `refused`: the receipt state is not `delivered` or `rejected`, or its JSON is over 4 KiB. A `stored` ack removes the body and stores the receipt **as it came**. Claim and ack work only on the caller's own queue: the queue id is `instance.master_did`, never a parameter. | M-5 holds by construction. Ids are unique per sender only (C4-6), so an ack must name the sender. The mailbox cannot check a receipt's proof: it does not know the message hash (task.md C4, `D-C2-7`). The size bound stops a receiver from storing junk receipts. The batch bounds keep one answer far below the 16 MiB frame limit (`rpc/src/framing.rs`). |
 | C4-11 | **Closing after 5 claims (M-14).** `MAX_CLAIMS = 5`. A message whose `claim_count >= 5` and whose visibility time has ended is closed with `Receipt::unsigned_rejection(RejectCode::TooManyClaims, now)`, by the next `claim` of its queue or by the sweep, whichever runs first. A claim never returns such a message. | "Claimed 5 times without an acknowledgement" ends when the 5th visibility time ends: the receiver may still ack during it. |
 | C4-12 | **Queue lifetime (M-10).** A queue's lifetime is counted from its last `register` **or** `claim` (`last_active_at`). `queue_ends_at_secs = last_active_at + queue_lifetime_secs`. A removed queue closes its messages with `expired`. | The change doc says "not claimed for 30 days". A queue that was just registered has never been claimed, and must not be removed at once; counting `register` too is the smallest fix. A receiver claims on every pull (60 s, R-1), so in practice the claim keeps it alive. |
 | C4-13 | **Sweeps and republish: one worker loop** (`MailboxWorker::run`), ticking every `sweep_interval_secs` (60) and also woken by a new record. Each tick: (1) sweep (expired messages → `expired`, M-7; over-claimed messages → `too_many_claims`, M-14; idle queues removed, M-10; receipts past their keep time deleted, M-9), at most 1,000 rows per kind per tick; (2) republish due records (`next_publish_at <= now`, `record_not_after > now`, at most 100 per tick) with `RegistryClient::register(&record, false)`; on success the next is `now + republish_interval_secs` (3,600), on failure `now + 300`; (3) set the gauges. The registry client is the host's own (`substrate.registry_url`, `enable_bep0044_dht`); without one, the mailbox logs one warning at boot and never publishes. | K-4 says "publishes that record to the registry every hour". The only registry the host knows is its own; a receiver in another registry community is not helped (§6 item 6). A failed publish retried after 5 minutes keeps the record alive well inside the registry's 2-hour lifetime. Bounded batches keep the store lock short. One loop is simpler than two timers and both jobs are light. |
 | C4-14 | **Deposit rate limits.** Two fixed one-minute windows: per sender DID (`deposits_per_minute_per_sender`, default 60) and for the whole node (`deposits_per_minute_total`, default 6,000). `RequestLimiter` in `crates/passport` becomes generic over its key (`RequestLimiter<K = IpAddr>`); the mailbox uses `RequestLimiter<String>` and `RequestLimiter<()>`. Refusal: `rate_limited`. | The change doc asks for "deposit rate limits for each node", but a native service sees only the caller's DIDs, not the sending node (§6 item 3). A sender DID costs nothing to make, so the node-wide window is the real limit (the change doc says so). Reusing the limiter avoids a second copy (the duplication gate would flag one). |
 | C4-15 | **Config `[roles.mailbox]`** (`MailboxRole`, all fields with defaults, §3 Step 2.1). Checked once at startup by `Limits::from_role` in the mailbox crate; a bad value stops the boot with a message that names the field. The sealed-size limit is not a setting: it is `MAX_SEALED_BYTES` of the format. `max_ttl_secs` may not exceed `OPEN_MAX_TTL_SECS` (7 days). | The change doc calls the values "first values to tune", so they are settings. Tests need small values (short visibility, small queues). A ttl above 7 days is the dedicated-mailbox case (C8, from the passport facts), not an open-mailbox setting. |
-| C4-16 | **Error codes** `-32040` to `-32049` (§3 Step 2.2), each with `data: { "kind": "<snake_case name>" }`. Bad JSON or a bad field is `-32602`; a store failure is `-32603`. | M-4 asks for one error for each refusal. The range is free (`git grep -E '\-320(4[0-9])\b'` finds nothing). The `kind` lets C5 tell "queue full" from "unknown destination" without parsing text. |
+| C4-16 | **Error codes** `-32040` to `-32050` (§3 Step 2.2), each with `data: { "kind": "<snake_case name>" }`. `ttl_too_long` (`-32050`) also carries `data.max_ttl_secs`, the limit of **that queue**. Bad JSON or a bad field (also a zero ttl, a destination that is not a `did:key`, a sealed message under the minimum) is `-32602`; a store failure or an unreadable master anchor is `-32603`. | M-4 asks for one error for each refusal. The range is free (`git grep -E '\-320(4[0-9]\|50)\b'` finds nothing). The `kind` lets C5 tell "queue full" from "unknown destination" without parsing text. A ttl over the limit needs its own code: today every queue has the open limit, which `info` reports, but C8 gives queues their own limits, and `info` cannot report those. With the limit in the refusal, C5 can tell this refusal from bad input and deposit again with a ttl that fits. |
 | C4-17 | **SDK:** `SyneroymClient::with_delegation(cert)` puts the certificate on every JSON-RPC request preamble the client opens (like `with_ucan`). | The e2e tests must call the mailbox as a service instance, and the SDK has no way to send a delegation on a JSON-RPC request today (only `passthrough` takes one). It is small and also what a future operator CLI would use. |
 | C4-18 | **`setup_connection_router` returns a struct** `RouterSetup` with named fields, in place of the 5-tuple (and `setup_router` likewise, in place of its 6-tuple), with a new field `mailbox: Option<MailboxParts>`. | A 6th tuple element would be hard to read. The unused `_publisher` element is dropped (the control plane holds its own `Arc`). |
 
@@ -261,6 +263,8 @@ pub mod codes {
     pub const BAD_RECORD: i32 = -32047;
     pub const DUPLICATE_DEPOSIT: i32 = -32048;
     pub const UNAUTHENTICATED: i32 = -32049;
+    /// Also carries `data.max_ttl_secs`, the limit of the queue.
+    pub const TTL_TOO_LONG: i32 = -32050;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,7 +345,7 @@ Tests `crates/core/src/mailbox/tests.rs` (add `#[cfg(test)] mod tests;`):
    `AckParams`, one `AckAnswer`, one `StatusAnswer` and one
    `RegisterAnswer` (`serde_json::json!` comparisons). This is the
    contract C5 and C6 build on.
-2. `error_codes_are_distinct`: the ten codes are pairwise different.
+2. `error_codes_are_distinct`: the eleven codes are pairwise different.
 3. `unknown_fields_are_ignored`: `ClaimParams` and `RegisterParams` parse
    with an extra field.
 
@@ -366,6 +370,18 @@ Tests `crates/core/src/mailbox/tests.rs` (add `#[cfg(test)] mod tests;`):
    interfaces are of the same kind"). Import from `syneroym_control_plane`.
    Test in the existing `call_dedup` tests: `is_node_level_interface("mailbox")`
    and its `short_hash` are both `true`.
+4. `crates/core/src/local_registry.rs:219-227` (`resolve_interface`, the
+   empty-name case): also leave out `MAILBOX_INTERFACE`
+   (`crate::mailbox::MAILBOX_INTERFACE`). Extend the doc comment: the
+   mailbox is registered under the node DID by a role, not declared by an
+   app, so it is never "the one interface" of a call that names none; a
+   call to the mailbox always names it. Do not add `supervisor` here (C4-2).
+   Tests in the existing `local_registry` tests:
+   `a_call_with_no_interface_never_picks_the_mailbox` (node DID with only
+   `orchestrator`, `security` and `mailbox`: `None`) and
+   `the_mailbox_does_not_make_the_supervisor_ambiguous` (node DID with
+   `supervisor` and `mailbox`: `Some("supervisor")`, as without the
+   mailbox).
 
 ### Step 4 — the mailbox crate (`crates/mailbox`)
 
@@ -445,6 +461,8 @@ pub enum MailboxError {
     BadRecord(String),
     #[error("deposit id {0} was already used by this sender")]
     DuplicateDeposit(String),
+    #[error("time-to-live {ttl_secs} s is over this queue's {max_secs} s maximum")]
+    TtlTooLong { ttl_secs: u64, max_secs: u64 },
     #[error("invalid parameters: {0}")]
     InvalidParams(String),
     #[error("internal error: {0}")]
@@ -460,7 +478,8 @@ impl From<MailboxError> for RpcError {
     fn from(e: MailboxError) -> Self {
         // InvalidParams -> RpcError::InvalidParams, Internal -> RpcError::InternalError,
         // every other variant -> RpcError::Custom(code, e.to_string(), Some(json!({"kind": e.kind()})))
-        // with the code from `syneroym_core::mailbox::codes`.
+        // with the code from `syneroym_core::mailbox::codes`; TtlTooLong adds
+        // "max_ttl_secs": max_secs to the same `data` object.
     }
 }
 
@@ -512,6 +531,7 @@ pub(crate) struct Instance {
 }
 
 pub(crate) fn instance_of(caller: &CallerContext, now_secs: u64) -> Result<Instance, MailboxError>
+pub(crate) async fn check_not_revoked(resolver: &dyn MasterAnchorResolver, who: &Instance) -> Result<(), MailboxError>
 pub(crate) fn sender_of(caller: &CallerContext) -> Result<String, MailboxError>
 ```
 
@@ -529,17 +549,27 @@ instance_of:
                                                      else NotAnInstance(<error text>)
   Ok(Instance { master_did, instance_did: cert.temporary_did, issued_at_secs: cert.issued_at_secs })
 
+check_not_revoked:
+  anchor = time::timeout(5 s, resolver.resolve_master_anchor(&who.master_did))
+           timeout or Err(e)                         -> Internal("could not read the master anchor: ..")
+  require !anchor.revoked_keys.contains(&who.instance_did)
+                                                     else NotAnInstance("the instance key is revoked")
+  Ok(())
+
 sender_of:
   require caller.auth in {Delegated, Ucan}           else Unauthenticated
   Ok(caller.caller_did.clone())
 ```
 
-Doc comment on `instance_of`: the router has already made these checks for
-a wire call; a same-node call reaches the service with no handshake, so
-they are made again here. Tests (`caller/tests.rs`, with
-`test_support::Member`): one pass, and one refusal for each line above
-(`CallerContext::service_system`, no proof, routing scope, other master,
-other pubkey, expired certificate via `now = expires_at + 1`).
+Doc comment on `instance_of` and `check_not_revoked`: the router has
+already made these checks for a wire call; a same-node call reaches the
+service with no handshake, so they are made again here. `check_not_revoked`
+is a separate `async` function because it does network I/O; every receiver
+handler calls it right after `instance_of`. Tests (`caller/tests.rs`, with
+`test_support::Member` and `test_support::Anchors`): one pass, and one
+refusal for each line above (`CallerContext::service_system`, no proof,
+routing scope, other master, other pubkey, expired certificate via
+`now = expires_at + 1`, revoked instance DID, resolver error).
 
 #### 4.5 `record.rs`
 
@@ -742,8 +772,9 @@ deposit:
   tx
   row = queue_row(tx, &deposit.destination)?   else UnknownDestination(destination)
   deposit.check(row.limits.max_ttl_secs) map:
-      DepositError::TooLarge{bytes,max} -> TooLarge{bytes,max}
-      every other variant              -> InvalidParams(e.to_string())
+      DepositError::TooLarge{bytes,max}             -> TooLarge{bytes,max}
+      DepositError::TtlTooLong{ttl_secs,max_secs}   -> TtlTooLong{ttl_secs,max_secs}
+      every other variant                           -> InvalidParams(e.to_string())
   id = deposit.deposit_id.to_string(); size = deposit.sealed.len()
   if let Some((dest, sealed, at)) = SELECT service_id, sealed, deposited_at FROM messages
                                     WHERE sender = ? AND deposit_id = ?:
@@ -890,6 +921,8 @@ Write `last_active_at + lifetime <= now` as `last_active_at <= ?` with
 pub struct MailboxService {
     node_did: String,
     store: Arc<MailboxStore>,
+    /// Reads master anchors for the revocation check of receiver calls.
+    anchors: Arc<dyn MasterAnchorResolver>,
     per_sender: RequestLimiter<String>,
     total: RequestLimiter<()>,
     /// Woken when a register brings a new record to publish.
@@ -900,7 +933,12 @@ pub struct MailboxService {
 
 impl MailboxService {
     /// Opens the store at `<db_dir>/<role.db_name>`.
-    pub fn open(role: &MailboxRole, db_dir: &Path, node_did: &str) -> anyhow::Result<Self>
+    pub fn open(
+        role: &MailboxRole,
+        db_dir: &Path,
+        node_did: &str,
+        anchors: Arc<dyn MasterAnchorResolver>,
+    ) -> anyhow::Result<Self>
     /// The background loop for this service. `registry` is `None` when
     /// this node has no registry; then nothing is republished.
     #[must_use]
@@ -942,7 +980,7 @@ async fn blocking<T: Send + 'static>(
 
 ```text
 register(caller, params, now):
-  who = instance_of(caller, now)?; p: RegisterParams = parse(params)?
+  who = self.instance(caller, now).await?; p: RegisterParams = parse(params)?
   record = CheckedRecord::check(&p.record, &who, &self.node_did)?
   r = blocking(store, move |s| s.register(&who, &record, now)).await?
   if r.publish_now { self.wake.notify_one() }
@@ -966,7 +1004,12 @@ parse_deposit(params) -> Result<Deposit, MailboxError>:
       NotBase64 -> InvalidParams
   Ok(Deposit { destination: w.destination, deposit_id: w.deposit_id, ttl_secs: w.ttl_secs, sealed })
 
-unregister / claim / ack: who = instance_of(caller, now)?, parse, blocking store call, answer.
+instance(caller, now):                                  (every receiver method)
+  who = instance_of(caller, now)?
+  check_not_revoked(self.anchors.as_ref(), &who).await?
+  Ok(who)
+
+unregister / claim / ack: who = self.instance(caller, now).await?, parse, blocking store call, answer.
   claim: max = p.max.unwrap_or(MAX_CLAIM_BATCH)
 status: sender = sender_of(caller)?, parse, blocking, answer(&StatusAnswer { receipts })
 info:   answer(&InfoAnswer { version: PROTOCOL_VERSION, mailbox: node_did, limits: store.limits().queue,
@@ -1037,6 +1080,10 @@ is acceptable for it.
 - `fn sealed_deposit(from: &Member, to: &Member, ttl: u64, now: u64) -> Sealed`
   with real `seal` and a fixed `MessageContent` (interface
   `"marker-interface"`, method `"marker-method"`).
+- `Anchors`: a `MasterAnchorResolver` over a `Mutex<HashMap<String,
+  MasterAnchorPayload>>`, with `publish(master_did)`, `revoke(master_did,
+  key_did)` and a `fail` switch. A master with no entry is an error, as
+  with the real registry.
 - `fn store_with(limits: Limits) -> MailboxStore` (in memory) and
   `fn small_limits() -> Limits` (queue 3 messages, 200 KiB, visibility 10 s,
   keep 100 s, lifetime 1,000 s, total 10 MiB, 4 queues).
@@ -1064,7 +1111,7 @@ member certificate (`member.cert.issued_at_secs + 10`).
 3. `the_same_deposit_twice_answers_the_first_time`.
 4. `the_same_id_with_other_content_is_a_duplicate`; `a_used_id_is_a_duplicate_after_delivery`.
 5. `two_senders_may_use_the_same_deposit_id`.
-6. `a_ttl_above_the_queue_limit_is_refused`.
+6. `a_ttl_above_the_queue_limit_is_ttl_too_long` (`TtlTooLong` with the queue's `max_ttl_secs`).
 7. `a_full_queue_evicts_the_largest_sender_first` (M-8: victim's receipt
    is `expired`, the new deposit is `stored`).
 8. `a_full_queue_refuses_the_largest_sender_itself` (M-8: `QueueFull`,
@@ -1123,6 +1170,15 @@ member certificate (`member.cert.issued_at_secs + 10`).
    base64 `sealed`: `-32041`, `data.kind == "too_large"`).
 7. `a_register_with_a_record_for_another_mailbox_is_refused` (`-32047`).
 8. `info_reports_the_limits`.
+9. `a_ttl_over_the_limit_reports_the_queue_limit` (`-32050`,
+   `data.kind == "ttl_too_long"`, `data.max_ttl_secs` equal to the
+   queue's limit).
+10. `a_revoked_instance_is_refused` (the anchor lists the instance DID:
+    `register` and `claim` answer `-32045`; a newer instance of the same
+    master that is not revoked still registers).
+11. `an_unreadable_master_anchor_refuses_receiver_calls` (the resolver
+    fails: `claim` answers `-32603`; `deposit` and `status` still work,
+    they do not read the anchor).
 
 `worker/tests.rs`
 1. `the_worker_sweeps_on_its_tick_and_stops_when_cancelled` (sweep
@@ -1183,14 +1239,18 @@ pub(super) async fn init_mailbox(
       }
       return Ok(None);
   };
-  let service = Arc::new(MailboxService::open(role, &config.storage.db_dir, node_did)?);
+  let client = Arc::new(RegistryClient::new(config.substrate.enable_bep0044_dht,
+                                            config.substrate.registry_url.clone()));
+  let service = Arc::new(MailboxService::open(role, &config.storage.db_dir, node_did,
+                                              client.clone() as Arc<dyn MasterAnchorResolver>)?);
   endpoint_registry.register(node_did.to_string(), MAILBOX_INTERFACE.to_string(),
       SubstrateEndpoint::NativeHostChannel { service_id: MAILBOX_RESERVED_SERVICE_ID.to_string() }).await?;
   shared.native_dispatch().insert(MAILBOX_RESERVED_SERVICE_ID.to_string(),
       service.clone() as Arc<dyn NativeService>);
+  // The same client the router builds (`route_handler.rs`), so the
+  // revocation check reads the anchors the handshake reads.
   let registry = (config.substrate.registry_url.is_some() || config.substrate.enable_bep0044_dht)
-      .then(|| Arc::new(RegistryClient::new(config.substrate.enable_bep0044_dht,
-                                            config.substrate.registry_url.clone())));
+      .then_some(client);
   if registry.is_none() {
       warn!("mailbox role is enabled but this node has no registry: the service records of \
              sleeping receivers will not be kept alive");
@@ -1266,6 +1326,14 @@ Helpers in the file (keep it under 800 lines; move shared record helpers
 into `common/` only if `mailbox_record_e2e.rs` can use them too):
 - `Member { master, instance, cert, mailbox }` with a real
   `service-instance` certificate (`DelegationCertificate::issue`).
+  `Member::new(node)` also publishes the master's anchor to the node's
+  registry with `common::conversation_fixture::publish_master_anchor`.
+  Without it, `verify_preamble` refuses every delegated call (it reads the
+  anchor for revocation), and so does the mailbox's own check. Do this for
+  every member, senders too. `mailbox_record_e2e.rs:106` does the same.
+- `async fn publish_anchors(node, members)`: publishes the anchors again.
+  The node's registry keeps its data in memory only (`DashMap` in
+  `community_registry/src/registry.rs`), so a restart loses them.
 - `async fn instance_client(node, member) -> SyneroymClient`:
   `node.client_as(clone of member.instance).with_delegation(member.cert.clone())`, then `connect()`.
 - `async fn sender_client(node, member)`: the same for the sender.
@@ -1296,8 +1364,9 @@ Tests:
    (`-32040`); `register` by a client with no delegation (`-32045`); a
    second identical deposit answers `stored` and a changed one `-32048`.
 6. `the_queue_and_its_messages_survive_a_restart`: deposit, then
-   `node.restart_in_place()`, then the receiver's `claim` returns the
-   message.
+   `node.restart_in_place()`, then `publish_anchors` for the sender and
+   the receiver (the restarted registry is empty), then the receiver's
+   `claim` returns the message.
 7. `an_unclaimed_message_returns_after_its_visibility_time` (M-6): claim,
    do not ack, claim again at once (empty), after 3 s claim again (the
    message, `claim_count == 2`).
@@ -1327,9 +1396,14 @@ behaviour is not part of this slice).
    `.closed_unacked`, `.republish_failures`, gauges `.queues`, `.messages`,
    `.bytes`); the `mailbox` Cargo feature.
 3. `docs/TERMINOLOGY.md`: rows "Mailbox" (a native service that holds
-   sealed messages for a service that cannot be reached; ADR-0026) and
+   sealed messages for a service that cannot be reached; ADR-0026),
    "Queue lifetime" (how long a queue lives without a register or claim;
-   30 days by default).
+   30 days by default) and "Sealed message" (a message for a mailbox: an
+   outer part the mailbox reads (destination, deposit id, size, time to
+   live) and an inner part sealed to the receiver's mailbox key, which
+   holds the call, the sender's instance certificate and the sender's
+   signature; ADR-0026). The change doc close-out
+   lists all three; the file has none of them today.
 4. `docs/system-requirements-spec.md` under `[PLT-ASY]` (:1063): one
    bullet for the mailbox role (what a node with the role provides, its
    limits, M-1 to M-14 in plain words), saying the sender and receiver
@@ -1349,19 +1423,31 @@ behaviour is not part of this slice).
    - Deviations `D-C4-1` to `D-C4-n`: one line each for C4-3 (certificate
      from the caller proof, not the body), C4-4 (no proof of possession;
      denial of service only), C4-6, C4-7 (eviction receipt `expired`; mailbox cap
-     refuses), C4-8 (tie rule; revocation by transport), C4-9 (record
+     refuses), C4-8 (tie rule), C4-9 (record
      checks; older record kept), C4-11, C4-12, C4-13 (own registry only),
      C4-14 (per sender and per node, not per sending node), C4-5
-     (plaintext store), plus every difference found while building.
+     (plaintext store), C4-16 (`ttl_too_long` with the queue's limit),
+     C4-2 (`mailbox` never "the one interface"), plus every difference
+     found while building. C4-8's line also says that the mailbox checks
+     revocation itself, because a same-node call runs no handshake.
    - Do **not** set `status: done`: C5 to C8 remain.
-7. `docs/planning/changes/operator-passport/change.md`, `D-B1-17`: add one
-   sentence: "C4 found that the router passes the verified certificate in
-   `CallerContext.proof`; C8 may take the signer binding from there
-   instead of the request body." Only if the owner agrees with §6 item 2;
-   otherwise leave it.
+7. `docs/planning/changes/operator-passport/change.md`, `D-B1-17`: add
+   these sentences at its end (do not rewrite the rest): "Changed by C4
+   (`D-C4-n`): the router passes the verified certificate in
+   `CallerContext.proof.delegation_json`, so `register` has no certificate
+   in its body. C8 takes the certificate for
+   `SignerBinding::InstanceCertificate` from there. The binding form and
+   the rule against a 'the transport already checked it' form are
+   unchanged." (Decided, §6 item 2.)
 8. `task.md`: the status line; C4 marked "Done" with a pointer to the
-   decisions; and these forward notes (also in §7 below) added to C5, C6
-   and C8.
+   decisions; these forward notes (also in §7 below) added to C5, C6, C7
+   and C8; and two line changes:
+   - C8: replace "`register` carries the instance certificate
+     (`D-B1-17`)" with "`register` takes the instance certificate from the
+     verified caller proof, not its body (`D-B1-17`, as changed by C4)".
+   - C7: change "Needs A2 and C3." to "Needs A2 and C3, and the router
+     check that a caller holds the instance key (backlog)." and add the
+     requirement of the C7 note in §7.
 9. `status.md`: the C4 row with evidence (test files and counts, verify
    result).
 10. `docs/planning/deferred-backlog.md`: the rows of §5.
@@ -1372,7 +1458,7 @@ behaviour is not part of this slice).
 | --- | --- |
 | M-1 | `service/tests.rs` (every method), `mailbox_service_e2e.rs` test 3 |
 | M-2, M-3 | `caller/tests.rs`, `record/tests.rs`, `service/tests.rs` 2, 3, e2e 5 |
-| M-4 | `store/tests/deposit.rs` 1, 7-10; `service/tests.rs` 5, 6; e2e 5 |
+| M-4 | `store/tests/deposit.rs` 1, 6-10; `service/tests.rs` 5, 6, 9; e2e 5 |
 | M-5 | `deposit.rs` 11, `claim.rs` 7 |
 | M-6 | `claim.rs` 2, e2e 7 |
 | M-7 | `sweep.rs` 1 |
@@ -1380,13 +1466,13 @@ behaviour is not part of this slice).
 | M-9 | `sweep.rs` 2 |
 | M-10 | `sweep.rs` 3 |
 | M-11 | `plaintext.rs` |
-| M-12 | `queue.rs` 3-5, e2e 4 |
+| M-12 | `queue.rs` 3-5, `caller/tests.rs` (revoked), `service/tests.rs` 10, 11, e2e 4 |
 | M-13 | `claim.rs` 5, e2e 3 |
 | M-14 | `claim.rs` 4 |
 | K-4 | `sweep.rs` 4, e2e 1, 2 |
 
-Plus: limiter (Step 1), config and wire shapes (Step 2), reserved id and
-dedup (Step 3), SDK preamble (Step 5), counters (`sweep.rs` 5), worker
+Plus: limiter (Step 1), config and wire shapes (Step 2), reserved id,
+dedup and calls with no interface (Step 3), SDK preamble (Step 5), counters (`sweep.rs` 5), worker
 (`worker/tests.rs`).
 
 ## 5. Deferred-backlog rows to add (Step 8)
@@ -1400,7 +1486,8 @@ dedup (Step 3), SDK preamble (Step 5), counters (`sweep.rs` 5), worker
    This is a denial of service: no message is read, faked as delivered or
    lost (ADR-0026 A1, S-5), but repeated `unregister` calls turn the
    mailbox off for one chosen receiver. Fix it in the router before open
-   mailboxes are listed for strangers (C7 or earlier). Source:
+   mailboxes are listed for strangers: C7 needs it, and carries the fix if
+   it has not landed (task.md C7, §7). Source:
    `crates/mailbox/src/caller.rs`.
 2. **Mailbox store is plaintext.** `mailbox.db` lists who sent to whom,
    when and how much. Bodies are sealed. Encrypting it needs the KEK at
@@ -1422,6 +1509,19 @@ dedup (Step 3), SDK preamble (Step 5), counters (`sweep.rs` 5), worker
    this as *Unverified*). TBD. `crates/core/src/dht_registry/client.rs`.
 7. **No operator surface for the mailbox.** No CLI or control-plane call
    lists queues, removes a queue or blocks a sender. TBD.
+8. **A call with no interface to the node DID can reach the supervisor.**
+   `EndpointRegistry::resolve_interface` leaves out only
+   `NATIVE_CAPABILITY_INTERFACES`, `NODE_NATIVE_INTERFACES` and (from C4)
+   `mailbox`. On a node with the supervisor role, `supervisor` is then the
+   node DID's "one interface", and a call that names no interface goes to
+   it. C4 does not change this, because a caller may rely on it; check
+   that no caller does, then leave `supervisor` out too. TBD.
+   `crates/core/src/local_registry.rs:219`.
+9. **Receiver calls read the master anchor twice.** A wire call reads it
+   in the router handshake and again in the mailbox, because the mailbox
+   cannot tell a wire call from a same-node call. A `CallerContext` flag
+   set only by the handshake would remove the second read. TBD.
+   `crates/mailbox/src/caller.rs`.
 
 Remove none: C4 resolves no existing row.
 
@@ -1441,8 +1541,14 @@ Remove none: C4 resolves no existing row.
    body because the router does not pass it on. `build_caller`
    (`route_handler/io.rs:250-258`) puts the verified certificate in
    `CallerContext.proof.delegation_json`. C4 reads it from there and adds
-   no body field (C4-3). C8 can take its signer binding from the same
-   place. Step 8.6 and 8.7 fix the text.
+   no body field (C4-3). **Decided (2026-10-18): C8 takes the certificate
+   for its signer binding from the same place.** It is the same
+   certificate, and the router has verified it. Only its source changes:
+   the binding stays `SignerBinding::InstanceCertificate`, and D-B1-17's
+   rule against a "the transport already checked it" binding form still
+   holds. C8 must not add a body field that C4 refused, so the two slices
+   cannot differ here. Step 8.6, 8.7 and 8.8 change the change doc, the
+   passport doc and task.md C8 together, in the C4 PR.
 3. **"Deposit rate limits for each node".** A native service does not see
    the sending node (`CallerContext` has no transport peer id). C4-14
    limits per sender DID and per mailbox node. Backlog row 3.
@@ -1468,12 +1574,14 @@ Remove none: C4 resolves no existing row.
    a `CallerContext` with `auth = Delegated`, `caller_did` = the master,
    and `proof` = the instance pubkey and certificate (C4-3). C5 and C6
    must build it so; today `CallOrigin::Native` with no proof would be
-   refused with `-32049`. Forward note (§7).
-10. **M-12 "only if that certificate is not revoked".** The mailbox does
-    not look up revocation itself; the router does at every stream (C4-8).
-    A revoked newest instance therefore blocks the queue until a newer
-    certificate registers, which is what M-12 asks; the change doc does
-    not say this, the deviation will.
+   refused with `-32049`. Because no handshake runs, the mailbox also
+   checks revocation itself (C4-8). Forward note (§7).
+10. **M-12 "only if that certificate is not revoked".** The router checks
+    revocation at every stream, but a same-node call (item 9) runs no
+    handshake. So the mailbox reads the master anchor on every receiver
+    call (C4-8). A revoked newest instance is refused and blocks the queue
+    until a newer certificate registers, which is what M-12 asks. The
+    price is a second anchor read for wire calls (backlog row 9).
 11. **M-14 timing.** "Claimed 5 times without an acknowledgement" could
     mean at the 5th claim or after it. C4-11: after the 5th visibility
     time ends.
@@ -1488,28 +1596,65 @@ Remove none: C4 resolves no existing row.
 14. **task.md C4 "hourly record publish (K-4)"** and the change doc's
     task line "Lookup change: ... Mailbox republishes the record (open)":
     both are this slice; Step 8.6 ticks the line.
+15. **How a sender learns a queue's ttl limit.** M-4 lists refusals but
+    not a ttl over the limit. Only `info` reports limits, and only the
+    open ones. C4-16 gives it its own code, `-32050`, with the queue's
+    `max_ttl_secs` in `data`, so it stays readable when C8 gives queues
+    their own limits.
+16. **An expired record at `register`.** A record from `svc deploy` lasts
+    30 days (`DEFAULT_ENDPOINT_NOT_AFTER_SECS`), and only the master holder
+    can sign a new one. C4-9 refuses an expired record (`-32047`) also for
+    an existing queue, which keeps working for `claim`. C6 must handle
+    this (§7).
+17. **A call with no interface to the node DID.** Not covered by the
+    change doc. C4-2 and Step 3.4 keep `mailbox` out of "the one
+    interface"; the supervisor's own case stays (backlog row 8).
 
 ## 7. Forward notes for later slices (add to task.md in Step 8.8)
 
 - **C5 (sender):** import the wire types and codes from
-  `syneroym_core::mailbox`. Every mailbox error (`-32040` to `-32049`,
-  `-32602`, `-32603`, a transport failure) means "back to direct
-  attempts, deposit again later" (S-4); none fails the message. A
-  `deposit` answer is a `Receipt::Stored`. Poll `status` with at most 100
-  ids per call. A sender on the mailbox host itself must present a
-  `CallerContext` with its instance proof (§6 item 9).
+  `syneroym_core::mailbox`. A `deposit` answer is a `Receipt::Stored`.
+  Poll `status` with at most 100 ids per call. A sender on the mailbox host
+  itself must present a `CallerContext` with its instance proof (§6 item
+  9). How C5 reacts to each refusal is C5's decision; S-4 covers only "the
+  mailbox is unreachable". The facts C4 gives it:
+  - may succeed later without a change: a transport failure, `-32603`,
+    `rate_limited` (`-32043`), `queue_full` (`-32042`), `mailbox_full`
+    (`-32044`), `unknown_destination` (`-32040`: the receiver has not
+    registered yet, or its queue was removed);
+  - will fail again for the same payload: `too_large` (`-32041`; the
+    payload is too large for any open mailbox), `ttl_too_long` (`-32050`;
+    a new deposit with a ttl at most `data.max_ttl_secs` can succeed);
+  - a bug in the sender: `-32602`, `duplicate_deposit` (`-32048`; each
+    deposit is sealed again with a new id, S-5, so a correct sender never
+    sees it), `not_an_instance` (`-32045`) and `unauthenticated`
+    (`-32049`; the caller proof is missing or wrong).
 - **C6 (receiver):** register with the stored deploy record; use the
   answer's `limits.max_ttl_secs` for `OpenPolicy` and for the
   idempotency memory (R-7). Ack by `(sender, deposit_id)` from the claim
   answer; at most 32 per call. Re-register when `claim` answers `-32040`
   (the queue was removed). `-32046` means a newer instance holds the
-  queue: stop pulling for that service and log it. A receiver on the
-  mailbox host must present its instance proof in the `CallerContext`
-  (§6 item 9).
+  queue: stop pulling for that service and log it. `-32045` at `register`
+  or `claim` can mean the instance key is revoked: stop pulling and wait
+  for a renewed certificate (task.md C6). `-32047` at `register` for a queue
+  that exists means the stored record is no longer accepted, in practice
+  because it is past `not_after` (30 days after deploy): keep claiming
+  (the queue keeps its limits and messages), use the limits from the last
+  successful `register` (or `info` when there is none), and log a warning
+  once an hour that the owner must deploy again to renew the record; the
+  mailbox stops republishing it at `not_after`. A receiver on the mailbox
+  host must present its instance proof in the `CallerContext` (§6 item 9).
+- **C7 (open mailbox list):** before the registry lists open mailboxes
+  for strangers, the router must check that a caller holds the instance
+  key of its certificate (backlog row "Router does not check that the
+  caller holds the temporary key", §5 item 1). The C4-4 risk decision
+  holds only until then. If the fix has not landed when C7 starts, C7
+  carries it.
 - **C8 (dedicated mailbox):** add `passport` to `RegisterParams`; raise
   the queue's `max_bytes`, `max_messages`, `max_ttl_secs` columns from
-  the lease (the store already keeps limits per queue); take the signer
-  binding from `CallerContext.proof` (§6 item 2).
+  the lease (the store already keeps limits per queue); take the
+  certificate for `SignerBinding::InstanceCertificate` from
+  `CallerContext.proof` (§6 item 2, decided).
 
 ## 8. Completion steps
 
