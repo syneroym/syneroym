@@ -107,7 +107,7 @@ on the same day changed C4-2, C4-3, C4-8, C4-9 and C4-16, decided §6 item
 | C4-10 | **`claim` and `ack` shapes.** `claim { max? }` returns up to `min(max, 32)` visible messages of the caller's own queue, oldest first, at most 4 MiB of sealed bytes (always at least one message), each `{ sender, deposit_id, sealed, deposited_at_secs, expires_at_secs, claim_count }`, plus `visible_again_at_secs`. `ack { acks: [{ sender, deposit_id, receipt }] }` (at most 32) answers one outcome per entry, in order: `stored`, `not_found` or `refused`. `refused`: the receipt state is not `delivered` or `rejected`, or its JSON is over 4 KiB. A `stored` ack removes the body and stores the receipt **as it came**. Claim and ack work only on the caller's own queue: the queue id is `instance.master_did`, never a parameter. | M-5 holds by construction. Ids are unique per sender only (C4-6), so an ack must name the sender. The mailbox cannot check a receipt's proof: it does not know the message hash (task.md C4, `D-C2-7`). The size bound stops a receiver from storing junk receipts. The batch bounds keep one answer far below the 16 MiB frame limit (`rpc/src/framing.rs`). |
 | C4-11 | **Closing after 5 claims (M-14).** `MAX_CLAIMS = 5`. A message whose `claim_count >= 5` and whose visibility time has ended is closed with `Receipt::unsigned_rejection(RejectCode::TooManyClaims, now)`, by the next `claim` of its queue or by the sweep, whichever runs first. A claim never returns such a message. | "Claimed 5 times without an acknowledgement" ends when the 5th visibility time ends: the receiver may still ack during it. |
 | C4-12 | **Queue lifetime (M-10).** A queue's lifetime is counted from its last `register` **or** `claim` (`last_active_at`). `queue_ends_at_secs = last_active_at + queue_lifetime_secs`. A removed queue closes its messages with `expired`. | The change doc says "not claimed for 30 days". A queue that was just registered has never been claimed, and must not be removed at once; counting `register` too is the smallest fix. A receiver claims on every pull (60 s, R-1), so in practice the claim keeps it alive. |
-| C4-13 | **Sweeps and republish: one worker loop** (`MailboxWorker::run`), ticking every `sweep_interval_secs` (60) and also woken by a new record. Each tick: (1) sweep (expired messages → `expired`, M-7; over-claimed messages → `too_many_claims`, M-14; idle queues removed, M-10; receipts past their keep time deleted, M-9), at most 1,000 rows per kind per tick; (2) republish due records (`next_publish_at <= now`, `record_not_after > now`, at most 100 per tick) with `RegistryClient::register(&record, false)`; on success the next is `now + republish_interval_secs` (3,600), on failure `now + 300`; (3) set the gauges. The registry client is the host's own (`substrate.registry_url`, `enable_bep0044_dht`); without one, the mailbox logs one warning at boot and never publishes. | K-4 says "publishes that record to the registry every hour". The only registry the host knows is its own; a receiver in another registry community is not helped (§6 item 6). A failed publish retried after 5 minutes keeps the record alive well inside the registry's 2-hour lifetime. Bounded batches keep the store lock short. One loop is simpler than two timers and both jobs are light. |
+| C4-13 | **Sweeps and republish: one worker loop** (`MailboxWorker::run`), ticking every `sweep_interval_secs` (60) and also woken by a new record. Each tick: (1) sweep (expired messages → `expired`, M-7; over-claimed messages → `too_many_claims`, M-14; idle queues removed, M-10; receipts past their keep time deleted, M-9), at most 1,000 rows per kind per tick; (2) republish due records (`next_publish_at <= now`, `record_not_after > now`, at most 100 per tick) with `RegistryClient::register(&record, false)`; on success the next is `now + republish_interval_secs` (3,600), on failure `now + 300`; (3) set the gauges. The registry client is the host's own (`substrate.registry_url`, `enable_bep0044_dht`). **A node with the role but with no registry URL and the DHT off refuses to start** (Step 6.2). | K-4 says "publishes that record to the registry every hour". The only registry the host knows is its own; a receiver in another registry community is not helped (§6 item 6). A failed publish retried after 5 minutes keeps the record alive well inside the registry's 2-hour lifetime. Bounded batches keep the store lock short. One loop is simpler than two timers and both jobs are light. Without a registry, the mailbox could serve no receiver at all: every receiver call reads the master anchor (C4-8), and that read always fails, so `register`, `unregister`, `claim` and `ack` would all answer `-32603`. No setup needs a mailbox that no receiver can use, so a clear error at boot is better than a warning. |
 | C4-14 | **Deposit rate limits.** Two fixed one-minute windows: per sender DID (`deposits_per_minute_per_sender`, default 60) and for the whole node (`deposits_per_minute_total`, default 6,000). `RequestLimiter` in `crates/passport` becomes generic over its key (`RequestLimiter<K = IpAddr>`); the mailbox uses `RequestLimiter<String>` and `RequestLimiter<()>`. Refusal: `rate_limited`. | The change doc asks for "deposit rate limits for each node", but a native service sees only the caller's DIDs, not the sending node (§6 item 3). A sender DID costs nothing to make, so the node-wide window is the real limit (the change doc says so). Reusing the limiter avoids a second copy (the duplication gate would flag one). |
 | C4-15 | **Config `[roles.mailbox]`** (`MailboxRole`, all fields with defaults, §3 Step 2.1). Checked once at startup by `Limits::from_role` in the mailbox crate; a bad value stops the boot with a message that names the field. The sealed-size limit is not a setting: it is `MAX_SEALED_BYTES` of the format. `max_ttl_secs` may not exceed `OPEN_MAX_TTL_SECS` (7 days). | The change doc calls the values "first values to tune", so they are settings. Tests need small values (short visibility, small queues). A ttl above 7 days is the dedicated-mailbox case (C8, from the passport facts), not an open-mailbox setting. |
 | C4-16 | **Error codes** `-32040` to `-32050` (§3 Step 2.2), each with `data: { "kind": "<snake_case name>" }`. `ttl_too_long` (`-32050`) also carries `data.max_ttl_secs`, the limit of **that queue**. Bad JSON or a bad field (also a zero ttl, a destination that is not a `did:key`, a sealed message under the minimum) is `-32602`; a store failure or an unreadable master anchor is `-32603`. | M-4 asks for one error for each refusal. The range is free (`git grep -E '\-320(4[0-9]\|50)\b'` finds nothing). The `kind` lets C5 tell "queue full" from "unknown destination" without parsing text. A ttl over the limit needs its own code: today every queue has the open limit, which `info` reports, but C8 gives queues their own limits, and `info` cannot report those. With the limit in the refusal, C5 can tell this refusal from bad input and deposit again with a ttl that fits. |
@@ -939,10 +939,9 @@ impl MailboxService {
         node_did: &str,
         anchors: Arc<dyn MasterAnchorResolver>,
     ) -> anyhow::Result<Self>
-    /// The background loop for this service. `registry` is `None` when
-    /// this node has no registry; then nothing is republished.
+    /// The background loop for this service.
     #[must_use]
-    pub fn worker(&self, registry: Option<Arc<RegistryClient>>) -> MailboxWorker
+    pub fn worker(&self, registry: Arc<RegistryClient>) -> MailboxWorker
 }
 
 #[async_trait::async_trait]
@@ -1026,7 +1025,7 @@ error for size. Write that reason in its doc comment.
 ```rust
 pub struct MailboxWorker {
     store: Arc<MailboxStore>,
-    registry: Option<Arc<RegistryClient>>,
+    registry: Arc<RegistryClient>,
     wake: Arc<Notify>,
     sweep_every: Duration,
     republish_every_secs: u64,
@@ -1049,7 +1048,7 @@ run:
       Ok(report) -> counters substrate.mailbox.expired (+expired),
                     substrate.mailbox.closed_unacked (+over_claimed); debug! when non-zero
       Err(e)     -> warn!(error = %e, "mailbox sweep failed")
-    if let Some(registry) = &registry { self.republish(registry, now, &cancel).await }
+    self.republish(&self.registry, now, &cancel).await
     if let Ok(t) = blocking(store, |s| s.totals()):
       gauges substrate.mailbox.queues / .messages / .bytes
 
@@ -1239,6 +1238,9 @@ pub(super) async fn init_mailbox(
       }
       return Ok(None);
   };
+  require_registry(config)?;
+  // The same client the router builds (`route_handler.rs`), so the
+  // revocation check reads the anchors the handshake reads.
   let client = Arc::new(RegistryClient::new(config.substrate.enable_bep0044_dht,
                                             config.substrate.registry_url.clone()));
   let service = Arc::new(MailboxService::open(role, &config.storage.db_dir, node_did,
@@ -1247,15 +1249,16 @@ pub(super) async fn init_mailbox(
       SubstrateEndpoint::NativeHostChannel { service_id: MAILBOX_RESERVED_SERVICE_ID.to_string() }).await?;
   shared.native_dispatch().insert(MAILBOX_RESERVED_SERVICE_ID.to_string(),
       service.clone() as Arc<dyn NativeService>);
-  // The same client the router builds (`route_handler.rs`), so the
-  // revocation check reads the anchors the handshake reads.
-  let registry = (config.substrate.registry_url.is_some() || config.substrate.enable_bep0044_dht)
-      .then_some(client);
-  if registry.is_none() {
-      warn!("mailbox role is enabled but this node has no registry: the service records of \
-             sleeping receivers will not be kept alive");
+  Ok(Some(MailboxParts { worker: service.worker(client) }))
+
+#[cfg(feature = "mailbox")] require_registry(config) -> anyhow::Result<()>:
+  if config.substrate.registry_url.is_none() && !config.substrate.enable_bep0044_dht {
+      bail!("[roles.mailbox] needs a registry: set substrate.registry_url or \
+             substrate.enable_bep0044_dht. Without one the mailbox cannot check \
+             revocation, so it could serve no receiver, and it cannot republish \
+             their service records")
   }
-  Ok(Some(MailboxParts { worker: service.worker(registry) }))
+  Ok(())
 
 #[cfg(not(feature = "mailbox"))] init_mailbox:
   if config.roles.mailbox.is_some() { bail!("[roles.mailbox] is configured but this binary was \
@@ -1265,6 +1268,12 @@ pub(super) async fn init_mailbox(
 
    The removal path also runs without the feature (copy the three lines,
    or put them in a small shared helper used by both versions).
+   `require_registry` runs before the store is opened or anything is
+   registered, so a refused boot leaves no state behind. Unit tests in
+   `runtime/mailbox/tests.rs` (add `#[cfg(test)] mod tests;`):
+   `the_mailbox_role_refuses_to_start_without_a_registry` (no URL, DHT off:
+   `Err`, and the message names both keys), and
+   `a_registry_url_or_the_dht_is_enough` (each one alone: `Ok`).
 
 3. `crates/substrate/src/runtime/router.rs`:
    - New struct at the top:
@@ -1312,7 +1321,8 @@ pub(super) async fn init_mailbox(
    - `shutdown`: `self.mailbox_cancel.cancel(); if let Some(h) = self.mailbox_join.take() { if let Err(e) = h.await { error!(..) } }`.
 6. `crates/substrate/config.sample.toml`, after `# [roles.roym]` (:261):
    a commented `# [roles.mailbox]` block with every key, its default and
-   one short comment line each.
+   one short comment line each, and a first line saying that the role
+   needs `substrate.registry_url` or `substrate.enable_bep0044_dht`.
 
 ### Step 7 — integration tests (`crates/substrate/tests/mailbox_service_e2e.rs`)
 
@@ -1388,7 +1398,8 @@ behaviour is not part of this slice).
    (C4-12); hourly republish to the host's own registry (C4-13); the error
    codes table. Say that the sender and receiver paths that use it are not
    built yet. ADR links only; no change-doc or slice ids.
-2. `docs/developer-guide.md`: the `[roles.mailbox]` keys (a table: key,
+2. `docs/developer-guide.md`: the role needs `substrate.registry_url` or
+   `substrate.enable_bep0044_dht`, or the node refuses to start; the `[roles.mailbox]` keys (a table: key,
    default, meaning); `mailbox.db` in the database-directory row at :270
    ("the mailbox's queues, messages and receipts; not a cache; plaintext
    metadata, sealed bodies"); the metrics (`substrate.mailbox.deposits`,
