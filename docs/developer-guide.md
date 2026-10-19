@@ -1732,8 +1732,8 @@ register_per_minute_per_master = 10
 register_per_minute_total = 120
 # Maximum receiver calls (claim, ack, unregister) per minute from one master DID (default: 120)
 receiver_calls_per_minute_per_master = 120
-# Maximum receiver calls per minute across all masters on this node (default: 1200)
-receiver_calls_per_minute_total = 1200
+# Maximum receiver calls per minute across all masters on this node (default: 24000)
+receiver_calls_per_minute_total = 24000
 # Interval between background sweeps in seconds (default: 60)
 sweep_interval_secs = 60
 # Interval between republishing stored service records in seconds (default: 3600)

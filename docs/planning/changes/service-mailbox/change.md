@@ -318,7 +318,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C4-18`: `syneroym-substrate` enables `mailbox` in default Cargo features.
 - `D-C4-19`: registration rate limiting limits per master DID (`register_per_minute_per_master: 10`) and total registrations (`register_per_minute_total: 120`).
 - `D-C4-20`: deposit retries are idempotent when identical, returning the current stored receipt (e.g. `Delivered`, `Stored`, `Rejected`, or `Expired`); altered destination, content, or TTL with the same deposit ID returns `DuplicateDeposit`. Both deposit and status require service instance caller context (`sender_of`).
-- `D-C4-21`: receiver call rate limiting limits receiver operations (`claim`, `ack`, `unregister`) per master DID (`receiver_calls_per_minute_per_master: 120`) and total receiver calls across the node (`receiver_calls_per_minute_total: 1200`), isolated from `register` rate limits. Counter metric `substrate.mailbox.receiver_refused` tracks rate-limited receiver calls.
+- `D-C4-21`: receiver call rate limiting limits receiver operations (`claim`, `ack`, `unregister`) per master DID (`receiver_calls_per_minute_per_master: 120`) and total receiver calls across the node (`receiver_calls_per_minute_total: 24000`, sized to at least 2 × `max_queues`), isolated from `register` rate limits. Counter metric `substrate.mailbox.receiver_refused` tracks rate-limited receiver calls. Node-wide limits are checked before per-master/per-sender limits to avoid consuming caller tokens during node floods.
 
 ## Close-out
 

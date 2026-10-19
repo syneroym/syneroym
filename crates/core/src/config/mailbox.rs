@@ -37,6 +37,8 @@ pub struct MailboxRole {
     /// master DID.
     pub receiver_calls_per_minute_per_master: u32,
     /// Maximum receiver calls per minute across all masters on this node.
+    /// Sized to at least 2 × max_queues so every queue can claim and ack once
+    /// per minute without false rate-limiting under normal operation.
     pub receiver_calls_per_minute_total: u32,
     /// Interval between background sweeps, in seconds.
     pub sweep_interval_secs: u64,
@@ -61,7 +63,7 @@ impl Default for MailboxRole {
             register_per_minute_per_master: 10,
             register_per_minute_total: 120,
             receiver_calls_per_minute_per_master: 120,
-            receiver_calls_per_minute_total: 1_200,
+            receiver_calls_per_minute_total: 24_000,
             sweep_interval_secs: 60,
             republish_interval_secs: 3_600,
         }

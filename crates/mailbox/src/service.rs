@@ -149,8 +149,8 @@ impl MailboxService {
 
     async fn instance(&self, caller: &CallerContext, now: u64) -> Result<Instance, MailboxError> {
         let who = instance_of(caller, now)?;
-        if !self.per_master_receiver.allow_key(who.master_did.clone(), now)
-            || !self.total_receiver.allow_key((), now)
+        if !self.total_receiver.allow_key((), now)
+            || !self.per_master_receiver.allow_key(who.master_did.clone(), now)
         {
             counter!("substrate.mailbox.receiver_refused", "kind" => "rate_limited").increment(1);
             return Err(MailboxError::RateLimited);
@@ -185,8 +185,8 @@ impl MailboxService {
         now: u64,
     ) -> Result<Value, MailboxError> {
         let who = instance_of(caller, now)?;
-        if !self.per_master_register.allow_key(who.master_did.clone(), now)
-            || !self.total_register.allow_key((), now)
+        if !self.total_register.allow_key((), now)
+            || !self.per_master_register.allow_key(who.master_did.clone(), now)
         {
             counter!("substrate.mailbox.register_refused", "kind" => "rate_limited").increment(1);
             return Err(MailboxError::RateLimited);
@@ -215,7 +215,7 @@ impl MailboxService {
     ) -> Result<Value, MailboxError> {
         let sender = self.sender(caller, now)?;
         let deposit = parse_deposit(params)?;
-        if !self.per_sender.allow_key(sender.clone(), now) || !self.total.allow_key((), now) {
+        if !self.total.allow_key((), now) || !self.per_sender.allow_key(sender.clone(), now) {
             counter!("substrate.mailbox.deposits_refused", "kind" => "rate_limited").increment(1);
             return Err(MailboxError::RateLimited);
         }

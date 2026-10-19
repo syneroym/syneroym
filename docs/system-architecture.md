@@ -2103,7 +2103,7 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 - `register_per_minute_per_master`: maximum registrations per minute from one master DID (default: 10).
 - `register_per_minute_total`: maximum registrations per minute across all masters on this node (default: 120).
 - `receiver_calls_per_minute_per_master`: maximum receiver calls (`claim`, `ack`, `unregister`) per minute from one master DID (default: 120).
-- `receiver_calls_per_minute_total`: maximum receiver calls per minute across all masters on this node (default: 1,200).
+- `receiver_calls_per_minute_total`: maximum receiver calls per minute across all masters on this node (default: 24,000, sized to at least 2 × `max_queues`).
 - `sweep_interval_secs`: interval between background sweeps, in seconds (default: 60).
 - `republish_interval_secs`: interval between republishing stored service records, in seconds (default: 3,600).
 

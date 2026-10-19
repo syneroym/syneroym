@@ -438,7 +438,7 @@ async fn raw_key_caller_with_no_delegation_is_refused_on_deposit_and_status() {
 async fn register_above_rate_limits_is_refused() {
     let role = MailboxRole {
         register_per_minute_per_master: 2,
-        register_per_minute_total: 3,
+        register_per_minute_total: 4,
         ..Default::default()
     };
     let (_dir, service, anchors) = test_service(role);
