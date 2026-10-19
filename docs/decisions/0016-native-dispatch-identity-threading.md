@@ -1,7 +1,7 @@
 # D-04-05: Native-Dispatch Identity Threading
 
-**Status**: Accepted (amended 2026-08-27 — see the dated amendment note at
-the end of **Decision**)
+**Status**: Accepted (amended 2026-08-27 and 2026-10-19 — see the dated
+amendment notes at the end of **Decision**)
 
 **Context**:
 
@@ -134,6 +134,43 @@ in `login` mode, a configured person delegation in `fixed` mode, nothing in
 
 Landing slice: **M06C C1.1** —
 [slice-c1.1-implementation-plan.md](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md).
+
+**Amendment 2 (2026-10-19, passing the caller's proof along a call chain).**
+§6 changes as follows. Everything else in this ADR, and the 2026-08-27
+amendment, stands. The proof-of-possession rules this depends on are in
+[ADR-0002](0002-handshake-authorization-point.md) A1.
+
+1. **A node never presents another party's proof as its own identity.**
+   After ADR-0002 A1, a preamble identity must be signed by the key it names,
+   and a node does not hold the original caller's key. So "send the proof" in
+   §6 no longer means presenting the caller's certificate as the connection's
+   identity. A node presents its own identity: its service instance key and
+   certificate, or its node key.
+2. **The original caller's proof travels in `on_behalf`.** The first node
+   keeps the caller's verified proof (key, certificate, `service_id`,
+   `interface`, `ts`, signature). A native call made for that caller puts it,
+   unchanged, in the preamble field `on_behalf`. Each later service passes
+   the same value on. The destination checks the immediate caller as usual,
+   then checks the proof in `on_behalf`: its signature, certificate,
+   revocation and time window. If both pass, it sets `anchor_did` to the
+   original caller.
+3. **Trust rule:** a caller trusts the services its call passes through. So
+   any service that the caller called, inside the time window, can act on its
+   behalf. `on_behalf` sets only `anchor_did`: capabilities are still checked.
+4. **Limits.** A guest never sends `on_behalf`. A preamble carries
+   `on_behalf` or `ucan`, not both, because both set `anchor_did`.
+
+Why: a cross-service relationship check (`resolve-relation`) admits a call
+only when the caller is the principal it asks about. Without rule 2, every
+such check made by a service for a person would be denied.
+
+Rejected: binding the proof to the first service with a signed link for each
+later hop. It protects against what the trust rule accepts, and it needs the
+instance certificate to name its service. A UCAN grant from the person to the
+service is the general form for longer grants, and is not needed here.
+
+Landing slice: **M06D C4b** —
+[signed-route-preamble change doc](../planning/changes/signed-route-preamble/change.md).
 
 **Consequences**:
 

@@ -1,18 +1,20 @@
 # M06D: Reachability and deferred delivery
 
-*Reader: developers who build these three changes.*
+*Reader: developers who build these changes.*
 
-**Status: in progress (2026-10-17).** S0, A1 to A4, C1, B1 to B3, C2, C3 are done. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-19).** S0, A1 to A4, C1, B1 to B3, C2 to C4 are done. C4b and C4c (added 2026-10-19) come before C5. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
-service that holds sealed messages for a sleeping receiver). This plan orders
-the work of their three change docs. It does not repeat their requirements or
-design. Read them first:
+service that holds sealed messages for a sleeping receiver). A fourth change,
+the signed route preamble (a caller proves it holds its key), was added because
+the mailbox depends on it. This plan orders the work of the four change docs.
+It does not repeat their requirements or design. Read them first:
 
 - [registry-listed-coordinators](../../changes/registry-listed-coordinators/change.md) (criteria `AC-*`)
 - [operator-passport](../../changes/operator-passport/change.md) (criteria `P-*`, `H-*`)
 - [service-mailbox](../../changes/service-mailbox/change.md) (criteria `M-*`, `K-*`, `S-*`, `R-*`, `D-*`), with [ADR-0026](../../../decisions/0026-receiver-chosen-mailbox.md)
+- [signed-route-preamble](../../changes/signed-route-preamble/change.md) (criteria `SP-*`), with [ADR-0002](../../../decisions/0002-handshake-authorization-point.md) A1 and [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2. Added 2026-10-19 for slices C4b and C4c.
 
 The goal of the order: write each shared part once, in its final form, before
 the second user of that part needs it. Each slice below is one PR (or a small
@@ -150,27 +152,36 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Key receipts on `(sender, deposit_id)`, or refuse a `deposit_id` that already exists: the sender picks the id, so a second sender could reuse it. Store a receiver's ack as it came: the mailbox cannot check the proof, because it does not know the message hash. Its own rejection after 5 claims is `Receipt::unsigned_rejection(TooManyClaims, ..)`.
 - Done 2026-10-18. Decisions `D-C4-1` to `D-C4-20` are in the [mailbox change doc](../../changes/service-mailbox/change.md).
 
-**C5 — Sender path (L).** Needs C1, C3, C4 and R-7 of C6. Parallel with C6, but the R-7 part of C6 must merge first.
+**C4b — Signed preamble (L, two PRs).** Needs C4. Before C5. Part 1 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-1` to `SP-9`), with [ADR-0002](../../../decisions/0002-handshake-authorization-point.md) A1 and [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2.
+- First PR: the `roymctl` command that revokes a temporary key. It does not depend on the rest.
+- Second PR: the caller signs the destination, the interface and the time with its key. The handshake key moves to `epk`. Only coordinators forward, and a forwarder checks nothing. A service in a call chain passes the caller's proof on in `on_behalf`. The logs stop printing identity fields.
+- *Why here.* The gap is live since C4: a copy of an instance certificate lets any node call the mailbox as that service. C5 and C6 build the paths that send an instance proof, so their tests are written once, against the final preamble. The fix is in the router, so C7 stays S.
+
+**C4c — Identity inside the encrypted channel (M).** Needs C4b. Before C5, so C5 and C6 build on the final transport. Part 2 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-10` to `SP-13`).
+- The client side of the end-to-end handshake in Rust (SDK, client gateway passthrough, `IrohHop`). On a connection through a forwarder, the client checks the host's key and then sends its identity encrypted. With no known host key it sends no identity. HKDF over the handshake secret.
+
+**C5 — Sender path (L).** Needs C1, C3, C4, C4b, C4c and R-7 of C6. Parallel with C6, but the R-7 part of C6 must merge first.
 - Needs R-7 (C6) in `main` first, or carries R-7 itself. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver.
 - First: decide where a guest method declares that it is mailbox-eligible (app manifest or WIT interface).
 - Eligibility (`S-1`) also needs a valid instance certificate: a `SealError::BadCertificate` or `SealError::TooLarge` from `seal` keeps the call on direct delivery. Each deposit is a new `seal` call; keep the plaintext call and store only the `SentDeposit` and the mailbox id in the park context (`D-C2-9`). Handle receipts by the rule in ADR-0026 A1: only a `verify_signed` result fails or completes a message; everything else goes back to direct attempts, including a `status` answer that does not parse. Before it accepts a receipt, check the receiver certificate's `temporary_did` against the receiver master's revoked keys, as C6 does for the sender (`D-C2-11` only bounds the receipt time).
 - `resolve_peer` bounds the substrate lookup of a peer with a mailbox (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s). The "one direct attempt with a short timeout" of `S-2` comes after it. Tune both together. The lookup of the **service** record is not bounded: the stored record (`record_of` in `net_iroh.rs`) is used only after `lookup` fails, which with a registry that does not answer takes the 10 s HTTP timeout and a DHT try. Bound that lookup too, or the wait adds to the short direct attempt.
 - Eligibility check (`S-1`), one direct attempt then deposit, `status` polling, `ProxyRouter` hook below both outboxes (`S-2` to `S-5`, `S-7`, `S-8`).
 - `deposited` state in both outboxes on X6 (`S-6`, `S-9`), the `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI. Group pushes.
+- **Forward note from C4b and C4c:** the C5 plan's refactor of `invoke_remote_at` (split into `outbound_preamble` and `invoke_remote_once`) must not build a signed preamble once and reuse it. `outbound_preamble` chooses only the identity (which key and which certificate) and `on_behalf`. `IrohHop::call` signs when it writes the preamble, on every attempt, and on an indirect connection runs the handshake and sends the identity encrypted. `invoke_remote` (not the retry loop) handles `not_hosted_here` by resolving the service again.
 - **Forward note from C4:** Import wire types and error codes from `syneroym_core::mailbox`. A `deposit` answer is initially `Receipt::Stored`. Poll `status` with at most 100 ids per call. A sender depositing to the mailbox (including a same-node sender via proxy outbox) must present a `CallerContext` with its service instance proof (`pubkey_hex` and `delegation_json`), keying the sender on `master_did`. C5 must test that router's `invoke_local` path carries this certificate proof to local native services. How C5 reacts to each refusal is C5's decision; S-4 covers only "the mailbox is unreachable". Facts C4 gives: may succeed later without change: transport failure, `-32603`, `rate_limited` (`-32043`), `queue_full` (`-32042`), `mailbox_full` (`-32044`), `unknown_destination` (`-32040`); will fail again for same payload: `too_large` (`-32041`), `ttl_too_long` (`-32050`, a new deposit with ttl <= `data.max_ttl_secs` can succeed); bug in sender: `-32602`, `duplicate_deposit` (`-32048`, identical retries succeed with the stored receipt state — which may be `Stored`, `Delivered`, `Rejected`, or `Expired` per `D-C4-20` — but re-using an ID with different destination, content, or TTL returns this error), `not_an_instance` (`-32045`), `unauthenticated` (`-32049`).
 
-**C6 — Receiver path (L).** Needs C3 and C4. Parallel with C5.
+**C6 — Receiver path (L).** Needs C3, C4, C4b and C4c. Parallel with C5.
 - Read the key with `ControlPlaneService::mailbox_key`. Pull only for a service whose stored record names a mailbox **and** whose key is present. The vault needs the KEK, so the pull waits for it after a restart. The pull always follows the **stored deploy record**: it is the only record whose mailbox matches the key the substrate holds. If the record the registry serves names another mailbox or none (only the master holder can sign one, for example by an old `registry register` over an expired record), keep pulling from the stored one and log a warning, once an hour, naming both.
 - Pull worker, unseal, `dispatch_json_rpc_once` with the sender's identity, signed ack, waiting for a renewed certificate, `mailbox.pull-now` (`R-1` to `R-6`).
 - Longer idempotency memory and a larger row limit for services with a mailbox (`R-7`).
 - Check revocation after `open` and ack with `OpenedMessage::sign_rejection(Revoked, ..)` (`D-C2-5`). Ack every `open` failure: `RefusedMessage::receipt` for `OpenError::Refused`, `Receipt::unsigned_rejection(e.reject_code(), ..)` for the rest. Pass the queue's own `max_ttl_secs` from `register` in `OpenPolicy`, and size the idempotency memory (`R-7`) from the same value, not from a 7-day constant. A signed `from_future` rejection is decided by the receiver's own clock: log a warning on it, so a receiver whose clock is slow by more than 24 hours is noticed.
 - **Forward note from C4:** Register with the stored deploy record; use `limits.max_ttl_secs` from the answer for `OpenPolicy` and for the idempotency memory (R-7). Ack by `(sender, deposit_id)` from the claim answer, at most 32 per call. Re-register when `claim` answers `-32040` (queue was removed). `-32046` means a newer instance holds the queue: stop pulling for that service and log it. `-32045` at `register` or `claim` means the instance key is revoked: stop pulling and wait for a renewed certificate. `-32047` at `register` for an existing queue means the stored record is past `not_after`: keep claiming, use limits from last successful `register` (or `info`), and log a warning once an hour that owner must deploy again to renew record (mailbox stops republishing at `not_after`). A receiver on the mailbox host must present its instance proof in `CallerContext`. C6 must test that router's `invoke_local` path carries this certificate proof to local native services.
 
-**C7 — Open mailbox list and `auto` (S).** Needs A2 and C3, and the router check that a caller holds the instance key (backlog).
+**C7 — Open mailbox list and `auto` (S).** Needs A2, C3, C4b and C4c.
 - `[[roles.community_registry.mailboxes]]` and `GET /mailboxes` as the second instance of X2.
 - `--mailbox auto` with X3. `MailboxChoice::Auto` already parses in the manifest, `svc deploy` and `app deploy`. Remove the three refusals (`validate_plan_member_settings`, `check_mailbox_args` in `svc deploy`, `certify_placed_members`). Resolve `auto` **once** and pin the result in the stored plan (roymctl before `apply_plan`; the supervisor at `submit`): a different mailbox later means a new record, and messages waiting at the old mailbox are lost.
 - After C5, C6 and C7: run the full integration list from the mailbox doc and close out its living docs, except the dedicated-mailbox criteria.
-- **Forward note from C4:** Before the registry lists open mailboxes for strangers, the router must check that a caller holds the instance key of its certificate (backlog row "Router does not check that the caller holds the temporary key"). The C4-4 risk decision holds only until then. If the fix has not landed when C7 starts, C7 carries it. Also, C4 implemented registration rate limiting (`register_per_minute_per_master: 10`, `register_per_minute_total: 120`) to prevent cheap queue flooding attacks on open mailboxes. Additionally, C7 must cap receipt table storage before listing open mailboxes to strangers (backlog row "Receipt table size is not capped by `max_total_bytes`").
+- **Forward note from C4:** Before the registry lists open mailboxes for strangers, the router must check that a caller holds the instance key of its certificate. C4b does this, and the C4-4 risk decision holds only until C4b lands. Also, C4 implemented registration rate limiting (`register_per_minute_per_master: 10`, `register_per_minute_total: 120`) to prevent cheap queue flooding attacks on open mailboxes. Additionally, C7 must cap receipt table storage before listing open mailboxes to strangers (backlog row "Receipt table size is not capped by `max_total_bytes`").
 
 **C8 — Dedicated mailbox (M).** Needs B1, C4 and C7. Last.
 - `register` with a passport, proof by transport identity, binding by instance certificate, raised quotas from facts, `max_services` (`D-1` to `D-3`).
@@ -198,13 +209,16 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 | C2 | S0 | S |
 | C3 | C2 | L |
 | C4 | C2, C3 | L |
-| C5 | C1, C3, C4, R-7 of C6 | L |
-| C6 | C3, C4 | L |
-| C7 | A2, C3 | S |
+| C4b | C4 | L |
+| C4c | C4b | M |
+| C5 | C1, C3, C4, C4b, C4c, R-7 of C6 | L |
+| C6 | C3, C4, C4b, C4c | L |
+| C7 | A2, C3, C4b, C4c | S |
 | C8 | B1, C4, C7 | M |
 
 With one developer, the serial order in use (the owner's choice, 2026-10-13) is:
-S0, A1, A2, A3, A4, C1, B1, B2, B3, C2, C3, C4, C5, C6, C7, C8.
+S0, A1, A2, A3, A4, C1, B1, B2, B3, C2, C3, C4, C4b, C4c, C5, C6, C7, C8.
+C4b and C4c were added on 2026-10-19, after C4 merged.
 One slice per PR. Each PR merges before the next slice starts.
 
 The relay work comes first. It is smaller, it makes the base for the passport,
@@ -214,7 +228,7 @@ and touches the supervisor, which is cheaper to check while little else is
 changing.
 
 With two developers: one takes Track A then Track B. The other takes C1, C2,
-C3, C4, then joins for C5 and C6 (the R-7 part of C6 must merge first).
+C3, C4, C4b, C4c, then joins for C5 and C6 (the R-7 part of C6 must merge first).
 
 ## 5. Where rework would come from, and how this order avoids it
 
@@ -229,6 +243,7 @@ C3, C4, then joins for C5 and C6 (the R-7 part of C6 must merge first).
 | Each outbox builds its own "deposited" state. | X6 in C1, used by both outboxes in C5. |
 | The deploy call changes twice (mailbox key, then child token). | The field is designed in C3 (`mailbox-credentials` record) with room for the child token. |
 | A3 and B2 both edit the info server at once. | A3 lands before B2. |
+| The preamble format changes under the tested sender and receiver paths. | C4b signs the preamble and C4c moves the identity inside the encrypted channel, both before C5 and C6 build on the instance proof. |
 
 ## 6. Not in this plan
 
