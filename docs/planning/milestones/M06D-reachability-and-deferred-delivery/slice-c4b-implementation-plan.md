@@ -143,9 +143,13 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   result was also `Retry`. For the conversation outbox it is a **change of
   behaviour**: there the old `Transport` result was `Disposition::
   Unreachable` (`transport.rs:649-651`), which delays the item and does not
-  use the attempt budget, so a refused stream used to wait without end. Now
+  use the attempt budget. So a refused message used to wait until
+  `max_pending_age_secs` (30 days by default, `conversation/src/store.rs:92`)
+  and then fail with the reason "recipient never became reachable"
+  (`conversation/src/outbox.rs:195-204`), which names the wrong cause. Now
   it uses the budget and ends in the dead-letter list. That is wanted: a
-  refusal that never clears should become visible, not wait forever. Record
+  refusal that never clears becomes visible after the retry budget, not
+  after 30 days, and is not reported as an unreachable recipient. Record
   it in the change doc's `## Deviations` and in the comment on the
   `classify` arm.
 - **C4b-2. Order of checks in `handle_stream`.** A forwarder must not check
@@ -1709,3 +1713,8 @@ Second review (2026-10-19), three small points, all incorporated:
 | 1 | C4b-19 said the new end matches the old `Transport` path; for the conversation outbox the old result was `Unreachable`, not `Retry`. | Fixed the sentence; C4b-19 now records the change for the conversation outbox (it now uses the attempt budget and can dead-letter) and asks for a `## Deviations` entry. |
 | 2 | `router.streams.refused` breaks the `substrate.` metric prefix; the developer guide lists metrics. | Renamed to `substrate.router.refused{kind}` (label `kind`, like `substrate.mailbox.deposits_refused`); Step 15 adds it to the developer guide. |
 | 3 | An unauthenticated refusal was logged twice at `debug`. | `write_refusal` now only writes and counts; the code that decides each refusal logs it once (C4b-13, Steps 6 and 7). |
+
+Third review (2026-10-19): C4b-19 said a refused conversation message
+"used to wait without end". It waited up to `max_pending_age_secs` (30 days)
+and then failed as "recipient never became reachable". Sentence corrected;
+the `Retry` decision is unchanged.
