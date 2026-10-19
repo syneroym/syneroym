@@ -1,0 +1,36 @@
+[package]
+name = "syneroym-mailbox"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+syneroym-core = { workspace = true }
+syneroym-identity = { workspace = true }
+syneroym-mailbox-format = { workspace = true }
+syneroym-passport = { workspace = true }
+syneroym-rpc = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+metrics = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+tempfile = { workspace = true }
+

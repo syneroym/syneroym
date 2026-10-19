@@ -201,3 +201,26 @@ operator = "Operator"
 "#;
     assert!(toml::from_str::<SubstrateConfig>(toml).is_err());
 }
+
+#[test]
+fn a_mailbox_role_parses_with_its_defaults() {
+    let toml = r#"
+[roles.mailbox]
+"#;
+    let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
+    assert_eq!(config.roles.mailbox, Some(MailboxRole::default()));
+
+    let override_toml = r#"
+[roles.mailbox]
+max_queue_messages = 42
+"#;
+    let override_config = toml::from_str::<SubstrateConfig>(override_toml).unwrap();
+    let expected = MailboxRole { max_queue_messages: 42, ..Default::default() };
+    assert_eq!(override_config.roles.mailbox, Some(expected));
+}
+
+#[test]
+fn no_mailbox_section_means_no_mailbox() {
+    let config = toml::from_str::<SubstrateConfig>("").unwrap();
+    assert_eq!(config.roles.mailbox, None);
+}

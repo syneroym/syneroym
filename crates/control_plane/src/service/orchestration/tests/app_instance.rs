@@ -196,29 +196,21 @@ async fn a_binding_naming_a_different_app_instance_than_its_own_context_fails_th
 /// scoped exactly to the `service_id` it targets, so the rejection is
 /// the reserved-name check firing, not the ordinary authorization gate.
 #[tokio::test]
-async fn a_deploy_cannot_claim_the_nodes_own_did_or_the_supervisor_dispatch_id() {
+async fn a_deploy_cannot_claim_the_nodes_own_did_or_a_reserved_dispatch_id() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = service_for_inline_tests(temp_dir.path()).await;
 
-    let err = service
-        .deploy(
-            "did:key:zTestNode".to_string(),
-            inline_manifest(None, None, None),
-            &scoped_deploy_caller("did:key:zMallory", "did:key:zTestNode"),
-        )
-        .await
-        .unwrap_err();
-    assert!(err.contains("reserved"), "{err}");
-
-    let err = service
-        .deploy(
-            SUPERVISOR_RESERVED_SERVICE_ID.to_string(),
-            inline_manifest(None, None, None),
-            &scoped_deploy_caller("did:key:zMallory", SUPERVISOR_RESERVED_SERVICE_ID),
-        )
-        .await
-        .unwrap_err();
-    assert!(err.contains("reserved"), "{err}");
+    for id in ["did:key:zTestNode", SUPERVISOR_RESERVED_SERVICE_ID, MAILBOX_RESERVED_SERVICE_ID] {
+        let err = service
+            .deploy(
+                id.to_string(),
+                inline_manifest(None, None, None),
+                &scoped_deploy_caller("did:key:zMallory", id),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("reserved"), "{err}");
+    }
 }
 
 #[tokio::test]

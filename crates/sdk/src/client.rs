@@ -88,6 +88,9 @@ pub struct SyneroymClient {
     /// preamble, set via [`Self::with_ucan`]. `None` by default -- callers
     /// that don't hold one still get the self-asserted-identity admission.
     caller_ucan: Option<CapabilityToken>,
+    /// A certificate that lets this client's key act as its master, sent on
+    /// every request preamble. Set via [`Self::with_delegation`].
+    caller_delegation: Option<DelegationCertificate>,
     /// Handles for endpoints from failed/timed-out connect attempts (see
     /// `spawn_background_close`), reaped by [`Self::shutdown`]. Unlike the
     /// `Drop` safety net, a retry loop such as `wait_for_ready` can spawn
@@ -126,6 +129,7 @@ impl Debug for SyneroymClient {
             .field("connect_timeout", &self.connect_timeout)
             .field("identity", &self.identity)
             .field("caller_ucan", &self.caller_ucan)
+            .field("caller_delegation", &self.caller_delegation)
             .field("pending_closes", &self.pending_closes.len())
             .finish()
     }
@@ -220,6 +224,7 @@ impl SyneroymClient {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
+            caller_delegation: None,
             pending_closes: Vec::new(),
             enable_dht: true,
             registry_client: OnceLock::new(),
@@ -237,6 +242,7 @@ impl SyneroymClient {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
+            caller_delegation: None,
             pending_closes: Vec::new(),
             enable_dht: true,
             registry_client: OnceLock::new(),
@@ -267,6 +273,7 @@ impl SyneroymClient {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
+            caller_delegation: None,
             pending_closes: Vec::new(),
             enable_dht: true,
             registry_client: OnceLock::new(),
@@ -292,6 +299,7 @@ impl SyneroymClient {
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity,
             caller_ucan: None,
+            caller_delegation: None,
             pending_closes: Vec::new(),
             enable_dht: true,
             registry_client: OnceLock::new(),
@@ -312,6 +320,20 @@ impl SyneroymClient {
     pub fn with_ucan(mut self, caller_ucan: CapabilityToken) -> Self {
         self.caller_ucan = Some(caller_ucan);
         self
+    }
+
+    /// Attaches a delegation certificate proving this client acts on behalf
+    /// of its member master, sent on every outbound preamble.
+    #[must_use]
+    pub fn with_delegation(mut self, cert: DelegationCertificate) -> Self {
+        self.caller_delegation = Some(cert);
+        self
+    }
+
+    /// The delegation certificate attached to this client, if any.
+    #[must_use]
+    pub const fn caller_delegation(&self) -> Option<&DelegationCertificate> {
+        self.caller_delegation.as_ref()
     }
 
     /// Opts this client's `connect`/`lookup_registry` out of the mainline
@@ -510,19 +532,21 @@ impl SyneroymClient {
             TransportConnection::Iroh { conn, .. } => {
                 let (mut send, recv) = conn.open_bi().await?;
 
-                // Every stream must start with a RoutePreamble identifying the target service.
-                // A self-asserted pubkey (no delegation) is set so this
-                // connection is not anonymous (ADR-0016 §0.5)
-                // -- see `SyneroymClient::identity`'s doc comment.
-                let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
-                preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
-                preamble.ucan = self.caller_ucan.clone();
+                let preamble = self.build_preamble(interface_name);
                 send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
                 framing::write_frame(&mut send, &req_bytes).await?;
                 Ok((send, recv))
             }
         }
+    }
+
+    pub(crate) fn build_preamble(&self, interface_name: &str) -> RoutePreamble {
+        let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
+        preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
+        preamble.ucan = self.caller_ucan.clone();
+        preamble.delegation = self.caller_delegation.clone();
+        preamble
     }
 
     pub async fn request_raw(

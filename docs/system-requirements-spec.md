@@ -1075,6 +1075,8 @@ The Asynchronous Operations component executes offline interactions, long-runnin
     > **Envisioned.** Not built yet. Client-side outbox queue and optimistic offline UI execution in browser clients. Today the durable outbox is substrate-side, and client calls execute synchronously over HTTP or WebSocket sessions.
     >
     > Clients can trigger operations using a fire-and-forget flag (or wrapper API) indicating it is "ok to send later". The client UI treats the request as optimistically successful.
+  - **Service Mailbox & Deferred Store-and-Forward:** Run a native substrate `mailbox` role holding end-to-end encrypted messages for sleeping or offline receivers ([ADR-0026](decisions/0026-receiver-chosen-mailbox.md)). The role exposes the `mailbox` interface under the node DID (`register`, `unregister`, `deposit`, `claim`, `ack`, `status`, `info`). Messages and receipts persist in SQLite (`mailbox.db`). The service enforces fair queue eviction, visibility timeouts, and automatic sweeping of idle queues and expired receipts.
+    > **Envisioned.** Not built yet. Sender-side automatic deposit fallback upon direct call failure and receiver-side pull/delivery workers. The mailbox role and storage engine are implemented.
 
 - **Long-Running Tasks:**
   > **Envisioned.** Not built yet. Uniform execution and in-memory state management for long-running workflows composed of multi-stage compute tasks. Today Wasm guest functions run within bounded dispatch timeouts, and long-running task restart or compensation rules are not implemented.

@@ -263,6 +263,44 @@ http_port = 7960
 # crates/roym_web/ui/bundle.tar.gz).
 # ui_bundle_path = "/path/to/bundle.tar.gz"
 
+# Service mailbox role: holds sealed messages for services that cannot be reached.
+# Requires substrate.registry_url or substrate.enable_bep0044_dht to check revocation and republish.
+# [roles.mailbox]
+# SQLite file name under storage.db_dir.
+# db_name = "mailbox.db"
+# Maximum bytes held across all messages in one queue.
+# max_queue_bytes = 5242880
+# Maximum number of messages held in one queue.
+# max_queue_messages = 500
+# Maximum time-to-live for a message, in seconds.
+# max_ttl_secs = 604800
+# How long receipts are kept after message completion or expiry, in seconds.
+# receipt_keep_secs = 1209600
+# How long a claimed message is hidden from other claims, in seconds.
+# visibility_secs = 300
+# How long an idle queue is kept without a register or claim, in seconds.
+# queue_lifetime_secs = 2592000
+# Maximum bytes held across all queues on this node.
+# max_total_bytes = 1073741824
+# Maximum number of queues on this node.
+# max_queues = 10000
+# Maximum deposits per minute from one sender DID.
+# deposits_per_minute_per_sender = 60
+# Maximum deposits per minute across all senders on this node.
+# deposits_per_minute_total = 6000
+# Maximum registrations per minute from one master DID.
+# register_per_minute_per_master = 10
+# Maximum registrations per minute across all masters on this node.
+# register_per_minute_total = 120
+# Maximum receiver calls (claim, ack, unregister) per minute from one master DID.
+# receiver_calls_per_minute_per_master = 120
+# Maximum receiver calls per minute across all masters on this node (at least 2 × max_queues).
+# receiver_calls_per_minute_total = 24000
+# Interval between background sweeps, in seconds.
+# sweep_interval_secs = 60
+# Interval between republishing stored service records, in seconds.
+# republish_interval_secs = 3600
+
 # Observability: Health checks, metrics, and tracing
 [roles.observability]
 

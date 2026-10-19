@@ -6,7 +6,7 @@ crates/app_supervisor/src/service/tests/helpers.rs 1220
 crates/app_supervisor/src/service/tests/resident_loop.rs 961
 crates/app_supervisor/src/service/tests/schedules.rs 802
 crates/app_supervisor/src/service/tests/verbs.rs 988
-crates/control_plane/src/service/orchestration/tests/app_instance.rs 1384
+crates/control_plane/src/service/orchestration/tests/app_instance.rs 1376
 crates/control_plane/src/service/orchestration/tests/assets.rs 1010
 crates/control_plane/src/service/orchestration/tests/deploy.rs 1240
 crates/control_plane/src/service/orchestration/tests/helpers.rs 1007

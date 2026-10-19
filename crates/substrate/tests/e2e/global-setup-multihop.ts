@@ -91,7 +91,7 @@ export default async function globalSetup() {
 
   const isRelease = process.env.CARGO_RELEASE_FLAG === '--release';
   const targetDir = isRelease ? 'target/release' : 'target/debug';
-  const buildFlag = isRelease ? '--release' : '';
+  const buildFlag = isRelease ? '--release' : '--profile test';
   const SUBSTRATE_BIN = path.join(WORKSPACE_DIR, targetDir, 'syneroym-substrate');
   const ROYMCTL_BIN = path.join(WORKSPACE_DIR, targetDir, 'roymctl');
   const MINIAPP_BIN = path.join(WORKSPACE_DIR, targetDir, 'miniapp-demo1-web');

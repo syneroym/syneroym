@@ -128,7 +128,7 @@ jobs:
           rm -rf target/wasm32-wasip2 target/wasm32-wasip1
           mise run build:test-components
           mise run build:roym
-          cargo build ${{ github.event.inputs.build_mode == 'release' && '--release' || '' }} \
+          cargo build ${{ github.event.inputs.build_mode == 'release' && '--release' || '--profile test' }} \
             --bin syneroym-substrate --bin roymctl --bin miniapp-demo1-web
       - name: Run Playwright E2E
         uses: ./.github/actions/ci-e2e

@@ -538,6 +538,7 @@ flowchart TD
 | `observability` | Metrics, health, logging and tracing. |
 | `supervisor` | The App Supervisor. It holds the desired state and the master keys of the app instances it manages. It reconciles those instances against their desired state. |
 | `roym` | Links the Roym services into the binary (Cargo feature `roym`). |
+| `mailbox` | Holds sealed messages for sleeping or offline receivers (crate `syneroym-mailbox`). |
 
 Two more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`.
 
@@ -744,7 +745,7 @@ A schedule is a cron expression with five fields. The parser also accepts a lead
 
 ### Deployment Profiles
 
-- **Cargo features.** The default build of `syneroym-substrate` has `community_registry`, `coordinator_all` (the Iroh and WebRTC coordinators), `client_gateway`, `auth` and `supervisor`. The `minimal` feature set has `client_gateway` and `auth` only. Other features are `coordinator_iroh` and `coordinator_webrtc`. Each of these turns on the base feature `coordinator`. The feature `aws` is the S3-compatible blob backend. The feature `roym` links the Roym services in. `dual_build_fixture` is for tests and must not be in a release build. The router, the sandboxes, the data layer, the MQTT broker, the conversation host and observability are always compiled in. A role also needs its `[roles.*]` section in the config.
+- **Cargo features.** The default build of `syneroym-substrate` has `community_registry`, `coordinator_all` (the Iroh and WebRTC coordinators), `client_gateway`, `auth`, `supervisor` and `mailbox`. The `minimal` feature set has `client_gateway` and `auth` only. Other features are `coordinator_iroh` and `coordinator_webrtc`. Each of these turns on the base feature `coordinator`. The feature `aws` is the S3-compatible blob backend. The feature `roym` links the Roym services in. `dual_build_fixture` is for tests and must not be in a release build. The router, the sandboxes, the data layer, the MQTT broker, the conversation host and observability are always compiled in. A role also needs its `[roles.*]` section in the config.
 - **Profile name.** `profile` (and `run --profile`) is a name that the substrate writes to its log. The `profiles` table in the config is parsed and nothing reads it.
 - **Docker image.** One image, built from the `Dockerfile` on `debian:bookworm-slim`, holds `syneroym-substrate` and `roymctl` (ADR-0004). The entry point is `syneroym-substrate` and the default command is `run`. The image exposes the ports 7964, 7965, 7961 and 7960. The port plan is in the [developer guide](developer-guide.md#3-port-reference-normalized-796x).
 - **TLS reload.** When `[tls]` has `reload_on_sigusr1 = true`, the HTTPS info server of the Iroh coordinator loads its certificate and key files again when it gets SIGUSR1. This works on Unix only.
@@ -2063,6 +2064,72 @@ A service record may carry an optional `mailbox` field: `{ "service_id": "<node 
 > **Envisioned.** Not built yet. `EndpointInfo` has no `protocols` field. The caller names the protocol in the route preamble, and the router checks it against a fixed table.
 >
 > - A service record advertises the application protocols the service supports (for example `"protocols": ["jsonrpc"]`).
+
+##### Service Mailbox
+
+A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the mailbox native service. It exposes the `mailbox` interface under the node DID. The service holds deferred, end-to-end encrypted messages for services that sleep or go offline.
+
+> **Envisioned.** Not built yet. The sender deposit path (falling back to the mailbox on delivery failure) and the receiver pull path (registering, polling, unsealing, delivering, and acknowledging) are not built yet. The mailbox service role itself is implemented.
+
+**Methods.** The service exposes seven JSON-RPC 2.0 methods on interface `mailbox`:
+
+| Method | Who may call | What it does and answers |
+|---|---|---|
+| `info` | Any caller (anonymous or verified). | Answers open limits and version: `version`, `mailbox` node DID, `limits` (`max_bytes`, `max_messages`, `max_ttl_secs`), `max_sealed_bytes`, `receipt_keep_secs`, `visibility_secs`, `queue_lifetime_secs`, and `max_claims`. |
+| `register` | Destination service instance with a verified instance certificate for that service. | Creates or refreshes the queue. Takes the service's current signed record. Answers `RegisterAnswer` with active queue limits and queue lifetime deadline. |
+| `unregister` | Destination service instance with a verified instance certificate for that service. | Removes the queue and expires its stored messages. Answers `UnregisterAnswer` (`removed: bool`). |
+| `deposit` | A service instance with a verified instance certificate. | Deposits a sealed message into the destination queue. Runs fair eviction if full, evicting unclaimed messages before in-flight claimed ones. Answers `Receipt::Stored`. |
+| `claim` | The destination service instance with the newest certificate seen for that queue. | Claims up to N messages (bounded by 32, default 32). Hides claimed messages for the visibility time. Answers `ClaimAnswer` with a list of `ClaimedMessage` and `visible_again_at_secs`. |
+| `ack` | The destination service instance with the newest certificate seen for that queue. | Acknowledges claimed messages as `delivered` (carrying the receiver's signature) or `rejected`. Removes the message body and retains the receipt. Answers `AckAnswer`. |
+| `status` | The original depositor of each requested deposit id (service instance). | Returns receipts for requested deposit ids (`Receipt::Unknown` for requested ids not deposited by this sender). Answers `StatusAnswer`. |
+
+**Store.** The mailbox stores its state in `<storage.db_dir>/mailbox.db`, an SQLite database in WAL mode. The store is plaintext. It tracks:
+- `queues`: destination DID, limits, queue lifetime deadline, newest instance certificate seen, signed endpoint record, and next republish deadline.
+- `messages`: seq, destination DID, sender DID, deposit id, size, sealed ciphertext body, deposit time, expiry time, visibility timeout, and claim count.
+- `receipts`: sender DID, deposit id, destination DID, content hash, deposit time, TTL, receipt JSON, and expiry time.
+
+**Limits and defaults.** Open mailbox settings in `[roles.mailbox]`:
+- `db_name`: SQLite file name under `storage.db_dir` (default: `"mailbox.db"`).
+- `max_queue_bytes`: maximum total bytes per queue (default: 5,242,880 bytes / 5 MiB).
+- `max_queue_messages`: maximum messages per queue (default: 500).
+- `max_ttl_secs`: maximum message time-to-live (default: 604,800 seconds / 7 days).
+- `receipt_keep_secs`: how long receipts are kept after message completion or expiry (default: 1,209,600 seconds / 14 days).
+- `visibility_secs`: duration a claimed message remains hidden after claim (default: 300 seconds / 5 minutes).
+- `queue_lifetime_secs`: idle time without a registration or claim before a queue and its messages are swept (default: 2,592,000 seconds / 30 days).
+- `max_total_bytes`: total storage cap across all queues on the node (default: 1,073,741,824 bytes / 1 GiB).
+- `max_queues`: maximum number of queues on this node (default: 10,000).
+- `deposits_per_minute_per_sender`: maximum deposits per sender DID per minute (default: 60).
+- `deposits_per_minute_total`: maximum deposits across all senders per minute (default: 6,000).
+- `register_per_minute_per_master`: maximum registrations per minute from one master DID (default: 10).
+- `register_per_minute_total`: maximum registrations per minute across all masters on this node (default: 120).
+- `receiver_calls_per_minute_per_master`: maximum receiver calls (`claim`, `ack`, `unregister`) per minute from one master DID (default: 120).
+- `receiver_calls_per_minute_total`: maximum receiver calls per minute across all masters on this node (default: 24,000, enforced to be at least 2 × `max_queues`).
+- `sweep_interval_secs`: interval between background sweeps, in seconds (default: 60).
+- `republish_interval_secs`: interval between republishing stored service records, in seconds (default: 3,600).
+
+**Fair eviction and mailbox cap.** When a queue exceeds its message or byte limits, the mailbox evicts messages from the sender that currently holds the most bytes in that queue. Unclaimed messages are evicted first before claimed in-flight messages. An evicted message is marked as an unsigned `Receipt::Expired`. If the depositor itself holds the most bytes, the new deposit is refused with `queue_full` (`-32042`). When the node-wide `max_total_bytes` cap is reached, new deposits are refused with `mailbox_full` (`-32044`) without cross-queue eviction.
+
+**Newest-certificate rule.** The mailbox accepts `claim` and `ack` only from the instance holding the newest valid certificate seen for that queue (highest `issued_at_secs`). If two instances have identical `issued_at_secs`, the one whose `temporary_did` matches the recorded newest certificate is accepted; if neither matches, the first to arrive wins. If an instance certificate is revoked in the master anchor, requests are refused with `not_an_instance` (`-32045`). Positive revocation checks are cached for up to 15 seconds to bound lookup load during claim/ack loops. If a caller presents a certificate older than the newest seen, requests are refused with `stale_instance` (`-32046`).
+
+**Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `Receipt::Rejected` (reason `too_many_claims`) after its 5th visibility window ends.
+
+**Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour (and to the Mainline DHT when `enable_bep0044_dht` is on). The registry rejects records with older timestamps with HTTP 409 Conflict. On conflict, the mailbox retries republishing at the normal republish interval (a registry conflict skips DHT publish for that attempt until the conflict resolves).
+
+**Error codes.** Mailbox JSON-RPC 2.0 error codes:
+
+| Code | Name | Meaning |
+|---|---|---|
+| `-32040` | `unknown_destination` | The destination queue does not exist. |
+| `-32041` | `too_large` | The sealed message exceeds 64 KiB (`MAX_SEALED_BYTES`). |
+| `-32042` | `queue_full` | The queue is full after fair eviction. |
+| `-32043` | `rate_limited` | Sender, receiver, or node deposit, register, or receiver call rate limit exceeded. |
+| `-32044` | `mailbox_full` | Total mailbox storage cap (`max_total_bytes`) reached. |
+| `-32045` | `not_an_instance` | Caller did not present a valid, unrevoked service instance certificate. |
+| `-32046` | `stale_instance` | A newer service instance certificate already holds the queue. |
+| `-32047` | `bad_record` | The service record is malformed, names another service, names another mailbox, is private, or has expired. |
+| `-32048` | `duplicate_deposit` | Deposit ID was already used with different destination, content, or TTL. |
+| `-32049` | `unauthenticated` | Caller context lacks required authentication level. |
+| `-32050` | `ttl_too_long` | Message TTL exceeds the queue's `max_ttl_secs`. |
 
 ---
 

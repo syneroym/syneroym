@@ -38,14 +38,14 @@ mod frame_size_tests {
 #[cfg(test)]
 mod publication_split_tests {
     use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
-    use syneroym_identity::Identity;
+    use syneroym_identity::{Identity, substrate};
     use syneroym_mailbox_format::MailboxSecretKey;
 
     use super::*;
 
     fn sample_record() -> SignedEndpointInfo {
         let identity = Identity::generate().unwrap();
-        let service_id = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+        let service_id = substrate::derive_did_key(&identity.public_key());
         EndpointInfo {
             service_id,
             substrate_id: "did:key:z6Mksub".to_string(),
@@ -107,7 +107,7 @@ mod publication_split_tests {
 #[cfg(test)]
 mod new_with_record_tests {
     use syneroym_core::dht_registry::{EndpointInfo, EndpointType};
-    use syneroym_identity::Identity;
+    use syneroym_identity::{Identity, substrate};
 
     use super::*;
 
@@ -117,7 +117,7 @@ mod new_with_record_tests {
         // (the registry's own admission rule), so it must be the signer's
         // real derived DID, not a placeholder string.
         let identity = Identity::generate().unwrap();
-        let service_id = syneroym_identity::substrate::derive_did_key(&identity.public_key());
+        let service_id = substrate::derive_did_key(&identity.public_key());
         let substrate_id = "did:key:z6Mksub".to_string();
         let record = EndpointInfo {
             service_id: service_id.clone(),
@@ -147,5 +147,36 @@ mod new_with_record_tests {
         assert!(
             SyneroymClient::new_with_record(tampered, "http://127.0.0.1:9999".to_string()).is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod delegation_preamble_tests {
+    use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE};
+    use syneroym_router::RoutePreamble;
+
+    use super::*;
+
+    #[test]
+    fn client_with_delegation_writes_delegation_on_preamble() {
+        let master = Identity::generate().unwrap();
+        let instance = Identity::generate().unwrap();
+        let cert = DelegationCertificate::issue(
+            &master,
+            instance.public_key(),
+            3600,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+
+        let client = SyneroymClient::new("did:key:z6MkTarget".to_string(), String::new())
+            .with_delegation(cert.clone());
+
+        let preamble = client.build_preamble("test_iface");
+        assert_eq!(preamble.delegation, Some(cert.clone()));
+
+        let line = preamble.to_preamble_line();
+        let parsed = RoutePreamble::parse(&line).unwrap();
+        assert_eq!(parsed.delegation, Some(cert));
     }
 }

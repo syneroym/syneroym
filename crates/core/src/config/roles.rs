@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     access::CoordinatorAccess,
+    mailbox::MailboxRole,
     sandbox::{AppSandboxRole, PodmanSandboxRole, RoymRole},
 };
 use crate::curated_list::CoordinatorEntry;
@@ -23,6 +24,9 @@ pub struct RolesConfig {
     pub supervisor: Option<SupervisorRole>,
     /// Linked native Roym product role.
     pub roym: Option<RoymRole>,
+    /// The service mailbox (ADR-0026). Absent = this node holds no
+    /// messages for other services.
+    pub mailbox: Option<MailboxRole>,
 }
 
 fn default_registry_http_bind_address() -> String {

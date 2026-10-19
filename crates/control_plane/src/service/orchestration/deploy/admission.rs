@@ -24,13 +24,14 @@ impl ControlPlaneService {
         // A deploy may not claim a `service_id` this substrate already uses
         // as a fixed `native_dispatch` key: the node's own DID (claiming it
         // hijacks every `orchestrator`/`security` call this node ever
-        // receives) or the literal `"supervisor"`/auth alias (whose vault a
-        // deploy under that name would also open). Neither `SERVICE_ID_
-        // REGEX` nor `validate_service_id` reserves either string -- both
-        // are ordinary, deployable-looking ids otherwise.
+        // receives) or the literal `"supervisor"`, auth alias, or `"mailbox"`
+        // (whose dispatch or vault a deploy under that name would also take
+        // over). Neither `SERVICE_ID_REGEX` nor `validate_service_id` reserves
+        // any of these strings -- all are ordinary, deployable-looking ids otherwise.
         if service_id == self.node_did
             || service_id == SUPERVISOR_RESERVED_SERVICE_ID
             || service_id == AUTH_RESERVED_SERVICE_ID
+            || service_id == MAILBOX_RESERVED_SERVICE_ID
         {
             return Err(format!(
                 "service_id '{service_id}' is reserved for this substrate's own dispatch and \

@@ -440,3 +440,9 @@ fn the_guard_never_runs_sqlite_on_the_async_worker_thread() {
         );
     });
 }
+
+#[test]
+fn the_mailbox_interface_is_a_node_level_interface() {
+    assert!(is_node_level_interface("mailbox"));
+    assert!(is_node_level_interface(&syneroym_core::util::short_hash("mailbox")));
+}

@@ -53,7 +53,10 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use tokio::task;
 use tracing::info;
 
-use super::{AUTH_RESERVED_SERVICE_ID, ControlPlaneService, SUPERVISOR_RESERVED_SERVICE_ID};
+use super::{
+    AUTH_RESERVED_SERVICE_ID, ControlPlaneService, MAILBOX_RESERVED_SERVICE_ID,
+    SUPERVISOR_RESERVED_SERVICE_ID,
+};
 use crate::{assets, config_utils, http_routes, synsvc_native::SynSvcNativeService};
 
 pub(super) mod app_instance;
