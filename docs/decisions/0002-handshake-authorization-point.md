@@ -40,11 +40,11 @@ The application-level authorization handshake will be implemented inside the `Ro
 4. **On an indirect connection, the identity travels only inside the
    end-to-end channel.** A connection is indirect when the client dials a node
    that is not the host. There, the preamble carries only the route,
-   `enc=ecdh-p256` and `epk`. The client checks the host's signature over the handshake keys with
-   the host key it expects, from the target's signed record. Only then does it
-   send its identity, encrypted. With no known host key, it sends no
-   identity. On a direct connection QUIC is end to end, so the identity stays
-   in the preamble and there is no handshake.
+   `enc=ecdh-p256` and `epk`. The client checks the host's signature over the
+   handshake keys with the host key it expects, from the target's signed
+   record. Only then does it send its identity, encrypted. With no known host
+   key, it sends no identity. On a direct connection QUIC is end to end, so the
+   identity stays in the preamble and there is no handshake.
 5. **The sender is responsible for its own encryption.** A forwarder only
    routes. It can copy or replay encrypted bytes, but each handshake uses a
    fresh server key, so a replay does not decrypt. A sender that puts its
