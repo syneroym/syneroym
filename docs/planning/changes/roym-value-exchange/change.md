@@ -8,7 +8,7 @@ living-docs-touched:
 
 This is an **overview** change document. It gives the features, the terms, the main design rules and the architecture of the Value Exchange. When Milestone 8 is planned, each module below gets its own change document with exact formats, methods and tests. Those documents must follow the rules here, or record a deviation. Detail that is correct to leave to them is listed in [Notes for the module documents](#notes-for-the-module-documents).
 
-Read first: [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md) (Roym today), [reputation-design-note.md](../../../reputation-design-note.md) (reputation ideas), and the [service mailbox](../service-mailbox/change.md) change (store-and-forward delivery, which vouchers depend on).
+Read first: [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md) (Roym today), [reputation-design-note.md](../../../reputation-design-note.md) (reputation ideas), and the [service mailbox](../service-mailbox/change.md) change (store-and-forward delivery, which EEPs depend on).
 
 ## Problem
 
@@ -27,12 +27,12 @@ This change merges them into one design: the **Roym Value Exchange**.
 ## What the reader can do after this change
 
 - Anyone is a **participant**. There is no separate consumer or provider role. In every deal, each side gives something of value to the other.
-- Everything that changes hands is a **resource**: a service, goods, currency, or a voucher. A deal is resources for resources. Paying in currency and bartering are the same kind of deal.
+- Everything that changes hands is a **resource**: a service, goods, currency, or an EEP. A deal is resources for resources. Paying in currency and bartering are the same kind of deal.
 - A participant starts an exchange in one of **two ways**:
   - **Want-Bid:** publish a **want** (what they need). Others answer with **bids**. The participant compares bids, asks for changes, and accepts or rejects.
   - **List-Search:** publish an **offering** (what they can give). Others find it by search and send an **enquiry**. The two sides change the terms until one accepts or rejects.
 - Both ways end in the same **agreement**. One agreement can hold several resources on each side.
-- A participant can issue a **voucher**: a signed, good-faith commitment, with a face value, to accept it against the issuer's own offerings. Later, after legal review, vouchers can change hands, one at a time or as a bundle. Roym tracks them as first-class records.
+- A participant can issue an **earnest effort promise (EEP)**: a signed commitment, with a face value, to make an earnest effort to accept it against the issuer's own offerings. Later, after legal review, EEPs can change hands, one at a time or as a bundle. Roym tracks them as first-class records.
 - Before a deal, a participant can judge the other party from **evidence** (signed facts) and **opinions** (signed views). Both parties to a deal can write an opinion of the other.
 - An exchange can forward a search to its **friend exchanges** and return its own and its friends' results together.
 - A participant can export a **statement** of every resource they gave and received, with a declared value. This is the raw data for tax. Roym computes no tax.
@@ -43,27 +43,27 @@ This change merges them into one design: the **Roym Value Exchange**.
 - **SynOrg:** an independent group (guild, cooperative, community) that runs services for its members. See [TERMINOLOGY.md](../../../TERMINOLOGY.md).
 - **Membership authority:** a SynOrg role. It issues membership credentials, revocations and moderation decisions about members. This exists today as the trust half of the Directory.
 - **Exchange:** a SynOrg role. It holds published offerings and wants, answers searches (its own and forwarded ones), stores published evidence and opinions, computes aggregates and lists friend exchanges. It replaces the search half of the Directory. It holds no balances and no money.
-- **Resource:** anything of value that one party gives to another in a deal. There are four **resource kinds**: a service in a time slot, goods or a service without a slot, currency, and a voucher. (From Valueflows, an open vocabulary for economic networks, which calls it an "economic resource". In this document "resource" never means compute or storage.)
-- **Unit of account:** the currency used to state values: prices, declared values and voucher face values. A currency can also be a resource that changes hands. The two roles are separate: a voucher of "₹300" uses rupees as its unit, but nobody owes rupees.
+- **Resource:** anything of value that one party gives to another in a deal. There are four **resource kinds**: a service in a time slot, goods or a service without a slot, currency, and an EEP. (From Valueflows, an open vocabulary for economic networks, which calls it an "economic resource". In this document "resource" never means compute or storage.)
+- **Unit of account:** the currency used to state values: prices, declared values and EEP face values. A currency can also be a resource that changes hands. The two roles are separate: an EEP of "₹300" uses rupees as its unit, but nobody owes rupees.
 - **Offering:** an intent to give a resource, on stated terms (today's `listing`).
 - **Want:** an intent to receive a resource, published so others can find it and bid.
 - **Intent:** the common word for an offering or a want. (From Valueflows.)
 - **Enquiry:** a request that answers an offering (today's `request`).
 - **Bid:** a quote that answers a want.
 - **Quote author:** the participant who writes the quote. In Want-Bid it is the bidder. In List-Search it is the owner of the offering.
-- **Barter:** a deal in which no currency changes hands. It is not a separate mechanism or record. It is an agreement whose resources are all goods, services or vouchers.
+- **Barter:** a deal in which no currency changes hands. It is not a separate mechanism or record. It is an agreement whose resources are all goods, services or EEPs.
 - **Agreement:** the signed terms both parties accepted. It is made of commitments.
-- **Commitment:** one promise inside an agreement: one party gives one resource to the other. Examples: "P delivers the service", "C pays ₹500", "C issues a voucher of ₹300". Each commitment has a **kind**, set by the resource kind, and is settled by its own record.
-- **Economic event:** the signed record that settles a commitment: a fulfilment receipt, a payment acknowledgement, an issued note.
+- **Commitment:** one item inside an agreement: one party gives one resource to the other. Examples: "P delivers the service", "C pays ₹500", "C issues an EEP of ₹300". Each commitment has a **kind**, set by the resource kind, and is settled by its own record.
+- **Economic event:** the signed record that settles a commitment: a fulfilment receipt, a payment acknowledgement, an issued EEP.
 - **Declared value:** the value of a commitment's resource in the unit of account, in minor units. For a resource that is not currency, it is what the giver would charge for it in currency.
-- **Event log:** an append-only log on each participant's node of every agreement and note event it took part in. The statement is read from it.
-- **Voucher:** a signed, good-faith commitment by its **issuer** to accept it against what the issuer offers when it is redeemed (see [What a voucher promises](#what-a-voucher-promises)). It names its current **holder**, a face value and an expiry. The holder can redeem it, or pass it on. The signed record that carries a voucher is called a **note**, and each change of holder is a new version of the note.
+- **Event log:** an append-only log on each participant's node of every agreement and EEP event it took part in. The statement is read from it.
+- **Earnest effort promise (EEP):** a signed commitment by its **issuer** to make an earnest effort to accept it against what the issuer offers when it is redeemed (see [What an EEP promises](#what-an-eep-promises)). It names its current **holder**, a face value and an expiry. The holder can redeem it, or pass it on. Each change of holder is a new version of the signed EEP record. "EEP" is used in the product as well as in this document.
 - **Home exchange:** the exchange that holds the intent a deal came from. It pairs and publishes the two parties' opinions of that deal.
-- **Reissue:** the issuer signs a new version of a note that names a new holder. A transfer is final only when the issuer reissues.
-- **Bundle:** several notes, from one or many issuers, given in one agreement.
+- **Reissue:** the issuer signs a new version of an EEP that names a new holder. A transfer is final only when the issuer reissues.
+- **Bundle:** several EEPs, from one or many issuers, given in one agreement.
 - **Evidence:** signed facts about how a party behaved: receipts, declines, refusals, and published evidence records.
 - **Opinion:** one party's signed, subjective view of a deal and of the other party. It is labelled as an opinion and is never mixed with evidence.
-- **Standing card:** a signed summary a participant chooses to show a counterparty: time active, number of distinct counterparties, outstanding vouchers (stated by the issuer), and similar facts.
+- **Standing card:** a signed summary a participant chooses to show a counterparty: time active, number of distinct counterparties, outstanding EEPs (stated by the issuer), and similar facts.
 - **Friend exchange:** another exchange that an exchange chooses to forward searches to and to point its users to.
 - **Wire-reachable method:** a service method that another node can call. Every other method answers only local calls (`roym_core::admit::require_internal`), as today.
 
@@ -71,17 +71,17 @@ This change merges them into one design: the **Roym Value Exchange**.
 
 These hold for every module.
 
-1. **Facts are hard, trust is soft.** A signature, a version or a record either verifies or it does not. Whether to accept a party, a resource or a voucher is always the participant's own choice. Roym ships no default acceptance policy and no score.
+1. **Facts are hard, trust is soft.** A signature, a version or a record either verifies or it does not. Whether to accept a party, a resource or an EEP is always the participant's own choice. Roym ships no default acceptance policy and no score.
 2. **No shared ledger.** No blockchain, no global balance, no clearing house. Each record has one writer.
 3. **The exchange finds. It never decides trust.** The participant's own node verifies every signature, credential and record, also for results that came through a friend exchange. This is today's rule for directories, unchanged.
-4. **Every deal is between two parties.** A voucher transfer also needs the issuer's reissue, which is a separate step by the issuer. Effects across many parties, such as netting, come only from bilateral steps.
-5. **Both sides give.** Roym treats both sides of a deal the same way. Currency, goods, services and vouchers are all resources, recorded as commitments of the same shape.
+4. **Every deal is between two parties.** An EEP transfer also needs the issuer's reissue, which is a separate step by the issuer. Effects across many parties, such as netting, come only from bilateral steps.
+5. **Both sides give.** Roym treats both sides of a deal the same way. Currency, goods, services and EEPs are all resources, recorded as commitments of the same shape.
 6. **Evidence and opinions, not scores.** Exchanges may compute aggregates. They are labelled as one party's calculation, never as truth. Opinions are shown as their authors wrote them. Roym computes no number from them.
 7. **No evidence is not good evidence.** A new identity with no history shows as "no evidence", never as neutral or positive.
 8. **Published evidence carries its publisher's standing.** Every published evidence record and opinion is labelled with whether its publisher holds a credential from an authority the reader trusts. One without such a credential shows as "no trusted credential", never as equal.
 9. **A party may tell others how a deal went, not what it cost.** Either party may disclose the outcome of each commitment without the other's consent. Amounts and payment details stay hidden unless the other party grants their disclosure. See [Disclosure of deal evidence](#disclosure-of-deal-evidence).
-10. **Vouchers and barter are enforced by reputation, not by Roym.** A voucher is a good-faith commitment, not a debt. Roym records how each one was honoured and makes the pattern visible. It makes no claim about legal enforceability.
-11. **Credit grows only as far as people believe each issuer can deliver.** No interest, no issuance granted by the system, no pooled risk. Any participant with an offering can issue. Holders decide whose notes to accept.
+10. **EEPs and barter are enforced by reputation, not by Roym.** An EEP is a commitment to make an earnest effort, not a debt. Roym records how each one was honoured and makes the pattern visible. It makes no claim about legal enforceability.
+11. **Credit grows only as far as people believe each issuer can deliver.** No interest, no issuance granted by the system, no pooled risk. Any participant with an offering can issue. Holders decide whose EEPs to accept.
 
 ## Scope and non-goals
 
@@ -90,8 +90,8 @@ These hold for every module.
   - Both ways to start an exchange: Want-Bid and List-Search, with one shared negotiation and agreement flow.
   - Agreements made of commitments with any resource on either side, with declared values, in one currency per agreement.
   - Selective disclosure of quote and agreement fields.
-  - Vouchers between two parties: issue, redemption, decline, split, set-off, expiry.
-  - Voucher transfer and reissue, and bundles, **after the legal review** (see [Tasks](#tasks)).
+  - EEPs between two parties: issue, redemption, decline, split, set-off, expiry.
+  - EEP transfer and reissue, and bundles, **after the legal review** (see [Tasks](#tasks)).
   - Revocations that take effect from a stated time, so honest old records stay valid.
   - Splitting the Directory into a membership authority and an exchange.
   - Friend exchanges: one-hop forwarding of searches, and a simple merge of own and friends' results.
@@ -107,8 +107,8 @@ These hold for every module.
   - Forwarding a search more than one hop (a friend of a friend). Hop limits and loop rules are later work.
   - Index sharding and deterministic placement across many exchange nodes (`[P2P-DSC]` leaf shards). Moved to Milestone 7.
   - Multi-party atomic swaps, and atomic bundles (see [Bundles](#bundles)).
-  - A shared note pool that holds notes from many people and swaps them automatically (as in Sarafu commitment pools). See [Rejected options](#rejected-options).
-  - Features that present notes as investments: yield, expected return, price history. See [Notes and investment](#notes-and-investment).
+  - A shared EEP pool that holds EEPs from many people and swaps them automatically (as in Sarafu commitment pools). See [Rejected options](#rejected-options).
+  - Features that present EEPs as investments: yield, expected return, price history. See [EEPs and investment](#eeps-and-investment).
   - Pseudonymous reviewers and context keys. A person can make any number of keys, so a pseudonym would break the distinct-reviewer count. This waits until an authority can attest "one key per member per context".
   - Witness committees, notaries, trusted execution environments and zero-knowledge proofs.
 
@@ -120,7 +120,7 @@ These are overview criteria. Each module change document refines them into tests
 | --- | --- | --- |
 | **Participants and resources** | | |
 | VX-1 | One identity can publish an offering, publish a want, and give and receive resources in deals, with no role switch. | |
-| VX-2 | Any resource kind can be on either side of an agreement: a service for currency, a service for a service, goods for a note, a note for a note. | |
+| VX-2 | Any resource kind can be on either side of an agreement: a service for currency, a service for a service, goods for an EEP, an EEP for an EEP. | |
 | **Want-Bid** | | |
 | VX-3 | A want is published to an exchange and found by search. Another participant answers it with a bid. The wanter sees all bids side by side, can ask a bidder for a revised bid, and can accept or reject each one. | |
 | VX-4 | A public want shows only an approximate area. The exact address is shared only inside a conversation, as today. | |
@@ -128,32 +128,32 @@ These are overview criteria. Each module change document refines them into tests
 | VX-5 | An offering found by search gets an enquiry. The owner answers with a quote. Either side can ask for changes, and each change is a new version, until one side accepts or rejects. | |
 | VX-6 | Want-Bid and List-Search end in the same agreement record and the same commitment states. | |
 | **Agreements** | | |
-| VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new voucher. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
+| VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new EEP. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
 | VX-8 | Each commitment moves only through the states of its kind, and every kind has a failure end (see the table under Design). An agreement closes when every commitment has reached a final state. | |
 | VX-9 | The quote author is the single writer of the agreement. A second, conflicting change gets a named conflict, never a merge. | |
 | VX-10 | A booking claims its slot under the slot owner's single-writer fence, also when the slot owner is not the quote author. If the claim fails, the agreement is not formed. | |
 | VX-11 | A party can show a quote or an agreement with chosen fields hidden (for example the price), and the signatures still verify. Neither record carries the hidden terms in plain form. | |
 | VX-12 | Reputation shows which party failed which commitment, not only that a deal failed. | |
-| **Vouchers between two parties** | | |
-| VX-13 | A participant with no published offering cannot issue a voucher. | |
-| VX-14 | A voucher's face value is in a currency that appears in the issuer's own offerings, in integer minor units. | |
+| **EEPs between two parties** | | |
+| VX-13 | A participant with no published offering cannot issue an EEP. | |
+| VX-14 | An EEP's face value is in a currency that appears in the issuer's own offerings, in integer minor units. | |
 | VX-15 | A holder who never talked to the issuer can send it a redemption demand through the obligation service, also when the issuer is offline and the demand waits in its mailbox. | |
-| VX-16 | A holder redeems a note at no more than the issuer's signed list price at that moment. A decline is recorded with the issuer's optional reason. | |
-| VX-17 | A note returned for redemption cannot be spent elsewhere. If the delivery then ends unconfirmed, the issuer reissues the note to the holder. | |
+| VX-16 | A holder redeems an EEP at no more than the issuer's signed list price at that moment. A decline is recorded with the issuer's optional reason. | |
+| VX-17 | An EEP returned for redemption cannot be spent elsewhere. If the delivery then ends unconfirmed, the issuer reissues the EEP to the holder. | |
 | VX-18 | The issuer signs every split. The parts' face values add up exactly to the original. | |
 | VX-19 | A participant can set a private limit per issuer. A quote that would go over it shows a warning. It does not block. | |
-| VX-20 | Two parties who hold each other's notes in the same currency can cancel them against each other in one bilateral step. | |
-| VX-21 | A note still verifies after the delegated key that signed it has expired. | |
+| VX-20 | Two parties who hold each other's EEPs in the same currency can cancel them against each other in one bilateral step. | |
+| VX-21 | An EEP still verifies after the delegated key that signed it has expired. | |
 | VX-22 | A record signed before a revocation's effective time stays valid. After a key compromise, it stays valid only when another party countersigned or acknowledged it before that time. | |
 | VX-23 | After a known restore, a holder's version that the issuer signed after the backup time brings the issuer up to date. A version dated before the backup time is not accepted this way. | |
-| VX-24 | If an issuer reissues from stale state, the two issuer-signed notes with the same id and version are proof against the issuer, and both holders keep a valid claim. | |
-| VX-50 | Every voucher shows the standard good-faith sentence of its note version. No note carries a text of its own that changes the promise. | |
-| **Voucher transfer (after legal review)** | | |
-| VX-25 | A holder passes a note to a new holder. The issuer reissues it to the new holder, also when the issuer was offline and the request waited in its mailbox. | |
-| VX-26 | If one note version is passed to two people, the issuer reissues only the first valid request it processes. The other receives a signed refusal plus the two signed endorsements as proof against the double spender. | |
-| VX-27 | The issuer refuses a reissue only for a double spend, an expired note, or a version already claimed by a redemption, and every refusal is signed. | |
-| VX-28 | A repeated reissue request returns the same reissued note. It never creates a second version. | |
-| VX-29 | One agreement can transfer a bundle of notes from several issuers. Each note settles or is refused on its own, and a refused note does not undo the others. | |
+| VX-24 | If an issuer reissues from stale state, the two issuer-signed EEPs with the same id and version are proof against the issuer, and both holders keep a valid claim. | |
+| VX-50 | Every EEP shows the standard earnest-effort sentence of its record version. No EEP carries a text of its own that changes the promise. | |
+| **EEP transfer (after legal review)** | | |
+| VX-25 | A holder passes an EEP to a new holder. The issuer reissues it to the new holder, also when the issuer was offline and the request waited in its mailbox. | |
+| VX-26 | If one EEP version is passed to two people, the issuer reissues only the first valid request it processes. The other receives a signed refusal plus the two signed endorsements as proof against the double spender. | |
+| VX-27 | The issuer refuses a reissue only for a double spend, an expired EEP, or a version already claimed by a redemption, and every refusal is signed. | |
+| VX-28 | A repeated reissue request returns the same reissued EEP. It never creates a second version. | |
+| VX-29 | One agreement can transfer a bundle of EEPs from several issuers. Each EEP settles or is refused on its own, and a refused EEP does not undo the others. | |
 | **Membership and exchange** | | |
 | VX-30 | A SynOrg can run a membership authority without an exchange, and an exchange without a membership authority. | |
 | VX-31 | An exchange can accept credentials from another SynOrg's authority. A revocation there removes the member's offerings from search within the stated cache time. The client's own check shows the revocation at its next look. | |
@@ -176,7 +176,7 @@ These are overview criteria. Each module change document refines them into tests
 | VX-52 | An agreement records its home exchange: the source exchange of the intent, not a relaying one. Both opinions of the deal are paired there, also when one party sends its opinion through a friend exchange. | |
 | VX-53 | A deal with no home exchange publishes no opinions. Each author can still show its own opinion on request. | |
 | **Event log, statement, analytics** | | |
-| VX-45 | Every agreement and note event a participant takes part in is appended to its event log. Nothing in the log can block a deal. | |
+| VX-45 | Every agreement and EEP event a participant takes part in is appended to its event log. Nothing in the log can block a deal. | |
 | VX-46 | A participant exports a statement for a period from the event log: every commitment given and received, its resource kind and its declared value. | |
 | VX-47 | An exchange shares an aggregate only when it covers at least a minimum number of participants. | |
 | VX-48 | Suggestions for one participant are computed on that participant's node, never on the exchange. | |
@@ -194,7 +194,7 @@ Eight modules. They are separate in data and API, and they work closely together
 | **Intents** | every participant | offerings and wants, as one intent record of kind offer or want; prices; what each intent accepts or gives in return | `catalog`, extended |
 | **Agreements** | every participant keeps a copy; the quote author is the writer | enquiries, bids, quotes, agreements, commitments and their states; the participant's own opinions | `transaction`, extended |
 | **Event log and statement** | every participant | the append-only event log; the statement export | inside `transaction` (the module document confirms) |
-| **Obligations** | every participant | notes it issued (as the single writer), notes it holds, endorsements, refusals, demands, declines | new `obligation` service |
+| **Obligations** | every participant | EEPs it issued (as the single writer), EEPs it holds, endorsements, refusals, demands, declines | new `obligation` service |
 | **Search client** | every participant | the participant's lists of exchanges and trusted authorities; fan-out, merge and verification of results | client library, from the client half of `directory` |
 | **Reputation** | every participant | the reader's view: gathers evidence and opinions and shows them | client library, new |
 | **Exchange** | a SynOrg that enables it | published intents, search index, forwarded search, published evidence and opinions, aggregates, friend list | new `exchange` service, from the search half of `directory` |
@@ -225,10 +225,10 @@ All modules stay inside the Roym SynApp. The requirements rule out separate ledg
 
 Each kind of traffic has a named channel:
 
-| Traffic | Channel | Notes |
+| Traffic | Channel | EEPs |
 | --- | --- | --- |
 | Enquiry, bid, quote, agreement, receipts between the two parties of a deal | Conversation cards, as today | First contact with an offline party still needs one live `prekey-bundle` call. The mailbox change leaves that out of scope, so first contact needs both parties online. |
-| Reissue request, redemption demand, decline, reissued note, between a holder and an issuer who may never have talked | wire-reachable methods of the `obligation` service | Verified callers only: the caller's DID comes from the transport. Every such method is mailbox-eligible: it carries an idempotency key and returns no data. The answer comes back as a call to the other side's `obligation` service. |
+| Reissue request, redemption demand, decline, reissued EEP, between a holder and an issuer who may never have talked | wire-reachable methods of the `obligation` service | Verified callers only: the caller's DID comes from the transport. Every such method is mailbox-eligible: it carries an idempotency key and returns no data. The answer comes back as a call to the other side's `obligation` service. |
 | Publish, search, evidence, opinions, aggregates | wire-reachable methods of the `exchange` service | Like the four `directory` methods today (`crates/roym_directory/src/app.rs:73`). |
 | Forwarded search, forwarded reads of evidence and opinions, forwarded opinions to a home exchange | `exchange` to `exchange` | One hop. See [Federation](#federation). |
 | Member standing | wire-reachable method of the `membership` service | Moves from `directory.standing`. |
@@ -237,18 +237,18 @@ Each kind of traffic has a named channel:
 Rules:
 
 - **Each new or split service lists its wire-reachable methods in its module document.** Every other method stays local-only, as today.
-- **The `obligation` service is deployed `public`.** Only a public service can have a mailbox (mailbox change, `D-C3-4`), and holders and issuers are often offline. Its record shows that the participant takes part in vouchers. It shows no notes.
+- **The `obligation` service is deployed `public`.** Only a public service can have a mailbox (mailbox change, `D-C3-4`), and holders and issuers are often offline. Its record shows that the participant takes part in EEPs. It shows no EEPs.
 - `obligation` and `exchange` hold `CallTarget::Service`, because each talks to a stranger's node. Today `directory` is the only Roym service that does.
 
 ### Resources and intents
 
 - Every participant runs the same services. "Provider" and "consumer" now mean only "the side that gives this resource" and "the side that receives it".
-- A **resource** has a kind: a service in a time slot, goods or a service without a slot, currency, or a voucher. The kind decides how a commitment to give it is settled (see [Agreements made of commitments](#agreements-made-of-commitments)).
-- **Currency has two roles.** As a resource, it is money that one side pays. As the unit of account, it is how every price, declared value and voucher face value is stated. A barter deal has no currency resource, but it still has a unit of account, so each side's resources can be compared and reported.
+- A **resource** has a kind: a service in a time slot, goods or a service without a slot, currency, or an EEP. The kind decides how a commitment to give it is settled (see [Agreements made of commitments](#agreements-made-of-commitments)).
+- **Currency has two roles.** As a resource, it is money that one side pays. As the unit of account, it is how every price, declared value and EEP face value is stated. A barter deal has no currency resource, but it still has a unit of account, so each side's resources can be compared and reported.
 - **One currency per agreement in v1.** Every declared value in an agreement uses the same unit of account.
-- An **offering** is today's `listing`: what the participant gives, its price in the unit of account, and what it **accepts in return**. Its `PaymentTerms` (`crates/roym_core/src/listing.rs:77`) becomes this list of accepted resource kinds: currency methods, goods or services (barter), vouchers. "Accepts vouchers" means vouchers at face value. Which issuer and how much are negotiated in the quote and fixed in the agreement. Acceptance rules are never published in detail.
-- A **want** is the mirror of an offering: what the participant needs (categories, description), an approximate area, a time window, a close time, and what it can **give in return** (currency, its own goods or services, vouchers). Offerings and wants are one intent record in `catalog`, with a kind field.
-- A voucher is a resource like any other. Once transfer is enabled, a holder can list a note in an offering, and a participant can publish a want for notes of one issuer.
+- An **offering** is today's `listing`: what the participant gives, its price in the unit of account, and what it **accepts in return**. Its `PaymentTerms` (`crates/roym_core/src/listing.rs:77`) becomes this list of accepted resource kinds: currency methods, goods or services (barter), EEPs. "Accepts EEPs" means EEPs at face value. Which issuer and how much are negotiated in the quote and fixed in the agreement. Acceptance rules are never published in detail.
+- A **want** is the mirror of an offering: what the participant needs (categories, description), an approximate area, a time window, a close time, and what it can **give in return** (currency, its own goods or services, EEPs). Offerings and wants are one intent record in `catalog`, with a kind field.
+- An EEP is a resource like any other. Once transfer is enabled, a holder can list an EEP in an offering, and a participant can publish a want for EEPs of one issuer.
 
 ### Two ways to start an exchange
 
@@ -284,22 +284,22 @@ An agreement is a set of commitments. Each commitment names who gives, who recei
 | Service in a time slot | booking | `fulfilment-receipt` | scheduled → in progress → done; or ended unconfirmed |
 | Goods or a service without a slot | delivery | `fulfilment-receipt` | promised → delivered; or ended unconfirmed |
 | Currency | currency | `payment-acknowledgement` | requested → acknowledged; or ended unconfirmed |
-| New voucher | voucher-issue | the issued note, version 1 | promised → issued; or ended unconfirmed |
-| Voucher the giver holds | voucher-transfer | endorsement, then the issuer's reissue | promised → endorsed → reissued; or refused |
-| Note returned to its issuer (redemption or set-off) | voucher-return | endorsement back to the issuer, then the issuer's closing record | promised → returned → closed; or ended unconfirmed |
+| New EEP | eep-issue | the issued EEP, version 1 | promised → issued; or ended unconfirmed |
+| EEP the giver holds | eep-transfer | endorsement, then the issuer's reissue | promised → endorsed → reissued; or refused |
+| EEP returned to its issuer (redemption or set-off) | eep-return | endorsement back to the issuer, then the issuer's closing record | promised → returned → closed; or ended unconfirmed |
 
 The agreement itself has a short life: requested → quoted → agreed → closed, or expired, or cancelled. It closes when every commitment is final.
 
 Rules:
 
 - **The list of kinds is fixed in code.** Offerings choose a kind (booking or delivery). Strangers can then compare "delivered" across all participants, and reputation and the statement can read every state. A configurable workflow engine is rejected (see [Rejected options](#rejected-options)). A new kind is added in code when a real need appears.
-- **One writer per record.** The quote author's node writes the agreement and the commitment states. Both parties keep a copy. This generalises today's rule that the provider's Transaction service is the single writer. The issuer writes each note. One deal can therefore involve two writers, each for its own record.
+- **One writer per record.** The quote author's node writes the agreement and the commitment states. Both parties keep a copy. This generalises today's rule that the provider's Transaction service is the single writer. The issuer writes each EEP. One deal can therefore involve two writers, each for its own record.
 - **The slot owner claims its own slot.** Today a slot is claimed under the slot owner's single-writer fence when it files the acceptance (integrated spec, `D-C8-2`). In List-Search the quote author owns the slot, as today. In a bid, or a barter with a booking on each side, the quote author may not own every slot. Then each slot owner claims its own slot as a separate step when the agreement is accepted, and the agreement writer records the result. If a claim fails, the agreement is not formed.
-- **How an agreement and a note point to each other.** For `voucher-issue`, the agreement names the issuer, the currency and the face value. The note does not exist yet, so the agreement cannot name it. The note's version 1 names the agreement's content hash, and the settlement record names the note id. For `voucher-transfer` and `voucher-return`, the note already exists, so the agreement names its id and version. The agreement writer marks a voucher commitment settled when it holds the issuer's signed note that names the right holder.
+- **How an agreement and an EEP point to each other.** For `eep-issue`, the agreement names the issuer, the currency and the face value. The EEP does not exist yet, so the agreement cannot name it. The EEP's version 1 names the agreement's content hash, and the settlement record names the EEP id. For `eep-transfer` and `eep-return`, the EEP already exists, so the agreement names its id and version. The agreement writer marks an EEP commitment settled when it holds the issuer's signed EEP that names the right holder.
 - **The agreement records its home exchange.** It is the exchange that holds the intent the deal came from: the source exchange named in the search result, not an exchange that relayed it. A deal that began from a direct link has no home unless the two parties name one in the agreement. See [Publishing an opinion](#reputation-evidence-and-opinions).
 - **Cancellation:** only the quote author, and only while no commitment has moved. This generalises today's rule.
 - **Every commitment carries a declared value** in the agreement's unit of account, in minor units. The statement export uses it.
-- **Selective disclosure covers the quote and the agreement.** Today `AgreementReceiptPayload` (`crates/roym_core/src/transaction.rs:192`) carries a plain copy of `terms`, and `quote_record_id`, a hash of the whole quote. Salting only the receipt would hide nothing, because showing the quote shows everything. So: each field of the quote is hashed with its own random salt, and the quote's signature covers the list of hashes. The receipt carries the same list of hashes and no plain terms. To show a deal to a third party, a party reveals the fields it chooses, with their salts. The others stay hidden, and both signatures still verify. This changes the canonical bytes of the quote and of `agreement-receipt`, so it is done in the first phase, before any voucher or evidence record depends on them. The product is not released, so the records change in place, with no migration.
+- **Selective disclosure covers the quote and the agreement.** Today `AgreementReceiptPayload` (`crates/roym_core/src/transaction.rs:192`) carries a plain copy of `terms`, and `quote_record_id`, a hash of the whole quote. Salting only the receipt would hide nothing, because showing the quote shows everything. So: each field of the quote is hashed with its own random salt, and the quote's signature covers the list of hashes. The receipt carries the same list of hashes and no plain terms. To show a deal to a third party, a party reveals the fields it chooses, with their salts. The others stay hidden, and both signatures still verify. This changes the canonical bytes of the quote and of `agreement-receipt`, so it is done in the first phase, before any EEP or evidence record depends on them. The product is not released, so the records change in place, with no migration.
 
 ### Disclosure of deal evidence
 
@@ -313,31 +313,31 @@ This change keeps that rule for amounts and changes it for outcomes:
 
 This reverses part of a rule of record, so it gets its own ADR before the reputation phase. The integrated spec rule is updated at close-out.
 
-### Vouchers
+### Earnest effort promises (EEPs)
 
-#### What a voucher promises
+#### What an EEP promises
 
-Every voucher carries the same promise, in these words:
+Every EEP carries the same promise, in these words:
 
-> *"In good faith, I will accept this voucher against what I offer when it is redeemed, at my listed prices, as far as my circumstances then allow."*
+> *"I will make an earnest effort to accept this promise against what I offer when it is redeemed, at my listed prices, as far as my circumstances then allow."*
 
-- **In good faith** means an honest, sincere attempt. It is not a guarantee. An honest decline is in good faith, for example: "my wife fell ill, I sold most of my stock, and I need what is left for food". A false reason is not, for example "no stock" while selling the same stock to buyers who pay cash, and neither is charging a voucher holder more than the listed price.
-- **What I offer when it is redeemed** means the issuer's offerings at that time, not at issue time. The voucher names no goods.
+- **An earnest effort** means a sincere attempt within the issuer's real limits. It promises the effort, not the acceptance. An honest decline is an earnest effort, for example: "my wife fell ill, I sold most of my stock, and I need what is left for food". A false reason is not, for example "no stock" while selling the same stock to buyers who pay cash, and neither is charging an EEP holder more than the listed price.
+- **What I offer when it is redeemed** means the issuer's offerings at that time, not at issue time. The EEP names no goods.
 - **At my listed prices** gives the face value its meaning: "₹300" buys what ₹300 buys at the issuer's list prices.
 - **As far as my circumstances then allow** says that capacity, health, stock and season can change.
 
-The sentence belongs to the version of the note record type. Note version 1 means this sentence. A note needs no extra field, and an issuer cannot add a weaker or stronger text of its own. If the wording ever changes, it becomes a new record version, and old notes keep their meaning. The Hub shows the sentence next to every voucher.
+The sentence belongs to the version of the EEP record type. EEP version 1 means this sentence. An EEP needs no extra field, and an issuer cannot add a weaker or stronger text of its own. If the wording ever changes, it becomes a new record version, and old EEPs keep their meaning. The Hub shows the sentence next to every EEP.
 
 What follows from it:
 
 - **A decline is normal, not a breach.** Readers see each decline with its optional reason, and judge the **pattern** of an issuer's redemptions, not one decline.
-- **Giving a reason stays optional.** Good faith asks only that a reason given is true.
-- **There is no personal note from the issuer.** Thanks between the first two people belong in an **opinion** of their deal. After a transfer, a personal note would mean nothing to a stranger.
-- **The duty to reissue stays hard** (see [Transfer and reissue](#transfer-and-reissue)). Reissue only records who holds the voucher. It asks the issuer to deliver nothing.
+- **Giving a reason stays optional.** An earnest effort asks only that a reason given is true.
+- **There is no personal message from the issuer.** Thanks between the first two people belong in an **opinion** of their deal. After a transfer, a personal message would mean nothing to a stranger.
+- **The duty to reissue stays hard** (see [Transfer and reissue](#transfer-and-reissue)). Reissue only records who holds the EEP. It asks the issuer to deliver nothing.
 
-#### The note
+#### The EEP record
 
-A note is a signed record. Each version is a new record that supersedes the previous one.
+An EEP is a signed record. Each version is a new record that supersedes the previous one.
 
 ```text
 id          hash of version 1
@@ -355,103 +355,103 @@ The fields are provisional. The obligation change document fixes them.
 - **Unit and thumb rule.** The currency is used **only as the unit of account**. The issuer does not owe money. "₹300 from X" means "what ₹300 buys at X's list prices when I redeem". The issuer sets the face value at what the same goods cost in that currency at its list price today.
 - **The issuer must have an offering.** A participant with no published offering cannot issue. A promise must point to something the issuer offers.
 - **Capabilities are indicators only.** "Wheat" or "carpentry" is what the issuer's offerings say, proven over time by redemptions. They are not part of the promise.
-- **Every note can be transferred,** once transfer is enabled. There is no non-transferable flag.
-- **No interest.** A note promises its face value. Any time value appears only as a discount that two parties choose when they trade a note.
-- **The holder acknowledges each version.** The holder's node signs a short acknowledgement of each note version it receives and keeps it with the note. This lets the note survive a later compromise of the issuer's key (see [Signatures that outlive keys](#signatures-that-outlive-keys)).
+- **Every EEP can be transferred,** once transfer is enabled. There is no non-transferable flag.
+- **No interest.** An EEP promises its face value. Any time value appears only as a discount that two parties choose when they trade an EEP.
+- **The holder acknowledges each version.** The holder's node signs a short acknowledgement of each EEP version it receives and keeps it with the EEP. This lets the EEP survive a later compromise of the issuer's key (see [Signatures that outlive keys](#signatures-that-outlive-keys)).
 
 #### Issue
 
-The issuer gives a new note as a resource. It signs version 1, naming the receiver as holder, and sends it as the settlement of a `voucher-issue` commitment.
+The issuer gives a new EEP as a resource. It signs version 1, naming the receiver as holder, and sends it as the settlement of a `eep-issue` commitment.
 
 #### Redemption, decline and set-off
 
 - **List price is a maximum.** The holder redeems at no more than the issuer's signed list price that is current when the holder asks. The issuer may give a better deal. A refusal to go below the list price is normal and is not evidence against the issuer.
-- **The issuer chooses which offerings to accept notes for, at that time.** For example, ten offerings may accept notes today and five next week. Fewer offerings is a **decline**, recorded with the issuer's optional reason. The reader decides whether it was good, bad or acceptable.
-- **Who carries the risk.** A redemption is one agreement with a `voucher-return` commitment from the holder and a booking or delivery commitment from the issuer. When the agreement is signed, the holder signs the return endorsement, and the issuer records that version as claimed by this redemption. From then on the note cannot be spent elsewhere, so the issuer carries no double-spend risk. The issuer closes the note only when its own delivery is done. If the delivery ends unconfirmed, the issuer must reissue the note to the holder. So the holder carries only the risk that the issuer fails to deliver, and that failure leaves signed evidence: the return endorsement, the agreement, and the unconfirmed delivery.
+- **The issuer chooses which offerings to accept EEPs for, at that time.** For example, ten offerings may accept EEPs today and five next week. Fewer offerings is a **decline**, recorded with the issuer's optional reason. The reader decides whether it was good, bad or acceptable.
+- **Who carries the risk.** A redemption is one agreement with a `eep-return` commitment from the holder and a booking or delivery commitment from the issuer. When the agreement is signed, the holder signs the return endorsement, and the issuer records that version as claimed by this redemption. From then on the EEP cannot be spent elsewhere, so the issuer carries no double-spend risk. The issuer closes the EEP only when its own delivery is done. If the delivery ends unconfirmed, the issuer must reissue the EEP to the holder. So the holder carries only the risk that the issuer fails to deliver, and that failure leaves signed evidence: the return endorsement, the agreement, and the unconfirmed delivery.
 - **No answer.** A demand the issuer never collected from its mailbox, with a delivery window that has ended, is weaker negative evidence than a signed decline. The mailbox's signed `stored` receipt proves that a message was deposited for the issuer at a given time. Proving that this message was the demand needs extra work, because the mailbox signs a hash of ciphertext it cannot read. The obligation change document designs it. The `delivered` receipt, signed by the receiver, proves the issuer's node received the message.
-- **Set-off.** A holder who owes the issuer can return the issuer's note in payment. This is a `voucher-return` commitment, the same as a redemption.
-- **Split.** The issuer signs every split. A holder asks the issuer to split a note. The parts are new notes whose face values add up exactly to the original, in integer minor units, and the original version is closed. Only the issuer writes notes, so a split by the holder alone is not valid.
-- **Expiry.** After expiry the issuer's duty ends, and it may delete its records of that note. A demand made inside the window and not met stays as evidence with the holder.
+- **Set-off.** A holder who owes the issuer can return the issuer's EEP in payment. This is a `eep-return` commitment, the same as a redemption.
+- **Split.** The issuer signs every split. A holder asks the issuer to split an EEP. The parts are new EEPs whose face values add up exactly to the original, in integer minor units, and the original version is closed. Only the issuer writes EEPs, so a split by the holder alone is not valid.
+- **Expiry.** After expiry the issuer's duty ends, and it may delete its records of that EEP. A demand made inside the window and not met stays as evidence with the holder.
 
 #### Transfer and reissue
 
-Transfer is built only after the legal review (see [Notes and investment](#notes-and-investment) and [Tasks](#tasks)). It also needs reputation to be safe between strangers.
+Transfer is built only after the legal review (see [EEPs and investment](#eeps-and-investment) and [Tasks](#tasks)). It also needs reputation to be safe between strangers.
 
-1. The holder signs an **endorsement**: "note N, version v, now held by H2". It is the settlement step of a `voucher-transfer` commitment.
+1. The holder signs an **endorsement**: "EEP N, version v, now held by H2". It is the settlement step of a `eep-transfer` commitment.
 2. H2's node sends a **reissue request** to the issuer's `obligation` service: directly, or through the issuer's mailbox when the issuer is offline.
-3. The issuer checks the chain from the last version it signed, and signs version v+1 naming H2. It sends the note back to H2's `obligation` service, through H2's mailbox if needed.
+3. The issuer checks the chain from the last version it signed, and signs version v+1 naming H2. It sends the EEP back to H2's `obligation` service, through H2's mailbox if needed.
 
 Rules for the issuer:
 
-- **Duty to reissue.** The issuer must reissue the first valid request it processes for each version. It may refuse only when the version was already reissued (a double spend), the version is claimed by a redemption, or the note has expired. Every refusal is a signed record. A refusal for any other reason counts against the issuer as evidence.
-- **First processed wins.** The mailbox gives no order between different senders, so "first" means the issuer's own processing order. That is enough, because the issuer is the only record of its notes. The losing holder receives the signed refusal plus the double spender's two endorsements.
-- **Idempotent.** The key is `(note id, version, endorsement hash)`. A repeated request returns the same reissued note.
-- **Claim one note version, never all of the issuer's records.**
-- **Chain length.** Until the issuer reissues, each new holder adds an endorsement, so a note can pass through several hands while the issuer is offline. Each holder sees the earlier holders in the chain. A reissue resets the chain.
+- **Duty to reissue.** The issuer must reissue the first valid request it processes for each version. It may refuse only when the version was already reissued (a double spend), the version is claimed by a redemption, or the EEP has expired. Every refusal is a signed record. A refusal for any other reason counts against the issuer as evidence.
+- **First processed wins.** The mailbox gives no order between different senders, so "first" means the issuer's own processing order. That is enough, because the issuer is the only record of its EEPs. The losing holder receives the signed refusal plus the double spender's two endorsements.
+- **Idempotent.** The key is `(EEP id, version, endorsement hash)`. A repeated request returns the same reissued EEP.
+- **Claim one EEP version, never all of the issuer's records.**
+- **Chain length.** Until the issuer reissues, each new holder adds an endorsement, so an EEP can pass through several hands while the issuer is offline. Each holder sees the earlier holders in the chain. A reissue resets the chain.
 
 Rules for the receiver:
 
 - **Accept now or wait.** The receiver chooses. It can deliver its own side at once and carry the risk until the reissue arrives. Or it can deliver after the reissue. Roym fulfilment usually comes after payment, so waiting fits most deals. The booking card shows "payment pending issuer confirmation".
-- **Per-issuer limit.** A participant can set a private limit for each issuer, for example "at most ₹2,000 of X's notes". A quote that would go over it shows a warning. It never blocks. (This also applies to newly issued notes, before transfer exists.)
+- **Per-issuer limit.** A participant can set a private limit for each issuer, for example "at most ₹2,000 of X's EEPs". A quote that would go over it shows a warning. It never blocks. (This also applies to newly issued EEPs, before transfer exists.)
 
 #### Restore from an old backup
 
 An issuer that restored an old backup may not know about versions it signed later. Two rules:
 
 - **Catch up only after a known restore.** The issuer's node records each restore with the backup's time. After a known restore, when a holder shows a version that is newer than the issuer's record, the issuer accepts it only when its own signature verifies, the version was signed after the backup time, and no revocation's effective time is earlier than the signing time. It then catches up. Without a known restore, an unknown newer version is not accepted. This stops a person with a leaked, expired delegated key from back-dating a forged "newer version": the verifier trusts the signer-written `issued_at_secs` (`crates/signed_record/src/verify.rs:204`), so the signing time alone proves nothing.
-- **A stale reissue is visible, not prevented.** Until a holder shows the newer version, a restored issuer cannot know it is stale. So it may reissue a version it already reissued. The two issuer-signed notes with the same `(id, version)` and different holders are signed proof against the issuer. Both holders keep a valid claim on the issuer, because the issuer signed both.
+- **A stale reissue is visible, not prevented.** Until a holder shows the newer version, a restored issuer cannot know it is stale. So it may reissue a version it already reissued. The two issuer-signed EEPs with the same `(id, version)` and different holders are signed proof against the issuer. Both holders keep a valid claim on the issuer, because the issuer signed both.
 
 #### Bundles
 
-A participant can give several notes in one agreement, from one issuer or from many. Examples: a buyer collects notes from many holders and sells them on as one lot; a buyer buys a lot from one seller. Bundles need transfer, so they come with it.
+A participant can give several EEPs in one agreement, from one issuer or from many. Examples: a buyer collects EEPs from many holders and sells them on as one lot; a buyer buys a lot from one seller. Bundles need transfer, so they come with it.
 
-- Each note in a bundle is its **own `voucher-transfer` commitment**, with its own declared value, its own endorsement and its own reissue by its own issuer.
-- A bundle is **not atomic**. Each issuer acts alone, so one note can be refused (for example a double spend) while the others are reissued. A refused note does not undo the others. Making a bundle atomic would need every issuer to act together, which principle 4 rules out.
-- The agreement says what a refused note does to the other side's commitments. The simple choice is one payment commitment per note, which lapses when its note is refused. The obligation change document decides (see [Open questions](#open-questions)).
-- The receiver can wait for every reissue before it delivers its own side, as for a single note.
-- A seller who collected notes from many issuers carries the risk of each of them until the reissue. Readers judge the seller like any other party.
+- Each EEP in a bundle is its **own `eep-transfer` commitment**, with its own declared value, its own endorsement and its own reissue by its own issuer.
+- A bundle is **not atomic**. Each issuer acts alone, so one EEP can be refused (for example a double spend) while the others are reissued. A refused EEP does not undo the others. Making a bundle atomic would need every issuer to act together, which principle 4 rules out.
+- The agreement says what a refused EEP does to the other side's commitments. The simple choice is one payment commitment per EEP, which lapses when its EEP is refused. The obligation change document decides (see [Open questions](#open-questions)).
+- The receiver can wait for every reissue before it delivers its own side, as for a single EEP.
+- A seller who collected EEPs from many issuers carries the risk of each of them until the reissue. Readers judge the seller like any other party.
 
 #### Netting
 
 Netting comes from bilateral steps only. Example: A owes B, B owes C, C owes A.
 
-1. B pays C with A's note, and C returns B's note. B is now even.
-2. C now holds A's note, and A holds C's note. They set off against each other.
+1. B pays C with A's EEP, and C returns B's EEP. B is now even.
+2. C now holds A's EEP, and A holds C's EEP. They set off against each other.
 
-Step 1 needs transfer. Step 2 is a set-off between two parties and works without it. Each step is a fair trade on its own, so a chain that stops half-way leaves nobody worse off. No multi-party atomic swap is needed. Only a two-party swap is atomic: one swap record holds both endorsements and is valid only with both signatures. Netting works only between notes in the same currency. Across currencies, the two parties agree a rate for that step. The participant's node may suggest a step ("you hold X's note, and you owe X"). No node sees the whole graph.
+Step 1 needs transfer. Step 2 is a set-off between two parties and works without it. Each step is a fair trade on its own, so a chain that stops half-way leaves nobody worse off. No multi-party atomic swap is needed. Only a two-party swap is atomic: one swap record holds both endorsements and is valid only with both signatures. Netting works only between EEPs in the same currency. Across currencies, the two parties agree a rate for that step. The participant's node may suggest a step ("you hold X's EEP, and you owe X"). No node sees the whole graph.
 
 #### Over-issuance
 
 An issuer may knowingly issue more than it can redeem at once, as an airline overbooks. Roym does not prevent it. It makes it visible in two ways:
 
 - **Redemption behaviour.** Each delivery, decline, refusal and unanswered demand is signed evidence from holders. This is the faithful signal.
-- **A stated total.** The issuer's standing card can show the total face value of its outstanding notes. The issuer's node holds every note, so this costs nothing. The card labels the total "stated by the issuer, not checked".
+- **A stated total.** The issuer's standing card can show the total face value of its outstanding EEPs. The issuer's node holds every EEP, so this costs nothing. The card labels the total "stated by the issuer, not checked".
 
 A published Merkle commitment that holders check was considered and dropped (see [Rejected options](#rejected-options)).
 
-#### Notes and investment
+#### EEPs and investment
 
-A note is a claim on the issuer's future output. That is true of every note, so there is no separate "investment" record and no rule that can tell an investment from a normal voucher. A holder who buys a note at a discount and redeems it later at face value has, in effect, invested. Roym does not prevent this.
+An EEP is a claim on the issuer's future output. That is true of every EEP, so there is no separate "investment" record and no rule that can tell an investment from a normal EEP. A holder who buys an EEP at a discount and redeems it later at face value has, in effect, invested. Roym does not prevent this.
 
-The legal question is wider than investments. Notes priced in a currency and passed between strangers may count as payment instruments in some countries. `docs/system-architecture.md` already requires legal review before mutual credit goes live. So:
+The legal question is wider than investments. EEPs priced in a currency and passed between strangers may count as payment instruments in some countries. `docs/system-architecture.md` already requires legal review before mutual credit goes live. So:
 
-- **Two-party vouchers** (issue, redeem, set-off, split) can be built first. A note that only goes back to its issuer is a commitment between two people, settled between the same two people. It is not prepaid: the issuer received value first and gives back later.
-- **Transfer, bundles and listing notes for trade** are gated on the legal review. They are built only after it.
-- **Features that present notes as investments** (an expected return or yield, a price history or chart for a note, ranking issuers by how much a note may gain) are not built, even after transfer. They need their own legal review.
+- **Two-party EEPs** (issue, redeem, set-off, split) can be built first. An EEP that only goes back to its issuer is a commitment between two people, settled between the same two people. It is not prepaid: the issuer received value first and gives back later.
+- **Transfer, bundles and listing EEPs for trade** are gated on the legal review. They are built only after it.
+- **Features that present EEPs as investments** (an expected return or yield, a price history or chart for an EEP, ranking issuers by how much an EEP may gain) are not built, even after transfer. They need their own legal review.
 
 #### Signatures that outlive keys
 
-Notes can live for years, but the substrate signs with delegated keys that expire (spec D7). A note carries its delegation certificate. The verifier checks that the note was signed **inside the certificate's window**, not that the certificate is valid now. Today's verifier already does this: `crates/signed_record/src/verify.rs:204` compares the record's `issued_at_secs` with the certificate window. `verify_chain_at` (`crates/identity/src/delegation.rs:203`) uses the current time only to reject a certificate issued in the future.
+EEPs can live for years, but the substrate signs with delegated keys that expire (spec D7). An EEP carries its delegation certificate. The verifier checks that the EEP was signed **inside the certificate's window**, not that the certificate is valid now. Today's verifier already does this: `crates/signed_record/src/verify.rs:204` compares the record's `issued_at_secs` with the certificate window. `verify_chain_at` (`crates/identity/src/delegation.rs:203`) uses the current time only to reject a certificate issued in the future.
 
-**Revocations take effect from a stated time.** Today a revoked signing key fails every record it ever signed, including honest notes signed before the revocation (`crates/signed_record/src/verify.rs`, the `check_did` calls). This change adds an `effective_from` time and a reason to revocations:
+**Revocations take effect from a stated time.** Today a revoked signing key fails every record it ever signed, including honest EEPs signed before the revocation (`crates/signed_record/src/verify.rs`, the `check_did` calls). This change adds an `effective_from` time and a reason to revocations:
 
 - A record signed before `effective_from` stays valid.
-- When the reason is a key compromise, the signer-written time cannot be trusted. A record signed with that key stays valid only when another party countersigned or acknowledged it, in a record of its own, before `effective_from`. For notes, that is the holder's acknowledgement of each version.
-- This is a prerequisite. It is built before notes.
+- When the reason is a key compromise, the signer-written time cannot be trusted. A record signed with that key stays valid only when another party countersigned or acknowledged it, in a record of its own, before `effective_from`. For EEPs, that is the holder's acknowledgement of each version.
+- This is a prerequisite. It is built before EEPs.
 
 #### What the issuer sees
 
-Notes are not blind. The issuer sees every holder that asks it to redeem or reissue. Holders also see the earlier holders in a chain that has not yet been reissued. This is the price of accountability: every double spend produces signed proof against a named person. The UI says so.
+EEPs are not blind. The issuer sees every holder that asks it to redeem or reissue. Holders also see the earlier holders in a chain that has not yet been reissued. This is the price of accountability: every double spend produces signed proof against a named person. The UI says so.
 
 ### Membership and exchange
 
@@ -494,7 +494,7 @@ Roym keeps two kinds of input apart:
 The reader's node gathers evidence from three sources and opinions from the parties to each deal. It shows them **side by side, labelled, never merged into one number**. What each source may show follows [Disclosure of deal evidence](#disclosure-of-deal-evidence).
 
 **1. Records the participant shows.**
-- Signed receipts, notes and declines that the participant holds, plus its standing card.
+- Signed receipts, EEPs and declines that the participant holds, plus its standing card.
 - The reader counts **distinct counterparties**, gives less weight to a counterparty that appears in many places in the reader's own view (inverse frequency), and counts mutual pairs (A rates B, B rates A) only once.
 - How a reader can check that a participant shows its whole history, and not only the good part, is set out in [reputation-design-note.md](../../../reputation-design-note.md). That covers a signed count, receipt sequence numbers and random sampling. The reputation module document decides how much of it v1 needs.
 
@@ -539,17 +539,17 @@ Three steps, in order:
 
 **Content rules (later).** An exchange may later enforce stated content rules on published opinions, for example no abusive language and no personal data such as a phone number. It hides an opinion that breaks a rule with a signed `moderation-decision` that names the rule. It may never hide an opinion because it is negative. A hidden opinion stays with its author, who can still show it on request. v1 has no content rules.
 
-**What evidence says about vouchers.** Each event points at one named party:
+**What evidence says about EEPs.** Each event points at one named party:
 
 | Event | Evidence | About |
 | --- | --- | --- |
 | Redeemed | the holder's receipt | issuer, positive |
 | Declined, with or without a reason | the issuer's signed decline | issuer; the reader judges |
 | Unanswered past the window | mailbox `stored` receipt and the demand | issuer, weaker negative |
-| Returned, delivery ended unconfirmed, note not reissued | the return endorsement, the agreement and the unconfirmed delivery | issuer, negative |
+| Returned, delivery ended unconfirmed, EEP not reissued | the return endorsement, the agreement and the unconfirmed delivery | issuer, negative |
 | Refused reissue | the issuer's signed refusal | the double spender if the reason holds; otherwise the issuer |
 | One version endorsed twice | the two endorsements | the endorser |
-| Two issuer-signed notes with the same `(id, version)` and different holders | the two notes | issuer, negative |
+| Two issuer-signed EEPs with the same `(id, version)` and different holders | the two EEPs | issuer, negative |
 | Released by the holder | a signed release with its label | issuer; the event stays, labelled, and fades over time |
 
 **Known limit: fake identities.** A farm of one-time fake identities, each with one fake deal, can create good-looking evidence and opinions in source 1. It can also publish them to an exchange in source 3, because a publisher need not be a member and the farm's fake identities are each other's counterparties. The defences are:
@@ -561,7 +561,7 @@ Three steps, in order:
 
 ### Event log and statement
 
-- **The event log** is append-only, on the participant's node. It records: agreement signed; commitment settled or failed; note issued, redeemed, declined, split, set off, transferred, reissued, refused, expired. Each entry points at the signed record behind it.
+- **The event log** is append-only, on the participant's node. It records: agreement signed; commitment settled or failed; EEP issued, redeemed, declined, split, set off, transferred, reissued, refused, expired. Each entry points at the signed record behind it.
 - Nothing reads the log in a way that can block, change or delay a deal.
 - **Statement export (built in):** for a chosen period, every commitment given and received, with its resource kind, counterparty, unit of account and declared value. Barter appears like any other deal: each side's resources with their declared values.
 - **Policy hooks are later work.** A policy package (for example from an accountant or a public body) would read the event log as an observer, on the participant's node, after the participant installs it. A hook that can block a deal before signing is added only when a real policy needs it.
@@ -576,7 +576,7 @@ Three steps, in order:
 
 ### Mailbox change
 
-Voucher redemption demands and reissue requests use the [service mailbox](../service-mailbox/change.md). One addition is needed. Today the mailbox answers `deposit` with `stored`, and the change document does not say that this receipt is signed (unverified against the code). This change asks the mailbox to **sign** its `stored` receipt: deposit id, destination, message hash and time. The mailbox is a third party, so its signature proves that a message was deposited for the destination at that time. It does not prove what the message said, because the message is sealed. The mailbox service task is still open in the current mailbox work, so this addition should go there.
+EEP redemption demands and reissue requests use the [service mailbox](../service-mailbox/change.md). One addition is needed. Today the mailbox answers `deposit` with `stored`, and the change document does not say that this receipt is signed (unverified against the code). This change asks the mailbox to **sign** its `stored` receipt: deposit id, destination, message hash and time. The mailbox is a third party, so its signature proves that a message was deposited for the destination at that time. It does not prove what the message said, because the message is sealed. The mailbox service task is still open in the current mailbox work, so this addition should go there.
 
 ### Lessons from existing systems
 
@@ -587,9 +587,9 @@ Voucher redemption demands and reissue requests use the [service mailbox](../ser
 | Circles | Each holder decides whom to accept, with a limit | Free value for every account, which made fake accounts pay off |
 | XRP Ledger issued currencies | A holder limit per issuer; issuer powers that are visible | "Rippling", where balances moved through accounts not taking part in the payment. Only our issuer reissues, so this cannot happen. |
 | Holochain mutual credit and Valueflows | The words resource, intent, commitment, economic event; both sides of a deal as the same shape | Countersigning, which does not stop double spends; importing the whole Valueflows model |
-| Cashu and Fedimint | Reissue = invalidate the old note and issue the new one in one step; a final expiry ends the issuer's duty | Undefined half-finished swaps, and bugs in backup and restore. Hence the idempotency and restore rules above. |
+| Cashu and Fedimint | Reissue = invalidate the old EEP and issue the new one in one step; a final expiry ends the issuer's duty | Undefined half-finished swaps, and bugs in backup and restore. Hence the idempotency and restore rules above. |
 | Multilateral trade credit set-off (MTCS), Cycles | Loops of debt can be cancelled with consent | One solver that sees everyone's debts |
-| Sarafu commitment pools | Notes from many local issuers can be swapped for each other | A shared pool that holds everyone's notes, with a steward who sets its rules. Bundles sold by one participant cover the same need without shared custody. |
+| Sarafu commitment pools | EEPs from many local issuers can be swapped for each other | A shared pool that holds everyone's EEPs, with a steward who sets its rules. Bundles sold by one participant cover the same need without shared custody. |
 | Two-sided reviews (Airbnb, eBay) | Both sides review each other; reviews revealed together | Retaliation: eBay stopped sellers giving buyers negative feedback in 2008 because of revenge reviews. Reveal-together rules address this without silencing one side. |
 | SD-JWT (selective disclosure for signed tokens) | One salt per field and a signed list of hashes | Inventing our own disclosure format |
 
@@ -597,25 +597,32 @@ Voucher redemption demands and reissue requests use the [service mailbox](../ser
 
 - **Separate words for what is offered and how it is paid** ("offering" against "medium"). It made one side of every deal look like the seller and the other like the payer, and barter did not fit either word. Every side now gives resources. The words **asset** (suggests ownership and finance, and a service is not owned), **good** (excludes services in plain English) and **consideration** (a legal term, hard for many readers) were also considered for "resource".
 - **Two separate protocols for Want-Bid and List-Search.** Double the states and records, and deals made in different ways could not be compared. One flow after the first quote.
-- **The name "IOU".** It stands for "I owe you" and reads as a debt. The commitment is softer than that, so the product calls it a voucher.
-- **A strong promise to redeem** ("I will redeem this note"). It is worth more to a holder, but it looks like a debt and draws in more law and regulation. It would also make every honest hardship decline a breach. The good-faith sentence keeps the face value meaningful without that.
-- **A personal text or note from the issuer on each voucher.** It would let issuers weaken or strengthen the standard promise, and readers could no longer compare vouchers. Thanks between the first two people belong in an opinion.
+- **Other names for the EEP.** Each one says more, or something else, than an earnest effort:
+  - **IOU** stands for "I owe you" and reads as a debt.
+  - **Voucher** reads as a prepaid entitlement that a shop must honour, like a gift voucher. In EU VAT rules a voucher is something there is an obligation to accept (from memory, not checked).
+  - **Token** reads as a crypto token. In India, a cryptographic token with value that can be transferred may fall under the tax law's "virtual digital asset" category (from memory, not checked).
+  - **Note** first means a currency note in India and in British English.
+  - **Endeavour** is close in meaning, but in UK-style contract law "best endeavours" is a strong duty to take all reasonable steps.
+  - **Good faith** is a legal term with a low bar: honesty, not effort.
+  - **Coupon, chit, pledge, hundi, bond** each already name an entitlement or a regulated thing.
+- **A strong promise to redeem** ("I will redeem this EEP"). It is worth more to a holder, but it looks like a debt and draws in more law and regulation. It would also make every honest hardship decline a breach. The earnest-effort sentence keeps the face value meaningful without that.
+- **A personal text from the issuer on each EEP.** It would let issuers weaken or strengthen the standard promise, and readers could no longer compare EEPs. Thanks between the first two people belong in an opinion.
 - **Opinions sent to any exchange.** The two opinions of one deal could land on different exchanges, and the sealed reveal could not pair them. They go to the home exchange, through a friend exchange if needed.
 - **One global credit balance per identity (mutual credit).** It loses who owes whom. A balance can prove "gave at least X" but not "has X left", because nothing stops showing an old history.
 - **Circles or a clearing service per group.** It needs groups and an operator. Acceptance is the peer's own choice.
-- **A shared note pool** (as in Sarafu commitment pools). Many people deposit notes into one common reserve, and it swaps any note for another at set rates, with no person on the other side of each swap. It needs one shared record of the pool and someone who controls it: a shared ledger and a custodian, which principles 2 and 11 rule out. A participant who collects notes and sells them as a bundle gives most of the same use, and is supported once transfer is enabled.
-- **Atomic bundles.** Every issuer in the bundle would have to act together. Each note settles on its own instead.
-- **Accepting any newer note version whose issuer signature verifies.** A leaked, expired delegated key could sign a back-dated forgery. Catch-up is allowed only after a known restore and only for versions dated after the backup.
+- **A shared EEP pool** (as in Sarafu commitment pools). Many people deposit EEPs into one common reserve, and it swaps any EEP for another at set rates, with no person on the other side of each swap. It needs one shared record of the pool and someone who controls it: a shared ledger and a custodian, which principles 2 and 11 rule out. A participant who collects EEPs and sells them as a bundle gives most of the same use, and is supported once transfer is enabled.
+- **Atomic bundles.** Every issuer in the bundle would have to act together. Each EEP settles on its own instead.
+- **Accepting any newer EEP version whose issuer signature verifies.** A leaked, expired delegated key could sign a back-dated forgery. Catch-up is allowed only after a known restore and only for versions dated after the backup.
 - **Salting only the agreement receipt.** The receipt points at the whole quote, so showing the quote would show every hidden field. Disclosure covers both records.
 - **Requiring the other party's consent to disclose any deal evidence.** Every bad outcome would be hidden. Outcomes need no consent. Amounts still do.
 - **Reviewer pseudonyms with free context keys.** A person can make any number of keys, so the distinct-reviewer count would break. Deferred until an authority can attest one key per member per context.
 - **Policy hooks in v1.** No policy package exists yet, so hooks would have no users. The event log, which the statement needs anyway, is built instead, and hooks can read it later.
-- **Witness committees for notes.** Waiting for the issuer's reissue already stops a double transfer. Witnesses cannot stop over-issuance, which is not a fork. They would also bring an unsolved problem: who chooses the witnesses.
-- **A published Merkle sum-tree commitment of outstanding notes.** It is real work, and it proves only a lower bound. The outstanding total cannot separate "can deliver" from "holders went dormant". Redemption evidence is the faithful signal. Recorded as a later option.
+- **Witness committees for EEPs.** Waiting for the issuer's reissue already stops a double transfer. Witnesses cannot stop over-issuance, which is not a fork. They would also bring an unsolved problem: who chooses the witnesses.
+- **A published Merkle sum-tree commitment of outstanding EEPs.** It is real work, and it proves only a lower bound. The outstanding total cannot separate "can deliver" from "holders went dormant". Redemption evidence is the faithful signal. Recorded as a later option.
 - **A configurable state-machine engine per offering.** Strangers could not compare states, and evidence would lose meaning.
-- **An independent unit of account.** The rule "redeem at list price" has no meaning unless notes and offerings use the same unit, and offerings are priced in a currency.
-- **A non-transferable flag on notes.** Not needed. Transfer is always confirmed by the issuer.
-- **A separate record for investment claims.** Every note is already a claim on future output. A second record would add nothing that a note does not have.
+- **An independent unit of account.** The rule "redeem at list price" has no meaning unless EEPs and offerings use the same unit, and offerings are priced in a currency.
+- **A non-transferable flag on EEPs.** Not needed. Transfer is always confirmed by the issuer.
+- **A separate record for investment claims.** Every EEP is already a claim on future output. A second record would add nothing that an EEP does not have.
 - **Multi-party atomic swaps.** Bilateral steps give the same netting, and each step is safe alone.
 - **Forwarding searches more than one hop.** Later. It needs hop limits, loop rules and a merge across many rankings. One hop gives most of the reach.
 - **Merging results by relevance score across exchanges.** Each exchange ranks by its own rules, so the scores mean different things. Own results first, then friends' in turn.
@@ -630,12 +637,12 @@ Voucher redemption demands and reissue requests use the [service mailbox](../ser
 
 ## Open questions
 
-- **Legal review.** Whether transferable notes priced in a currency count as payment instruments in the first target countries, and what that requires. Transfer, bundles and listing notes for trade wait for the answer.
+- **Legal review.** Whether transferable EEPs priced in a currency count as payment instruments in the first target countries, and what that requires. In India, also whether a signed, transferable EEP falls under the income tax "virtual digital asset" definition, whatever it is called, because that brings a flat tax and tax deducted at source on transfers. Transfer, bundles and listing EEPs for trade wait for the answer.
 - **How far source 1 goes in v1.** Recommendation: distinct counterparties, time active, and counts labelled "stated by the participant". Signed counts, receipt sequence numbers and random sampling (from the reputation design note) later. The reputation module document decides.
 - **Asking contacts.** How the asker hides which party it is interested in.
-- **A refused note in a bundle.** One payment commitment per note, which lapses when its note is refused, or one payment for the bundle with a rule for refunds. The obligation change document decides.
+- **A refused EEP in a bundle.** One payment commitment per EEP, which lapses when its EEP is refused, or one payment for the bundle with a rule for refunds. The obligation change document decides.
 - **Bids on one want.** Whether a want shows bidders how many bids it has, and whether a wanter can close a want without answering each bid.
-- **First values to tune.** Starting points: standing cache 15 minutes; default note expiry 12 months; redemption notice at most 7 days (the mailbox's longest time-to-live); aggregates over at least 10 participants; opinion writing window 14 days and resolution window 7 days. Still to choose: the friend timeout and the cap per friend. The evidence size cap is measured, not guessed (see [Notes for the module documents](#notes-for-the-module-documents)).
+- **First values to tune.** Starting points: standing cache 15 minutes; default EEP expiry 12 months; redemption notice at most 7 days (the mailbox's longest time-to-live); aggregates over at least 10 participants; opinion writing window 14 days and resolution window 7 days. Still to choose: the friend timeout and the cap per friend. The evidence size cap is measured, not guessed (see [Notes for the module documents](#notes-for-the-module-documents)).
 
 ## Notes for the module documents
 
@@ -647,10 +654,10 @@ These are correct to leave out of the overview. They are listed so the module au
 - VX-13, VX-14 and VX-27 can be checked only on one party's node, or only against the reference code. Word their tests that way.
 
 **Obligations**
-- Partial transfer: the issuer reissues two notes in one step. This covers "pay ₹200 with a ₹300 note".
-- Use a unique insert on `(note id, version)`, like the seat claim, not a lock.
-- Note expiry and the envelope's `expires_at_secs`: checking an expired note as evidence needs `allow_expired`.
-- New record and card types: note, acknowledgement, endorsement, refusal, demand, decline, swap. The Hub has seven fixed card templates today.
+- Partial transfer: the issuer reissues two EEPs in one step. This covers "pay ₹200 with a ₹300 EEP".
+- Use a unique insert on `(EEP id, version)`, like the seat claim, not a lock.
+- EEP expiry and the envelope's `expires_at_secs`: checking an expired EEP as evidence needs `allow_expired`.
+- New record and card types: EEP, acknowledgement, endorsement, refusal, demand, decline, swap. The Hub has seven fixed card templates today.
 - The proof that a `stored` receipt covers a given demand (for example, re-sealing with a seed the holder reveals).
 
 **Exchange and membership**
@@ -658,11 +665,11 @@ These are correct to leave out of the overview. They are listed so the module au
 - Make the same-SynOrg case the same code path, with a cache time of 0.
 
 **Reputation**
-- Show the issuer's price history around redemptions, because an issuer can lower the value of its notes by raising prices.
+- Show the issuer's price history around redemptions, because an issuer can lower the value of its EEPs by raising prices.
 - The evidence size cap: measure a real record with two receipt halves and their delegation certificates. 2 KB is probably too small.
 
 **Event log and statement**
-- The statement also lists the notes outstanding (issued and held) at the start and end of the period, not only the flows.
+- The statement also lists the EEPs outstanding (issued and held) at the start and end of the period, not only the flows.
 
 ## Tasks
 
@@ -671,20 +678,20 @@ Milestone 8 is too big for one milestone, so it is split in two. Phases are in b
 **Before Milestone 8**
 - [ ] The current mailbox work (M06D) is finished.
 - [ ] The signed `stored` receipt goes into the current mailbox work, where the mailbox service task is still open.
-- [ ] Revocations gain `effective_from` and a reason, with the countersign rule after a key compromise. Built before notes.
+- [ ] Revocations gain `effective_from` and a reason, with the countersign rule after a key compromise. Built before EEPs.
 
-**M8A: agreements and vouchers between two parties**
+**M8A: agreements and EEPs between two parties**
 - [ ] **Phase 1, agreements.** Resource kinds. Commitments with kinds, states (each with a failure end) and declared values, in one currency. Quote author as the single writer, and slot claims by the slot owner. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. Work items: new card types, Hub UI for multi-commitment agreements and the statement, WIT changes.
-- [ ] **Phase 2, two-party vouchers.** The `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths. Issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements. The restore rule. Per-issuer limit. Stated outstanding total on the standing card. Work items: a wallet screen in the Hub, card types for notes, demands and declines, WIT changes.
+- [ ] **Phase 2, two-party EEPs.** The `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths. Issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements. The restore rule. Per-issuer limit. Stated outstanding total on the standing card. Work items: a wallet screen in the Hub, card types for EEPs, demands and declines, WIT changes.
 
 **M8B: discovery, trust and transfer**
 - [ ] **Phase 3, discovery.** Wants and bids (Want-Bid) next to offerings and enquiries (List-Search), as one intent record in `catalog`, with one negotiation flow. Split the directory into `membership` and `exchange`, with the rules in the membership and exchange table. The search client library. Friend exchanges with one-hop forwarding and the v1 merge rule. Work items: wants and bids screens in the Hub.
 - [ ] **Phase 4, reputation, evidence and opinions.** An ADR for the disclosure rule first. Evidence records, responses and withdrawals on the exchange, with credential labels. Opinions from both parties: sealed writing, reveal to each other, resolution window, then publish. Contact queries over Conversation, one level. The three-source view. Work items: the evidence view in the Hub.
-- [ ] **Phase 5, transfer (gated on the legal review).** Endorsement, reissue, refusals, idempotency, bundles, two-party swaps. Listing notes for trade. Work items: card types for endorsements, refusals and swaps.
+- [ ] **Phase 5, transfer (gated on the legal review).** Endorsement, reissue, refusals, idempotency, bundles, two-party swaps. Listing EEPs for trade. Work items: card types for endorsements, refusals and swaps.
 - [ ] **Phase 6, analytics.** Exchange aggregates with the minimum group size. Suggestions on the participant's node.
 
 **On approval**
-- [ ] Add rows to [deferred-backlog.md](../../deferred-backlog.md) for each non-goal that is postponed: multi-hop forwarding, contact queries beyond one level, index sharding to Milestone 7, the Merkle commitment option, shared note pools, investment features for notes, policy hooks and the pre-sign hook, reviewer pseudonyms and context keys, more than one currency per agreement, and exchange content rules for opinions.
+- [ ] Add rows to [deferred-backlog.md](../../deferred-backlog.md) for each non-goal that is postponed: multi-hop forwarding, contact queries beyond one level, index sharding to Milestone 7, the Merkle commitment option, shared EEP pools, investment features for EEPs, policy hooks and the pre-sign hook, reviewer pseudonyms and context keys, more than one currency per agreement, and exchange content rules for opinions.
 - [ ] Replace the Milestone 8 row in [roadmap.md](../../roadmap.md) with M8A and M8B.
 
 ## Deviations
@@ -693,9 +700,9 @@ Milestone 8 is too big for one milestone, so it is split in two. Phases are in b
 
 Before merge, update the living docs so they describe the result, then set `status: done` and fill in `living-docs-touched`. Expected changes:
 
-- `docs/system-requirements-spec.md`: replace the native ledger token in `[APP-ESC]` with vouchers; replace the EMA score in `[P2P-REP]` with the three-source evidence view and two-sided opinions; move the leaf shards of `[P2P-DSC]` to Milestone 7; add the participant role, resources, wants, the two ways to start an exchange, commitments, one-hop forwarding and the event log.
+- `docs/system-requirements-spec.md`: replace the native ledger token in `[APP-ESC]` with EEPs; replace the EMA score in `[P2P-REP]` with the three-source evidence view and two-sided opinions; move the leaf shards of `[P2P-DSC]` to Milestone 7; add the participant role, resources, wants, the two ways to start an exchange, commitments, one-hop forwarding and the event log.
 - `docs/roym-integrated-experience-spec.md`: roles, the Records table, the transaction state, search (D1), the "Not in the first release" list, and the rule "Payment evidence is not a public listing field", which this change narrows to amounts and payment details (see [Disclosure of deal evidence](#disclosure-of-deal-evidence) and its ADR).
-- `docs/system-architecture.md`: the new and split services, and the legal review gate for note transfer.
+- `docs/system-architecture.md`: the new and split services, and the legal review gate for EEP transfer.
 - `docs/TERMINOLOGY.md`: the terms in this document.
 - `docs/reputation-design-note.md`: align it with the reputation rules here.
 - `docs/planning/roadmap.md`: M8A and M8B.
