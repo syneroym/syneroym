@@ -135,49 +135,41 @@ in `login` mode, a configured person delegation in `fixed` mode, nothing in
 Landing slice: **M06C C1.1** —
 [slice-c1.1-implementation-plan.md](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md).
 
-**Amendment 2 (2026-10-19, signed route preamble).**
-§3 and §6 change as follows. Everything else in this ADR, and the 2026-08-27
-amendment, stands.
+**Amendment 2 (2026-10-19, passing the caller's proof along a call chain).**
+§6 changes as follows. Everything else in this ADR, and the 2026-08-27
+amendment, stands. The proof-of-possession rules this depends on are in
+[ADR-0002](0002-handshake-authorization-point.md) A1.
 
-1. **A caller proves that it holds its key.** The caller signs
-   `syneroym-preamble-v1\n<service_id>\n<interface>\n<ts>` with the Ed25519
-   key in `pubkey`. When the preamble has a handshake key (`epk`), that key is
-   added at the end. The preamble carries `ts` (Unix seconds) and `sig`.
-   `verify_preamble` refuses a preamble that has a `pubkey` and no valid
-   signature, and a `ts` more than 15 minutes from its own clock. This holds
-   with and without a delegation certificate.
-2. **`pubkey` is only the identity key.** The P-256 key of the end-to-end
-   handshake moves to its own field, `epk`, inside the signed bytes. A hop
-   that swaps it breaks the signature.
-3. **Each node presents its own identity; the original caller's proof
-   travels in `on_behalf`.** This replaces "send the proof" in §6 for a proof
-   that the sending node does not hold the key for. A node signs as itself
-   (its service instance key or its node key). It passes the original
-   caller's signed proof unchanged in `on_behalf`. Each later service passes
-   the same value on. The destination checks both, and sets `anchor_did` to
-   the original caller. Trust rule: a caller trusts the services its call
-   passes through. A preamble carries `on_behalf` or `ucan`, not both. A
-   guest never sends `on_behalf`.
-4. **Only coordinators forward.** On a local registry miss, a coordinator
-   forwards the stream to the host. Any other node refuses it
-   (`not_hosted_here`).
-5. **A call through a forwarder is encrypted end to end.** A client uses the
-   handshake when the endpoint it dials is not the host named in the target's
-   record, or when it does not know the host. A direct QUIC connection needs
-   no handshake.
+1. **A node never presents another party's proof as its own identity.**
+   After ADR-0002 A1, a preamble identity must be signed by the key it names,
+   and a node does not hold the original caller's key. So "send the proof" in
+   §6 no longer means presenting the caller's certificate as the connection's
+   identity. A node presents its own identity: its service instance key and
+   certificate, or its node key.
+2. **The original caller's proof travels in `on_behalf`.** The first node
+   keeps the caller's verified proof (key, certificate, `service_id`,
+   `interface`, `ts`, signature). A native call made for that caller puts it,
+   unchanged, in the preamble field `on_behalf`. Each later service passes
+   the same value on. The destination checks the immediate caller as usual,
+   then checks the proof in `on_behalf`: its signature, certificate,
+   revocation and time window. If both pass, it sets `anchor_did` to the
+   original caller.
+3. **Trust rule:** a caller trusts the services its call passes through. So
+   any service that the caller called, inside the time window, can act on its
+   behalf. `on_behalf` sets only `anchor_did`: capabilities are still checked.
+4. **Limits.** A guest never sends `on_behalf`. A preamble carries
+   `on_behalf` or `ucan`, not both, because both set `anchor_did`.
 
-Why: without proof of possession, a delegation certificate is a bearer
-credential. A service sends its instance certificate on every remote call, so
-every node it calls could act as that service. The time window keeps the
-check stateless. A preamble can be used again inside the window only by a
-party that reads it in plaintext: a forwarder before rule 5, or a reader of
-`debug` logs.
+Why: a cross-service relationship check (`resolve-relation`) admits a call
+only when the caller is the principal it asks about. Without rule 2, every
+such check made by a service for a person would be denied.
 
-Rejected: a nonce and replay cache (state for a rare case), a server
-challenge (one more round trip on every stream), and binding the proof to the
-QUIC connection (breaks forwarders).
+Rejected: binding the proof to the first service with a signed link for each
+later hop. It protects against what the trust rule accepts, and it needs the
+instance certificate to name its service. A UCAN grant from the person to the
+service is the general form for longer grants, and is not needed here.
 
-Landing slices: **M06D C4b** (rules 1 to 4) and **M06D C4c** (rule 5) —
+Landing slice: **M06D C4b** —
 [signed-route-preamble change doc](../planning/changes/signed-route-preamble/change.md).
 
 **Consequences**:

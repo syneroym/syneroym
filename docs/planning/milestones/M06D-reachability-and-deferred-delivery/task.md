@@ -14,7 +14,7 @@ It does not repeat their requirements or design. Read them first:
 - [registry-listed-coordinators](../../changes/registry-listed-coordinators/change.md) (criteria `AC-*`)
 - [operator-passport](../../changes/operator-passport/change.md) (criteria `P-*`, `H-*`)
 - [service-mailbox](../../changes/service-mailbox/change.md) (criteria `M-*`, `K-*`, `S-*`, `R-*`, `D-*`), with [ADR-0026](../../../decisions/0026-receiver-chosen-mailbox.md)
-- [signed-route-preamble](../../changes/signed-route-preamble/change.md) (criteria `SP-*`), with [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2. Added 2026-10-19 for slices C4b and C4c.
+- [signed-route-preamble](../../changes/signed-route-preamble/change.md) (criteria `SP-*`), with [ADR-0002](../../../decisions/0002-handshake-authorization-point.md) A1 and [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2. Added 2026-10-19 for slices C4b and C4c.
 
 The goal of the order: write each shared part once, in its final form, before
 the second user of that part needs it. Each slice below is one PR (or a small
@@ -152,12 +152,13 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Key receipts on `(sender, deposit_id)`, or refuse a `deposit_id` that already exists: the sender picks the id, so a second sender could reuse it. Store a receiver's ack as it came: the mailbox cannot check the proof, because it does not know the message hash. Its own rejection after 5 claims is `Receipt::unsigned_rejection(TooManyClaims, ..)`.
 - Done 2026-10-18. Decisions `D-C4-1` to `D-C4-20` are in the [mailbox change doc](../../changes/service-mailbox/change.md).
 
-**C4b — Signed preamble (M).** Needs C4. Before C5. Part 1 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-1` to `SP-8`), with [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2.
-- The caller signs the destination, the interface and the time with its key. The handshake key moves to `epk`. Only coordinators forward. A service in a call chain passes the caller's proof on in `on_behalf`. A `roymctl` command revokes a temporary key.
+**C4b — Signed preamble (L, two PRs).** Needs C4. Before C5. Part 1 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-1` to `SP-9`), with [ADR-0002](../../../decisions/0002-handshake-authorization-point.md) A1 and [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2.
+- First PR: the `roymctl` command that revokes a temporary key. It does not depend on the rest.
+- Second PR: the caller signs the destination, the interface and the time with its key. The handshake key moves to `epk`. Only coordinators forward, and a forwarder checks nothing. A service in a call chain passes the caller's proof on in `on_behalf`. The logs stop printing identity fields.
 - *Why here.* The gap is live since C4: a copy of an instance certificate lets any node call the mailbox as that service. C5 and C6 build the paths that send an instance proof, so their tests are written once, against the final preamble. The fix is in the router, so C7 stays S.
 
-**C4c — Encryption through a forwarder (M).** Needs C4b. Before C5, so C5 and C6 build on the final transport. Part 2 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-9` to `SP-12`).
-- The client side of the end-to-end handshake in Rust, used when the client does not dial the host directly. A forwarder refuses a plaintext stream that names a key. HKDF over the handshake secret.
+**C4c — Identity inside the encrypted channel (M).** Needs C4b. Before C5, so C5 and C6 build on the final transport. Part 2 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-10` to `SP-13`).
+- The client side of the end-to-end handshake in Rust (SDK, client gateway passthrough, `IrohHop`). On a connection through a forwarder, the client checks the host's key and then sends its identity encrypted. With no known host key it sends no identity. HKDF over the handshake secret.
 
 **C5 — Sender path (L).** Needs C1, C3, C4, C4b, C4c and R-7 of C6. Parallel with C6, but the R-7 part of C6 must merge first.
 - Needs R-7 (C6) in `main` first, or carries R-7 itself. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver.
@@ -166,7 +167,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - `resolve_peer` bounds the substrate lookup of a peer with a mailbox (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s). The "one direct attempt with a short timeout" of `S-2` comes after it. Tune both together. The lookup of the **service** record is not bounded: the stored record (`record_of` in `net_iroh.rs`) is used only after `lookup` fails, which with a registry that does not answer takes the 10 s HTTP timeout and a DHT try. Bound that lookup too, or the wait adds to the short direct attempt.
 - Eligibility check (`S-1`), one direct attempt then deposit, `status` polling, `ProxyRouter` hook below both outboxes (`S-2` to `S-5`, `S-7`, `S-8`).
 - `deposited` state in both outboxes on X6 (`S-6`, `S-9`), the `ConversationDeliveryState` value, the WIT enum in `conversation.wit`, and the Hub UI. Group pushes.
-- **Forward note from C4b and C4c:** the C5 plan's refactor of `invoke_remote_at` (split into `outbound_preamble` and `invoke_remote_once`) must not build a signed preamble once and reuse it. `outbound_preamble` chooses only the identity (which key and which certificate) and `on_behalf`. `IrohHop::call` signs when it writes the preamble, on every attempt, and runs the handshake when the connection is not direct.
+- **Forward note from C4b and C4c:** the C5 plan's refactor of `invoke_remote_at` (split into `outbound_preamble` and `invoke_remote_once`) must not build a signed preamble once and reuse it. `outbound_preamble` chooses only the identity (which key and which certificate) and `on_behalf`. `IrohHop::call` signs when it writes the preamble, on every attempt, and on an indirect connection runs the handshake and sends the identity encrypted. `invoke_remote` (not the retry loop) handles `not_hosted_here` by resolving the service again.
 - **Forward note from C4:** Import wire types and error codes from `syneroym_core::mailbox`. A `deposit` answer is initially `Receipt::Stored`. Poll `status` with at most 100 ids per call. A sender depositing to the mailbox (including a same-node sender via proxy outbox) must present a `CallerContext` with its service instance proof (`pubkey_hex` and `delegation_json`), keying the sender on `master_did`. C5 must test that router's `invoke_local` path carries this certificate proof to local native services. How C5 reacts to each refusal is C5's decision; S-4 covers only "the mailbox is unreachable". Facts C4 gives: may succeed later without change: transport failure, `-32603`, `rate_limited` (`-32043`), `queue_full` (`-32042`), `mailbox_full` (`-32044`), `unknown_destination` (`-32040`); will fail again for same payload: `too_large` (`-32041`), `ttl_too_long` (`-32050`, a new deposit with ttl <= `data.max_ttl_secs` can succeed); bug in sender: `-32602`, `duplicate_deposit` (`-32048`, identical retries succeed with the stored receipt state — which may be `Stored`, `Delivered`, `Rejected`, or `Expired` per `D-C4-20` — but re-using an ID with different destination, content, or TTL returns this error), `not_an_instance` (`-32045`), `unauthenticated` (`-32049`).
 
 **C6 — Receiver path (L).** Needs C3, C4, C4b and C4c. Parallel with C5.
@@ -208,7 +209,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 | C2 | S0 | S |
 | C3 | C2 | L |
 | C4 | C2, C3 | L |
-| C4b | C4 | M |
+| C4b | C4 | L |
 | C4c | C4b | M |
 | C5 | C1, C3, C4, C4b, C4c, R-7 of C6 | L |
 | C6 | C3, C4, C4b, C4c | L |
@@ -242,7 +243,7 @@ C3, C4, C4b, C4c, then joins for C5 and C6 (the R-7 part of C6 must merge first)
 | Each outbox builds its own "deposited" state. | X6 in C1, used by both outboxes in C5. |
 | The deploy call changes twice (mailbox key, then child token). | The field is designed in C3 (`mailbox-credentials` record) with room for the child token. |
 | A3 and B2 both edit the info server at once. | A3 lands before B2. |
-| The preamble format changes under the tested sender and receiver paths. | C4b signs the preamble and C4c adds encryption through a forwarder, both before C5 and C6 build on the instance proof. |
+| The preamble format changes under the tested sender and receiver paths. | C4b signs the preamble and C4c moves the identity inside the encrypted channel, both before C5 and C6 build on the instance proof. |
 
 ## 6. Not in this plan
 
