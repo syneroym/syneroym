@@ -136,9 +136,18 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   functions classify `NOT_HOSTED_HERE_RPC_CODE` and
   `STREAM_UNAUTHENTICATED_RPC_CODE` like `SERVICE_NOT_FOUND_RPC_CODE`
   (`Disposition::Retry`). A refusal that never clears (an expired
-  certificate) then ends in the dead-letter list after the retry budget,
-  which is the same end the old `Transport` path had. A queued call cannot
-  carry a forged signature: the node signs it itself.
+  certificate) then ends in the dead-letter list after the retry budget. A
+  queued call cannot carry a forged signature: the node signs it itself.
+
+  For the proxy outbox this is the same end as before: its old `Transport`
+  result was also `Retry`. For the conversation outbox it is a **change of
+  behaviour**: there the old `Transport` result was `Disposition::
+  Unreachable` (`transport.rs:649-651`), which delays the item and does not
+  use the attempt budget, so a refused stream used to wait without end. Now
+  it uses the budget and ends in the dead-letter list. That is wanted: a
+  refusal that never clears should become visible, not wait forever. Record
+  it in the change doc's `## Deviations` and in the comment on the
+  `classify` arm.
 - **C4b-2. Order of checks in `handle_stream`.** A forwarder must not check
   the caller (change doc), and the signature must be checked against the
   `interface` as sent, before `rewrite_empty_http_interface` changes it. So:
@@ -265,9 +274,13 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   Some(verified.master_did)`. `caller_did`, `subject_did` and `auth` stay the
   immediate caller's. Any failure refuses the stream (`unauthenticated`).
 
-  A refused stream is logged once, at `debug`, with the reason, and counted
-  in a new metric `router.streams.refused` with label `reason`
-  (`unauthenticated`, `not_hosted_here`, `unknown_interface`). Not `warn`
+  A refused stream is logged once, at `debug`, with the reason, by the code
+  that decides the refusal (`verify_caller` for `unauthenticated`,
+  `handle_stream` for the other two). `write_refusal` writes and counts, and
+  logs nothing. The count is a new counter `substrate.router.refused` with
+  label `kind` (`unauthenticated`, `not_hosted_here`, `unknown_interface`),
+  named like the other workspace metrics (`substrate.proxy.retries`,
+  `substrate.mailbox.deposits_refused{kind}`). Not `warn`
   or `error`: a flood of forged streams must not fill the logs. An operator
   sees refusals in the metric; a client sees the readable refusal.
 - **C4b-14. Revoke command name and flags** (change doc open question 2):
@@ -863,8 +876,9 @@ impl Refusal {
 }
 
 /// Writes `refusal` in the framing `transport` uses, flushes, shuts the
-/// write half down (QUIC `FIN`), logs it once at `debug` and counts it in
-/// `router.streams.refused{reason}`. Write errors are ignored: the peer may
+/// write half down (QUIC `FIN`), and counts it in
+/// `substrate.router.refused{kind}`. It does not log: the caller that
+/// decided the refusal logs it once. Write errors are ignored: the peer may
 /// already be gone, and the stream ends either way.
 pub(crate) async fn write_refusal(
     writer: &mut (impl AsyncWrite + Unpin), transport: RouteTransport, refusal: Refusal,
@@ -914,6 +928,7 @@ Declare `mod refusal;` in `route_handler.rs`.
        if self.inner.forwards {
            return self.relay_to_next_hop(preamble, reader, writer).await   // no caller check
        }
+       debug!(service_id = %preamble.service_id, "not hosted here; refused");
        write_refusal(&mut writer, preamble.transport, Refusal::NotHostedHere).await;
        return Ok(())
    }
@@ -930,6 +945,7 @@ Declare `mod refusal;` in `route_handler.rs`.
 
    self.rewrite_empty_http_interface(&mut preamble)
    let Some((endpoint, canonical_interface)) = registry.lookup(..) else {
+       debug!(service_id = %preamble.service_id, "unknown interface; refused");
        write_refusal(&mut writer, preamble.transport, Refusal::UnknownInterface).await;
        return Ok(())
    }
@@ -1541,6 +1557,11 @@ now false:
   signature check and `on_behalf` to the description and name the new test
   files as evidence.
 - The module doc of `crates/router/src/preamble.rs` (Step 3.10).
+- `docs/developer-guide.md`, the exported metrics list (around line 1753):
+  add `substrate.router.refused`, a counter of streams the router refused
+  before dispatch, labelled by `kind` (`unauthenticated`, `not_hosted_here`,
+  `unknown_interface`). Put it in its own sentence, not under the mailbox
+  role, because every node exports it.
 - `docs/developer-guide.md`: search for `pubkey=`; if it lists preamble
   parameters, add `ts`, `sig`, `epk`, `on_behalf`.
 - `docs/TERMINOLOGY.md`: add **Forwarder** and **On-behalf proof** if they
@@ -1675,8 +1696,16 @@ a later reader can see why the plan has its current shape.
 | 8 | `websocket_e2e.rs` and `miniapp_demo1_wasm_e2e.rs` break and share a duplicate helper. | Incorporated: one signed `open_http_stream` in `crates/substrate/tests/common/streams.rs` (Step 13). |
 | 9 | Concurrent re-homes in the SDK close each other's connection. | Incorporated: a re-home lock and compare-before-replace by `stable_id` (C4b-10, Step 9.5); concurrency test in Step 14 item 9. |
 | 10 | Strict parse runs before the forward decision, so a coordinator drops a malformed stream. | Pushed back, recorded as a deviation (C4b-5): rule 3 protects valid streams from the forwarder's clock and anchor lookups, not malformed ones; a forwarder must parse what it writes again; it already drops an unparseable preamble today. Incorporated the logging part: a parse error is logged at `debug` and returns `Ok(())`. |
-| 11 | Each refused caller is logged twice, once at `error`. | Incorporated: refusals return `Ok(())`, are logged once at `debug`, and are counted in `router.streams.refused` (C4b-1, C4b-13, Step 7). |
+| 11 | Each refused caller is logged twice, once at `error`. | Incorporated: refusals return `Ok(())`, are logged once at `debug`, and are counted in `substrate.router.refused` (C4b-1, C4b-13, Step 7). |
 | 12 | The requirements spec [NET-PRM] and the traceability matrix are missing from Step 15. | Incorporated (Step 15). |
 | 13 | Two more stale comments. | Incorporated (§3 item 9). |
 | 14 | Derived `Debug` on the proof types prints signatures and certificates. | Incorporated: hand-written `Debug` (C4b-17, Step 2.2, Step 3.7). |
 | 15 | `blobs.rs` needs no change; `native_dispatch_identity/helpers.rs` already builds a `RouteHandler`. | Incorporated: Step 3.2 corrected; the router stream tests now live in the `native_dispatch_identity` test binary and reuse `test_route_handler()` (Step 14 item 4). |
+
+Second review (2026-10-19), three small points, all incorporated:
+
+| # | Point | Answer |
+| --- | --- | --- |
+| 1 | C4b-19 said the new end matches the old `Transport` path; for the conversation outbox the old result was `Unreachable`, not `Retry`. | Fixed the sentence; C4b-19 now records the change for the conversation outbox (it now uses the attempt budget and can dead-letter) and asks for a `## Deviations` entry. |
+| 2 | `router.streams.refused` breaks the `substrate.` metric prefix; the developer guide lists metrics. | Renamed to `substrate.router.refused{kind}` (label `kind`, like `substrate.mailbox.deposits_refused`); Step 15 adds it to the developer guide. |
+| 3 | An unauthenticated refusal was logged twice at `debug`. | `write_refusal` now only writes and counts; the code that decides each refusal logs it once (C4b-13, Steps 6 and 7). |
