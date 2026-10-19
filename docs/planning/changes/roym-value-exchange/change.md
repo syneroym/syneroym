@@ -8,7 +8,7 @@ living-docs-touched:
 
 This is an **overview** change document. It gives the features, the terms, the main design rules and the architecture of the Value Exchange. When Milestone 8 is planned, each module below gets its own change document with exact formats, methods and tests. Those documents must follow the rules here, or record a deviation. Detail that is correct to leave to them is listed in [Notes for the module documents](#notes-for-the-module-documents).
 
-Read first: [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md) (Roym today), [reputation-design-note.md](../../../reputation-design-note.md) (reputation ideas), and the [service mailbox](../service-mailbox/change.md) change (store-and-forward delivery, which IOUs depend on).
+Read first: [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md) (Roym today), [reputation-design-note.md](../../../reputation-design-note.md) (reputation ideas), and the [service mailbox](../service-mailbox/change.md) change (store-and-forward delivery, which vouchers depend on).
 
 ## Problem
 
@@ -27,12 +27,12 @@ This change merges them into one design: the **Roym Value Exchange**.
 ## What the reader can do after this change
 
 - Anyone is a **participant**. There is no separate consumer or provider role. In every deal, each side gives something of value to the other.
-- Everything that changes hands is a **resource**: a service, goods, currency, or an IOU. A deal is resources for resources. Paying in currency and bartering are the same kind of deal.
+- Everything that changes hands is a **resource**: a service, goods, currency, or a voucher. A deal is resources for resources. Paying in currency and bartering are the same kind of deal.
 - A participant starts an exchange in one of **two ways**:
   - **Want-Bid:** publish a **want** (what they need). Others answer with **bids**. The participant compares bids, asks for changes, and accepts or rejects.
   - **List-Search:** publish an **offering** (what they can give). Others find it by search and send an **enquiry**. The two sides change the terms until one accepts or rejects.
 - Both ways end in the same **agreement**. One agreement can hold several resources on each side.
-- A participant can issue an **IOU**: a signed promise, with a face value, that can be redeemed against the issuer's own offerings. Later, after legal review, IOUs can change hands, one at a time or as a bundle. Roym tracks them as first-class records.
+- A participant can issue a **voucher**: a signed, good-faith commitment, with a face value, to accept it against the issuer's own offerings. Later, after legal review, vouchers can change hands, one at a time or as a bundle. Roym tracks them as first-class records.
 - Before a deal, a participant can judge the other party from **evidence** (signed facts) and **opinions** (signed views). Both parties to a deal can write an opinion of the other.
 - An exchange can forward a search to its **friend exchanges** and return its own and its friends' results together.
 - A participant can export a **statement** of every resource they gave and received, with a declared value. This is the raw data for tax. Roym computes no tax.
@@ -43,26 +43,27 @@ This change merges them into one design: the **Roym Value Exchange**.
 - **SynOrg:** an independent group (guild, cooperative, community) that runs services for its members. See [TERMINOLOGY.md](../../../TERMINOLOGY.md).
 - **Membership authority:** a SynOrg role. It issues membership credentials, revocations and moderation decisions about members. This exists today as the trust half of the Directory.
 - **Exchange:** a SynOrg role. It holds published offerings and wants, answers searches (its own and forwarded ones), stores published evidence and opinions, computes aggregates and lists friend exchanges. It replaces the search half of the Directory. It holds no balances and no money.
-- **Resource:** anything of value that one party gives to another in a deal. There are four **resource kinds**: a service in a time slot, goods or a service without a slot, currency, and an IOU. (From Valueflows, an open vocabulary for economic networks, which calls it an "economic resource". In this document "resource" never means compute or storage.)
-- **Unit of account:** the currency used to state values: prices, declared values and IOU face values. A currency can also be a resource that changes hands. The two roles are separate: an IOU of "₹300" uses rupees as its unit, but nobody owes rupees.
+- **Resource:** anything of value that one party gives to another in a deal. There are four **resource kinds**: a service in a time slot, goods or a service without a slot, currency, and a voucher. (From Valueflows, an open vocabulary for economic networks, which calls it an "economic resource". In this document "resource" never means compute or storage.)
+- **Unit of account:** the currency used to state values: prices, declared values and voucher face values. A currency can also be a resource that changes hands. The two roles are separate: a voucher of "₹300" uses rupees as its unit, but nobody owes rupees.
 - **Offering:** an intent to give a resource, on stated terms (today's `listing`).
 - **Want:** an intent to receive a resource, published so others can find it and bid.
 - **Intent:** the common word for an offering or a want. (From Valueflows.)
 - **Enquiry:** a request that answers an offering (today's `request`).
 - **Bid:** a quote that answers a want.
 - **Quote author:** the participant who writes the quote. In Want-Bid it is the bidder. In List-Search it is the owner of the offering.
-- **Barter:** a deal in which no currency changes hands. It is not a separate mechanism or record. It is an agreement whose resources are all goods, services or IOUs.
+- **Barter:** a deal in which no currency changes hands. It is not a separate mechanism or record. It is an agreement whose resources are all goods, services or vouchers.
 - **Agreement:** the signed terms both parties accepted. It is made of commitments.
-- **Commitment:** one promise inside an agreement: one party gives one resource to the other. Examples: "P delivers the service", "C pays ₹500", "C issues an IOU of ₹300". Each commitment has a **kind**, set by the resource kind, and is settled by its own record.
+- **Commitment:** one promise inside an agreement: one party gives one resource to the other. Examples: "P delivers the service", "C pays ₹500", "C issues a voucher of ₹300". Each commitment has a **kind**, set by the resource kind, and is settled by its own record.
 - **Economic event:** the signed record that settles a commitment: a fulfilment receipt, a payment acknowledgement, an issued note.
 - **Declared value:** the value of a commitment's resource in the unit of account, in minor units. For a resource that is not currency, it is what the giver would charge for it in currency.
 - **Event log:** an append-only log on each participant's node of every agreement and note event it took part in. The statement is read from it.
-- **IOU (note):** a signed promise by its **issuer**. It names its current **holder**, a face value and an expiry. The holder can redeem it against the issuer's offerings, or pass it on.
+- **Voucher:** a signed, good-faith commitment by its **issuer** to accept it against what the issuer offers when it is redeemed (see [What a voucher promises](#what-a-voucher-promises)). It names its current **holder**, a face value and an expiry. The holder can redeem it, or pass it on. The signed record that carries a voucher is called a **note**, and each change of holder is a new version of the note.
+- **Home exchange:** the exchange that holds the intent a deal came from. It pairs and publishes the two parties' opinions of that deal.
 - **Reissue:** the issuer signs a new version of a note that names a new holder. A transfer is final only when the issuer reissues.
 - **Bundle:** several notes, from one or many issuers, given in one agreement.
 - **Evidence:** signed facts about how a party behaved: receipts, declines, refusals, and published evidence records.
 - **Opinion:** one party's signed, subjective view of a deal and of the other party. It is labelled as an opinion and is never mixed with evidence.
-- **Standing card:** a signed summary a participant chooses to show a counterparty: time active, number of distinct counterparties, outstanding IOUs (stated by the issuer), and similar facts.
+- **Standing card:** a signed summary a participant chooses to show a counterparty: time active, number of distinct counterparties, outstanding vouchers (stated by the issuer), and similar facts.
 - **Friend exchange:** another exchange that an exchange chooses to forward searches to and to point its users to.
 - **Wire-reachable method:** a service method that another node can call. Every other method answers only local calls (`roym_core::admit::require_internal`), as today.
 
@@ -70,16 +71,16 @@ This change merges them into one design: the **Roym Value Exchange**.
 
 These hold for every module.
 
-1. **Facts are hard, trust is soft.** A signature, a version or a record either verifies or it does not. Whether to accept a party, a resource or an IOU is always the participant's own choice. Roym ships no default acceptance policy and no score.
+1. **Facts are hard, trust is soft.** A signature, a version or a record either verifies or it does not. Whether to accept a party, a resource or a voucher is always the participant's own choice. Roym ships no default acceptance policy and no score.
 2. **No shared ledger.** No blockchain, no global balance, no clearing house. Each record has one writer.
 3. **The exchange finds. It never decides trust.** The participant's own node verifies every signature, credential and record, also for results that came through a friend exchange. This is today's rule for directories, unchanged.
-4. **Every deal is between two parties.** An IOU transfer also needs the issuer's reissue, which is a separate step by the issuer. Effects across many parties, such as netting, come only from bilateral steps.
-5. **Both sides give.** Roym treats both sides of a deal the same way. Currency, goods, services and IOUs are all resources, recorded as commitments of the same shape.
+4. **Every deal is between two parties.** A voucher transfer also needs the issuer's reissue, which is a separate step by the issuer. Effects across many parties, such as netting, come only from bilateral steps.
+5. **Both sides give.** Roym treats both sides of a deal the same way. Currency, goods, services and vouchers are all resources, recorded as commitments of the same shape.
 6. **Evidence and opinions, not scores.** Exchanges may compute aggregates. They are labelled as one party's calculation, never as truth. Opinions are shown as their authors wrote them. Roym computes no number from them.
 7. **No evidence is not good evidence.** A new identity with no history shows as "no evidence", never as neutral or positive.
 8. **Published evidence carries its publisher's standing.** Every published evidence record and opinion is labelled with whether its publisher holds a credential from an authority the reader trusts. One without such a credential shows as "no trusted credential", never as equal.
 9. **A party may tell others how a deal went, not what it cost.** Either party may disclose the outcome of each commitment without the other's consent. Amounts and payment details stay hidden unless the other party grants their disclosure. See [Disclosure of deal evidence](#disclosure-of-deal-evidence).
-10. **IOUs and barter are enforced by reputation, not by Roym.** Roym records them and makes kept and broken promises visible. It makes no claim about legal enforceability.
+10. **Vouchers and barter are enforced by reputation, not by Roym.** A voucher is a good-faith commitment, not a debt. Roym records how each one was honoured and makes the pattern visible. It makes no claim about legal enforceability.
 11. **Credit grows only as far as people believe each issuer can deliver.** No interest, no issuance granted by the system, no pooled risk. Any participant with an offering can issue. Holders decide whose notes to accept.
 
 ## Scope and non-goals
@@ -89,8 +90,8 @@ These hold for every module.
   - Both ways to start an exchange: Want-Bid and List-Search, with one shared negotiation and agreement flow.
   - Agreements made of commitments with any resource on either side, with declared values, in one currency per agreement.
   - Selective disclosure of quote and agreement fields.
-  - IOUs between two parties: issue, redemption, decline, split, set-off, expiry.
-  - IOU transfer and reissue, and bundles, **after the legal review** (see [Tasks](#tasks)).
+  - Vouchers between two parties: issue, redemption, decline, split, set-off, expiry.
+  - Voucher transfer and reissue, and bundles, **after the legal review** (see [Tasks](#tasks)).
   - Revocations that take effect from a stated time, so honest old records stay valid.
   - Splitting the Directory into a membership authority and an exchange.
   - Friend exchanges: one-hop forwarding of searches, and a simple merge of own and friends' results.
@@ -127,15 +128,15 @@ These are overview criteria. Each module change document refines them into tests
 | VX-5 | An offering found by search gets an enquiry. The owner answers with a quote. Either side can ask for changes, and each change is a new version, until one side accepts or rejects. | |
 | VX-6 | Want-Bid and List-Search end in the same agreement record and the same commitment states. | |
 | **Agreements** | | |
-| VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new IOU. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
+| VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new voucher. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
 | VX-8 | Each commitment moves only through the states of its kind, and every kind has a failure end (see the table under Design). An agreement closes when every commitment has reached a final state. | |
 | VX-9 | The quote author is the single writer of the agreement. A second, conflicting change gets a named conflict, never a merge. | |
 | VX-10 | A booking claims its slot under the slot owner's single-writer fence, also when the slot owner is not the quote author. If the claim fails, the agreement is not formed. | |
 | VX-11 | A party can show a quote or an agreement with chosen fields hidden (for example the price), and the signatures still verify. Neither record carries the hidden terms in plain form. | |
 | VX-12 | Reputation shows which party failed which commitment, not only that a deal failed. | |
-| **IOUs between two parties** | | |
-| VX-13 | A participant with no published offering cannot issue an IOU. | |
-| VX-14 | An IOU's face value is in a currency that appears in the issuer's own offerings, in integer minor units. | |
+| **Vouchers between two parties** | | |
+| VX-13 | A participant with no published offering cannot issue a voucher. | |
+| VX-14 | A voucher's face value is in a currency that appears in the issuer's own offerings, in integer minor units. | |
 | VX-15 | A holder who never talked to the issuer can send it a redemption demand through the obligation service, also when the issuer is offline and the demand waits in its mailbox. | |
 | VX-16 | A holder redeems a note at no more than the issuer's signed list price at that moment. A decline is recorded with the issuer's optional reason. | |
 | VX-17 | A note returned for redemption cannot be spent elsewhere. If the delivery then ends unconfirmed, the issuer reissues the note to the holder. | |
@@ -146,7 +147,8 @@ These are overview criteria. Each module change document refines them into tests
 | VX-22 | A record signed before a revocation's effective time stays valid. After a key compromise, it stays valid only when another party countersigned or acknowledged it before that time. | |
 | VX-23 | After a known restore, a holder's version that the issuer signed after the backup time brings the issuer up to date. A version dated before the backup time is not accepted this way. | |
 | VX-24 | If an issuer reissues from stale state, the two issuer-signed notes with the same id and version are proof against the issuer, and both holders keep a valid claim. | |
-| **IOU transfer (after legal review)** | | |
+| VX-50 | Every voucher shows the standard good-faith sentence of its note version. No note carries a text of its own that changes the promise. | |
+| **Voucher transfer (after legal review)** | | |
 | VX-25 | A holder passes a note to a new holder. The issuer reissues it to the new holder, also when the issuer was offline and the request waited in its mailbox. | |
 | VX-26 | If one note version is passed to two people, the issuer reissues only the first valid request it processes. The other receives a signed refusal plus the two signed endorsements as proof against the double spender. | |
 | VX-27 | The issuer refuses a reissue only for a double spend, an expired note, or a version already claimed by a redemption, and every refusal is signed. | |
@@ -161,6 +163,7 @@ These are overview criteria. Each module change document refines them into tests
 | VX-34 | A friend that receives a forwarded search answers from its own index only. It never forwards it on. | |
 | VX-35 | A friend that does not answer in time is left out, and the answer names it. | |
 | VX-36 | The client can also search a friend exchange directly. | |
+| VX-51 | A read of evidence and opinions about a party is forwarded one hop to friend exchanges, and each answer keeps its source exchange and original signatures. | |
 | **Reputation, evidence and opinions** | | |
 | VX-37 | A counterparty can publish evidence or an opinion about a participant to an exchange only with an agreement that names both of them. | |
 | VX-38 | Published evidence shows the outcome of each commitment. It shows amounts and payment details only with the subject's grant. | |
@@ -168,8 +171,10 @@ These are overview criteria. Each module change document refines them into tests
 | VX-40 | The subject can attach a signed response. A withdrawal by the publisher stays visible as a withdrawal. | |
 | VX-41 | The reader sees evidence from the three sources side by side, with each source labelled, and opinions apart from evidence. They are never merged into one number. | |
 | VX-42 | Both parties to an agreement can sign an opinion of the other. A held opinion is shown to a third party only when its author agrees. The subject cannot block it. | |
-| VX-43 | An opinion sent to an exchange stays hidden from everyone until the other party has also written one, or the writing window ends. Then each party sees the other's opinion, and the public does not. | |
+| VX-43 | An opinion sent to the home exchange stays hidden from everyone until the other party has also written one, or the writing window ends. Then each party sees the other's opinion, and the public does not. | |
 | VX-44 | During the resolution window an author can withdraw or revise its opinion, and a revision cannot lower the rating. When the window ends, the exchange publishes the current versions, and a revised one carries its label. | |
+| VX-52 | An agreement records its home exchange: the source exchange of the intent, not a relaying one. Both opinions of the deal are paired there, also when one party sends its opinion through a friend exchange. | |
+| VX-53 | A deal with no home exchange publishes no opinions. Each author can still show its own opinion on request. | |
 | **Event log, statement, analytics** | | |
 | VX-45 | Every agreement and note event a participant takes part in is appended to its event log. Nothing in the log can block a deal. | |
 | VX-46 | A participant exports a statement for a period from the event log: every commitment given and received, its resource kind and its declared value. | |
@@ -225,25 +230,25 @@ Each kind of traffic has a named channel:
 | Enquiry, bid, quote, agreement, receipts between the two parties of a deal | Conversation cards, as today | First contact with an offline party still needs one live `prekey-bundle` call. The mailbox change leaves that out of scope, so first contact needs both parties online. |
 | Reissue request, redemption demand, decline, reissued note, between a holder and an issuer who may never have talked | wire-reachable methods of the `obligation` service | Verified callers only: the caller's DID comes from the transport. Every such method is mailbox-eligible: it carries an idempotency key and returns no data. The answer comes back as a call to the other side's `obligation` service. |
 | Publish, search, evidence, opinions, aggregates | wire-reachable methods of the `exchange` service | Like the four `directory` methods today (`crates/roym_directory/src/app.rs:73`). |
-| Forwarded search | `exchange` to `exchange` | One hop. See [Federation](#federation). |
+| Forwarded search, forwarded reads of evidence and opinions, forwarded opinions to a home exchange | `exchange` to `exchange` | One hop. See [Federation](#federation). |
 | Member standing | wire-reachable method of the `membership` service | Moves from `directory.standing`. |
 | Questions to contacts | Conversation | No new wire method. One level in v1. |
 
 Rules:
 
 - **Each new or split service lists its wire-reachable methods in its module document.** Every other method stays local-only, as today.
-- **The `obligation` service is deployed `public`.** Only a public service can have a mailbox (mailbox change, `D-C3-4`), and holders and issuers are often offline. Its record shows that the participant takes part in IOUs. It shows no notes.
+- **The `obligation` service is deployed `public`.** Only a public service can have a mailbox (mailbox change, `D-C3-4`), and holders and issuers are often offline. Its record shows that the participant takes part in vouchers. It shows no notes.
 - `obligation` and `exchange` hold `CallTarget::Service`, because each talks to a stranger's node. Today `directory` is the only Roym service that does.
 
 ### Resources and intents
 
 - Every participant runs the same services. "Provider" and "consumer" now mean only "the side that gives this resource" and "the side that receives it".
-- A **resource** has a kind: a service in a time slot, goods or a service without a slot, currency, or an IOU. The kind decides how a commitment to give it is settled (see [Agreements made of commitments](#agreements-made-of-commitments)).
-- **Currency has two roles.** As a resource, it is money that one side pays. As the unit of account, it is how every price, declared value and IOU face value is stated. A barter deal has no currency resource, but it still has a unit of account, so each side's resources can be compared and reported.
+- A **resource** has a kind: a service in a time slot, goods or a service without a slot, currency, or a voucher. The kind decides how a commitment to give it is settled (see [Agreements made of commitments](#agreements-made-of-commitments)).
+- **Currency has two roles.** As a resource, it is money that one side pays. As the unit of account, it is how every price, declared value and voucher face value is stated. A barter deal has no currency resource, but it still has a unit of account, so each side's resources can be compared and reported.
 - **One currency per agreement in v1.** Every declared value in an agreement uses the same unit of account.
-- An **offering** is today's `listing`: what the participant gives, its price in the unit of account, and what it **accepts in return**. Its `PaymentTerms` (`crates/roym_core/src/listing.rs:77`) becomes this list of accepted resource kinds: currency methods, goods or services (barter), IOUs. "Accepts IOUs" means IOUs at face value. Which issuer and how much are negotiated in the quote and fixed in the agreement. Acceptance rules are never published in detail.
-- A **want** is the mirror of an offering: what the participant needs (categories, description), an approximate area, a time window, a close time, and what it can **give in return** (currency, its own goods or services, IOUs). Offerings and wants are one intent record in `catalog`, with a kind field.
-- An IOU is a resource like any other. Once transfer is enabled, a holder can list a note in an offering, and a participant can publish a want for notes of one issuer.
+- An **offering** is today's `listing`: what the participant gives, its price in the unit of account, and what it **accepts in return**. Its `PaymentTerms` (`crates/roym_core/src/listing.rs:77`) becomes this list of accepted resource kinds: currency methods, goods or services (barter), vouchers. "Accepts vouchers" means vouchers at face value. Which issuer and how much are negotiated in the quote and fixed in the agreement. Acceptance rules are never published in detail.
+- A **want** is the mirror of an offering: what the participant needs (categories, description), an approximate area, a time window, a close time, and what it can **give in return** (currency, its own goods or services, vouchers). Offerings and wants are one intent record in `catalog`, with a kind field.
+- A voucher is a resource like any other. Once transfer is enabled, a holder can list a note in an offering, and a participant can publish a want for notes of one issuer.
 
 ### Two ways to start an exchange
 
@@ -279,9 +284,9 @@ An agreement is a set of commitments. Each commitment names who gives, who recei
 | Service in a time slot | booking | `fulfilment-receipt` | scheduled → in progress → done; or ended unconfirmed |
 | Goods or a service without a slot | delivery | `fulfilment-receipt` | promised → delivered; or ended unconfirmed |
 | Currency | currency | `payment-acknowledgement` | requested → acknowledged; or ended unconfirmed |
-| New IOU | iou-issue | the issued note, version 1 | promised → issued; or ended unconfirmed |
-| IOU the giver holds | iou-transfer | endorsement, then the issuer's reissue | promised → endorsed → reissued; or refused |
-| Note returned to its issuer (redemption or set-off) | iou-return | endorsement back to the issuer, then the issuer's closing record | promised → returned → closed; or ended unconfirmed |
+| New voucher | voucher-issue | the issued note, version 1 | promised → issued; or ended unconfirmed |
+| Voucher the giver holds | voucher-transfer | endorsement, then the issuer's reissue | promised → endorsed → reissued; or refused |
+| Note returned to its issuer (redemption or set-off) | voucher-return | endorsement back to the issuer, then the issuer's closing record | promised → returned → closed; or ended unconfirmed |
 
 The agreement itself has a short life: requested → quoted → agreed → closed, or expired, or cancelled. It closes when every commitment is final.
 
@@ -290,10 +295,11 @@ Rules:
 - **The list of kinds is fixed in code.** Offerings choose a kind (booking or delivery). Strangers can then compare "delivered" across all participants, and reputation and the statement can read every state. A configurable workflow engine is rejected (see [Rejected options](#rejected-options)). A new kind is added in code when a real need appears.
 - **One writer per record.** The quote author's node writes the agreement and the commitment states. Both parties keep a copy. This generalises today's rule that the provider's Transaction service is the single writer. The issuer writes each note. One deal can therefore involve two writers, each for its own record.
 - **The slot owner claims its own slot.** Today a slot is claimed under the slot owner's single-writer fence when it files the acceptance (integrated spec, `D-C8-2`). In List-Search the quote author owns the slot, as today. In a bid, or a barter with a booking on each side, the quote author may not own every slot. Then each slot owner claims its own slot as a separate step when the agreement is accepted, and the agreement writer records the result. If a claim fails, the agreement is not formed.
-- **How an agreement and a note point to each other.** For `iou-issue`, the agreement names the issuer, the currency and the face value. The note does not exist yet, so the agreement cannot name it. The note's version 1 names the agreement's content hash, and the settlement record names the note id. For `iou-transfer` and `iou-return`, the note already exists, so the agreement names its id and version. The agreement writer marks an IOU commitment settled when it holds the issuer's signed note that names the right holder.
+- **How an agreement and a note point to each other.** For `voucher-issue`, the agreement names the issuer, the currency and the face value. The note does not exist yet, so the agreement cannot name it. The note's version 1 names the agreement's content hash, and the settlement record names the note id. For `voucher-transfer` and `voucher-return`, the note already exists, so the agreement names its id and version. The agreement writer marks a voucher commitment settled when it holds the issuer's signed note that names the right holder.
+- **The agreement records its home exchange.** It is the exchange that holds the intent the deal came from: the source exchange named in the search result, not an exchange that relayed it. A deal that began from a direct link has no home unless the two parties name one in the agreement. See [Publishing an opinion](#reputation-evidence-and-opinions).
 - **Cancellation:** only the quote author, and only while no commitment has moved. This generalises today's rule.
 - **Every commitment carries a declared value** in the agreement's unit of account, in minor units. The statement export uses it.
-- **Selective disclosure covers the quote and the agreement.** Today `AgreementReceiptPayload` (`crates/roym_core/src/transaction.rs:192`) carries a plain copy of `terms`, and `quote_record_id`, a hash of the whole quote. Salting only the receipt would hide nothing, because showing the quote shows everything. So: each field of the quote is hashed with its own random salt, and the quote's signature covers the list of hashes. The receipt carries the same list of hashes and no plain terms. To show a deal to a third party, a party reveals the fields it chooses, with their salts. The others stay hidden, and both signatures still verify. This changes the canonical bytes of the quote and of `agreement-receipt`, so it is done in the first phase, before any IOU or evidence record depends on them. The product is not released, so the records change in place, with no migration.
+- **Selective disclosure covers the quote and the agreement.** Today `AgreementReceiptPayload` (`crates/roym_core/src/transaction.rs:192`) carries a plain copy of `terms`, and `quote_record_id`, a hash of the whole quote. Salting only the receipt would hide nothing, because showing the quote shows everything. So: each field of the quote is hashed with its own random salt, and the quote's signature covers the list of hashes. The receipt carries the same list of hashes and no plain terms. To show a deal to a third party, a party reveals the fields it chooses, with their salts. The others stay hidden, and both signatures still verify. This changes the canonical bytes of the quote and of `agreement-receipt`, so it is done in the first phase, before any voucher or evidence record depends on them. The product is not released, so the records change in place, with no migration.
 
 ### Disclosure of deal evidence
 
@@ -307,7 +313,27 @@ This change keeps that rule for amounts and changes it for outcomes:
 
 This reverses part of a rule of record, so it gets its own ADR before the reputation phase. The integrated spec rule is updated at close-out.
 
-### IOUs
+### Vouchers
+
+#### What a voucher promises
+
+Every voucher carries the same promise, in these words:
+
+> *"In good faith, I will accept this voucher against what I offer when it is redeemed, at my listed prices, as far as my circumstances then allow."*
+
+- **In good faith** means an honest, sincere attempt. It is not a guarantee. An honest decline is in good faith, for example: "my wife fell ill, I sold most of my stock, and I need what is left for food". A false reason is not, for example "no stock" while selling the same stock to buyers who pay cash, and neither is charging a voucher holder more than the listed price.
+- **What I offer when it is redeemed** means the issuer's offerings at that time, not at issue time. The voucher names no goods.
+- **At my listed prices** gives the face value its meaning: "₹300" buys what ₹300 buys at the issuer's list prices.
+- **As far as my circumstances then allow** says that capacity, health, stock and season can change.
+
+The sentence belongs to the version of the note record type. Note version 1 means this sentence. A note needs no extra field, and an issuer cannot add a weaker or stronger text of its own. If the wording ever changes, it becomes a new record version, and old notes keep their meaning. The Hub shows the sentence next to every voucher.
+
+What follows from it:
+
+- **A decline is normal, not a breach.** Readers see each decline with its optional reason, and judge the **pattern** of an issuer's redemptions, not one decline.
+- **Giving a reason stays optional.** Good faith asks only that a reason given is true.
+- **There is no personal note from the issuer.** Thanks between the first two people belong in an **opinion** of their deal. After a transfer, a personal note would mean nothing to a stranger.
+- **The duty to reissue stays hard** (see [Transfer and reissue](#transfer-and-reissue)). Reissue only records who holds the voucher. It asks the issuer to deliver nothing.
 
 #### The note
 
@@ -335,15 +361,15 @@ The fields are provisional. The obligation change document fixes them.
 
 #### Issue
 
-The issuer gives a new note as a resource. It signs version 1, naming the receiver as holder, and sends it as the settlement of an `iou-issue` commitment.
+The issuer gives a new note as a resource. It signs version 1, naming the receiver as holder, and sends it as the settlement of a `voucher-issue` commitment.
 
 #### Redemption, decline and set-off
 
 - **List price is a maximum.** The holder redeems at no more than the issuer's signed list price that is current when the holder asks. The issuer may give a better deal. A refusal to go below the list price is normal and is not evidence against the issuer.
 - **The issuer chooses which offerings to accept notes for, at that time.** For example, ten offerings may accept notes today and five next week. Fewer offerings is a **decline**, recorded with the issuer's optional reason. The reader decides whether it was good, bad or acceptable.
-- **Who carries the risk.** A redemption is one agreement with an `iou-return` commitment from the holder and a booking or delivery commitment from the issuer. When the agreement is signed, the holder signs the return endorsement, and the issuer records that version as claimed by this redemption. From then on the note cannot be spent elsewhere, so the issuer carries no double-spend risk. The issuer closes the note only when its own delivery is done. If the delivery ends unconfirmed, the issuer must reissue the note to the holder. So the holder carries only the risk that the issuer fails to deliver, and that failure leaves signed evidence: the return endorsement, the agreement, and the unconfirmed delivery.
+- **Who carries the risk.** A redemption is one agreement with a `voucher-return` commitment from the holder and a booking or delivery commitment from the issuer. When the agreement is signed, the holder signs the return endorsement, and the issuer records that version as claimed by this redemption. From then on the note cannot be spent elsewhere, so the issuer carries no double-spend risk. The issuer closes the note only when its own delivery is done. If the delivery ends unconfirmed, the issuer must reissue the note to the holder. So the holder carries only the risk that the issuer fails to deliver, and that failure leaves signed evidence: the return endorsement, the agreement, and the unconfirmed delivery.
 - **No answer.** A demand the issuer never collected from its mailbox, with a delivery window that has ended, is weaker negative evidence than a signed decline. The mailbox's signed `stored` receipt proves that a message was deposited for the issuer at a given time. Proving that this message was the demand needs extra work, because the mailbox signs a hash of ciphertext it cannot read. The obligation change document designs it. The `delivered` receipt, signed by the receiver, proves the issuer's node received the message.
-- **Set-off.** A holder who owes the issuer can return the issuer's note in payment. This is an `iou-return` commitment, the same as a redemption.
+- **Set-off.** A holder who owes the issuer can return the issuer's note in payment. This is a `voucher-return` commitment, the same as a redemption.
 - **Split.** The issuer signs every split. A holder asks the issuer to split a note. The parts are new notes whose face values add up exactly to the original, in integer minor units, and the original version is closed. Only the issuer writes notes, so a split by the holder alone is not valid.
 - **Expiry.** After expiry the issuer's duty ends, and it may delete its records of that note. A demand made inside the window and not met stays as evidence with the holder.
 
@@ -351,7 +377,7 @@ The issuer gives a new note as a resource. It signs version 1, naming the receiv
 
 Transfer is built only after the legal review (see [Notes and investment](#notes-and-investment) and [Tasks](#tasks)). It also needs reputation to be safe between strangers.
 
-1. The holder signs an **endorsement**: "note N, version v, now held by H2". It is the settlement step of an `iou-transfer` commitment.
+1. The holder signs an **endorsement**: "note N, version v, now held by H2". It is the settlement step of a `voucher-transfer` commitment.
 2. H2's node sends a **reissue request** to the issuer's `obligation` service: directly, or through the issuer's mailbox when the issuer is offline.
 3. The issuer checks the chain from the last version it signed, and signs version v+1 naming H2. It sends the note back to H2's `obligation` service, through H2's mailbox if needed.
 
@@ -379,7 +405,7 @@ An issuer that restored an old backup may not know about versions it signed late
 
 A participant can give several notes in one agreement, from one issuer or from many. Examples: a buyer collects notes from many holders and sells them on as one lot; a buyer buys a lot from one seller. Bundles need transfer, so they come with it.
 
-- Each note in a bundle is its **own `iou-transfer` commitment**, with its own declared value, its own endorsement and its own reissue by its own issuer.
+- Each note in a bundle is its **own `voucher-transfer` commitment**, with its own declared value, its own endorsement and its own reissue by its own issuer.
 - A bundle is **not atomic**. Each issuer acts alone, so one note can be refused (for example a double spend) while the others are reissued. A refused note does not undo the others. Making a bundle atomic would need every issuer to act together, which principle 4 rules out.
 - The agreement says what a refused note does to the other side's commitments. The simple choice is one payment commitment per note, which lapses when its note is refused. The obligation change document decides (see [Open questions](#open-questions)).
 - The receiver can wait for every reissue before it delivers its own side, as for a single note.
@@ -405,11 +431,11 @@ A published Merkle commitment that holders check was considered and dropped (see
 
 #### Notes and investment
 
-A note is a claim on the issuer's future output. That is true of every note, so there is no separate "investment" record and no rule that can tell an investment from a normal IOU. A holder who buys a note at a discount and redeems it later at face value has, in effect, invested. Roym does not prevent this.
+A note is a claim on the issuer's future output. That is true of every note, so there is no separate "investment" record and no rule that can tell an investment from a normal voucher. A holder who buys a note at a discount and redeems it later at face value has, in effect, invested. Roym does not prevent this.
 
 The legal question is wider than investments. Notes priced in a currency and passed between strangers may count as payment instruments in some countries. `docs/system-architecture.md` already requires legal review before mutual credit goes live. So:
 
-- **Two-party IOUs** (issue, redeem, set-off, split) can be built first. A note that only goes back to its issuer is a prepaid promise between two people.
+- **Two-party vouchers** (issue, redeem, set-off, split) can be built first. A note that only goes back to its issuer is a commitment between two people, settled between the same two people. It is not prepaid: the issuer received value first and gives back later.
 - **Transfer, bundles and listing notes for trade** are gated on the legal review. They are built only after it.
 - **Features that present notes as investments** (an expected return or yield, a price history or chart for a note, ranking issuers by how much a note may gain) are not built, even after transfer. They need their own legal review.
 
@@ -454,6 +480,7 @@ Today one node is both the membership authority and the directory. Search keeps 
   2. Then the friends' results, taken one from each friend in turn (round robin), each friend in its own order, up to a cap per friend.
   3. The same intent (same id and version) from several sources is shown once, with every source listed.
 - **Every result keeps its source and its original signature.** The forwarding exchange can leave a friend's result out, but it cannot change one without breaking the publisher's signature. The search client verifies every record itself, and credentials from unknown authorities show as unknown, as for any result.
+- **Reads of evidence and opinions are forwarded the same way.** A reader asks its own exchange about a party. That exchange answers from its own store and forwards the question one hop to its friends, with the same marker, timeout and merge rule. Every answer keeps its source exchange and its original signatures, and the client verifies them.
 - The client can also search a friend exchange directly. An exchange may show its friend list for this, mainly when a search finds nothing.
 - One exchange is one index. Sharding one exchange's index across many nodes moves to Milestone 7.
 
@@ -494,9 +521,14 @@ The reader's node gathers evidence from three sources and opinions from the part
 - **Nobody can block an opinion about a real agreement.** If the subject had to agree, every bad opinion would be hidden, and the good ones would mean nothing. The subject is protected in other ways: the opinion must name a real agreement between the two, and the subject can attach a signed response, or show its own opinion of the same deal next to it.
 - Opinions follow the same rules as other published evidence: one per party per agreement, a credential label, a signed response, a visible withdrawal.
 
-**Publishing an opinion to an exchange.** Three steps, in order:
+**Publishing an opinion to an exchange.** Both opinions of one agreement go to its **home exchange**, because only one place can pair them and reveal them together.
 
-1. **Write, sealed.** Each party sends its opinion to the exchange inside a **writing window** after the agreement closes (14 days is a first value to tune). The exchange shows it to nobody yet.
+- A party may send its opinion to **its own exchange**. If that exchange is a friend of the home exchange, it forwards the opinion there, one hop. Otherwise the party's node sends it to the home exchange directly.
+- A deal with no home exchange has no published opinions. Each author keeps its opinion and shows it on request.
+
+Three steps, in order:
+
+1. **Write, sealed.** Each party sends its opinion inside a **writing window** after the agreement closes (14 days is a first value to tune). The home exchange shows it to nobody yet. "Sealed" means the exchange holds it back. It is not encrypted, so the exchange itself can read it, and the parties trust the home exchange for this.
 2. **Reveal to each other.** When both parties have written, or the writing window ends, the exchange shows each party the other's opinion. The public still sees nothing. Neither party could read the other's opinion before writing its own, so neither can answer it with revenge.
 3. **Resolve, then publish.** A **resolution window** follows (7 days is a first value to tune). The parties can talk, fix the problem, or agree a refund. In this window:
    - An author can withdraw its opinion, or replace it with a revised one. The published opinion is labelled "revised during resolution".
@@ -507,7 +539,7 @@ The reader's node gathers evidence from three sources and opinions from the part
 
 **Content rules (later).** An exchange may later enforce stated content rules on published opinions, for example no abusive language and no personal data such as a phone number. It hides an opinion that breaks a rule with a signed `moderation-decision` that names the rule. It may never hide an opinion because it is negative. A hidden opinion stays with its author, who can still show it on request. v1 has no content rules.
 
-**What evidence says about IOUs.** Each event points at one named party:
+**What evidence says about vouchers.** Each event points at one named party:
 
 | Event | Evidence | About |
 | --- | --- | --- |
@@ -544,7 +576,7 @@ The reader's node gathers evidence from three sources and opinions from the part
 
 ### Mailbox change
 
-IOU redemption demands and reissue requests use the [service mailbox](../service-mailbox/change.md). One addition is needed. Today the mailbox answers `deposit` with `stored`, and the change document does not say that this receipt is signed (unverified against the code). This change asks the mailbox to **sign** its `stored` receipt: deposit id, destination, message hash and time. The mailbox is a third party, so its signature proves that a message was deposited for the destination at that time. It does not prove what the message said, because the message is sealed. The mailbox service task is still open in the current mailbox work, so this addition should go there.
+Voucher redemption demands and reissue requests use the [service mailbox](../service-mailbox/change.md). One addition is needed. Today the mailbox answers `deposit` with `stored`, and the change document does not say that this receipt is signed (unverified against the code). This change asks the mailbox to **sign** its `stored` receipt: deposit id, destination, message hash and time. The mailbox is a third party, so its signature proves that a message was deposited for the destination at that time. It does not prove what the message said, because the message is sealed. The mailbox service task is still open in the current mailbox work, so this addition should go there.
 
 ### Lessons from existing systems
 
@@ -565,6 +597,10 @@ IOU redemption demands and reissue requests use the [service mailbox](../service
 
 - **Separate words for what is offered and how it is paid** ("offering" against "medium"). It made one side of every deal look like the seller and the other like the payer, and barter did not fit either word. Every side now gives resources. The words **asset** (suggests ownership and finance, and a service is not owned), **good** (excludes services in plain English) and **consideration** (a legal term, hard for many readers) were also considered for "resource".
 - **Two separate protocols for Want-Bid and List-Search.** Double the states and records, and deals made in different ways could not be compared. One flow after the first quote.
+- **The name "IOU".** It stands for "I owe you" and reads as a debt. The commitment is softer than that, so the product calls it a voucher.
+- **A strong promise to redeem** ("I will redeem this note"). It is worth more to a holder, but it looks like a debt and draws in more law and regulation. It would also make every honest hardship decline a breach. The good-faith sentence keeps the face value meaningful without that.
+- **A personal text or note from the issuer on each voucher.** It would let issuers weaken or strengthen the standard promise, and readers could no longer compare vouchers. Thanks between the first two people belong in an opinion.
+- **Opinions sent to any exchange.** The two opinions of one deal could land on different exchanges, and the sealed reveal could not pair them. They go to the home exchange, through a friend exchange if needed.
 - **One global credit balance per identity (mutual credit).** It loses who owes whom. A balance can prove "gave at least X" but not "has X left", because nothing stops showing an old history.
 - **Circles or a clearing service per group.** It needs groups and an operator. Acceptance is the peer's own choice.
 - **A shared note pool** (as in Sarafu commitment pools). Many people deposit notes into one common reserve, and it swaps any note for another at set rates, with no person on the other side of each swap. It needs one shared record of the pool and someone who controls it: a shared ledger and a custodian, which principles 2 and 11 rule out. A participant who collects notes and sells them as a bundle gives most of the same use, and is supported once transfer is enabled.
@@ -637,9 +673,9 @@ Milestone 8 is too big for one milestone, so it is split in two. Phases are in b
 - [ ] The signed `stored` receipt goes into the current mailbox work, where the mailbox service task is still open.
 - [ ] Revocations gain `effective_from` and a reason, with the countersign rule after a key compromise. Built before notes.
 
-**M8A: agreements and IOUs between two parties**
+**M8A: agreements and vouchers between two parties**
 - [ ] **Phase 1, agreements.** Resource kinds. Commitments with kinds, states (each with a failure end) and declared values, in one currency. Quote author as the single writer, and slot claims by the slot owner. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. Work items: new card types, Hub UI for multi-commitment agreements and the statement, WIT changes.
-- [ ] **Phase 2, two-party IOUs.** The `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths. Issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements. The restore rule. Per-issuer limit. Stated outstanding total on the standing card. Work items: a wallet screen in the Hub, card types for notes, demands and declines, WIT changes.
+- [ ] **Phase 2, two-party vouchers.** The `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths. Issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements. The restore rule. Per-issuer limit. Stated outstanding total on the standing card. Work items: a wallet screen in the Hub, card types for notes, demands and declines, WIT changes.
 
 **M8B: discovery, trust and transfer**
 - [ ] **Phase 3, discovery.** Wants and bids (Want-Bid) next to offerings and enquiries (List-Search), as one intent record in `catalog`, with one negotiation flow. Split the directory into `membership` and `exchange`, with the rules in the membership and exchange table. The search client library. Friend exchanges with one-hop forwarding and the v1 merge rule. Work items: wants and bids screens in the Hub.
@@ -657,7 +693,7 @@ Milestone 8 is too big for one milestone, so it is split in two. Phases are in b
 
 Before merge, update the living docs so they describe the result, then set `status: done` and fill in `living-docs-touched`. Expected changes:
 
-- `docs/system-requirements-spec.md`: replace the native ledger token in `[APP-ESC]` with IOUs; replace the EMA score in `[P2P-REP]` with the three-source evidence view and two-sided opinions; move the leaf shards of `[P2P-DSC]` to Milestone 7; add the participant role, resources, wants, the two ways to start an exchange, commitments, one-hop forwarding and the event log.
+- `docs/system-requirements-spec.md`: replace the native ledger token in `[APP-ESC]` with vouchers; replace the EMA score in `[P2P-REP]` with the three-source evidence view and two-sided opinions; move the leaf shards of `[P2P-DSC]` to Milestone 7; add the participant role, resources, wants, the two ways to start an exchange, commitments, one-hop forwarding and the event log.
 - `docs/roym-integrated-experience-spec.md`: roles, the Records table, the transaction state, search (D1), the "Not in the first release" list, and the rule "Payment evidence is not a public listing field", which this change narrows to amounts and payment details (see [Disclosure of deal evidence](#disclosure-of-deal-evidence) and its ADR).
 - `docs/system-architecture.md`: the new and split services, and the legal review gate for note transfer.
 - `docs/TERMINOLOGY.md`: the terms in this document.
