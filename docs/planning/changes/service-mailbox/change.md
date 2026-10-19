@@ -306,18 +306,18 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C4-6`: receipts are keyed on `(sender, deposit_id)`.
 - `D-C4-7`: fair eviction marks evicted messages with an unsigned `expired` receipt, evicting unclaimed messages before in-flight claimed messages. When node storage reaches `max_total_bytes`, new deposits are refused with `mailbox_full` (`-32044`) without cross-queue eviction.
 - `D-C4-8`: newest certificate tie rule: identical `issued_at_secs` accepts the instance matching the stored newest certificate; if neither matches, the first to arrive wins. The mailbox also verifies revocation in the master anchor directly, because local same-node calls bypass the router handshake.
-- `D-C4-9`: `register` validates the signed endpoint record (`SignedEndpointInfo::verify`, non-expired, matches destination service). A stale record at `register` is rejected with `-32047`, leaving the existing queue intact.
+- `D-C4-9`: `register` validates the signed endpoint record (`SignedEndpointInfo::verify`, non-expired, matches destination service). An older or equal record for an existing queue is kept silently (no error), leaving the newer stored record intact; an expired record is refused with `-32047` (`bad_record`).
 - `D-C4-10`: `claim` returns up to `limit` messages (bounded by 32, default 32; `MAX_CLAIM_BATCH`).
-- `D-C4-11`: `ack` returns `AckAnswer { results: Vec<AckOutcome> }`. A message claimed 5 times without an ack closes immediately with unsigned `Receipt::Expired` (reason `too_many_claims`), rather than waiting for visibility timeout.
+- `D-C4-11`: `ack` returns `AckAnswer { results: Vec<AckOutcome> }`. A message claimed 5 times without an ack closes after its 5th visibility timeout with unsigned `Receipt::Rejected` (reason `too_many_claims`).
 - `D-C4-12`: `queue_lifetime_secs` (30 days default) sweeps idle queues that have not registered or claimed.
-- `D-C4-13`: hourly record republish publishes to the host node's own community registry (`substrate.registry_url`). On 409 Conflict, the stored record is marked superseded to stop republishing until a newer record arrives.
+- `D-C4-13`: hourly record republish publishes to the host node's own community registry (`substrate.registry_url`) and to the Mainline DHT when `enable_bep0044_dht` is on. On 409 Conflict, republish retries at the normal republish interval.
 - `D-C4-14`: deposit rate limiting limits per sender DID and for the entire node (`RequestLimiter`), not per sending node IP.
 - `D-C4-15`: `RequestLimiter` in `syneroym-passport` is made generic over key type `K: Hash + Eq + Clone`.
 - `D-C4-16`: a deposit with TTL exceeding `max_ttl_secs` fails with `-32050` (`ttl_too_long`), reporting the queue's limit in `data`.
 - `D-C4-17`: `syneroym-sdk` `SyneroymClient::with_delegation` and `build_preamble` attach the instance certificate to outbound stream preambles.
 - `D-C4-18`: `syneroym-substrate` enables `mailbox` in default Cargo features.
 - `D-C4-19`: registration rate limiting limits per master DID (`register_per_minute_per_master: 10`) and total registrations (`register_per_minute_total: 120`).
-- `D-C4-20`: deposit retries are idempotent when identical (`Receipt::Stored`); altered destination, content, or TTL with the same deposit ID returns `DuplicateDeposit`. Both deposit and status require service instance caller context (`sender_of`).
+- `D-C4-20`: deposit retries are idempotent when identical, returning the current stored receipt (e.g. `Delivered`, `Stored`, `Rejected`, or `Expired`); altered destination, content, or TTL with the same deposit ID returns `DuplicateDeposit`. Both deposit and status require service instance caller context (`sender_of`).
 
 ## Close-out
 

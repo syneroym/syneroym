@@ -351,6 +351,7 @@ async fn an_unreadable_master_anchor_refuses_receiver_calls() {
         .unwrap();
 
     anchors.set_fail(true);
+    service.clear_revocation_cache();
 
     let claim_res =
         service.dispatch(invocation(METHOD_CLAIM, json!({ "max": 10 }), receiver.caller())).await;
@@ -484,4 +485,46 @@ async fn register_above_rate_limits_is_refused() {
         Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
         other => panic!("expected RATE_LIMITED for total register, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn an_expired_record_on_existing_queue_is_refused_while_existing_messages_remain_claimable() {
+    let (_dir, service, anchors) = test_service(MailboxRole::default());
+    let receiver = Member::new(3600);
+    let sender = Member::new(3600);
+    anchors.publish(&receiver.service_id());
+
+    let rec = record(&receiver, NODE_DID);
+    service
+        .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
+        .await
+        .unwrap();
+
+    let now = syneroym_passport::now_secs();
+    let dep = sealed_deposit(&sender, &receiver, 3600, now).deposit;
+    let dep_id = dep.deposit_id;
+    service.dispatch(invocation(METHOD_DEPOSIT, json!(dep), sender.caller())).await.unwrap();
+
+    // Try to register an expired record for the same queue
+    let mut expired_rec = record(&receiver, NODE_DID);
+    expired_rec.info.not_after = now.saturating_sub(60);
+    let resigned = expired_rec.info.sign(&receiver.master).unwrap();
+
+    let res = service
+        .dispatch(invocation(METHOD_REGISTER, json!({ "record": resigned }), receiver.caller()))
+        .await;
+    match res {
+        Err(RpcError::Custom(code, _, Some(data))) => {
+            assert_eq!(code, codes::BAD_RECORD);
+            assert_eq!(data["kind"], "bad_record");
+        }
+        other => panic!("expected BAD_RECORD for expired record, got {other:?}"),
+    }
+
+    // Existing messages and claiming on the queue still work fine!
+    let claim_res =
+        service.dispatch(invocation(METHOD_CLAIM, json!({}), receiver.caller())).await.unwrap();
+    let claim_ans: ClaimAnswer = serde_json::from_value(claim_res.payload).unwrap();
+    assert_eq!(claim_ans.messages.len(), 1);
+    assert_eq!(claim_ans.messages[0].deposit_id, dep_id);
 }

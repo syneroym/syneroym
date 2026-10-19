@@ -14,9 +14,9 @@ fn register_creates_a_queue_and_reports_its_limits_and_end() {
     let store = store_with(small_limits());
     let member = Member::new(3600);
     let rec = record(&member, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &member.instance(), NODE_DID).unwrap();
-
     let now = member.cert.issued_at_secs + 10;
+    let checked = CheckedRecord::check(&rec, &member.instance(), NODE_DID, now).unwrap();
+
     let registered = store.register(&member.instance(), &checked, now).unwrap();
 
     assert!(registered.publish_now);
@@ -29,9 +29,9 @@ fn a_newer_record_replaces_the_stored_one_and_an_older_one_is_kept() {
     let store = store_with(small_limits());
     let member = Member::new(3600);
     let rec1 = record(&member, NODE_DID);
-    let checked1 = CheckedRecord::check(&rec1, &member.instance(), NODE_DID).unwrap();
-
     let now = member.cert.issued_at_secs + 10;
+    let checked1 = CheckedRecord::check(&rec1, &member.instance(), NODE_DID, now).unwrap();
+
     let r1 = store.register(&member.instance(), &checked1, now).unwrap();
     assert!(r1.publish_now);
 
@@ -57,7 +57,8 @@ fn a_newer_instance_takes_the_queue_and_the_old_one_is_stale() {
     let store = store_with(small_limits());
     let member1 = Member::new(3600);
     let rec1 = record(&member1, NODE_DID);
-    let checked1 = CheckedRecord::check(&rec1, &member1.instance(), NODE_DID).unwrap();
+    let now = member1.cert.issued_at_secs + 10;
+    let checked1 = CheckedRecord::check(&rec1, &member1.instance(), NODE_DID, now).unwrap();
 
     let now = member1.cert.issued_at_secs + 10;
     store.register(&member1.instance(), &checked1, now).unwrap();
@@ -82,6 +83,12 @@ fn a_newer_instance_takes_the_queue_and_the_old_one_is_stale() {
     let claim_old = store.claim(&member1.instance(), 10, now + 40);
     assert!(matches!(claim_old, Err(MailboxError::StaleInstance(_))));
 
+    let ack_old = store.ack(&member1.instance(), &[], now + 40);
+    assert!(matches!(ack_old, Err(MailboxError::StaleInstance(_))));
+
+    let unreg_old = store.unregister(&member1.instance(), now + 40);
+    assert!(matches!(unreg_old, Err(MailboxError::StaleInstance(_))));
+
     let claim_new = store.claim(&instance2, 10, now + 40);
     assert!(claim_new.is_ok());
 }
@@ -90,10 +97,10 @@ fn a_newer_instance_takes_the_queue_and_the_old_one_is_stale() {
 fn the_same_instance_with_an_older_certificate_is_still_admitted() {
     let store = store_with(small_limits());
     let member = Member::new(3600);
-    let rec = record(&member, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &member.instance(), NODE_DID).unwrap();
-
     let now = member.cert.issued_at_secs + 10;
+    let rec = record(&member, NODE_DID);
+    let checked = CheckedRecord::check(&rec, &member.instance(), NODE_DID, now).unwrap();
+
     store.register(&member.instance(), &checked, now).unwrap();
 
     let mut old_instance = member.instance();
@@ -107,10 +114,10 @@ fn the_same_instance_with_an_older_certificate_is_still_admitted() {
 fn two_instances_with_the_same_issue_time_keep_the_first() {
     let store = store_with(small_limits());
     let member1 = Member::new(3600);
-    let rec1 = record(&member1, NODE_DID);
-    let checked1 = CheckedRecord::check(&rec1, &member1.instance(), NODE_DID).unwrap();
-
     let now = member1.cert.issued_at_secs + 10;
+    let rec1 = record(&member1, NODE_DID);
+    let checked1 = CheckedRecord::check(&rec1, &member1.instance(), NODE_DID, now).unwrap();
+
     store.register(&member1.instance(), &checked1, now).unwrap();
 
     let instance2 = Instance {
@@ -134,17 +141,17 @@ fn a_new_queue_is_refused_when_the_mailbox_holds_its_maximum() {
 
     let m1 = Member::new(3600);
     let r1 = record(&m1, NODE_DID);
-    let c1 = CheckedRecord::check(&r1, &m1.instance(), NODE_DID).unwrap();
+    let c1 = CheckedRecord::check(&r1, &m1.instance(), NODE_DID, 100).unwrap();
     store.register(&m1.instance(), &c1, 100).unwrap();
 
     let m2 = Member::new(3600);
     let r2 = record(&m2, NODE_DID);
-    let c2 = CheckedRecord::check(&r2, &m2.instance(), NODE_DID).unwrap();
+    let c2 = CheckedRecord::check(&r2, &m2.instance(), NODE_DID, 100).unwrap();
     store.register(&m2.instance(), &c2, 100).unwrap();
 
     let m3 = Member::new(3600);
     let r3 = record(&m3, NODE_DID);
-    let c3 = CheckedRecord::check(&r3, &m3.instance(), NODE_DID).unwrap();
+    let c3 = CheckedRecord::check(&r3, &m3.instance(), NODE_DID, 100).unwrap();
     let res = store.register(&m3.instance(), &c3, 100);
     assert!(matches!(res, Err(MailboxError::MailboxFull)));
 }
@@ -154,8 +161,9 @@ fn unregister_removes_the_queue_and_expires_its_messages() {
     let store = store_with(small_limits());
     let receiver = Member::new(3600);
     let sender = Member::new(3600);
+    let now = receiver.cert.issued_at_secs + 10;
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
 
     let now = receiver.cert.issued_at_secs + 10;
     store.register(&receiver.instance(), &checked, now).unwrap();

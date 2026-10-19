@@ -30,7 +30,7 @@ fn a_deposit_is_stored_and_its_receipt_is_stored() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 3600, now).deposit;
@@ -52,7 +52,7 @@ fn the_same_deposit_twice_answers_the_first_time() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 3600, now).deposit;
@@ -71,7 +71,7 @@ fn the_same_id_with_other_content_is_a_duplicate() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep1 = sealed_deposit(&sender, &receiver, 3600, now).deposit;
@@ -85,14 +85,14 @@ fn the_same_id_with_other_content_is_a_duplicate() {
 }
 
 #[test]
-fn a_used_id_is_a_duplicate_after_delivery() {
+fn an_identical_retry_after_delivery_returns_delivered_receipt() {
     let store = store_with(small_limits());
     let sender = Member::new(3600);
     let receiver = Member::new(3600);
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let sealed = sealed_deposit(&sender, &receiver, 3600, now);
@@ -119,15 +119,16 @@ fn a_used_id_is_a_duplicate_after_delivery() {
             &[AckEntry {
                 sender: sender.service_id(),
                 deposit_id: sealed.deposit.deposit_id,
-                receipt: delivered,
+                receipt: delivered.clone(),
             }],
             now,
         )
         .unwrap();
 
-    // An identical retry after delivery returns the original Stored receipt
+    // An identical retry after delivery returns the current stored receipt
+    // (Delivered)
     let retry = store.deposit(&sender.service_id(), &sealed.deposit, now + 10).unwrap();
-    assert_eq!(retry.receipt, Receipt::Stored { at_secs: now });
+    assert_eq!(retry.receipt, delivered);
 
     // But reusing the same id with a different deposit is refused as duplicate
     let mut different_deposit = sealed.deposit.clone();
@@ -145,7 +146,7 @@ fn two_senders_may_use_the_same_deposit_id() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep_id = DepositId::random().unwrap();
@@ -171,7 +172,7 @@ fn a_ttl_above_the_queue_limit_is_ttl_too_long() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 1200, now).deposit;
@@ -192,7 +193,7 @@ fn a_full_queue_evicts_the_largest_sender_first() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let d1_1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
@@ -225,7 +226,7 @@ fn a_full_queue_refuses_the_largest_sender_itself() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let mut d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
@@ -253,7 +254,7 @@ fn the_message_count_limit_also_evicts() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
@@ -279,7 +280,7 @@ fn the_mailbox_cap_refuses_and_evicts_nothing() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
@@ -305,7 +306,7 @@ fn status_shows_only_the_callers_own_receipts() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;
@@ -332,7 +333,7 @@ fn unclaimed_messages_are_evicted_before_claimed_in_flight_messages() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;

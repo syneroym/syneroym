@@ -22,7 +22,7 @@ fn claim_returns_messages_oldest_first_up_to_the_batch_and_byte_limit() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let d1 = sealed_deposit(&sender, &receiver, 3600, now).deposit;
@@ -48,7 +48,7 @@ fn a_claimed_message_is_hidden_until_its_visibility_time_ends() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 3600, now).deposit;
@@ -82,7 +82,7 @@ fn five_claims_without_an_ack_close_the_message_unsigned() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 3600, now).deposit;
@@ -104,6 +104,66 @@ fn five_claims_without_an_ack_close_the_message_unsigned() {
 }
 
 #[test]
+fn an_ack_during_the_fifth_visibility_window_succeeds() {
+    let store = store_with(small_limits());
+    let sender = Member::new(3600);
+    let receiver = Member::new(3600);
+    let now = receiver.cert.issued_at_secs + 10;
+
+    let rec = record(&receiver, NODE_DID);
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
+    store.register(&receiver.instance(), &checked, now).unwrap();
+
+    let sealed = sealed_deposit(&sender, &receiver, 3600, now);
+    let dep_id = sealed.deposit.deposit_id;
+    store.deposit(&sender.service_id(), &sealed.deposit, now).unwrap();
+
+    let mut t = now;
+    // 4 previous claims after visibility expirations
+    for _ in 0..4 {
+        let c = store.claim(&receiver.instance(), 10, t).unwrap();
+        assert_eq!(c.messages.len(), 1);
+        t += 11;
+    }
+    // 5th claim at time t (visibility_secs = 10, so claimed_until = t + 10)
+    let c5 = store.claim(&receiver.instance(), 10, t).unwrap();
+    assert_eq!(c5.messages.len(), 1);
+
+    // During the 5th visibility window (t + 5 < t + 10):
+    // 1. A status check shows message is NOT closed with TooManyClaims
+    let st_during = store.status(&sender.service_id(), &[dep_id], t + 5).unwrap();
+    assert_eq!(st_during[0].receipt, Receipt::Stored { at_secs: now });
+
+    // 2. An ack during this window succeeds
+    let opened = open(
+        &receiver.mailbox,
+        &receiver.service_id(),
+        &dep_id,
+        &c5.messages[0].sealed,
+        syneroym_mailbox_format::OpenPolicy { max_ttl_secs: 86400, max_clock_skew_secs: 3600 },
+        t + 5,
+    )
+    .unwrap();
+    let delivered = opened.sign_delivered(&receiver.instance, &receiver.cert, t + 5).unwrap();
+    let ack_res = store
+        .ack(
+            &receiver.instance(),
+            &[AckEntry {
+                sender: sender.service_id(),
+                deposit_id: dep_id,
+                receipt: delivered.clone(),
+            }],
+            t + 5,
+        )
+        .unwrap();
+    assert_eq!(ack_res, vec![AckOutcome::Stored]);
+
+    // Status is Delivered, not rejected with TooManyClaims
+    let st_after = store.status(&sender.service_id(), &[dep_id], t + 15).unwrap();
+    assert_eq!(st_after[0].receipt, delivered);
+}
+
+#[test]
 fn an_ack_stores_the_receipt_as_sent_and_removes_the_body() {
     let store = store_with(small_limits());
     let sender = Member::new(3600);
@@ -111,7 +171,7 @@ fn an_ack_stores_the_receipt_as_sent_and_removes_the_body() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let sealed = sealed_deposit(&sender, &receiver, 3600, now);
@@ -158,7 +218,7 @@ fn an_ack_of_a_stored_or_unknown_receipt_is_refused() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let refused_ack = store
@@ -189,7 +249,7 @@ fn an_oversized_receipt_is_refused() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let cert = DelegationCertificate::issue(
@@ -227,11 +287,11 @@ fn an_ack_for_another_queues_message_is_not_found() {
     let now = r1.cert.issued_at_secs + 10;
 
     let rec1 = record(&r1, NODE_DID);
-    let c1 = CheckedRecord::check(&rec1, &r1.instance(), NODE_DID).unwrap();
+    let c1 = CheckedRecord::check(&rec1, &r1.instance(), NODE_DID, now).unwrap();
     store.register(&r1.instance(), &c1, now).unwrap();
 
     let rec2 = record(&r2, NODE_DID);
-    let c2 = CheckedRecord::check(&rec2, &r2.instance(), NODE_DID).unwrap();
+    let c2 = CheckedRecord::check(&rec2, &r2.instance(), NODE_DID, now).unwrap();
     store.register(&r2.instance(), &c2, now).unwrap();
 
     let dep = sealed_deposit(&s, &r1, 3600, now).deposit;
@@ -263,7 +323,7 @@ fn an_ack_after_eviction_is_not_found() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let d1 = sealed_deposit(&s1, &receiver, 3600, now).deposit;

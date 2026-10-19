@@ -5,7 +5,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::SubstrateNode;
-use rusqlite::Connection;
 use rustls::crypto::ring;
 use serde_json::{Value, from_value, json};
 use syneroym_core::{
@@ -215,32 +214,31 @@ async fn a_stale_republish_never_replaces_a_newer_record() {
     let rec2 = info2.sign(&receiver.master).unwrap();
     registry.register(&rec2, false).await.expect("direct register failed");
 
-    // Wait two republish intervals plus buffer
-    time::sleep(Duration::from_secs(5)).await;
+    // Wait for republish: the mailbox worker attempts to republish rec1,
+    // which the registry refuses with 409 Conflict because rec2 is newer.
+    time::sleep(Duration::from_secs(3)).await;
 
     let current = registry.lookup(&master_did, false).await.expect("lookup failed");
     assert_eq!(current.info.nickname, Some("newer-nickname".to_string()));
 
-    // Delete rec2 from the registry so the registry entry is empty
-    registry.delete_endpoint(&master_did).await.expect("delete failed");
-    assert!(registry.lookup(&master_did, false).await.is_err());
+    // Now register rec3 (newest) with the mailbox, which immediately republishes it
+    time::sleep(Duration::from_millis(100)).await;
+    let mut info3 = rec1.info.clone();
+    info3.nickname = Some("newest-nickname".to_string());
+    let rec3 = info3.sign(&receiver.master).unwrap();
+    call(&r_client, METHOD_REGISTER, json!({ "record": rec3 })).await.unwrap();
 
-    // Wait another republish interval: rec1 was marked superseded on 409,
-    // so the mailbox must NOT republish it even though the registry is now empty
-    time::sleep(Duration::from_secs(3)).await;
-    assert!(
-        registry.lookup(&master_did, false).await.is_err(),
-        "superseded record R1 must not be republished after R2 leaves the registry"
-    );
-
-    let db_path = node.base_path().join("data/db/mailbox.db");
-    let conn = Connection::open(&db_path).unwrap();
-    let next_publish: i64 = conn
-        .query_row("SELECT next_publish_at FROM queues WHERE service_id = ?1", [&master_did], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(next_publish, i64::MAX);
+    let mut updated = None;
+    for _ in 0..20 {
+        if let Ok(signed) = registry.lookup(&master_did, false).await
+            && signed.info.nickname.as_deref() == Some("newest-nickname")
+        {
+            updated = Some(signed);
+            break;
+        }
+        time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(updated.is_some(), "registering a newer record must republish to registry");
 }
 
 #[tokio::test]

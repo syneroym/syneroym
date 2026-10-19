@@ -100,17 +100,6 @@ impl MailboxStore {
         Ok(())
     }
 
-    /// Marks a stored service record as superseded so it is never republished
-    /// again.
-    pub(crate) fn mark_superseded(&self, service_id: &str) -> Result<(), MailboxError> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE queues SET next_publish_at = ?1 WHERE service_id = ?2",
-            rusqlite::params![to_sql(u64::MAX), service_id],
-        )?;
-        Ok(())
-    }
-
     /// Returns aggregate storage counts across all active queues.
     pub(crate) fn totals(&self) -> Result<Totals, MailboxError> {
         let conn = self.lock();

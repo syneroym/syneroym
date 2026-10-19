@@ -22,7 +22,7 @@ fn the_store_holds_no_message_content_in_clear() {
     {
         let store = MailboxStore::open(&db_path, small_limits()).unwrap();
         let rec = record(&receiver, NODE_DID);
-        let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+        let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
         store.register(&receiver.instance(), &checked, now).unwrap();
 
         let dep = sealed_deposit(&sender, &receiver, 3600, now).deposit;
@@ -45,6 +45,13 @@ fn the_store_holds_no_message_content_in_clear() {
             !content_str.contains("marker-method"),
             "database file contained unencrypted method marker"
         );
-        assert!(!content_str.contains("test"), "database file contained unencrypted param key");
+        assert!(
+            !content_str.contains("marker-param-7f3a"),
+            "database file contained unencrypted param marker"
+        );
+        assert!(
+            !content_str.contains("secret-payload-99"),
+            "database file contained unencrypted payload"
+        );
     }
 }

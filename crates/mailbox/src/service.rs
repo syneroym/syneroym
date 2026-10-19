@@ -1,7 +1,13 @@
 //! The mailbox native service: handles JSON-RPC requests for interface
 //! `mailbox`.
 
-use std::{fmt, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use metrics::counter;
 use serde::{Serialize, de::DeserializeOwned};
@@ -49,6 +55,7 @@ pub struct MailboxService {
     wake: Arc<Notify>,
     sweep_every: Duration,
     republish_every_secs: u64,
+    revocation_cache: Mutex<HashMap<(String, String), u64>>,
 }
 
 impl fmt::Debug for MailboxService {
@@ -87,6 +94,7 @@ impl MailboxService {
             wake,
             sweep_every,
             republish_every_secs,
+            revocation_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -102,9 +110,34 @@ impl MailboxService {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_revocation_cache(&self) {
+        if let Ok(mut cache) = self.revocation_cache.lock() {
+            cache.clear();
+        }
+    }
+
+    async fn check_revocation(&self, who: &Instance, now: u64) -> Result<(), MailboxError> {
+        let key = (who.master_did.clone(), who.instance_did.clone());
+        if let Ok(cache) = self.revocation_cache.lock()
+            && let Some(&expires) = cache.get(&key)
+            && now < expires
+        {
+            return Ok(());
+        }
+        check_not_revoked(self.anchors.as_ref(), who).await?;
+        if let Ok(mut cache) = self.revocation_cache.lock() {
+            if cache.len() > 10_000 {
+                cache.retain(|_, &mut exp| exp > now);
+            }
+            cache.insert(key, now.saturating_add(15));
+        }
+        Ok(())
+    }
+
     async fn instance(&self, caller: &CallerContext, now: u64) -> Result<Instance, MailboxError> {
         let who = instance_of(caller, now)?;
-        check_not_revoked(self.anchors.as_ref(), &who).await?;
+        self.check_revocation(&who, now).await?;
         Ok(who)
     }
 
@@ -133,15 +166,17 @@ impl MailboxService {
         params: Value,
         now: u64,
     ) -> Result<Value, MailboxError> {
-        let who = self.instance(caller, now).await?;
+        let who = instance_of(caller, now)?;
         if !self.per_master_register.allow_key(who.master_did.clone(), now)
             || !self.total_register.allow_key((), now)
         {
             counter!("substrate.mailbox.register_refused", "kind" => "rate_limited").increment(1);
             return Err(MailboxError::RateLimited);
         }
+        self.check_revocation(&who, now).await?;
+        let now = syneroym_passport::now_secs();
         let p: RegisterParams = parse(params)?;
-        let record = CheckedRecord::check(&p.record, &who, &self.node_did)?;
+        let record = CheckedRecord::check(&p.record, &who, &self.node_did, now)?;
         let r = blocking(&self.store, move |s| s.register(&who, &record, now)).await?;
         if r.publish_now {
             self.wake.notify_one();
@@ -151,6 +186,7 @@ impl MailboxService {
 
     async fn unregister(&self, caller: &CallerContext, now: u64) -> Result<Value, MailboxError> {
         let who = self.instance(caller, now).await?;
+        let now = syneroym_passport::now_secs();
         let removed = blocking(&self.store, move |s| s.unregister(&who, now)).await?;
         answer(&UnregisterAnswer { removed })
     }
@@ -191,6 +227,7 @@ impl MailboxService {
         now: u64,
     ) -> Result<Value, MailboxError> {
         let who = self.instance(caller, now).await?;
+        let now = syneroym_passport::now_secs();
         let p: ClaimParams = parse(params)?;
         let max = p.max.unwrap_or(MAX_CLAIM_BATCH);
         let ans = blocking(&self.store, move |s| s.claim(&who, max, now)).await?;
@@ -204,6 +241,7 @@ impl MailboxService {
         now: u64,
     ) -> Result<Value, MailboxError> {
         let who = self.instance(caller, now).await?;
+        let now = syneroym_passport::now_secs();
         let p: AckParams = parse(params)?;
         let results = blocking(&self.store, move |s| s.ack(&who, &p.acks, now)).await?;
         answer(&AckAnswer { results })

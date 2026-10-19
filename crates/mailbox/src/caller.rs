@@ -103,7 +103,11 @@ pub(crate) async fn check_not_revoked(
 /// Extracts and verifies the sender identity from `caller`.
 ///
 /// Senders must present a service-instance certificate proving their master
-/// DID.
+/// DID. `sender_of` verifies the certificate signature and validity window
+/// but intentionally skips the network master anchor check to avoid latency
+/// and registry load on deposits and status queries; the receiving service
+/// verifies the inner sealed certificate against its master anchor upon
+/// unsealing.
 pub(crate) fn sender_of(caller: &CallerContext, now_secs: u64) -> Result<Instance, MailboxError> {
     instance_of(caller, now_secs)
 }

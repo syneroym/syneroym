@@ -56,6 +56,14 @@ fn zero_values_are_refused() {
     let err = Limits::from_role(&role).unwrap_err().to_string();
     assert!(err.contains("deposits_per_minute_total"));
 
+    let role = MailboxRole { register_per_minute_per_master: 0, ..Default::default() };
+    let err = Limits::from_role(&role).unwrap_err().to_string();
+    assert!(err.contains("register_per_minute_per_master"));
+
+    let role = MailboxRole { register_per_minute_total: 0, ..Default::default() };
+    let err = Limits::from_role(&role).unwrap_err().to_string();
+    assert!(err.contains("register_per_minute_total"));
+
     let role = MailboxRole { sweep_interval_secs: 0, ..Default::default() };
     let err = Limits::from_role(&role).unwrap_err().to_string();
     assert!(err.contains("sweep_interval_secs"));

@@ -99,7 +99,15 @@ fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             expires_at   INTEGER NOT NULL,
             PRIMARY KEY (sender, deposit_id)
         );
-        CREATE INDEX IF NOT EXISTS receipts_expiry ON receipts (expires_at);",
+        CREATE INDEX IF NOT EXISTS receipts_expiry ON receipts (expires_at);
+        CREATE TABLE IF NOT EXISTS mailbox_stats (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            total_bytes INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT OR IGNORE INTO mailbox_stats (id, total_bytes)
+            SELECT 1, COALESCE(SUM(bytes), 0) FROM queues;
+        UPDATE mailbox_stats SET total_bytes = (SELECT COALESCE(SUM(bytes), 0) FROM queues) WHERE \
+         id = 1;",
     )
 }
 
@@ -188,22 +196,18 @@ pub(super) fn remove_message(
     keep_secs: u64,
     now: u64,
 ) -> Result<(), MailboxError> {
-    let mut stmt = tx.prepare(
-        "SELECT service_id, sender, deposit_id, sealed, deposited_at, expires_at, size FROM \
-         messages WHERE seq = ?1",
-    )?;
+    let mut stmt =
+        tx.prepare("SELECT service_id, sender, deposit_id, size FROM messages WHERE seq = ?1")?;
     let mut rows = stmt.query([seq])?;
-    let info: Option<(String, String, String, String, i64, i64, i64)> =
-        if let Some(r) = rows.next()? {
-            Some((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
-        } else {
-            None
-        };
+    let info: Option<(String, String, String, i64)> = if let Some(r) = rows.next()? {
+        Some((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    } else {
+        None
+    };
     drop(rows);
     drop(stmt);
 
-    let Some((service_id, sender, deposit_id, sealed, deposited_at, expires_at, size)) = info
-    else {
+    let Some((service_id, sender, deposit_id, size)) = info else {
         return Ok(());
     };
 
@@ -213,20 +217,17 @@ pub(super) fn remove_message(
          service_id = ?2",
         rusqlite::params![size, service_id],
     )?;
-    let content_hash = compute_content_hash(&service_id, &sealed);
-    let ttl_secs = from_sql(expires_at).saturating_sub(from_sql(deposited_at));
-    put_receipt(
-        tx,
-        ReceiptEntry {
-            sender: &sender,
-            deposit_id: &deposit_id,
-            destination: &service_id,
-            content_hash: &content_hash,
-            deposited_at: from_sql(deposited_at),
-            ttl_secs,
-            receipt,
-            expires_at: now.saturating_add(keep_secs),
-        },
+    tx.execute(
+        "UPDATE mailbox_stats SET total_bytes = MAX(0, total_bytes - ?1) WHERE id = 1",
+        rusqlite::params![size],
+    )?;
+    let json = serde_json::to_string(receipt)
+        .map_err(|e| MailboxError::Internal(format!("failed to serialize receipt: {e}")))?;
+    let expires = to_sql(now.saturating_add(keep_secs));
+    tx.execute(
+        "UPDATE receipts SET receipt_json = ?1, expires_at = ?2 WHERE sender = ?3 AND deposit_id \
+         = ?4",
+        rusqlite::params![json, expires, sender, deposit_id],
     )?;
     Ok(())
 }

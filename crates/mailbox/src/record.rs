@@ -21,6 +21,7 @@ impl CheckedRecord {
         record: &SignedEndpointInfo,
         owner: &Instance,
         mailbox_did: &str,
+        now: u64,
     ) -> Result<Self, MailboxError> {
         let info = &record.info;
         if info.service_id != owner.master_did {
@@ -42,7 +43,7 @@ impl CheckedRecord {
                 ));
             }
         }
-        if info.not_after <= syneroym_passport::now_secs() {
+        if info.not_after <= now {
             return Err(MailboxError::BadRecord("the record has expired".to_string()));
         }
         let json = serde_json::to_string(record)

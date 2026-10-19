@@ -67,10 +67,7 @@ impl MailboxStore {
                 && receipt_row.content_hash == content_hash
                 && receipt_row.ttl_secs == deposit.ttl_secs
             {
-                return Ok(DepositOutcome {
-                    receipt: Receipt::Stored { at_secs: receipt_row.deposited_at },
-                    evicted: 0,
-                });
+                return Ok(DepositOutcome { receipt: receipt_row.receipt, evicted: 0 });
             }
             return Err(MailboxError::DuplicateDeposit(id));
         }
@@ -78,7 +75,7 @@ impl MailboxStore {
         let evicted = make_room(&tx, &row, sender, size, now, self.limits.receipt_keep_secs)?;
 
         let total: i64 =
-            tx.query_row("SELECT COALESCE(SUM(bytes), 0) FROM queues", [], |r| r.get(0))?;
+            tx.query_row("SELECT total_bytes FROM mailbox_stats WHERE id = 1", [], |r| r.get(0))?;
         if from_sql(total).saturating_add(size as u64) > self.limits.max_total_bytes {
             return Err(MailboxError::MailboxFull);
         }
@@ -100,6 +97,10 @@ impl MailboxStore {
         tx.execute(
             "UPDATE queues SET bytes = bytes + ?1, messages = messages + 1 WHERE service_id = ?2",
             rusqlite::params![to_sql(size as u64), deposit.destination],
+        )?;
+        tx.execute(
+            "UPDATE mailbox_stats SET total_bytes = total_bytes + ?1 WHERE id = 1",
+            rusqlite::params![to_sql(size as u64)],
         )?;
         put_receipt(
             &tx,
@@ -192,8 +193,8 @@ fn check_existing_message(
 struct ExistingReceipt {
     destination: String,
     content_hash: String,
-    deposited_at: u64,
     ttl_secs: u64,
+    receipt: Receipt,
 }
 
 fn check_existing_receipt(
@@ -203,16 +204,18 @@ fn check_existing_receipt(
 ) -> Result<Option<ExistingReceipt>, MailboxError> {
     let res = tx
         .query_row(
-            "SELECT destination, content_hash, deposited_at, ttl_secs FROM receipts WHERE sender \
-             = ?1 AND deposit_id = ?2",
+            "SELECT destination, content_hash, deposited_at, ttl_secs, receipt_json FROM receipts \
+             WHERE sender = ?1 AND deposit_id = ?2",
             rusqlite::params![sender, deposit_id],
             |r| {
-                Ok(ExistingReceipt {
-                    destination: r.get(0)?,
-                    content_hash: r.get(1)?,
-                    deposited_at: from_sql(r.get(2)?),
-                    ttl_secs: from_sql(r.get(3)?),
-                })
+                let destination: String = r.get(0)?;
+                let content_hash: String = r.get(1)?;
+                let deposited_at = from_sql(r.get(2)?);
+                let ttl_secs = from_sql(r.get(3)?);
+                let json: String = r.get(4)?;
+                let receipt = serde_json::from_str::<Receipt>(&json)
+                    .unwrap_or(Receipt::Stored { at_secs: deposited_at });
+                Ok(ExistingReceipt { destination, content_hash, ttl_secs, receipt })
             },
         )
         .optional()?;

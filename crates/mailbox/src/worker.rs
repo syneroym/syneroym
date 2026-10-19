@@ -123,10 +123,11 @@ impl MailboxWorker {
                         }
                         Err(RegisterError::Conflict) => {
                             counter!("substrate.mailbox.republish_conflicts").increment(1);
+                            let next = now.saturating_add(republish_every_secs);
                             if let Err(e) =
-                                blocking(&store, move |s| s.mark_superseded(&service_id)).await
+                                blocking(&store, move |s| s.mark_published(&service_id, next)).await
                             {
-                                warn!(error = %e, "failed to mark record superseded");
+                                warn!(error = %e, "failed to mark record publish deadline");
                             }
                         }
                         Err(_) => {

@@ -2109,9 +2109,9 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 
 **Newest-certificate rule.** The mailbox accepts `claim` and `ack` only from the instance holding the newest valid certificate seen for that queue (highest `issued_at_secs`). If two instances have identical `issued_at_secs`, the one whose `temporary_did` matches the recorded newest certificate is accepted; if neither matches, the first to arrive wins. If an instance certificate is revoked in the master anchor, requests are refused with `not_an_instance` (`-32045`). If a caller presents a certificate older than the newest seen, requests are refused with `stale_instance` (`-32046`).
 
-**Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `Receipt::Expired` (reason `too_many_claims`).
+**Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `Receipt::Rejected` (reason `too_many_claims`) after its 5th visibility window ends.
 
-**Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour. The registry rejects records with older timestamps with HTTP 409 Conflict. On conflict, the mailbox marks the stored record as superseded and stops republishing it until a newer record is registered.
+**Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour (and to the Mainline DHT when `enable_bep0044_dht` is on). The registry rejects records with older timestamps with HTTP 409 Conflict. On conflict, the mailbox retries republishing at the normal republish interval.
 
 **Error codes.** Mailbox JSON-RPC 2.0 error codes:
 

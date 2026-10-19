@@ -25,7 +25,7 @@ async fn the_worker_sweeps_on_its_tick_and_stops_when_cancelled() {
     let now = syneroym_passport::now_secs();
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 1, now).deposit;

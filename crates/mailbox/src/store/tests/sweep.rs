@@ -18,7 +18,7 @@ fn an_expired_message_is_removed_and_its_receipt_says_expired() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 100, now).deposit;
@@ -46,7 +46,7 @@ fn a_receipt_is_kept_for_the_keep_time_then_removed() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let dep = sealed_deposit(&sender, &receiver, 100, now).deposit;
@@ -75,7 +75,7 @@ fn an_idle_queue_is_removed_after_its_lifetime() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let rep1 = store.sweep(now + 299).unwrap();
@@ -98,7 +98,7 @@ fn a_claim_keeps_a_queue_alive() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     store.claim(&receiver.instance(), 10, now + 200).unwrap();
@@ -117,7 +117,7 @@ fn a_record_is_due_after_register_and_not_after_it_was_published() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
 
     let due = store.records_due(now, 10).unwrap();
@@ -137,7 +137,7 @@ fn a_record_past_not_after_is_never_due() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let mut checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let mut checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     checked.not_after = now + 50;
     store.register(&receiver.instance(), &checked, now).unwrap();
 
@@ -166,6 +166,9 @@ fn assert_counters_match(store: &MailboxStore) {
         assert!(m >= 0, "messages underflowed: {m}");
         assert!(b >= 0, "bytes underflowed: {b}");
     }
+    let (stats_bytes,): (i64,) = conn
+        .query_row("SELECT total_bytes FROM mailbox_stats WHERE id = 1", [], |r| Ok((r.get(0)?,)))
+        .unwrap();
     drop(stmt);
     drop(conn);
 
@@ -174,6 +177,7 @@ fn assert_counters_match(store: &MailboxStore) {
     assert_eq!(totals.bytes, real_bytes as u64);
     assert_eq!(totals.messages, q_messages as u64);
     assert_eq!(totals.bytes, q_bytes as u64);
+    assert_eq!(totals.bytes, stats_bytes as u64);
 }
 
 #[test]
@@ -188,7 +192,7 @@ fn the_counters_match_the_messages_after_every_kind_of_removal() {
     let now = receiver.cert.issued_at_secs + 10;
 
     let rec = record(&receiver, NODE_DID);
-    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID).unwrap();
+    let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
     store.register(&receiver.instance(), &checked, now).unwrap();
     assert_counters_match(&store);
 

@@ -210,19 +210,6 @@ impl RegistryClient {
         Ok(())
     }
 
-    /// Deletes an endpoint record from the HTTP registry.
-    pub async fn delete_endpoint(&self, service_id: &str) -> Result<(), RegisterError> {
-        if let Some(registry_url) = &self.registry_url {
-            let url = format!("{}/register/{}", registry_url.trim_end_matches('/'), service_id);
-            let resp =
-                self.http_client.delete(&url).send().await.map_err(RegisterError::Connection)?;
-            if !resp.status().is_success() {
-                return Err(RegisterError::HttpStatus(resp.status()));
-            }
-        }
-        Ok(())
-    }
-
     /// Look up a service or substrate in the community registry.
     /// Handles both full DIDs and shorthash aliases.
     /// If `resolve` is true, it will follow service-to-substrate mappings to
