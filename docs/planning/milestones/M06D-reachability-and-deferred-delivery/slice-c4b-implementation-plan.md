@@ -83,8 +83,8 @@ Two PRs, in this order:
 
 ## 2. Decisions this plan makes (check them before you start)
 
-The owner should confirm the ones marked **(owner)** before PR 2 starts. If
-the owner does not answer, build the recommended form written here.
+The ones marked **(confirmed)** needed an owner decision. The owner
+confirmed the recommended form of both on 2026-10-19. Build them as written.
 
 - **C4b-1. How a refusal reaches the client** (change doc open question 1).
   The router writes the refusal in the framing the preamble asked for, so the
@@ -171,7 +171,7 @@ the owner does not answer, build the recommended form written here.
   `.await`: clone out, release, then await. The SDK re-homes only when it
   can look the service up again: `provided_mechanisms` is `None` and
   `registry_url` is not empty. Otherwise the readable error is returned.
-- **C4b-11 (owner). The client gateway also re-homes.** The change doc
+- **C4b-11 (confirmed). The client gateway also re-homes.** The change doc
   covers the SDK and `ProxyRouter` only. But the gateway caches one
   `SyneroymClient` (one QUIC connection) per service. After a service moves,
   the old host is not a coordinator, so it now refuses instead of forwarding,
@@ -183,8 +183,8 @@ the owner does not answer, build the recommended form written here.
   sent yet (true for every request whose head and body fit the gateway's
   first read; always true for `GET`). Otherwise the 421 response goes to the
   HTTP client as is, and the gateway still drops its cached client so the
-  next request works. Alternative if the owner prefers a smaller PR 2: drop
-  only the cached client on a 421 (no replay) and record a backlog row.
+  next request works. (Rejected: drop only the cached client on a 421, with
+  no replay. The first request after every move would then fail.)
 - **C4b-12. `on_behalf` and identity.** A native call (`CallOrigin::Native`)
   always presents this node's own identity: the instance key and certificate
   of `service_id` when it has an unexpired certificate and a recorded owner,
@@ -206,7 +206,7 @@ the owner does not answer, build the recommended form written here.
   master's own DID (revoking the master would cut every key it ever
   delegated). It waits for the DHT copy (`sync_dht: true`), because the
   process exits right after.
-- **C4b-15 (owner). `publish-anchor` must stop erasing revocations.** Today
+- **C4b-15 (confirmed). `publish-anchor` must stop erasing revocations.** Today
   `roymctl identity publish-anchor` publishes `revoked_keys: vec![]`. Run
   after `revoke-key`, it would silently un-revoke every key, so SP-8 would
   hold only until the next `publish-anchor`. PR 1 changes it to the existing
@@ -244,10 +244,10 @@ Flagged, not guessed. Each has the decision or the action this plan takes.
 4. **SDK retry "in its request path"** is not possible with today's `&self`
    signatures. See C4b-10.
 5. **The client gateway's passthrough** also meets `not_hosted_here` and is
-   not mentioned. See C4b-11 (owner).
+   not mentioned. See C4b-11.
 6. **`publish-anchor` erases revocations**, which defeats SP-8 in practice.
    The change doc says only "a command adds a key ... and keeps the keys that
-   are already in the list". See C4b-15 (owner).
+   are already in the list". See C4b-15.
 7. **A command already writes `revoked_keys`**: `RegistryClient::
    revoke_instance_key` (used by the App Supervisor). The backlog row "No
    operator command revokes a person's temporary key" is correct that no
@@ -1066,8 +1066,6 @@ there).
        }
    }
    ```
-   If the owner chooses the smaller form in C4b-11, keep only the
-   `disconnect()` line and return `Ok(())`.
 
 ### Step 11 — Browser handshake key
 
@@ -1308,7 +1306,7 @@ In `docs/planning/deferred-backlog.md`:
   - *An `on_behalf` proof older than 15 minutes refuses the whole stream*
     (long-lived streams, §3 item 12). TBD.
   - *Gateway passthrough cannot replay a request after it has sent body
-    bytes* (if C4b-11 recommended form is built; §7 Gateway). TBD.
+    bytes* (§7 Gateway). TBD.
   - *`EndpointRegistry::hosts_service` scans all endpoints per stream* (§7,
     perf, only if it shows in a profile). TBD.
 - Keep "A person with a session cookie gets no `on_behalf`" as is.
