@@ -16,7 +16,8 @@ Read these before you change anything:
   `mod.rs` under `src/`), no hard-coded ports in substrate tests, and the
   two-sided ratchets (oversized test files must never grow; when one
   shrinks, lower its entry in `xtask/oversized-test-files.txt`).
-  **This plan names its decisions `C4b-1` to `C4b-17`. Those ids are for
+  **This plan names its decisions `C4b-1` to `C4b-19` (18 and 19 were added
+  after review and sit next to the decision they extend). Those ids are for
   this plan only. When a step says "for the reason in C4b-n", write the
   reason itself in the comment, never the id.**
 - `task.md` in this folder: §3 slices C4b, C4c, C5 (forward note "from C4b
@@ -106,6 +107,38 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   `-32096` and `-32097` are free today (the highest used is `-32095`,
   `crates/async_queue/src/dedup.rs`). The old `Unauthorized\n` line goes
   away; nothing outside `io.rs` reads it.
+
+  After it writes a refusal, the router flushes, shuts down its write half
+  (QUIC `FIN`), and returns `Ok(())`. A refusal is an answer, not a router
+  error, so `RouteHandler::accept` does not log it at `error`.
+- **C4b-18. A client reads the answer even when its own write fails.** When
+  the router refuses and returns, it drops the read half of the stream, and
+  QUIC sends `STOP_SENDING`. Both Rust clients write the whole request before
+  they read (`hop.rs:79-84`, `client.rs:533-537`). With a request larger than
+  the stream's flow-control window (a deploy with WASM bytes), the client's
+  write fails first, so `IrohHop` reports `Transport` (never re-homed) and
+  the SDK reports a write error, not `-32096`. The refusal bytes are already
+  in the client's receive buffer. So `IrohHop::call` and the SDK's
+  `request_once` do this: if writing the preamble or the request frame fails,
+  try `framing::read_frame` once, bounded by what is left of the attempt
+  timeout (at most 2 s). A frame that parses as a JSON-RPC response is the
+  answer; otherwise return the original write error. Rejected: the router
+  reads and discards the request before it closes. That makes every refusal
+  cost the node the full upload, and a bound on the discard would bring back
+  the same failure above the bound.
+- **C4b-19. Queued calls retry on the two new codes.** Today a refused
+  stream looks like a frame-length error, which is `Transport`, so a queued
+  call is retried. After C4b, `Callee { code: -32097 }` would be `Terminal`
+  in `syneroym_router::proxy_outbox::disposition_of`
+  (`proxy_outbox.rs:105-123`) and in `syneroym_conversation::transport::
+  classify` (`crates/conversation/src/transport.rs:632-656`). Some causes are
+  temporary: the 5 s master-anchor lookup timeout, and clock skew. So both
+  functions classify `NOT_HOSTED_HERE_RPC_CODE` and
+  `STREAM_UNAUTHENTICATED_RPC_CODE` like `SERVICE_NOT_FOUND_RPC_CODE`
+  (`Disposition::Retry`). A refusal that never clears (an expired
+  certificate) then ends in the dead-letter list after the retry budget,
+  which is the same end the old `Transport` path had. A queued call cannot
+  carry a forged signature: the node signs it itself.
 - **C4b-2. Order of checks in `handle_stream`.** A forwarder must not check
   the caller (change doc), and the signature must be checked against the
   `interface` as sent, before `rewrite_empty_http_interface` changes it. So:
@@ -136,6 +169,20 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   permissive parse (a bad `delegation` or `ucan` becomes `None`). This is
   safe for the old fields only because a dropped `delegation` now still
   needs a valid signature by `pubkey`.
+
+  The parse runs in `read_preamble`, before the forward decision, so a
+  coordinator drops a stream with a malformed `ts`, `sig` or `on_behalf`
+  instead of forwarding it. This is a deviation from the letter of ADR-0002
+  A1 rule 3 ("checks nothing about the caller"), recorded as such. Reasons:
+  rule 3 exists so that a forwarder never refuses a *valid* stream because of
+  its own clock or a slow anchor lookup; a syntax check has neither cause.
+  A forwarder already drops a preamble it cannot parse today (no
+  `service_id`). And a forwarder writes the preamble again
+  (`to_preamble_line`), so it must parse the fields it writes; keeping raw
+  strings only for the forwarder would give the type two shapes. Our writers
+  never produce a malformed field (round-trip tests, Step 14). On a parse
+  error the router logs at `debug` (with `route_text`), writes nothing and
+  returns `Ok(())`: without a parsed preamble it does not know the framing.
 - **C4b-6. Where the `on_behalf` proof is kept: inside `CallerProof`.**
   ADR-0016 A2 says "a service that received `on_behalf` passes the same value
   on". So the receiving node must remember it. `CallerContext` has about 130
@@ -145,6 +192,15 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   (`CallerProof::to_pass_on`). `CallerProof.pubkey_hex` and
   `delegation_json` keep their meaning (the immediate caller), so
   `crates/mailbox/src/caller.rs` is unchanged.
+
+  The signed part is **optional**: `CallerProof::signed:
+  Option<PreambleSignature>`. The router always fills it. C5 and C6 build a
+  `CallerProof` in production for a same-node call (an instance key and
+  certificate, with no stream and so no signature); they leave `signed` as
+  `None`. `to_pass_on()` returns `Option<OnBehalfProof>`: the carried
+  `on_behalf`, else this caller's own proof when it is signed, else `None`.
+  So an unsigned local proof is never sent as an `on_behalf` that every
+  destination would refuse; the call travels with the node's identity only.
 - **C4b-7. The `on_behalf` wire type lives in `syneroym-rpc`.** Both
   `CallerProof` (rpc) and `RoutePreamble` (router) need it, and router
   depends on rpc. Name: `OnBehalfProof`. Its JSON is exactly the change doc's
@@ -171,6 +227,14 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   `.await`: clone out, release, then await. The SDK re-homes only when it
   can look the service up again: `provided_mechanisms` is `None` and
   `registry_url` is not empty. Otherwise the readable error is returned.
+
+  Two requests can get `not_hosted_here` at the same time. Re-homing is
+  therefore serialised by a `tokio::sync::Mutex<()>` (`rehome_lock`) and is
+  compare-before-replace: each request passes the `stable_id()` of the
+  connection it used; under the lock, if the current connection has another
+  `stable_id`, another request already re-homed, and this one just retries
+  on the current connection. So a second re-home never replaces the
+  connection the first one just opened.
 - **C4b-11 (confirmed). The client gateway also re-homes.** The change doc
   covers the SDK and `ProxyRouter` only. But the gateway caches one
   `SyneroymClient` (one QUIC connection) per service. After a service moves,
@@ -200,6 +264,12 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   certificate, revocation) and set `caller.session.anchor_did =
   Some(verified.master_did)`. `caller_did`, `subject_did` and `auth` stay the
   immediate caller's. Any failure refuses the stream (`unauthenticated`).
+
+  A refused stream is logged once, at `debug`, with the reason, and counted
+  in a new metric `router.streams.refused` with label `reason`
+  (`unauthenticated`, `not_hosted_here`, `unknown_interface`). Not `warn`
+  or `error`: a flood of forged streams must not fill the logs. An operator
+  sees refusals in the metric; a client sees the readable refusal.
 - **C4b-14. Revoke command name and flags** (change doc open question 2):
   `roymctl identity revoke-key --master <name> --key <did:key> --registry-url
   <url>`. It refuses a `--key` that is not a `did:key`, and refuses the
@@ -226,6 +296,11 @@ confirmed the recommended form of both on 2026-10-19. Build them as written.
   only *whether* `epk`, `sig`, `ucan` and `on_behalf` are present. Never
   `sig`, the certificate, the `ucan` chain or the `on_behalf` value. Parse
   errors stop echoing the raw line; they echo only the text before `?`.
+  The same rule covers the other types that hold proof material:
+  `CallerProof`, `PreambleSignature`, `OnBehalfProof` and `OutboundIdentity`
+  get a hand-written `Debug` that prints the key, the master DID and `ts`,
+  and only whether a signature, certificate or `on_behalf` is present. So a
+  future `?caller` log field cannot leak them.
 
 ## 3. Things in task.md and the change doc that are ambiguous or stale
 
@@ -257,9 +332,11 @@ Flagged, not guessed. Each has the decision or the action this plan takes.
 9. **Stale comments that describe the old forwarding of the caller's proof**
    (they must be rewritten in Step 12): `crates/rpc/src/fdae_fetch.rs:64-72`
    ("`invoke_remote_at` already forwards `caller.proof` verbatim"),
-   `crates/rpc/src/native.rs:35-44` (`CallerContext::proof` doc),
-   `crates/rpc/src/proxy.rs:64-67`, and the long comment block at the top of
-   `invoke_remote_at`.
+   `crates/rpc/src/fdae_fetch.rs:78-84` (cites the removed "`(None,
+   Native)` arm"), `crates/rpc/src/native.rs:35-44` (`CallerContext::proof`
+   doc), `crates/rpc/src/proxy.rs:64-67`,
+   `crates/router/src/proxy/router.rs:131-137` ("re-verifies the forwarded
+   proof"), and the long comment block at the top of `invoke_remote_at`.
 10. **An existing test asserts the old behaviour.**
     `crates/coordinator_iroh/tests/multi_hop_relay.rs`
     `test_cross_node_native_capability_identity_forwarding` asserts that the
@@ -358,24 +435,45 @@ prefers one branch per slice). Conventional commit, for example
        registry_url: String,
    },
    ```
-2. New `pub async fn revoke_key(dir: &Path, master: &str, key: &str,
-   registry_url: &str) -> anyhow::Result<()>` (public so a substrate test can
-   call it, like `roymctl::commands::coordinator::leases`):
+2. Two functions, so a test can turn the DHT off (with the DHT on,
+   `sync_dht: true` waits for a real Mainline DHT publish,
+   `dht_registry/client.rs:30-43`, which is slow or hangs without network):
+
+   ```rust
+   /// What `identity revoke-key` runs: the HTTP registry plus the DHT, and
+   /// waits for the DHT copy because the process exits right after.
+   async fn handle_revoke_key(dir: &Path, master: &str, key: &str, registry_url: &str)
+       -> anyhow::Result<()>
+   {
+       let client = RegistryClient::new(true, Some(registry_url.to_string()));
+       revoke_key(&client, dir, master, key, true).await
+   }
+
+   /// Public so a substrate test can call it with a DHT-less client, like
+   /// `roymctl::commands::coordinator::leases`.
+   pub async fn revoke_key(
+       client: &RegistryClient, dir: &Path, master: &str, key: &str, sync_dht: bool,
+   ) -> anyhow::Result<()>
+   ```
+   `revoke_key` body:
 
    ```text
    load master identity (require_key_present(dir, master, "Master identity"))
    master_did = derive_did_key(master.public_key())
    substrate::resolve_did_key(key)  -> on Err: bail "--key must be a did:key: {e}"
    if key == master_did             -> bail "--key names the master itself; revoke a delegated key"
-   RegistryClient::new(true, Some(registry_url)).revoke_key(&master, key, true).await?
-   println!("Revoked {key} for {master_did} at {registry_url}")
+   client.revoke_key(&master, key, sync_dht).await?
+   println!("Revoked {key} for {master_did}")
    ```
-   Do both checks before any network call.
+   Do both checks before any network call. A `RegistryClient` built with
+   `enable_dht = false` has no DHT client, so `publish_master_anchor` skips
+   the DHT step whatever `sync_dht` says.
 3. `handle_publish_anchor`: replace the `publish_master_anchor(&master_id,
    vec![], None, &identity, true)` call with
    `client.republish_master_anchor(&identity, true)`. Update the
    `PublishAnchor` doc line: it keeps the revoked keys already published.
-4. Wire `IdentityCommands::RevokeKey` in the `match` at `identity.rs:407`.
+4. Wire `IdentityCommands::RevokeKey` to `handle_revoke_key` in the `match`
+   at `identity.rs:407`.
 
 ### Step 1.3 — Tests (PR 1)
 
@@ -383,20 +481,25 @@ prefers one branch per slice). Conventional commit, for example
   lists the three flags.
 - `apps/roymctl/src/commands/identity.rs` has no `tests` module today. Add
   `identity/tests.rs` (module layout rule) with two tests: a non-`did:key`
-  `--key` and the master's own DID are both refused, with the registry URL
-  `http://registry.invalid` (a host that never resolves, so the test has no
-  port literal), proving the checks run before any network call.
+  `--key` and the master's own DID are both refused, with a DHT-less client
+  for the registry URL `http://registry.invalid` (a host that never
+  resolves, so the test has no port literal). Assert the error text
+  (`"must be a did:key"`, `"names the master itself"`): a network failure
+  also returns `Err`, so only the text proves the checks ran before any
+  network call.
 - New `crates/substrate/tests/revoke_key_e2e.rs` (SP-8). Boot one
   `SubstrateNode` (it serves the registry). Create a master identity and save
   it under `<tempdir>/identities/<name>.key` like
   `relay_passport_admin.rs:64-67`. Issue a `routing`-scoped certificate for a
   fresh temporary key; publish the anchor (`refresh_master_anchor`). A
   `SyneroymClient::new_with_identity(node_did, registry_url, temp)
-  .with_delegation(cert)` calls `orchestrator`/`readyz`: it succeeds. Call
-  `roymctl::commands::identity::revoke_key(dir, name, temp_did,
-  registry_url)`. A *new* client with the same key and certificate fails.
-  Then run `handle_publish_anchor` (through a public wrapper, or call
-  `republish_master_anchor` directly) and check the key is still refused.
+  .with_registry_dht(false).with_delegation(cert)` calls
+  `orchestrator`/`readyz`: it succeeds. Call
+  `roymctl::commands::identity::revoke_key(&RegistryClient::new(false,
+  Some(registry_url)), dir, name, temp_did, false)`. A *new* client with the
+  same key and certificate fails. Then call `republish_master_anchor(&master,
+  false)` on the same DHT-less client (what `publish-anchor` now runs) and
+  check the key is still refused. No step of this test touches the DHT.
   In PR 1 the failure is not yet readable (it is the frame-length error), so
   assert only `is_err()`. PR 2 tightens the assertion to
   `STREAM_UNAUTHENTICATED_RPC_CODE` (Step 14).
@@ -433,29 +536,37 @@ the whole PR passes `mise run verify` at the end.
    pub const STREAM_UNAUTHENTICATED_RPC_CODE: i32 = -32097;
    ```
    Re-export both from `crates/rpc/src/lib.rs`.
-2. `crates/rpc/src/native.rs`:
+2. `crates/rpc/src/native.rs` (C4b-6, C4b-17):
 
    ```rust
    /// See [`CallerContext::proof`].
-   #[derive(Clone, Debug, Default, PartialEq, Eq)]
+   #[derive(Clone, Default, PartialEq, Eq)]
    pub struct CallerProof {
        /// Hex Ed25519 public key (the preamble's `pubkey=`).
        pub pubkey_hex: String,
        /// JSON `DelegationCertificate` (the preamble's `delegation=`, pre-hex).
        pub delegation_json: Option<String>,
-       /// The fields the caller signed (ADR-0002 A1), as it sent them.
-       pub service_id: String,
-       pub interface: String,
-       pub ts: u64,
-       /// Hex Ed25519 signature (the preamble's `sig=`).
-       pub sig_hex: String,
+       /// What the caller signed on its stream (ADR-0002 A1). The router
+       /// always sets it. `None` for a proof built on this node for a
+       /// same-node call, which has no stream to sign.
+       pub signed: Option<PreambleSignature>,
        /// The original caller's proof that this caller passed on
        /// (ADR-0016 Amendment 2). `None` when this caller is the original.
        pub on_behalf: Option<OnBehalfProof>,
    }
 
+   /// The signed fields of a preamble, as the caller sent them.
+   #[derive(Clone, PartialEq, Eq)]
+   pub struct PreambleSignature {
+       pub service_id: String,
+       pub interface: String,
+       pub ts: u64,
+       /// Hex Ed25519 signature (the preamble's `sig=`).
+       pub sig_hex: String,
+   }
+
    /// The original caller's proof, as it travels in `on_behalf=`.
-   #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+   #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
    #[serde(deny_unknown_fields)]
    pub struct OnBehalfProof {
        pub pubkey: String,
@@ -468,25 +579,48 @@ the whole PR passes `mise run verify` at the end.
 
    impl CallerProof {
        /// The proof a native call made for this caller passes on: the one
-       /// this caller carried, else this caller's own. Never wrapped.
+       /// this caller carried, else this caller's own when it is signed.
+       /// `None` for an unsigned local proof: a destination would refuse
+       /// it, so it is not sent. Never wrapped.
        #[must_use]
-       pub fn to_pass_on(&self) -> OnBehalfProof {
-           self.on_behalf.clone().unwrap_or_else(|| OnBehalfProof {
+       pub fn to_pass_on(&self) -> Option<OnBehalfProof> {
+           if let Some(carried) = &self.on_behalf {
+               return Some(carried.clone());
+           }
+           let signed = self.signed.as_ref()?;
+           Some(OnBehalfProof {
                pubkey: self.pubkey_hex.clone(),
                delegation: self.delegation_json.clone(),
-               service_id: self.service_id.clone(),
-               interface: self.interface.clone(),
-               ts: self.ts,
-               sig: self.sig_hex.clone(),
+               service_id: signed.service_id.clone(),
+               interface: signed.interface.clone(),
+               ts: signed.ts,
+               sig: signed.sig_hex.clone(),
            })
        }
    }
    ```
-   Re-export `OnBehalfProof` from `lib.rs`. Rewrite the `CallerContext::proof`
-   doc comment: the destination re-verifies it; a node never presents it as
-   its own identity; a native call passes it on in `on_behalf`.
-   `#[derive(Default)]` is for tests: every test literal that builds a
-   `CallerProof` adds `..Default::default()` (sites listed in Step 13).
+   Hand-written `Debug` for all three (C4b-17): `CallerProof` prints
+   `pubkey_hex`, `delegation: present|absent`, `signed` (its `Debug`), and
+   `on_behalf` (its `Debug`); `PreambleSignature` prints `service_id`,
+   `interface`, `ts`, `sig: present`; `OnBehalfProof` prints `pubkey`,
+   `delegation: present|absent`, `service_id`, `interface`, `ts`,
+   `sig: present`. `CallerContext` keeps its derived `Debug`, which now uses
+   these.
+
+   Re-export `PreambleSignature` and `OnBehalfProof` from `lib.rs`. Rewrite
+   the `CallerContext::proof` doc comment: the destination re-verifies it; a
+   node never presents it as its own identity; a native call passes it on in
+   `on_behalf` when it is signed. `#[derive(Default)]` gives an unsigned
+   proof: test literals add `..Default::default()` (sites in Step 13), and C5
+   and C6 may build one in production for a same-node call.
+3. **Retry on the new codes** (C4b-19). In
+   `crates/router/src/proxy_outbox.rs` `disposition_of` and
+   `crates/conversation/src/transport.rs` `classify`, add
+   `NOT_HOSTED_HERE_RPC_CODE` and `STREAM_UNAUTHENTICATED_RPC_CODE` to the
+   `Callee` arm that already lists `SERVICE_NOT_FOUND_RPC_CODE`, with one
+   comment line: the refusal comes before any dispatch, and some of its causes
+   (an anchor lookup timeout, clock skew) clear on their own. Extend each
+   function's existing unit test with both codes.
 
 ### Step 3 — `crates/router/src/preamble.rs`: fields, signing, redaction
 
@@ -521,8 +655,9 @@ Then:
 2. **`RoutePreamble::new(transport, protocol, service_id, interface)`**, every
    optional field `None`. `binary_json_rpc` and `from_http_path` call it.
    Every struct literal in the workspace (the compiler lists them: `sdk`
-   `passthrough_with_conn`, `route_handler/http/blobs.rs` ×2, and the test
-   files in Step 13) uses `RoutePreamble { .., ..RoutePreamble::new(..) }` or
+   `passthrough_with_conn` and the test files in Step 13; the two in
+   `route_handler/http/blobs.rs` already end in `..self.preamble.clone()` and
+   need no change) uses `RoutePreamble { .., ..RoutePreamble::new(..) }` or
    sets the four new fields to `None`.
 3. **Parse** (C4b-5). In the query loop add:
 
@@ -542,10 +677,11 @@ Then:
 5. **`has_identity_fields(&self) -> bool`**: any of `pubkey`, `delegation`,
    `ucan`, `ts`, `sig`, `on_behalf` is `Some` (C4b-4).
 6. **`caller_proof(&self) -> Option<CallerProof>`**: `Some` when `pubkey`,
-   `ts` and `sig` are all `Some`; copies `service_id` and `interface` as they
-   are *now* (callers use it before any rewrite), `delegation_json` from
-   `delegation.to_json()`, and `on_behalf`. Used by `build_caller` and by
-   tests that need a real signed proof.
+   `ts` and `sig` are all `Some`. It fills `pubkey_hex`, `delegation_json`
+   (from `delegation.to_json()`), `signed: Some(PreambleSignature { .. })`
+   with `service_id` and `interface` as they are *now* (callers use it
+   before any rewrite), and `on_behalf`. Used by `build_caller` and by tests
+   that need a real signed proof.
 7. **`preamble/proof.rs`**:
 
    ```rust
@@ -587,7 +723,7 @@ Then:
 
    /// Who an outbound call presents itself as. Chosen once per call, and
    /// signed into the preamble on every attempt.
-   #[derive(Clone, Debug)]
+   #[derive(Clone)]   // hand-written Debug: key DID, master DID, on_behalf present or not
    pub struct OutboundIdentity {
        pub key: Arc<Identity>,
        pub delegation: Option<DelegationCertificate>,
@@ -726,9 +862,10 @@ impl Refusal {
     fn json_body(self) -> Vec<u8>;       // JsonRpcErrorResponse, id: None, data: {"reason": ..}
 }
 
-/// Writes `refusal` in the framing `transport` uses, then flushes.
-/// Errors are ignored: the peer may already be gone, and the stream ends
-/// either way.
+/// Writes `refusal` in the framing `transport` uses, flushes, shuts the
+/// write half down (QUIC `FIN`), logs it once at `debug` and counts it in
+/// `router.streams.refused{reason}`. Write errors are ignored: the peer may
+/// already be gone, and the stream ends either way.
 pub(crate) async fn write_refusal(
     writer: &mut (impl AsyncWrite + Unpin), transport: RouteTransport, refusal: Refusal,
 )
@@ -766,19 +903,30 @@ Declare `mod refusal;` in `route_handler.rs`.
    ```text
    stop_signal = stream.stop_signal()
    split, BufReader
-   preamble = timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader))??
+   preamble = match timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await {
+       Err(_) => return Err(anyhow!("timed out reading route preamble")),   // as today
+       Ok(Err(e)) => { debug!("[Router] unreadable preamble: {e}"); return Ok(()) }   // C4b-5
+       Ok(Ok(p)) => p,
+   }
    debug!("[Router] Preamble received: {}", preamble.redacted())
 
    if !self.inner.registry.hosts_service(&preamble.service_id) {
        if self.inner.forwards {
            return self.relay_to_next_hop(preamble, reader, writer).await   // no caller check
        }
-       debug!(service_id, "not hosted here; refusing");
        write_refusal(&mut writer, preamble.transport, Refusal::NotHostedHere).await;
        return Ok(())
    }
 
-   caller = self.verify_caller(&preamble, &mut writer).await?   // signature uses interface as sent
+   // The signature is checked against the interface as sent, before the rewrite below.
+   let caller = match self.verify_caller(&preamble).await {
+       CallerCheck::Anonymous => None,
+       CallerCheck::Verified(caller) => Some(caller),
+       CallerCheck::Refused => {
+           write_refusal(&mut writer, preamble.transport, Refusal::Unauthenticated).await;
+           return Ok(())
+       }
+   };
 
    self.rewrite_empty_http_interface(&mut preamble)
    let Some((endpoint, canonical_interface)) = registry.lookup(..) else {
@@ -790,19 +938,23 @@ Declare `mod refusal;` in `route_handler.rs`.
 4. Replace `read_and_verify_preamble` with `verify_caller`:
 
    ```rust
-   /// Builds the caller of a stream this node hosts. `Ok(None)` is an
-   /// anonymous caller: the preamble has no identity field at all. Any other
-   /// preamble must prove its key, or the stream is refused.
-   async fn verify_caller(&self, preamble: &RoutePreamble, writer: &mut (impl AsyncWrite + Unpin))
-       -> Result<Option<CallerContext>>
-   {
-       if !preamble.has_identity_fields() { return Ok(None); }
+   /// The caller of a stream this node hosts.
+   enum CallerCheck {
+       /// The preamble has no identity field at all.
+       Anonymous,
+       Verified(CallerContext),
+       /// The preamble names an identity that did not prove itself.
+       Refused,
+   }
+
+   async fn verify_caller(&self, preamble: &RoutePreamble) -> CallerCheck {
+       if !preamble.has_identity_fields() { return CallerCheck::Anonymous; }
        match self.check_caller(preamble).await {
-           Ok(caller) => Ok(Some(caller)),
+           Ok(caller) => CallerCheck::Verified(caller),
            Err(e) => {
-               tracing::warn!(service_id = %preamble.service_id, "caller refused: {e}");
-               write_refusal(writer, preamble.transport, Refusal::Unauthenticated).await;
-               Err(e)
+               // Once, at debug (C4b-13): forged streams must not flood the logs.
+               debug!(service_id = %preamble.service_id, "caller refused: {e}");
+               CallerCheck::Refused
            }
        }
    }
@@ -825,7 +977,9 @@ Declare `mod refusal;` in `route_handler.rs`.
    `build_caller` builds `proof: preamble.caller_proof()` instead of its
    inline `CallerProof { .. }`. Its doc comment's last line about a malformed
    delegation being a hard reject "in `handle_stream`" stays true; point it at
-   `verify_caller`. The error text from `verify_presented` names DIDs and
+   `verify_caller`. Every refusal path in `handle_stream` returns `Ok(())`,
+   so `RouteHandler::accept` (`route_handler.rs:571-576`) does not log it a
+   second time at `error`. The error text from `verify_presented` names DIDs and
    reasons only, never `sig` or a certificate, so logging it is fine (SP-9).
 5. `relay_to_next_hop`: replace the "Forwarding original preamble" debug line
    with `debug!("[Router] Forwarding preamble: {}", preamble.redacted())`.
@@ -854,8 +1008,25 @@ Declare `mod refusal;` in `route_handler.rs`.
 
    ```rust
    let preamble = identity.map_or_else(|| route.clone(), |id| id.apply(route, now_secs()));
-   send.write_all(preamble.to_preamble_line().as_bytes()).await...
    ```
+   Then the write and read become (C4b-18):
+
+   ```text
+   let wrote = async {
+       send.write_all(preamble line)?; framing::write_frame(&mut send, &body)?; send.finish()
+   }.await;
+   let frame = match wrote {
+       Ok(()) => framing::read_frame(&mut recv).await.map_err(transport_err)?,
+       // The node may have answered and stopped reading (a refusal before a
+       // large request was fully sent). Its answer is still in our receive buffer.
+       Err(write_err) => match timeout(REFUSAL_READ_GRACE, framing::read_frame(&mut recv)).await {
+           Ok(Ok(frame)) if !frame.is_empty() => frame,
+           _ => return Err(transport_err(write_err)),
+       },
+   };
+   ```
+   `REFUSAL_READ_GRACE = 2 s`, a private const in `hop.rs`; the whole attempt
+   still sits under the call `timeout`.
    `MockHop` (`proxy/tests/helpers.rs`) applies the identity the same way
    (with a fixed `now`) and stores the signed preamble in `last_preamble`, so
    existing assertions on `pubkey`/`delegation` keep working.
@@ -873,7 +1044,7 @@ Declare `mod refusal;` in `route_handler.rs`.
                let mut id = service_id.as_deref()
                    .and_then(|sid| self.instance_identity(sid))
                    .unwrap_or_else(|| OutboundIdentity::key_only(self.node_identity.clone()));
-               id.on_behalf = req.caller.proof.as_ref().map(CallerProof::to_pass_on);
+               id.on_behalf = req.caller.proof.as_ref().and_then(CallerProof::to_pass_on);
                Some(id)
            }
            CallOrigin::Guest { service_id } => self.instance_identity(service_id),
@@ -967,27 +1138,47 @@ there).
        fn can_rehome(&self) -> bool {
            self.provided_mechanisms.is_none() && !self.registry_url.is_empty()
        }
-
-       /// Looks the service up again and swaps in a new connection.
-       async fn rehome(&self) -> Result<()> {
-           let target = self.registry_lookup_override.as_deref().unwrap_or(&self.service_id);
-           let info = self.registry_client().lookup(target, true).await?.info;
-           let conn = self.dial(info.mechanisms).await?;
-           let old = self.connection.lock()..replace(conn);
-           if let Some(TransportConnection::Iroh { endpoint, .. }) = old {
-               self.pending_closes.lock()..push(spawn_background_close(endpoint));
-           }
-           Ok(())
-       }
    }
 
    pub(crate) fn is_not_hosted_here(e: &anyhow::Error) -> bool {
        e.downcast_ref::<JsonRpcError>().is_some_and(|j| j.code == NOT_HOSTED_HERE_RPC_CODE)
    }
    ```
+   With C4b-10's compare-before-replace, `rehome` takes the connection the
+   failed request used:
+
+   ```rust
+   /// Swaps in a connection to the service's current host, unless another
+   /// request already did since `failed` was used.
+   async fn rehome(&self, failed: &TransportConnection) -> Result<()> {
+       let _serial = self.rehome_lock.lock().await;
+       if self.current_stable_id() != Some(stable_id(failed)) {
+           return Ok(());   // another request re-homed; retry on its connection
+       }
+       let target = self.registry_lookup_override.as_deref().unwrap_or(&self.service_id);
+       let info = self.registry_client().lookup(target, true).await?.info;
+       let conn = self.dial(info.mechanisms).await?;
+       let old = lock(&self.connection).replace(conn);
+       if let Some(TransportConnection::Iroh { endpoint, .. }) = old {
+           lock(&self.pending_closes).push(spawn_background_close(endpoint));
+       }
+       Ok(())
+   }
+   ```
+   New field
+   `rehome_lock: tokio::sync::Mutex<()>`. Closing the old endpoint can cut a
+   request still in flight on it; that request was talking to a node that
+   no longer hosts the service, so it would have been refused anyway.
+
    `request_raw` becomes a two-try wrapper around today's body (renamed
-   `request_once`): on `Err(e)` with `is_not_hosted_here(&e) &&
-   self.can_rehome()`, call `rehome()` and `request_once` again, once.
+   `request_once`, which now also returns the `TransportConnection` it used):
+   on `Err(e)` with `is_not_hosted_here(&e) && self.can_rehome()`, call
+   `rehome(&used)` and `request_once` again, once.
+
+   `request_once` and `open_request_stream` also follow C4b-18: if writing the
+   preamble or the request frame fails, try `framing::read_frame` once within
+   2 s; a frame that parses as a JSON-RPC response (success or error) is the
+   answer, else return the write error.
    `subscribe` does the same around "open stream + read the ack": move the
    ack parse to the same error-response fallback `request_raw` uses, so a
    refusal frame becomes a `JsonRpcError` there too.
@@ -1033,6 +1224,11 @@ there).
    }
    // Phase 2: copy both ways until either side closes (as today).
    ```
+   C4b-18 applies here too: if writing the preamble, `initial_bytes` or a
+   forwarded client chunk fails in phase 1, stop reading from the client
+   (`tcp_open = false`, `client_sent_more` stays as it was) and keep waiting
+   for the host's first bytes for at most 2 s; a refusal found there is
+   handled as above, otherwise return the write error.
    `starts_with_not_hosted_refusal`: the chunk starts with `b"HTTP/1.1 421 "`
    and its header block (up to the first `\r\n\r\n`, or the chunk end)
    contains `x-syneroym-refusal: not_hosted_here` (ASCII case-insensitive
@@ -1104,15 +1300,41 @@ These build preambles or `CallerProof`s and break or start failing:
   `static_assets_e2e.rs:126`, `http_passthrough_e2e.rs:117`,
   `cert_renewal_e2e.rs:90-104` (it calls `verify_preamble` directly: sign
   with the instance key it already derives), and any other site the compiler
-  or a failing test shows (`websocket_e2e.rs`, `stream_client_e2e.rs`,
-  `miniapp_demo1_wasm_e2e.rs`, `router/tests/*` use `RoutePreamble` —
-  check each).
+  or a failing test shows.
+- `websocket_e2e.rs:154-175` and `miniapp_demo1_wasm_e2e.rs:180-197` each
+  have the same `open_http_stream`, which sends a `pubkey` with no `sig` and
+  would now be refused. Replace both with one signed helper,
+  `open_http_stream(conn, service_id, Option<&Identity>)`, in a new
+  `crates/substrate/tests/common/streams.rs` (declared in `common/mod.rs`),
+  which builds the preamble with `RoutePreamble::new` and calls `sign` when
+  an identity is given. Use the same helper in `guest_http_e2e.rs`,
+  `static_assets_e2e.rs` and `http_passthrough_e2e.rs` where their helper
+  has the same shape (the duplication gate).
+- `crates/router/tests/native_dispatch_identity/helpers.rs:200`
+  (`preamble_for`): a struct literal; use `RoutePreamble::new`. Its callers
+  pass `caller` separately and need no signature.
+- Checked, no change expected: `router/tests/native_dispatch_identity/
+  {cross_service_fetch,resolve_relation}.rs` build `CallerContext` with
+  `proof: None` and dispatch on one node, so no proof crosses a wire.
+- `crates/substrate/tests/federated_fdae_e2e.rs`: the only real two-node
+  test of the one production native call that carries a proof
+  (`fdae_fetch.rs:109`). Alice connects with her own key and a `ucan`; node
+  B's FDAE fetch calls `resolve-relation(principal = alice)` on node A.
+  Before C4b, A saw alice's key as the caller; after C4b, A sees B's
+  instance identity with `on_behalf` = alice, and `anchor_did` = alice makes
+  the relation check pass. The test should pass unchanged, and it is the
+  real-node evidence for SP-7's "`resolve-relation(principal = P)`
+  succeeds". Update its comments that describe the old forwarding (around
+  line 183, "alice's forwarded `resolve-relation` identity"), and add one
+  assertion if a cheap one exists (for example the second query in the bad
+  app path still fails for the reason it states).
 - `RemoteHop::call` callers in tests: `MockHop` (Step 8.1).
 - `remote_dispatch.rs` tests that assert "a native call with a proof
   presents the caller's key" now assert: `pubkey` is the node (or instance)
   key, and `on_behalf` equals the caller's proof. Rename such tests to match.
 - `crates/sdk/src/tests.rs:175` (`build_preamble`): assert `ts` and `sig`
   are set and verify with `HandshakeVerifier::verify_preamble`.
+- The two classifier unit tests (Step 2.3).
 - `crates/substrate/tests/stream_client_e2e.rs` (unregistered protocol):
   today it checks "no hang, no bytes". After C4b the node may answer with a
   refusal; assert the refusal (or no bytes) explicitly so the test keeps its
@@ -1144,13 +1366,13 @@ See §6 for the map to criteria. Files:
 3. `crates/router/src/handshake/tests/on_behalf.rs`: valid P proof; P proof
    with a forged `sig`; with old `ts`; with a revoked P key; with an
    unreadable `delegation`.
-4. `crates/router/tests/signed_preamble.rs` (new integration test; drive
-   `RouteHandler::handle_stream` over `tokio::io::duplex`). Reuse a route
-   handler builder: move `route_handler_with` from
-   `crates/router/tests/unsupported_protocol.rs` into a new
-   `crates/router/tests/common/mod.rs` and use it from both files (the
-   duplication gate). Register a local native test service under one
-   `service_id` that records the `CallerContext` it got. Cases:
+4. `crates/router/tests/native_dispatch_identity/signed_preamble.rs` (new
+   module of the existing `native_dispatch_identity` test binary: add its
+   `#[path]` line in `crates/router/tests/native_dispatch_identity.rs`).
+   Drive `RouteHandler::handle_stream` over `tokio::io::duplex`. Reuse
+   `test_route_handler()` from `native_dispatch_identity/helpers.rs:135` and
+   its `RecordingNativeService`-style double, registered under one
+   `service_id`, recording the `CallerContext` it got. Cases:
    - Binary stream, `pubkey` without `sig` → one frame with code `-32097`;
      the service saw nothing (SP-1).
    - Binary stream for a `service_id` this node does not host → frame with
@@ -1167,14 +1389,18 @@ See §6 for the map to criteria. Files:
      `caller_did` = immediate, `session.anchor_did` = P's master DID (SP-7).
    - valid immediate caller + `on_behalf` with forged `sig` or old `ts` →
      refused (SP-7, C's own check).
-   - SP-9: install a `tracing_subscriber` writer that captures to a buffer
-     (`tracing::subscriber::with_default`; add `tracing-subscriber` to router
-     `[dev-dependencies]` with `workspace = true`) at `trace` for
-     `syneroym_router`; run a refused stream, an accepted stream and a
-     forwarding coordinator stream (use `RouteHandler::new_coordinator` with
-     a registry that does not resolve, so it logs and fails); assert the
-     buffer contains none of the `sig` hex, the certificate hex, the `ucan`
-     hex, the `on_behalf` hex.
+   - A refused stream ends with `Ok(())` from `handle_stream` (no `error`
+     log from `accept`), and the refusal is followed by end of stream.
+   - SP-9 (node side): install a capturing `tracing_subscriber` with
+     `tracing::subscriber::set_default` (the `#[tokio::test]` runtime is
+     single-threaded, so the guard covers the handler; add
+     `tracing-subscriber` to router `[dev-dependencies]` with
+     `workspace = true`) at `trace` for `syneroym_router`; run a refused
+     stream, an accepted stream with `delegation` + `ucan`, and one with
+     `on_behalf`; assert the buffer contains none of the `sig` hex, the
+     certificate hex or JSON, the `ucan` hex, the `on_behalf` hex. The
+     forwarding log line is covered in item 8 (it runs only after a real
+     resolve and connect).
 5. `crates/router/src/route_handler/encryption.rs` has no tests module.
    Add `encryption/tests.rs`: a client P-256 key in `epk` completes the
    handshake (server key + signature come back, signature verifies with the
@@ -1197,16 +1423,20 @@ See §6 for the map to criteria. Files:
    - native call with `service_id: Some(s)` and a certificate → instance key
      and certificate, `on_behalf` = P;
    - caller proof that itself carries `on_behalf = Q` → passes Q, unchanged;
+   - native call with an unsigned local proof (`signed: None`, as C5 and C6
+     build for a same-node caller) → no `on_behalf`, node identity only;
    - guest call with `caller.proof = Some(P)` → `on_behalf` is `None`
      (SP-7 "a guest cannot send `on_behalf`");
    - two attempts of a retried idempotent call carry their own `ts` (sign per
      attempt): use a `MockHop` that records every preamble.
-8. `crates/coordinator_iroh/tests/on_behalf_chain.rs` (new, SP-7 over real
-   Iroh). First move, unchanged, the node helpers it needs out of
-   `multi_hop_relay.rs` into `crates/coordinator_iroh/tests/common/nodes.rs`
-   (declared in `common/mod.rs`): `build_test_route_handler_deps`,
-   `wait_for_local_addr`, `create_signed_info_with_full_addr`, and the
-   callee/caller node spawners with `CapturingNativeService`. Move
+8. `crates/coordinator_iroh/tests/signed_preamble_nodes.rs` (new, real Iroh
+   nodes in one process). First move, unchanged, the node helpers it needs
+   out of `multi_hop_relay.rs` into
+   `crates/coordinator_iroh/tests/common/nodes.rs` (declared in
+   `common/mod.rs`): `build_test_route_handler_deps`, `wait_for_local_addr`,
+   `create_signed_info_with_full_addr`, `spawn_global_coordinator`,
+   `spawn_z_target_substrate`, and the callee/caller node spawners with
+   `CapturingNativeService`. Move
    `test_cross_node_native_capability_identity_forwarding` here too.
    `multi_hop_relay.rs` shrinks: lower its line count in
    `xtask/oversized-test-files.txt` (or remove the entry if it is now under
@@ -1215,16 +1445,41 @@ See §6 for the map to criteria. Files:
    - The moved test now builds P's proof with
      `RoutePreamble::sign` + `caller_proof()` and asserts the callee sees
      `caller_did` = caller node DID and `anchor_did` = P's master DID.
-   - New three-node test: Sa (caller) → Sb → Sc. Sb registers a test native
-     service on interface `chain` that, on dispatch, calls Sc's `data-layer`
-     through Sb's own `ServiceProxy` with `caller: invocation.caller.clone()`
-     and `origin: CallOrigin::Native { service_id: None }` (set its proxy
-     handle after `RouteHandler::init`, through a `OnceLock<Weak<dyn
-     ServiceProxy>>`, the same two-phase wiring the control plane uses). Sa
-     calls Sb `chain` with P's signed proof. Assert Sc saw `caller_did` = Sb's
-     DID and `anchor_did` = P's master DID.
-   - Same chain with P's proof forged, and with `ts = now - 16 min`: the call
-     fails with `Callee { code: -32097 }`, and Sc recorded nothing.
+   - New chain test, P → Sa → Sb → Sc, three nodes and **two** `on_behalf`
+     wire hops. Sa is the node P called: its proxy is invoked with a
+     `CallerContext` whose `proof` is P's signed proof (what Sa's router
+     built from P's preamble). Hop 1, Sa → Sb: Sa presents its own node key
+     and `on_behalf` = P (from `proof.to_pass_on()`, P's own proof). Sb
+     registers a test native service on interface `chain` that, on
+     dispatch, calls Sc's `data-layer` through Sb's own `ServiceProxy` with
+     `caller: invocation.caller.clone()` and `origin: CallOrigin::Native {
+     service_id: None }` (proxy handle set after `RouteHandler::init`
+     through a `OnceLock<Weak<dyn ServiceProxy>>`, the same two-phase wiring
+     the control plane uses). Hop 2, Sb → Sc: Sb received P's proof *over the
+     wire* in `on_behalf`, so its `CallerProof` is Sa's proof with
+     `on_behalf: Some(P)`, and `to_pass_on()` returns that P value
+     unchanged. Assert at Sc: `caller_did` = Sb's DID (not Sa's) and
+     `anchor_did` = P's master DID. Also assert at Sb (record in the `chain`
+     service): `caller_did` = Sa's DID, `anchor_did` = P.
+   - Same chain with P's proof forged, and with `ts = now - 16 min`: Sb (the
+     first node that receives the bad `on_behalf`) refuses, the call fails
+     with `Callee { code: -32097 }`, and Sc recorded nothing. Sc's own check
+     of a bad `on_behalf` is item 4.
+   - Large request (C4b-18): call `IrohHop::call` (public) directly from
+     Sa's endpoint to Sb's address, for a `service_id` Sb does not host, with
+     `params` holding 4 MiB (under `MAX_FRAME_SIZE`, above the stream
+     window). Assert `Err(ProxyError::Callee { code: -32096, .. })`, not
+     `Transport`. The re-home that follows is covered by the `MockHop` tests
+     in item 6.
+   - SP-9 (forwarding line): registry R, coordinator C
+     (`spawn_global_coordinator`), target Sz. A raw stream to C carries a
+     signed preamble for a service on Sz with `delegation`, `ucan` and
+     `on_behalf`, so C runs the "Forwarding preamble" line. Capture logs with
+     a global subscriber (`set_global_default` once per binary, behind a
+     `OnceLock`; C runs on other tasks) writing to a shared buffer at
+     `trace` for `syneroym_router`; assert none of the `sig`, certificate,
+     `ucan` or `on_behalf` values appear, and that the redacted line did
+     appear (so the test cannot pass by logging nothing).
 9. `crates/substrate/tests/signed_preamble_e2e.rs` (new, real nodes via
    `SubstrateNode`):
    - SP-2: a node with `[roles.mailbox]` (reuse the mailbox e2e setup; move
@@ -1241,7 +1496,11 @@ See §6 for the map to criteria. Files:
      mechanisms (`connect_with_mechanisms`, mechanisms from a lookup of N1's
      record) calls `orchestrator`/`readyz`: it succeeds (it re-homed to N2).
      A client made with `new_with_mechanisms(n2_did, n1_mechanisms)` (cannot
-     re-home) gets an error whose `JsonRpcError.code` is `-32096`.
+     re-home) gets an error whose `JsonRpcError.code` is `-32096`, for a
+     small request and for one whose `params` hold 4 MiB (C4b-18).
+   - Concurrent re-home (C4b-10): one client stuck on N1 sends 8 requests at
+     once (`join_all`); all succeed, and the client ends with one live
+     connection (to N2).
    - SP-6 (gateway, C4b-11): N1 with a client gateway; a service S deployed
      on N2. Prime the gateway's cached client for S with a connection to N1
      (hard to do from outside; if no clean way exists, test
@@ -1273,13 +1532,22 @@ now false:
     `not_hosted_here`; what a forwarder still sees (the identity, in plain
     text, until C4c).
   - The routing paragraph (~549): the separator is `|` (§3 item 1).
+- `docs/system-requirements-spec.md` [NET-PRM] (lines ~795-805): the
+  grammar separator `|`; `enc` with `epk` (not `pubkey`); a new bullet for
+  proof of possession (`pubkey` needs `ts` and `sig` over `service_id`,
+  `interface` and `ts`, ±15 minutes); `on_behalf`; the readable refusals
+  and who forwards.
+- `docs/planning/traceability-matrix.md:85` ([NET-PRM] row): add the
+  signature check and `on_behalf` to the description and name the new test
+  files as evidence.
 - The module doc of `crates/router/src/preamble.rs` (Step 3.10).
 - `docs/developer-guide.md`: search for `pubkey=`; if it lists preamble
   parameters, add `ts`, `sig`, `epk`, `on_behalf`.
 - `docs/TERMINOLOGY.md`: add **Forwarder** and **On-behalf proof** if they
   are not there.
 - Change doc: tick the Part 1 task boxes; add `## Deviations` entries
-  `D-C4b-4` onward for each decision C4b-1 to C4b-13 and C4b-17 that the
+  `D-C4b-4` onward for each decision C4b-1 to C4b-13 and C4b-17 to C4b-19
+  that the
   change doc did not already state, and for anything that changed while you
   built. Fill `living-docs-touched` with the files above (it stays open for
   C4c to add its own).
@@ -1305,6 +1573,9 @@ In `docs/planning/deferred-backlog.md`:
     recorded so it is not re-proposed without the reason). TBD.
   - *An `on_behalf` proof older than 15 minutes refuses the whole stream*
     (long-lived streams, §3 item 12). TBD.
+  - *On a stream with `enc`, a refusal arrives in plain text before the
+    handshake, and the browser reads it as a failed handshake* (§7 C4c
+    note). Target M06D C4c.
   - *Gateway passthrough cannot replay a request after it has sent body
     bytes* (§7 Gateway). TBD.
   - *`EndpointRegistry::hosts_service` scans all endpoints per stream* (§7,
@@ -1315,15 +1586,15 @@ In `docs/planning/deferred-backlog.md`:
 
 | Criterion | Where |
 | --- | --- |
-| SP-1 | `handshake/tests/proof.rs`; `router/tests/signed_preamble.rs` (refusal frame) |
+| SP-1 | `handshake/tests/proof.rs`; `router/tests/native_dispatch_identity/signed_preamble.rs` (refusal frame) |
 | SP-2 | `substrate/tests/signed_preamble_e2e.rs` (six mailbox methods) |
 | SP-3 | `handshake/tests/proof.rs` (±899 accepted, ±901 refused) |
 | SP-4 | `handshake/tests/proof.rs` (other `service_id`, other `interface`) |
 | SP-5 | `route_handler/encryption/tests.rs`; Playwright `webrtc.spec.ts`, `multi-hop.spec.ts` |
-| SP-6 | `router/tests/signed_preamble.rs` (refusal, no forward, three framings); `proxy/tests/rehome.rs` (idempotent and not); `substrate/tests/signed_preamble_e2e.rs` (SDK, gateway) |
-| SP-7 | `router/tests/signed_preamble.rs` (anchor, both fields, guest-free); `proxy/tests/remote_dispatch.rs` (guest never sends, pass on unchanged); `coordinator_iroh/tests/on_behalf_chain.rs` (three nodes, forged, old) |
+| SP-6 | `router/tests/native_dispatch_identity/signed_preamble.rs` (refusal, no forward, three framings); `proxy/tests/rehome.rs` (idempotent and not); `coordinator_iroh/tests/signed_preamble_nodes.rs` (4 MiB request still gets `-32096`); `substrate/tests/signed_preamble_e2e.rs` (SDK, large request, concurrent re-home, gateway) |
+| SP-7 | `router/tests/native_dispatch_identity/signed_preamble.rs` (anchor, both fields, C's own check); `proxy/tests/remote_dispatch.rs` (guest never sends, pass on unchanged, unsigned local proof); `coordinator_iroh/tests/signed_preamble_nodes.rs` (P → Sa → Sb → Sc, two wire hops, forged, old); `substrate/tests/federated_fdae_e2e.rs` (real `resolve-relation(principal = P)` succeeds) |
 | SP-8 | `substrate/tests/revoke_key_e2e.rs` (PR 1, tightened in PR 2) |
-| SP-9 | `preamble/tests.rs` (redacted view); `router/tests/signed_preamble.rs` (captured logs) |
+| SP-9 | `preamble/tests.rs` (redacted views); `router/tests/native_dispatch_identity/signed_preamble.rs` (node logs); `coordinator_iroh/tests/signed_preamble_nodes.rs` (the forwarding line) |
 
 ## 7. Forward notes for later slices (add to task.md in the close-out)
 
@@ -1335,14 +1606,35 @@ In `docs/planning/deferred-backlog.md`:
   from. `OutboundIdentity::apply` is the one place a Rust client sets
   identity fields; on an indirect connection C4c sends the same fields in the
   encrypted line instead.
+  A refusal on a stream with `enc` (`not_hosted_here`, `unknown_interface`)
+  is written in plain text *before* any handshake, because it is decided
+  before the encryption stage. A client that expects the server's handshake
+  bytes first must tell the two apart. They differ in the first byte: the
+  server's P-256 key is SEC1 uncompressed and starts with `0x04`; a binary
+  refusal frame starts with a big-endian length (`0x00`), an HTTP refusal
+  with `H`, a raw one with a letter. C4c's Rust client and its
+  `peer-proxy.js` change must check this byte and read the refusal in the
+  stream's framing. Until then the browser fails the handshake on such a
+  stream (no wrong data is accepted).
+- **C5.** Classify the new codes: `NOT_HOSTED_HERE_RPC_CODE` (`-32096`)
+  normally never reaches C5, because `invoke_rehoming` turns it into
+  `ServiceNotFound`; `STREAM_UNAUTHENTICATED_RPC_CODE` (`-32097`) is
+  "may succeed later" (anchor lookup timeout, clock skew, a renewed
+  certificate). Both outboxes already retry them (C4b-19); C5's mailbox
+  decision must treat them the same way, not as a final refusal.
+  A same-node sender's `CallerProof` (instance key and certificate) has
+  `signed: None`; that is correct, and `to_pass_on()` keeps it off the wire.
 - **C5.** `invoke_remote_at` already takes the identity as an
   `OutboundIdentity` chosen once per call and signed per attempt by
   `IrohHop`. The C5 `outbound_preamble` split should build on
   `outbound_identity`, not replace it. `invoke_rehoming` is where a
   mailbox-aware retry would sit.
-- **C6.** A receiver on the mailbox host presents its instance proof; a
-  same-node call has no signature to check (no wire). Nothing changes for C6
-  beyond signing in `IrohHop`.
+- **C6.** A receiver on the mailbox host presents its instance proof in a
+  `CallerProof` it builds itself: fill `pubkey_hex` and `delegation_json`,
+  leave `signed: None` and `on_behalf: None` (`..Default::default()`). A
+  same-node call has no stream, so there is nothing to sign, and an unsigned
+  proof is never passed on in `on_behalf`. A remote receiver's calls are
+  signed by `IrohHop`.
 - **C7.** The C4-4 risk (a copied certificate acts as a service) is closed
   by this slice.
 
@@ -1365,3 +1657,26 @@ For each PR:
 6. `status.md`: the C4b row with evidence (test files and counts, verify
    result), implemented by / reviewed by.
 7. PR body includes the CLA line from `AGENTS.md` verbatim.
+
+## 9. Review changes (2026-10-19)
+
+A review of the first version raised 15 points. Each is answered here, so
+a later reader can see why the plan has its current shape.
+
+| # | Point | Answer |
+| --- | --- | --- |
+| 1 | A refusal is lost on a request larger than the flow-control window: the client's write fails first. | Incorporated: C4b-18 (the client reads the answer after a failed write) and the router shuts its write half down after a refusal (C4b-1). Rejected the router-side discard, with the reason in C4b-18. Tests: 4 MiB cases in Step 14 items 8 and 9. |
+| 2 | `-32097` becomes `Terminal` for queued calls; C5 must classify the codes. | Incorporated: C4b-19, Step 2.3, §7 C5 note. |
+| 3 | A production `CallerProof` without a signature (C5, C6) turns into an `on_behalf` every destination refuses. | Incorporated: the signed part is optional (`signed: Option<PreambleSignature>`), `to_pass_on()` returns `Option` (C4b-6, Step 2.2); §7 C6 note says what to fill in; test in Step 14 item 7. |
+| 4 | A refusal on an `enc` stream is plain text and comes before the handshake. | Incorporated as a C4c forward note (§7) with the first-byte rule, and a backlog row. Not changed in C4b: the refusal is decided before the encryption stage, and C4c already rewrites both client handshakes. |
+| 5 | The SP-7 chain is one hop short; `resolve-relation` has no test; `federated_fdae_e2e.rs` and two router tests are not named. | Partly pushed back: the planned chain already had two `on_behalf` wire hops (Sa → Sb, Sb → Sc), and Sb is the node that receives `on_behalf` over the wire and passes it on. The text did not make this clear; Step 14 item 8 now spells out each hop and asserts at both Sb and Sc. Incorporated: `federated_fdae_e2e.rs` is named as the real `resolve-relation(principal = P)` evidence (Step 13, §6); the two router tests were checked and need no change (Step 13). |
+| 6 | The SP-9 test never runs the "Forwarding preamble" line. | Incorporated: the forwarding case moved to a real coordinator with a resolvable target (Step 14 item 8), and it asserts that the redacted line did appear. |
+| 7 | The revoke tests depend on the real DHT; the unit test must assert the error text. | Incorporated: `revoke_key` takes a `RegistryClient` and `sync_dht`; tests use a DHT-less client; the unit test asserts the text (Steps 1.2, 1.3). |
+| 8 | `websocket_e2e.rs` and `miniapp_demo1_wasm_e2e.rs` break and share a duplicate helper. | Incorporated: one signed `open_http_stream` in `crates/substrate/tests/common/streams.rs` (Step 13). |
+| 9 | Concurrent re-homes in the SDK close each other's connection. | Incorporated: a re-home lock and compare-before-replace by `stable_id` (C4b-10, Step 9.5); concurrency test in Step 14 item 9. |
+| 10 | Strict parse runs before the forward decision, so a coordinator drops a malformed stream. | Pushed back, recorded as a deviation (C4b-5): rule 3 protects valid streams from the forwarder's clock and anchor lookups, not malformed ones; a forwarder must parse what it writes again; it already drops an unparseable preamble today. Incorporated the logging part: a parse error is logged at `debug` and returns `Ok(())`. |
+| 11 | Each refused caller is logged twice, once at `error`. | Incorporated: refusals return `Ok(())`, are logged once at `debug`, and are counted in `router.streams.refused` (C4b-1, C4b-13, Step 7). |
+| 12 | The requirements spec [NET-PRM] and the traceability matrix are missing from Step 15. | Incorporated (Step 15). |
+| 13 | Two more stale comments. | Incorporated (§3 item 9). |
+| 14 | Derived `Debug` on the proof types prints signatures and certificates. | Incorporated: hand-written `Debug` (C4b-17, Step 2.2, Step 3.7). |
+| 15 | `blobs.rs` needs no change; `native_dispatch_identity/helpers.rs` already builds a `RouteHandler`. | Incorporated: Step 3.2 corrected; the router stream tests now live in the `native_dispatch_identity` test binary and reuse `test_route_handler()` (Step 14 item 4). |
