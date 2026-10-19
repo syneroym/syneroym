@@ -69,8 +69,9 @@ fn code_of(e: &MailboxError) -> i32 {
         MailboxError::BadRecord(_) => codes::BAD_RECORD,
         MailboxError::DuplicateDeposit(_) => codes::DUPLICATE_DEPOSIT,
         MailboxError::TtlTooLong { .. } => codes::TTL_TOO_LONG,
-        MailboxError::InvalidParams(_) => -32602,
-        MailboxError::Internal(_) => -32603,
+        MailboxError::InvalidParams(_) | MailboxError::Internal(_) => {
+            unreachable!("standard RPC errors are handled before code_of")
+        }
     }
 }
 

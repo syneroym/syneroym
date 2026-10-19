@@ -224,11 +224,12 @@ pub(super) fn remove_message(
     let json = serde_json::to_string(receipt)
         .map_err(|e| MailboxError::Internal(format!("failed to serialize receipt: {e}")))?;
     let expires = to_sql(now.saturating_add(keep_secs));
-    tx.execute(
+    let updated = tx.execute(
         "UPDATE receipts SET receipt_json = ?1, expires_at = ?2 WHERE sender = ?3 AND deposit_id \
          = ?4",
         rusqlite::params![json, expires, sender, deposit_id],
     )?;
+    debug_assert_eq!(updated, 1, "receipt row must exist when removing message");
     Ok(())
 }
 

@@ -95,16 +95,6 @@ pub(crate) fn record(member: &Member, mailbox_did: &str) -> SignedEndpointInfo {
     info.sign(&member.master).unwrap()
 }
 
-#[expect(dead_code, reason = "test helper")]
-pub(crate) fn checked_record(
-    member: &Member,
-    mailbox_did: &str,
-    now: u64,
-) -> crate::record::CheckedRecord {
-    let rec = record(member, mailbox_did);
-    crate::record::CheckedRecord::check(&rec, &member.instance(), mailbox_did, now).unwrap()
-}
-
 pub(crate) fn sealed_deposit(from: &Member, to: &Member, ttl: u64, now: u64) -> Sealed {
     let content = MessageContent {
         interface: "marker-interface".to_string(),

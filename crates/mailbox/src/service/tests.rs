@@ -528,3 +528,64 @@ async fn an_expired_record_on_existing_queue_is_refused_while_existing_messages_
     assert_eq!(claim_ans.messages.len(), 1);
     assert_eq!(claim_ans.messages[0].deposit_id, dep_id);
 }
+
+#[tokio::test]
+async fn revocation_cache_admits_calls_within_15_seconds_and_refuses_after() {
+    let (_dir, service, anchors) = test_service(MailboxRole::default());
+    let receiver = Member::new(3600);
+    anchors.publish(&receiver.service_id());
+
+    let rec = record(&receiver, NODE_DID);
+    let t0 = receiver.cert.issued_at_secs + 10;
+    assert!(
+        service
+            .dispatch_at(
+                invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()),
+                t0,
+            )
+            .await
+            .is_ok()
+    );
+
+    // Revoke the key at the master anchor
+    anchors.revoke(&receiver.service_id(), &receiver.cert.temporary_did);
+
+    // Call within 15 seconds (t0 + 5) succeeds via revocation cache
+    let claim_res_cached =
+        service.dispatch_at(invocation(METHOD_CLAIM, json!({}), receiver.caller()), t0 + 5).await;
+    assert!(claim_res_cached.is_ok());
+
+    // Call after 15 seconds (t0 + 16) discovers revocation and is refused
+    let claim_res_expired =
+        service.dispatch_at(invocation(METHOD_CLAIM, json!({}), receiver.caller()), t0 + 16).await;
+    match claim_res_expired {
+        Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::NOT_AN_INSTANCE),
+        other => panic!("expected NOT_AN_INSTANCE after cache expires, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn claim_and_receiver_calls_are_rate_limited_per_master() {
+    let role = MailboxRole { register_per_minute_per_master: 2, ..Default::default() };
+    let (_dir, service, anchors) = test_service(role);
+    let receiver = Member::new(3600);
+    anchors.publish(&receiver.service_id());
+
+    let rec = record(&receiver, NODE_DID);
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
+            .await
+            .is_ok()
+    );
+
+    // Second call: allowed (2nd call in this minute)
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), receiver.caller())).await.is_ok());
+
+    // Third call: exceeds 2 per minute, refused with RATE_LIMITED
+    let res = service.dispatch(invocation(METHOD_CLAIM, json!({}), receiver.caller())).await;
+    match res {
+        Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
+        other => panic!("expected RATE_LIMITED for claim over limit, got {other:?}"),
+    }
+}

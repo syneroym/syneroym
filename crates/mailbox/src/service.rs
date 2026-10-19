@@ -64,6 +64,9 @@ impl fmt::Debug for MailboxService {
     }
 }
 
+const REVOCATION_CACHE_SECS: u64 = 15;
+const REVOCATION_CACHE_MAX: usize = 10_000;
+
 impl MailboxService {
     /// Opens the mailbox storage under `db_dir` and constructs the service.
     pub fn open(
@@ -127,16 +130,22 @@ impl MailboxService {
         }
         check_not_revoked(self.anchors.as_ref(), who).await?;
         if let Ok(mut cache) = self.revocation_cache.lock() {
-            if cache.len() > 10_000 {
+            if cache.len() >= REVOCATION_CACHE_MAX {
                 cache.retain(|_, &mut exp| exp > now);
             }
-            cache.insert(key, now.saturating_add(15));
+            if cache.len() < REVOCATION_CACHE_MAX {
+                cache.insert(key, now.saturating_add(REVOCATION_CACHE_SECS));
+            }
         }
         Ok(())
     }
 
     async fn instance(&self, caller: &CallerContext, now: u64) -> Result<Instance, MailboxError> {
         let who = instance_of(caller, now)?;
+        if !self.per_master_register.allow_key(who.master_did.clone(), now) {
+            counter!("substrate.mailbox.register_refused", "kind" => "rate_limited").increment(1);
+            return Err(MailboxError::RateLimited);
+        }
         self.check_revocation(&who, now).await?;
         Ok(who)
     }
@@ -259,13 +268,13 @@ impl MailboxService {
             blocking(&self.store, move |s| s.status(&sender, &p.deposit_ids, now)).await?;
         answer(&StatusAnswer { receipts })
     }
-}
-
-#[async_trait::async_trait]
-impl NativeService for MailboxService {
-    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
+    /// Dispatches a native invocation using a specified timestamp.
+    pub async fn dispatch_at(
+        &self,
+        invocation: NativeInvocation,
+        now: u64,
+    ) -> RpcResult<NativeResponse> {
         let NativeInvocation { method, params, caller, .. } = invocation;
-        let now = syneroym_passport::now_secs();
         let payload = match method.as_str() {
             METHOD_INFO => self.info(),
             METHOD_REGISTER => self.register(&caller, params, now).await,
@@ -279,6 +288,14 @@ impl NativeService for MailboxService {
         .map_err(RpcError::from)?;
 
         Ok(NativeResponse { payload })
+    }
+}
+
+#[async_trait::async_trait]
+impl NativeService for MailboxService {
+    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
+        let now = syneroym_passport::now_secs();
+        self.dispatch_at(invocation, now).await
     }
 }
 
