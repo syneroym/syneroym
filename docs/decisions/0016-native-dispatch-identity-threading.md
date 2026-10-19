@@ -1,7 +1,7 @@
 # D-04-05: Native-Dispatch Identity Threading
 
-**Status**: Accepted (amended 2026-08-27 — see the dated amendment note at
-the end of **Decision**)
+**Status**: Accepted (amended 2026-08-27 and 2026-10-19 — see the dated
+amendment notes at the end of **Decision**)
 
 **Context**:
 
@@ -134,6 +134,51 @@ in `login` mode, a configured person delegation in `fixed` mode, nothing in
 
 Landing slice: **M06C C1.1** —
 [slice-c1.1-implementation-plan.md](../planning/milestones/M06C-roym-product/slice-c1.1-implementation-plan.md).
+
+**Amendment 2 (2026-10-19, signed route preamble).**
+§3 and §6 change as follows. Everything else in this ADR, and the 2026-08-27
+amendment, stands.
+
+1. **A caller proves that it holds its key.** The caller signs
+   `syneroym-preamble-v1\n<service_id>\n<interface>\n<ts>` with the Ed25519
+   key in `pubkey`. When the preamble has a handshake key (`epk`), that key is
+   added at the end. The preamble carries `ts` (Unix seconds) and `sig`.
+   `verify_preamble` refuses a preamble that has a `pubkey` and no valid
+   signature, and a `ts` more than 15 minutes from its own clock. This holds
+   with and without a delegation certificate.
+2. **`pubkey` is only the identity key.** The P-256 key of the end-to-end
+   handshake moves to its own field, `epk`, inside the signed bytes. A hop
+   that swaps it breaks the signature.
+3. **Each node presents its own identity; the original caller's proof
+   travels in `on_behalf`.** This replaces "send the proof" in §6 for a proof
+   that the sending node does not hold the key for. A node signs as itself
+   (its service instance key or its node key). It passes the original
+   caller's signed proof unchanged in `on_behalf`. Each later service passes
+   the same value on. The destination checks both, and sets `anchor_did` to
+   the original caller. Trust rule: a caller trusts the services its call
+   passes through. A preamble carries `on_behalf` or `ucan`, not both. A
+   guest never sends `on_behalf`.
+4. **Only coordinators forward.** On a local registry miss, a coordinator
+   forwards the stream to the host. Any other node refuses it
+   (`not_hosted_here`).
+5. **A call through a forwarder is encrypted end to end.** A client uses the
+   handshake when the endpoint it dials is not the host named in the target's
+   record, or when it does not know the host. A direct QUIC connection needs
+   no handshake.
+
+Why: without proof of possession, a delegation certificate is a bearer
+credential. A service sends its instance certificate on every remote call, so
+every node it calls could act as that service. The time window keeps the
+check stateless. A preamble can be used again inside the window only by a
+party that reads it in plaintext: a forwarder before rule 5, or a reader of
+`debug` logs.
+
+Rejected: a nonce and replay cache (state for a rare case), a server
+challenge (one more round trip on every stream), and binding the proof to the
+QUIC connection (breaks forwarders).
+
+Landing slices: **M06D C4b** (rules 1 to 4) and **M06D C4c** (rule 5) —
+[signed-route-preamble change doc](../planning/changes/signed-route-preamble/change.md).
 
 **Consequences**:
 
