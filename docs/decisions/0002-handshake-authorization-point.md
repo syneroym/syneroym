@@ -39,8 +39,8 @@ The application-level authorization handshake will be implemented inside the `Ro
    the service up again.
 4. **On an indirect connection, the identity travels only inside the
    end-to-end channel.** A connection is indirect when the client dials a node
-   that is not the host. There, the preamble carries only the route and
-   `epk`. The client checks the host's signature over the handshake keys with
+   that is not the host. There, the preamble carries only the route,
+   `enc=ecdh-p256` and `epk`. The client checks the host's signature over the handshake keys with
    the host key it expects, from the target's signed record. Only then does it
    send its identity, encrypted. With no known host key, it sends no
    identity. On a direct connection QUIC is end to end, so the identity stays

@@ -93,6 +93,12 @@ Related gaps:
     of `on_behalf` for longer grants.
   - Carrying the person's UCAN chain to the next hop. Today's forwarding drops
     it too.
+  - `on_behalf` for a person who reaches a service through the client gateway's
+    session cookie (`login` mode). Such a caller has no preamble proof
+    (`proof: None` in `route_handler/http/auth.rs`), so the service presents
+    only its own identity, and `resolve-relation(principal = P)` is still
+    denied for that person. This is the same as today. It is the main way a
+    person reaches a service (the Hub in a browser), so it is a backlog row.
 
 ## Acceptance criteria
 
@@ -104,7 +110,7 @@ Related gaps:
 | SP-4 | A signature made for one `service_id` or `interface` is refused at another. | |
 | SP-5 | The router reads the handshake key only from `epk`. The browser tunnel works with `epk`. | |
 | SP-6 | A node that is not a coordinator and does not host the service answers `not_hosted_here` and does not forward. The SDK and `ProxyRouter` then look the service up again and reach the new host, for idempotent and non-idempotent calls. | |
-| SP-7 | Person P calls service A, A calls B, and B calls C, each on a different node. C sets `anchor_did` to P, and `resolve-relation(principal = P)` succeeds. C refuses the stream when P's proof has a `ts` outside the window or a forged signature. A guest cannot send `on_behalf`. A preamble with both `on_behalf` and `ucan` is refused. | |
+| SP-7 | Person P, with a preamble proof (not a session cookie), calls service A, A calls B, and B calls C, each on a different node. C sets `anchor_did` to P, and `resolve-relation(principal = P)` succeeds. C refuses the stream when P's proof has a `ts` outside the window or a forged signature. A guest cannot send `on_behalf`. A preamble with both `on_behalf` and `ucan` is refused. | |
 | SP-8 | After `roymctl identity` revokes a temporary key and publishes the anchor, the router refuses that key. | |
 | SP-9 | The router's logs do not contain `sig`, a certificate, a `ucan` chain or `on_behalf`. | |
 | SP-10 | On an indirect connection (through C and through Cp in `crates/coordinator_iroh/tests/multi_hop_relay.rs`), the Rust client runs the handshake, checks the host's key, and then sends its identity encrypted. The forwarder sees no identity field. On a direct connection the client runs no handshake. | |
@@ -137,10 +143,12 @@ empty HTTP interface and maps the interface to its canonical name later
 - `ts` limits how long a proof can be used. Without it the signed bytes are the
   same on every call, and a proof would stay valid until the certificate
   expires. `ts` limits to 15 minutes what a service that received the proof
-  can do with it: pass it on in `on_behalf`, or replay it to another member of
-  a `Redundant` service.
+  can do with it: pass it on in `on_behalf`. It also bounds what a forwarder
+  can do with a Rust identity between C4b and C4c.
 - `service_id` and `interface` stop a proof from being used at another service
-  or another interface.
+  or another interface. Each member of a `Redundant` or `Sharded` service has
+  its own `ServiceId` (ADR-0022), so a proof for one member does not verify at
+  another.
 
 **New preamble parameters.**
 
@@ -192,9 +200,13 @@ handshake key moves to `epk`, in `route_handler/encryption.rs` and in
 `peer-proxy.js`. The browser sends `epk` and no `pubkey`: its identity comes
 from the session cookie, so it signs nothing.
 
-**Logs.** The router's `Display` for `RoutePreamble` and its debug lines stop
-printing `sig`, `delegation`, `ucan` and `on_behalf`. They print the master DID
-of the certificate instead.
+**Logs.** `to_preamble_line` is `format!("{self}\n")`, so `Display` is the
+wire format and must keep every field. Logs use a separate redacted view of
+`RoutePreamble` that leaves out `sig`, `delegation`, `ucan` and `on_behalf` and
+prints the certificate's master DID instead. The line to change is the
+"Forwarding original preamble" debug line in `relay_to_next_hop`
+(`route_handler/io.rs`); check every other place that logs a whole
+preamble.
 
 ### Part 1 (C4b): only coordinators forward
 
@@ -216,8 +228,10 @@ for every call, idempotent or not. Today `invoke_remote_at` retries only
 same address. So the retry belongs in `invoke_remote`, not in that loop: on
 `not_hosted_here`, `invoke_remote` resolves the service again
 (`net_iroh::resolve_peer`, which asks the registry before it falls back to the
-stored peer record) and calls `invoke_remote_at` once more. The SDK does the
-same in `connect`.
+stored peer record) and calls `invoke_remote_at` once more. In the SDK,
+`not_hosted_here` arrives on the request stream, not at `connect`, so the SDK
+retries in its request path: it connects again after a fresh lookup and
+sends the request once more.
 
 The only test found on this path,
 `crates/substrate/tests/stream_client_e2e.rs` (unregistered protocol), checks
@@ -314,7 +328,10 @@ endpoint id.
    `delegation`, `ucan`, `ts`, `sig`, `on_behalf`. The signed bytes are the
    same as in Part 1.
 5. The destination reads that line after its encryption stage, runs the same
-   check as in Part 1, and only then dispatches.
+   check as in Part 1, and only then dispatches. By then the router has
+   already replaced `interface` with its canonical name
+   (`preamble.interface = canonical_interface`, `route_handler/io.rs`), so it
+   keeps the value as sent and checks the signature against that.
 
 A stream with `enc` takes its identity only from the encrypted line. If its
 plaintext preamble carries identity fields, the destination refuses it, so a
@@ -335,10 +352,11 @@ and receive the identity.
   key.
 - When the client cannot find a host key, it does not send an identity
   through a forwarder. The call fails with a clear error.
-- *Open:* the record of a `Redundant` or `Sharded` service, and an app record
-  (it names the supervising node in `substrate_id`,
-  `crates/app_supervisor/src/tier1.rs`), do not name the member that answers.
-  Until a rule is decided, these fail closed.
+- A `Redundant` or `Sharded` service: each member has its own `ServiceId`
+  and its own record that names its host (ADR-0022), and the client always
+  dials one member's id. So the client uses the record of the member it
+  dials. The app record names the supervising node, and the client dials the
+  supervisor by its own `did:key`, so its key is known too.
 
 **Users.** One module in `crates/router` holds the client side. The SDK
 already depends on `crates/router` for `RoutePreamble`. Its users:
@@ -359,9 +377,6 @@ These are recorded in the deferred backlog when C4b lands.
 
 - Any service that P called in the last 15 minutes can act on behalf of P
   through `on_behalf`.
-- On a direct connection, the destination can replay a caller's preamble to
-  another member of the same `Redundant` or `Sharded` service, inside the
-  window.
 - Between C4b and C4c, a Rust call through a forwarder still carries its
   identity in plaintext. Both slices land before C5.
 - A sender that does not follow Part 2 on an indirect connection exposes its
@@ -395,8 +410,7 @@ These are recorded in the deferred backlog when C4b lands.
 - **Signing the raw preamble line.** Forwarders write the preamble again, so
   they would have to forward raw bytes.
 - **The destination node DID in the signed bytes.** The client does not know
-  the node behind a forwarder or inside a `Redundant` service. `service_id`
-  binds the destination well enough.
+  the node behind a forwarder. `service_id` already names one service member.
 - **Reading the identity key from the certificate and reusing `pubkey` for
   the handshake key.** `pubkey` would then mean two things, depending on
   whether `delegation` is present. A caller without a certificate needs
@@ -406,16 +420,23 @@ These are recorded in the deferred backlog when C4b lands.
 
 ## Open questions
 
-1. **How a refusal reaches the client.** Today the router writes the text line
-   `Unauthorized\n` before any framing (`route_handler/io.rs`). Decide how
-   `not_hosted_here` and the new refusals reach the SDK and `IrohHop`, and how
-   they tell these apart from a transport failure. *Unverified:* how the SDK
-   reads `Unauthorized` today. Decide in the C4b plan.
+1. **How a refusal reaches the client.** Decide in the C4b plan. Fact to start
+   from: today the router writes the text line `Unauthorized\n` before any
+   framing (`route_handler/io.rs`). The SDK reads it as a frame: `read_frame`
+   takes the bytes `Unau` as a big-endian length (about 1.4 GB) and fails with
+   "frame length … exceeds MAX_FRAME_SIZE" (`crates/rpc/src/framing.rs`). So
+   today no refusal is readable. `not_hosted_here` must be readable, because
+   the client acts on it.
 2. The name and flags of the revoke command. Decide in its PR.
 3. The HKDF salt and `info` tag, and the format of the encrypted identity
    line. Decide in the C4c plan.
-4. The host key for a `Redundant` or `Sharded` service and for an app record.
-   Decide in the C4c plan. Until then these fail closed.
+4. **Tests that dial with no record.** About 13 uses of
+   `SyneroymClient::new_with_mechanisms` in 10 test files (outside the SDK)
+   dial with no record. Under C4c they cannot tell direct from indirect, and
+   with no host key they send no identity through a forwarder. Decide in the
+   C4c plan: a way to pass the host key to the client, or give these tests a
+   record. When the target id is a substrate `did:key`, the host key is
+   already known.
 
 ## Tasks
 
@@ -443,6 +464,7 @@ Part 2 (C4c):
 - [ ] Direct or indirect, and the expected host key.
 - [ ] The encrypted identity line on both sides.
 - [ ] HKDF in the router and in `peer-proxy.js`.
+- [ ] A host key for the tests that dial with no record (open question 4).
 - [ ] Tests for SP-10 to SP-13.
 
 ## Deviations
