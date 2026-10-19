@@ -438,7 +438,7 @@ async fn raw_key_caller_with_no_delegation_is_refused_on_deposit_and_status() {
 async fn register_above_rate_limits_is_refused() {
     let role = MailboxRole {
         register_per_minute_per_master: 2,
-        register_per_minute_total: 4,
+        register_per_minute_total: 3,
         ..Default::default()
     };
     let (_dir, service, anchors) = test_service(role);
@@ -602,8 +602,9 @@ async fn claim_and_receiver_calls_are_rate_limited_per_master() {
 #[tokio::test]
 async fn receiver_calls_are_rate_limited_node_wide() {
     let role = MailboxRole {
+        max_queues: 3,
         receiver_calls_per_minute_per_master: 10,
-        receiver_calls_per_minute_total: 2,
+        receiver_calls_per_minute_total: 6,
         ..Default::default()
     };
     let (_dir, service, anchors) = test_service(role);
@@ -636,14 +637,66 @@ async fn receiver_calls_are_rate_limited_node_wide() {
             .is_ok()
     );
 
-    // Two receiver calls from different receivers exhaust the node-wide limit of 2
+    // Receiver calls across the three receivers exhaust the node-wide limit of 6
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r1.caller())).await.is_ok());
     assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r1.caller())).await.is_ok());
     assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r2.caller())).await.is_ok());
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r2.caller())).await.is_ok());
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r3.caller())).await.is_ok());
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r3.caller())).await.is_ok());
 
-    // Third receiver call across the node is refused with RATE_LIMITED
+    // Seventh receiver call across the node is refused with RATE_LIMITED
     let res = service.dispatch(invocation(METHOD_CLAIM, json!({}), r3.caller())).await;
     match res {
         Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
         other => panic!("expected RATE_LIMITED for total receiver calls, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn single_master_over_limit_does_not_consume_node_wide_budget() {
+    let role = MailboxRole {
+        max_queues: 2,
+        receiver_calls_per_minute_per_master: 2,
+        receiver_calls_per_minute_total: 4,
+        ..Default::default()
+    };
+    let (_dir, service, anchors) = test_service(role);
+    let master_a = Member::new(3600);
+    let master_b = Member::new(3600);
+    anchors.publish(&master_a.service_id());
+    anchors.publish(&master_b.service_id());
+
+    let rec_a = record(&master_a, NODE_DID);
+    let rec_b = record(&master_b, NODE_DID);
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec_a }), master_a.caller()))
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec_b }), master_b.caller()))
+            .await
+            .is_ok()
+    );
+
+    // Master A makes 2 successful receiver calls
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), master_a.caller())).await.is_ok());
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), master_a.caller())).await.is_ok());
+
+    // Master A makes 3 more receiver calls; all are refused by per-master limit
+    for _ in 0..3 {
+        let res = service.dispatch(invocation(METHOD_CLAIM, json!({}), master_a.caller())).await;
+        match res {
+            Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
+            other => panic!("expected RATE_LIMITED for master A, got {other:?}"),
+        }
+    }
+
+    // Master B still has budget under the node-wide limit of 4 (A's rejected calls
+    // did not consume total tokens)
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), master_b.caller())).await.is_ok());
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), master_b.caller())).await.is_ok());
 }

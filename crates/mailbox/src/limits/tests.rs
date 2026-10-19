@@ -104,6 +104,14 @@ fn total_bytes_under_queue_bytes_is_refused() {
 }
 
 #[test]
+fn receiver_calls_total_under_twice_max_queues_is_refused() {
+    let mut role = MailboxRole::default();
+    role.receiver_calls_per_minute_total = (role.max_queues * 2) - 1;
+    let err = Limits::from_role(&role).unwrap_err().to_string();
+    assert!(err.contains("receiver_calls_per_minute_total"));
+}
+
+#[test]
 fn invalid_db_names_are_refused() {
     for bad in ["", "sub/dir.db", "sub\\dir.db", "../escape.db"] {
         let role = MailboxRole { db_name: bad.to_string(), ..Default::default() };

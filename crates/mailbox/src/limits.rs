@@ -93,6 +93,14 @@ impl Limits {
                 role.max_queue_bytes
             );
         }
+        let min_receiver_total = (role.max_queues as u64).saturating_mul(2);
+        if (role.receiver_calls_per_minute_total as u64) < min_receiver_total {
+            bail!(
+                "[roles.mailbox] receiver_calls_per_minute_total ({}) must be at least 2 × \
+                 max_queues ({min_receiver_total})",
+                role.receiver_calls_per_minute_total
+            );
+        }
 
         Ok(Self {
             queue: QueueLimits {
