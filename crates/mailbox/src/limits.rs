@@ -60,6 +60,12 @@ impl Limits {
         if role.register_per_minute_total == 0 {
             bail!("[roles.mailbox] register_per_minute_total must be greater than 0");
         }
+        if role.receiver_calls_per_minute_per_master == 0 {
+            bail!("[roles.mailbox] receiver_calls_per_minute_per_master must be greater than 0");
+        }
+        if role.receiver_calls_per_minute_total == 0 {
+            bail!("[roles.mailbox] receiver_calls_per_minute_total must be greater than 0");
+        }
         if role.sweep_interval_secs == 0 {
             bail!("[roles.mailbox] sweep_interval_secs must be greater than 0");
         }

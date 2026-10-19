@@ -55,3 +55,9 @@ fn ttl_too_long_carries_max_ttl_secs() {
     assert_eq!(data["kind"], "ttl_too_long");
     assert_eq!(data["max_ttl_secs"], 1_000);
 }
+
+#[test]
+fn code_of_returns_standard_codes_for_invalid_params_and_internal() {
+    assert_eq!(code_of(&MailboxError::InvalidParams("bad".into())), -32602);
+    assert_eq!(code_of(&MailboxError::Internal("fail".into())), -32603);
+}

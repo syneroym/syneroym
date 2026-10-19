@@ -33,6 +33,11 @@ pub struct MailboxRole {
     pub register_per_minute_per_master: u32,
     /// Maximum registrations per minute across all masters on this node.
     pub register_per_minute_total: u32,
+    /// Maximum receiver calls (claim, ack, unregister) per minute from one
+    /// master DID.
+    pub receiver_calls_per_minute_per_master: u32,
+    /// Maximum receiver calls per minute across all masters on this node.
+    pub receiver_calls_per_minute_total: u32,
     /// Interval between background sweeps, in seconds.
     pub sweep_interval_secs: u64,
     /// Interval between republishing stored service records, in seconds.
@@ -55,6 +60,8 @@ impl Default for MailboxRole {
             deposits_per_minute_total: 6_000,
             register_per_minute_per_master: 10,
             register_per_minute_total: 120,
+            receiver_calls_per_minute_per_master: 120,
+            receiver_calls_per_minute_total: 1_200,
             sweep_interval_secs: 60,
             republish_interval_secs: 3_600,
         }

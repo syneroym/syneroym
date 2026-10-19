@@ -2102,6 +2102,8 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 - `deposits_per_minute_total`: maximum deposits across all senders per minute (default: 6,000).
 - `register_per_minute_per_master`: maximum registrations per minute from one master DID (default: 10).
 - `register_per_minute_total`: maximum registrations per minute across all masters on this node (default: 120).
+- `receiver_calls_per_minute_per_master`: maximum receiver calls (`claim`, `ack`, `unregister`) per minute from one master DID (default: 120).
+- `receiver_calls_per_minute_total`: maximum receiver calls per minute across all masters on this node (default: 1,200).
 - `sweep_interval_secs`: interval between background sweeps, in seconds (default: 60).
 - `republish_interval_secs`: interval between republishing stored service records, in seconds (default: 3,600).
 
@@ -2111,7 +2113,7 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 
 **Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `Receipt::Rejected` (reason `too_many_claims`) after its 5th visibility window ends.
 
-**Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour (and to the Mainline DHT when `enable_bep0044_dht` is on). The registry rejects records with older timestamps with HTTP 409 Conflict. On conflict, the mailbox retries republishing at the normal republish interval (skipping DHT publish until the HTTP conflict resolves).
+**Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour (and to the Mainline DHT when `enable_bep0044_dht` is on). The registry rejects records with older timestamps with HTTP 409 Conflict. On conflict, the mailbox retries republishing at the normal republish interval (a registry conflict skips DHT publish for that attempt until the conflict resolves).
 
 **Error codes.** Mailbox JSON-RPC 2.0 error codes:
 
@@ -2120,7 +2122,7 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 | `-32040` | `unknown_destination` | The destination queue does not exist. |
 | `-32041` | `too_large` | The sealed message exceeds 64 KiB (`MAX_SEALED_BYTES`). |
 | `-32042` | `queue_full` | The queue is full after fair eviction. |
-| `-32043` | `rate_limited` | Sender or node deposit or register rate limit exceeded. |
+| `-32043` | `rate_limited` | Sender, receiver, or node deposit, register, or receiver call rate limit exceeded. |
 | `-32044` | `mailbox_full` | Total mailbox storage cap (`max_total_bytes`) reached. |
 | `-32045` | `not_an_instance` | Caller did not present a valid, unrevoked service instance certificate. |
 | `-32046` | `stale_instance` | A newer service instance certificate already holds the queue. |

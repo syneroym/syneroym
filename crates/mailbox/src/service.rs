@@ -52,6 +52,8 @@ pub struct MailboxService {
     total: RequestLimiter<()>,
     per_master_register: RequestLimiter<String>,
     total_register: RequestLimiter<()>,
+    per_master_receiver: RequestLimiter<String>,
+    total_receiver: RequestLimiter<()>,
     wake: Arc<Notify>,
     sweep_every: Duration,
     republish_every_secs: u64,
@@ -82,6 +84,9 @@ impl MailboxService {
         let total = RequestLimiter::new(role.deposits_per_minute_total, 1);
         let per_master_register = RequestLimiter::new(role.register_per_minute_per_master, 10_000);
         let total_register = RequestLimiter::new(role.register_per_minute_total, 1);
+        let per_master_receiver =
+            RequestLimiter::new(role.receiver_calls_per_minute_per_master, 10_000);
+        let total_receiver = RequestLimiter::new(role.receiver_calls_per_minute_total, 1);
         let wake = Arc::new(Notify::new());
         let sweep_every = Duration::from_secs(role.sweep_interval_secs);
         let republish_every_secs = role.republish_interval_secs;
@@ -94,6 +99,8 @@ impl MailboxService {
             total,
             per_master_register,
             total_register,
+            per_master_receiver,
+            total_receiver,
             wake,
             sweep_every,
             republish_every_secs,
@@ -142,8 +149,10 @@ impl MailboxService {
 
     async fn instance(&self, caller: &CallerContext, now: u64) -> Result<Instance, MailboxError> {
         let who = instance_of(caller, now)?;
-        if !self.per_master_register.allow_key(who.master_did.clone(), now) {
-            counter!("substrate.mailbox.register_refused", "kind" => "rate_limited").increment(1);
+        if !self.per_master_receiver.allow_key(who.master_did.clone(), now)
+            || !self.total_receiver.allow_key((), now)
+        {
+            counter!("substrate.mailbox.receiver_refused", "kind" => "rate_limited").increment(1);
             return Err(MailboxError::RateLimited);
         }
         self.check_revocation(&who, now).await?;
@@ -183,7 +192,6 @@ impl MailboxService {
             return Err(MailboxError::RateLimited);
         }
         self.check_revocation(&who, now).await?;
-        let now = syneroym_passport::now_secs();
         let p: RegisterParams = parse(params)?;
         let record = CheckedRecord::check(&p.record, &who, &self.node_did, now)?;
         let r = blocking(&self.store, move |s| s.register(&who, &record, now)).await?;
@@ -195,7 +203,6 @@ impl MailboxService {
 
     async fn unregister(&self, caller: &CallerContext, now: u64) -> Result<Value, MailboxError> {
         let who = self.instance(caller, now).await?;
-        let now = syneroym_passport::now_secs();
         let removed = blocking(&self.store, move |s| s.unregister(&who, now)).await?;
         answer(&UnregisterAnswer { removed })
     }
@@ -236,7 +243,6 @@ impl MailboxService {
         now: u64,
     ) -> Result<Value, MailboxError> {
         let who = self.instance(caller, now).await?;
-        let now = syneroym_passport::now_secs();
         let p: ClaimParams = parse(params)?;
         let max = p.max.unwrap_or(MAX_CLAIM_BATCH);
         let ans = blocking(&self.store, move |s| s.claim(&who, max, now)).await?;
@@ -250,7 +256,6 @@ impl MailboxService {
         now: u64,
     ) -> Result<Value, MailboxError> {
         let who = self.instance(caller, now).await?;
-        let now = syneroym_passport::now_secs();
         let p: AckParams = parse(params)?;
         let results = blocking(&self.store, move |s| s.ack(&who, &p.acks, now)).await?;
         answer(&AckAnswer { results })
@@ -268,8 +273,9 @@ impl MailboxService {
             blocking(&self.store, move |s| s.status(&sender, &p.deposit_ids, now)).await?;
         answer(&StatusAnswer { receipts })
     }
+
     /// Dispatches a native invocation using a specified timestamp.
-    pub async fn dispatch_at(
+    pub(crate) async fn dispatch_at(
         &self,
         invocation: NativeInvocation,
         now: u64,

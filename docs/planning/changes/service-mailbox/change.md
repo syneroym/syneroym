@@ -310,7 +310,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C4-10`: `claim` returns up to `limit` messages (bounded by 32, default 32; `MAX_CLAIM_BATCH`).
 - `D-C4-11`: `ack` returns `AckAnswer { results: Vec<AckOutcome> }`. A message claimed 5 times without an ack closes after its 5th visibility timeout with unsigned `Receipt::Rejected` (reason `too_many_claims`).
 - `D-C4-12`: `queue_lifetime_secs` (30 days default) sweeps idle queues that have not registered or claimed.
-- `D-C4-13`: hourly record republish publishes to the host node's own community registry (`substrate.registry_url`) and to the Mainline DHT when `enable_bep0044_dht` is on. On 409 Conflict, republish retries at the normal republish interval.
+- `D-C4-13`: hourly record republish publishes to the host node's own community registry (`substrate.registry_url`) and to the Mainline DHT when `enable_bep0044_dht` is on. On 409 Conflict, republish retries at the normal republish interval (skipping DHT publish for that attempt until the HTTP conflict resolves).
 - `D-C4-14`: deposit rate limiting limits per sender DID and for the entire node (`RequestLimiter`), not per sending node IP.
 - `D-C4-15`: `RequestLimiter` in `syneroym-passport` is made generic over key type `K: Hash + Eq + Clone`.
 - `D-C4-16`: a deposit with TTL exceeding `max_ttl_secs` fails with `-32050` (`ttl_too_long`), reporting the queue's limit in `data`.
@@ -318,6 +318,7 @@ See the alternatives in the ADR. Also rejected here: cumulative sequence windows
 - `D-C4-18`: `syneroym-substrate` enables `mailbox` in default Cargo features.
 - `D-C4-19`: registration rate limiting limits per master DID (`register_per_minute_per_master: 10`) and total registrations (`register_per_minute_total: 120`).
 - `D-C4-20`: deposit retries are idempotent when identical, returning the current stored receipt (e.g. `Delivered`, `Stored`, `Rejected`, or `Expired`); altered destination, content, or TTL with the same deposit ID returns `DuplicateDeposit`. Both deposit and status require service instance caller context (`sender_of`).
+- `D-C4-21`: receiver call rate limiting limits receiver operations (`claim`, `ack`, `unregister`) per master DID (`receiver_calls_per_minute_per_master: 120`) and total receiver calls across the node (`receiver_calls_per_minute_total: 1200`), isolated from `register` rate limits. Counter metric `substrate.mailbox.receiver_refused` tracks rate-limited receiver calls.
 
 ## Close-out
 

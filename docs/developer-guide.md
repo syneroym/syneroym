@@ -1730,6 +1730,10 @@ deposits_per_minute_total = 6000
 register_per_minute_per_master = 10
 # Maximum registrations per minute across all masters on this node (default: 120)
 register_per_minute_total = 120
+# Maximum receiver calls (claim, ack, unregister) per minute from one master DID (default: 120)
+receiver_calls_per_minute_per_master = 120
+# Maximum receiver calls per minute across all masters on this node (default: 1200)
+receiver_calls_per_minute_total = 1200
 # Interval between background sweeps in seconds (default: 60)
 sweep_interval_secs = 60
 # Interval between republishing stored service records in seconds (default: 3600)
@@ -1756,6 +1760,7 @@ When the mailbox role is active, the endpoint exposes these Prometheus metrics:
 - `substrate.mailbox.deposits`: Counter of successfully stored deposits.
 - `substrate.mailbox.deposits_refused`: Counter of refused deposits labeled by refusal `kind` (`mailbox_full`, `queue_full`, `rate_limited`, `ttl_too_long`, `too_large`, `duplicate_deposit`).
 - `substrate.mailbox.register_refused`: Counter of refused registrations labeled by refusal `kind` (`rate_limited`).
+- `substrate.mailbox.receiver_refused`: Counter of refused receiver calls (`claim`, `ack`, `unregister`) labeled by refusal `kind` (`rate_limited`).
 - `substrate.mailbox.evictions`: Counter of messages evicted due to queue limits.
 - `substrate.mailbox.expired`: Counter of expired messages swept.
 - `substrate.mailbox.closed_unacked`: Counter of messages closed after reaching the maximum claim count (5) without an acknowledgment.

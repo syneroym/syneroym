@@ -64,6 +64,14 @@ fn zero_values_are_refused() {
     let err = Limits::from_role(&role).unwrap_err().to_string();
     assert!(err.contains("register_per_minute_total"));
 
+    let role = MailboxRole { receiver_calls_per_minute_per_master: 0, ..Default::default() };
+    let err = Limits::from_role(&role).unwrap_err().to_string();
+    assert!(err.contains("receiver_calls_per_minute_per_master"));
+
+    let role = MailboxRole { receiver_calls_per_minute_total: 0, ..Default::default() };
+    let err = Limits::from_role(&role).unwrap_err().to_string();
+    assert!(err.contains("receiver_calls_per_minute_total"));
+
     let role = MailboxRole { sweep_interval_secs: 0, ..Default::default() };
     let err = Limits::from_role(&role).unwrap_err().to_string();
     assert!(err.contains("sweep_interval_secs"));

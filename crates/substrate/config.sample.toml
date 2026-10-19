@@ -292,6 +292,10 @@ http_port = 7960
 # register_per_minute_per_master = 10
 # Maximum registrations per minute across all masters on this node.
 # register_per_minute_total = 120
+# Maximum receiver calls (claim, ack, unregister) per minute from one master DID.
+# receiver_calls_per_minute_per_master = 120
+# Maximum receiver calls per minute across all masters on this node.
+# receiver_calls_per_minute_total = 1200
 # Interval between background sweeps, in seconds.
 # sweep_interval_secs = 60
 # Interval between republishing stored service records, in seconds.

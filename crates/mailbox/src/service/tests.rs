@@ -566,7 +566,7 @@ async fn revocation_cache_admits_calls_within_15_seconds_and_refuses_after() {
 
 #[tokio::test]
 async fn claim_and_receiver_calls_are_rate_limited_per_master() {
-    let role = MailboxRole { register_per_minute_per_master: 2, ..Default::default() };
+    let role = MailboxRole { receiver_calls_per_minute_per_master: 2, ..Default::default() };
     let (_dir, service, anchors) = test_service(role);
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
@@ -579,13 +579,71 @@ async fn claim_and_receiver_calls_are_rate_limited_per_master() {
             .is_ok()
     );
 
-    // Second call: allowed (2nd call in this minute)
+    // Two receiver calls within the 2/minute budget succeed
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), receiver.caller())).await.is_ok());
     assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), receiver.caller())).await.is_ok());
 
-    // Third call: exceeds 2 per minute, refused with RATE_LIMITED
+    // Third receiver call exceeds 2 per minute and is refused with RATE_LIMITED
     let res = service.dispatch(invocation(METHOD_CLAIM, json!({}), receiver.caller())).await;
     match res {
         Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
         other => panic!("expected RATE_LIMITED for claim over limit, got {other:?}"),
+    }
+
+    // Register draws from a separate limiter and remains usable
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn receiver_calls_are_rate_limited_node_wide() {
+    let role = MailboxRole {
+        receiver_calls_per_minute_per_master: 10,
+        receiver_calls_per_minute_total: 2,
+        ..Default::default()
+    };
+    let (_dir, service, anchors) = test_service(role);
+    let r1 = Member::new(3600);
+    let r2 = Member::new(3600);
+    let r3 = Member::new(3600);
+    anchors.publish(&r1.service_id());
+    anchors.publish(&r2.service_id());
+    anchors.publish(&r3.service_id());
+
+    let rec1 = record(&r1, NODE_DID);
+    let rec2 = record(&r2, NODE_DID);
+    let rec3 = record(&r3, NODE_DID);
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec1 }), r1.caller()))
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec2 }), r2.caller()))
+            .await
+            .is_ok()
+    );
+    assert!(
+        service
+            .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec3 }), r3.caller()))
+            .await
+            .is_ok()
+    );
+
+    // Two receiver calls from different receivers exhaust the node-wide limit of 2
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r1.caller())).await.is_ok());
+    assert!(service.dispatch(invocation(METHOD_CLAIM, json!({}), r2.caller())).await.is_ok());
+
+    // Third receiver call across the node is refused with RATE_LIMITED
+    let res = service.dispatch(invocation(METHOD_CLAIM, json!({}), r3.caller())).await;
+    match res {
+        Err(RpcError::Custom(code, _, _)) => assert_eq!(code, codes::RATE_LIMITED),
+        other => panic!("expected RATE_LIMITED for total receiver calls, got {other:?}"),
     }
 }
