@@ -300,6 +300,12 @@ async fn handle_revoke_key(
 
 /// Public so a substrate test can call it with a DHT-less client, like
 /// `roymctl::commands::coordinator::leases`.
+///
+/// Single-writer note: there is one writer per master. If two operators revoke
+/// concurrently for the same master, the second read-modify-write overwrites
+/// the first's list on the registry; true concurrency would need
+/// compare-and-set, which the registry does not offer. A single operator or
+/// sequential CLI invocations do not race.
 pub async fn revoke_key(
     client: &RegistryClient,
     dir: &Path,

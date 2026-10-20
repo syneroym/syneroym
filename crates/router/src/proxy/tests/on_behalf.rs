@@ -8,11 +8,14 @@ use syneroym_rpc::{
     CallOrigin, CallerProof, NativeDispatchRegistry, OnBehalfProof, PreambleSignature,
 };
 
-use crate::proxy::{
-    ProxyRouter,
-    tests::helpers::{
-        MockHop, MockOutcome, base_request, empty_registry, empty_registry_client, synthetic_addr,
-        test_router,
+use crate::{
+    OutboundIdentity, RoutePreamble,
+    proxy::{
+        ProxyRouter,
+        tests::helpers::{
+            MockHop, MockOutcome, base_request, empty_registry, empty_registry_client,
+            synthetic_addr, test_router,
+        },
     },
 };
 
@@ -184,4 +187,14 @@ async fn retried_idempotent_call_attempts_carry_distinct_timestamps() {
     let ts0 = preambles[0].ts.expect("ts0 must be set");
     let ts1 = preambles[1].ts.expect("ts1 must be set");
     assert_ne!(ts0, ts1);
+    let sig0 = preambles[0].sig.as_ref().expect("sig0 must be set");
+    let sig1 = preambles[1].sig.as_ref().expect("sig1 must be set");
+    assert_ne!(sig0, sig1, "signatures must differ across attempts with different timestamps");
+
+    // Also prove OutboundIdentity re-computes distinct signatures on each call:
+    let out_id = OutboundIdentity::key_only(Arc::new(Identity::generate().unwrap()));
+    let route = RoutePreamble::binary_json_rpc("remote-svc", "greet");
+    let p0 = out_id.apply(&route, ts0);
+    let p1 = out_id.apply(&route, ts1);
+    assert_ne!(p0.sig, p1.sig, "fresh signatures must be generated for each timestamp");
 }

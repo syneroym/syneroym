@@ -53,3 +53,4 @@ dashmap.workspace = true
 async-trait.workspace = true
 hex.workspace = true
 syneroym-rpc.workspace = true
+syneroym-ucan.workspace = true

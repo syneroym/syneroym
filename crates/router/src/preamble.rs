@@ -44,6 +44,27 @@
 //! | `ucan` | `?ucan=<hex_json>` | Optional UCAN capability token chain. |
 //! | `dir` | `?dir=upload\|download` | Stream-protocol direction disambiguator (ADR-0014). |
 //!
+//! ## Interface Names
+//!
+//! `preamble.interface` (the `<interface>` segment) is looked up in the
+//! target service's `EndpointRegistry` to resolve a `SubstrateEndpoint`. Two
+//! disjoint sets of names share this same lookup, which is the source of the
+//! `http`/`http-native` naming collision:
+//!
+//! - **App-declared interfaces**: any WIT interface name (or, for TCP/container
+//!   services, a bare capability tag like `http`, e.g. `roymctl svc deploy
+//!   --interfaces http --tcp <host:port>`) a deployed component/service
+//!   registers for itself at deploy time
+//!   (`register_wasm_endpoints`/`ControlPlaneService::deploy`). Fully
+//!   app-owner-controlled; the substrate does not reserve or validate these
+//!   beyond uniqueness per `(service_id, interface)`.
+//! - **Reserved native-capability interfaces** (`NATIVE_CAPABILITY_INTERFACES`,
+//!   `syneroym_core::local_registry`): `data-layer`, `vault`, `app-config`,
+//!   `blob-store`, `messaging`, `http-native`, `conversation`. Every deployed
+//!   service (regardless of `service-type`) automatically gets these registered
+//!   as `SubstrateEndpoint::NativeHostChannel` entries pointing at
+//!   `SynSvcNativeService` instances.
+//!
 //! **Authentication status:** A preamble is anonymous only when it has none of
 //! `pubkey`, `delegation`, `ucan`, `ts`, `sig`, or `on_behalf`. Every other
 //! preamble must pass verification (signature, window, certificate, revocation)
@@ -302,6 +323,17 @@ impl RoutePreamble {
     }
 
     /// Parses a preamble string into structured route information.
+    ///
+    /// # Example
+    /// ```
+    /// use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
+    ///
+    /// let p = RoutePreamble::parse("json-rpc://default|service-123").unwrap();
+    /// assert_eq!(p.transport, RouteTransport::Binary);
+    /// assert_eq!(p.protocol, RouteProtocol::JsonRpc);
+    /// assert_eq!(p.interface, "default");
+    /// assert_eq!(p.service_id, "service-123");
+    /// ```
     pub fn parse(raw: &str) -> Result<Self> {
         let (scheme, target) = raw
             .trim()
@@ -389,7 +421,7 @@ impl ParsedQuery {
             }
             "sig" => {
                 if v.len() != 128
-                    || !v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    || !v.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
                 {
                     return Err(anyhow!("invalid sig in preamble"));
                 }

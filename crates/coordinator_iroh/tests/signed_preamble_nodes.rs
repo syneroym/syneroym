@@ -27,6 +27,7 @@ use syneroym_rpc::{
     NativeResponse, NativeService, OnBehalfProof, ProxyError, ProxyProtocol, ProxyRequest,
     RpcResult, STREAM_UNAUTHENTICATED_RPC_CODE, ServiceProxy, framing,
 };
+use syneroym_ucan::CapabilityToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod common;
@@ -411,11 +412,23 @@ async fn forwarding_log_redaction() -> Result<()> {
     let client_ep = Endpoint::empty_builder().bind().await?;
 
     let master = Identity::generate()?;
-    let _master_did = derive_did_key(&master.public_key());
+    let master_did = derive_did_key(&master.public_key());
     let instance = Identity::generate()?;
     let cert =
         DelegationCertificate::issue(&master, instance.public_key(), 3600, "routing".to_string())?;
     let secret_cert_json = cert.to_json()?;
+    let secret_cert_hex = hex::encode(secret_cert_json.as_bytes());
+
+    let ucan = CapabilityToken::issue(
+        &master,
+        "did:key:z6MkuAnY",
+        vec![],
+        Default::default(),
+        3600,
+        vec![],
+    )?;
+    let secret_ucan_json = serde_json::to_string(&ucan)?;
+    let secret_ucan_hex = hex::encode(secret_ucan_json.as_bytes());
 
     let mut preamble = RoutePreamble::new(
         RouteTransport::Binary,
@@ -424,6 +437,7 @@ async fn forwarding_log_redaction() -> Result<()> {
         "data-layer",
     );
     preamble.delegation = Some(cert);
+    preamble.ucan = Some(ucan);
     let secret_sig_now = now_secs();
     preamble.sign(&instance, secret_sig_now);
 
@@ -460,9 +474,20 @@ async fn forwarding_log_redaction() -> Result<()> {
     drop(recv);
 
     let captured = log_lines.read().unwrap().join("\n");
+    assert!(captured.contains("Forwarding preamble"), "log must positively record forwarding line");
     assert!(!captured.contains(&secret_sig_hex), "log must not leak raw signature hex");
     assert!(!captured.contains(&secret_cert_json), "log must not leak delegation certificate JSON");
+    assert!(!captured.contains(&secret_cert_hex), "log must not leak delegation certificate hex");
     assert!(!captured.contains(&secret_on_behalf_hex), "log must not leak on_behalf hex");
+    assert!(!captured.contains(&secret_ucan_json), "log must not leak ucan JSON");
+    assert!(!captured.contains(&secret_ucan_hex), "log must not leak ucan hex");
+    assert!(captured.contains("sig=set"), "log must show redacted sig");
+    assert!(
+        captured.contains(&format!("master={master_did}")),
+        "log must show redacted master DID"
+    );
+    assert!(captured.contains("ucan=set"), "log must show redacted ucan");
+    assert!(captured.contains("on_behalf=set"), "log must show redacted on_behalf");
 
     let _ = target.router.shutdown().await;
     let _ = coord.shutdown().await;

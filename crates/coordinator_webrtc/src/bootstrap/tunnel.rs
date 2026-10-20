@@ -70,13 +70,13 @@ async fn read_preamble_from_ws(
         }
     };
 
-    let route_text = preamble_str.split('?').next().unwrap_or(&preamble_str).trim();
+    let route_text = syneroym_router::route_text(&preamble_str);
     debug!(%route_text, "[BlindTunnel] tunnel received preamble");
 
     let preamble = match RoutePreamble::parse(&preamble_str) {
         Ok(p) => p,
         Err(e) => {
-            error!(%route_text, "[BlindTunnel] Failed to parse preamble: {e}");
+            debug!(%route_text, "[BlindTunnel] Failed to parse preamble: {e}");
             return None;
         }
     };

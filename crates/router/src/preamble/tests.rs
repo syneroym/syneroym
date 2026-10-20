@@ -246,3 +246,18 @@ fn test_route_text_cuts_at_question_and_256_chars() {
     let cut = route_text(&long_raw);
     assert_eq!(cut.len(), 256);
 }
+
+#[test]
+fn test_sig_hex_strict_parsing() {
+    let valid_sig = "a".repeat(128);
+    let p = RoutePreamble::parse(&format!("json-rpc://svc?sig={valid_sig}")).unwrap();
+    assert_eq!(p.sig.as_deref(), Some(valid_sig.as_str()));
+
+    // Contains 'g' (invalid hex digit)
+    let with_g = format!("{}g", "a".repeat(127));
+    assert!(RoutePreamble::parse(&format!("json-rpc://svc?sig={with_g}")).is_err());
+
+    // Contains uppercase 'A'
+    let with_upper = format!("{}A", "a".repeat(127));
+    assert!(RoutePreamble::parse(&format!("json-rpc://svc?sig={with_upper}")).is_err());
+}

@@ -208,9 +208,10 @@ async fn test_unregistered_stream_protocol_rejected_cleanly() {
     let outcome = time::timeout(Duration::from_secs(10), recv.read_to_end(1024 * 1024)).await;
     assert!(outcome.is_ok(), "unregistered-protocol stream must not hang the peer");
     let buf = outcome.unwrap().unwrap_or_default();
-    assert!(
-        buf.is_empty() || buf == b"unknown_interface\n",
-        "an unregistered protocol must yield a refusal line or no bytes, got: {:?}",
+    assert_eq!(
+        buf,
+        b"unknown_interface\n",
+        "an unregistered protocol must yield the unknown_interface refusal line, got: {:?}",
         String::from_utf8_lossy(&buf)
     );
 

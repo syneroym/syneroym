@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use iroh::endpoint::{RecvStream, SendStream, WriteError};
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_router::{REFUSAL_HEADER, RoutePreamble, RouteProtocol, RouteTransport};
 use tokio::{
@@ -122,8 +123,14 @@ impl SyneroymClient {
                 }
 
                 tcp_stream.write_all(&first[..n]).await?;
-                let mut joined_iroh = io::join(recv, send);
-                let _ = io::copy_bidirectional(tcp_stream, &mut joined_iroh).await;
+                if !tcp_open {
+                    let (_, mut tcp_w) = tcp_stream.split();
+                    let _ = io::copy(&mut recv, &mut tcp_w).await;
+                    let _ = tcp_w.shutdown().await;
+                } else {
+                    let mut joined_iroh = io::join(recv, send);
+                    let _ = io::copy_bidirectional(tcp_stream, &mut joined_iroh).await;
+                }
                 Ok(PassthroughOutcome::Done)
             }
         }
@@ -131,28 +138,28 @@ impl SyneroymClient {
 }
 
 async fn read_first_response(
-    recv: &mut iroh::endpoint::RecvStream,
-    send: &mut iroh::endpoint::SendStream,
+    recv: &mut RecvStream,
+    send: &mut SendStream,
     tcp_stream: &mut TcpStream,
     first: &mut [u8],
-    write_err: &mut Option<iroh::endpoint::WriteError>,
+    write_err: &mut Option<WriteError>,
     tcp_open: &mut bool,
     client_sent_more: &mut bool,
 ) -> Result<usize> {
     let mut buf = vec![0u8; 4096];
     loop {
-        if !*tcp_open {
+        if let Some(err) = write_err.take() {
             match time::timeout(REFUSAL_READ_GRACE, recv.read(first)).await {
                 Ok(Ok(Some(n))) => return Ok(n),
-                Ok(Ok(None)) => return Ok(0),
+                Ok(Ok(None)) => return Err(err.into()),
                 Ok(Err(e)) => return Err(anyhow::anyhow!(e)),
-                Err(_) => {
-                    if let Some(err) = write_err.take() {
-                        return Err(err.into());
-                    }
-                    return Err(anyhow::anyhow!("timed out waiting for host response"));
-                }
+                Err(_) => return Err(err.into()),
             }
+        }
+
+        if !*tcp_open {
+            let r = recv.read(first).await?;
+            return Ok(r.unwrap_or(0));
         }
 
         tokio::select! {

@@ -180,7 +180,7 @@ async fn federated_fdae_fetch_across_two_real_substrates() {
     let hr_owner_did = substrate::derive_did_key(&hr_owner_identity.public_key());
 
     // Node A is owned by `hr_owner_did` -- otherwise every unrelated caller
-    // (including alice's forwarded `resolve-relation` identity, who never
+    // (including alice's proof carried in `on_behalf`, who never
     // delegated anything on Node A) would fall back to a free, bare
     // `substrate:<node_did>`-scoped `orchestrator/*` capability, which
     // `resolve_relation`'s two-way fork treats as "holds a capability scoped

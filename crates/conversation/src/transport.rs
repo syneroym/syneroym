@@ -644,7 +644,9 @@ pub(super) fn classify(error: ProxyError) -> Disposition {
         // Transient in-flight collision or the callee service was briefly
         // absent — retry rather than permanently failing.
         // The refusal comes before any dispatch, and some of its causes (an
-        // anchor lookup timeout, clock skew) clear on their own.
+        // anchor lookup timeout, clock skew) clear on their own. Refusals now
+        // spend the outbox attempt budget and can dead-letter rather than
+        // waiting up to the recipient reachability ceiling.
         ProxyError::Callee { code, .. }
             if code == CALL_ALREADY_RUNNING_RPC_CODE
                 || code == SERVICE_NOT_FOUND_RPC_CODE

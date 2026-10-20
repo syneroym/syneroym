@@ -67,4 +67,13 @@ ignore = [
     "RUSTSEC-2026-0361",
     "RUSTSEC-2026-0362",
     "RUSTSEC-2026-0363",
+
+    # Two more wasmtime / wasmtime-wasi 46.0.3 advisories (published
+    # 2026-10-19): panic lowering host-created component model stream into
+    # guest expecting different payload type (0378), and Cranelift backend
+    # aarch64 jump to incorrect target on large Wasm br_table (0379). Fixed
+    # in wasmtime 48.0.7 / 49.0.4, so the same dedicated wasmtime upgrade
+    # clears them. Remove these entries with the ones above.
+    "RUSTSEC-2026-0378",
+    "RUSTSEC-2026-0379",
 ]

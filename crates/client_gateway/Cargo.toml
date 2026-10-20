@@ -23,3 +23,5 @@ httparse.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+iroh.workspace = true
+syneroym-router.workspace = true

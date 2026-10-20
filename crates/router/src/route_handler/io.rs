@@ -404,7 +404,7 @@ impl RouteHandler {
         match self.check_caller(preamble).await {
             Ok(caller) => CallerCheck::Verified(Box::new(caller)),
             Err(e) => {
-                // Once, at debug (C4b-13): forged streams must not flood the logs.
+                // Log once at debug: forged streams must not flood the logs.
                 debug!(service_id = %preamble.service_id, "caller refused: {e}");
                 CallerCheck::Refused
             }
@@ -468,13 +468,13 @@ impl RouteHandler {
         );
     }
 
-    /// Step 2's registry-miss fallback: resolves the next relay hop over
-    /// Iroh, forwards the original preamble, and blindly pipes bytes both
-    /// ways until the tunnel closes. Always terminal for `handle_stream` --
-    /// every path through this, success or failure, is exactly what the
-    /// caller should return, so `handle_stream` calls this as `return
-    /// self.relay_to_next_hop(...).await;`, the same as the inline `return
-    /// Ok(())` / `return Err(...)` this replaces.
+    /// Coordinator forwarding: resolves the destination service over Iroh,
+    /// forwards the preamble, and blindly pipes bytes both ways until the
+    /// tunnel closes. Only coordinators forward; non-coordinator nodes
+    /// refuse non-hosted services with not_hosted_here. Always terminal for
+    /// `handle_stream` -- every path through this, success or failure, is
+    /// exactly what the caller should return, so `handle_stream` calls this
+    /// as `return self.relay_to_next_hop(...).await;`.
     async fn relay_to_next_hop(
         &self,
         preamble: RoutePreamble,

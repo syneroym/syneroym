@@ -3,7 +3,7 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
-    sync::{Arc, Mutex, OnceLock, PoisonError},
+    sync::{Arc, Mutex, OnceLock, PoisonError, atomic::AtomicUsize},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -20,7 +20,11 @@ use syneroym_rpc::{
     CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
     MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
 };
-use tokio::{sync::mpsc, task::JoinHandle, time};
+use tokio::{
+    sync::{Mutex as AsyncMutex, mpsc},
+    task::JoinHandle,
+    time,
+};
 use tracing::debug;
 
 mod orchestrator;
@@ -101,7 +105,8 @@ pub struct SyneroymClient {
     /// finish, which is what was producing iroh's "Endpoint dropped without
     /// calling `Endpoint::close`" warning.
     pending_closes: Mutex<Vec<JoinHandle<()>>>,
-    rehome_lock: tokio::sync::Mutex<()>,
+    rehome_lock: AsyncMutex<()>,
+    rehome_count: AtomicUsize,
     /// Whether `registry_client()` builds its cached client with a real
     /// mainline-DHT client attached. `true` by default (existing behavior:
     /// the DHT is a best-effort backup, checked only if the HTTP registry
@@ -238,7 +243,8 @@ impl SyneroymClient {
             caller_ucan: None,
             caller_delegation: None,
             pending_closes: Mutex::new(Vec::new()),
-            rehome_lock: tokio::sync::Mutex::new(()),
+            rehome_lock: AsyncMutex::new(()),
+            rehome_count: AtomicUsize::new(0),
             enable_dht: true,
             registry_client: OnceLock::new(),
         }
@@ -257,7 +263,8 @@ impl SyneroymClient {
             caller_ucan: None,
             caller_delegation: None,
             pending_closes: Mutex::new(Vec::new()),
-            rehome_lock: tokio::sync::Mutex::new(()),
+            rehome_lock: AsyncMutex::new(()),
+            rehome_count: AtomicUsize::new(0),
             enable_dht: true,
             registry_client: OnceLock::new(),
         }
@@ -289,7 +296,8 @@ impl SyneroymClient {
             caller_ucan: None,
             caller_delegation: None,
             pending_closes: Mutex::new(Vec::new()),
-            rehome_lock: tokio::sync::Mutex::new(()),
+            rehome_lock: AsyncMutex::new(()),
+            rehome_count: AtomicUsize::new(0),
             enable_dht: true,
             registry_client: OnceLock::new(),
         })
@@ -316,7 +324,8 @@ impl SyneroymClient {
             caller_ucan: None,
             caller_delegation: None,
             pending_closes: Mutex::new(Vec::new()),
-            rehome_lock: tokio::sync::Mutex::const_new(()),
+            rehome_lock: AsyncMutex::const_new(()),
+            rehome_count: AtomicUsize::new(0),
             enable_dht: true,
             registry_client: OnceLock::new(),
         }
@@ -407,14 +416,20 @@ impl SyneroymClient {
         Ok(())
     }
 
+    pub(crate) fn push_pending_close(&self, handle: JoinHandle<()>) {
+        let mut list = self.pending_closes.lock().unwrap_or_else(PoisonError::into_inner);
+        list.retain(|h| !h.is_finished());
+        list.push(handle);
+    }
+
     pub fn disconnect(&mut self) {
         if let Some(TransportConnection::Iroh { endpoint, .. }) =
             self.connection.get_mut().unwrap_or_else(PoisonError::into_inner).take()
         {
-            self.pending_closes
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(spawn_background_close(endpoint));
+            let handle = spawn_background_close(endpoint);
+            let list = self.pending_closes.get_mut().unwrap_or_else(PoisonError::into_inner);
+            list.retain(|h| !h.is_finished());
+            list.push(handle);
         }
     }
 
@@ -650,7 +665,10 @@ impl SyneroymClient {
             Ok(res) => Ok(res),
             Err(e) if is_not_hosted_here(&e) && self.can_rehome() => {
                 if let Some(used) = used_conn {
-                    self.rehome(&used).await?;
+                    if let Err(rehome_err) = self.rehome(&used).await {
+                        tracing::debug!("rehome failed: {rehome_err}; returning original refusal");
+                        return Err(e);
+                    }
                     let (second_try, _) = self.request_once(interface_name, &request).await;
                     second_try
                 } else {
@@ -661,35 +679,32 @@ impl SyneroymClient {
         }
     }
 
-    /// Subscribes to `topic` on `interface`'s messaging capability, over a
-    /// live push channel. Unlike `request`/`request_raw`, this does **not**
-    /// finish the send half of the stream after writing the request:
-    /// finishing it would make the router-side reader hit EOF and tear the
-    /// whole handler down before any notification arrives. Dropping the
-    /// returned `MessageStream` closes the send half, which the router
-    /// treats as the unsubscribe signal.
-    pub async fn subscribe(&self, interface: &str, topic: &str) -> Result<MessageStream> {
-        let request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "subscribe".to_string(),
-            params: serde_json::json!({"topic": topic}),
-            id: Some(Value::Number(1.into())),
-            idempotency_key: None,
-        };
-        let (send, mut recv) = self.open_request_stream(interface, &request).await?;
+    async fn subscribe_once(
+        &self,
+        interface: &str,
+        topic: &str,
+        request: &JsonRpcRequest,
+    ) -> Result<MessageStream, (anyhow::Error, Option<TransportConnection>)> {
+        let conn_wrapper = self.connection();
+        let (send, mut recv) = self
+            .open_request_stream(interface, request)
+            .await
+            .map_err(|e| (e, conn_wrapper.clone()))?;
 
-        let ack_frame = framing::read_frame(&mut recv).await?;
+        let ack_frame =
+            framing::read_frame(&mut recv).await.map_err(|e| (e, conn_wrapper.clone()))?;
         if ack_frame.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Empty ack for subscribe on topic {topic} (interface {interface})"
+            return Err((
+                anyhow::anyhow!("Empty ack for subscribe on topic {topic} (interface {interface})"),
+                conn_wrapper,
             ));
         }
         let ack: JsonRpcResponse = match serde_json::from_slice(&ack_frame) {
             Ok(res) => res,
             Err(parse_err) => {
                 return match serde_json::from_slice::<JsonRpcErrorResponse>(&ack_frame) {
-                    Ok(err_res) => Err(err_res.error.into()),
-                    Err(_) => Err(parse_err.into()),
+                    Ok(err_res) => Err((err_res.error.into(), conn_wrapper)),
+                    Err(_) => Err((parse_err.into(), conn_wrapper)),
                 };
             }
         };
@@ -722,6 +737,34 @@ impl SyneroymClient {
         });
 
         Ok(MessageStream { receiver: rx, send })
+    }
+
+    /// Subscribes to `topic` on `interface`'s messaging capability, over a
+    /// live push channel. Unlike `request`/`request_raw`, this does **not**
+    /// finish the send half of the stream after writing the request:
+    /// finishing it would make the router-side reader hit EOF and tear the
+    /// whole handler down before any notification arrives. Dropping the
+    /// returned `MessageStream` closes the send half, which the router
+    /// treats as the unsubscribe signal.
+    pub async fn subscribe(&self, interface: &str, topic: &str) -> Result<MessageStream> {
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "subscribe".to_string(),
+            params: serde_json::json!({"topic": topic}),
+            id: Some(Value::Number(1.into())),
+            idempotency_key: None,
+        };
+        match self.subscribe_once(interface, topic, &request).await {
+            Ok(stream) => Ok(stream),
+            Err((e, Some(used))) if is_not_hosted_here(&e) && self.can_rehome() => {
+                if let Err(rehome_err) = self.rehome(&used).await {
+                    debug!("subscribe rehome failed: {rehome_err}; returning original refusal");
+                    return Err(e);
+                }
+                self.subscribe_once(interface, topic, &request).await.map_err(|(e, _)| e)
+            }
+            Err((e, _)) => Err(e),
+        }
     }
 
     pub async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {

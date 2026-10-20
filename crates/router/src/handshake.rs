@@ -118,6 +118,15 @@ async fn verify_presented(
     let Some(cert) = p.delegation else {
         return Ok(VerifiedIdentity { master_did: temporary_did.clone(), temporary_did });
     };
+    // `master_did` is read from the certificate itself, so verifying against
+    // `cert.master_did` is a self-consistency check on this path --
+    // the connection asserts "I am delegated by M" and M is whatever
+    // the certificate says; binding to a target is resolved
+    // downstream on `master_did`. The scope check is what actually
+    // enforces something here: both a person's delegated device key
+    // and a service instance route a connection under a master's
+    // identity, so the ingress accepts either transport scope and
+    // leaves narrowing to whoever uses the connection.
     cert.verify_at(&cert.master_did, &TRANSPORT_SCOPES, now_secs)?;
     if cert.temporary_did != temporary_did {
         return Err(anyhow!(

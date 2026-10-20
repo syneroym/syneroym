@@ -4,6 +4,8 @@ living-docs-touched:
   - docs/system-architecture.md
   - docs/system-requirements-spec.md
   - docs/TERMINOLOGY.md
+  - docs/developer-guide.md
+  - docs/planning/traceability-matrix.md
 ---
 # Signed route preamble
 
@@ -472,7 +474,54 @@ Part 2 (C4c):
 
 ## Deviations
 
-None yet.
+- **D-C4b-1 (Refusal framing):** The router writes a refusal in the framing the preamble requested:
+  `Binary` sends a JSON-RPC error frame with code `-32096` (`not_hosted_here`) or `-32097` (`unauthenticated`);
+  `Http` sends a complete HTTP/1.1 response (status 421 or 401, `x-syneroym-refusal` header, JSON body);
+  `Raw` sends one text line. The router then flushes, closes its write half, and returns `Ok(())` without logging at error level.
+- **D-C4b-2 (Order of checks in `handle_stream`):** Forwarders do not verify caller identity. Signature is checked
+  against `interface` as received, before `rewrite_empty_http_interface`. Check sequence: read preamble → check whether
+  local node hosts `service_id` via `EndpointRegistry::hosts_service` → if not, forward (coordinator) or refuse `not_hosted_here`
+  → verify caller → rewrite empty HTTP interface → registry lookup → plan → encrypt → dispatch.
+- **D-C4b-3 (Unknown interface on hosted service):** A hosted service with an unknown interface is refused with
+  `SERVICE_NOT_FOUND_RPC_CODE` (`-32601`, `unknown_interface`), not forwarded. This prevents a forwarding loop back to the same node.
+- **D-C4b-4 (Identity fields without pubkey refused):** A preamble is anonymous only when it has none of `pubkey`,
+  `delegation`, `ucan`, `ts`, `sig`, `on_behalf`. A preamble with identity fields but missing `pubkey` is refused rather than silently
+  falling back to anonymous.
+- **D-C4b-5 (Strict syntax parse for new fields before forward decision):** `RoutePreamble::parse` strictly validates `ts` (u64),
+  `sig` (128 lowercase hex characters), and `on_behalf` (JSON matching `OnBehalfProof`). Forwarders drop syntactically malformed streams
+  instead of forwarding unparseable bytes. This is a deviation from the literal text of ADR-0002 A1 rule 3 ("checks nothing about the caller");
+  it is justified because syntax validation does not depend on host clocks or anchor lookups, and forwarders re-serialize the preamble anyway.
+- **D-C4b-6 (CallerProof carries on_behalf and optional signed part):** Received `on_behalf` is stored in `CallerProof::on_behalf`.
+  Native calls pass on `proof.on_behalf` if present, else caller's own proof (`CallerProof::to_pass_on`). Local same-node calls in C5/C6
+  leave `signed: None` and do not generate an unsigned `on_behalf` proof that downstream hosts would reject.
+- **D-C4b-7 (OnBehalfProof wire type location):** `OnBehalfProof` lives in `syneroym-rpc` so both `CallerProof` and `RoutePreamble`
+  share the definition without circular crate dependencies.
+- **D-C4b-8 (Preamble signing on each attempt):** Writers sign at the moment of preamble writing via `RoutePreamble::sign(&mut self, key: &Identity, now_secs)`.
+  `RemoteHop::call` accepts `identity: Option<&OutboundIdentity>` to sign per attempt.
+- **D-C4b-9 (Proxy retry on `not_hosted_here`):** `invoke_remote` resolves the service endpoint again upon receiving `not_hosted_here` (`-32096`).
+  If the endpoint changed, it retries once. If the endpoint is identical or the second attempt fails, it returns `ProxyError::ServiceNotFound` (retryable in outbox).
+- **D-C4b-10 (SDK interior mutability and compare-before-replace):** `SyneroymClient` uses `Mutex<Option<TransportConnection>>` and serializes
+  re-homing under `rehome_lock` with compare-before-replace based on `stable_id()`. This prevents concurrent requests from replacing a newly established connection.
+- **D-C4b-11 (Client gateway re-home and replay):** Client gateway detects `421 Misdirected Request` (`NotHostedHere`) on the first bytes received from the host.
+  The gateway re-homes the cached `SyneroymClient` via compare-before-replace, reconnects with a fresh lookup, and replays the request if no body bytes beyond the initial buffer were sent.
+- **D-C4b-12 (Native call identity and on_behalf threading):** A native call (`CallOrigin::Native`) presents node/instance identity and threads caller proof as `on_behalf`
+  when present. Removed the old `(Some(proof), Native)` arm that presented caller proof directly as node identity.
+- **D-C4b-13 (Destination check of `on_behalf` and refusal logging):** A stream carrying both `on_behalf` and `ucan` is refused. A valid `on_behalf`
+  verifies signature, timestamp, certificate, and revocation, setting `caller.session.anchor_did = Some(verified.master_did)` while preserving
+  `caller_did` as the immediate caller. Refusals are logged once at `debug` and counted in `substrate.router.refused{kind}`.
+- **D-C4b-14 (Revoke command CLI):** `roymctl identity revoke-key --master <name> --key <did:key> --registry-url <url>`. Requires `did:key`,
+  forbids revoking master's own DID, and waits for DHT propagation (`sync_dht: true`).
+- **D-C4b-15 (Publish-anchor preserves revocations):** `roymctl identity publish-anchor` preserves existing `revoked_keys` via read-modify-write
+  rather than overwriting with an empty list.
+- **D-C4b-16 (RegistryClient::revoke_key generalization):** `revoke_instance_key` was renamed `revoke_key` and accepts `sync_dht: bool`,
+  supporting both instance keys and person temporary keys.
+- **D-C4b-17 (Debug formatting and log redaction):** `RoutePreamble`, `CallerProof`, `PreambleSignature`, `OnBehalfProof`, and `OutboundIdentity`
+  implement custom `Debug` implementations omitting raw signatures, certificates, UCAN tokens, and `on_behalf` payloads. Preamble parse errors log only route text before `?`.
+- **D-C4b-18 (Client reads refusal after write error):** When router refuses a large request, QUIC stream shuts down the write half. `IrohHop::call` and
+  `SyneroymClient` attempt reading a response frame (up to 2 s) after write errors before returning the write failure, allowing clients to receive `-32096`/`-32097`.
+- **D-C4b-19 (Queued calls retry on `-32096` and `-32097`; conversation outbox behavior change):** `proxy_outbox` and `conversation/transport` classify
+  `-32096` and `-32097` as `Disposition::Retry` rather than terminal errors. In the conversation outbox, refused messages now consume their attempt budget
+  and dead-letter upon exhaustion instead of remaining in `Unreachable` state for up to 30 days (`max_pending_age_secs`).
 
 ## Close-out
 

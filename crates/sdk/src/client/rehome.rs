@@ -1,4 +1,4 @@
-use std::sync::PoisonError;
+use std::sync::{PoisonError, atomic::Ordering};
 
 use anyhow::Result;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl};
@@ -41,17 +41,11 @@ impl SyneroymClient {
                             return Ok(TransportConnection::Iroh { endpoint, conn });
                         }
                         Ok(Err(e)) => {
-                            self.pending_closes
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .push(spawn_background_close(endpoint));
+                            self.push_pending_close(spawn_background_close(endpoint));
                             return Err(e.into());
                         }
                         Err(_) => {
-                            self.pending_closes
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .push(spawn_background_close(endpoint));
+                            self.push_pending_close(spawn_background_close(endpoint));
                             return Err(anyhow::anyhow!(
                                 "connect to {} timed out after {:?}",
                                 self.service_id,
@@ -69,9 +63,15 @@ impl SyneroymClient {
         Err(anyhow::anyhow!("No supported communication mechanism found for {}", self.service_id))
     }
 
+    #[doc(hidden)]
+    pub fn rehome_count(&self) -> usize {
+        self.rehome_count.load(Ordering::SeqCst)
+    }
+
     /// Swaps in a connection to the service's current host, unless another
     /// request already did since `failed` was used.
-    pub(crate) async fn rehome(&self, failed: &TransportConnection) -> Result<()> {
+    #[doc(hidden)]
+    pub async fn rehome(&self, failed: &TransportConnection) -> Result<()> {
         let _serial = self.rehome_lock.lock().await;
         if self.current_stable_id() != Some(failed.stable_id()) {
             return Ok(());
@@ -79,12 +79,10 @@ impl SyneroymClient {
         let target = self.registry_lookup_override.as_deref().unwrap_or(&self.service_id);
         let info = self.registry_client().lookup(target, true).await?.info;
         let conn = self.dial(info.mechanisms).await?;
+        self.rehome_count.fetch_add(1, Ordering::SeqCst);
         let old = self.connection.lock().unwrap_or_else(PoisonError::into_inner).replace(conn);
         if let Some(TransportConnection::Iroh { endpoint, .. }) = old {
-            self.pending_closes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(spawn_background_close(endpoint));
+            self.push_pending_close(spawn_background_close(endpoint));
         }
         Ok(())
     }

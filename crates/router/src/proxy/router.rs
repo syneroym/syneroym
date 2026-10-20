@@ -346,6 +346,14 @@ impl ProxyRouter {
     /// native call made for a caller passes that caller's proof on in
     /// `on_behalf`; a guest call never does, because the guest chooses the
     /// call and must not travel under the caller's authority.
+    ///
+    /// What a guest *may* present is its own service's certified instance
+    /// key (ADR-0020 §1): that grants no privilege the guest didn't
+    /// already have as itself, since the guest still chooses the call --
+    /// only the identity it travels under changes, from anonymous to the
+    /// member master this substrate derived and was certified for. `None`
+    /// for either the certificate or the recorded owner falls back to
+    /// presenting nothing.
     fn outbound_identity(&self, req: &ProxyRequest) -> Option<OutboundIdentity> {
         match &req.origin {
             CallOrigin::Native { service_id } => {
@@ -362,6 +370,10 @@ impl ProxyRouter {
 
     /// The certified instance identity of `service_id`: its derived key and
     /// unexpired certificate. `None` without both a certificate and an owner.
+    /// An expired certificate is worse than none: the destination
+    /// hard-rejects any connection whose delegation fails to verify
+    /// (`route_handler/io.rs`), where a `None` pubkey instead falls back to
+    /// anonymous.
     fn instance_identity(&self, service_id: &str) -> Option<OutboundIdentity> {
         let cert = self.registry.instance_cert(service_id).filter(|c| !c.is_expired())?;
         let owner = self.registry.owner_of(service_id)?;
