@@ -62,6 +62,7 @@ impl Member {
             proof: Some(CallerProof {
                 pubkey_hex: hex::encode(self.instance.public_key().to_bytes()),
                 delegation_json: Some(self.cert.to_json().unwrap()),
+                ..Default::default()
             }),
         }
     }

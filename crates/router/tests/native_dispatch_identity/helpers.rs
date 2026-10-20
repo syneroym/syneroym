@@ -200,17 +200,7 @@ pub(crate) fn raw_pipeline(service_id: &str) -> RoutePipeline {
 }
 
 pub(crate) fn preamble_for(service_id: &str, interface: &str) -> RoutePreamble {
-    RoutePreamble {
-        transport: RouteTransport::Binary,
-        protocol: RouteProtocol::JsonRpc,
-        interface: interface.to_string(),
-        service_id: service_id.to_string(),
-        enc: None,
-        pubkey: None,
-        delegation: None,
-        ucan: None,
-        dir: None,
-    }
+    RoutePreamble::binary_json_rpc(service_id, interface)
 }
 
 pub(crate) fn json_rpc_body(method: &str, params: Value) -> Vec<u8> {

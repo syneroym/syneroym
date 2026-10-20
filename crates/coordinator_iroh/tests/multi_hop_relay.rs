@@ -4,48 +4,28 @@
 //! across network boundaries in a hierarchy and tests bidirectional e2e
 //! connectivity between clients and substrates across networks.
 #![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use std::{
-    collections::BTreeSet,
-    path::Path,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use anyhow::Result;
-use async_trait::async_trait;
-use dashmap::DashMap;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, protocol::Router};
 use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
-use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
-    asset_manifest::AssetRegistry,
     config::{CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig},
     coordinator_info::{CoordinatorInfo, INFO_PATH},
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
     },
-    http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     test_constants,
 };
-use syneroym_data_blob::ObjectStoreBlobProvider;
-use syneroym_data_db::{SqliteStorageProvider, registry_store, traits::StorageProvider};
-use syneroym_data_keystore::KeyStore;
-use syneroym_identity::{DelegationCertificate, Identity, substrate::derive_did_key};
-use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
+use syneroym_data_db::registry_store;
+use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{
-    AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
-    RouteProtocol, RouteTransport, SYNEROYM_ALPN, ServiceStage, TransportStage,
+    AdaptationStage, EncryptionStage, RouteHandler, RoutePipeline, RoutePreamble, RouteProtocol,
+    RouteTransport, SYNEROYM_ALPN, ServiceStage, TransportStage,
 };
-use syneroym_rpc::{
-    AuthLevel, CallOrigin, CallerContext, CallerProof, NativeDispatchRegistry, NativeInvocation,
-    NativeResponse, NativeService, ProxyProtocol, ProxyRequest, RpcResult, ServiceProxy,
-    SessionContext,
-};
-use syneroym_sandbox_podman::ContainerEngine;
-use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_sdk::SyneroymClient;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
@@ -53,159 +33,10 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use tokio::time;
 
 mod common;
-
-/// Mirrors `syneroym_substrate::runtime::build_route_handler_deps`: this
-/// test simulates a full substrate node via `RouteHandler::init` directly
-/// (bypassing `syneroym-substrate`, whose `runtime` module -- and
-/// `build_route_handler_deps` itself -- is private, and which is the
-/// top-level composition-root binary crate that already depends on
-/// `coordinator_iroh` transitively via `syneroym-coordinator`; depending on
-/// it back from here, even as a dev-dependency, would invert that
-/// layering), so it must build the same dependency bundle substrate's
-/// composition root builds in production. Simplified to the local blob
-/// backend only -- these tests never configure S3.
-async fn build_test_route_handler_deps(
-    config: &SubstrateConfig,
-    service_id: &str,
-    registry: &EndpointRegistry,
-) -> Result<RouteHandlerDeps> {
-    let key_store = Arc::new(KeyStore::new());
-    let storage_provider: Arc<dyn StorageProvider> =
-        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, config.storage.encryption)?);
-    let bs = &config.storage.blob_store;
-    let blob_provider = Arc::new(ObjectStoreBlobProvider::new_local(
-        bs.local_root.clone(),
-        bs.max_blob_bytes,
-        bs.max_service_total_bytes,
-    )?);
-
-    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
-        channel_capacity: config.mqtt.channel_capacity as usize,
-    })?);
-
-    let app_sandbox_engine = Arc::new(
-        AppSandboxEngine::init(
-            config,
-            registry.get_all_endpoints(),
-            key_store.clone(),
-            storage_provider.clone(),
-            blob_provider.clone(),
-            messaging_broker.clone(),
-            registry.clone(),
-            syneroym_app_orchestration::empty_resolver(),
-        )
-        .await?,
-    );
-    app_sandbox_engine
-        .self_weak
-        .set(Arc::downgrade(&app_sandbox_engine))
-        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::self_weak set more than once"))?;
-    let websocket_senders = syneroym_rpc::WebSocketSenders::new();
-    app_sandbox_engine
-        .websocket_senders
-        .set(websocket_senders.clone())
-        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::websocket_senders set more than once"))?;
-
-    // Mirrors `replay_persisted_subscriptions` in
-    // `syneroym_substrate::runtime` (ADR-0010 Finding A1) -- omitting this
-    // would silently break any future test in this file that simulates a
-    // restart to check a guest's persisted MQTT subscription survives it.
-    for (subscribed_service_id, topic) in
-        storage_provider.list_all_messaging_subscriptions().await?
-    {
-        if let Err(e) =
-            app_sandbox_engine.register_internal_subscription(&subscribed_service_id, &topic).await
-        {
-            tracing::warn!(
-                service_id = %subscribed_service_id,
-                topic = %topic,
-                error = %e,
-                "Failed to replay messaging subscription on startup"
-            );
-        }
-    }
-
-    let podman_path = config
-        .roles
-        .podman_sandbox
-        .as_ref()
-        .map(|cfg| cfg.podman_path.clone())
-        .unwrap_or_else(|| "podman".to_string());
-    let podman_sandbox_engine = Arc::new(ContainerEngine::new(
-        podman_path,
-        &config.app_local_data_dir,
-        Some(storage_provider.clone()),
-    ));
-
-    let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
-    let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
-    let assets: AssetRegistry = Arc::new(DashMap::new());
-
-    let control_plane_service = ControlPlaneService::init(
-        service_id.to_string(),
-        service_id.to_string(),
-        app_sandbox_engine.clone(),
-        podman_sandbox_engine,
-        registry.clone(),
-        config.hosted_apps_dir(),
-        key_store.clone(),
-        storage_provider.clone(),
-        blob_provider,
-        messaging_broker.clone(),
-        native_dispatch.clone(),
-        http_routes.clone(),
-        assets.clone(),
-        Arc::new(syneroym_identity::Identity::generate().unwrap()),
-        syneroym_app_orchestration::empty_resolver(),
-    )
-    .await?;
-    let control_plane_service = Arc::new(control_plane_service);
-
-    Ok(RouteHandlerDeps {
-        logical_resolver: syneroym_app_orchestration::empty_resolver(),
-        key_store,
-        storage_provider,
-        app_sandbox_engine,
-        messaging_broker,
-        native_dispatch,
-        native_http: Arc::new(DashMap::new()),
-        websocket_senders,
-        http_routes,
-        assets,
-        sse_permits: control_plane_service.sse_permits(),
-        control_plane_service: control_plane_service.clone(),
-        control_plane: Some(control_plane_service),
-        session_revocation: None,
-    })
-}
-
-/// Like `create_signed_info`, but preserves direct addresses up to pkarr's
-/// 1000-byte DNS packet limit (the cross-node proxy test needs direct
-/// addresses because endpoints have no relay). We retain 2 direct
-/// addresses to guarantee the signed pkarr record fits within the 1000-byte DNS
-/// payload limit regardless of interface count.
-fn create_signed_info_with_full_addr(
-    identity: &Identity,
-    service_id: &str,
-    endpoint_addr: &EndpointAddr,
-) -> SignedEndpointInfo {
-    let pruned_addrs: BTreeSet<_> = endpoint_addr.addrs.iter().take(2).cloned().collect();
-    let pruned = EndpointAddr { id: endpoint_addr.id, addrs: pruned_addrs };
-    let endpoint_addr_bytes = serde_json::to_vec(&pruned).unwrap();
-    let info = EndpointInfo {
-        service_id: service_id.to_string(),
-        substrate_id: service_id.to_string(),
-        endpoint_type: EndpointType::Substrate,
-        nickname: Some("test-node".to_string()),
-        mechanisms: vec![EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url: None }],
-        is_private: false,
-        ttl: None,
-        not_after: u64::MAX / 2,
-        generation: 0,
-        mailbox: None,
-    };
-    info.sign(identity).unwrap()
-}
+use common::nodes::{
+    TargetSubstrate, build_test_route_handler_deps, create_signed_info_with_full_addr,
+    spawn_global_coordinator, spawn_z_target_substrate, wait_for_local_addr,
+};
 
 /// Minimal `DeployManifest` for `AppSandboxEngine::deploy_wasm` (the
 /// cross-node proxy test) -- no `custom_config`/quota, matching
@@ -232,22 +63,6 @@ fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     )
 }
 
-/// Polls `ep.addr()` until it carries at least one direct address (the
-/// cross-node proxy test is direct-connect-only, no relay).
-/// `Endpoint::online()` is unsuitable here -- it waits for *both* a relay
-/// connection *and* a local address, and these test endpoints configure no
-/// relay at all, so `online()` would never resolve.
-async fn wait_for_local_addr(ep: &Endpoint) -> EndpointAddr {
-    for _ in 0..50 {
-        let addr = ep.addr();
-        if !addr.is_empty() {
-            return addr;
-        }
-        time::sleep(Duration::from_millis(20)).await;
-    }
-    ep.addr()
-}
-
 fn create_signed_info(
     identity: &Identity,
     service_id: &str,
@@ -270,42 +85,6 @@ fn create_signed_info(
     };
 
     info.sign(identity).unwrap()
-}
-
-/// Spawns global Coordinator C as both relay tests do: relay and signalling
-/// on, own record published in R (`share_in_registry`; unused by routing here).
-async fn spawn_global_coordinator(
-    base_path: &Path,
-    r_url: &str,
-    info_client: &Client,
-) -> Result<(CoordinatorIroh, CoordinatorInfo, String)> {
-    let mut config_c = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_c"),
-        app_data_dir: base_path.join("user_data_c"),
-        ..Default::default()
-    };
-    config_c.substrate.enable_bep0044_dht = false;
-    config_c.roles.coordinator = Some(CoordinatorRole {
-        iroh: Some(CoordinatorIrohConfig {
-            enable_signalling: true,
-            enable_relay: true,
-            http_bind_address: "127.0.0.1:0".to_string(),
-            quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.to_string()),
-            share_in_registry: true,
-            ..Default::default()
-        }),
-        ..Default::default()
-    });
-    let c = common::init_coordinator(&config_c).await?;
-    common::wait_for_relay(&c, Duration::from_secs(30)).await?;
-    let c_info_addr = c.info_addr().unwrap();
-
-    let c_info: CoordinatorInfo =
-        info_client.get(format!("http://{c_info_addr}{INFO_PATH}")).send().await?.json().await?;
-    let c_relay_url = c_info.relay_url.clone().unwrap();
-
-    Ok((c, c_info, c_relay_url))
 }
 
 /// Spawns private Coordinator Cp (home relay: C's; record published in R).
@@ -342,73 +121,6 @@ async fn spawn_private_coordinator(
         info_client.get(format!("http://{cp_info_addr}{INFO_PATH}")).send().await?.json().await?;
 
     Ok((cp, cp_info))
-}
-
-/// What `test_inbound_relay`/`test_outbound_relay` still need of their target
-/// substrate node after it is up, bound to Iroh, and registered in R.
-struct TargetSubstrate {
-    did: String,
-    router: Router,
-}
-
-/// Spawns target substrate Sz in the private network under Cp, exactly as
-/// `test_inbound_relay` does: bound to Cp's relay (when Cp reports one), then
-/// registered in registry R.
-async fn spawn_z_target_substrate(
-    base_path: &Path,
-    r_url: &str,
-    cp_relay_url: Option<String>,
-    info_client: &Client,
-) -> Result<TargetSubstrate> {
-    let identity_z = Identity::generate()?;
-    let secret_z_bytes = identity_z.to_bytes();
-    let did_z = derive_did_key(&identity_z.public_key());
-
-    let mut config_z = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_z"),
-        app_data_dir: base_path.join("user_data_z"),
-        ..Default::default()
-    };
-    config_z.substrate.enable_bep0044_dht = false;
-    config_z.resolve_paths();
-    let data_store_z = registry_store::init_store(&config_z).await?;
-    let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
-
-    let endpoint_z = SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
-    endpoint_registry_z.register(did_z.clone(), "orchestrator".to_string(), endpoint_z).await?;
-
-    // Bind Sz to Iroh so Cp can connect to it (Sz uses Cp's relay url). Built
-    // *before* `RouteHandler::init`: the Universal Proxy's outbound remote hop
-    // needs a live Iroh endpoint, which `RouteHandler::init` wires into its
-    // `ProxyRouter`.
-    let mut ep_z_bldr = Endpoint::empty_builder();
-    if let Some(relay_url) = cp_relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
-        ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
-    }
-    let secret_key_z = SecretKey::generate(&mut rand::rng());
-    let ep_z = ep_z_bldr.secret_key(secret_key_z).bind().await?;
-    ep_z.online().await;
-
-    let deps_z = build_test_route_handler_deps(&config_z, &did_z, &endpoint_registry_z).await?;
-    let route_handler_z = RouteHandler::init(
-        did_z.clone(),
-        &config_z,
-        endpoint_registry_z,
-        secret_z_bytes,
-        Some(ep_z.clone()),
-        deps_z,
-    )
-    .await?;
-
-    let ep_z_addr = ep_z.addr();
-    let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
-
-    // Register Sz in community registry R
-    let signed_info_z = create_signed_info(&identity_z, &did_z, &ep_z_addr, cp_relay_url);
-    let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
-    assert!(res.status().is_success());
-
-    Ok(TargetSubstrate { did: did_z, router: router_z })
 }
 
 /// Spawns target substrate Sx in the public network under C, exactly as
@@ -793,17 +505,12 @@ fn build_cross_node_call_peer_request(
         adaptation: AdaptationStage::JsonRpcToWasm,
         service: ServiceStage::WasmComponent { service_id: "proxy-caller".to_string() },
     };
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Binary,
-        protocol: RouteProtocol::JsonRpc,
-        interface: test_constants::PROXY_TEST_DRIVER_INTERFACE.to_string(),
-        service_id: "proxy-caller".to_string(),
-        enc: None,
-        pubkey: None,
-        delegation: None,
-        ucan: None,
-        dir: None,
-    };
+    let preamble = RoutePreamble::new(
+        RouteTransport::Binary,
+        RouteProtocol::JsonRpc,
+        "proxy-caller",
+        test_constants::PROXY_TEST_DRIVER_INTERFACE,
+    );
     let body = serde_json::to_vec(&serde_json::json!({
         "jsonrpc": "2.0",
         "method": "call-peer",
@@ -857,254 +564,6 @@ async fn test_cross_node_proxy_call() -> Result<()> {
 
     let _ = greeter.router.shutdown().await;
     proxy_caller.ep.close().await;
-    registry_r.shutdown().await?;
-    Ok(())
-}
-
-/// A `NativeService` test double that records the `caller_did` of every
-/// invocation it receives, for asserting exactly what identity a dispatch
-/// carried.
-#[derive(Debug, Default)]
-struct CapturingNativeService {
-    captured_caller_did: Mutex<Option<String>>,
-}
-
-#[async_trait]
-impl NativeService for CapturingNativeService {
-    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        *self.captured_caller_did.lock().unwrap() = Some(invocation.caller.caller_did.clone());
-        Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) })
-    }
-}
-
-/// `test_cross_node_proxy_call` above only drives a guest -> WASM greeter
-/// call, where the callee runs as `service_system` and native-capability
-/// identity never crosses -- the full loop (`invoke_remote_at` builds the
-/// outbound preamble from a real `CallerProof` -> destination
-/// `verify_preamble` re-verifies the delegation cert -> `build_caller` ->
-/// native dispatch with the re-verified caller) had no integration coverage.
-/// This exercises that loop directly (via `AppSandboxEngine::service_proxy`,
-/// bypassing the WASM guest path, since such a guest never carries a proof
-/// -- see `CallOrigin::Native` callers in `syneroym_router::proxy`) and
-/// asserts Sz's `NativeService` sees the re-verified master DID, not the
-/// temporary session key or the forwarding node's own identity.
-/// What `test_cross_node_native_capability_identity_forwarding` needs of Sz
-/// (the native-capability callee) after it is spawned and registered.
-struct NativeCapabilityCalleeNode {
-    did: String,
-    router: Router,
-    capturing_service: Arc<CapturingNativeService>,
-}
-
-/// Spawns Sz with a `CapturingNativeService` registered under
-/// `data-layer-svc-z`, and registers Sz in registry R, exactly as
-/// `test_cross_node_native_capability_identity_forwarding` did inline.
-///
-/// Sz's own `RegistryClient` (built inside `RouteHandler::init`) needs
-/// `registry_url` set to resolve the caller's master anchor during handshake
-/// verification -- unlike `spawn_greeter_node` above, this test's caller
-/// presents a real delegation cert, not a proof-less/self-signed key.
-async fn spawn_native_capability_callee_node(
-    base_path: &Path,
-    r_url: &str,
-) -> Result<NativeCapabilityCalleeNode> {
-    let identity_z = Identity::generate()?;
-    let secret_z_bytes = identity_z.to_bytes();
-    let did_z = derive_did_key(&identity_z.public_key());
-
-    let mut config_z = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_z"),
-        app_data_dir: base_path.join("user_data_z"),
-        ..Default::default()
-    };
-    config_z.substrate.enable_bep0044_dht = false;
-    config_z.substrate.registry_url = Some(r_url.to_string());
-    config_z.resolve_paths();
-    let data_store_z = registry_store::init_store(&config_z).await?;
-    let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
-
-    let ep_z =
-        Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_z_bytes)).bind().await?;
-    let ep_z_addr = wait_for_local_addr(&ep_z).await;
-
-    let deps_z = build_test_route_handler_deps(&config_z, &did_z, &endpoint_registry_z).await?;
-    // Grab the (shared) dispatch table before `RouteHandler::init` consumes
-    // `deps_z` -- `RouteHandler::init` registers `control_plane_service`
-    // under `did_z` itself, so the capturing double below is registered
-    // under a distinct key to avoid colliding with it.
-    let native_dispatch_z = deps_z.native_dispatch.clone();
-    let capturing_service = Arc::new(CapturingNativeService::default());
-    native_dispatch_z.insert(
-        "data-layer-svc-z".to_string(),
-        capturing_service.clone() as Arc<dyn NativeService>,
-    );
-    endpoint_registry_z
-        .register(
-            did_z.clone(),
-            "data-layer".to_string(),
-            SubstrateEndpoint::NativeHostChannel { service_id: "data-layer-svc-z".to_string() },
-        )
-        .await?;
-
-    let route_handler_z = RouteHandler::init(
-        did_z.clone(),
-        &config_z,
-        endpoint_registry_z.clone(),
-        secret_z_bytes,
-        Some(ep_z.clone()),
-        deps_z,
-    )
-    .await?;
-    let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
-
-    let signed_info_z = create_signed_info_with_full_addr(&identity_z, &did_z, &ep_z_addr);
-    let info_client = Client::new();
-    let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
-    assert!(res.status().is_success());
-
-    Ok(NativeCapabilityCalleeNode { did: did_z, router: router_z, capturing_service })
-}
-
-/// What `test_cross_node_native_capability_identity_forwarding` needs of Sx
-/// (the caller): `ep` and `route_handler` are kept only so the test can
-/// explicitly close/drop them at the same points the original inline code
-/// did -- `route_handler` in particular is `RouteHandlerInner`'s strong
-/// owner of the `ProxyRouter` behind `service_proxy`, so it must outlive
-/// every use of `service_proxy`.
-struct NativeCapabilityCallerNode {
-    ep: Endpoint,
-    route_handler: RouteHandler,
-    service_proxy: Arc<dyn ServiceProxy>,
-}
-
-/// Spawns Sx, exactly as
-/// `test_cross_node_native_capability_identity_forwarding` did inline. It
-/// only needs `RouteHandler::init` to wire up a `ProxyRouter` (reachable via
-/// `AppSandboxEngine::service_proxy`) -- it never receives inbound
-/// connections in this test, so no accept loop is spawned for it.
-async fn spawn_native_capability_caller_node(
-    base_path: &Path,
-    r_url: &str,
-) -> Result<NativeCapabilityCallerNode> {
-    let identity_x = Identity::generate()?;
-    let secret_x_bytes = identity_x.to_bytes();
-    let did_x = derive_did_key(&identity_x.public_key());
-
-    let mut config_x = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_x"),
-        app_data_dir: base_path.join("user_data_x"),
-        ..Default::default()
-    };
-    config_x.substrate.enable_bep0044_dht = false;
-    config_x.substrate.registry_url = Some(r_url.to_string());
-    config_x.resolve_paths();
-    let data_store_x = registry_store::init_store(&config_x).await?;
-    let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
-
-    let ep_x =
-        Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_x_bytes)).bind().await?;
-
-    let deps_x = build_test_route_handler_deps(&config_x, &did_x, &endpoint_registry_x).await?;
-    let app_sandbox_engine_x = deps_x.app_sandbox_engine.clone();
-    let route_handler_x = RouteHandler::init(
-        did_x.clone(),
-        &config_x,
-        endpoint_registry_x.clone(),
-        secret_x_bytes,
-        Some(ep_x.clone()),
-        deps_x,
-    )
-    .await?;
-
-    let service_proxy = app_sandbox_engine_x
-        .service_proxy
-        .get()
-        .expect("RouteHandler::init sets AppSandboxEngine::service_proxy")
-        .upgrade()
-        .expect("route_handler_x keeps the ProxyRouter alive");
-
-    Ok(NativeCapabilityCallerNode { ep: ep_x, route_handler: route_handler_x, service_proxy })
-}
-
-/// Issues a temporary key delegated by a freshly generated master identity,
-/// publishes the master's anchor to registry R (so Sz can resolve it while
-/// re-verifying the delegation certificate), and builds the `ProxyRequest`
-/// that `test_cross_node_native_capability_identity_forwarding` sends to
-/// `target_service_did`'s `data-layer` capability under that caller identity.
-async fn build_delegated_proxy_request(
-    r_url: &str,
-    target_service_did: &str,
-) -> Result<(String, ProxyRequest)> {
-    let master = Identity::generate()?;
-    let master_did = derive_did_key(&master.public_key());
-    let temp = Identity::generate()?;
-    let temp_pubkey_hex = hex::encode(temp.public_key().to_bytes());
-    let cert =
-        DelegationCertificate::issue(&master, temp.public_key(), 3600, "routing".to_string())?;
-
-    let registry_client = RegistryClient::new(false, Some(r_url.to_string()));
-    registry_client.publish_master_anchor(&master_did, vec![], None, &master, false).await?;
-
-    let req = ProxyRequest {
-        target_service: target_service_did.to_string(),
-        interface: "data-layer".to_string(),
-        method: "query".to_string(),
-        params: serde_json::json!({}),
-        caller: CallerContext {
-            caller_did: master_did.clone(),
-            app_instance: None,
-            session: SessionContext::default(),
-            auth: AuthLevel::Delegated,
-            proof: Some(CallerProof {
-                pubkey_hex: temp_pubkey_hex,
-                delegation_json: Some(cert.to_json()?),
-            }),
-        },
-        origin: CallOrigin::Native { service_id: None },
-        protocol: ProxyProtocol::JsonRpcV1,
-        idempotency_key: None,
-        idempotent: false,
-        timeout: Some(Duration::from_secs(5)),
-    };
-
-    Ok((master_did, req))
-}
-
-#[tokio::test]
-async fn test_cross_node_native_capability_identity_forwarding() -> Result<()> {
-    let temp_dir = tempfile::tempdir()?;
-    let base_path = temp_dir.path();
-
-    // 1. Community registry -- also where Sz resolves the caller's master anchor to
-    //    re-verify the delegation certificate.
-    let (mut registry_r, r_url) = common::spawn_registry(base_path).await?;
-
-    // 2. Node Sz: the native-capability callee.
-    let callee = spawn_native_capability_callee_node(base_path, &r_url).await?;
-
-    // 3. Node Sx: the caller.
-    let caller = spawn_native_capability_caller_node(base_path, &r_url).await?;
-
-    // 4. A real caller proof: a temporary key delegated by a master identity, with
-    //    the master's anchor published to the same registry Sz resolves against.
-    let (master_did, req) = build_delegated_proxy_request(&r_url, &callee.did).await?;
-
-    caller
-        .service_proxy
-        .invoke(req)
-        .await
-        .map_err(|e| anyhow::anyhow!("proxy call failed: {e}"))?;
-
-    assert_eq!(
-        callee.capturing_service.captured_caller_did.lock().unwrap().as_deref(),
-        Some(master_did.as_str()),
-        "Sz's NativeService should see the re-verified master DID, not the temporary session key \
-         or the forwarding node's own identity"
-    );
-
-    let _ = caller.route_handler;
-    let _ = callee.router.shutdown().await;
-    caller.ep.close().await;
     registry_r.shutdown().await?;
     Ok(())
 }

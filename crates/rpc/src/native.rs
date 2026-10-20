@@ -3,8 +3,9 @@
 //! Provides the core abstraction and types for in-process, native Rust
 //! services, permitting local request dispatching within the substrate.
 
-use std::fmt::Debug;
+use std::fmt::{self, Debug};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_ucan::{Ability, ResourceUri, SessionContext};
 
@@ -32,25 +33,108 @@ pub struct CallerContext {
     /// path or a real UCAN chain populated it.
     pub session: SessionContext,
     pub auth: AuthLevel,
-    /// Signed, forwardable proof of this caller's identity
-    /// (ADR-0016 §6) -- verbatim what the inbound preamble carried. A
-    /// cross-node proxy hop (`syneroym-router`'s `ProxyRouter`) re-presents
-    /// it on the outbound preamble; the destination re-verifies it with
-    /// `HandshakeVerifier::verify_preamble` and builds a **fresh**
-    /// `CallerContext` -- capabilities themselves never cross the wire, only
-    /// this proof does. `None` for substrate-injected callers
-    /// (`local_elevated`/`service_system`), which therefore cannot be
-    /// impersonated across a hop.
+    /// Signed, forwardable proof of this caller's identity (ADR-0016 §6,
+    /// Amendment 2). The destination re-verifies it; a node never presents
+    /// it as its own identity. A native call made for this caller passes it
+    /// on in `on_behalf` when it is signed.
     pub proof: Option<CallerProof>,
 }
 
 /// See [`CallerContext::proof`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct CallerProof {
-    /// Hex-encoded ed25519 public key (the preamble's `pubkey=`).
+    /// Hex Ed25519 public key (the preamble's `pubkey=`).
     pub pubkey_hex: String,
     /// JSON `DelegationCertificate` (the preamble's `delegation=`, pre-hex).
     pub delegation_json: Option<String>,
+    /// What the caller signed on its stream (ADR-0002 A1). The router
+    /// always sets it. `None` for a proof built on this node for a
+    /// same-node call, which has no stream to sign.
+    pub signed: Option<PreambleSignature>,
+    /// The original caller's proof that this caller passed on
+    /// (ADR-0016 Amendment 2). `None` when this caller is the original.
+    pub on_behalf: Option<OnBehalfProof>,
+}
+
+/// The signed fields of a preamble, as the caller sent them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PreambleSignature {
+    pub service_id: String,
+    pub interface: String,
+    pub ts: u64,
+    /// Hex Ed25519 signature (the preamble's `sig=`).
+    pub sig_hex: String,
+}
+
+/// The original caller's proof, as it travels in `on_behalf=`.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnBehalfProof {
+    pub pubkey: String,
+    pub delegation: Option<String>,
+    pub service_id: String,
+    pub interface: String,
+    pub ts: u64,
+    pub sig: String,
+}
+
+impl CallerProof {
+    /// The proof a native call made for this caller passes on: the one
+    /// this caller carried, else this caller's own when it is signed.
+    /// `None` for an unsigned local proof: a destination would refuse
+    /// it, so it is not sent. Never wrapped.
+    #[must_use]
+    pub fn to_pass_on(&self) -> Option<OnBehalfProof> {
+        if let Some(carried) = &self.on_behalf {
+            return Some(carried.clone());
+        }
+        let signed = self.signed.as_ref()?;
+        Some(OnBehalfProof {
+            pubkey: self.pubkey_hex.clone(),
+            delegation: self.delegation_json.clone(),
+            service_id: signed.service_id.clone(),
+            interface: signed.interface.clone(),
+            ts: signed.ts,
+            sig: signed.sig_hex.clone(),
+        })
+    }
+}
+
+impl fmt::Debug for PreambleSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreambleSignature")
+            .field("service_id", &self.service_id)
+            .field("interface", &self.interface)
+            .field("ts", &self.ts)
+            .field("sig", &"present")
+            .finish()
+    }
+}
+
+impl fmt::Debug for OnBehalfProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let delegation = if self.delegation.is_some() { "present" } else { "absent" };
+        f.debug_struct("OnBehalfProof")
+            .field("pubkey", &self.pubkey)
+            .field("delegation", &delegation)
+            .field("service_id", &self.service_id)
+            .field("interface", &self.interface)
+            .field("ts", &self.ts)
+            .field("sig", &"present")
+            .finish()
+    }
+}
+
+impl fmt::Debug for CallerProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let delegation = if self.delegation_json.is_some() { "present" } else { "absent" };
+        f.debug_struct("CallerProof")
+            .field("pubkey_hex", &self.pubkey_hex)
+            .field("delegation", &delegation)
+            .field("signed", &self.signed)
+            .field("on_behalf", &self.on_behalf)
+            .finish()
+    }
 }
 
 /// How a `CallerContext` was established.

@@ -132,8 +132,8 @@ impl ProxyRouter {
     /// exactly what the relationship-proof fetch is, so gating
     /// it here would foreclose the scenario the proxy is explicitly
     /// supposed to co-design for. Native-origin calls are authorized at the
-    /// **data-owning node** -- the destination re-verifies the forwarded
-    /// proof (`invoke_remote`) and, once the FDAE policy lands, runs it
+    /// **data-owning node** -- the destination re-verifies the caller's
+    /// proof carried in `on_behalf` and, once the FDAE policy lands, runs it
     /// inside the callee's own `data-layer` dispatch.
     pub(super) fn check_native_capability_gate(
         &self,
@@ -298,18 +298,87 @@ impl ProxyRouter {
     /// Resolves `req.target_service`'s Iroh address via the community
     /// registry / DHT and dispatches the call over [`RemoteHop`].
     pub(super) async fn invoke_remote(&self, req: &ProxyRequest) -> Result<Value, ProxyError> {
-        let peer = net_iroh::resolve_peer(
-            &self.registry_client,
-            self.peer_records.as_deref(),
-            &req.target_service,
-        )
-        .await
-        .map_err(|_| ProxyError::ServiceNotFound(req.target_service.clone()))?;
+        self.invoke_rehoming(req, || self.resolve_addr(&req.target_service)).await
+    }
+
+    async fn resolve_addr(&self, target: &str) -> Result<EndpointAddr, ProxyError> {
+        let peer =
+            net_iroh::resolve_peer(&self.registry_client, self.peer_records.as_deref(), target)
+                .await
+                .map_err(|_| ProxyError::ServiceNotFound(target.to_string()))?;
         // A peer with a mailbox but no address cannot be called directly.
-        let Some(addr) = peer.addr else {
-            return Err(ProxyError::ServiceNotFound(req.target_service.clone()));
-        };
-        self.invoke_remote_at(&addr, req).await
+        peer.addr.ok_or_else(|| ProxyError::ServiceNotFound(target.to_string()))
+    }
+
+    /// Calls the resolved address; on `not_hosted_here`, resolves again and
+    /// calls once more. The refusal comes before any dispatch, so this is safe
+    /// for every call, idempotent or not.
+    pub(super) async fn invoke_rehoming<F, Fut>(
+        &self,
+        req: &ProxyRequest,
+        mut resolve: F,
+    ) -> Result<Value, ProxyError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<EndpointAddr, ProxyError>>,
+    {
+        let addr = resolve().await?;
+        match self.invoke_remote_at(&addr, req).await {
+            Err(e) if is_not_hosted_here(&e) => {
+                let fresh = resolve().await?;
+                if fresh.id == addr.id {
+                    return Err(ProxyError::ServiceNotFound(req.target_service.clone()));
+                }
+                self.invoke_remote_at(&fresh, req).await.map_err(|e| {
+                    if is_not_hosted_here(&e) {
+                        ProxyError::ServiceNotFound(req.target_service.clone())
+                    } else {
+                        e
+                    }
+                })
+            }
+            other => other,
+        }
+    }
+
+    /// Who this node presents on an outbound call (ADR-0016 Amendment 2).
+    /// A node never presents another party's proof as its own identity. A
+    /// native call made for a caller passes that caller's proof on in
+    /// `on_behalf`; a guest call never does, because the guest chooses the
+    /// call and must not travel under the caller's authority.
+    ///
+    /// What a guest *may* present is its own service's certified instance
+    /// key (ADR-0020 §1): that grants no privilege the guest didn't
+    /// already have as itself, since the guest still chooses the call --
+    /// only the identity it travels under changes, from anonymous to the
+    /// member master this substrate derived and was certified for. `None`
+    /// for either the certificate or the recorded owner falls back to
+    /// presenting nothing.
+    fn outbound_identity(&self, req: &ProxyRequest) -> Option<OutboundIdentity> {
+        match &req.origin {
+            CallOrigin::Native { service_id } => {
+                let mut id = service_id
+                    .as_deref()
+                    .and_then(|sid| self.instance_identity(sid))
+                    .unwrap_or_else(|| OutboundIdentity::key_only(self.node_identity.clone()));
+                id.on_behalf = req.caller.proof.as_ref().and_then(CallerProof::to_pass_on);
+                Some(id)
+            }
+            CallOrigin::Guest { service_id } => self.instance_identity(service_id),
+        }
+    }
+
+    /// The certified instance identity of `service_id`: its derived key and
+    /// unexpired certificate. `None` without both a certificate and an owner.
+    /// An expired certificate is worse than none: the destination
+    /// hard-rejects any connection whose delegation fails to verify
+    /// (`route_handler/io.rs`), where a `None` pubkey instead falls back to
+    /// anonymous.
+    fn instance_identity(&self, service_id: &str) -> Option<OutboundIdentity> {
+        let cert = self.registry.instance_cert(service_id).filter(|c| !c.is_expired())?;
+        let owner = self.registry.owner_of(service_id)?;
+        let key = self.node_identity.derive_service_identity(&owner, service_id);
+        Some(OutboundIdentity { key: Arc::new(key), delegation: Some(cert), on_behalf: None })
     }
 
     /// The retry loop and preamble construction, split out from
@@ -320,86 +389,8 @@ impl ProxyRouter {
         addr: &EndpointAddr,
         req: &ProxyRequest,
     ) -> Result<Value, ProxyError> {
-        // Identity: forward the caller's *signed proof* verbatim when it has
-        // one and the call is genuinely substrate-internal (ADR-0016 §6 --
-        // the destination re-verifies with `verify_preamble` and builds a
-        // fresh `CallerContext`); otherwise present this node's own identity
-        // -- again only for `CallOrigin::Native`. A guest is never allowed to
-        // present the *caller's* proof or the *node's* key remotely, even one
-        // it legitimately carries today (the self-proxy path forwards a
-        // self-proxy caller's real `CallerContext`, proof included, whenever
-        // the target is the guest's own service -- `check_native_capability_
-        // gate`'s same-service check only restricts *native-capability*
-        // interfaces, so an ordinary interface the local registry doesn't
-        // happen to have registered still falls through to this remote path
-        // with that proof attached). Presenting either of those on a guest's
-        // behalf would let the guest steer its own freely-chosen `(interface,
-        // method, params)` onto the wire under a real, potentially
-        // privileged identity -- exactly the laundering this function's
-        // `CallOrigin::Guest` branch exists to prevent.
-        //
-        // What a guest *may* present is its own service's certified instance
-        // key (ADR-0020 §1): that grants no privilege the guest didn't
-        // already have as itself, since the guest still chooses the call --
-        // only the identity it travels under changes, from anonymous to the
-        // member master this substrate derived and was certified for. `None`
-        // for either the certificate or the recorded owner (a service
-        // deployed before an owner/certificate existed) falls back to
-        // presenting nothing, unchanged from before: the destination treats
-        // it as anonymous, which the native-dispatch arm already rejects and
-        // non-native paths already tolerate. Capabilities never cross either
-        // way.
-        let mut preamble = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
-        match (&req.caller.proof, &req.origin) {
-            (Some(proof), CallOrigin::Native { .. }) => {
-                preamble.pubkey = Some(proof.pubkey_hex.clone());
-                preamble.delegation = proof
-                    .delegation_json
-                    .as_deref()
-                    .and_then(|json| DelegationCertificate::from_json(json).ok());
-            }
-            // Built for the guest-origin arm; the same reasoning
-            // applies to a substrate-internal call made on a service's
-            // behalf. Only the no-proof case: the arm above forwards the
-            // original caller's chain verbatim, which is what lets the
-            // destination re-derive `subject_did`/`anchor_did` and authorize
-            // the real caller. Presenting the service's identity
-            // here instead would silently change who the destination thinks
-            // is asking.
-            (None, CallOrigin::Native { service_id: Some(sid) }) => {
-                if let Some(cert) = self.registry.instance_cert(sid)
-                    && !cert.is_expired()
-                    && let Some(owner) = self.registry.owner_of(sid)
-                {
-                    let instance = self.node_identity.derive_service_identity(&owner, sid);
-                    preamble.pubkey = Some(hex::encode(instance.public_key().to_bytes()));
-                    preamble.delegation = Some(cert);
-                } else {
-                    preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
-                }
-            }
-            (None, CallOrigin::Native { service_id: None }) => {
-                preamble.pubkey = Some(hex::encode(self.node_identity.public_key().to_bytes()));
-            }
-            (_, CallOrigin::Guest { service_id }) => {
-                // An expired certificate is worse than none: the
-                // destination hard-rejects any connection whose delegation
-                // fails to verify (`route_handler/io.rs`), where a `None`
-                // pubkey instead falls back to anonymous -- which non-
-                // native-dispatch destinations already tolerate. Presenting
-                // it anyway would turn a missed renewal into an outage for
-                // passthrough/relay calls that never cared about identity
-                // before this certificate mechanism existed.
-                if let Some(cert) = self.registry.instance_cert(service_id)
-                    && !cert.is_expired()
-                    && let Some(owner) = self.registry.owner_of(service_id)
-                {
-                    let instance = self.node_identity.derive_service_identity(&owner, service_id);
-                    preamble.pubkey = Some(hex::encode(instance.public_key().to_bytes()));
-                    preamble.delegation = Some(cert);
-                }
-            }
-        }
+        let route = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
+        let identity = self.outbound_identity(req);
 
         let json_rpc_request = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -427,7 +418,11 @@ impl ProxyRouter {
         let mut backoff = self.retry_policy.initial_backoff_ms;
         let mut attempt: u8 = 1;
         loop {
-            match self.hop.call(addr, &preamble, &json_rpc_request, call_timeout).await {
+            match self
+                .hop
+                .call(addr, &route, identity.as_ref(), &json_rpc_request, call_timeout)
+                .await
+            {
                 Ok(v) => return Ok(v),
                 Err(e)
                     if attempt >= attempts
@@ -625,4 +620,8 @@ impl ServiceProxy for ProxyRouter {
     async fn saga_status(&self, service_id: &str, saga_id: &str) -> Result<SagaInfo, ProxyError> {
         ProxyRouter::saga_status_impl(self, service_id, saga_id).await
     }
+}
+
+fn is_not_hosted_here(e: &ProxyError) -> bool {
+    matches!(e, ProxyError::Callee { code, .. } if *code == NOT_HOSTED_HERE_RPC_CODE)
 }

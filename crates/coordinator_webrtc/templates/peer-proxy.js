@@ -435,7 +435,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                 clientPubRaw = await window.crypto.subtle.exportKey("raw", clientKeyPair.publicKey);
                 const clientPubHex = Array.from(new Uint8Array(clientPubRaw)).map(b => b.toString(16).padStart(2, '0')).join('');
 
-                finalPreamble = preamble.replace(/pubkey=[^ \n]*/, `pubkey=${clientPubHex}`);
+                finalPreamble = preamble.replace(/epk=[^&\n]*/, `epk=${clientPubHex}`);
             }
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -584,7 +584,7 @@ class SynWebSocket extends EventTarget {
         // WebSocket has no answer for. A TCP passthrough service is
         // unaffected either way -- its endpoint forces raw byte copying
         // regardless of the scheme.
-        const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
+        const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&epk=placeholder\n`;
 
         let headerBuffer = new Uint8Array(0);
         let handshakeComplete = false;
@@ -941,7 +941,7 @@ async function handleSWRequest(reqData, port) {
 
         console.debug(`[Page][SW] Intercepted ${reqData.method} ${url.pathname} (interface='${TARGET_INTERFACE}' service='${serviceId}')`);
 
-        const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&pubkey=placeholder\n`;
+        const preamble = `http://${TARGET_INTERFACE}|${serviceId}?enc=ecdh-p256&epk=placeholder\n`;
         console.debug(`[Page][SW] Preamble to send: ${preamble.trim()}`);
 
         const { writable, readable } = new TransformStream();

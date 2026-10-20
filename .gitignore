@@ -36,6 +36,9 @@ crates/control_plane/blobs/
 # Same pattern, router's own proxy_dispatch.rs tests (M04A Slice A1).
 crates/router/blobs/
 
+# Local Cargo config overrides (e.g. re-enable full debug symbols for IDE debugging)
+.cargo/config.local.toml
+
 # AI
 .gemini
 GEMINI.md

@@ -1,7 +1,9 @@
 mod dead_letter;
 mod helpers;
 mod local_dispatch;
+mod on_behalf;
 mod outbox;
+mod rehome;
 mod remote_dispatch;
 mod saga_walk;
 mod sagas;

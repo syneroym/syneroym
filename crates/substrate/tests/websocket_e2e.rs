@@ -11,19 +11,16 @@
 use std::{collections::HashMap, time::Duration};
 
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
-use iroh::endpoint::{RecvStream, SendStream};
+use iroh::endpoint::RecvStream;
 use rustls::crypto::ring;
 use syneroym_core::{config::AppSandboxRole, test_constants};
-use syneroym_identity::Identity;
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
-    TransportConnection, WasmManifest,
+    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient, WasmManifest,
 };
 use tokio::time;
 
 mod common;
-use common::{SubstrateTestContext, alloc_ports};
+use common::{SubstrateTestContext, alloc_ports, streams::open_http_stream};
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> DeployManifest {
     DeployManifest::unpublished(
@@ -150,28 +147,6 @@ async fn read_exact_buffered(recv: &mut RecvStream, unconsumed: &mut Vec<u8>, ou
             unconsumed.extend_from_slice(&tmp[..n]);
         }
     }
-}
-
-async fn open_http_stream(
-    conn: &TransportConnection,
-    service_id: &str,
-    pubkey: Option<&Identity>,
-) -> (SendStream, RecvStream) {
-    let TransportConnection::Iroh { conn, .. } = conn;
-    let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Http,
-        protocol: RouteProtocol::JsonRpc,
-        interface: "http-native".to_string(),
-        service_id: service_id.to_string(),
-        enc: None,
-        pubkey: pubkey.map(|id| hex::encode(id.public_key().to_bytes())),
-        delegation: None,
-        ucan: None,
-        dir: None,
-    };
-    send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
-    (send, recv)
 }
 
 fn build_websocket_upgrade_request(path: &str) -> Vec<u8> {

@@ -18,6 +18,7 @@ exclude = [
 [profile.dev]
 incremental = true      # Compile your binary in smaller steps.
 split-debuginfo = "unpacked" # Keep debug info out-of-line instead of duplicated into each binary; much smaller target/.
+debug = "line-tables-only"  # File+line in backtraces; no variable inspection. Override in .cargo/config.local.toml for IDE debugging.
 
 [profile.dev.package."*"]
 debug = false     # Disable debug symbols for all dependencies

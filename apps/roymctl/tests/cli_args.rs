@@ -28,6 +28,21 @@ fn test_cli_parsing() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// `identity revoke-key --help` parses and lists the three flags.
+#[test]
+fn test_identity_revoke_key_help() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("identity")
+        .arg("revoke-key")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--master"))
+        .stdout(contains("--key"))
+        .stdout(contains("--registry-url"));
+    Ok(())
+}
+
 /// `identity issue-grant --help` parses (the subcommand and all its flags
 /// are wired into clap).
 #[test]

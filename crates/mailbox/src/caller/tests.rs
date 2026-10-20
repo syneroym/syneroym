@@ -47,6 +47,7 @@ fn missing_delegation_json_is_not_an_instance() {
     caller.proof = Some(CallerProof {
         pubkey_hex: hex::encode(member.instance.public_key().to_bytes()),
         delegation_json: None,
+        ..Default::default()
     });
     assert!(matches!(
         instance_of(&caller, member.cert.issued_at_secs + 10).unwrap_err(),
@@ -61,6 +62,7 @@ fn unreadable_certificate_json_is_not_an_instance() {
     caller.proof = Some(CallerProof {
         pubkey_hex: hex::encode(member.instance.public_key().to_bytes()),
         delegation_json: Some("not json".to_string()),
+        ..Default::default()
     });
     assert!(matches!(
         instance_of(&caller, member.cert.issued_at_secs + 10).unwrap_err(),
@@ -93,6 +95,7 @@ fn routing_scope_is_not_an_instance() {
         proof: Some(CallerProof {
             pubkey_hex: hex::encode(instance.public_key().to_bytes()),
             delegation_json: Some(cert.to_json().unwrap()),
+            ..Default::default()
         }),
     };
     assert!(matches!(
@@ -120,6 +123,7 @@ fn mismatched_pubkey_is_refused() {
     caller.proof = Some(CallerProof {
         pubkey_hex: hex::encode(other_key.public_key().to_bytes()),
         delegation_json: Some(member.cert.to_json().unwrap()),
+        ..Default::default()
     });
     assert!(matches!(
         instance_of(&caller, member.cert.issued_at_secs + 10).unwrap_err(),

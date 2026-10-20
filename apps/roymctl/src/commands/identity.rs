@@ -47,10 +47,24 @@ pub enum IdentityCommands {
         #[arg(long)]
         scope: String,
     },
-    /// Publish MasterAnchorPayload to the community registry
+    /// Publish MasterAnchorPayload to the community registry, keeping any
+    /// revoked keys already published
     PublishAnchor {
         #[arg(long)]
         master: String,
+        #[arg(long)]
+        registry_url: String,
+    },
+    /// Revoke a temporary key of a master: add its DID to the master
+    /// anchor's revoked-key list and publish the anchor. Keys already in the
+    /// list stay. Nodes refuse the key at its next stream.
+    RevokeKey {
+        /// Name of the local master identity that delegated the key.
+        #[arg(long)]
+        master: String,
+        /// The `did:key` of the temporary key to revoke.
+        #[arg(long)]
+        key: String,
         #[arg(long)]
         registry_url: String,
     },
@@ -267,10 +281,47 @@ async fn handle_publish_anchor(dir: &Path, master: &str, registry_url: &str) -> 
     let identity = Identity::load_from_path(&key_path)?;
 
     let client = RegistryClient::new(true, Some(registry_url.to_string()));
-    let master_id = substrate::derive_did_key(&identity.public_key());
-
-    client.publish_master_anchor(&master_id, vec![], None, &identity, true).await?;
+    client.republish_master_anchor(&identity, true).await?;
     println!("Successfully published MasterAnchorPayload to {registry_url}");
+    Ok(())
+}
+
+/// What `identity revoke-key` runs: the HTTP registry plus the DHT, and
+/// waits for the DHT copy because the process exits right after.
+async fn handle_revoke_key(
+    dir: &Path,
+    master: &str,
+    key: &str,
+    registry_url: &str,
+) -> anyhow::Result<()> {
+    let client = RegistryClient::new(true, Some(registry_url.to_string()));
+    revoke_key(&client, dir, master, key, true).await
+}
+
+/// Public so a substrate test can call it with a DHT-less client, like
+/// `roymctl::commands::coordinator::leases`.
+///
+/// Single-writer note: there is one writer per master. If two operators revoke
+/// concurrently for the same master, the second read-modify-write overwrites
+/// the first's list on the registry; true concurrency would need
+/// compare-and-set, which the registry does not offer. A single operator or
+/// sequential CLI invocations do not race.
+pub async fn revoke_key(
+    client: &RegistryClient,
+    dir: &Path,
+    master: &str,
+    key: &str,
+    sync_dht: bool,
+) -> anyhow::Result<()> {
+    let key_path = require_key_present(dir, master, "Master identity")?;
+    let master_identity = Identity::load_from_path(&key_path)?;
+    let master_did = substrate::derive_did_key(&master_identity.public_key());
+    substrate::resolve_did_key(key).map_err(|e| anyhow::anyhow!("--key must be a did:key: {e}"))?;
+    if key == master_did {
+        anyhow::bail!("--key names the master itself; revoke a delegated key");
+    }
+    client.revoke_key(&master_identity, key, sync_dht).await?;
+    println!("Revoked {key} for {master_did}");
     Ok(())
 }
 
@@ -407,6 +458,9 @@ pub async fn handle(
         IdentityCommands::PublishAnchor { master, registry_url } => {
             handle_publish_anchor(dir, master, registry_url).await?;
         }
+        IdentityCommands::RevokeKey { master, key, registry_url } => {
+            handle_revoke_key(dir, master, key, registry_url).await?;
+        }
         IdentityCommands::IssueGrant { from, to, can, with, expires_days, no_delegate } => {
             handle_issue_grant(dir, from, to, can, with, *expires_days, *no_delegate)?;
         }
@@ -457,78 +511,4 @@ pub async fn handle(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_export_and_import_identity_flow() {
-        let dir = tempfile::tempdir().unwrap();
-        let name = "test-export-id";
-
-        // 1. Create identity
-        handle(
-            &IdentityCommands::Create { name: name.to_string() },
-            "http://localhost:7960",
-            dir.path(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let key_path = dir.path().join("identities").join(format!("{name}.key"));
-        let original_id = Identity::load_from_path(&key_path).unwrap();
-
-        // 2. Export identity using the CLI command directly
-        let out_file = dir.path().join("backup.json");
-        let rec_file = dir.path().join("recovery.key");
-        handle(
-            &IdentityCommands::Export {
-                name: name.to_string(),
-                out: out_file.clone(),
-                recovery_key_out: Some(rec_file.clone()),
-            },
-            "http://localhost:7960",
-            dir.path(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-        assert!(out_file.exists());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::metadata(&out_file).unwrap().permissions();
-            assert_eq!(perms.mode() & 0o777, 0o600, "exported backup must be mode 0600 on unix");
-        }
-        let encoded_key = fs::read_to_string(&rec_file).unwrap();
-
-        // 3. Import in a clean directory
-        let clean_dir = tempfile::tempdir().unwrap();
-        handle(
-            &IdentityCommands::Import {
-                name: "restored-id".to_string(),
-                r#in: out_file,
-                recovery_key: encoded_key,
-            },
-            "http://localhost:7960",
-            clean_dir.path(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-        // 4. Verify restored identity exists and matches original key bytes and DID
-        let restored_path = clean_dir.path().join("identities").join("restored-id.key");
-        let restored_id = Identity::load_from_path(&restored_path).unwrap();
-        assert_eq!(original_id.public_key(), restored_id.public_key());
-        assert_eq!(original_id.to_bytes(), restored_id.to_bytes());
-        assert_eq!(
-            substrate::derive_did_key(&original_id.public_key()),
-            substrate::derive_did_key(&restored_id.public_key())
-        );
-    }
-}
+mod tests;

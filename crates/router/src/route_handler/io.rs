@@ -11,12 +11,12 @@ use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
 use syneroym_core::local_registry::{EndpointRegistry, HTTP_NATIVE_INTERFACE, SubstrateEndpoint};
 use syneroym_rpc::{
-    Ability, AuthLevel, CallerContext, CallerProof, Capability, CapabilityToken, ChainVerifyOpts,
-    ResourceUri, SessionContext, framing,
+    Ability, AuthLevel, CallerContext, Capability, CapabilityToken, ChainVerifyOpts, ResourceUri,
+    SessionContext, framing,
 };
 use tokio::{
     io,
-    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader},
     net::TcpStream,
     time,
 };
@@ -40,7 +40,12 @@ const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// cert is a few hundred bytes.
 const MAX_PREAMBLE_LINE_BYTES: u64 = 256 * 1024;
 
-use super::{super::SYNEROYM_ALPN, RouteHandler, dispatch, encryption::ReaderWriter};
+use super::{
+    super::SYNEROYM_ALPN,
+    RouteHandler, dispatch,
+    encryption::ReaderWriter,
+    refusal::{Refusal, write_refusal},
+};
 use crate::{
     handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity},
     net_iroh,
@@ -244,7 +249,7 @@ async fn build_caller(
             // token does not sink an otherwise-verified *transport* identity;
             // the caller simply holds no UCAN capabilities. The admin/native
             // gates then fail closed downstream. (A malformed *delegation*
-            // cert is still a hard reject in `handle_stream`, unchanged.)
+            // cert is still a hard reject in `verify_caller`, unchanged.)
         }
     }
 
@@ -253,10 +258,7 @@ async fn build_caller(
         app_instance: None,
         session,
         auth,
-        proof: Some(CallerProof {
-            pubkey_hex: preamble.pubkey.clone().unwrap_or_default(),
-            delegation_json: preamble.delegation.as_ref().and_then(|cert| cert.to_json().ok()),
-        }),
+        proof: preamble.caller_proof(),
     }
 }
 
@@ -304,17 +306,45 @@ impl RouteHandler {
         let mut reader = BufReader::new(read_half);
         let mut writer = write_half;
 
-        debug!("[Router] Reading preamble from incoming stream");
-        let (mut preamble, caller) =
-            self.read_and_verify_preamble(&mut reader, &mut writer).await?;
+        let mut preamble =
+            match time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await {
+                Err(_) => return Err(anyhow!("timed out reading route preamble")),
+                Ok(Err(e)) => {
+                    debug!("[Router] unreadable preamble: {e}");
+                    return Ok(());
+                }
+                Ok(Ok(p)) => p,
+            };
+        debug!("[Router] Preamble received: {}", preamble.redacted());
+
+        if !self.inner.registry.hosts_service(&preamble.service_id) {
+            if self.inner.forwards {
+                return self.relay_to_next_hop(preamble, reader, writer).await;
+            }
+            debug!(service_id = %preamble.service_id, "not hosted here; refused");
+            write_refusal(&mut writer, preamble.transport, Refusal::NotHostedHere).await;
+            return Ok(());
+        }
+
+        // The signature is checked against the interface as sent, before the rewrite
+        // below.
+        let caller = match self.verify_caller(&preamble).await {
+            CallerCheck::Anonymous => None,
+            CallerCheck::Verified(caller) => Some(*caller),
+            CallerCheck::Refused => {
+                write_refusal(&mut writer, preamble.transport, Refusal::Unauthenticated).await;
+                return Ok(());
+            }
+        };
 
         // 2. Registry lookup & normalization
         self.rewrite_empty_http_interface(&mut preamble);
-        let lookup_result = self.inner.registry.lookup(&preamble.service_id, &preamble.interface);
-
-        let (endpoint, canonical_interface) = match lookup_result {
-            Some(res) => res,
-            None => return self.relay_to_next_hop(preamble, reader, writer).await,
+        let Some((endpoint, canonical_interface)) =
+            self.inner.registry.lookup(&preamble.service_id, &preamble.interface)
+        else {
+            debug!(service_id = %preamble.service_id, "unknown interface; refused");
+            write_refusal(&mut writer, preamble.transport, Refusal::UnknownInterface).await;
+            return Ok(());
         };
 
         preamble.interface = canonical_interface;
@@ -355,77 +385,54 @@ impl RouteHandler {
             }
         }
     }
+}
 
-    /// Step 1 of `handle_stream`: reads the route preamble off the wire and
-    /// runs handshake verification. `Ok(None)` for the caller identity means
-    /// "no verifiable identity", tolerated only by the passthrough/relay
-    /// paths that never reach native dispatch (the native dispatch arm in
-    /// `dispatch.rs` rejects `None`, ADR-0016 §3). A *malformed* delegation
-    /// -- a certificate whose `temporary_did` doesn't match the preamble's
-    /// own pubkey, that's expired, revoked, or carries a scope outside
-    /// `TRANSPORT_SCOPES` -- is a hard reject: this writes `Unauthorized`
-    /// back to the peer and returns `Err`, which `handle_stream` propagates
-    /// via `?`, exactly as the inline `return Err(e)` this replaces did.
-    async fn read_and_verify_preamble(
-        &self,
-        reader: &mut BufReader<impl AsyncRead + Unpin>,
-        writer: &mut (impl AsyncWrite + Unpin),
-    ) -> Result<(RoutePreamble, Option<CallerContext>)> {
-        let preamble = time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(reader))
-            .await
-            .map_err(|_| anyhow!("timed out reading route preamble"))??;
-        debug!(
-            "[Router] Preamble received: transport={:?} protocol={:?} interface='{}' \
-             service_id='{}' enc={:?} master_did={:?}",
-            preamble.transport,
-            preamble.protocol,
-            preamble.interface,
-            preamble.service_id,
-            preamble.enc,
-            preamble.delegation.as_ref().map(|d| &d.master_did)
-        );
+/// The caller of a stream this node hosts.
+enum CallerCheck {
+    /// The preamble has no identity field at all.
+    Anonymous,
+    Verified(Box<CallerContext>),
+    /// The preamble names an identity that did not prove itself.
+    Refused,
+}
 
-        // Handshake verification -- now mandatory for native-capability
-        // dispatch. Always attempt; `None` means "no verifiable identity",
-        // tolerated only by passthrough/relay paths (which never reach
-        // native dispatch) -- the native dispatch arm (dispatch.rs) rejects
-        // `None` (ADR-0016 §3).
-        let caller = match HandshakeVerifier::verify_preamble(
-            &preamble,
-            self.inner.registry_client.as_ref(),
-        )
-        .await
-        {
-            Ok(id) => Some(
-                build_caller(
-                    &preamble,
-                    &id,
-                    self.inner.admin_ucan_root.as_deref(),
-                    &self.inner.node_did,
-                    &self.inner.registry,
-                    self.inner.registry_client.as_ref(),
-                    self.inner.grant_resolve_to_node_did,
-                )
-                .await,
-            ),
+impl RouteHandler {
+    async fn verify_caller(&self, preamble: &RoutePreamble) -> CallerCheck {
+        if !preamble.has_identity_fields() {
+            return CallerCheck::Anonymous;
+        }
+        match self.check_caller(preamble).await {
+            Ok(caller) => CallerCheck::Verified(Box::new(caller)),
             Err(e) => {
-                // A *malformed* delegation is still a hard reject here: a
-                // certificate whose `temporary_did` doesn't match the
-                // preamble's own pubkey, that's expired, revoked, or carries
-                // a scope outside TRANSPORT_SCOPES.
-                if preamble.delegation.is_some() {
-                    tracing::warn!("Handshake verification failed: {e}");
-                    let _ = writer.write_all(b"Unauthorized\n").await;
-                    let _ = writer.flush().await;
-                    return Err(e);
-                }
-                // No delegation + unverifiable (e.g. missing pubkey) ->
-                // anonymous.
-                None
+                // Log once at debug: forged streams must not flood the logs.
+                debug!(service_id = %preamble.service_id, "caller refused: {e}");
+                CallerCheck::Refused
             }
-        };
+        }
+    }
 
-        Ok((preamble, caller))
+    async fn check_caller(&self, preamble: &RoutePreamble) -> Result<CallerContext> {
+        if preamble.on_behalf.is_some() && preamble.ucan.is_some() {
+            return Err(anyhow!("a preamble carries on_behalf or ucan, not both"));
+        }
+        let now = now_secs();
+        let resolver = self.inner.registry_client.as_ref();
+        let id = HandshakeVerifier::verify_preamble_at(preamble, resolver, now).await?;
+        let mut caller = build_caller(
+            preamble,
+            &id,
+            self.inner.admin_ucan_root.as_deref(),
+            &self.inner.node_did,
+            &self.inner.registry,
+            resolver,
+            self.inner.grant_resolve_to_node_did,
+        )
+        .await;
+        if let Some(proof) = &preamble.on_behalf {
+            let original = HandshakeVerifier::verify_on_behalf_at(proof, resolver, now).await?;
+            caller.session.anchor_did = Some(original.master_did);
+        }
+        Ok(caller)
     }
 
     /// Step 2's interface normalization: an HTTP request with no interface
@@ -461,13 +468,13 @@ impl RouteHandler {
         );
     }
 
-    /// Step 2's registry-miss fallback: resolves the next relay hop over
-    /// Iroh, forwards the original preamble, and blindly pipes bytes both
-    /// ways until the tunnel closes. Always terminal for `handle_stream` --
-    /// every path through this, success or failure, is exactly what the
-    /// caller should return, so `handle_stream` calls this as `return
-    /// self.relay_to_next_hop(...).await;`, the same as the inline `return
-    /// Ok(())` / `return Err(...)` this replaces.
+    /// Coordinator forwarding: resolves the destination service over Iroh,
+    /// forwards the preamble, and blindly pipes bytes both ways until the
+    /// tunnel closes. Only coordinators forward; non-coordinator nodes
+    /// refuse non-hosted services with not_hosted_here. Always terminal for
+    /// `handle_stream` -- every path through this, success or failure, is
+    /// exactly what the caller should return, so `handle_stream` calls this
+    /// as `return self.relay_to_next_hop(...).await;`.
     async fn relay_to_next_hop(
         &self,
         preamble: RoutePreamble,
@@ -495,7 +502,7 @@ impl RouteHandler {
         let (mut out_send, out_recv) = conn.open_bi().await?;
 
         // 4. Send original preamble
-        debug!("[Router] Forwarding original preamble: {}", preamble.to_string());
+        debug!("[Router] Forwarding preamble: {}", preamble.redacted());
         out_send.write_all(preamble.to_preamble_line().as_bytes()).await?;
 
         // 5. Blind bidirectional pipe

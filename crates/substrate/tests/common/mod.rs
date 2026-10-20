@@ -35,6 +35,7 @@ pub mod passport;
 pub mod roym;
 pub mod roym_flow;
 pub mod roym_group;
+pub mod streams;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},

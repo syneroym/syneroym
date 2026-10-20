@@ -330,6 +330,7 @@ async fn a_revoked_instance_is_refused() {
     caller2.proof = Some(CallerProof {
         pubkey_hex: hex::encode(instance2.public_key().to_bytes()),
         delegation_json: Some(cert2.to_json().unwrap()),
+        ..Default::default()
     });
 
     let res2 =
@@ -411,6 +412,7 @@ async fn raw_key_caller_with_no_delegation_is_refused_on_deposit_and_status() {
         proof: Some(CallerProof {
             pubkey_hex: hex::encode(raw_key.public_key().to_bytes()),
             delegation_json: None,
+            ..Default::default()
         }),
     };
 

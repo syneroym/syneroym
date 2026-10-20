@@ -35,12 +35,14 @@ pub use fdae_abac::{
 pub use fdae_fetch::{FDAE_FETCH_TIMEOUT, FetchError, resolve_fetches};
 pub use native::{
     AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeResponse, NativeService,
+    OnBehalfProof, PreambleSignature,
 };
 pub use native_http::{NativeHttpRegistry, NativeHttpService};
 pub use proxy::{
-    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, PROXY_TRANSPORT_RPC_CODE, ProxyError,
-    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget,
-    SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo, SagaState, SagaStepRequest, ServiceProxy,
+    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, NOT_HOSTED_HERE_RPC_CODE,
+    PROXY_TRANSPORT_RPC_CODE, ProxyError, ProxyProtocol, ProxyQueueInspector, ProxyRequest,
+    QueuedCall, QueuedCallInfo, QueuedTarget, SERVICE_NOT_FOUND_RPC_CODE,
+    STREAM_UNAUTHENTICATED_RPC_CODE, SagaBegin, SagaInfo, SagaState, SagaStepRequest, ServiceProxy,
     UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };
 pub use relationship_proof::{

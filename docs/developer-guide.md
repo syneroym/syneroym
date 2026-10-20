@@ -1753,6 +1753,9 @@ curl http://localhost:7966/health
 curl http://localhost:7967/metrics
 ```
 
+The router exposes:
+- `substrate.router.refused`: Counter of refused inbound streams labeled by refusal `kind` (`unauthenticated`, `not_hosted_here`, `unknown_interface`).
+
 When the mailbox role is active, the endpoint exposes these Prometheus metrics:
 - `substrate.mailbox.queues`: Gauge of active destination queues.
 - `substrate.mailbox.messages`: Gauge of current stored messages across all queues.
@@ -1805,6 +1808,16 @@ To generate a Master Identity and delegate access to a Temporary Identity:
      --master master-key \
      --registry-url http://localhost:7961
    ```
+   Publishes the master anchor to the registry. When an anchor already exists in the registry, `publish-anchor` preserves any previously revoked keys via read-modify-write.
+
+5. **Revoke a Temporary Key**:
+   ```bash
+   roymctl identity revoke-key \
+     --master master-key \
+     --key <TEMP_DID> \
+     --registry-url http://localhost:7961
+   ```
+   Revokes `<TEMP_DID>` on the master anchor in the registry and publishes the updated anchor to the DHT (`sync_dht: true`). Inbound streams signed by this key are subsequently refused with error `-32097` (`Unauthenticated`).
 
 > **A member master's instance certificate is a separate flow:**
 > `roymctl identity certify-instance --master <name> --substrate <did>`

@@ -1,5 +1,7 @@
 use super::*;
 
+const REFUSAL_READ_GRACE: Duration = Duration::from_secs(2);
+
 /// response". The transport-agnostic seam a future wRPC wire (A.5) slots
 /// into: a second impl plus a second `ProxyProtocol` variant, nothing else.
 #[async_trait::async_trait]
@@ -7,7 +9,8 @@ pub trait RemoteHop: Send + Sync + Debug {
     async fn call(
         &self,
         addr: &EndpointAddr,
-        preamble: &RoutePreamble,
+        route: &RoutePreamble,
+        identity: Option<&OutboundIdentity>,
         request: &JsonRpcRequest,
         timeout: Duration,
     ) -> Result<Value, ProxyError>;
@@ -49,7 +52,8 @@ impl RemoteHop for IrohHop {
     async fn call(
         &self,
         addr: &EndpointAddr,
-        preamble: &RoutePreamble,
+        route: &RoutePreamble,
+        identity: Option<&OutboundIdentity>,
         request: &JsonRpcRequest,
         timeout: Duration,
     ) -> Result<Value, ProxyError> {
@@ -60,6 +64,9 @@ impl RemoteHop for IrohHop {
 
         let body = serde_json::to_vec(request)
             .map_err(|e| ProxyError::Internal(format!("failed to serialize request: {e}")))?;
+
+        let preamble = identity
+            .map_or_else(|| route.clone(), |id| id.apply(route, crate::handshake::now_secs()));
 
         // The whole attempt -- connect, open the bi-stream, write the
         // preamble and request, and read the response -- sits under one
@@ -78,14 +85,29 @@ impl RemoteHop for IrohHop {
             .map_err(transport_err)?;
 
             let (mut send, mut recv) = conn.open_bi().await.map_err(transport_err)?;
-            send.write_all(preamble.to_preamble_line().as_bytes()).await.map_err(transport_err)?;
-            framing::write_frame(&mut send, &body).await.map_err(transport_err)?;
-            send.finish().map_err(transport_err)?;
+            let wrote: Result<(), anyhow::Error> = async {
+                send.write_all(preamble.to_preamble_line().as_bytes()).await?;
+                framing::write_frame(&mut send, &body).await?;
+                send.finish()?;
+                Ok(())
+            }
+            .await;
 
-            framing::read_frame(&mut recv).await.map_err(transport_err)
+            match wrote {
+                Ok(()) => framing::read_frame(&mut recv).await.map_err(transport_err),
+                // The node may have answered and stopped reading (a refusal before a
+                // large request was fully sent). Its answer is still in our receive buffer.
+                Err(write_err) => {
+                    match time::timeout(REFUSAL_READ_GRACE, framing::read_frame(&mut recv)).await {
+                        Ok(Ok(frame)) if !frame.is_empty() => Ok(frame),
+                        _ => Err(transport_err(write_err)),
+                    }
+                }
+            }
         })
         .await
         .map_err(|_| ProxyError::Timeout(timeout))??;
+
         if frame.is_empty() {
             return Err(ProxyError::Transport("empty response frame".to_string()));
         }

@@ -11,7 +11,9 @@ pub mod mapper;
 pub mod topology;
 pub mod types;
 
-pub use client::{DEFAULT_CONNECT_TIMEOUT, MessageStream, SyneroymClient, TransportConnection};
+pub use client::{
+    DEFAULT_CONNECT_TIMEOUT, MessageStream, PassthroughOutcome, SyneroymClient, TransportConnection,
+};
 pub use deploy::{
     ApplyReport, ApplyRequest, DeployTarget, ServiceFailure, SubstrateActor, apply_plan,
     resolve_targets,

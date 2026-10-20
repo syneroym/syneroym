@@ -26,7 +26,10 @@ pub use call_dedup::{ASYNC_DB_NAME, CallDedupGuard, DedupClaim, GuardOutcome, re
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};
 pub use home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
-pub use preamble::{RoutePreamble, RouteProtocol, RouteTransport};
+pub use preamble::{
+    OutboundIdentity, PREAMBLE_SEPARATOR, PROOF_WINDOW_SECS, REFUSAL_HEADER, RoutePreamble,
+    RouteProtocol, RouteTransport, route_text,
+};
 pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};
 pub use route_handler::{RouteHandler, RouteHandlerDeps, io::ucan_chain_not_revoked};

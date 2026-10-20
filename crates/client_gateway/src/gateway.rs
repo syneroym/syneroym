@@ -26,7 +26,7 @@ use syneroym_core::{
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_rpc::CapabilityToken;
 use syneroym_sdk::{
-    SyneroymClient,
+    PassthroughOutcome, SyneroymClient, TransportConnection,
     topology::{
         AppHostResolver, CredentialWarning, RegistryTopologyFetcher, Tier2Fetch, credential_warning,
     },
@@ -474,6 +474,18 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     .await
 }
 
+async fn connected(
+    client_arc: &Arc<Mutex<SyneroymClient>>,
+    is_auth_host: bool,
+) -> Result<(TransportConnection, String)> {
+    let mut client = client_arc.lock().await;
+    client.connect().await?;
+    let resolved_id =
+        if is_auth_host { AUTH_SERVICE_ALIAS.to_string() } else { client.service_id().to_string() };
+    let conn = client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?;
+    Ok((conn, resolved_id))
+}
+
 async fn forward_to_service(
     stream: &mut TcpStream,
     state: &GatewayState,
@@ -500,18 +512,12 @@ async fn forward_to_service(
         })
         .clone();
 
-    let (conn, target_service_id) = {
-        let mut client = client_arc.lock().await;
-        if let Err(e) = client.connect().await {
+    let (conn, target_service_id) = match connected(&client_arc, is_auth_host).await {
+        Ok(c) => c,
+        Err(e) => {
             error!("Gateway failed to connect to service {}: {}", connect_service_id, e);
             return write_json_rpc_error(stream, 502, "Bad Gateway").await;
         }
-        let resolved_id = if is_auth_host {
-            AUTH_SERVICE_ALIAS.to_string()
-        } else {
-            client.service_id().to_string()
-        };
-        (client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?, resolved_id)
     };
 
     let delegation = match state.identity_mode {
@@ -521,8 +527,8 @@ async fn forward_to_service(
 
     // Forward the initial bytes untouched (cookie is not stripped)
     let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
-    SyneroymClient::passthrough_with_conn(
-        conn,
+    let outcome = SyneroymClient::passthrough_with_conn(
+        conn.clone(),
         &target_service_id,
         interface,
         initial_bytes,
@@ -531,7 +537,43 @@ async fn forward_to_service(
         delegation,
     )
     .await?;
-    Ok(())
+
+    match outcome {
+        PassthroughOutcome::Done => Ok(()),
+        PassthroughOutcome::NotHostedHere { replayable } => {
+            let rehome_res = {
+                let client = client_arc.lock().await;
+                client.rehome(&conn).await
+            };
+            if let Err(e) = rehome_res {
+                warn!("Gateway failed to rehome client for service {}: {}", connect_service_id, e);
+            }
+            if !replayable {
+                return Ok(());
+            }
+            let (conn2, target_service_id2) = match connected(&client_arc, is_auth_host).await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Gateway failed to reconnect to service {}: {}", connect_service_id, e);
+                    return write_json_rpc_error(stream, 502, "Bad Gateway").await;
+                }
+            };
+            let outcome2 = SyneroymClient::passthrough_with_conn(
+                conn2,
+                &target_service_id2,
+                interface,
+                initial_bytes,
+                stream,
+                &passthrough_identity,
+                delegation,
+            )
+            .await?;
+            if let PassthroughOutcome::NotHostedHere { .. } = outcome2 {
+                write_json_rpc_error(stream, 502, "Bad Gateway").await?;
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn resolve_target(
@@ -564,96 +606,4 @@ async fn write_json_rpc_error(stream: &mut TcpStream, status: u16, message: &str
 }
 
 #[cfg(test)]
-mod tests {
-    use syneroym_core::dht_registry::SignedEndpointInfo;
-    use syneroym_sdk::topology::Tier1Lookup;
-
-    use super::*;
-
-    #[test]
-    fn parsing_an_unscoped_host_yields_the_expected_alias_and_interface() {
-        let sh = syneroym_core::util::short_hash("did:key:zSvc");
-        let ih = syneroym_core::util::short_hash("default");
-        let host = format!("my-svc-s{sh}-i{ih}.localhost");
-
-        let target = parse_target_host(&host).unwrap();
-        let TargetHost::Service { lookup_alias, interface } = target else {
-            panic!("expected a Service target");
-        };
-        assert_eq!(lookup_alias, format!("my-svc-{sh}"));
-        assert_eq!(interface, ih);
-    }
-
-    #[derive(Debug)]
-    struct UnreachableTier1;
-
-    #[async_trait::async_trait]
-    impl Tier1Lookup for UnreachableTier1 {
-        async fn lookup(&self, _alias: &str) -> Result<SignedEndpointInfo> {
-            Err(anyhow::anyhow!("Tier1Lookup::lookup must not be called here"))
-        }
-    }
-
-    fn test_state(fetcher: Option<Box<dyn Tier2Fetch>>) -> GatewayState {
-        let identity = Identity::generate().unwrap();
-        GatewayState {
-            registry_url: String::new(),
-            clients: DashMap::new(),
-            identity,
-            app_host_resolver: AppHostResolver::new(
-                Box::new(UnreachableTier1),
-                fetcher,
-                LogicalResolver::new(Arc::new(StaticInventory::new())),
-            ),
-            identity_mode: IdentityMode::Open,
-            fixed_identity_did: None,
-            fixed_delegation: None,
-            connection_auth_gate: false,
-            auth_service_did: Arc::new(RwLock::new(None)),
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_target_passes_an_unscoped_host_through_unresolved() {
-        let state = test_state(None);
-        let target = TargetHost::Service {
-            lookup_alias: "my-svc-alias".to_string(),
-            interface: "some-interface-hash".to_string(),
-        };
-
-        let (service_id, interface) = resolve_target(&state, target, None).await.unwrap();
-        assert_eq!(service_id, "my-svc-alias");
-        assert_eq!(interface, "some-interface-hash");
-    }
-
-    #[tokio::test]
-    async fn resolve_target_routes_an_app_scoped_host_through_the_resolver_and_surfaces_its_error()
-    {
-        let state = test_state(None);
-        let target = TargetHost::App {
-            app_lookup_alias: "my-app-abcdefgh".to_string(),
-            app_did_hash: "abcdefgh".to_string(),
-            service_name_hash: "ijklmnop".to_string(),
-            interface: String::new(),
-        };
-
-        let err = resolve_target(&state, target, None).await.unwrap_err();
-        assert!(err.to_string().contains("no community registry configured"), "{err}");
-    }
-
-    #[test]
-    fn a_gateway_with_neither_credential_warns_at_init_naming_both_config_keys() {
-        assert_eq!(
-            credential_warning(false, false),
-            Some(CredentialWarning::NeitherConfigured),
-            "neither `resolve_ucan` nor the same-node gate: must warn"
-        );
-        assert_eq!(
-            credential_warning(false, true),
-            Some(CredentialWarning::OnlyTheSameNodeGate),
-            "the same-node gate alone: a quieter debug, not a warning"
-        );
-        assert_eq!(credential_warning(true, false), None, "a resolve_ucan token: no warning");
-        assert_eq!(credential_warning(true, true), None, "both configured: no warning");
-    }
-}
+mod tests;

@@ -57,6 +57,7 @@ pub mod dispatch;
 pub mod encryption;
 pub mod http;
 pub mod io;
+pub(crate) mod refusal;
 
 #[derive(Clone)]
 pub struct RouteHandler {
@@ -171,6 +172,10 @@ pub struct RouteHandlerInner {
     pub dedup_guard: Option<Arc<CallDedupGuard>>,
     /// Session revocation store (ADR-0024).
     pub session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
+    /// Whether a stream for a service this node does not host is forwarded
+    /// to its host (ADR-0002 A1). Only a coordinator forwards; any other
+    /// node answers `not_hosted_here`.
+    pub forwards: bool,
 }
 
 impl Debug for RouteHandler {
@@ -445,6 +450,7 @@ impl RouteHandler {
             _proxy: Some(proxy),
             dedup_guard: Some(dedup_guard),
             session_revocation: deps.session_revocation,
+            forwards: false,
         });
 
         let s = Self { inner };
@@ -492,6 +498,7 @@ impl RouteHandler {
             _proxy: None,
             dedup_guard: None,
             session_revocation: None,
+            forwards: true,
         });
         Self { inner }
     }
@@ -506,6 +513,11 @@ impl RouteHandler {
 
     pub fn register_native_service(&self, service_id: String, service: Arc<dyn NativeService>) {
         self.inner.native_dispatch.insert(service_id, service);
+    }
+
+    #[must_use]
+    pub fn registry(&self) -> &EndpointRegistry {
+        &self.inner.registry
     }
 
     /// Dynamically acquire a connection slot. Returns Some(ConnectionSlot) if

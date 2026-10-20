@@ -2,7 +2,7 @@
 
 *Reader: developers who build these changes.*
 
-**Status: in progress (2026-10-19).** S0, A1 to A4, C1, B1 to B3, C2 to C4 are done. C4b and C4c (added 2026-10-19) come before C5. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-20).** S0, A1 to A4, C1, B1 to B3, C2 to C4, and C4b are done. C4c comes before C5. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -152,7 +152,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Key receipts on `(sender, deposit_id)`, or refuse a `deposit_id` that already exists: the sender picks the id, so a second sender could reuse it. Store a receiver's ack as it came: the mailbox cannot check the proof, because it does not know the message hash. Its own rejection after 5 claims is `Receipt::unsigned_rejection(TooManyClaims, ..)`.
 - Done 2026-10-18. Decisions `D-C4-1` to `D-C4-20` are in the [mailbox change doc](../../changes/service-mailbox/change.md).
 
-**C4b — Signed preamble (L, two PRs).** Needs C4. Before C5. Part 1 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-1` to `SP-9`), with [ADR-0002](../../../decisions/0002-handshake-authorization-point.md) A1 and [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2.
+**C4b — Signed preamble (L, two PRs, Done).** Needs C4. Before C5. Part 1 of the [signed-route-preamble change doc](../../changes/signed-route-preamble/change.md) (criteria `SP-1` to `SP-9`), with [ADR-0002](../../../decisions/0002-handshake-authorization-point.md) A1 and [ADR-0016](../../../decisions/0016-native-dispatch-identity-threading.md) Amendment 2.
 - First PR: the `roymctl` command that revokes a temporary key. It does not depend on the rest.
 - Second PR: the caller signs the destination, the interface and the time with its key. The handshake key moves to `epk`. Only coordinators forward, and a forwarder checks nothing. A service in a call chain passes the caller's proof on in `on_behalf`. The logs stop printing identity fields.
 - *Why here.* The gap is live since C4: a copy of an instance certificate lets any node call the mailbox as that service. C5 and C6 build the paths that send an instance proof, so their tests are written once, against the final preamble. The fix is in the router, so C7 stays S.

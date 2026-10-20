@@ -109,8 +109,13 @@ pub fn disposition_of(error: &ProxyError) -> Disposition {
         ProxyError::Callee { code, .. } if *code == CALL_RESULT_NOT_RETAINED_RPC_CODE => {
             Disposition::Delivered
         }
+        // The refusal comes before any dispatch, and some of its causes (an
+        // anchor lookup timeout, clock skew) clear on their own.
         ProxyError::Callee { code, .. }
-            if *code == CALL_ALREADY_RUNNING_RPC_CODE || *code == SERVICE_NOT_FOUND_RPC_CODE =>
+            if *code == CALL_ALREADY_RUNNING_RPC_CODE
+                || *code == SERVICE_NOT_FOUND_RPC_CODE
+                || *code == syneroym_rpc::NOT_HOSTED_HERE_RPC_CODE
+                || *code == syneroym_rpc::STREAM_UNAUTHENTICATED_RPC_CODE =>
         {
             Disposition::Retry
         }
@@ -558,6 +563,22 @@ mod tests {
             disposition_of(&ProxyError::Callee {
                 code: SERVICE_NOT_FOUND_RPC_CODE,
                 message: "unknown service".into(),
+                data: None,
+            }),
+            Disposition::Retry
+        );
+        assert_eq!(
+            disposition_of(&ProxyError::Callee {
+                code: syneroym_rpc::NOT_HOSTED_HERE_RPC_CODE,
+                message: "not hosted here".into(),
+                data: None,
+            }),
+            Disposition::Retry
+        );
+        assert_eq!(
+            disposition_of(&ProxyError::Callee {
+                code: syneroym_rpc::STREAM_UNAUTHENTICATED_RPC_CODE,
+                message: "unauthenticated".into(),
                 data: None,
             }),
             Disposition::Retry

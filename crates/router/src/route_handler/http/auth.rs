@@ -11,9 +11,9 @@ pub(super) const SESSION_CALLER_MARKER: &str = "__syneroym_session_caller";
 ///
 /// Takes `preamble` as well as `caller` because the two `auth` halves read
 /// different sources: `CallerContext.auth` cannot distinguish a verified
-/// certificate from an unchallenged pubkey -- `AuthLevel::Delegated`
-/// is assigned to *every* verified preamble, including the client gateway's
-/// unchallenged node-DID pubkey -- while the preamble's own `delegation`
+/// certificate from a self-asserted master pubkey -- `AuthLevel::Delegated`
+/// is assigned to *every* verified preamble, including a caller's
+/// self-signed key without delegation -- while the preamble's own `delegation`
 /// field can, since a malformed certificate is a hard reject before this
 /// point. A session caller carrying `SESSION_CALLER_MARKER` from a verified
 /// session token presents `CallerAuth::Delegated`. Conversely

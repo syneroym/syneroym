@@ -198,6 +198,12 @@ impl EndpointRegistry {
         Ok(())
     }
 
+    /// Whether this node hosts any interface of `service_id`.
+    #[must_use]
+    pub fn hosts_service(&self, service_id: &str) -> bool {
+        self.active_endpoints.iter().any(|e| e.key().0 == service_id)
+    }
+
     /// Canonicalizes the interface a caller named into one this service
     /// actually registered. Three inputs, one rule -- the party holding
     /// the candidate set does the reversing:

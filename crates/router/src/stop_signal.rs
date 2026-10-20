@@ -19,3 +19,6 @@ pub trait StopSignal {
         Box::pin(std::future::pending())
     }
 }
+
+// An in-memory stream has no stop signal; tests drive `handle_stream` over it.
+impl StopSignal for tokio::io::DuplexStream {}

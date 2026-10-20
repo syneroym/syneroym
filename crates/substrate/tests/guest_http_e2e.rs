@@ -40,7 +40,7 @@ use tokio::{
 };
 
 mod common;
-use common::{SubstrateTestContext, alloc_ports};
+use common::{SubstrateTestContext, alloc_ports, streams::open_http_stream};
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> DeployManifest {
     DeployManifest::unpublished(
@@ -118,34 +118,6 @@ fn parse_http_response(raw: &[u8]) -> HttpResponse {
     HttpResponse { status, headers, body }
 }
 
-/// Opens a fresh Iroh bidi stream and writes the `http://http-native|
-/// <service_id>` route preamble. `pubkey` controls whether this connection
-/// is genuinely anonymous (`None`, the direct-WebRTC shape)
-/// or self-asserted (`Some`, an ephemeral identity with no delegation --
-/// mirrors what every other e2e file in this workspace does for an
-/// ordinary "not anonymous" connection).
-async fn open_http_stream(
-    conn: &TransportConnection,
-    service_id: &str,
-    pubkey: Option<&Identity>,
-) -> (SendStream, RecvStream) {
-    let TransportConnection::Iroh { conn, .. } = conn;
-    let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Http,
-        protocol: RouteProtocol::JsonRpc,
-        interface: "http-native".to_string(),
-        service_id: service_id.to_string(),
-        enc: None,
-        pubkey: pubkey.map(|id| hex::encode(id.public_key().to_bytes())),
-        delegation: None,
-        ucan: None,
-        dir: None,
-    };
-    send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
-    (send, recv)
-}
-
 /// The attacker-controlled case: a UCAN token is attached, but it is not
 /// rooted at anything this node trusts, so `build_caller` fail-opens to
 /// dropping its capabilities rather than rejecting the connection. Same
@@ -159,17 +131,14 @@ async fn open_http_stream_with_ucan(
 ) -> (SendStream, RecvStream) {
     let TransportConnection::Iroh { conn, .. } = conn;
     let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Http,
-        protocol: RouteProtocol::JsonRpc,
-        interface: "http-native".to_string(),
-        service_id: service_id.to_string(),
-        enc: None,
-        pubkey: Some(hex::encode(pubkey.public_key().to_bytes())),
-        delegation: None,
-        ucan: Some(ucan),
-        dir: None,
-    };
+    let mut preamble =
+        RoutePreamble::new(RouteTransport::Http, RouteProtocol::JsonRpc, service_id, "http-native");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_secs();
+    preamble.sign(pubkey, now);
+    preamble.ucan = Some(ucan);
     send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
     (send, recv)
 }

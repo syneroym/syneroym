@@ -26,7 +26,7 @@ fn bench_preamble_parsing(c: &mut Criterion) {
         });
     });
 
-    let encrypted = "raw://health|substrate-123?enc=ecdh-p256&pubkey=62734fde81";
+    let encrypted = "raw://health|substrate-123?enc=ecdh-p256&epk=62734fde81";
     group.bench_function("encrypted_query_params", |b| {
         b.iter(|| {
             let _ = RoutePreamble::parse(black_box(encrypted)).unwrap();
