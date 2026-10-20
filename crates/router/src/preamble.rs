@@ -4,7 +4,7 @@
 //! protocol, interface, and service information.
 //!
 //! The full preamble grammar is:
-//! `<scheme>://<interface>.<service_id>[?enc=<alg>&pubkey=<hex>]`
+//! `<scheme>://<interface>|<service_id>[?<params>]`
 //!
 //! ## Scheme Overloading
 //!
@@ -35,68 +35,46 @@
 //!
 //! | Param | Example | Meaning |
 //! |-------|---------|---------|
-//! | `enc`/`pubkey` | `?enc=ecdh-p256&pubkey=<hex>` | E2E ECDH-P256 + AES-GCM handshake (`handshake.rs`). Orthogonal to transport: `raw://my-interface.my-service?enc=ecdh-p256&pubkey=<hex-encoded-client-pubkey>`. |
-//! | `delegation` | `?delegation=<hex-encoded-json>` | Hex-encoded JSON `DelegationCertificate`. When present, `HandshakeVerifier::verify_preamble` checks it against the `pubkey` param's derived DID and the certificate's own signed scope -- it never reads `preamble.service_id` (see "Interface Names" below for what happens when `delegation` is absent). |
-//! | `dir` | `?dir=upload\|download` | Stream-protocol direction disambiguator (ADR-0014); only meaningful on `raw://` streams routed to a registered `stream-types` protocol. Any other value is rejected at the router before WASM instantiation. |
+//! | `enc`/`epk` | `?enc=ecdh-p256&epk=<hex>` | E2E ECDH-P256 handshake key. Orthogonal to transport. |
+//! | `pubkey` | `?pubkey=<hex>` | Ed25519 identity key of caller. Must accompany `ts` and `sig`. |
+//! | `ts` | `?ts=<unix_seconds>` | Unix timestamp of signature generation (ADR-0002 A1). |
+//! | `sig` | `?sig=<128_hex_chars>` | Ed25519 signature over `proof_bytes(service_id, interface, ts)`. |
+//! | `on_behalf` | `?on_behalf=<hex_json>` | Original caller's proof passed along a call chain (ADR-0016 A2). |
+//! | `delegation` | `?delegation=<hex_json>` | Hex-encoded JSON `DelegationCertificate`. Verified against `pubkey` and master anchor. |
+//! | `ucan` | `?ucan=<hex_json>` | Optional UCAN capability token chain. |
+//! | `dir` | `?dir=upload\|download` | Stream-protocol direction disambiguator (ADR-0014). |
 //!
-//! The `RoutePipeline`'s `EncryptionStage` and `AdaptationStage` are **not**
-//! encoded in the preamble itself; they are **derived** at planning time
-//! (`plan_pipeline`) from the combination of preamble fields and target
-//! registry capability entries.
-//!
-//! ## Interface Names
-//!
-//! `preamble.interface` (the `<interface>` segment) is looked up in the
-//! target service's `EndpointRegistry` to resolve a `SubstrateEndpoint`. Two
-//! disjoint sets of names share this same lookup, which is the source of the
-//! `http`/`http-native` naming collision below -- **tracked as a deferred
-//! item for the capability-scoped-routing work to clean up**, not
-//! resolved here, since restructuring this now would likely need redoing
-//! once capability-scoped routing lands:
-//!
-//! - **App-declared interfaces**: any WIT interface name (or, for TCP/container
-//!   services, a bare capability tag like `http`, e.g. `roymctl svc deploy
-//!   --interfaces http --tcp <host:port>`) a deployed component/service
-//!   registers for itself at deploy time
-//!   (`register_wasm_endpoints`/`ControlPlaneService::deploy`). Fully
-//!   app-owner-controlled; the substrate does not reserve or validate these
-//!   beyond uniqueness per `(service_id, interface)`.
-//! - **Reserved native-capability interfaces** (`NATIVE_CAPABILITY_INTERFACES`,
-//!   `syneroym_core::local_registry`): `data-layer`, `vault`, `app-config`,
-//!   `blob-store`, `messaging`, `http-native`, `conversation`. Every deployed
-//!   service (regardless of `service-type`) automatically gets these registered
-//!   as `SubstrateEndpoint:: NativeHostChannel` entries pointing at
-//!   `SynSvcNativeService`'s `NativeService::dispatch` implementation -- no
-//!   WASM component or app-declared interface required. `http-native`
-//!   specifically is *not* a preamble scheme (compare the scheme table above);
-//!   it is the reserved interface name the M3C HTTP bridge
-//!   (`route_handler/http.rs`) dispatches through, deliberately hyphenated (not
-//!   the bare `http`) precisely to avoid colliding with the app-declared `http`
-//!   tag above -- see `NATIVE_CAPABILITY_INTERFACES`'s own doc comment for the
-//!   regression this collision caused once already.
-//!
-//! **Authentication status:** `HandshakeVerifier::verify_preamble` is
-//! *always* attempted (an earlier version only attempted it when
-//! `preamble.delegation` was present); every native-capability interface
-//! and the HTTP bridge reject a caller with no verified identity. Beyond
-//! transport identity, `preamble.ucan` (this module's `ucan` field) carries
-//! an optional signed `CapabilityToken` chain, verified into
-//! `SessionContext` capabilities by the router's `build_caller`
-//! (`route_handler/io.rs`) -- see that module's doc comment for
-//! the chain-verification/revocation details.
+//! **Authentication status:** A preamble is anonymous only when it has none of
+//! `pubkey`, `delegation`, `ucan`, `ts`, `sig`, or `on_behalf`. Every other
+//! preamble must pass verification (signature, window, certificate, revocation)
+//! or is refused before dispatch.
 
-use std::{convert::Infallible, fmt, result};
+use std::{convert::Infallible, fmt, result, str::FromStr};
 
 use anyhow::{Result, anyhow};
 use fmt::{Display, Formatter};
 use syneroym_core::streaming::StreamDirection;
 use syneroym_identity::DelegationCertificate;
+use syneroym_rpc::{CallerProof, OnBehalfProof, PreambleSignature};
 use syneroym_ucan::CapabilityToken;
+
+pub mod proof;
+pub mod redacted;
+#[cfg(test)]
+mod tests;
+
+pub(crate) use proof::check_signature;
+#[cfg(test)]
+pub(crate) use proof::proof_bytes;
+pub use proof::{OutboundIdentity, PROOF_WINDOW_SECS};
+pub use redacted::{RedactedPreamble, route_text};
+
+/// Header carried by HTTP/1.1 refusal responses.
+pub const REFUSAL_HEADER: &str = "x-syneroym-refusal";
 
 /// Separator used in the routing preamble between the interface name and
 /// service ID.
 pub const PREAMBLE_SEPARATOR: &str = "|";
-use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteTransport {
@@ -167,7 +145,7 @@ impl Display for RouteProtocol {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RoutePreamble {
     /// The transport mechanism (e.g., binary, http)
     pub transport: RouteTransport,
@@ -179,7 +157,7 @@ pub struct RoutePreamble {
     pub service_id: String,
     /// Encryption protocol (e.g., ecdh-p256)
     pub enc: Option<String>,
-    /// Ephemeral client public key (hex)
+    /// Ed25519 identity key of the caller (hex)
     pub pubkey: Option<String>,
     /// Client delegation certificate (optional, hex encoded JSON in query
     /// param)
@@ -193,138 +171,52 @@ pub struct RoutePreamble {
     /// preamble shape; strictly validated (not defaulted) by the router
     /// before a stream-protocol route is served.
     pub dir: Option<StreamDirection>,
+    /// Unix seconds when the caller signed (ADR-0002 A1).
+    pub ts: Option<u64>,
+    /// Ed25519 signature by `pubkey` over `proof_bytes(service_id, interface,
+    /// ts)`, lowercase hex.
+    pub sig: Option<String>,
+    /// The caller's P-256 key for the end-to-end handshake, lowercase hex
+    /// SEC1. `pubkey` is only ever the Ed25519 identity key.
+    pub epk: Option<String>,
+    /// The original caller's proof, passed on by a service in a call chain
+    /// (ADR-0016 Amendment 2).
+    pub on_behalf: Option<OnBehalfProof>,
 }
 
 impl RoutePreamble {
-    /// Parses a preamble string into structured route information.
-    ///
-    /// The preamble format is: `scheme://[interface.]service_id[?query]`
-    ///
-    /// Schemes can be well-known overloaded aliases (e.g. `json-rpc`, `http`,
-    /// `wrpc`, `raw`) or explicit composable tokens separated by a dash
-    /// (e.g. `http-wrpc`).
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let preamble = RoutePreamble::parse("json-rpc://health.service-123")?;
-    /// assert_eq!(preamble.protocol, RouteProtocol::JsonRpc);
-    /// assert_eq!(preamble.interface, "health");
-    /// assert_eq!(preamble.service_id, "service-123");
-    /// ```
-    pub fn parse(raw: &str) -> Result<Self> {
-        let (scheme, target) = raw
-            .trim()
-            .split_once("://")
-            .ok_or_else(|| anyhow!("Invalid preamble format: {raw}"))?;
-
-        // Scheme mapping: well-known aliases take precedence over the combined-scheme
-        // splitter so that `json-rpc` and `wrpc` are never mistakenly split on their
-        // dash.
-        let (transport, protocol) = match scheme {
-            "http" => (RouteTransport::Http, RouteProtocol::JsonRpc),
-            "json-rpc" => (RouteTransport::Binary, RouteProtocol::JsonRpc),
-            "wrpc" => (RouteTransport::Binary, RouteProtocol::Wrpc),
-            "raw" => (RouteTransport::Raw, RouteProtocol::Raw),
-            // Combined schemes such as `http-wrpc`: split on the first `-` that separates
-            // a valid transport from a protocol identifier.
-            s => {
-                if let Some((t_str, p_str)) = s.split_once('-') {
-                    (t_str.parse()?, p_str.parse().unwrap())
-                } else {
-                    (RouteTransport::Binary, RouteProtocol::Other(s.to_string()))
-                }
-            }
-        };
-
-        let (target_clean, query) =
-            if let Some((t, q)) = target.split_once('?') { (t, Some(q)) } else { (target, None) };
-
-        let mut enc = None;
-        let mut pubkey = None;
-        let mut delegation = None;
-        let mut ucan = None;
-        let mut dir = None;
-        if let Some(q) = query {
-            for part in q.split('&') {
-                if let Some((k, v)) = part.split_once('=') {
-                    if k == "enc" {
-                        enc = Some(v.to_string());
-                    } else if k == "pubkey" {
-                        pubkey = Some(v.to_string());
-                    } else if k == "delegation"
-                        && let Ok(bytes) = hex::decode(v)
-                        && let Ok(json_str) = String::from_utf8(bytes)
-                        && let Ok(cert) = DelegationCertificate::from_json(&json_str)
-                    {
-                        delegation = Some(cert);
-                    } else if k == "ucan"
-                        && let Ok(bytes) = hex::decode(v)
-                        && let Ok(json_str) = String::from_utf8(bytes)
-                        && let Ok(token) = serde_json::from_str::<CapabilityToken>(&json_str)
-                    {
-                        // Unparseable → left `None`, permissive like
-                        // `delegation`; the router fails closed at dispatch,
-                        // it does not trust a malformed token.
-                        ucan = Some(token);
-                    } else if k == "dir" {
-                        // Left as `None` on an unparseable value, matching
-                        // this loop's existing permissive style for the
-                        // other params -- the router validates `dir`
-                        // strictly (reject, don't default) once a preamble
-                        // is known to target a stream-protocol route (see
-                        // ADR-0014).
-                        dir = v.parse::<StreamDirection>().ok();
-                    }
-                }
-            }
-        }
-
-        let (interface, service_id) =
-            target_clean.rsplit_once(PREAMBLE_SEPARATOR).unwrap_or(("", target_clean));
-
-        if service_id.is_empty() {
-            return Err(anyhow!("Incomplete preamble (missing service_id): {raw}"));
-        }
-
-        Ok(Self {
+    /// Creates a new preamble with the given route fields and all optional
+    /// parameters set to `None`.
+    pub fn new(
+        transport: RouteTransport,
+        protocol: RouteProtocol,
+        service_id: impl Into<String>,
+        interface: impl Into<String>,
+    ) -> Self {
+        Self {
             transport,
             protocol,
-            interface: interface.to_string(),
-            service_id: service_id.to_string(),
-            enc,
-            pubkey,
-            delegation,
-            ucan,
-            dir,
-        })
-    }
-
-    /// Constructs a preamble for the canonical binary JSON-RPC case.
-    ///
-    /// This is the default transport used by `SyneroymClient::request_raw`.
-    /// Using this constructor ensures that the framing choice is defined in
-    /// one place and callers don't need to know the internal defaults.
-    pub fn binary_json_rpc(service_id: impl Into<String>, interface: impl Into<String>) -> Self {
-        Self {
-            transport: RouteTransport::Binary,
-            protocol: RouteProtocol::JsonRpc,
-            service_id: service_id.into(),
             interface: interface.into(),
+            service_id: service_id.into(),
             enc: None,
             pubkey: None,
             delegation: None,
             ucan: None,
             dir: None,
+            ts: None,
+            sig: None,
+            epk: None,
+            on_behalf: None,
         }
+    }
+
+    /// Constructs a preamble for the canonical binary JSON-RPC case.
+    pub fn binary_json_rpc(service_id: impl Into<String>, interface: impl Into<String>) -> Self {
+        Self::new(RouteTransport::Binary, RouteProtocol::JsonRpc, service_id, interface)
     }
 
     /// Parses a preamble from an HTTP request path of the form
     /// `/v1/{service_id}/{interface}`.
-    ///
-    /// HTTP is treated purely as a framing concern; the resulting
-    /// `RouteProtocol` is still `JsonRpc` so the same routing logic applies
-    /// regardless of how the bytes arrived.
     pub fn from_http_path(path: &str) -> Result<Self> {
         let rest = path
             .strip_prefix("/v1/")
@@ -338,33 +230,12 @@ impl RoutePreamble {
             return Err(anyhow!("Empty service_id or interface in HTTP path: {path}"));
         }
 
-        Ok(Self {
-            transport: RouteTransport::Http,
-            protocol: RouteProtocol::JsonRpc,
-            interface: interface.to_string(),
-            service_id: service_id.to_string(),
-            enc: None,
-            pubkey: None,
-            delegation: None,
-            ucan: None,
-            dir: None,
-        })
+        Ok(Self::new(RouteTransport::Http, RouteProtocol::JsonRpc, service_id, interface))
     }
 
-    /// Returns the preamble as a newline-terminated string, suitable for
-    /// sending over the wire.
-    ///
-    /// This is used by clients to prefix their streams so the router knows how
-    /// to handle them.
-    #[must_use]
-    pub fn to_preamble_line(&self) -> String {
-        format!("{self}\n")
-    }
-}
-
-impl Display for RoutePreamble {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let scheme = match (self.transport, &self.protocol) {
+    /// Returns the scheme string for this preamble.
+    pub(crate) fn scheme_str(&self) -> String {
+        match (self.transport, &self.protocol) {
             (RouteTransport::Http, RouteProtocol::JsonRpc) => "http".to_string(),
             (RouteTransport::Http, p) => format!("http-{p}"),
             (RouteTransport::Binary, RouteProtocol::JsonRpc) => "json-rpc".to_string(),
@@ -372,17 +243,200 @@ impl Display for RoutePreamble {
             (RouteTransport::Binary, p) => p.to_string(),
             (RouteTransport::Raw, RouteProtocol::Raw) => "raw".to_string(),
             (RouteTransport::Raw, p) => format!("raw-{p}"),
-        };
+        }
+    }
 
-        let mut base = if self.interface.is_empty() {
+    /// Returns the `scheme://interface|service_id` base string without query
+    /// parameters.
+    pub(crate) fn route_base(&self) -> String {
+        let scheme = self.scheme_str();
+        if self.interface.is_empty() {
             format!("{}://{}", scheme, self.service_id)
         } else {
             format!("{}://{}{}{}", scheme, self.interface, PREAMBLE_SEPARATOR, self.service_id)
-        };
+        }
+    }
 
+    /// Returns a redacted log view of this preamble.
+    #[must_use]
+    pub fn redacted(&self) -> RedactedPreamble<'_> {
+        RedactedPreamble(self)
+    }
+
+    /// True when any identity field is present on this preamble.
+    #[must_use]
+    pub fn has_identity_fields(&self) -> bool {
+        self.pubkey.is_some()
+            || self.delegation.is_some()
+            || self.ucan.is_some()
+            || self.ts.is_some()
+            || self.sig.is_some()
+            || self.on_behalf.is_some()
+    }
+
+    /// Returns the caller proof if all signed proof fields (`pubkey`, `ts`,
+    /// `sig`) are present.
+    #[must_use]
+    pub fn caller_proof(&self) -> Option<CallerProof> {
+        let pubkey_hex = self.pubkey.as_ref()?;
+        let ts = self.ts?;
+        let sig_hex = self.sig.as_ref()?;
+        Some(CallerProof {
+            pubkey_hex: pubkey_hex.clone(),
+            delegation_json: self.delegation.as_ref().and_then(|d| d.to_json().ok()),
+            signed: Some(PreambleSignature {
+                service_id: self.service_id.clone(),
+                interface: self.interface.clone(),
+                ts,
+                sig_hex: sig_hex.clone(),
+            }),
+            on_behalf: self.on_behalf.clone(),
+        })
+    }
+
+    /// Returns the preamble as a newline-terminated string, suitable for
+    /// sending over the wire.
+    #[must_use]
+    pub fn to_preamble_line(&self) -> String {
+        format!("{self}\n")
+    }
+
+    /// Parses a preamble string into structured route information.
+    pub fn parse(raw: &str) -> Result<Self> {
+        let (scheme, target) = raw
+            .trim()
+            .split_once("://")
+            .ok_or_else(|| anyhow!("Invalid preamble format: {}", route_text(raw)))?;
+
+        let (transport, protocol) = parse_scheme(scheme)?;
+        let (target_clean, query) =
+            if let Some((t, q)) = target.split_once('?') { (t, Some(q)) } else { (target, None) };
+
+        let mut parsed_query = ParsedQuery::default();
+        if let Some(q) = query {
+            for part in q.split('&') {
+                if let Some((k, v)) = part.split_once('=') {
+                    parsed_query.parse_param(k, v)?;
+                }
+            }
+        }
+
+        let (interface, service_id) =
+            target_clean.rsplit_once(PREAMBLE_SEPARATOR).unwrap_or(("", target_clean));
+
+        if service_id.is_empty() {
+            return Err(anyhow!("Incomplete preamble (missing service_id): {}", route_text(raw)));
+        }
+
+        Ok(Self {
+            transport,
+            protocol,
+            interface: interface.to_string(),
+            service_id: service_id.to_string(),
+            enc: parsed_query.enc,
+            pubkey: parsed_query.pubkey,
+            delegation: parsed_query.delegation,
+            ucan: parsed_query.ucan,
+            dir: parsed_query.dir,
+            ts: parsed_query.ts,
+            sig: parsed_query.sig,
+            epk: parsed_query.epk,
+            on_behalf: parsed_query.on_behalf,
+        })
+    }
+}
+
+fn parse_scheme(scheme: &str) -> Result<(RouteTransport, RouteProtocol)> {
+    Ok(match scheme {
+        "http" => (RouteTransport::Http, RouteProtocol::JsonRpc),
+        "json-rpc" => (RouteTransport::Binary, RouteProtocol::JsonRpc),
+        "wrpc" => (RouteTransport::Binary, RouteProtocol::Wrpc),
+        "raw" => (RouteTransport::Raw, RouteProtocol::Raw),
+        s => {
+            if let Some((t_str, p_str)) = s.split_once('-') {
+                (t_str.parse()?, p_str.parse().unwrap())
+            } else {
+                (RouteTransport::Binary, RouteProtocol::Other(s.to_string()))
+            }
+        }
+    })
+}
+
+#[derive(Default)]
+struct ParsedQuery {
+    enc: Option<String>,
+    pubkey: Option<String>,
+    delegation: Option<DelegationCertificate>,
+    ucan: Option<CapabilityToken>,
+    dir: Option<StreamDirection>,
+    ts: Option<u64>,
+    sig: Option<String>,
+    epk: Option<String>,
+    on_behalf: Option<OnBehalfProof>,
+}
+
+impl ParsedQuery {
+    fn parse_param(&mut self, k: &str, v: &str) -> Result<()> {
+        match k {
+            "enc" => self.enc = Some(v.to_string()),
+            "epk" => self.epk = Some(v.to_string()),
+            "pubkey" => self.pubkey = Some(v.to_string()),
+            "delegation" => self.delegation = decode_delegation(v),
+            "ucan" => self.ucan = decode_ucan(v),
+            "ts" => {
+                let parsed = v.parse::<u64>().map_err(|_| anyhow!("invalid ts in preamble"))?;
+                self.ts = Some(parsed);
+            }
+            "sig" => {
+                if v.len() != 128
+                    || !v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                {
+                    return Err(anyhow!("invalid sig in preamble"));
+                }
+                self.sig = Some(v.to_string());
+            }
+            "on_behalf" => self.on_behalf = Some(decode_on_behalf(v)?),
+            "dir" => self.dir = v.parse::<StreamDirection>().ok(),
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+fn decode_delegation(v: &str) -> Option<DelegationCertificate> {
+    let bytes = hex::decode(v).ok()?;
+    let json_str = String::from_utf8(bytes).ok()?;
+    DelegationCertificate::from_json(&json_str).ok()
+}
+
+fn decode_ucan(v: &str) -> Option<CapabilityToken> {
+    let bytes = hex::decode(v).ok()?;
+    let json_str = String::from_utf8(bytes).ok()?;
+    serde_json::from_str::<CapabilityToken>(&json_str).ok()
+}
+
+fn decode_on_behalf(v: &str) -> Result<OnBehalfProof> {
+    let bytes = hex::decode(v).map_err(|e| anyhow!("invalid on_behalf hex: {e}"))?;
+    let json_str = String::from_utf8(bytes).map_err(|e| anyhow!("invalid on_behalf utf-8: {e}"))?;
+    serde_json::from_str::<OnBehalfProof>(&json_str)
+        .map_err(|e| anyhow!("invalid on_behalf json: {e}"))
+}
+
+impl fmt::Debug for RoutePreamble {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.redacted(), f)
+    }
+}
+
+impl Display for RoutePreamble {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let base = self.route_base();
         let mut params = Vec::new();
         if let Some(enc) = &self.enc {
             params.push(format!("enc={enc}"));
+        }
+        if let Some(epk) = &self.epk {
+            params.push(format!("epk={epk}"));
         }
         if let Some(pubkey) = &self.pubkey {
             params.push(format!("pubkey={pubkey}"));
@@ -397,152 +451,24 @@ impl Display for RoutePreamble {
         {
             params.push(format!("ucan={}", hex::encode(json)));
         }
+        if let Some(ts) = self.ts {
+            params.push(format!("ts={ts}"));
+        }
+        if let Some(sig) = &self.sig {
+            params.push(format!("sig={sig}"));
+        }
+        if let Some(on_behalf) = &self.on_behalf
+            && let Ok(json) = serde_json::to_string(on_behalf)
+        {
+            params.push(format!("on_behalf={}", hex::encode(json)));
+        }
         if let Some(dir) = &self.dir {
             params.push(format!("dir={dir}"));
         }
         if !params.is_empty() {
-            base = format!("{base}?{}", params.join("&"));
+            write!(f, "{base}?{}", params.join("&"))
+        } else {
+            write!(f, "{base}")
         }
-
-        write!(f, "{base}")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_route_preamble() {
-        let parsed = RoutePreamble::parse("json-rpc://health|substrate-123\n").unwrap();
-        assert_eq!(parsed.transport, RouteTransport::Binary);
-        assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
-        assert_eq!(parsed.interface, "health");
-        assert_eq!(parsed.service_id, "substrate-123");
-    }
-
-    #[test]
-    fn parses_http_scheme() {
-        let parsed = RoutePreamble::parse("http://health|substrate-123\n").unwrap();
-        assert_eq!(parsed.transport, RouteTransport::Http);
-        assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
-    }
-
-    #[test]
-    fn parses_combined_scheme() {
-        let parsed = RoutePreamble::parse("http-wrpc://health|substrate-123\n").unwrap();
-        assert_eq!(parsed.transport, RouteTransport::Http);
-        assert_eq!(parsed.protocol, RouteProtocol::Wrpc);
-    }
-
-    #[test]
-    fn parses_route_preamble_no_interface() {
-        let parsed = RoutePreamble::parse("json-rpc://substrate-123\n").unwrap();
-        assert_eq!(parsed.transport, RouteTransport::Binary);
-        assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
-        assert_eq!(parsed.interface, "");
-        assert_eq!(parsed.service_id, "substrate-123");
-    }
-
-    #[test]
-    fn parses_http_path() {
-        let parsed = RoutePreamble::from_http_path("/v1/my-service/health").unwrap();
-        assert_eq!(parsed.transport, RouteTransport::Http);
-        assert_eq!(parsed.protocol, RouteProtocol::JsonRpc);
-        assert_eq!(parsed.service_id, "my-service");
-        assert_eq!(parsed.interface, "health");
-    }
-
-    #[test]
-    fn parses_http_path_rejects_bad_prefix() {
-        assert!(RoutePreamble::from_http_path("/api/my-service/health").is_err());
-    }
-
-    #[test]
-    fn parses_http_path_rejects_missing_interface() {
-        assert!(RoutePreamble::from_http_path("/v1/my-service").is_err());
-    }
-
-    #[test]
-    fn parses_http_path_rejects_empty_segments() {
-        assert!(RoutePreamble::from_http_path("/v1//health").is_err());
-        assert!(RoutePreamble::from_http_path("/v1/my-service/").is_err());
-    }
-
-    #[test]
-    fn parses_with_query_params() {
-        let parsed =
-            RoutePreamble::parse("raw://health|substrate-123?enc=ecdh-p256&pubkey=abc123\n")
-                .unwrap();
-        assert_eq!(parsed.transport, RouteTransport::Raw);
-        assert_eq!(parsed.protocol, RouteProtocol::Raw);
-        assert_eq!(parsed.interface, "health");
-        assert_eq!(parsed.service_id, "substrate-123");
-        assert_eq!(parsed.enc, Some("ecdh-p256".to_string()));
-        assert_eq!(parsed.pubkey, Some("abc123".to_string()));
-    }
-
-    #[test]
-    fn parses_and_round_trips_dir_query_param() {
-        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1?dir=download\n").unwrap();
-        assert_eq!(parsed.dir, Some(StreamDirection::Download));
-        assert_eq!(parsed.to_string(), "raw://file-transfer|svc-1?dir=download");
-
-        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1?dir=upload\n").unwrap();
-        assert_eq!(parsed.dir, Some(StreamDirection::Upload));
-    }
-
-    #[test]
-    fn invalid_dir_value_parses_as_none_not_an_error() {
-        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1?dir=sideways\n").unwrap();
-        assert_eq!(parsed.dir, None);
-    }
-
-    #[test]
-    fn missing_dir_is_none() {
-        let parsed = RoutePreamble::parse("raw://file-transfer|svc-1\n").unwrap();
-        assert_eq!(parsed.dir, None);
-    }
-
-    #[test]
-    fn ucan_round_trips_through_display_and_parse() {
-        use syneroym_identity::Identity;
-        use syneroym_ucan::CapabilityToken;
-
-        let issuer = Identity::generate().unwrap();
-        let token = CapabilityToken::issue(
-            &issuer,
-            "did:key:hybndrfg8ejkmcpqx",
-            vec![],
-            serde_json::Map::new(),
-            3600,
-            vec![],
-        )
-        .unwrap();
-
-        let mut preamble = RoutePreamble::parse("json-rpc://health|substrate-123").unwrap();
-        preamble.ucan = Some(token.clone());
-
-        let round_tripped = RoutePreamble::parse(&preamble.to_string()).unwrap();
-        assert_eq!(round_tripped.ucan, Some(token));
-    }
-
-    #[test]
-    fn test_display() {
-        let p1 = RoutePreamble::parse("http://health|substrate-123").unwrap();
-        assert_eq!(p1.to_string(), "http://health|substrate-123");
-
-        let p2 = RoutePreamble::parse("json-rpc://substrate-123").unwrap();
-        assert_eq!(p2.to_string(), "json-rpc://substrate-123");
-
-        let p3 = RoutePreamble::parse("http-wrpc://my-service").unwrap();
-        assert_eq!(p3.to_string(), "http-wrpc://my-service");
-
-        let p4 = RoutePreamble::parse("wrpc://my-interface|my-service").unwrap();
-        assert_eq!(p4.to_string(), "wrpc://my-interface|my-service");
-
-        let p5 = RoutePreamble::parse("raw://health|substrate-123?enc=ecdh-p256&pubkey=abc123\n")
-            .unwrap();
-        assert_eq!(p5.to_string(), "raw://health|substrate-123?enc=ecdh-p256&pubkey=abc123");
     }
 }

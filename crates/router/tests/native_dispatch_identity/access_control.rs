@@ -265,17 +265,12 @@ async fn http_bridge_rejects_anonymous_caller_with_401() {
         adaptation: AdaptationStage::None,
         service: ServiceStage::NativeService { service_id: service_id.clone() },
     };
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Http,
-        protocol: RouteProtocol::JsonRpc,
-        interface: String::new(),
-        service_id: service_id.clone(),
-        enc: None,
-        pubkey: None,
-        delegation: None,
-        ucan: None,
-        dir: None,
-    };
+    let preamble = RoutePreamble::new(
+        RouteTransport::Http,
+        RouteProtocol::JsonRpc,
+        service_id.clone(),
+        String::new(),
+    );
 
     let (mut client, server) = duplex(4096);
     let io = TokioIo::new(server);

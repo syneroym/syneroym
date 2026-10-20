@@ -284,12 +284,12 @@ where
         EncryptionStage::TerminateEcdhP256 => {
             debug!("[Router] TerminateEcdhP256 encryption stage: performing handshake");
 
-            let pubkey_hex = preamble.pubkey.as_deref().ok_or_else(|| {
-                anyhow!("Missing 'pubkey' query parameter required for ecdh-p256 encryption")
+            let pubkey_hex = preamble.epk.as_deref().ok_or_else(|| {
+                anyhow!("Missing 'epk' query parameter required for ecdh-p256 encryption")
             })?;
 
-            let client_pub_key_bytes = hex::decode(pubkey_hex)
-                .map_err(|e| anyhow!("Invalid hex pubkey in preamble: {e}"))?;
+            let client_pub_key_bytes =
+                hex::decode(pubkey_hex).map_err(|e| anyhow!("Invalid hex epk in preamble: {e}"))?;
 
             let client_pub_key = EncodedPoint::from_bytes(&client_pub_key_bytes)
                 .map_err(|e| anyhow!("Invalid public key bytes: {e}"))?;
@@ -349,3 +349,6 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

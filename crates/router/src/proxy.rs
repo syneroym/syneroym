@@ -28,13 +28,13 @@ use syneroym_core::{
     },
     retry, util,
 };
-use syneroym_identity::{DelegationCertificate, Identity};
+use syneroym_identity::Identity;
 use syneroym_rpc::{
-    CallOrigin, CallerContext, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, JsonRpcErrorResponse,
-    JsonRpcRequest, JsonRpcResponse, NativeInvocation, ProxyError, ProxyProtocol,
-    ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget, RpcError,
-    SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo, SagaState as RpcSagaState, SagaStepRequest,
-    ServiceProxy, WeakNativeDispatchRegistry, framing,
+    CallOrigin, CallerContext, CallerProof, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo,
+    JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, NOT_HOSTED_HERE_RPC_CODE,
+    NativeInvocation, ProxyError, ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall,
+    QueuedCallInfo, QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo,
+    SagaState as RpcSagaState, SagaStepRequest, ServiceProxy, WeakNativeDispatchRegistry, framing,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{task, time};
@@ -45,7 +45,7 @@ use crate::{
     call_dedup::{self, CallDedupGuard, GuardOutcome},
     net_iroh,
     peer_records::PeerRecordStore,
-    preamble::RoutePreamble,
+    preamble::{OutboundIdentity, RoutePreamble},
     proxy_outbox::{self, Disposition, ProxyOutbox},
     saga::SagaStore,
 };

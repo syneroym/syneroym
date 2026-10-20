@@ -15,20 +15,18 @@
 use std::{collections::HashMap, time::Duration};
 
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
-use iroh::endpoint::{RecvStream, SendStream};
+use iroh::endpoint::RecvStream;
 use rustls::crypto::ring;
 use syneroym_core::test_constants;
-use syneroym_identity::Identity;
 use syneroym_observability::MemoryRecorder;
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
-    ArtifactSource, AssetBundle, DeployManifest, ServiceConfig, ServiceType, TransportConnection,
-    Visibility, WasmManifest,
+    ArtifactSource, AssetBundle, DeployManifest, ServiceConfig, ServiceType, Visibility,
+    WasmManifest,
 };
 use tokio::time::timeout;
 
 mod common;
-use common::{SubstrateTestContext, alloc_ports};
+use common::{SubstrateTestContext, alloc_ports, streams::open_http_stream};
 
 fn miniapp_manifest_with_assets(
     wasm_bytes: Vec<u8>,
@@ -175,28 +173,6 @@ async fn read_full_http_response(recv: &mut RecvStream) -> HttpResponse {
         }
     }
     parse_http_response(&raw)
-}
-
-async fn open_http_stream(
-    conn: &TransportConnection,
-    service_id: &str,
-    pubkey: Option<&Identity>,
-) -> (SendStream, RecvStream) {
-    let TransportConnection::Iroh { conn, .. } = conn;
-    let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Http,
-        protocol: RouteProtocol::JsonRpc,
-        interface: "http-native".to_string(),
-        service_id: service_id.to_string(),
-        enc: None,
-        pubkey: pubkey.map(|id| hex::encode(id.public_key().to_bytes())),
-        delegation: None,
-        ucan: None,
-        dir: None,
-    };
-    send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
-    (send, recv)
 }
 
 fn counter_value(name: &str) -> u64 {

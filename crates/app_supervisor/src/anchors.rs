@@ -71,6 +71,6 @@ impl AnchorWriter for RegistryAnchorWriter {
     }
 
     async fn revoke_instance(&self, master: &Identity, instance_did: &str) -> Result<(), String> {
-        self.client.revoke_instance_key(master, instance_did).await.map_err(|e| e.to_string())
+        self.client.revoke_key(master, instance_did, false).await.map_err(|e| e.to_string())
     }
 }

@@ -47,6 +47,7 @@ pub async fn spawn_registry(base_path: &Path) -> Result<(EcosystemRegistry, Stri
     registry_r.spawn().await?;
     Ok((registry_r, r_url))
 }
+pub mod nodes;
 pub mod passport;
 
 /// A coordinator on a host with a fresh node key and no controller.

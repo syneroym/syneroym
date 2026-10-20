@@ -26,3 +26,5 @@ mod fdae_enforcement;
 mod queries;
 #[path = "native_dispatch_identity/resolve_relation.rs"]
 mod resolve_relation;
+#[path = "native_dispatch_identity/signed_preamble.rs"]
+mod signed_preamble;

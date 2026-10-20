@@ -174,9 +174,13 @@ mod delegation_preamble_tests {
 
         let preamble = client.build_preamble("test_iface");
         assert_eq!(preamble.delegation, Some(cert.clone()));
+        assert!(preamble.ts.is_some());
+        assert!(preamble.sig.is_some());
 
         let line = preamble.to_preamble_line();
         let parsed = RoutePreamble::parse(&line).unwrap();
         assert_eq!(parsed.delegation, Some(cert));
+        assert_eq!(parsed.ts, preamble.ts);
+        assert_eq!(parsed.sig, preamble.sig);
     }
 }

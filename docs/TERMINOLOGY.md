@@ -51,6 +51,8 @@ neighbourhood.
 | **Mailbox** | A substrate role running a native store-and-forward service (`mailbox`) that holds sealed messages for sleeping or offline receivers. The mailbox cannot read or tamper with message contents. See [ADR-0026](decisions/0026-receiver-chosen-mailbox.md). | An ordinary message broker or MQTT queue. |
 | **Queue lifetime** | The duration a destination queue stays active at a mailbox without a receiver registration or claim. Past this duration, the queue and its stored messages are swept. | Visibility timeout or message time-to-live. |
 | **Sealed message** | An authenticated, HPKE-encrypted message envelope sealed to the receiver member's mailbox public key with the sender's instance certificate and signature inside. | Transport-level stream encryption or plaintext RPC payloads. |
+| **Route preamble** | The initial header line framing every transport stream (`<scheme>://<interface>.<service_id>?<params>`). Declares wire transport, application protocol, target service and interface, caller public key, proof-of-possession signature and timestamp, and optional delegations. See [ADR-0002](decisions/0002-handshake-authorization-point.md). | An HTTP request line. |
+| **On-behalf proof** | A cryptographic proof carried in a route preamble showing that an intermediate service calls a downstream service on behalf of an originating user, verified against that user's anchor. See [ADR-0016](decisions/0016-native-dispatch-identity-threading.md). | A UCAN delegation token. |
 
 ## Key phrasings
 

@@ -62,14 +62,11 @@ pub enum FetchError {
 /// scale here), and returns the corresponding
 /// `FetchResult`s ready for `syneroym_fdae::finalize`.
 ///
-/// `caller` is forwarded **unmodified**: `ProxyRequest.caller`
-/// carries the local invocation's own already-verified `CallerContext`
-/// (proof intact), not a synthesized identity. `invoke_remote_at` already
-/// forwards `caller.proof` verbatim for any `CallOrigin::Native` call
-/// (`router/src/proxy.rs`), so the remote's own `verify_chain` re-derives
-/// `subject_did`/`anchor_did` from the real chain and gating happens on
-/// whatever was legitimately delegated through it -- no new proof-forwarding
-/// mechanism needed.
+/// `caller` carries the local invocation's already-verified `CallerContext`.
+/// For outbound remote hops, the proxy router signs the preamble using the node
+/// key and carries the incoming caller proof in `on_behalf` per ADR-0016. The
+/// remote receiver verifies both the preamble signature and the full delegation
+/// chain.
 ///
 /// **Fails closed on the first error**: a timeout, transport error, or a
 /// proof that doesn't verify against its `RemoteFetch.expected_asserter_did`
@@ -79,8 +76,7 @@ pub enum FetchError {
 ///
 /// `local_service_id` names the deployed service this fetch is made *on
 /// behalf of*, so `CallOrigin::Native { service_id }` lets the destination
-/// present that service's certified instance key rather than the node's own
-/// (`ProxyRouter::invoke_remote_at`'s `(None, Native)` arm).
+/// present that service's certified instance key when configured.
 pub async fn resolve_fetches(
     fetches: &[RemoteFetch],
     caller: &CallerContext,

@@ -1,6 +1,9 @@
 ---
-status: approved
+status: in-progress
 living-docs-touched:
+  - docs/system-architecture.md
+  - docs/system-requirements-spec.md
+  - docs/TERMINOLOGY.md
 ---
 # Signed route preamble
 
@@ -442,20 +445,20 @@ These are recorded in the deferred backlog when C4b lands.
 
 Part 1 (C4b):
 
-- [ ] The revoke command (its own PR).
-- [ ] Signed bytes, `ts`, `sig`, `epk` and `on_behalf` in `RoutePreamble`,
+- [x] The revoke command (its own PR).
+- [x] Signed bytes, `ts`, `sig`, `epk` and `on_behalf` in `RoutePreamble`,
       including `to_preamble_line`.
-- [ ] The check in `verify_preamble`, and the reject branch in
+- [x] The check in `verify_preamble`, and the reject branch in
       `read_and_verify_preamble`.
-- [ ] Every preamble writer signs: the SDK request path,
+- [x] Every preamble writer signs: the SDK request path,
       `passthrough_with_conn`, `IrohHop`.
-- [ ] `epk` in `encryption.rs` and `peer-proxy.js`.
-- [ ] Logs without identity fields.
-- [ ] The forward flag on `RouteHandler`, no identity check on a forwarder,
+- [x] `epk` in `encryption.rs` and `peer-proxy.js`.
+- [x] Logs without identity fields.
+- [x] The forward flag on `RouteHandler`, no identity check on a forwarder,
       `not_hosted_here`, and the retry in `invoke_remote` and the SDK.
-- [ ] `on_behalf`: `CallerProof` fields, `invoke_remote_at`, the check, and
+- [x] `on_behalf`: `CallerProof` fields, `invoke_remote_at`, the check, and
       `anchor_did`.
-- [ ] Tests for SP-1 to SP-9.
+- [x] Tests for SP-1 to SP-9.
 
 Part 2 (C4c):
 

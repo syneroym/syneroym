@@ -1,3 +1,5 @@
+use syneroym_rpc::PreambleSignature;
+
 use super::helpers::*;
 
 // -- remote dispatch: retry -------------------------------------------
@@ -63,17 +65,38 @@ async fn idempotent_call_stops_retrying_once_it_succeeds() {
 // -- remote dispatch: proof forwarding ---------------------------------
 
 #[tokio::test]
-async fn caller_with_proof_forwards_it_verbatim_on_the_outbound_preamble() {
+async fn caller_with_proof_presents_node_identity_and_passes_proof_on_outbound_preamble() {
     let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
-    let router = test_router(hop.clone(), empty_registry());
+    let identity = Arc::new(Identity::generate().unwrap());
+    let expected_pubkey = hex::encode(identity.public_key().to_bytes());
+    let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
+    let router = ProxyRouter::new(
+        empty_registry(),
+        empty_registry_client(),
+        Arc::downgrade(&native_dispatch),
+        Weak::new(),
+        hop.clone(),
+        identity,
+        RetryPolicy::default(),
+    );
 
     let mut req = base_request("remote-svc", "greet");
-    req.caller.proof =
-        Some(CallerProof { pubkey_hex: "deadbeef".to_string(), delegation_json: None });
+    req.caller.proof = Some(CallerProof {
+        pubkey_hex: "deadbeef".to_string(),
+        delegation_json: None,
+        signed: Some(PreambleSignature {
+            service_id: "orig-svc".to_string(),
+            interface: "orig-iface".to_string(),
+            ts: 1_700_000_000,
+            sig_hex: "00".repeat(64),
+        }),
+        on_behalf: None,
+    });
     router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
 
     let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
-    assert_eq!(preamble.pubkey.as_deref(), Some("deadbeef"));
+    assert_eq!(preamble.pubkey.as_deref(), Some(expected_pubkey.as_str()));
+    assert_eq!(preamble.on_behalf.as_ref().map(|o| o.pubkey.as_str()), Some("deadbeef"));
 }
 
 #[tokio::test]
@@ -156,8 +179,11 @@ async fn guest_with_proof_still_forwards_as_anonymous_not_the_real_proof() {
     );
 
     let mut req = base_request("guest-component", "some-unregistered-iface");
-    req.caller.proof =
-        Some(CallerProof { pubkey_hex: "deadbeef".to_string(), delegation_json: None });
+    req.caller.proof = Some(CallerProof {
+        pubkey_hex: "deadbeef".to_string(),
+        delegation_json: None,
+        ..Default::default()
+    });
     req.origin = CallOrigin::Guest { service_id: "guest-component".to_string() };
     router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
 
@@ -360,14 +386,11 @@ async fn a_native_origin_call_on_a_services_behalf_presents_that_services_instan
     assert_eq!(verified.master_did, member_master_did);
 }
 
-/// When the caller already carries a signed proof (a forwarded chain),
-/// a `Native` call must forward that proof verbatim
-/// -- never substitute the service's own identity -- so the destination
-/// can re-derive `subject_did`/`anchor_did` from the real chain. This is
-/// what keeps FDAE's cross-service fetch authorizing the *real* caller
-/// rather than the relaying service.
+/// When the caller already carries a signed proof, a `Native` call made on a
+/// service's behalf presents the service instance identity and passes the
+/// caller's proof on in `on_behalf`.
 #[tokio::test]
-async fn a_native_origin_call_with_a_caller_proof_still_forwards_the_proof_verbatim() {
+async fn a_native_origin_call_with_a_caller_proof_presents_service_instance_and_passes_proof() {
     let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Success(Value::Null)]));
     let node_identity = Arc::new(Identity::generate().unwrap());
     let registry = empty_registry();
@@ -399,17 +422,28 @@ async fn a_native_origin_call_with_a_caller_proof_still_forwards_the_proof_verba
 
     let forwarded_pubkey_hex = "aabbccdd".to_string();
     let mut req = base_request("remote-svc", "data-layer");
-    req.caller.proof =
-        Some(CallerProof { pubkey_hex: forwarded_pubkey_hex.clone(), delegation_json: None });
+    req.caller.proof = Some(CallerProof {
+        pubkey_hex: forwarded_pubkey_hex.clone(),
+        delegation_json: None,
+        signed: Some(PreambleSignature {
+            service_id: "orig-svc".to_string(),
+            interface: "orig-iface".to_string(),
+            ts: 1_700_000_000,
+            sig_hex: "00".repeat(64),
+        }),
+        on_behalf: None,
+    });
     req.origin = CallOrigin::Native { service_id: Some(service_id.clone()) };
     router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
 
     let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
     assert_eq!(
         preamble.pubkey.as_deref(),
+        Some(hex::encode(instance.public_key().to_bytes()).as_str()),
+    );
+    assert_eq!(
+        preamble.on_behalf.as_ref().map(|o| o.pubkey.as_str()),
         Some(forwarded_pubkey_hex.as_str()),
-        "an already-present caller proof must be forwarded verbatim, never replaced by the \
-         relaying service's own certified identity"
     );
 }
 

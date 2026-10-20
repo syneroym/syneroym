@@ -798,9 +798,12 @@ Transmit a structured route preamble before payload data on inbound transport st
 
 - **Preamble Wire Format:** Format stream preambles using the grammar `<scheme>://<interface>.<service_id>[?query]`, terminated by a newline. The scheme specifies wire transport (`binary`, `http`, `raw`) and application protocol (`json-rpc`, `wrpc`, `raw`). Preamble lines enforce a maximum size limit (`MAX_PREAMBLE_LINE_BYTES = 256 KiB`) and a pre-authentication timeout (`PRE_AUTH_READ_TIMEOUT = 5s`) to prevent unauthenticated resource exhaustion.
 - **Transport Security & E2EE Query Parameters:** Configure transport options using orthogonal query parameters:
-  - `enc` and `pubkey`: Trigger an ephemeral ECDH-P256 key exchange encrypted with AES-256-GCM before payload forwarding.
+  - `pubkey`, `ts`, and `sig`: Prove caller identity and key possession. The caller signs `destination`, `interface`, and `ts` with its Ed25519 private key. The router checks that `ts` is within 60 seconds of node time and verifies `sig`. If `pubkey` is present and `sig` is missing or invalid, the stream is refused with error `-32097` (`Unauthenticated`).
+  - `enc` and `epk`: Trigger an ephemeral ECDH-P256 key exchange encrypted with AES-256-GCM before payload forwarding. The ephemeral handshake key travels in `epk`, separate from `pubkey`.
   - `dir`: Specify stream direction (`upload` or `download`) for raw streaming protocols.
+  - `on_behalf`: Supply hex-encoded proof (`OnBehalfProof`) of an originating caller when an intermediate service invokes a callee on behalf of a user.
 - **Delegation Certificate Verification:** Include a hex-encoded `DelegationCertificate` (`?delegation=<hex>`) when routing with a delegated identity. The router verifies that the certificate's temporary DID matches the preamble public key. It checks validity timestamps, confirms that the scope covers transport permissions, and verifies that the audience key is not revoked in the issuer's Master Anchor DHT record.
+- **Reachability and Transparent Re-homing:** When an inbound stream targets a service not hosted on the receiving node, and the node is not configured as a forwarder coordinator, the node immediately refuses the stream with JSON-RPC error `-32096` (`NotHostedHere`). SDK clients and client gateways catch this refusal, clear cached routing mechanisms, re-resolve the target service from the registry, and retry the request against the new host.
 - **UCAN Capability Token Verification:** Supply an optional hex-encoded UCAN capability token (`?ucan=<hex>`). The router validates the token chain into `SessionContext` capabilities and checks each chain link against issuer Master Anchor revocations. Unauthenticated or invalid UCAN tokens fail closed on native capability interfaces.
 
 ---

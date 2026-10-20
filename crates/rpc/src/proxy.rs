@@ -63,8 +63,8 @@ pub enum CallOrigin {
 
 /// A cross-service call. Locally constructed; `caller` is **never**
 /// wire-serialized (ADR-0016 §6) -- only `caller.proof` (signed material)
-/// crosses a hop, and the destination re-verifies it and builds a fresh
-/// `CallerContext`.
+/// crosses a hop as an `on_behalf` chain, and the destination re-verifies it
+/// to build a fresh `CallerContext`.
 #[derive(Clone, Debug)]
 pub struct ProxyRequest {
     pub target_service: String,
@@ -137,6 +137,15 @@ impl ProxyError {
 /// recognise it on the wire: it is the one "the callee answered" code that
 /// can mean "not yet" rather than "no".
 pub const SERVICE_NOT_FOUND_RPC_CODE: i32 = -32601;
+/// JSON-RPC code a node that is not a coordinator answers with when it
+/// does not host the service a stream names. It comes before any
+/// dispatch, so a caller may look the service up again and retry, for
+/// any call.
+pub const NOT_HOSTED_HERE_RPC_CODE: i32 = -32096;
+/// JSON-RPC code for a stream whose caller identity the router refused:
+/// a missing or wrong signature, a time outside the window, or a bad
+/// certificate.
+pub const STREAM_UNAUTHENTICATED_RPC_CODE: i32 = -32097;
 pub const UNSUPPORTED_PROTOCOL_RPC_CODE: i32 = -32091;
 /// Reserved JSON-RPC error code for a proxy transport failure (connect
 /// failure, malformed response, or exhausted retries).

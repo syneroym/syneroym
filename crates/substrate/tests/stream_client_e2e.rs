@@ -53,9 +53,13 @@ async fn open_stream(
         interface: protocol.to_string(),
         service_id: service_id.to_string(),
         enc: None,
+        epk: None,
         pubkey: None,
+        ts: None,
+        sig: None,
         delegation: None,
         ucan: None,
+        on_behalf: None,
         dir: dir.parse().ok(),
     };
     send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
@@ -204,7 +208,11 @@ async fn test_unregistered_stream_protocol_rejected_cleanly() {
     let outcome = time::timeout(Duration::from_secs(10), recv.read_to_end(1024 * 1024)).await;
     assert!(outcome.is_ok(), "unregistered-protocol stream must not hang the peer");
     let buf = outcome.unwrap().unwrap_or_default();
-    assert!(buf.is_empty(), "an unregistered protocol must never yield stream bytes");
+    assert!(
+        buf.is_empty() || buf == b"unknown_interface\n",
+        "an unregistered protocol must yield a refusal line or no bytes, got: {:?}",
+        String::from_utf8_lossy(&buf)
+    );
 
     let _ = peer.shutdown().await;
     ctx.teardown().await;

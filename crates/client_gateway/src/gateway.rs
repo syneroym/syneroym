@@ -26,7 +26,7 @@ use syneroym_core::{
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_rpc::CapabilityToken;
 use syneroym_sdk::{
-    SyneroymClient,
+    PassthroughOutcome, SyneroymClient, TransportConnection,
     topology::{
         AppHostResolver, CredentialWarning, RegistryTopologyFetcher, Tier2Fetch, credential_warning,
     },
@@ -474,6 +474,18 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
     .await
 }
 
+async fn connected(
+    client_arc: &Arc<Mutex<SyneroymClient>>,
+    is_auth_host: bool,
+) -> Result<(TransportConnection, String)> {
+    let mut client = client_arc.lock().await;
+    client.connect().await?;
+    let resolved_id =
+        if is_auth_host { AUTH_SERVICE_ALIAS.to_string() } else { client.service_id().to_string() };
+    let conn = client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?;
+    Ok((conn, resolved_id))
+}
+
 async fn forward_to_service(
     stream: &mut TcpStream,
     state: &GatewayState,
@@ -500,18 +512,12 @@ async fn forward_to_service(
         })
         .clone();
 
-    let (conn, target_service_id) = {
-        let mut client = client_arc.lock().await;
-        if let Err(e) = client.connect().await {
+    let (conn, target_service_id) = match connected(&client_arc, is_auth_host).await {
+        Ok(c) => c,
+        Err(e) => {
             error!("Gateway failed to connect to service {}: {}", connect_service_id, e);
             return write_json_rpc_error(stream, 502, "Bad Gateway").await;
         }
-        let resolved_id = if is_auth_host {
-            AUTH_SERVICE_ALIAS.to_string()
-        } else {
-            client.service_id().to_string()
-        };
-        (client.connection().ok_or_else(|| anyhow::anyhow!("Connection lost"))?, resolved_id)
     };
 
     let delegation = match state.identity_mode {
@@ -521,7 +527,7 @@ async fn forward_to_service(
 
     // Forward the initial bytes untouched (cookie is not stripped)
     let passthrough_identity = Identity::from_bytes(&state.identity.to_bytes());
-    SyneroymClient::passthrough_with_conn(
+    let outcome = SyneroymClient::passthrough_with_conn(
         conn,
         &target_service_id,
         interface,
@@ -531,7 +537,37 @@ async fn forward_to_service(
         delegation,
     )
     .await?;
-    Ok(())
+
+    match outcome {
+        PassthroughOutcome::Done => Ok(()),
+        PassthroughOutcome::NotHostedHere { replayable } => {
+            client_arc.lock().await.disconnect();
+            if !replayable {
+                return Ok(());
+            }
+            let (conn2, target_service_id2) = match connected(&client_arc, is_auth_host).await {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("Gateway failed to reconnect to service {}: {}", connect_service_id, e);
+                    return write_json_rpc_error(stream, 502, "Bad Gateway").await;
+                }
+            };
+            let outcome2 = SyneroymClient::passthrough_with_conn(
+                conn2,
+                &target_service_id2,
+                interface,
+                initial_bytes,
+                stream,
+                &passthrough_identity,
+                delegation,
+            )
+            .await?;
+            if let PassthroughOutcome::NotHostedHere { .. } = outcome2 {
+                write_json_rpc_error(stream, 502, "Bad Gateway").await?;
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn resolve_target(

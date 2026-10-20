@@ -3,27 +3,38 @@
 
 use std::{
     fmt::{self, Debug, Formatter},
-    sync::{Arc, OnceLock},
-    time::{Duration, Instant},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
 use iroh::{
-    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl,
+    Endpoint,
     endpoint::{Connection, RecvStream, SendStream},
 };
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
 use syneroym_identity::{DelegationCertificate, Identity};
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
+use syneroym_router::RoutePreamble;
 use syneroym_rpc::{
     CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
     MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
 };
-use tokio::{io, net::TcpStream, sync::mpsc, task::JoinHandle, time};
+use tokio::{sync::mpsc, task::JoinHandle, time};
 use tracing::debug;
 
 mod orchestrator;
+mod passthrough;
+mod rehome;
+
+pub use passthrough::PassthroughOutcome;
+use rehome::is_not_hosted_here;
+
+const REFUSAL_READ_GRACE: Duration = Duration::from_secs(2);
+
+pub(crate) fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
 
 /// Default ceiling for establishing a connection to a single mechanism.
 /// Without a bound here, iroh's relay/hole-punch retries can churn
@@ -72,17 +83,8 @@ pub struct SyneroymClient {
     /// DID, taken from the signed record, so `connect()` resolves *that*
     /// instead.
     pub(crate) registry_lookup_override: Option<String>,
-    connection: Option<TransportConnection>,
+    connection: Mutex<Option<TransportConnection>>,
     connect_timeout: Duration,
-    /// A self-asserted caller identity (pubkey only, no delegation) sent on
-    /// every outbound preamble (ADR-0016 §4.2). Without it, every
-    /// SDK-driven call resolves to the anonymous bucket once the router
-    /// makes verify_preamble mandatory for native-capability dispatch.
-    ///
-    /// TODO(FDAE): a self-asserted pubkey is an assertion, not proof-
-    /// of-possession (the no-delegation handshake path does not challenge
-    /// it). A later change tightens this to verified UCAN chains; today it
-    /// only needs "not anonymous."
     identity: Identity,
     /// A verified UCAN capability chain to present on every outbound
     /// preamble, set via [`Self::with_ucan`]. `None` by default -- callers
@@ -98,7 +100,8 @@ pub struct SyneroymClient {
     /// the runtime abort them mid-close on teardown instead of letting them
     /// finish, which is what was producing iroh's "Endpoint dropped without
     /// calling `Endpoint::close`" warning.
-    pending_closes: Vec<JoinHandle<()>>,
+    pending_closes: Mutex<Vec<JoinHandle<()>>>,
+    rehome_lock: tokio::sync::Mutex<()>,
     /// Whether `registry_client()` builds its cached client with a real
     /// mainline-DHT client attached. `true` by default (existing behavior:
     /// the DHT is a best-effort backup, checked only if the HTTP registry
@@ -125,12 +128,12 @@ impl Debug for SyneroymClient {
             .field("registry_url", &self.registry_url)
             .field("provided_mechanisms", &self.provided_mechanisms)
             .field("registry_lookup_override", &self.registry_lookup_override)
-            .field("connection", &self.connection)
+            .field("connection", &self.connection.lock().map(|c| c.clone()).ok())
             .field("connect_timeout", &self.connect_timeout)
             .field("identity", &self.identity)
             .field("caller_ucan", &self.caller_ucan)
             .field("caller_delegation", &self.caller_delegation)
-            .field("pending_closes", &self.pending_closes.len())
+            .field("pending_closes", &self.pending_closes.lock().map(|p| p.len()).unwrap_or(0))
             .finish()
     }
 }
@@ -153,6 +156,15 @@ pub enum TransportConnection {
         endpoint: Endpoint,
         conn: Connection,
     },
+}
+
+impl TransportConnection {
+    #[must_use]
+    pub fn stable_id(&self) -> usize {
+        match self {
+            Self::Iroh { conn, .. } => conn.stable_id(),
+        }
+    }
 }
 
 impl Debug for TransportConnection {
@@ -220,12 +232,13 @@ impl SyneroymClient {
             registry_url,
             provided_mechanisms: None,
             registry_lookup_override: None,
-            connection: None,
+            connection: Mutex::new(None),
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
             caller_delegation: None,
-            pending_closes: Vec::new(),
+            pending_closes: Mutex::new(Vec::new()),
+            rehome_lock: tokio::sync::Mutex::new(()),
             enable_dht: true,
             registry_client: OnceLock::new(),
         }
@@ -238,12 +251,13 @@ impl SyneroymClient {
             registry_url: String::new(),
             provided_mechanisms: Some(mechanisms),
             registry_lookup_override: None,
-            connection: None,
+            connection: Mutex::new(None),
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
             caller_delegation: None,
-            pending_closes: Vec::new(),
+            pending_closes: Mutex::new(Vec::new()),
+            rehome_lock: tokio::sync::Mutex::new(()),
             enable_dht: true,
             registry_client: OnceLock::new(),
         }
@@ -269,12 +283,13 @@ impl SyneroymClient {
             registry_url,
             provided_mechanisms,
             registry_lookup_override,
-            connection: None,
+            connection: Mutex::new(None),
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity: generate_ephemeral_identity(),
             caller_ucan: None,
             caller_delegation: None,
-            pending_closes: Vec::new(),
+            pending_closes: Mutex::new(Vec::new()),
+            rehome_lock: tokio::sync::Mutex::new(()),
             enable_dht: true,
             registry_client: OnceLock::new(),
         })
@@ -295,12 +310,13 @@ impl SyneroymClient {
             registry_url,
             provided_mechanisms: None,
             registry_lookup_override: None,
-            connection: None,
+            connection: Mutex::new(None),
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             identity,
             caller_ucan: None,
             caller_delegation: None,
-            pending_closes: Vec::new(),
+            pending_closes: Mutex::new(Vec::new()),
+            rehome_lock: tokio::sync::Mutex::const_new(()),
             enable_dht: true,
             registry_client: OnceLock::new(),
         }
@@ -358,7 +374,7 @@ impl SyneroymClient {
     }
 
     pub async fn connect(&mut self) -> Result<()> {
-        if self.connection.is_some() {
+        if self.connection.get_mut().unwrap_or_else(PoisonError::into_inner).is_some() {
             return Ok(());
         }
 
@@ -386,50 +402,20 @@ impl SyneroymClient {
         &mut self,
         mechanisms: Vec<EndpointMechanism>,
     ) -> Result<()> {
-        // Try mechanisms. Currently only Iroh is implemented.
-        for mechanism in mechanisms {
-            match mechanism {
-                EndpointMechanism::Iroh { endpoint_addr_bytes, relay_url } => {
-                    let mut endpoint_addr: EndpointAddr =
-                        serde_json::from_slice(&endpoint_addr_bytes)?;
+        let conn = self.dial(mechanisms).await?;
+        *self.connection.get_mut().unwrap_or_else(PoisonError::into_inner) = Some(conn);
+        Ok(())
+    }
 
-                    let mut ep_bldr = Endpoint::empty_builder();
-                    if let Some(relay) = relay_url
-                        && let Ok(url) = relay.parse::<RelayUrl>()
-                    {
-                        ep_bldr =
-                            ep_bldr.relay_mode(RelayMode::Custom(RelayMap::from(url.clone())));
-                        endpoint_addr = endpoint_addr.with_relay_url(url);
-                    }
-
-                    let endpoint = ep_bldr.bind().await?;
-                    let dial = endpoint.connect(endpoint_addr, SYNEROYM_ALPN);
-                    match time::timeout(self.connect_timeout, dial).await {
-                        Ok(Ok(conn)) => {
-                            self.connection = Some(TransportConnection::Iroh { endpoint, conn });
-                            return Ok(());
-                        }
-                        Ok(Err(e)) => {
-                            self.pending_closes.push(spawn_background_close(endpoint));
-                            return Err(e.into());
-                        }
-                        Err(_) => {
-                            self.pending_closes.push(spawn_background_close(endpoint));
-                            return Err(anyhow::anyhow!(
-                                "connect to {} timed out after {:?}",
-                                self.service_id,
-                                self.connect_timeout
-                            ));
-                        }
-                    }
-                }
-                EndpointMechanism::WebRtc { .. } => {
-                    // Not implemented
-                }
-            }
+    pub fn disconnect(&mut self) {
+        if let Some(TransportConnection::Iroh { endpoint, .. }) =
+            self.connection.get_mut().unwrap_or_else(PoisonError::into_inner).take()
+        {
+            self.pending_closes
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(spawn_background_close(endpoint));
         }
-
-        Err(anyhow::anyhow!("No supported communication mechanism found for {}", self.service_id))
     }
 
     pub async fn lookup(&self) -> Result<SignedEndpointInfo> {
@@ -479,10 +465,14 @@ impl SyneroymClient {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        if let Some(TransportConnection::Iroh { endpoint, .. }) = self.connection.take() {
+        if let Some(TransportConnection::Iroh { endpoint, .. }) =
+            self.connection.get_mut().unwrap_or_else(PoisonError::into_inner).take()
+        {
             endpoint.close().await;
         }
-        for handle in self.pending_closes.drain(..) {
+        let handles: Vec<_> =
+            std::mem::take(self.pending_closes.get_mut().unwrap_or_else(PoisonError::into_inner));
+        for handle in handles {
             let _ = handle.await;
         }
         Ok(())
@@ -495,7 +485,16 @@ impl SyneroymClient {
 
     #[must_use]
     pub fn connection(&self) -> Option<TransportConnection> {
-        self.connection.clone()
+        self.connection.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    #[must_use]
+    pub fn current_stable_id(&self) -> Option<usize> {
+        self.connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(TransportConnection::stable_id)
     }
 
     pub async fn request(
@@ -514,6 +513,81 @@ impl SyneroymClient {
         self.request_raw(interface, request).await
     }
 
+    async fn request_once(
+        &self,
+        interface_name: &str,
+        request: &JsonRpcRequest,
+    ) -> (Result<JsonRpcResponse>, Option<TransportConnection>) {
+        let req_bytes = match serde_json::to_vec(request) {
+            Ok(b) => b,
+            Err(e) => return (Err(e.into()), None),
+        };
+        if let Err(e) = check_frame_size(&request.method, &req_bytes) {
+            return (Err(e), None);
+        }
+
+        let conn_wrapper = match self.connection() {
+            Some(c) => c,
+            None => return (Err(anyhow::anyhow!("Not connected")), None),
+        };
+
+        let res = match &conn_wrapper {
+            TransportConnection::Iroh { conn, .. } => {
+                let (mut send, mut recv) = match conn.open_bi().await {
+                    Ok(pair) => pair,
+                    Err(e) => return (Err(e.into()), Some(conn_wrapper)),
+                };
+
+                let preamble = self.build_preamble(interface_name);
+                let write_res: Result<()> = async {
+                    send.write_all(preamble.to_preamble_line().as_bytes()).await?;
+                    framing::write_frame(&mut send, &req_bytes).await?;
+                    send.finish()?;
+                    Ok(())
+                }
+                .await;
+
+                let frame = match write_res {
+                    Ok(()) => match framing::read_frame(&mut recv).await {
+                        Ok(f) => f,
+                        Err(e) => return (Err(e), Some(conn_wrapper)),
+                    },
+                    Err(write_err) => {
+                        match time::timeout(REFUSAL_READ_GRACE, framing::read_frame(&mut recv))
+                            .await
+                        {
+                            Ok(Ok(f)) if !f.is_empty() => f,
+                            _ => return (Err(write_err), Some(conn_wrapper)),
+                        }
+                    }
+                };
+
+                if frame.is_empty() {
+                    return (
+                        Err(anyhow::anyhow!(
+                            "Empty response from stream for method {}",
+                            request.method
+                        )),
+                        Some(conn_wrapper),
+                    );
+                }
+
+                let res: JsonRpcResponse = match serde_json::from_slice(&frame) {
+                    Ok(res) => res,
+                    Err(parse_err) => {
+                        return match serde_json::from_slice::<JsonRpcErrorResponse>(&frame) {
+                            Ok(err_res) => (Err(err_res.error.into()), Some(conn_wrapper)),
+                            Err(_) => (Err(parse_err.into()), Some(conn_wrapper)),
+                        };
+                    }
+                };
+                Ok(res)
+            }
+        };
+
+        (res, Some(conn_wrapper))
+    }
+
     /// Opens a new bidirectional stream to the connected peer, writes the
     /// route preamble and the JSON-RPC request frame, and returns the raw
     /// send/recv halves. Shared by `request_raw` (which finishes the send
@@ -527,15 +601,32 @@ impl SyneroymClient {
         let req_bytes = serde_json::to_vec(request)?;
         check_frame_size(&request.method, &req_bytes)?;
 
-        let conn_wrapper = self.connection.as_ref().context("Not connected")?;
+        let conn_wrapper = self.connection().context("Not connected")?;
         match conn_wrapper {
             TransportConnection::Iroh { conn, .. } => {
-                let (mut send, recv) = conn.open_bi().await?;
+                let (mut send, mut recv) = conn.open_bi().await?;
 
                 let preamble = self.build_preamble(interface_name);
-                send.write_all(preamble.to_preamble_line().as_bytes()).await?;
+                let write_res: Result<()> = async {
+                    send.write_all(preamble.to_preamble_line().as_bytes()).await?;
+                    framing::write_frame(&mut send, &req_bytes).await?;
+                    Ok(())
+                }
+                .await;
 
-                framing::write_frame(&mut send, &req_bytes).await?;
+                if let Err(write_err) = write_res {
+                    match time::timeout(REFUSAL_READ_GRACE, framing::read_frame(&mut recv)).await {
+                        Ok(Ok(f)) if !f.is_empty() => {
+                            if let Ok(err_res) = serde_json::from_slice::<JsonRpcErrorResponse>(&f)
+                            {
+                                return Err(err_res.error.into());
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Err(write_err);
+                }
+
                 Ok((send, recv))
             }
         }
@@ -543,9 +634,9 @@ impl SyneroymClient {
 
     pub(crate) fn build_preamble(&self, interface_name: &str) -> RoutePreamble {
         let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
-        preamble.pubkey = Some(hex::encode(self.identity.public_key().to_bytes()));
         preamble.ucan = self.caller_ucan.clone();
         preamble.delegation = self.caller_delegation.clone();
+        preamble.sign(&self.identity, now_secs());
         preamble
     }
 
@@ -554,36 +645,20 @@ impl SyneroymClient {
         interface_name: &str,
         request: JsonRpcRequest,
     ) -> Result<JsonRpcResponse> {
-        let (mut send, mut recv) = self.open_request_stream(interface_name, &request).await?;
-        debug!(">>> Wrote request for method: {} to {}", request.method, self.service_id);
-        send.finish()?;
-
-        let frame = framing::read_frame(&mut recv).await?;
-        if frame.is_empty() {
-            return Err(anyhow::anyhow!(
-                "Empty response from stream for method {}",
-                request.method
-            ));
-        }
-        // A wire error frame is a `JsonRpcErrorResponse` (`{error, ..}`),
-        // structurally disjoint from the success shape `JsonRpcResponse`
-        // (`{result, ..}`) this deserializes into first -- so a failed parse
-        // here doesn't yet mean "malformed response," only "not a success."
-        // Falling back to `JsonRpcErrorResponse` recovers the RPC-level
-        // `code`/`message` (e.g. `PermissionDenied` at -32010) as a
-        // downcastable `JsonRpcError` on the returned `anyhow::Error`,
-        // instead of only ever surfacing an opaque deserialize failure.
-        let res: JsonRpcResponse = match serde_json::from_slice(&frame) {
-            Ok(res) => res,
-            Err(parse_err) => {
-                return match serde_json::from_slice::<JsonRpcErrorResponse>(&frame) {
-                    Ok(err_res) => Err(err_res.error.into()),
-                    Err(_) => Err(parse_err.into()),
-                };
+        let (first_try, used_conn) = self.request_once(interface_name, &request).await;
+        match first_try {
+            Ok(res) => Ok(res),
+            Err(e) if is_not_hosted_here(&e) && self.can_rehome() => {
+                if let Some(used) = used_conn {
+                    self.rehome(&used).await?;
+                    let (second_try, _) = self.request_once(interface_name, &request).await;
+                    second_try
+                } else {
+                    Err(e)
+                }
             }
-        };
-        debug!("got json response for method: {}: {:?}", request.method, res);
-        Ok(res)
+            Err(e) => Err(e),
+        }
     }
 
     /// Subscribes to `topic` on `interface`'s messaging capability, over a
@@ -609,7 +684,15 @@ impl SyneroymClient {
                 "Empty ack for subscribe on topic {topic} (interface {interface})"
             ));
         }
-        let ack: JsonRpcResponse = serde_json::from_slice(&ack_frame)?;
+        let ack: JsonRpcResponse = match serde_json::from_slice(&ack_frame) {
+            Ok(res) => res,
+            Err(parse_err) => {
+                return match serde_json::from_slice::<JsonRpcErrorResponse>(&ack_frame) {
+                    Ok(err_res) => Err(err_res.error.into()),
+                    Err(_) => Err(parse_err.into()),
+                };
+            }
+        };
         debug!("subscribe ack for topic {}: {:?}", topic, ack);
 
         let (tx, rx) = mpsc::channel(1024);
@@ -641,68 +724,6 @@ impl SyneroymClient {
         Ok(MessageStream { receiver: rx, send })
     }
 
-    pub async fn passthrough(
-        &self,
-        interface_name: &str,
-        initial_bytes: &[u8],
-        tcp_stream: &mut TcpStream,
-        delegation: Option<&DelegationCertificate>,
-    ) -> Result<()> {
-        let conn_wrapper = self.connection.as_ref().context("Not connected")?.clone();
-        Self::passthrough_with_conn(
-            conn_wrapper,
-            &self.service_id,
-            interface_name,
-            initial_bytes,
-            tcp_stream,
-            &self.identity,
-            delegation,
-        )
-        .await
-    }
-
-    pub async fn passthrough_with_conn(
-        conn_wrapper: TransportConnection,
-        service_id: &str,
-        interface_name: &str,
-        initial_bytes: &[u8],
-        tcp_stream: &mut TcpStream,
-        identity: &Identity,
-        delegation: Option<&DelegationCertificate>,
-    ) -> Result<()> {
-        match conn_wrapper {
-            TransportConnection::Iroh { conn, .. } => {
-                let (mut send, recv) = conn.open_bi().await?;
-
-                // Use HTTP transport for passthrough of raw requests. The node
-                // pubkey is set along with any optional routing delegation so this
-                // connection presents caller identity to the downstream service.
-                let preamble = RoutePreamble {
-                    transport: RouteTransport::Http,
-                    protocol: RouteProtocol::JsonRpc,
-                    interface: interface_name.to_string(),
-                    service_id: service_id.to_string(),
-                    enc: None,
-                    pubkey: Some(hex::encode(identity.public_key().to_bytes())),
-                    delegation: delegation.cloned(),
-                    ucan: None,
-                    dir: None,
-                }
-                .to_preamble_line();
-                send.write_all(preamble.as_bytes()).await?;
-
-                send.write_all(initial_bytes).await?;
-
-                let mut joined_iroh = io::join(recv, send);
-                if let Err(e) = io::copy_bidirectional(tcp_stream, &mut joined_iroh).await {
-                    debug!("Bidirectional copy error between TCP and Iroh: {}", e);
-                }
-
-                Ok(())
-            }
-        }
-    }
-
     pub async fn lookup_registry(&self) -> Result<SignedEndpointInfo> {
         self.registry_client().lookup(&self.service_id, true).await
     }
@@ -720,7 +741,8 @@ impl SyneroymClient {
 /// case nothing does.
 impl Drop for SyneroymClient {
     fn drop(&mut self) {
-        if let Some(TransportConnection::Iroh { endpoint, .. }) = self.connection.take()
+        if let Some(TransportConnection::Iroh { endpoint, .. }) =
+            self.connection.get_mut().unwrap_or_else(PoisonError::into_inner).take()
             && tokio::runtime::Handle::try_current().is_ok()
         {
             drop(spawn_background_close(endpoint));

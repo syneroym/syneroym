@@ -518,51 +518,50 @@ impl RegistryClient {
     /// daily duty, so a late operator would land on that path every time and
     /// publish an empty payload over a stale but authentic one. An
     /// unreadable anchor aborts here; it never degrades to "start empty."
-    pub async fn refresh_master_anchor(&self, master: &Identity) -> anyhow::Result<()> {
-        let master_did = substrate::derive_did_key(&master.public_key());
-        let (revoked_keys, revoke_list_registry) = self
-            .fetch_own_master_anchor(&master_did)
-            .await?
-            .map(|prev| (prev.revoked_keys, prev.revoke_list_registry))
-            .unwrap_or_default();
-        // `sync_dht: false`: the HTTP publish above (awaited inside
-        // `publish_master_anchor`) is the operative guarantee: resolution
-        // requires a configured HTTP registry, so the DHT copy is
-        // redundant, best-effort backup. This
-        // is called from `roymctl`'s deploy paths (`svc deploy --master`,
-        // `app deploy --mint-masters`, once per master), and blocking one of
-        // those on a real mainline-DHT publish -- which can take seconds or
-        // hang without connectivity -- would trade a synchronous guarantee
-        // this function does not need for one it does not need either.
-        self.publish_master_anchor(&master_did, revoked_keys, revoke_list_registry, master, false)
-            .await
-    }
-
-    /// Adds `instance_did` to `master`'s revoked-key list and republishes
-    /// the anchor. Read-modify-write over the same `fetch_own_master_anchor`
-    /// path `refresh_master_anchor` uses, and for the same reason: the
-    /// publish overwrites the whole payload, so anything already revoked
-    /// has to be carried forward or this call un-revokes it.
-    ///
-    /// The value to pass is the derived **instance** DID (`temporary_did`
-    /// on the certificate, what `resolve-instance-identity` computes), not
-    /// the master's own -- revoking the master would repudiate every
-    /// instance it has ever certified, past and future.
-    ///
-    /// Idempotent: revoking an already-revoked key republishes the same
-    /// list rather than duplicating the entry.
-    ///
-    /// The read-modify-write races a concurrent refresh of the same master.
-    /// Under the topology this tree supports -- mint-in-place means exactly
-    /// one `MasterVault` ever holds a given master, and export/import moves
-    /// a *file* rather than granting concurrent live access -- there is
-    /// structurally one writer, so the race is not reachable. A redundant
-    /// deployment sharing one master across two live processes would need
-    /// real compare-and-set from the registry, which it does not offer.
-    pub async fn revoke_instance_key(
+    pub async fn republish_master_anchor(
         &self,
         master: &Identity,
-        instance_did: &str,
+        sync_dht: bool,
+    ) -> anyhow::Result<()> {
+        self.republish_with(master, None, sync_dht).await
+    }
+
+    /// Wall-clock refresh of `master`'s anchor without waiting on the DHT.
+    ///
+    /// The HTTP publish is the operative guarantee: resolution requires a
+    /// configured HTTP registry, so the DHT copy is redundant, best-effort
+    /// backup. Blocking on a real mainline-DHT publish can take seconds or
+    /// hang without connectivity.
+    pub async fn refresh_master_anchor(&self, master: &Identity) -> anyhow::Result<()> {
+        self.republish_master_anchor(master, false).await
+    }
+
+    /// Adds `key_did` to `master`'s revoked-key list and republishes the
+    /// anchor.
+    ///
+    /// Revokes any temporary key the master delegated — an instance key or a
+    /// person's device key — never the master's own DID. Revoking the master
+    /// itself would repudiate every key it ever delegated.
+    ///
+    /// Read-modify-write over the same `fetch_own_master_anchor` path
+    /// `republish_master_anchor` uses: the publish overwrites the whole
+    /// payload, so keys already revoked must be carried forward.
+    /// Idempotent: revoking an already-revoked key republishes the same list
+    /// rather than duplicating the entry.
+    pub async fn revoke_key(
+        &self,
+        master: &Identity,
+        key_did: &str,
+        sync_dht: bool,
+    ) -> anyhow::Result<()> {
+        self.republish_with(master, Some(key_did), sync_dht).await
+    }
+
+    async fn republish_with(
+        &self,
+        master: &Identity,
+        extra_revoked: Option<&str>,
+        sync_dht: bool,
     ) -> anyhow::Result<()> {
         let master_did = substrate::derive_did_key(&master.public_key());
         let (mut revoked_keys, revoke_list_registry) = self
@@ -570,11 +569,19 @@ impl RegistryClient {
             .await?
             .map(|prev| (prev.revoked_keys, prev.revoke_list_registry))
             .unwrap_or_default();
-        if !revoked_keys.iter().any(|k| k == instance_did) {
-            revoked_keys.push(instance_did.to_string());
+        if let Some(did) = extra_revoked
+            && !revoked_keys.iter().any(|k| k == did)
+        {
+            revoked_keys.push(did.to_string());
         }
-        self.publish_master_anchor(&master_did, revoked_keys, revoke_list_registry, master, false)
-            .await
+        self.publish_master_anchor(
+            &master_did,
+            revoked_keys,
+            revoke_list_registry,
+            master,
+            sync_dht,
+        )
+        .await
     }
 }
 

@@ -35,7 +35,9 @@ pub(super) use super::super::{
     step_call_budget_ms, target_produced,
 };
 pub(super) use crate::{
-    HandshakeVerifier, MasterAnchorResolver, preamble::RoutePreamble, saga::SagaStore,
+    HandshakeVerifier, MasterAnchorResolver,
+    preamble::{OutboundIdentity, RoutePreamble},
+    saga::SagaStore,
 };
 
 pub(super) fn test_caller(did: &str) -> CallerContext {
@@ -442,18 +444,34 @@ pub(super) enum MockOutcome {
     Callee { code: i32, message: String },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct MockHop {
     pub(super) calls: AtomicUsize,
+    pub(super) current_ts: std::sync::atomic::AtomicU64,
     pub(super) last_preamble: Mutex<Option<RoutePreamble>>,
+    pub(super) all_preambles: Mutex<Vec<RoutePreamble>>,
     pub(super) outcomes: Mutex<std::collections::VecDeque<MockOutcome>>,
+}
+
+impl Default for MockHop {
+    fn default() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            current_ts: std::sync::atomic::AtomicU64::new(crate::handshake::now_secs()),
+            last_preamble: Mutex::new(None),
+            all_preambles: Mutex::new(Vec::new()),
+            outcomes: Mutex::new(std::collections::VecDeque::new()),
+        }
+    }
 }
 
 impl MockHop {
     pub(super) fn with_outcomes(outcomes: Vec<MockOutcome>) -> Self {
         Self {
             calls: AtomicUsize::new(0),
+            current_ts: std::sync::atomic::AtomicU64::new(crate::handshake::now_secs()),
             last_preamble: Mutex::new(None),
+            all_preambles: Mutex::new(Vec::new()),
             outcomes: Mutex::new(outcomes.into()),
         }
     }
@@ -468,12 +486,16 @@ impl RemoteHop for MockHop {
     async fn call(
         &self,
         _addr: &EndpointAddr,
-        preamble: &RoutePreamble,
+        route: &RoutePreamble,
+        identity: Option<&OutboundIdentity>,
         _request: &JsonRpcRequest,
         _timeout: Duration,
     ) -> Result<Value, ProxyError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        let ts = self.current_ts.fetch_add(1, Ordering::SeqCst);
+        let preamble = identity.map_or_else(|| route.clone(), |id| id.apply(route, ts));
         *self.last_preamble.lock().unwrap() = Some(preamble.clone());
+        self.all_preambles.lock().unwrap().push(preamble);
         match self.outcomes.lock().unwrap().pop_front() {
             Some(MockOutcome::Success(v)) => Ok(v),
             Some(MockOutcome::Transport) | None => {

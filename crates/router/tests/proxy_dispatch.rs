@@ -41,7 +41,7 @@ use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
-    RouteProtocol, RouteTransport, ServiceStage, TransportStage,
+    ServiceStage, TransportStage,
 };
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
@@ -347,17 +347,7 @@ fn call_peer_pipeline() -> RoutePipeline {
 }
 
 fn call_peer_preamble() -> RoutePreamble {
-    RoutePreamble {
-        transport: RouteTransport::Binary,
-        protocol: RouteProtocol::JsonRpc,
-        interface: test_constants::PROXY_TEST_DRIVER_INTERFACE.to_string(),
-        service_id: "proxy-caller".to_string(),
-        enc: None,
-        pubkey: None,
-        delegation: None,
-        ucan: None,
-        dir: None,
-    }
+    RoutePreamble::binary_json_rpc("proxy-caller", test_constants::PROXY_TEST_DRIVER_INTERFACE)
 }
 
 fn json_rpc_body(method: &str, params: Value) -> Vec<u8> {

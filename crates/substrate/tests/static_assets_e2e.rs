@@ -18,19 +18,16 @@
 use std::collections::HashMap;
 
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
-use iroh::endpoint::{RecvStream, SendStream};
 use rustls::crypto::ring;
 use syneroym_core::{dht_registry::EndpointMechanism, test_constants};
 use syneroym_identity::{Identity, substrate};
 use syneroym_observability::MemoryRecorder;
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
     ArtifactSource, AssetBundle, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
     TransportConnection, Visibility, WasmManifest,
 };
-
 mod common;
-use common::{SubstrateTestContext, alloc_ports};
+use common::{SubstrateTestContext, alloc_ports, streams::open_http_stream};
 
 fn wasm_asset_manifest(
     wasm_bytes: Vec<u8>,
@@ -110,28 +107,6 @@ struct HttpResponse {
     body: Vec<u8>,
 }
 
-async fn open_http_stream(
-    conn: &TransportConnection,
-    service_id: &str,
-) -> (SendStream, RecvStream) {
-    let TransportConnection::Iroh { conn, .. } = conn;
-    let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
-    let identity = Identity::generate().expect("failed to generate test identity");
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Http,
-        protocol: RouteProtocol::JsonRpc,
-        interface: "http-native".to_string(),
-        service_id: service_id.to_string(),
-        enc: None,
-        pubkey: Some(hex::encode(identity.public_key().to_bytes())),
-        delegation: None,
-        ucan: None,
-        dir: None,
-    };
-    send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
-    (send, recv)
-}
-
 async fn http_request(
     conn: &TransportConnection,
     service_id: &str,
@@ -139,7 +114,8 @@ async fn http_request(
     path_and_query: &str,
     extra_headers: &[(&str, &str)],
 ) -> HttpResponse {
-    let (mut send, mut recv) = open_http_stream(conn, service_id).await;
+    let identity = Identity::generate().expect("failed to generate test identity");
+    let (mut send, mut recv) = open_http_stream(conn, service_id, Some(&identity)).await;
     let mut request =
         format!("{method} {path_and_query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
     for (k, v) in extra_headers {

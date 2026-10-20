@@ -30,7 +30,7 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
-    RouteProtocol, RouteTransport, ServiceStage, TransportStage,
+    ServiceStage, TransportStage,
 };
 use syneroym_rpc::{
     AuthLevel, CallerContext, JsonRpcErrorResponse, JsonRpcResponse, NativeDispatchRegistry,
@@ -153,17 +153,7 @@ fn pipeline() -> RoutePipeline {
 }
 
 fn preamble() -> RoutePreamble {
-    RoutePreamble {
-        transport: RouteTransport::Binary,
-        protocol: RouteProtocol::JsonRpc,
-        interface: "greeter".to_string(),
-        service_id: TARGET_SERVICE.to_string(),
-        enc: None,
-        pubkey: None,
-        delegation: None,
-        ucan: None,
-        dir: None,
-    }
+    RoutePreamble::binary_json_rpc(TARGET_SERVICE, "greeter")
 }
 
 fn caller(did: &str) -> CallerContext {

@@ -10,7 +10,7 @@ use std::{
 
 use syneroym_core::{dht_registry::MasterAnchorPayload, storage::MockStorage};
 use syneroym_identity::{Identity, substrate::derive_did_key};
-use tokio::io::duplex;
+use tokio::io::{AsyncWriteExt, duplex};
 
 use super::*;
 
@@ -219,7 +219,7 @@ async fn parsed_wire_preamble_with_ucan_reaches_build_caller() {
     .unwrap();
 
     let mut preamble = RoutePreamble::binary_json_rpc("svc", "data-layer");
-    preamble.pubkey = Some(hex::encode(client.public_key().to_bytes()));
+    preamble.sign(&client, now_secs());
     preamble.ucan = Some(token);
 
     // Round-trip through the actual wire format, not the struct directly.

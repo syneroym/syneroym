@@ -16,13 +16,12 @@
 //!
 //! 2. **A revoked instance key stops verifying, while a fresh one from the same
 //!    master still does.** Driven through the real revocation writer
-//!    (`RegistryClient::revoke_instance_key`, what `roymctl supervisor
-//!    revoke-instance` calls) against a real HTTP registry, then read back
-//!    through the real ingress check (`HandshakeVerifier::verify_preamble`
-//!    against a real `RegistryClient` resolver). Earlier nothing in the tree
-//!    could *write* a non-empty `revoked_keys` list outside a unit test's
-//!    in-memory mock, so this is the revocation half that had a mechanism and
-//!    no trigger.
+//!    (`RegistryClient::revoke_key`, what `roymctl supervisor revoke-instance`
+//!    calls) against a real HTTP registry, then read back through the real
+//!    ingress check (`HandshakeVerifier::verify_preamble` against a real
+//!    `RegistryClient` resolver). Earlier nothing in the tree could *write* a
+//!    non-empty `revoked_keys` list outside a unit test's in-memory mock, so
+//!    this is the revocation half that had a mechanism and no trigger.
 //!
 //! **Deliberately not covered here:** a wire-level proof that a guest's own
 //! outbound call presents the renewed certificate across a real cross-node
@@ -92,20 +91,19 @@ fn pubkey_from_hex(hex_str: &str) -> VerifyingKey {
 /// ingress.
 fn delegated_preamble(
     target_service_id: &str,
-    pubkey_hex: &str,
+    identity: &Identity,
     cert: &DelegationCertificate,
 ) -> RoutePreamble {
-    RoutePreamble {
-        transport: syneroym_router::RouteTransport::Binary,
-        protocol: syneroym_router::RouteProtocol::JsonRpc,
-        interface: "default".to_string(),
-        service_id: target_service_id.to_string(),
-        enc: None,
-        pubkey: Some(pubkey_hex.to_string()),
-        delegation: Some(cert.clone()),
-        ucan: None,
-        dir: None,
-    }
+    let mut preamble = RoutePreamble::new(
+        syneroym_router::RouteTransport::Binary,
+        syneroym_router::RouteProtocol::JsonRpc,
+        target_service_id,
+        "default",
+    );
+    preamble.delegation = Some(cert.clone());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    preamble.sign(identity, now);
+    preamble
 }
 
 /// The renewal half: `renew-cert` over the real wire installs in place, its
@@ -305,13 +303,8 @@ async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
     )
     .unwrap();
 
-    let doomed_preamble =
-        delegated_preamble(node.did(), &hex::encode(doomed.public_key().to_bytes()), &doomed_cert);
-    let replacement_preamble = delegated_preamble(
-        node.did(),
-        &hex::encode(replacement.public_key().to_bytes()),
-        &replacement_cert,
-    );
+    let doomed_preamble = delegated_preamble(node.did(), &doomed, &doomed_cert);
+    let replacement_preamble = delegated_preamble(node.did(), &replacement, &replacement_cert);
 
     // Before the revocation, both verify.
     HandshakeVerifier::verify_preamble(&doomed_preamble, &registry)
@@ -325,7 +318,7 @@ async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
     // calls. Earlier nothing outside a unit test's in-memory mock could
     // put a key on this list at all.
     registry
-        .revoke_instance_key(&member_master, &doomed_did)
+        .revoke_key(&member_master, &doomed_did, false)
         .await
         .expect("the revocation must publish");
 
@@ -344,7 +337,7 @@ async fn a_revoked_instance_key_handshake_fails_while_a_fresh_one_verifies() {
     // backlog row called out, exercised against a real registry.
     let second = Identity::generate().unwrap();
     registry
-        .revoke_instance_key(&member_master, &substrate::derive_did_key(&second.public_key()))
+        .revoke_key(&member_master, &substrate::derive_did_key(&second.public_key()), false)
         .await
         .expect("the second revocation must publish");
     let err = HandshakeVerifier::verify_preamble(&doomed_preamble, &registry)

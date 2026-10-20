@@ -27,7 +27,6 @@ use iroh::endpoint::{RecvStream, SendStream};
 use rustls::crypto::ring;
 use syneroym_core::{config::AppSandboxRole, dht_registry::EndpointMechanism, test_constants};
 use syneroym_identity::{Identity, substrate};
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_sdk::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
     TransportConnection, WasmManifest,
@@ -35,7 +34,7 @@ use syneroym_sdk::{
 use tokio::time;
 
 mod common;
-use common::{SubstrateTestContext, alloc_ports};
+use common::{SubstrateTestContext, alloc_ports, streams::open_http_stream};
 
 const STREAM_TEST_DRIVER_INTERFACE: &str = test_constants::STREAM_TEST_DRIVER_INTERFACE;
 const STREAM_PROTOCOL: &str = "file-transfer";
@@ -99,30 +98,6 @@ struct HttpResponse {
 /// Sets a self-asserted pubkey (a fresh ephemeral identity per stream, no
 /// delegation) so this hand-built preamble is not anonymous
 /// (ADR-0016 §0.5) -- mirroring what `SyneroymClient::open_request_stream`
-/// now does internally. Without this, every bridged native route in this
-/// file would 401.
-async fn open_http_stream(
-    conn: &TransportConnection,
-    service_id: &str,
-) -> (SendStream, RecvStream) {
-    let TransportConnection::Iroh { conn, .. } = conn;
-    let (mut send, recv) = conn.open_bi().await.expect("open_bi failed");
-    let identity = Identity::generate().expect("failed to generate test identity");
-    let preamble = RoutePreamble {
-        transport: RouteTransport::Http,
-        protocol: RouteProtocol::JsonRpc,
-        interface: "http-native".to_string(),
-        service_id: service_id.to_string(),
-        enc: None,
-        pubkey: Some(hex::encode(identity.public_key().to_bytes())),
-        delegation: None,
-        ucan: None,
-        dir: None,
-    };
-    send.write_all(preamble.to_preamble_line().as_bytes()).await.expect("write preamble failed");
-    (send, recv)
-}
-
 /// Sends one HTTP/1.1 request (`Connection: close`, so the response can be
 /// read to EOF unambiguously) and returns the parsed response.
 async fn http_request(
@@ -133,7 +108,8 @@ async fn http_request(
     extra_headers: &[(&str, &str)],
     body: &[u8],
 ) -> HttpResponse {
-    let (mut send, mut recv) = open_http_stream(conn, service_id).await;
+    let identity = Identity::generate().expect("failed to generate test identity");
+    let (mut send, mut recv) = open_http_stream(conn, service_id, Some(&identity)).await;
     let mut request =
         format!("{method} {path_and_query} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
     for (k, v) in extra_headers {
@@ -220,7 +196,8 @@ async fn open_sse_stream(
     service_id: &str,
     path: &str,
 ) -> (SendStream, RecvStream) {
-    let (mut send, recv) = open_http_stream(conn, service_id).await;
+    let identity = Identity::generate().expect("failed to generate test identity");
+    let (mut send, recv) = open_http_stream(conn, service_id, Some(&identity)).await;
     let request =
         format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n\r\n");
     send.write_all(request.as_bytes()).await.expect("write SSE request failed");
