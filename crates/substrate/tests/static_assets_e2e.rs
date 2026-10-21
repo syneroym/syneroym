@@ -145,8 +145,13 @@ fn parse_http_response(raw: &[u8]) -> HttpResponse {
     HttpResponse { status, headers, body }
 }
 
-fn connect_peer(app_service_id: &str, mechanisms: &[EndpointMechanism]) -> SyneroymClient {
+fn connect_peer(
+    app_service_id: &str,
+    mechanisms: &[EndpointMechanism],
+    node_did: &str,
+) -> SyneroymClient {
     SyneroymClient::new_with_mechanisms(app_service_id.to_string(), mechanisms.to_vec())
+        .with_host(node_did)
         .with_registry_dht(false)
 }
 
@@ -205,7 +210,7 @@ async fn test_static_asset_serving_index_etag_and_directory_rewrite() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms, &ctx.node_did);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -300,14 +305,14 @@ async fn test_static_asset_cross_service_isolation() {
     )
     .await;
 
-    let mut peer_a = connect_peer(&service_a, &ctx.substrate_mechanisms);
+    let mut peer_a = connect_peer(&service_a, &ctx.substrate_mechanisms, &ctx.node_did);
     peer_a.connect().await.expect("peer A failed to connect");
     let conn_a = peer_a.connection().expect("peer A has no live connection");
     let resp_a = http_request(&conn_a, &service_a, "GET", "/secret.txt", &[]).await;
     assert_eq!(resp_a.status, 200);
     assert_eq!(resp_a.body, b"service A's content");
 
-    let mut peer_b = connect_peer(&service_b, &ctx.substrate_mechanisms);
+    let mut peer_b = connect_peer(&service_b, &ctx.substrate_mechanisms, &ctx.node_did);
     peer_b.connect().await.expect("peer B failed to connect");
     let conn_b = peer_b.connection().expect("peer B has no live connection");
     let resp_b = http_request(&conn_b, &service_b, "GET", "/secret.txt", &[]).await;
@@ -359,12 +364,14 @@ async fn test_static_asset_private_visibility_matches_no_bundle() {
     )
     .await;
 
-    let mut private_peer = connect_peer(&private_service_id, &ctx.substrate_mechanisms);
+    let mut private_peer =
+        connect_peer(&private_service_id, &ctx.substrate_mechanisms, &ctx.node_did);
     private_peer.connect().await.expect("private peer failed to connect");
     let private_conn = private_peer.connection().expect("private peer has no live connection");
     let private_resp = http_request(&private_conn, &private_service_id, "GET", "/", &[]).await;
 
-    let mut bare_peer = connect_peer(&no_assets_service_id, &ctx.substrate_mechanisms);
+    let mut bare_peer =
+        connect_peer(&no_assets_service_id, &ctx.substrate_mechanisms, &ctx.node_did);
     bare_peer.connect().await.expect("bare peer failed to connect");
     let bare_conn = bare_peer.connection().expect("bare peer has no live connection");
     let bare_resp = http_request(&bare_conn, &no_assets_service_id, "GET", "/", &[]).await;
@@ -406,7 +413,7 @@ async fn test_static_asset_multi_chunk_round_trip() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms, &ctx.node_did);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -447,7 +454,7 @@ async fn test_static_assets_and_http_routes_coexist() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms, &ctx.node_did);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 

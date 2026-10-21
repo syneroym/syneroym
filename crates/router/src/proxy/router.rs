@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use super::*;
 
 impl ProxyRouter {
@@ -298,21 +300,22 @@ impl ProxyRouter {
     /// Resolves `req.target_service`'s Iroh address via the community
     /// registry / DHT and dispatches the call over [`RemoteHop`].
     pub(super) async fn invoke_remote(&self, req: &ProxyRequest) -> Result<Value, ProxyError> {
-        self.invoke_rehoming(req, || self.resolve_addr(&req.target_service)).await
+        self.invoke_rehoming(req, || self.resolve_peer_target(&req.target_service)).await
     }
 
-    async fn resolve_addr(&self, target: &str) -> Result<EndpointAddr, ProxyError> {
+    async fn resolve_peer_target(&self, target: &str) -> Result<RemotePeer, ProxyError> {
         let peer =
             net_iroh::resolve_peer(&self.registry_client, self.peer_records.as_deref(), target)
                 .await
                 .map_err(|_| ProxyError::ServiceNotFound(target.to_string()))?;
         // A peer with a mailbox but no address cannot be called directly.
-        peer.addr.ok_or_else(|| ProxyError::ServiceNotFound(target.to_string()))
+        let addr = peer.addr.ok_or_else(|| ProxyError::ServiceNotFound(target.to_string()))?;
+        Ok(RemotePeer { addr, host_key: peer.host_key })
     }
 
-    /// Calls the resolved address; on `not_hosted_here`, resolves again and
-    /// calls once more. The refusal comes before any dispatch, so this is safe
-    /// for every call, idempotent or not.
+    /// Calls the resolved address; on `not_hosted_here` or `host_mismatch`,
+    /// resolves again and calls once more. The refusal comes before any
+    /// dispatch, so this is safe for every call, idempotent or not.
     pub(super) async fn invoke_rehoming<F, Fut>(
         &self,
         req: &ProxyRequest,
@@ -320,14 +323,20 @@ impl ProxyRouter {
     ) -> Result<Value, ProxyError>
     where
         F: FnMut() -> Fut,
-        Fut: std::future::Future<Output = Result<EndpointAddr, ProxyError>>,
+        Fut: Future<Output = Result<RemotePeer, ProxyError>>,
     {
-        let addr = resolve().await?;
-        match self.invoke_remote_at(&addr, req).await {
-            Err(e) if is_not_hosted_here(&e) => {
+        let first = resolve().await?;
+        match self.invoke_remote_at(&first, req).await {
+            Err(e) if is_not_hosted_here(&e) || is_host_mismatch(&e) => {
                 let fresh = resolve().await?;
-                if fresh.id == addr.id {
-                    return Err(ProxyError::ServiceNotFound(req.target_service.clone()));
+                let same = fresh.addr.id == first.addr.id && fresh.host_key == first.host_key;
+                if same {
+                    // A node that is not the host is not "missing": keep the error.
+                    return Err(if is_not_hosted_here(&e) {
+                        ProxyError::ServiceNotFound(req.target_service.clone())
+                    } else {
+                        e
+                    });
                 }
                 self.invoke_remote_at(&fresh, req).await.map_err(|e| {
                     if is_not_hosted_here(&e) {
@@ -386,7 +395,7 @@ impl ProxyRouter {
     /// pre-resolved (synthetic) address without a live registry/DHT.
     pub(super) async fn invoke_remote_at(
         &self,
-        addr: &EndpointAddr,
+        peer: &RemotePeer,
         req: &ProxyRequest,
     ) -> Result<Value, ProxyError> {
         let route = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
@@ -420,7 +429,7 @@ impl ProxyRouter {
         loop {
             match self
                 .hop
-                .call(addr, &route, identity.as_ref(), &json_rpc_request, call_timeout)
+                .call(peer, &route, identity.as_ref(), &json_rpc_request, call_timeout)
                 .await
             {
                 Ok(v) => return Ok(v),
@@ -624,4 +633,8 @@ impl ServiceProxy for ProxyRouter {
 
 fn is_not_hosted_here(e: &ProxyError) -> bool {
     matches!(e, ProxyError::Callee { code, .. } if *code == NOT_HOSTED_HERE_RPC_CODE)
+}
+
+fn is_host_mismatch(e: &ProxyError) -> bool {
+    matches!(e, ProxyError::Callee { code, .. } if *code == HOST_MISMATCH_RPC_CODE)
 }

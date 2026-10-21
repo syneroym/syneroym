@@ -44,6 +44,11 @@
 //! | `ucan` | `?ucan=<hex_json>` | Optional UCAN capability token chain. |
 //! | `dir` | `?dir=upload\|download` | Stream-protocol direction disambiguator (ADR-0014). |
 //!
+//! On a stream with `enc=ecdh-p256` the identity parameters are not in this
+//! line. The client sends them as one encrypted line after the handshake
+//! (ADR-0002 A1 rule 4). The destination refuses an `enc` stream whose
+//! preamble line has an identity parameter.
+//!
 //! ## Interface Names
 //!
 //! `preamble.interface` (the `<interface>` segment) is looked up in the
@@ -79,16 +84,23 @@ use syneroym_identity::DelegationCertificate;
 use syneroym_rpc::{CallerProof, OnBehalfProof, PreambleSignature};
 use syneroym_ucan::CapabilityToken;
 
+mod identity;
 pub mod proof;
 pub mod redacted;
 #[cfg(test)]
 mod tests;
 
+pub use identity::IdentityFields;
+pub(crate) use identity::IdentityRef;
 pub(crate) use proof::check_signature;
 #[cfg(test)]
 pub(crate) use proof::proof_bytes;
 pub use proof::{OutboundIdentity, PROOF_WINDOW_SECS};
 pub use redacted::{RedactedPreamble, route_text};
+
+/// The identifier for end-to-end ECDH-P256 channel encryption in route
+/// preambles.
+pub const ENC_ECDH_P256: &str = "ecdh-p256";
 
 /// Header carried by HTTP/1.1 refusal responses.
 pub const REFUSAL_HEADER: &str = "x-syneroym-refusal";
@@ -284,6 +296,46 @@ impl RoutePreamble {
         RedactedPreamble(self)
     }
 
+    /// Returns true if this preamble asks for end-to-end ECDH-P256 channel
+    /// encryption.
+    #[must_use]
+    pub fn wants_e2e(&self) -> bool {
+        self.enc.as_deref() == Some(ENC_ECDH_P256)
+    }
+
+    pub(crate) fn identity_ref(&self) -> IdentityRef<'_> {
+        IdentityRef {
+            pubkey: self.pubkey.as_deref(),
+            delegation: self.delegation.as_ref(),
+            ucan: self.ucan.as_ref(),
+            ts: self.ts,
+            sig: self.sig.as_deref(),
+            on_behalf: self.on_behalf.as_ref(),
+        }
+    }
+
+    /// Moves the identity fields out, leaving the route.
+    pub fn take_identity(&mut self) -> IdentityFields {
+        IdentityFields {
+            pubkey: self.pubkey.take(),
+            delegation: self.delegation.take(),
+            ucan: self.ucan.take(),
+            ts: self.ts.take(),
+            sig: self.sig.take(),
+            on_behalf: self.on_behalf.take(),
+        }
+    }
+
+    /// Sets the identity fields (replaces all six).
+    pub fn set_identity(&mut self, f: IdentityFields) {
+        self.pubkey = f.pubkey;
+        self.delegation = f.delegation;
+        self.ucan = f.ucan;
+        self.ts = f.ts;
+        self.sig = f.sig;
+        self.on_behalf = f.on_behalf;
+    }
+
     /// True when any identity field is present on this preamble.
     #[must_use]
     pub fn has_identity_fields(&self) -> bool {
@@ -366,14 +418,14 @@ impl RoutePreamble {
             interface: interface.to_string(),
             service_id: service_id.to_string(),
             enc: parsed_query.enc,
-            pubkey: parsed_query.pubkey,
-            delegation: parsed_query.delegation,
-            ucan: parsed_query.ucan,
+            pubkey: parsed_query.identity.pubkey,
+            delegation: parsed_query.identity.delegation,
+            ucan: parsed_query.identity.ucan,
             dir: parsed_query.dir,
-            ts: parsed_query.ts,
-            sig: parsed_query.sig,
+            ts: parsed_query.identity.ts,
+            sig: parsed_query.identity.sig,
             epk: parsed_query.epk,
-            on_behalf: parsed_query.on_behalf,
+            on_behalf: parsed_query.identity.on_behalf,
         })
     }
 }
@@ -397,14 +449,9 @@ fn parse_scheme(scheme: &str) -> Result<(RouteTransport, RouteProtocol)> {
 #[derive(Default)]
 struct ParsedQuery {
     enc: Option<String>,
-    pubkey: Option<String>,
-    delegation: Option<DelegationCertificate>,
-    ucan: Option<CapabilityToken>,
-    dir: Option<StreamDirection>,
-    ts: Option<u64>,
-    sig: Option<String>,
     epk: Option<String>,
-    on_behalf: Option<OnBehalfProof>,
+    dir: Option<StreamDirection>,
+    identity: IdentityFields,
 }
 
 impl ParsedQuery {
@@ -412,46 +459,13 @@ impl ParsedQuery {
         match k {
             "enc" => self.enc = Some(v.to_string()),
             "epk" => self.epk = Some(v.to_string()),
-            "pubkey" => self.pubkey = Some(v.to_string()),
-            "delegation" => self.delegation = decode_delegation(v),
-            "ucan" => self.ucan = decode_ucan(v),
-            "ts" => {
-                let parsed = v.parse::<u64>().map_err(|_| anyhow!("invalid ts in preamble"))?;
-                self.ts = Some(parsed);
-            }
-            "sig" => {
-                if v.len() != 128
-                    || !v.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-                {
-                    return Err(anyhow!("invalid sig in preamble"));
-                }
-                self.sig = Some(v.to_string());
-            }
-            "on_behalf" => self.on_behalf = Some(decode_on_behalf(v)?),
             "dir" => self.dir = v.parse::<StreamDirection>().ok(),
-            _ => {}
+            _ => {
+                let _ = self.identity.parse_param(k, v)?;
+            }
         }
         Ok(())
     }
-}
-
-fn decode_delegation(v: &str) -> Option<DelegationCertificate> {
-    let bytes = hex::decode(v).ok()?;
-    let json_str = String::from_utf8(bytes).ok()?;
-    DelegationCertificate::from_json(&json_str).ok()
-}
-
-fn decode_ucan(v: &str) -> Option<CapabilityToken> {
-    let bytes = hex::decode(v).ok()?;
-    let json_str = String::from_utf8(bytes).ok()?;
-    serde_json::from_str::<CapabilityToken>(&json_str).ok()
-}
-
-fn decode_on_behalf(v: &str) -> Result<OnBehalfProof> {
-    let bytes = hex::decode(v).map_err(|e| anyhow!("invalid on_behalf hex: {e}"))?;
-    let json_str = String::from_utf8(bytes).map_err(|e| anyhow!("invalid on_behalf utf-8: {e}"))?;
-    serde_json::from_str::<OnBehalfProof>(&json_str)
-        .map_err(|e| anyhow!("invalid on_behalf json: {e}"))
 }
 
 impl fmt::Debug for RoutePreamble {
@@ -470,30 +484,7 @@ impl Display for RoutePreamble {
         if let Some(epk) = &self.epk {
             params.push(format!("epk={epk}"));
         }
-        if let Some(pubkey) = &self.pubkey {
-            params.push(format!("pubkey={pubkey}"));
-        }
-        if let Some(delegation) = &self.delegation
-            && let Ok(json_str) = delegation.to_json()
-        {
-            params.push(format!("delegation={}", hex::encode(json_str)));
-        }
-        if let Some(ucan) = &self.ucan
-            && let Ok(json) = serde_json::to_string(ucan)
-        {
-            params.push(format!("ucan={}", hex::encode(json)));
-        }
-        if let Some(ts) = self.ts {
-            params.push(format!("ts={ts}"));
-        }
-        if let Some(sig) = &self.sig {
-            params.push(format!("sig={sig}"));
-        }
-        if let Some(on_behalf) = &self.on_behalf
-            && let Ok(json) = serde_json::to_string(on_behalf)
-        {
-            params.push(format!("on_behalf={}", hex::encode(json)));
-        }
+        self.identity_ref().push_params(&mut params);
         if let Some(dir) = &self.dir {
             params.push(format!("dir={dir}"));
         }

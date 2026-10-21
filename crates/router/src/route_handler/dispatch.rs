@@ -318,9 +318,10 @@ impl RouteHandler {
     ) -> RoutePipeline {
         use crate::routing::{EncryptionStage, TransportStage};
 
-        let encryption = match preamble.enc.as_deref() {
-            Some("ecdh-p256") => EncryptionStage::TerminateEcdhP256,
-            _ => EncryptionStage::None,
+        let encryption = if preamble.wants_e2e() {
+            EncryptionStage::TerminateEcdhP256
+        } else {
+            EncryptionStage::None
         };
 
         let (adaptation, service) = match (&preamble.protocol, endpoint) {

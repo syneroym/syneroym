@@ -25,7 +25,7 @@ use std::{collections::HashMap, fs, str, time::Duration};
 use httparse::{EMPTY_HEADER, Response as HttparseResponse, Status};
 use iroh::endpoint::{RecvStream, SendStream};
 use rustls::crypto::ring;
-use syneroym_core::{config::AppSandboxRole, dht_registry::EndpointMechanism, test_constants};
+use syneroym_core::{config::AppSandboxRole, test_constants};
 use syneroym_identity::{Identity, substrate};
 use syneroym_sdk::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, SyneroymClient,
@@ -198,9 +198,9 @@ async fn open_sse_stream(
 ) -> (SendStream, RecvStream) {
     let identity = Identity::generate().expect("failed to generate test identity");
     let (mut send, recv) = open_http_stream(conn, service_id, Some(&identity)).await;
-    let request =
+    let req =
         format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n\r\n");
-    send.write_all(request.as_bytes()).await.expect("write SSE request failed");
+    send.write_all(req.as_bytes()).await.expect("write SSE request failed");
     (send, recv)
 }
 
@@ -219,16 +219,16 @@ async fn wait_for_sse_event(recv: &mut RecvStream, needles: &[&str], timeout: Du
                     return true;
                 }
             }
-            Ok(Ok(_)) => return false,
-            Ok(Err(_)) => return false,
+            Ok(Ok(_) | Err(_)) => return false,
             Err(_) => continue,
         }
     }
     false
 }
 
-fn connect_peer(app_service_id: &str, mechanisms: &[EndpointMechanism]) -> SyneroymClient {
-    SyneroymClient::new_with_mechanisms(app_service_id.to_string(), mechanisms.to_vec())
+fn connect_peer(app: &str, ctx: &SubstrateTestContext) -> SyneroymClient {
+    SyneroymClient::new_with_mechanisms(app.to_string(), ctx.substrate_mechanisms.clone())
+        .with_host(&ctx.node_did)
         .with_registry_dht(false)
 }
 
@@ -254,7 +254,7 @@ async fn test_signed_url_blob_get_resolves_end_to_end_and_meets_performance_budg
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -320,7 +320,7 @@ async fn test_tampered_and_expired_signed_urls_are_rejected() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -395,11 +395,11 @@ async fn test_signed_url_rejected_when_svc_does_not_match_connected_service() {
     )
     .await;
 
-    let mut peer_a = connect_peer(&service_a_id, &ctx.substrate_mechanisms);
+    let mut peer_a = connect_peer(&service_a_id, &ctx);
     peer_a.connect().await.expect("peer A failed to connect");
     let conn_a = peer_a.connection().expect("peer A has no live connection");
 
-    let mut peer_b = connect_peer(&service_b_id, &ctx.substrate_mechanisms);
+    let mut peer_b = connect_peer(&service_b_id, &ctx);
     peer_b.connect().await.expect("peer B failed to connect");
 
     let content = b"service B's own blob content".to_vec();
@@ -459,7 +459,7 @@ async fn test_data_layer_http_routes_error_mapping_and_fallthrough() {
     common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
         .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -594,7 +594,7 @@ async fn test_sse_receives_message_published_via_http() {
     common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
         .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -642,7 +642,7 @@ async fn test_sse_rejects_missing_accept_header() {
     common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
         .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -679,7 +679,7 @@ async fn test_sse_permit_exhaustion_returns_503_service_unavailable() {
     common::deploy_app(&ctx.substrate_client, &app_service_id, tcp_deploy_manifest(http_routes))
         .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -762,7 +762,7 @@ async fn test_chunked_upload_decline_and_round_trip_meets_performance_budget() {
     // `stream_client_e2e.rs`'s own readiness pattern.
     time::sleep(Duration::from_millis(200)).await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 

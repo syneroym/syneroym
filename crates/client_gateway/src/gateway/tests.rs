@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use dashmap::DashMap;
+use ed25519_dalek::VerifyingKey;
 use iroh::Endpoint;
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
@@ -12,7 +13,7 @@ use syneroym_core::{
     protocol_utils::{TargetHost, parse_target_host},
     util::short_hash,
 };
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::SYNEROYM_ALPN;
 use syneroym_sdk::topology::{
     AppHostResolver, CredentialWarning, Tier1Lookup, Tier2Fetch, credential_warning,
@@ -159,8 +160,10 @@ async fn forward_to_service_retries_on_not_hosted_here() {
         endpoint_addr_bytes: serde_json::to_vec(&server_addr).unwrap(),
         relay_url: None,
     }];
+    let host_did = derive_did_key(&VerifyingKey::from_bytes(server_ep.id().as_bytes()).unwrap());
     let client = Arc::new(Mutex::new(
         SyneroymClient::new_with_mechanisms("target-svc".to_string(), mechanisms)
+            .with_host(host_did)
             .with_registry_dht(false),
     ));
     state.clients.insert("target-svc".to_string(), client);
@@ -230,8 +233,10 @@ async fn forward_to_service_returns_bad_gateway_when_retry_also_refused() {
         endpoint_addr_bytes: serde_json::to_vec(&server_addr).unwrap(),
         relay_url: None,
     }];
+    let host_did = derive_did_key(&VerifyingKey::from_bytes(server_ep.id().as_bytes()).unwrap());
     let client = Arc::new(Mutex::new(
         SyneroymClient::new_with_mechanisms("target-svc-2".to_string(), mechanisms)
+            .with_host(host_did)
             .with_registry_dht(false),
     ));
     state.clients.insert("target-svc-2".to_string(), client);
@@ -277,6 +282,80 @@ async fn forward_to_service_returns_bad_gateway_when_retry_also_refused() {
 
     assert!(response.contains("HTTP/1.1 502"), "must return 502 Bad Gateway: {response}");
     assert!(response.contains("Bad Gateway"));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2, "must have made 2 attempts");
+
+    assert!(forward_task.await.unwrap().is_ok());
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn forward_to_service_rehomes_and_replays_on_host_mismatch() {
+    let state = test_state(None);
+    let server_ep =
+        Endpoint::empty_builder().alpns(vec![SYNEROYM_ALPN.to_vec()]).bind().await.unwrap();
+    let server_addr = server_ep.addr();
+
+    let expected_host_id = Identity::generate().unwrap();
+    let expected_host_did = derive_did_key(&expected_host_id.public_key());
+
+    let mechanisms = vec![EndpointMechanism::Iroh {
+        endpoint_addr_bytes: serde_json::to_vec(&server_addr).unwrap(),
+        relay_url: None,
+    }];
+    let client = Arc::new(Mutex::new(
+        SyneroymClient::new_with_mechanisms("target-svc-mismatch".to_string(), mechanisms)
+            .with_host(expected_host_did)
+            .with_registry_dht(false),
+    ));
+    state.clients.insert("target-svc-mismatch".to_string(), client);
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = Arc::clone(&attempts);
+
+    let server_task = tokio::spawn(async move {
+        let incoming = server_ep.accept().await.unwrap();
+        let connecting = incoming.accept().unwrap();
+        let conn = connecting.await.unwrap();
+
+        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+            let attempt = server_attempts.fetch_add(1, Ordering::SeqCst);
+            let mut buf = [0u8; 1024];
+            let _ = recv.read(&mut buf).await;
+            if attempt == 0 {
+                let mut epk = vec![0x04];
+                epk.extend_from_slice(&[1u8; 64]);
+                let reply = [epk.as_slice(), &[0u8; 64]].concat();
+                let _ = send.write_all(&reply).await;
+                let _ = send.finish();
+            } else {
+                let _ = send
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nreplayed-backend")
+                    .await;
+                let _ = send.finish();
+            }
+        }
+    });
+
+    let (mut client_stream, mut gw_stream) = tcp_pair().await;
+    let forward_task = tokio::spawn(async move {
+        forward_to_service(
+            &mut gw_stream,
+            &state,
+            "target-svc-mismatch",
+            "http",
+            false,
+            b"GET / HTTP/1.1\r\nHost: target-svc-mismatch\r\n\r\n",
+        )
+        .await
+    });
+
+    client_stream.shutdown().await.unwrap();
+    let mut buf = [0u8; 1024];
+    let n = client_stream.read(&mut buf).await.unwrap();
+    let response = String::from_utf8_lossy(&buf[..n]);
+
+    assert!(response.contains("HTTP/1.1 200 OK"), "must return 200 OK: {response}");
+    assert!(response.contains("replayed-backend"));
     assert_eq!(attempts.load(Ordering::SeqCst), 2, "must have made 2 attempts");
 
     assert!(forward_task.await.unwrap().is_ok());

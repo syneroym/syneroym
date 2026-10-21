@@ -300,6 +300,24 @@ function cleanupAllConnections() {
 window.addEventListener('beforeunload', cleanupAllConnections);
 window.addEventListener('pagehide', cleanupAllConnections);
 
+const KDF_SALT = new TextEncoder().encode("syneroym-e2e-v1");
+
+async function deriveChannelKeys(sharedBits, clientPubRaw, serverPubBytes) {
+    const base = await window.crypto.subtle.importKey("raw", sharedBits, "HKDF", false, ["deriveKey"]);
+    const info = (label) => {
+        const l = new TextEncoder().encode(label);
+        const out = new Uint8Array(l.length + 65 + 65);
+        out.set(l, 0);
+        out.set(new Uint8Array(clientPubRaw), l.length);
+        out.set(serverPubBytes, l.length + 65);
+        return out;
+    };
+    const derive = (label, usage) => window.crypto.subtle.deriveKey(
+        { name: "HKDF", hash: "SHA-256", salt: KDF_SALT, info: info(label) },
+        base, { name: "AES-GCM", length: 256 }, false, [usage]);
+    return { sendKey: await derive("c2s", "encrypt"), recvKey: await derive("s2c", "decrypt") };
+}
+
 async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw) {
     if (serverKeyBytes.length < 129) {
         return null;
@@ -308,6 +326,10 @@ async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, client
     const serverPubBytes = serverKeyBytes.slice(0, 65);
     const signature = serverKeyBytes.slice(65, 129);
     const leftovers = serverKeyBytes.slice(129);
+
+    if (serverPubBytes[0] !== 0x04) {
+        throw new Error("the server refused before the handshake; no identity was sent");
+    }
 
     console.debug("[Page][BlindTunnel] Verifying server signature...");
 
@@ -351,15 +373,14 @@ async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, client
         []
     );
 
-    const sharedSecret = await window.crypto.subtle.deriveKey(
+    const sharedBits = await window.crypto.subtle.deriveBits(
         { name: "ECDH", public: serverPub },
         clientKeyPair.privateKey,
-        { name: "AES-GCM", length: 256 },
-        false,
-        ["encrypt", "decrypt"]
+        256
     );
 
-    return { sharedSecret, leftovers };
+    const keys = await deriveChannelKeys(sharedBits, clientPubRaw, serverPubBytes);
+    return { keys, leftovers };
 }
 
 async function connectTunnel(preamble, isRaw, onData, onClose) {
@@ -422,7 +443,8 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
         let finalPreamble = preamble;
         let clientKeyPair = null;
         let clientPubRaw = null;
-        let sharedSecret = null;
+        let channelKeys = null;
+        let plainRefusal = false;
         let decryptor = null;
 
         const runFallback = async () => {
@@ -471,30 +493,49 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                 if (closed) return;
                 const bytes = new Uint8Array(event.data);
 
-                if (clientKeyPair && !sharedSecret) {
+                if (clientKeyPair && !channelKeys && !plainRefusal) {
                     const combined = new Uint8Array(serverKeyBytes.length + bytes.length);
                     combined.set(serverKeyBytes, 0);
                     combined.set(bytes, serverKeyBytes.length);
                     serverKeyBytes = combined;
 
+                    if (serverKeyBytes.length > 0 && serverKeyBytes[0] !== 0x04) {
+                        plainRefusal = true;
+                        resolve({
+                            send: async () => {},
+                            close: () => {
+                                closed = true;
+                                activeWebSockets.delete(tunnelWS);
+                                tunnelWS.close();
+                            }
+                        });
+                        onData(serverKeyBytes);
+                        serverKeyBytes = new Uint8Array(0);
+                        return;
+                    }
+
                     if (serverKeyBytes.length >= 129) {
                         try {
                             const result = await verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw);
                             if (result) {
-                                sharedSecret = result.sharedSecret;
+                                channelKeys = result.keys;
                                 const leftovers = result.leftovers;
 
-                                decryptor = new Decryptor(sharedSecret, (decrypted) => {
+                                decryptor = new Decryptor(channelKeys.recvKey, (decrypted) => {
                                     if (!closed) onData(decrypted);
                                 });
 
                                 console.debug("[Page][BlindTunnel] E2E ECDH key negotiated! Encrypted tunnel ready.");
 
+                                // Write the empty identity line inside the channel (C4c-1)
+                                const identityChunk = await encryptChunk(channelKeys.sendKey, new TextEncoder().encode('\n'));
+                                tunnelWS.send(identityChunk);
+
                                 resolve({
                                     send: async (data) => {
                                         if (tunnelWS.readyState === NativeWebSocket.OPEN) {
-                                            if (sharedSecret) {
-                                                const encrypted = await encryptChunk(sharedSecret, data);
+                                            if (channelKeys) {
+                                                const encrypted = await encryptChunk(channelKeys.sendKey, data);
                                                 tunnelWS.send(encrypted);
                                             } else {
                                                 tunnelWS.send(data);
@@ -521,7 +562,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                         }
                     }
                 } else {
-                    if (sharedSecret) {
+                    if (channelKeys) {
                         await decryptor.addBytes(bytes);
                     } else {
                         onData(bytes);

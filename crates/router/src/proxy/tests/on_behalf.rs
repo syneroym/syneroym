@@ -14,7 +14,7 @@ use crate::{
         ProxyRouter,
         tests::helpers::{
             MockHop, MockOutcome, base_request, empty_registry, empty_registry_client,
-            synthetic_addr, test_router,
+            synthetic_peer, test_router,
         },
     },
 };
@@ -52,7 +52,7 @@ async fn native_call_with_proof_and_no_service_id_presents_node_key_and_passes_o
     let mut req = base_request("remote-svc", "data-layer");
     req.caller.proof = Some(sample_p_proof());
     req.origin = CallOrigin::Native { service_id: None };
-    router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+    router.invoke_remote_at(&synthetic_peer(), &req).await.unwrap();
 
     let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
     assert_eq!(preamble.pubkey.as_deref(), Some(expected_pubkey.as_str()));
@@ -97,7 +97,7 @@ async fn native_call_with_service_id_and_cert_presents_instance_and_passes_on_be
     let mut req = base_request("remote-svc", "data-layer");
     req.caller.proof = Some(sample_p_proof());
     req.origin = CallOrigin::Native { service_id: Some(service_id) };
-    router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+    router.invoke_remote_at(&synthetic_peer(), &req).await.unwrap();
 
     let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
     assert_eq!(preamble.pubkey.as_deref(), Some(instance_pubkey.as_str()));
@@ -126,7 +126,7 @@ async fn caller_proof_carrying_on_behalf_passes_carried_on_behalf_unchanged() {
     let mut req = base_request("remote-svc", "greet");
     req.caller.proof = Some(p_proof);
     req.origin = CallOrigin::Native { service_id: None };
-    router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+    router.invoke_remote_at(&synthetic_peer(), &req).await.unwrap();
 
     let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
     let on_behalf = preamble.on_behalf.expect("on_behalf must be present");
@@ -149,7 +149,7 @@ async fn native_call_with_unsigned_local_proof_sends_no_on_behalf() {
     let mut req = base_request("remote-svc", "greet");
     req.caller.proof = Some(unsigned);
     req.origin = CallOrigin::Native { service_id: None };
-    router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+    router.invoke_remote_at(&synthetic_peer(), &req).await.unwrap();
 
     let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
     assert_eq!(preamble.on_behalf, None);
@@ -163,7 +163,7 @@ async fn guest_call_with_proof_sends_no_on_behalf() {
     let mut req = base_request("remote-svc", "greet");
     req.caller.proof = Some(sample_p_proof());
     req.origin = CallOrigin::Guest { service_id: "guest-component".to_string() };
-    router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+    router.invoke_remote_at(&synthetic_peer(), &req).await.unwrap();
 
     let preamble = hop.last_preamble.lock().unwrap().clone().unwrap();
     assert_eq!(preamble.on_behalf, None);
@@ -179,7 +179,7 @@ async fn retried_idempotent_call_attempts_carry_distinct_timestamps() {
 
     let mut req = base_request("remote-svc", "greet");
     req.idempotent = true;
-    let res = router.invoke_remote_at(&synthetic_addr(), &req).await.unwrap();
+    let res = router.invoke_remote_at(&synthetic_peer(), &req).await.unwrap();
     assert_eq!(res, Value::String("done".to_string()));
 
     let preambles = hop.all_preambles.lock().unwrap().clone();

@@ -7,6 +7,7 @@ pub(super) use std::{
 };
 
 pub(super) use dashmap::DashMap;
+pub(super) use ed25519_dalek::VerifyingKey;
 pub(super) use iroh::{EndpointAddr, SecretKey};
 pub(super) use serde_json::Value;
 pub(super) use syneroym_async_queue::QueueConfig;
@@ -30,7 +31,7 @@ pub(super) use syneroym_rpc::{
 pub(super) use tokio_util::sync::CancellationToken;
 
 pub(super) use super::super::{
-    ProxyRouter, RemoteHop, merge_forward_result,
+    ProxyRouter, RemoteHop, RemotePeer, merge_forward_result,
     proxy_outbox::{self, Disposition, ProxyOutbox},
     step_call_budget_ms, target_produced,
 };
@@ -65,9 +66,10 @@ pub(super) fn base_request(target_service: &str, interface: &str) -> ProxyReques
     }
 }
 
-pub(super) fn synthetic_addr() -> EndpointAddr {
+pub(super) fn synthetic_peer() -> RemotePeer {
     let node_id = SecretKey::generate(&mut rand::rng()).public();
-    EndpointAddr::new(node_id)
+    let host_key = VerifyingKey::from_bytes(node_id.as_bytes()).unwrap();
+    RemotePeer { addr: EndpointAddr::new(node_id), host_key: Some(host_key) }
 }
 
 pub(super) fn empty_registry() -> EndpointRegistry {
@@ -485,7 +487,7 @@ impl MockHop {
 impl RemoteHop for MockHop {
     async fn call(
         &self,
-        _addr: &EndpointAddr,
+        _peer: &RemotePeer,
         route: &RoutePreamble,
         identity: Option<&OutboundIdentity>,
         _request: &JsonRpcRequest,

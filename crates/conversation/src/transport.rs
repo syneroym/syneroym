@@ -632,7 +632,8 @@ fn apply_incoming_group_key(
 pub(super) fn classify(error: ProxyError) -> Disposition {
     use syneroym_async_queue::{CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE};
     use syneroym_rpc::{
-        NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE, STREAM_UNAUTHENTICATED_RPC_CODE,
+        HOST_MISMATCH_RPC_CODE, NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE,
+        STREAM_UNAUTHENTICATED_RPC_CODE,
     };
     match error {
         // "I already ran this, but its result was too large to keep." That
@@ -651,7 +652,8 @@ pub(super) fn classify(error: ProxyError) -> Disposition {
             if code == CALL_ALREADY_RUNNING_RPC_CODE
                 || code == SERVICE_NOT_FOUND_RPC_CODE
                 || code == NOT_HOSTED_HERE_RPC_CODE
-                || code == STREAM_UNAUTHENTICATED_RPC_CODE =>
+                || code == STREAM_UNAUTHENTICATED_RPC_CODE
+                || code == HOST_MISMATCH_RPC_CODE =>
         {
             Disposition::Retry
         }

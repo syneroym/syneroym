@@ -4,7 +4,7 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex, OnceLock, RwLock, Weak},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -18,9 +18,13 @@ use syneroym_core::{
     local_registry::SubstrateEndpoint,
 };
 use syneroym_data_db::registry_store;
-use syneroym_identity::{DelegationCertificate, Identity, substrate::derive_did_key};
+use syneroym_identity::{
+    DelegationCertificate, Identity,
+    substrate::{derive_did_key, resolve_did_key},
+};
 use syneroym_router::{
-    IrohHop, RemoteHop, RouteHandler, RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN,
+    IrohHop, RemoteHop, RemotePeer, RouteHandler, RoutePreamble, RouteProtocol, RouteTransport,
+    SYNEROYM_ALPN,
 };
 use syneroym_rpc::{
     CallOrigin, CallerContext, JsonRpcRequest, NOT_HOSTED_HERE_RPC_CODE, NativeInvocation,
@@ -28,10 +32,10 @@ use syneroym_rpc::{
     RpcResult, STREAM_UNAUTHENTICATED_RPC_CODE, ServiceProxy, framing,
 };
 use syneroym_ucan::CapabilityToken;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod common;
 use common::{
+    logs::init_trace_collector,
     nodes::{
         build_delegated_proxy_request, build_test_route_handler_deps,
         create_signed_info_with_full_addr, spawn_global_coordinator,
@@ -43,44 +47,6 @@ use common::{
 
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).expect("time went backwards").as_secs()
-}
-
-#[derive(Default)]
-struct SharedLogBuffer {
-    lines: Arc<RwLock<Vec<String>>>,
-}
-
-struct LogWriter {
-    buffer: Arc<RwLock<Vec<String>>>,
-}
-
-impl std::io::Write for LogWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if let Ok(s) = std::str::from_utf8(buf) {
-            let mut lines = self.buffer.write().unwrap();
-            lines.push(s.to_string());
-        }
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-static SHARED_LOGS: OnceLock<SharedLogBuffer> = OnceLock::new();
-
-fn init_trace_collector() -> Arc<RwLock<Vec<String>>> {
-    let shared = SHARED_LOGS.get_or_init(|| {
-        let lines = Arc::new(RwLock::new(Vec::new()));
-        let lines_clone = lines.clone();
-        let make_writer = move || LogWriter { buffer: lines_clone.clone() };
-        let layer = tracing_subscriber::fmt::layer().with_writer(make_writer).with_ansi(false);
-        let filter = tracing_subscriber::filter::EnvFilter::new("trace");
-        let _ = tracing_subscriber::registry().with(layer).with(filter).try_init();
-        SharedLogBuffer { lines }
-    });
-    shared.lines.clone()
 }
 
 #[derive(Debug)]
@@ -360,6 +326,8 @@ async fn large_request_to_unhosted_service_refused_without_hang() -> Result<()> 
 
     let hop = IrohHop::new(Some(sa.ep.clone()), RetryPolicy::default());
     let addr = wait_for_local_addr(sb.router.endpoint()).await;
+    let host_key = resolve_did_key(&sb.did).ok();
+    let peer = RemotePeer { addr, host_key };
 
     let large_payload = "a".repeat(4 * 1024 * 1024);
     let params = json!({"payload": large_payload});
@@ -379,7 +347,7 @@ async fn large_request_to_unhosted_service_refused_without_hang() -> Result<()> 
     );
 
     let err =
-        hop.call(&addr, &preamble, None, &request, Duration::from_secs(10)).await.unwrap_err();
+        hop.call(&peer, &preamble, None, &request, Duration::from_secs(10)).await.unwrap_err();
 
     match err {
         ProxyError::Callee { code, .. } => {

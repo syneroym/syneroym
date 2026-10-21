@@ -540,7 +540,7 @@ async fn forward_to_service(
 
     match outcome {
         PassthroughOutcome::Done => Ok(()),
-        PassthroughOutcome::NotHostedHere { replayable } => {
+        PassthroughOutcome::NotHostedHere { replayable: false } => {
             let rehome_res = {
                 let client = client_arc.lock().await;
                 client.rehome(&conn).await
@@ -548,32 +548,84 @@ async fn forward_to_service(
             if let Err(e) = rehome_res {
                 warn!("Gateway failed to rehome client for service {}: {}", connect_service_id, e);
             }
-            if !replayable {
-                return Ok(());
-            }
-            let (conn2, target_service_id2) = match connected(&client_arc, is_auth_host).await {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Gateway failed to reconnect to service {}: {}", connect_service_id, e);
-                    return write_json_rpc_error(stream, 502, "Bad Gateway").await;
-                }
-            };
-            let outcome2 = SyneroymClient::passthrough_with_conn(
-                conn2,
-                &target_service_id2,
-                interface,
-                initial_bytes,
-                stream,
-                &passthrough_identity,
-                delegation,
-            )
-            .await?;
-            if let PassthroughOutcome::NotHostedHere { .. } = outcome2 {
-                write_json_rpc_error(stream, 502, "Bad Gateway").await?;
-            }
             Ok(())
         }
+        PassthroughOutcome::NotHostedHere { replayable: true }
+        | PassthroughOutcome::HostMismatch => {
+            handle_passthrough_rehome(PassthroughRehomeParams {
+                stream,
+                client_arc: &client_arc,
+                conn: &conn,
+                connect_service_id: &connect_service_id,
+                is_auth_host,
+                interface,
+                initial_bytes,
+                passthrough_identity: &passthrough_identity,
+                delegation,
+            })
+            .await
+        }
     }
+}
+
+struct PassthroughRehomeParams<'a> {
+    stream: &'a mut TcpStream,
+    client_arc: &'a Arc<Mutex<SyneroymClient>>,
+    conn: &'a TransportConnection,
+    connect_service_id: &'a str,
+    is_auth_host: bool,
+    interface: &'a str,
+    initial_bytes: &'a [u8],
+    passthrough_identity: &'a Identity,
+    delegation: Option<&'a DelegationCertificate>,
+}
+
+async fn handle_passthrough_rehome(params: PassthroughRehomeParams<'_>) -> Result<()> {
+    let PassthroughRehomeParams {
+        stream,
+        client_arc,
+        conn,
+        connect_service_id,
+        is_auth_host,
+        interface,
+        initial_bytes,
+        passthrough_identity,
+        delegation,
+    } = params;
+    let rehome_res = {
+        let client = client_arc.lock().await;
+        client.rehome(conn).await
+    };
+    if let Err(e) = rehome_res {
+        warn!("Gateway failed to rehome client for service {}: {}", connect_service_id, e);
+    }
+    let (conn2, target_service_id2) = match connected(client_arc, is_auth_host).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Gateway failed to reconnect to service {}: {}", connect_service_id, e);
+            return write_json_rpc_error(stream, 502, "Bad Gateway").await;
+        }
+    };
+    let outcome2 = SyneroymClient::passthrough_with_conn(
+        conn2,
+        &target_service_id2,
+        interface,
+        initial_bytes,
+        stream,
+        passthrough_identity,
+        delegation,
+    )
+    .await?;
+    if matches!(
+        outcome2,
+        PassthroughOutcome::NotHostedHere { .. } | PassthroughOutcome::HostMismatch
+    ) {
+        if matches!(outcome2, PassthroughOutcome::HostMismatch) {
+            warn!("Gateway host mismatch after rehome for service {}", connect_service_id);
+        }
+        write_json_rpc_error(stream, 502, "Bad Gateway").await?;
+    }
+    Ok(())
 }
 
 async fn resolve_target(

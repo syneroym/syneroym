@@ -21,7 +21,7 @@ use iroh::endpoint::{RecvStream, SendStream};
 use rustls::crypto::ring;
 use syneroym_core::{
     config::AppSandboxRole,
-    dht_registry::{EndpointInfo, EndpointMechanism, EndpointType},
+    dht_registry::{EndpointInfo, EndpointType},
     test_constants,
     util::short_hash,
 };
@@ -171,12 +171,11 @@ async fn http_request(
     body: &[u8],
 ) -> HttpResponse {
     let (mut send, mut recv) = open_http_stream(conn, service_id, pubkey).await;
-    let mut request = format!(
+    let request = format!(
         "{method} {path_and_query} HTTP/1.1\r\nHost: localhost\r\nConnection: \
-         close\r\nContent-Length: {}\r\n",
+         close\r\nContent-Length: {}\r\n\r\n",
         body.len()
     );
-    request.push_str("\r\n");
     send.write_all(request.as_bytes()).await.expect("write request head failed");
     if !body.is_empty() {
         // Tolerated, not asserted: a server that rejects the request before
@@ -192,8 +191,9 @@ async fn http_request(
     parse_http_response(&raw)
 }
 
-fn connect_peer(app_service_id: &str, mechanisms: &[EndpointMechanism]) -> SyneroymClient {
-    SyneroymClient::new_with_mechanisms(app_service_id.to_string(), mechanisms.to_vec())
+fn connect_peer(app: &str, ctx: &SubstrateTestContext) -> SyneroymClient {
+    SyneroymClient::new_with_mechanisms(app.to_string(), ctx.substrate_mechanisms.clone())
+        .with_host(&ctx.node_did)
         .with_registry_dht(false)
 }
 
@@ -243,7 +243,7 @@ async fn test_anonymous_request_to_non_public_route_is_401_with_zero_instantiati
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -282,7 +282,7 @@ async fn test_public_route_reaches_guest_and_whoami_reports_anonymous() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -404,7 +404,7 @@ async fn test_reject_returns_the_guests_own_status_and_message() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -441,7 +441,7 @@ async fn test_over_cap_request_body_is_413_with_zero_instantiations() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -485,7 +485,7 @@ async fn test_trap_and_spin_return_500_and_a_new_stream_still_succeeds() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -541,7 +541,7 @@ async fn test_huge_and_bad_header_return_500_with_no_partial_body() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -604,7 +604,7 @@ async fn test_guest_http_concurrency_limit_returns_503_with_retry_after() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -675,7 +675,7 @@ async fn test_items_path_param_matches_the_captured_url_segment() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -715,7 +715,7 @@ async fn test_framing_headers_are_stripped_and_content_length_is_the_hosts() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -766,7 +766,7 @@ async fn test_rejected_ucan_reports_self_asserted_not_ucan() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -832,7 +832,7 @@ async fn test_guest_http_requests_within_budget_all_succeed_via_queuing() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 
@@ -888,7 +888,7 @@ async fn test_guest_route_and_data_layer_route_coexist() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
     let asserting = Identity::generate().unwrap();
@@ -937,7 +937,7 @@ async fn test_guest_route_and_asset_bundle_coexist() {
     )
     .await;
 
-    let mut peer = connect_peer(&app_service_id, &ctx.substrate_mechanisms);
+    let mut peer = connect_peer(&app_service_id, &ctx);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
 

@@ -214,6 +214,7 @@ pub struct SubstrateTestContext {
     #[allow(dead_code)]
     config: SubstrateConfig,
     pub substrate_client: SyneroymClient,
+    pub node_did: String,
     #[allow(dead_code)]
     pub registry_url: String,
     #[allow(dead_code)]
@@ -339,6 +340,7 @@ impl SubstrateTestContext {
         Self {
             config,
             substrate_client,
+            node_did: substrate_service_id.clone(),
             registry_url,
             substrate_mechanisms,
             owner_did,

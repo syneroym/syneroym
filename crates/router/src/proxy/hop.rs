@@ -1,6 +1,18 @@
+use ed25519_dalek::VerifyingKey;
+use tokio::io::AsyncWriteExt;
+
 use super::*;
+use crate::e2e_channel::{self, Opened};
 
 const REFUSAL_READ_GRACE: Duration = Duration::from_secs(2);
+
+/// Where a remote call goes: the address to dial and the node key that
+/// must answer the handshake when that address is not the host itself.
+#[derive(Debug, Clone)]
+pub struct RemotePeer {
+    pub addr: EndpointAddr,
+    pub host_key: Option<VerifyingKey>,
+}
 
 /// response". The transport-agnostic seam a future wRPC wire (A.5) slots
 /// into: a second impl plus a second `ProxyProtocol` variant, nothing else.
@@ -8,7 +20,7 @@ const REFUSAL_READ_GRACE: Duration = Duration::from_secs(2);
 pub trait RemoteHop: Send + Sync + Debug {
     async fn call(
         &self,
-        addr: &EndpointAddr,
+        peer: &RemotePeer,
         route: &RoutePreamble,
         identity: Option<&OutboundIdentity>,
         request: &JsonRpcRequest,
@@ -47,11 +59,23 @@ fn transport_err(e: impl std::fmt::Display) -> ProxyError {
     ProxyError::Transport(e.to_string())
 }
 
+fn e2e_err(e: e2e_channel::E2eError) -> ProxyError {
+    match e {
+        e2e_channel::E2eError::HostKeyUnknown { target } => ProxyError::ServiceNotFound(target),
+        e @ e2e_channel::E2eError::BadHostSignature { .. } => ProxyError::Callee {
+            code: syneroym_rpc::HOST_MISMATCH_RPC_CODE,
+            message: e.to_string(),
+            data: None,
+        },
+        other => transport_err(other),
+    }
+}
+
 #[async_trait::async_trait]
 impl RemoteHop for IrohHop {
     async fn call(
         &self,
-        addr: &EndpointAddr,
+        peer: &RemotePeer,
         route: &RoutePreamble,
         identity: Option<&OutboundIdentity>,
         request: &JsonRpcRequest,
@@ -68,6 +92,10 @@ impl RemoteHop for IrohHop {
         let preamble = identity
             .map_or_else(|| route.clone(), |id| id.apply(route, crate::handshake::now_secs()));
 
+        let path =
+            e2e_channel::path(peer.addr.id.as_bytes(), peer.host_key.as_ref(), &route.service_id)
+                .map_err(e2e_err)?;
+
         // The whole attempt -- connect, open the bi-stream, write the
         // preamble and request, and read the response -- sits under one
         // deadline, not just the final read: a peer that accepts the QUIC
@@ -77,28 +105,39 @@ impl RemoteHop for IrohHop {
         let frame = time::timeout(timeout, async {
             let conn = net_iroh::connect_with_retry(
                 endpoint,
-                addr.clone(),
+                peer.addr.clone(),
                 crate::SYNEROYM_ALPN,
                 &self.connect_retry_policy,
             )
             .await
             .map_err(transport_err)?;
 
-            let (mut send, mut recv) = conn.open_bi().await.map_err(transport_err)?;
+            let (send, recv) = conn.open_bi().await.map_err(transport_err)?;
+            let mut stream = match e2e_channel::open_stream(recv, send, preamble, &path)
+                .await
+                .map_err(e2e_err)?
+            {
+                Opened::Refused(mut s) => {
+                    return framing::read_frame(&mut s.reader).await.map_err(transport_err);
+                }
+                Opened::Ready(s) => s,
+            };
+
             let wrote: Result<(), anyhow::Error> = async {
-                send.write_all(preamble.to_preamble_line().as_bytes()).await?;
-                framing::write_frame(&mut send, &body).await?;
-                send.finish()?;
+                framing::write_frame(&mut stream.writer, &body).await?;
+                stream.writer.shutdown().await?;
                 Ok(())
             }
             .await;
 
             match wrote {
-                Ok(()) => framing::read_frame(&mut recv).await.map_err(transport_err),
+                Ok(()) => framing::read_frame(&mut stream.reader).await.map_err(transport_err),
                 // The node may have answered and stopped reading (a refusal before a
                 // large request was fully sent). Its answer is still in our receive buffer.
                 Err(write_err) => {
-                    match time::timeout(REFUSAL_READ_GRACE, framing::read_frame(&mut recv)).await {
+                    match time::timeout(REFUSAL_READ_GRACE, framing::read_frame(&mut stream.reader))
+                        .await
+                    {
                         Ok(Ok(frame)) if !frame.is_empty() => Ok(frame),
                         _ => Err(transport_err(write_err)),
                     }

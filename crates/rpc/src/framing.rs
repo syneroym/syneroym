@@ -28,6 +28,9 @@ where
     let len = frame.len() as u32;
     writer.write_u32(len).await?;
     writer.write_all(frame).await?;
+    // An encrypted writer holds bytes until it is flushed; a frame must
+    // reach the peer before the writer waits for an answer.
+    writer.flush().await?;
     Ok(())
 }
 

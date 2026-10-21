@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::Context;
+use ed25519_dalek::VerifyingKey;
 use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey,
     endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream},
@@ -24,6 +25,7 @@ use syneroym_core::{
     },
     retry::retry_with_backoff,
 };
+use syneroym_identity::substrate;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     time,
@@ -166,6 +168,9 @@ pub struct ResolvedPeer {
     pub addr: Option<EndpointAddr>,
     /// The peer's mailbox, from its own signed record.
     pub mailbox: Option<EndpointMailbox>,
+    /// The node key of the host the record names (`substrate_id`). A client
+    /// that dials another node checks the handshake against it.
+    pub host_key: Option<VerifyingKey>,
 }
 
 /// The Iroh address in `mechanisms`, if any. An Iroh entry that cannot be
@@ -250,8 +255,9 @@ pub async fn resolve_peer(
 ) -> anyhow::Result<ResolvedPeer> {
     let record = record_of(registry_client, peer_records, service_id).await?;
     let mailbox = record.info.mailbox.clone();
+    let host_key = substrate::resolve_did_key(&record.info.substrate_id).ok();
     let mechanisms = substrate_mechanisms(registry_client, record).await?;
-    Ok(ResolvedPeer { addr: iroh_addr_from_mechanisms(mechanisms)?, mailbox })
+    Ok(ResolvedPeer { addr: iroh_addr_from_mechanisms(mechanisms)?, mailbox, host_key })
 }
 
 /// Resolves a service's Iroh `EndpointAddr` via the community registry / DHT.

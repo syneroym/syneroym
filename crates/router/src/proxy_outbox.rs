@@ -115,7 +115,8 @@ pub fn disposition_of(error: &ProxyError) -> Disposition {
             if *code == CALL_ALREADY_RUNNING_RPC_CODE
                 || *code == SERVICE_NOT_FOUND_RPC_CODE
                 || *code == syneroym_rpc::NOT_HOSTED_HERE_RPC_CODE
-                || *code == syneroym_rpc::STREAM_UNAUTHENTICATED_RPC_CODE =>
+                || *code == syneroym_rpc::STREAM_UNAUTHENTICATED_RPC_CODE
+                || *code == syneroym_rpc::HOST_MISMATCH_RPC_CODE =>
         {
             Disposition::Retry
         }
@@ -579,6 +580,14 @@ mod tests {
             disposition_of(&ProxyError::Callee {
                 code: syneroym_rpc::STREAM_UNAUTHENTICATED_RPC_CODE,
                 message: "unauthenticated".into(),
+                data: None,
+            }),
+            Disposition::Retry
+        );
+        assert_eq!(
+            disposition_of(&ProxyError::Callee {
+                code: syneroym_rpc::HOST_MISMATCH_RPC_CODE,
+                message: "host mismatch".into(),
                 data: None,
             }),
             Disposition::Retry

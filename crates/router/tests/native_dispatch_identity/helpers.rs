@@ -1,6 +1,6 @@
 pub(crate) use std::{
     sync::{
-        Arc, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -54,6 +54,19 @@ impl NativeService for RecordingNativeService {
     async fn dispatch(&self, _invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         self.invoked.store(true, Ordering::SeqCst);
         Ok(NativeResponse { payload: Value::Null })
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CapturingNativeService {
+    pub(crate) caller: Mutex<Option<CallerContext>>,
+}
+
+#[async_trait::async_trait]
+impl NativeService for CapturingNativeService {
+    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
+        *self.caller.lock().unwrap() = Some(invocation.caller);
+        Ok(NativeResponse { payload: json!({"status": "ok"}) })
     }
 }
 

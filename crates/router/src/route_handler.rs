@@ -53,6 +53,7 @@ use crate::{
     saga::SagaStore,
 };
 
+pub(crate) mod caller;
 pub mod dispatch;
 pub mod encryption;
 pub mod http;
@@ -458,33 +459,30 @@ impl RouteHandler {
         Ok(s)
     }
 
-    #[allow(clippy::expect_used)]
-    #[must_use]
     pub fn new_coordinator(
         iroh_endpoint: Endpoint,
         registry_client: RegistryClient,
         parent_relay_url: Option<String>,
         retry_policy: RetryPolicy,
         max_connections: Option<usize>,
-    ) -> Self {
-        let identity = Identity::generate().expect("coordinator identity");
+        identity: Arc<Identity>,
+    ) -> Result<Self> {
         let node_did = substrate::derive_did_key(&identity.public_key());
+        let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default())?);
         let inner = Arc::new(RouteHandlerInner {
             registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
             native_dispatch: Arc::new(DashMap::new()),
             native_http: Arc::new(DashMap::new()),
             websocket_senders: syneroym_rpc::WebSocketSenders::new(),
             app_sandbox_engine: None,
-            identity: Arc::new(identity),
+            identity,
             iroh_endpoint: Some(iroh_endpoint),
             registry_client: Arc::new(registry_client),
             _parent_relay_url: parent_relay_url,
             retry_policy,
             active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
-            messaging_broker: Arc::new(
-                MqttBroker::new(MqttBrokerConfig::default()).expect("coordinator mqtt broker"),
-            ),
+            messaging_broker,
             http_routes: Arc::new(DashMap::new()),
             assets: Arc::new(DashMap::new()),
             sse_permits: Arc::new(DashMap::new()),
@@ -500,7 +498,7 @@ impl RouteHandler {
             session_revocation: None,
             forwards: true,
         });
-        Self { inner }
+        Ok(Self { inner })
     }
 
     /// The Universal Proxy this handler dispatches through, when it has

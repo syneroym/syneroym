@@ -7,6 +7,7 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::Result;
+use ed25519_dalek::VerifyingKey;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, protocol::Router};
 use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
@@ -26,6 +27,7 @@ use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RoutePipeline, RoutePreamble, RouteProtocol,
     RouteTransport, SYNEROYM_ALPN, ServiceStage, TransportStage,
 };
+use syneroym_rpc::JsonRpcError;
 use syneroym_sdk::SyneroymClient;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
@@ -248,50 +250,149 @@ async fn test_registry_propagation() -> Result<()> {
     Ok(())
 }
 
+struct InboundRelayTopology {
+    registry_r: EcosystemRegistry,
+    c: CoordinatorIroh,
+    c_info: CoordinatorInfo,
+    cp: CoordinatorIroh,
+    target_z: TargetSubstrate,
+    host_c: String,
+}
+
+impl InboundRelayTopology {
+    async fn spawn(base_path: &Path, info_client: &Client) -> Result<Self> {
+        let (registry_r, r_url) = common::spawn_registry(base_path).await?;
+        let (c, c_info, c_relay_url) =
+            spawn_global_coordinator(base_path, &r_url, info_client).await?;
+        let (cp, cp_info) =
+            spawn_private_coordinator(base_path, &r_url, &c_relay_url, info_client).await?;
+        let target_z =
+            spawn_z_target_substrate(base_path, &r_url, cp_info.relay_url.clone(), info_client)
+                .await?;
+        let addr_c: EndpointAddr = serde_json::from_slice(&c_info.endpoint_addr_bytes)?;
+        let host_c = derive_did_key(&VerifyingKey::from_bytes(addr_c.id.as_bytes())?);
+        Ok(Self { registry_r, c, c_info, cp, target_z, host_c })
+    }
+
+    fn new_client(&self) -> SyneroymClient {
+        SyneroymClient::new_with_mechanisms(
+            self.target_z.did.clone(),
+            vec![EndpointMechanism::Iroh {
+                endpoint_addr_bytes: self.c_info.endpoint_addr_bytes.clone(),
+                relay_url: self.c_info.relay_url.clone(),
+            }],
+        )
+        .with_host(&self.host_c)
+    }
+
+    async fn shutdown(mut self) -> Result<()> {
+        let _ = self.target_z.router.shutdown().await;
+        self.cp.shutdown().await?;
+        self.c.shutdown().await?;
+        self.registry_r.shutdown().await?;
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn test_inbound_relay() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
-    let base_path = temp_dir.path();
     let info_client = Client::new();
+    let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
 
-    // 1. Spawn global registry R
-    let (mut registry_r, r_url) = common::spawn_registry(base_path).await?;
-
-    // 2. Spawn Global Coordinator C
-    let (mut c, c_info, c_relay_url) =
-        spawn_global_coordinator(base_path, &r_url, &info_client).await?;
-
-    // 3. Spawn Private Coordinator Cp pointing to C
-    let (mut cp, cp_info) =
-        spawn_private_coordinator(base_path, &r_url, &c_relay_url, &info_client).await?;
-
-    // 4. Spawn target substrate Sz in private network under Cp
-    let target_z =
-        spawn_z_target_substrate(base_path, &r_url, cp_info.relay_url.clone(), &info_client)
-            .await?;
-
-    // 5. Client in public network dials only C. C looks Sz up in R and dials it via
-    //    Sz's home relay (Cp's relay). Cp is a relay here, not a forwarder.
-    let mut sdk_client = SyneroymClient::new_with_mechanisms(
-        target_z.did.clone(),
-        vec![EndpointMechanism::Iroh {
-            endpoint_addr_bytes: c_info.endpoint_addr_bytes,
-            relay_url: c_info.relay_url,
-        }],
-    );
-
+    let mut sdk_client = topo.new_client();
     sdk_client.connect().await?;
 
-    // Request readyz!
     let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
     sdk_client.shutdown().await?;
-    let _ = target_z.router.shutdown().await;
-    cp.shutdown().await?;
+    topo.shutdown().await
+}
+
+#[tokio::test]
+async fn multi_hop_relay_without_host_key_fails_service_not_found() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let info_client = Client::new();
+    let (mut registry_r, r_url) = common::spawn_registry(temp_dir.path()).await?;
+    let (mut c, c_info, _c_relay_url) =
+        spawn_global_coordinator(temp_dir.path(), &r_url, &info_client).await?;
+
+    let addr_c: EndpointAddr = serde_json::from_slice(&c_info.endpoint_addr_bytes)?;
+    let host_c = derive_did_key(&VerifyingKey::from_bytes(addr_c.id.as_bytes())?);
+    let unregistered = derive_did_key(&Identity::generate()?.public_key());
+
+    let mut sdk_client = SyneroymClient::new_with_mechanisms(
+        unregistered,
+        vec![EndpointMechanism::Iroh {
+            endpoint_addr_bytes: c_info.endpoint_addr_bytes,
+            relay_url: c_info.relay_url,
+        }],
+    )
+    .with_host(&host_c);
+
+    sdk_client.connect().await?;
+    let err =
+        sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await.unwrap_err();
+    let rpc_err = err.downcast_ref::<JsonRpcError>().expect("expected JsonRpcError");
+    assert_eq!(rpc_err.code, syneroym_rpc::NOT_HOSTED_HERE_RPC_CODE);
+
+    sdk_client.shutdown().await?;
     c.shutdown().await?;
     registry_r.shutdown().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn multi_hop_relay_with_host_key_keeps_identity_inside_encrypted_channel() -> Result<()> {
+    let logs = common::logs::init_trace_collector();
+    let temp_dir = tempfile::tempdir()?;
+    let info_client = Client::new();
+    let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
+
+    let caller_identity = Identity::generate()?;
+    let caller_did = derive_did_key(&caller_identity.public_key());
+
+    let mut sdk_client = topo.new_client().with_identity(caller_identity);
+    sdk_client.connect().await?;
+
+    let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
+    assert_eq!(response.result, serde_json::json!({"status": "ok"}));
+
+    let leaked = logs.read().unwrap().iter().any(|l| l.contains(&caller_did));
+    assert!(!leaked, "caller DID leaked into relay logs: {caller_did}");
+
+    sdk_client.shutdown().await?;
+    topo.shutdown().await
+}
+
+#[tokio::test]
+async fn multi_hop_relay_with_wrong_host_key_fails_host_mismatch() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let info_client = Client::new();
+    let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
+
+    let wrong_host = derive_did_key(&Identity::generate()?.public_key());
+    let mut sdk_client = SyneroymClient::new_with_mechanisms(
+        topo.target_z.did.clone(),
+        vec![EndpointMechanism::Iroh {
+            endpoint_addr_bytes: topo.c_info.endpoint_addr_bytes.clone(),
+            relay_url: topo.c_info.relay_url.clone(),
+        }],
+    )
+    .with_host(&wrong_host);
+
+    sdk_client.connect().await?;
+    let err =
+        sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("did not prove it is host") || err_str.contains("bad handshake signature"),
+        "expected bad host signature error, got: {err_str}"
+    );
+
+    sdk_client.shutdown().await?;
+    topo.shutdown().await
 }
 
 #[tokio::test]
@@ -316,13 +417,16 @@ async fn test_outbound_relay() -> Result<()> {
 
     // 5. Client in private network dials Cp, the forwarding entry point. Cp looks
     //    Sx up in R and dials it via Sx's home relay (C's relay).
+    let addr_cp: EndpointAddr = serde_json::from_slice(&cp_info.endpoint_addr_bytes)?;
+    let host_cp = derive_did_key(&VerifyingKey::from_bytes(addr_cp.id.as_bytes())?);
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
         target_x.did.clone(),
         vec![EndpointMechanism::Iroh {
             endpoint_addr_bytes: cp_info.endpoint_addr_bytes,
             relay_url: cp_info.relay_url,
         }],
-    );
+    )
+    .with_host(&host_cp);
 
     sdk_client.connect().await?;
 

@@ -244,7 +244,7 @@ async fn guest_reaching_a_non_native_interface_on_another_service_is_allowed() {
 
     let mut req = base_request("svc-b", "some-app-interface");
     req.origin = CallOrigin::Guest { service_id: "svc-a".to_string() };
-    let result = router.invoke_remote_at(&synthetic_addr(), &req).await;
+    let result = router.invoke_remote_at(&synthetic_peer(), &req).await;
     assert!(result.is_ok());
 }
 

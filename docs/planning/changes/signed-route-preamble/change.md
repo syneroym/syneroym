@@ -1,11 +1,12 @@
 ---
-status: in-progress
+status: done
 living-docs-touched:
   - docs/system-architecture.md
   - docs/system-requirements-spec.md
   - docs/TERMINOLOGY.md
   - docs/developer-guide.md
   - docs/planning/traceability-matrix.md
+  - docs/planning/deferred-backlog.md
 ---
 # Signed route preamble
 
@@ -433,15 +434,8 @@ These are recorded in the deferred backlog when C4b lands.
    today no refusal is readable. `not_hosted_here` must be readable, because
    the client acts on it.
 2. The name and flags of the revoke command. Decide in its PR.
-3. The HKDF salt and `info` tag, and the format of the encrypted identity
-   line. Decide in the C4c plan.
-4. **Tests that dial with no record.** About 13 uses of
-   `SyneroymClient::new_with_mechanisms` in 10 test files (outside the SDK)
-   dial with no record. Under C4c they cannot tell direct from indirect, and
-   with no host key they send no identity through a forwarder. Decide in the
-   C4c plan: a way to pass the host key to the client, or give these tests a
-   record. When the target id is a substrate `did:key`, the host key is
-   already known.
+3. **The HKDF salt and `info` tag, and the format of the encrypted identity line.** Decided in C4c: see [D-C4c-1](#deviations) and [D-C4c-2](#deviations).
+4. **Tests that dial with no record.** Decided in C4c: `SyneroymClient::with_host` allows tests without registry records to provide the expected host DID key directly. See [D-C4c-7](#deviations).
 
 ## Tasks
 
@@ -464,13 +458,13 @@ Part 1 (C4b):
 
 Part 2 (C4c):
 
-- [ ] The client handshake module, used by the SDK request path,
+- [x] The client handshake module, used by the SDK request path,
       `passthrough_with_conn` and `IrohHop`.
-- [ ] Direct or indirect, and the expected host key.
-- [ ] The encrypted identity line on both sides.
-- [ ] HKDF in the router and in `peer-proxy.js`.
-- [ ] A host key for the tests that dial with no record (open question 4).
-- [ ] Tests for SP-10 to SP-13.
+- [x] Direct or indirect, and the expected host key.
+- [x] The encrypted identity line on both sides.
+- [x] HKDF in the router and in `peer-proxy.js`.
+- [x] A host key for the tests that dial with no record (open question 4).
+- [x] Tests for SP-10 to SP-13.
 
 ## Deviations
 
@@ -522,6 +516,16 @@ Part 2 (C4c):
 - **D-C4b-19 (Queued calls retry on `-32096` and `-32097`; conversation outbox behavior change):** `proxy_outbox` and `conversation/transport` classify
   `-32096` and `-32097` as `Disposition::Retry` rather than terminal errors. In the conversation outbox, refused messages now consume their attempt budget
   and dead-letter upon exhaustion instead of remaining in `Unreachable` state for up to 30 days (`max_pending_age_secs`).
+- **D-C4c-1 (HKDF salt, info tags, and directional keys):** ECDH derivation uses salt `"syneroym-p256-ecdh-v1"` and info `"syneroym-stream-aes256gcm-v1"`. Client and server derive two separate 32-byte AES-256-GCM keys: a client write key (`client_key`) and a server write key (`server_key`). `peer-proxy.js` derives and uses matching directional keys and tags.
+- **D-C4c-2 (Encrypted identity line format):** On an encrypted stream (`enc=ecdh-p256`), identity parameters (`pubkey`, `delegation`, `ucan`, `ts`, `sig`, `on_behalf`) are stripped from the initial preamble line and transmitted as a single encrypted line (`params.join("&") + "\n"`) immediately after the handshake. An anonymous stream transmits an empty encrypted line (`"\n"`).
+- **D-C4c-3 (Order of checks on encrypted streams):** Forwarders perform no handshake and no decryption. On a destination host, the stream is decrypted and `unknown_interface` (`SERVICE_NOT_FOUND_RPC_CODE`, `-32601`) is checked before the caller identity check.
+- **D-C4c-4 (First-byte rule for indirect streams):** On indirect connections, the client sends no application data or identity line before reading and verifying the server's handshake response (`epk` and signature). If the server fails the handshake or refuses the stream, caller identity is never sent.
+- **D-C4c-5 (`write_frame` flushes):** `syneroym_rpc::framing::write_frame` explicitly flushes its writer. Because encrypted writers buffer ciphertexts, flushing ensures frames reach the remote peer before the client waits for replies.
+- **D-C4c-6 (Strict `epk` requirement):** When `enc=ecdh-p256` is present in the route preamble, `epk` is mandatory. A stream specifying `enc=ecdh-p256` without an `epk` is rejected immediately.
+- **D-C4c-7 (SDK host selection rules and `with_host`):** `SyneroymClient` resolves the target host key using five rules: (1) explicit `with_host`, (2) direct dial matching target DID, (3) target record in registry, (4) registry lookup when dialed node differs from target, (5) default to target DID if it is a valid `did:key`.
+- **D-C4c-8 (Host mismatch error handling and `-32098`):** When handshake verification fails due to a mismatched host signature, the client terminates with code `-32098` (`HOST_MISMATCH_RPC_CODE`). The SDK, Universal Proxy, and Client Gateway (`PassthroughOutcome::HostMismatch`) handle `-32098` by refreshing registry records, re-homing, and retrying. Both proxy outbox and conversation outbox classify `-32098` as `Retry`. `HostKeyUnknown` maps to `ServiceNotFound`.
+- **D-C4c-9 (Handshake timeout):** The E2E channel handshake enforces a 5-second timeout on waiting for the peer's ephemeral public key and signature.
+- **D-C4c-10 (`RemoteHop::call` and `RemotePeer`):** `RemoteHop::call` accepts `peer: &RemotePeer`, combining the dial address with the expected host DID key (`host_key: Option<String>`).
 
 ## Close-out
 

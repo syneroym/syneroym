@@ -9,9 +9,8 @@ use syneroym_core::{local_registry::SubstrateEndpoint, streaming::StreamDirectio
 use syneroym_identity::{Identity, substrate};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_rpc::{
-    AuthLevel, CallerContext, CapabilityToken, NOT_HOSTED_HERE_RPC_CODE, NativeInvocation,
-    NativeResponse, NativeService, OnBehalfProof, RpcResult, STREAM_UNAUTHENTICATED_RPC_CODE,
-    framing,
+    AuthLevel, CapabilityToken, NOT_HOSTED_HERE_RPC_CODE, OnBehalfProof,
+    STREAM_UNAUTHENTICATED_RPC_CODE, framing,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
@@ -36,19 +35,6 @@ async fn register_test_endpoint(route_handler: &RouteHandler, service_id: &str) 
 async fn read_refusal_response(client: &mut tokio::io::DuplexStream) -> Value {
     let frame = framing::read_frame(client).await.expect("read refusal frame failed");
     serde_json::from_slice(&frame).expect("expected JSON-RPC response")
-}
-
-#[derive(Debug, Default)]
-struct CapturingNativeService {
-    caller: Mutex<Option<CallerContext>>,
-}
-
-#[async_trait::async_trait]
-impl NativeService for CapturingNativeService {
-    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        *self.caller.lock().unwrap() = Some(invocation.caller);
-        Ok(NativeResponse { payload: json!({"status": "ok"}) })
-    }
 }
 
 #[tokio::test]

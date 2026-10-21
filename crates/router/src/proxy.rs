@@ -31,10 +31,11 @@ use syneroym_core::{
 use syneroym_identity::Identity;
 use syneroym_rpc::{
     CallOrigin, CallerContext, CallerProof, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo,
-    JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, NOT_HOSTED_HERE_RPC_CODE,
-    NativeInvocation, ProxyError, ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall,
-    QueuedCallInfo, QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo,
-    SagaState as RpcSagaState, SagaStepRequest, ServiceProxy, WeakNativeDispatchRegistry, framing,
+    HOST_MISMATCH_RPC_CODE, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
+    NOT_HOSTED_HERE_RPC_CODE, NativeInvocation, ProxyError, ProxyProtocol, ProxyQueueInspector,
+    ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE,
+    SagaBegin, SagaInfo, SagaState as RpcSagaState, SagaStepRequest, ServiceProxy,
+    WeakNativeDispatchRegistry, framing,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{task, time};
