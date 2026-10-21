@@ -13,6 +13,7 @@ use syneroym_identity::{Identity, substrate::derive_did_key};
 use tokio::io::{AsyncWriteExt, duplex};
 
 use super::*;
+use crate::handshake::HandshakeVerifier;
 
 /// A fresh, empty `EndpointRegistry` for tests that don't exercise
 /// owner-rooted trust (every other test in this module).
@@ -33,11 +34,8 @@ impl MasterAnchorResolver for MockResolver {
         &self,
         master_id: &str,
     ) -> Result<MasterAnchorPayload, anyhow::Error> {
-        let mut anchor = MasterAnchorPayload::default();
-        if let Some(revoked) = self.revoked.get(master_id) {
-            anchor.revoked_keys = revoked.clone();
-        }
-        Ok(anchor)
+        let revoked_keys = self.revoked.get(master_id).cloned().unwrap_or_default();
+        Ok(MasterAnchorPayload { revoked_keys, ..Default::default() })
     }
 }
 

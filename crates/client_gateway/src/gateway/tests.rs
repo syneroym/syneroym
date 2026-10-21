@@ -1,11 +1,15 @@
 use std::sync::{
-    Arc, RwLock,
+    self, Arc, RwLock,
     atomic::{AtomicUsize, Ordering},
 };
 
 use dashmap::DashMap;
 use ed25519_dalek::VerifyingKey;
 use iroh::Endpoint;
+use p256::{
+    ecdh::EphemeralSecret,
+    elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
+};
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
     config::IdentityMode,
@@ -14,10 +18,11 @@ use syneroym_core::{
     util::short_hash,
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
-use syneroym_router::SYNEROYM_ALPN;
+use syneroym_router::{RoutePreamble, SYNEROYM_ALPN};
 use syneroym_sdk::topology::{
     AppHostResolver, CredentialWarning, Tier1Lookup, Tier2Fetch, credential_warning,
 };
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use super::*;
 
@@ -311,28 +316,44 @@ async fn forward_to_service_rehomes_and_replays_on_host_mismatch() {
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let server_attempts = Arc::clone(&attempts);
+    let recorded_post_preamble = Arc::new(sync::Mutex::new(Vec::new()));
+    let server_recorded = Arc::clone(&recorded_post_preamble);
 
     let server_task = tokio::spawn(async move {
         let incoming = server_ep.accept().await.unwrap();
         let connecting = incoming.accept().unwrap();
         let conn = connecting.await.unwrap();
 
-        while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-            let attempt = server_attempts.fetch_add(1, Ordering::SeqCst);
-            let mut buf = [0u8; 1024];
-            let _ = recv.read(&mut buf).await;
-            if attempt == 0 {
-                let mut epk = vec![0x04];
-                epk.extend_from_slice(&[1u8; 64]);
-                let reply = [epk.as_slice(), &[0u8; 64]].concat();
-                let _ = send.write_all(&reply).await;
+        while let Ok((mut send, recv)) = conn.accept_bi().await {
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            let server_recorded = Arc::clone(&server_recorded);
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(recv);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let preamble = RoutePreamble::parse(&line).unwrap();
+                assert_eq!(preamble.enc.as_deref(), Some("ecdh-p256"));
+                assert!(preamble.pubkey.is_none());
+                let client_epk_bytes = hex::decode(preamble.epk.expect("epk present")).unwrap();
+                assert_eq!(client_epk_bytes.len(), 65);
+
+                let server_secret = EphemeralSecret::random(&mut OsRng);
+                let server_point = server_secret.public_key().to_encoded_point(false);
+                assert_eq!(server_point.as_bytes().len(), 65);
+                let wrong_identity = Identity::generate().unwrap();
+                let mut sign_bytes = Vec::new();
+                sign_bytes.extend_from_slice(server_point.as_bytes());
+                sign_bytes.extend_from_slice(&client_epk_bytes);
+                let sig = wrong_identity.sign(&sign_bytes);
+
+                send.write_all(server_point.as_bytes()).await.unwrap();
+                send.write_all(&sig.to_bytes()).await.unwrap();
                 let _ = send.finish();
-            } else {
-                let _ = send
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\nreplayed-backend")
-                    .await;
-                let _ = send.finish();
-            }
+
+                let mut extra = Vec::new();
+                let _ = reader.read_to_end(&mut extra).await;
+                server_recorded.lock().unwrap().push(extra);
+            });
         }
     });
 
@@ -354,10 +375,20 @@ async fn forward_to_service_rehomes_and_replays_on_host_mismatch() {
     let n = client_stream.read(&mut buf).await.unwrap();
     let response = String::from_utf8_lossy(&buf[..n]);
 
-    assert!(response.contains("HTTP/1.1 200 OK"), "must return 200 OK: {response}");
-    assert!(response.contains("replayed-backend"));
+    let forward_res = forward_task.await.unwrap();
+    assert!(response.contains("HTTP/1.1 502"), "must return 502 Bad Gateway: {response}");
     assert_eq!(attempts.load(Ordering::SeqCst), 2, "must have made 2 attempts");
+    for _ in 0..50 {
+        if recorded_post_preamble.lock().unwrap().len() == 2 {
+            break;
+        }
+        time::sleep(Duration::from_millis(10)).await;
+    }
+    let recorded = recorded_post_preamble.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[0].is_empty(), "attempt 1 must have no bytes after preamble line");
+    assert!(recorded[1].is_empty(), "attempt 2 must have no bytes after preamble line");
 
-    assert!(forward_task.await.unwrap().is_ok());
+    assert!(forward_res.is_ok());
     server_task.abort();
 }

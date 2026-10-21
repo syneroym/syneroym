@@ -465,8 +465,8 @@ impl RouteHandler {
         parent_relay_url: Option<String>,
         retry_policy: RetryPolicy,
         max_connections: Option<usize>,
-        identity: Arc<Identity>,
     ) -> Result<Self> {
+        let identity = Arc::new(Identity::generate()?);
         let node_did = substrate::derive_did_key(&identity.public_key());
         let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default())?);
         let inner = Arc::new(RouteHandlerInner {

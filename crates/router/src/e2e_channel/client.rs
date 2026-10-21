@@ -119,49 +119,51 @@ where
     let Some((server_pk, sig)) = reply else {
         return Ok(Opened::Refused(plain(reader, writer)));
     };
-    finish_handshake(
-        reader,
-        writer,
+    let params = HandshakeParams {
         secret,
         client_epk,
         server_pk,
         sig,
         host,
-        &preamble.service_id,
+        target: &preamble.service_id,
         identity,
-    )
-    .await
+    };
+    finish_handshake(reader, writer, params).await
 }
 
-#[expect(clippy::too_many_arguments, reason = "helper for open_stream kept under 100 lines")]
-async fn finish_handshake<R, W>(
-    reader: BufReader<R>,
-    writer: W,
+struct HandshakeParams<'a> {
     secret: EphemeralSecret,
     client_epk: EncodedPoint,
     server_pk: [u8; 65],
     sig: [u8; 64],
-    host: &VerifyingKey,
-    target: &str,
+    host: &'a VerifyingKey,
+    target: &'a str,
     identity: IdentityFields,
+}
+
+async fn finish_handshake<R, W>(
+    reader: BufReader<R>,
+    writer: W,
+    params: HandshakeParams<'_>,
 ) -> Result<Opened, E2eError>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let signed = [server_pk.as_slice(), client_epk.as_bytes()].concat();
-    let signature = Signature::from_bytes(&sig);
-    host.verify_strict(&signed, &signature).map_err(|_| E2eError::BadHostSignature {
-        host: substrate::derive_did_key(host),
-        target: target.to_string(),
+    let signed = [params.server_pk.as_slice(), params.client_epk.as_bytes()].concat();
+    let signature = Signature::from_bytes(&params.sig);
+    params.host.verify_strict(&signed, &signature).map_err(|_| E2eError::BadHostSignature {
+        host: substrate::derive_did_key(params.host),
+        target: params.target.to_string(),
     })?;
-    let server_point =
-        PublicKey::from_sec1_bytes(&server_pk).map_err(|e| E2eError::BadReply(e.to_string()))?;
-    let shared = secret.diffie_hellman(&server_point);
-    let keys = kdf::derive(shared.raw_secret_bytes(), client_epk.as_bytes(), &server_pk)
+    let server_point = PublicKey::from_sec1_bytes(&params.server_pk)
         .map_err(|e| E2eError::BadReply(e.to_string()))?;
+    let shared = params.secret.diffie_hellman(&server_point);
+    let keys =
+        kdf::derive(shared.raw_secret_bytes(), params.client_epk.as_bytes(), &params.server_pk)
+            .map_err(|e| E2eError::BadReply(e.to_string()))?;
     let mut stream = cipher::wrap(reader, writer, &keys.client_to_server, &keys.server_to_client);
-    stream.writer.write_all(identity.to_line().as_bytes()).await?;
+    stream.writer.write_all(params.identity.to_line().as_bytes()).await?;
     stream.writer.flush().await?;
     Ok(Opened::Ready(stream))
 }

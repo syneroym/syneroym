@@ -541,13 +541,7 @@ async fn forward_to_service(
     match outcome {
         PassthroughOutcome::Done => Ok(()),
         PassthroughOutcome::NotHostedHere { replayable: false } => {
-            let rehome_res = {
-                let client = client_arc.lock().await;
-                client.rehome(&conn).await
-            };
-            if let Err(e) = rehome_res {
-                warn!("Gateway failed to rehome client for service {}: {}", connect_service_id, e);
-            }
+            rehome_client(&client_arc, &conn, &connect_service_id).await;
             Ok(())
         }
         PassthroughOutcome::NotHostedHere { replayable: true }
@@ -565,6 +559,20 @@ async fn forward_to_service(
             })
             .await
         }
+    }
+}
+
+async fn rehome_client(
+    client_arc: &Arc<Mutex<SyneroymClient>>,
+    conn: &TransportConnection,
+    connect_service_id: &str,
+) {
+    let rehome_res = {
+        let client = client_arc.lock().await;
+        client.rehome(conn).await
+    };
+    if let Err(e) = rehome_res {
+        warn!("Gateway failed to rehome client for service {}: {}", connect_service_id, e);
     }
 }
 
@@ -592,13 +600,7 @@ async fn handle_passthrough_rehome(params: PassthroughRehomeParams<'_>) -> Resul
         passthrough_identity,
         delegation,
     } = params;
-    let rehome_res = {
-        let client = client_arc.lock().await;
-        client.rehome(conn).await
-    };
-    if let Err(e) = rehome_res {
-        warn!("Gateway failed to rehome client for service {}: {}", connect_service_id, e);
-    }
+    rehome_client(client_arc, conn, connect_service_id).await;
     let (conn2, target_service_id2) = match connected(client_arc, is_auth_host).await {
         Ok(c) => c,
         Err(e) => {

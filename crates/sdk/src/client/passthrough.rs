@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_router::{
-    Opened, REFUSAL_HEADER, ReaderWriter, RoutePreamble, RouteProtocol, RouteTransport, e2e_channel,
+    Opened, REFUSAL_HEADER, ReaderWriter, RoutePreamble, RouteProtocol, RouteTransport,
+    e2e_channel::{self, E2eError, OwnedStream},
 };
 use tokio::{
     io::{self, AsyncReadExt, AsyncWriteExt},
@@ -29,6 +30,24 @@ pub enum PassthroughOutcome {
     HostMismatch,
 }
 
+fn is_authorized_http_refusal(chunk: &[u8]) -> bool {
+    let valid_status = chunk.starts_with(b"HTTP/1.1 4") || chunk.starts_with(b"HTTP/1.1 5");
+    if !valid_status {
+        return false;
+    }
+    let header_end = chunk.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(chunk.len());
+    let header_bytes = &chunk[..header_end];
+    let header_str = String::from_utf8_lossy(header_bytes);
+    for line in header_str.lines() {
+        if let Some((k, _)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case(REFUSAL_HEADER)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn starts_with_not_hosted_refusal(chunk: &[u8]) -> bool {
     if !chunk.starts_with(b"HTTP/1.1 421 ") {
         return false;
@@ -45,6 +64,37 @@ pub(crate) fn starts_with_not_hosted_refusal(chunk: &[u8]) -> bool {
         }
     }
     false
+}
+
+async fn handle_refused_passthrough(
+    s: OwnedStream,
+    tcp_stream: &mut TcpStream,
+) -> Result<PassthroughOutcome> {
+    let ReaderWriter { reader: mut recv, writer: mut send } = s;
+    let _ = send.shutdown().await;
+
+    let mut buf = vec![0u8; 4096];
+    let n = time::timeout(e2e_channel::HANDSHAKE_TIMEOUT, recv.read(&mut buf))
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout waiting for refusal response"))??;
+
+    if n == 0 {
+        anyhow::bail!("refused stream closed without refusal response");
+    }
+
+    if !is_authorized_http_refusal(&buf[..n]) {
+        anyhow::bail!("refusal response is not an authorized HTTP refusal");
+    }
+
+    if starts_with_not_hosted_refusal(&buf[..n]) {
+        return Ok(PassthroughOutcome::NotHostedHere { replayable: true });
+    }
+
+    tcp_stream.write_all(&buf[..n]).await?;
+    let (_, mut tcp_w) = tcp_stream.split();
+    let _ = io::copy(&mut recv, &mut tcp_w).await;
+    let _ = tcp_w.shutdown().await;
+    Ok(PassthroughOutcome::Done)
 }
 
 impl SyneroymClient {
@@ -92,27 +142,26 @@ impl SyneroymClient {
                 preamble.delegation = delegation.cloned();
                 preamble.sign(identity, now_secs());
 
-                let (stream, refused) =
-                    match e2e_channel::open_stream(recv, send, preamble, &path).await {
-                        Ok(Opened::Ready(s)) => (s, false),
-                        Ok(Opened::Refused(s)) => (s, true),
-                        Err(e2e_channel::E2eError::BadHostSignature { .. }) => {
-                            return Ok(PassthroughOutcome::HostMismatch);
-                        }
-                        Err(e) => return Err(e.into()),
-                    };
+                let stream = match e2e_channel::open_stream(recv, send, preamble, &path).await {
+                    Ok(Opened::Ready(s)) => s,
+                    Ok(Opened::Refused(s)) => {
+                        return handle_refused_passthrough(s, tcp_stream).await;
+                    }
+                    Err(E2eError::BadHostSignature { .. }) => {
+                        return Ok(PassthroughOutcome::HostMismatch);
+                    }
+                    Err(e) => return Err(e.into()),
+                };
 
                 let ReaderWriter { reader: mut recv, writer: mut send } = stream;
                 let mut write_err = None;
-                if !refused {
-                    let wrote = async {
-                        send.write_all(initial_bytes).await?;
-                        send.flush().await
-                    }
-                    .await;
-                    if let Err(e) = wrote {
-                        write_err = Some(e);
-                    }
+                let wrote = async {
+                    send.write_all(initial_bytes).await?;
+                    send.flush().await
+                }
+                .await;
+                if let Err(e) = wrote {
+                    write_err = Some(e);
                 }
 
                 let mut client_sent_more = false;

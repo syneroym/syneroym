@@ -546,7 +546,7 @@ Two more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, AD
 
 WebSocket is an option for one app. The guest declares an HTTP route with `target = "websocket"`. The router upgrades the connection and hands each frame to the guest. The app defines the frames. They are not JSON-RPC.
 
-**Routing.** Every stream starts with a route preamble: `<scheme>://<interface>|<service_id>[?enc=...]`. The router reads the preamble and checks who the caller is. Then it plans a pipeline of four stages: encryption, transport, adaptation, and service. The service stage is one of three things: a native Rust service, a WASM component, or a TCP proxy to a container or another TCP service. The preamble grammar is in `crates/router/src/preamble.rs`.
+**Routing.** Every stream starts with a route preamble: `<scheme>://<interface>|<service_id>[?enc=...]`. The router reads the preamble. On plain streams, it checks caller identity immediately. On encrypted streams (`enc=ecdh-p256`), it checks the requested interface before the handshake; then, after establishing the encrypted channel, it reads and validates the caller's identity line inside the decrypted stream. Then it plans a pipeline of four stages: encryption, transport, adaptation, and service. The service stage is one of three things: a native Rust service, a WASM component, or a TCP proxy to a container or another TCP service. The preamble grammar is in `crates/router/src/preamble.rs`.
 
 **Access control.** There are three layers. No single component holds all of them.
 
@@ -798,7 +798,7 @@ When a stream opens, the router (`HandshakeVerifier::verify_preamble`) validates
 2. Did the Master Key authorize this Temporary Key? When the preamble carries a delegation certificate, the router checks the signature, the validity window, and the scope (`routing` or `service-instance`) of the certificate. It also checks that the temporary DID in the certificate is the DID of the key in the preamble.
 3. Has the Master Key revoked this Temporary Key? The router resolves the master anchor (see below). It refuses the stream if the key is on the `revoked_keys` list, or if the anchor cannot be resolved within 5 seconds.
 
-When the preamble carries no certificate, the router accepts the key in the preamble as the caller's own master key after verifying the signature. The optional end-to-end handshake (`enc=ecdh-p256`) is a separate step. It does not use the certificate. See [Encryption at Every Layer](#encryption-at-every-layer).
+On plain streams, the router performs this check directly on the preamble. On encrypted streams (`enc=ecdh-p256`), unknown interface is checked and answered in plain text before the handshake (`SERVICE_NOT_FOUND_RPC_CODE`, `-32601`). After the end-to-end handshake completes, the router decrypts the identity line inside the channel and runs the same chain. When the preamble or identity line carries no certificate, the router accepts the key as the caller's own master key after verifying the signature. See [Encryption at Every Layer](#encryption-at-every-layer).
 
 > **Envisioned.** Not built yet.
 > - **Assurance credential.** The handshake optionally checks that the Master Key is bound to a verified government identity (Method B).
@@ -1619,12 +1619,12 @@ flowchart TD
 
 **Optional end-to-end stream layer (box T2).** A caller turns it on with `enc=ecdh-p256` in the route preamble. The router then runs the handshake on any transport. The handshake is described in [Appendix > 5. Data Transfer Characteristics](#5-data-transfer-characteristics).
 
-- **Who uses it.** The browser bootstrap page (`peer-proxy.js`) sets it on the WebSocket tunnel path. On a WebRTC data channel the page removes it, because DTLS already protects that channel. The Rust client (`SyneroymClient`) does not. Nothing else in the SDK or the gateway sets it.
-- **Only the node is authenticated.** The node signs both ephemeral keys with its identity key. The caller's ephemeral key is not signed.
-- **No key derivation step.** The ECDH shared secret is used as the AES-256-GCM key as it is. There is no KDF.
-- **Dedicated encryption key field (`epk`).** The preamble field `epk` carries the caller's P-256 key for this handshake. The identity check reads `pubkey` as an Ed25519 key. A stream that sets `enc=ecdh-p256` can now carry a delegation certificate and verified caller identity without field conflicts.
+- **Who uses it.** The Rust client (`SyneroymClient`), the client gateway passthrough, and the browser bootstrap page (`peer-proxy.js`) set it when dialing indirect or forwarded streams. On direct connections or WebRTC data channels protected by DTLS, plain streams are used.
+- **Node authentication before caller identity.** The node signs both ephemeral keys with its permanent Ed25519 identity key. The caller verifies this signature against the expected host key before transmitting any identity parameters. Caller identity is transmitted inside the encrypted stream, so forwarders cannot observe it.
+- **Key derivation step (HKDF-SHA256).** Key derivation uses salt `"syneroym-e2e-v1"` and info tags `"c2s"` and `"s2c"` with both ephemeral public keys to derive two directional 32-byte AES-256-GCM keys (`client_key` and `server_key`), preventing reflection attacks.
+- **Dedicated encryption key field (`epk`).** The preamble field `epk` carries the caller's 65-byte uncompressed P-256 key for this handshake. On indirect streams, caller identity fields (`pubkey`, `sig`, `delegation`, `ucan`, `ts`, `on_behalf`) are omitted from the route preamble line and transmitted in the first encrypted line after the handshake.
 
-> **Envisioned.** Not built yet. Today the handshake authenticates the node only and the shared secret is the key itself. A handshake that signs the caller's key too and a key derivation step are not built.
+> **Envisioned.** Not built yet. Today the host signs the ephemeral keys and the caller proves its identity inside the encrypted channel. Mutual signing of ephemeral keys during the handshake itself is not built.
 
 ### Keys: Location, Use, Loss
 
@@ -1835,13 +1835,13 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 1.  **Packet Transmission**: Synapp **Az** asks its host substrate **Sz** to send a packet to **Ax**.
 2.  **Resolution**: The client on **Sz** queries the local Registry **Rp**. **Rp** answers from its own records. It returns a not-found answer for a service it has no record of. It does not ask its parent, the global Registry **R**.
 3.  **Outbound Call**: When the lookup returns a record for **Ax**, **Sz** dials the Iroh address in that record with its own Iroh endpoint (the Universal Proxy). It does not send the stream to a coordinator first. If the lookup finds no record in the registry or in the DHT, the call fails with a service-not-found error. The DHT is asked only when `enable_bep0044_dht` is on, which is the default.
-4.  **Forwarding by a Coordinator**: A client in the private network that is given the address of **Cp** sends the preamble for **Ax** (including its public key) to **Cp**. **Cp** reads the preamble, resolves the target through the registry, and connects outbound to deliver the stream to **Sx** (possibly through relay **C**). Because **Cp** opens a new *outbound* Iroh connection for each forwarded stream, it avoids the inbound reachability limits (NATs and firewalls) that constrain the Ax -> Az flow.
+4.  **Forwarding by a Coordinator**: A client in the private network that is given the address of **Cp** sends the preamble for **Ax** (with `enc=ecdh-p256` and its ephemeral key `epk`, omitting caller identity keys) to **Cp**. **Cp** reads the preamble, resolves the target through the registry, and connects outbound to deliver the stream to **Sx** (possibly through relay **C**). Because **Cp** opens a new *outbound* Iroh connection for each forwarded stream, it avoids the inbound reachability limits (NATs and firewalls) that constrain the Ax -> Az flow.
 
 > **Envisioned.** Not built yet. Today a substrate dials its target itself, and nothing sends a substrate's own outbound call through a coordinator. A registry does not forward a lookup to its parent.
 
 *   **Rp** does not have a local record for **Ax**, so it queries its parent, the global Registry **R**. **R** returns **Ax**'s location (reachable directly via **Sx** on the public internet).
 *   Because **Sz** has no outbound internet access, it cannot connect to **Sx** directly. It uses the Iroh connection details of **Cp** that it got at startup. It got them by HTTP discovery or by the **Rp** -> **R** registry lookup. Then it routes the connection request through **Cp**.
-*   **Sz** connects to **Cp** and sends the preamble for **Ax** (including **Sz**'s public key or an ephemeral public key). **Cp** reads the preamble, sees that the target is on the public network, and connects outbound to deliver the stream to **Sx** (possibly through relay **C**).
+*   **Sz** connects to **Cp** and sends the preamble for **Ax** (with `enc=ecdh-p256` and `epk`, omitting caller identity keys). **Cp** reads the preamble, sees that the target is on the public network, and connects outbound to deliver the stream to **Sx** (possibly through relay **C**).
 
 #### 5. Data Transfer Characteristics
 

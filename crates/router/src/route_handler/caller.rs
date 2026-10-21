@@ -1,20 +1,13 @@
-use std::{
-    mem,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::mem;
 
 use anyhow::{Result, anyhow};
 use syneroym_rpc::CallerContext;
 use tokio::{io::BufReader, time};
 use tracing::debug;
 
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
-
 use crate::{
     e2e_channel::OwnedStream,
-    handshake::HandshakeVerifier,
+    handshake::{HandshakeVerifier, now_secs},
     preamble::{IdentityFields, RoutePreamble},
     route_handler::{
         RouteHandler,

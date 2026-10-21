@@ -38,9 +38,10 @@ use syneroym_rpc::{
 };
 use syneroym_sandbox_podman::ContainerEngine;
 use syneroym_sandbox_wasm::AppSandboxEngine;
+use syneroym_sdk::SyneroymClient;
 use tokio::time;
 
-use super::wait_for_relay;
+use super::{init_coordinator, spawn_registry, wait_for_relay};
 
 pub async fn build_test_route_handler_deps(
     config: &SubstrateConfig,
@@ -210,7 +211,7 @@ pub async fn spawn_global_coordinator(
         }),
         ..Default::default()
     });
-    let c = crate::common::init_coordinator(&config_c).await?;
+    let c = init_coordinator(&config_c).await?;
     wait_for_relay(&c, Duration::from_secs(30)).await?;
     let c_info_addr = c.info_addr().unwrap();
 
@@ -221,9 +222,86 @@ pub async fn spawn_global_coordinator(
     Ok((c, c_info, c_relay_url))
 }
 
+pub async fn spawn_private_coordinator(
+    base_path: &Path,
+    r_url: &str,
+    c_relay_url: &str,
+    info_client: &Client,
+) -> Result<(CoordinatorIroh, CoordinatorInfo)> {
+    let mut config_cp = SubstrateConfig {
+        app_local_data_dir: base_path.join("data_cp"),
+        app_data_dir: base_path.join("user_data_cp"),
+        ..Default::default()
+    };
+    config_cp.substrate.enable_bep0044_dht = false;
+    config_cp.roles.coordinator = Some(CoordinatorRole {
+        iroh: Some(CoordinatorIrohConfig {
+            enable_signalling: true,
+            enable_relay: true,
+            http_bind_address: "127.0.0.1:0".to_string(),
+            quic_bind_address: "127.0.0.1:0".to_string(),
+            community_registry_url: Some(r_url.to_string()),
+            share_in_registry: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    config_cp.parent_coordinator.iroh.url = Some(c_relay_url.to_string());
+    let cp = init_coordinator(&config_cp).await?;
+    wait_for_relay(&cp, Duration::from_secs(30)).await?;
+    let cp_info_addr = cp.info_addr().unwrap();
+
+    let cp_info: CoordinatorInfo =
+        info_client.get(format!("http://{cp_info_addr}{INFO_PATH}")).send().await?.json().await?;
+
+    Ok((cp, cp_info))
+}
+
+pub struct InboundRelayTopology {
+    pub registry_r: syneroym_community_registry::EcosystemRegistry,
+    pub r_url: String,
+    pub c: CoordinatorIroh,
+    pub c_info: CoordinatorInfo,
+    pub cp: CoordinatorIroh,
+    pub target_z: TargetSubstrate,
+}
+
+impl InboundRelayTopology {
+    pub async fn spawn(base_path: &Path, info_client: &Client) -> Result<Self> {
+        let (registry_r, r_url) = spawn_registry(base_path).await?;
+        let (c, c_info, c_relay_url) =
+            spawn_global_coordinator(base_path, &r_url, info_client).await?;
+        let (cp, cp_info) =
+            spawn_private_coordinator(base_path, &r_url, &c_relay_url, info_client).await?;
+        let target_z =
+            spawn_z_target_substrate(base_path, &r_url, cp_info.relay_url.clone(), info_client)
+                .await?;
+        Ok(Self { registry_r, r_url, c, c_info, cp, target_z })
+    }
+
+    pub fn new_client(&self) -> SyneroymClient {
+        SyneroymClient::new_with_mechanisms(
+            self.target_z.did.clone(),
+            vec![EndpointMechanism::Iroh {
+                endpoint_addr_bytes: self.c_info.endpoint_addr_bytes.clone(),
+                relay_url: self.c_info.relay_url.clone(),
+            }],
+        )
+    }
+
+    pub async fn shutdown(mut self) -> Result<()> {
+        let _ = self.target_z.router.shutdown().await;
+        self.cp.shutdown().await?;
+        self.c.shutdown().await?;
+        self.registry_r.shutdown().await?;
+        Ok(())
+    }
+}
+
 pub struct TargetSubstrate {
     pub did: String,
     pub router: Router,
+    pub route_handler: RouteHandler,
 }
 
 pub async fn spawn_z_target_substrate(
@@ -253,7 +331,7 @@ pub async fn spawn_z_target_substrate(
     if let Some(relay_url) = cp_relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
         ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
     }
-    let secret_key_z = SecretKey::generate(&mut rand::rng());
+    let secret_key_z = SecretKey::from_bytes(&secret_z_bytes);
     let ep_z = ep_z_bldr.secret_key(secret_key_z).bind().await?;
     ep_z.online().await;
 
@@ -269,7 +347,7 @@ pub async fn spawn_z_target_substrate(
     .await?;
 
     let ep_z_addr = ep_z.addr();
-    let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z).spawn();
+    let router_z = Router::builder(ep_z).accept(SYNEROYM_ALPN, route_handler_z.clone()).spawn();
 
     let signed_info_z = EndpointInfo {
         service_id: did_z.clone(),
@@ -292,7 +370,7 @@ pub async fn spawn_z_target_substrate(
     let res = info_client.post(format!("{r_url}/register")).json(&signed_info_z).send().await?;
     assert!(res.status().is_success());
 
-    Ok(TargetSubstrate { did: did_z, router: router_z })
+    Ok(TargetSubstrate { did: did_z, router: router_z, route_handler: route_handler_z })
 }
 
 #[derive(Debug, Default)]

@@ -1,8 +1,17 @@
+use std::fmt::Display;
+
 use ed25519_dalek::VerifyingKey;
+use syneroym_rpc::{
+    HOST_MISMATCH_RPC_CODE, NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE,
+    STREAM_UNAUTHENTICATED_RPC_CODE,
+};
 use tokio::io::AsyncWriteExt;
 
 use super::*;
-use crate::e2e_channel::{self, Opened};
+use crate::{
+    e2e_channel::{self, E2eError, Opened},
+    handshake::now_secs,
+};
 
 const REFUSAL_READ_GRACE: Duration = Duration::from_secs(2);
 
@@ -55,20 +64,42 @@ impl IrohHop {
     }
 }
 
-fn transport_err(e: impl std::fmt::Display) -> ProxyError {
+fn transport_err(e: impl Display) -> ProxyError {
     ProxyError::Transport(e.to_string())
 }
 
-fn e2e_err(e: e2e_channel::E2eError) -> ProxyError {
+fn e2e_err(e: E2eError) -> ProxyError {
     match e {
-        e2e_channel::E2eError::HostKeyUnknown { target } => ProxyError::ServiceNotFound(target),
-        e @ e2e_channel::E2eError::BadHostSignature { .. } => ProxyError::Callee {
-            code: syneroym_rpc::HOST_MISMATCH_RPC_CODE,
-            message: e.to_string(),
-            data: None,
-        },
+        E2eError::HostKeyUnknown { target } => ProxyError::ServiceNotFound(target),
+        e @ E2eError::BadHostSignature { .. } => {
+            ProxyError::Callee { code: HOST_MISMATCH_RPC_CODE, message: e.to_string(), data: None }
+        }
         other => transport_err(other),
     }
+}
+
+async fn handle_refused_hop(mut s: e2e_channel::OwnedStream) -> Result<Vec<u8>, ProxyError> {
+    let frame = time::timeout(e2e_channel::HANDSHAKE_TIMEOUT, framing::read_frame(&mut s.reader))
+        .await
+        .map_err(|_| ProxyError::Timeout(e2e_channel::HANDSHAKE_TIMEOUT))?
+        .map_err(transport_err)?;
+
+    let err: JsonRpcErrorResponse = serde_json::from_slice(&frame)
+        .map_err(|e| ProxyError::Transport(format!("malformed refusal response: {e}")))?;
+    if !matches!(
+        err.error.code,
+        NOT_HOSTED_HERE_RPC_CODE | STREAM_UNAUTHENTICATED_RPC_CODE | SERVICE_NOT_FOUND_RPC_CODE
+    ) {
+        return Err(ProxyError::Transport(format!(
+            "refusal response code {} is not an authorized pre-handshake error",
+            err.error.code
+        )));
+    }
+    Err(ProxyError::Callee {
+        code: err.error.code,
+        message: err.error.message,
+        data: err.error.data,
+    })
 }
 
 #[async_trait::async_trait]
@@ -89,8 +120,7 @@ impl RemoteHop for IrohHop {
         let body = serde_json::to_vec(request)
             .map_err(|e| ProxyError::Internal(format!("failed to serialize request: {e}")))?;
 
-        let preamble = identity
-            .map_or_else(|| route.clone(), |id| id.apply(route, crate::handshake::now_secs()));
+        let preamble = identity.map_or_else(|| route.clone(), |id| id.apply(route, now_secs()));
 
         let path =
             e2e_channel::path(peer.addr.id.as_bytes(), peer.host_key.as_ref(), &route.service_id)
@@ -117,9 +147,7 @@ impl RemoteHop for IrohHop {
                 .await
                 .map_err(e2e_err)?
             {
-                Opened::Refused(mut s) => {
-                    return framing::read_frame(&mut s.reader).await.map_err(transport_err);
-                }
+                Opened::Refused(s) => return handle_refused_hop(s).await,
                 Opened::Ready(s) => s,
             };
 

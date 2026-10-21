@@ -23,7 +23,6 @@ use syneroym_core::{
     dht_registry::EndpointMechanism,
 };
 use syneroym_identity::substrate;
-use syneroym_rpc::JsonRpcError;
 use syneroym_sdk::SyneroymClient;
 use tokio::{
     sync::{Notify, mpsc},
@@ -141,13 +140,7 @@ async fn probe_connection(client: &mut SyneroymClient) -> Verdict {
     };
     match time::timeout(ATTEMPT_DEADLINE, probe).await {
         Ok(Ok(_)) => Verdict::Accepted,
-        Ok(Err(e))
-            if e.to_string().contains("Empty response from stream")
-                || e.downcast_ref::<JsonRpcError>()
-                    .is_some_and(|r| r.code == syneroym_rpc::NOT_HOSTED_HERE_RPC_CODE) =>
-        {
-            Verdict::Accepted
-        }
+        Ok(Err(e)) if e.to_string().contains("Empty response from stream") => Verdict::Accepted,
         Ok(Err(_)) | Err(_) => Verdict::Rejected,
     }
 }

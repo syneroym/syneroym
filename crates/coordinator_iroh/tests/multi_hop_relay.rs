@@ -7,14 +7,11 @@
 use std::{path::Path, time::Duration};
 
 use anyhow::Result;
-use ed25519_dalek::VerifyingKey;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, protocol::Router};
 use reqwest::Client;
 use syneroym_community_registry::EcosystemRegistry;
-use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
-    config::{CoordinatorIrohConfig, CoordinatorRole, ServiceRegistryRole, SubstrateConfig},
-    coordinator_info::{CoordinatorInfo, INFO_PATH},
+    config::{ServiceRegistryRole, SubstrateConfig},
     dht_registry::{
         EndpointInfo, EndpointMechanism, EndpointType, RegistryClient, SignedEndpointInfo,
     },
@@ -27,7 +24,6 @@ use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RoutePipeline, RoutePreamble, RouteProtocol,
     RouteTransport, SYNEROYM_ALPN, ServiceStage, TransportStage,
 };
-use syneroym_rpc::JsonRpcError;
 use syneroym_sdk::SyneroymClient;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
@@ -35,9 +31,13 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use tokio::time;
 
 mod common;
-use common::nodes::{
-    TargetSubstrate, build_test_route_handler_deps, create_signed_info_with_full_addr,
-    spawn_global_coordinator, spawn_z_target_substrate, wait_for_local_addr,
+use common::{
+    logs::init_trace_collector,
+    nodes::{
+        InboundRelayTopology, TargetSubstrate, build_test_route_handler_deps,
+        create_signed_info_with_full_addr, spawn_global_coordinator, spawn_private_coordinator,
+        wait_for_local_addr,
+    },
 };
 
 /// Minimal `DeployManifest` for `AppSandboxEngine::deploy_wasm` (the
@@ -89,42 +89,6 @@ fn create_signed_info(
     info.sign(identity).unwrap()
 }
 
-/// Spawns private Coordinator Cp (home relay: C's; record published in R).
-async fn spawn_private_coordinator(
-    base_path: &Path,
-    r_url: &str,
-    c_relay_url: &str,
-    info_client: &Client,
-) -> Result<(CoordinatorIroh, CoordinatorInfo)> {
-    let mut config_cp = SubstrateConfig {
-        app_local_data_dir: base_path.join("data_cp"),
-        app_data_dir: base_path.join("user_data_cp"),
-        ..Default::default()
-    };
-    config_cp.substrate.enable_bep0044_dht = false;
-    config_cp.roles.coordinator = Some(CoordinatorRole {
-        iroh: Some(CoordinatorIrohConfig {
-            enable_signalling: true,
-            enable_relay: true,
-            http_bind_address: "127.0.0.1:0".to_string(),
-            quic_bind_address: "127.0.0.1:0".to_string(),
-            community_registry_url: Some(r_url.to_string()),
-            share_in_registry: true,
-            ..Default::default()
-        }),
-        ..Default::default()
-    });
-    config_cp.parent_coordinator.iroh.url = Some(c_relay_url.to_string());
-    let cp = common::init_coordinator(&config_cp).await?;
-    common::wait_for_relay(&cp, Duration::from_secs(30)).await?;
-    let cp_info_addr = cp.info_addr().unwrap();
-
-    let cp_info: CoordinatorInfo =
-        info_client.get(format!("http://{cp_info_addr}{INFO_PATH}")).send().await?.json().await?;
-
-    Ok((cp, cp_info))
-}
-
 /// Spawns target substrate Sx in the public network under C, exactly as
 /// `test_outbound_relay` does: bound directly to C's relay, then registered
 /// in registry R.
@@ -156,7 +120,7 @@ async fn spawn_x_target_substrate(
     let mut ep_x_bldr = Endpoint::empty_builder();
     ep_x_bldr = ep_x_bldr
         .relay_mode(RelayMode::Custom(RelayMap::from(c_relay_url.parse::<RelayUrl>().unwrap())));
-    let secret_key_x = SecretKey::generate(&mut rand::rng());
+    let secret_key_x = SecretKey::from_bytes(&secret_x_bytes);
     let ep_x = ep_x_bldr.secret_key(secret_key_x).bind().await?;
     ep_x.online().await;
 
@@ -172,7 +136,7 @@ async fn spawn_x_target_substrate(
     .await?;
 
     let ep_x_addr = ep_x.addr();
-    let router_x = Router::builder(ep_x).accept(SYNEROYM_ALPN, route_handler_x).spawn();
+    let router_x = Router::builder(ep_x).accept(SYNEROYM_ALPN, route_handler_x.clone()).spawn();
 
     // Register Sx in community registry R
     let signed_info_x =
@@ -180,7 +144,7 @@ async fn spawn_x_target_substrate(
     let res = info_client.post(format!("{r_url}/register")).json(&signed_info_x).send().await?;
     assert!(res.status().is_success());
 
-    Ok(TargetSubstrate { did: did_x, router: router_x })
+    Ok(TargetSubstrate { did: did_x, router: router_x, route_handler: route_handler_x })
 }
 
 #[tokio::test]
@@ -250,52 +214,9 @@ async fn test_registry_propagation() -> Result<()> {
     Ok(())
 }
 
-struct InboundRelayTopology {
-    registry_r: EcosystemRegistry,
-    c: CoordinatorIroh,
-    c_info: CoordinatorInfo,
-    cp: CoordinatorIroh,
-    target_z: TargetSubstrate,
-    host_c: String,
-}
-
-impl InboundRelayTopology {
-    async fn spawn(base_path: &Path, info_client: &Client) -> Result<Self> {
-        let (registry_r, r_url) = common::spawn_registry(base_path).await?;
-        let (c, c_info, c_relay_url) =
-            spawn_global_coordinator(base_path, &r_url, info_client).await?;
-        let (cp, cp_info) =
-            spawn_private_coordinator(base_path, &r_url, &c_relay_url, info_client).await?;
-        let target_z =
-            spawn_z_target_substrate(base_path, &r_url, cp_info.relay_url.clone(), info_client)
-                .await?;
-        let addr_c: EndpointAddr = serde_json::from_slice(&c_info.endpoint_addr_bytes)?;
-        let host_c = derive_did_key(&VerifyingKey::from_bytes(addr_c.id.as_bytes())?);
-        Ok(Self { registry_r, c, c_info, cp, target_z, host_c })
-    }
-
-    fn new_client(&self) -> SyneroymClient {
-        SyneroymClient::new_with_mechanisms(
-            self.target_z.did.clone(),
-            vec![EndpointMechanism::Iroh {
-                endpoint_addr_bytes: self.c_info.endpoint_addr_bytes.clone(),
-                relay_url: self.c_info.relay_url.clone(),
-            }],
-        )
-        .with_host(&self.host_c)
-    }
-
-    async fn shutdown(mut self) -> Result<()> {
-        let _ = self.target_z.router.shutdown().await;
-        self.cp.shutdown().await?;
-        self.c.shutdown().await?;
-        self.registry_r.shutdown().await?;
-        Ok(())
-    }
-}
-
 #[tokio::test]
 async fn test_inbound_relay() -> Result<()> {
+    let logs = init_trace_collector();
     let temp_dir = tempfile::tempdir()?;
     let info_client = Client::new();
     let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
@@ -306,36 +227,55 @@ async fn test_inbound_relay() -> Result<()> {
     let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
+    let line = {
+        let captured = logs.read().unwrap();
+        captured
+            .iter()
+            .find(|l| l.contains("Forwarding preamble") && l.contains(&topo.target_z.did))
+            .cloned()
+            .expect("must contain Forwarding preamble line for target_z")
+    };
+    assert!(line.contains("enc=ecdh-p256"), "must have enc: {line}");
+    assert!(line.contains("master=-"), "must have master=-: {line}");
+    assert!(line.contains("sig=-"), "must have sig=-: {line}");
+    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
+
     sdk_client.shutdown().await?;
     topo.shutdown().await
 }
 
 #[tokio::test]
-async fn multi_hop_relay_without_host_key_fails_service_not_found() -> Result<()> {
+async fn unknown_host_key_sends_nothing() -> Result<()> {
+    let logs = init_trace_collector();
     let temp_dir = tempfile::tempdir()?;
     let info_client = Client::new();
     let (mut registry_r, r_url) = common::spawn_registry(temp_dir.path()).await?;
     let (mut c, c_info, _c_relay_url) =
         spawn_global_coordinator(temp_dir.path(), &r_url, &info_client).await?;
 
-    let addr_c: EndpointAddr = serde_json::from_slice(&c_info.endpoint_addr_bytes)?;
-    let host_c = derive_did_key(&VerifyingKey::from_bytes(addr_c.id.as_bytes())?);
-    let unregistered = derive_did_key(&Identity::generate()?.public_key());
-
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
-        unregistered,
+        "not-a-did".to_string(),
         vec![EndpointMechanism::Iroh {
             endpoint_addr_bytes: c_info.endpoint_addr_bytes,
             relay_url: c_info.relay_url,
         }],
-    )
-    .with_host(&host_c);
+    );
 
     sdk_client.connect().await?;
     let err =
         sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await.unwrap_err();
-    let rpc_err = err.downcast_ref::<JsonRpcError>().expect("expected JsonRpcError");
-    assert_eq!(rpc_err.code, syneroym_rpc::NOT_HOSTED_HERE_RPC_CODE);
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("no host key for 'not-a-did'"),
+        "error must mention no host key for 'not-a-did': {err_str}"
+    );
+
+    let leaked = logs
+        .read()
+        .unwrap()
+        .iter()
+        .any(|l| l.contains("Forwarding preamble") && l.contains("not-a-did"));
+    assert!(!leaked, "forwarder must not receive or forward any preamble for unknown host");
 
     sdk_client.shutdown().await?;
     c.shutdown().await?;
@@ -345,13 +285,14 @@ async fn multi_hop_relay_without_host_key_fails_service_not_found() -> Result<()
 
 #[tokio::test]
 async fn multi_hop_relay_with_host_key_keeps_identity_inside_encrypted_channel() -> Result<()> {
-    let logs = common::logs::init_trace_collector();
+    let logs = init_trace_collector();
     let temp_dir = tempfile::tempdir()?;
     let info_client = Client::new();
     let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
 
     let caller_identity = Identity::generate()?;
     let caller_did = derive_did_key(&caller_identity.public_key());
+    let caller_hex = hex::encode(caller_identity.public_key().as_bytes());
 
     let mut sdk_client = topo.new_client().with_identity(caller_identity);
     sdk_client.connect().await?;
@@ -359,8 +300,20 @@ async fn multi_hop_relay_with_host_key_keeps_identity_inside_encrypted_channel()
     let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
-    let leaked = logs.read().unwrap().iter().any(|l| l.contains(&caller_did));
-    assert!(!leaked, "caller DID leaked into relay logs: {caller_did}");
+    let line = {
+        let captured = logs.read().unwrap();
+        captured
+            .iter()
+            .find(|l| l.contains("Forwarding preamble") && l.contains(&topo.target_z.did))
+            .cloned()
+            .expect("must contain Forwarding preamble line for target_z")
+    };
+    assert!(line.contains("enc=ecdh-p256"), "must have enc: {line}");
+    assert!(line.contains("master=-"), "must have master=-: {line}");
+    assert!(line.contains("sig=-"), "must have sig=-: {line}");
+    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
+    assert!(!line.contains(&caller_did), "caller DID leaked into preamble: {line}");
+    assert!(!line.contains(&caller_hex), "caller key hex leaked into preamble: {line}");
 
     sdk_client.shutdown().await?;
     topo.shutdown().await
@@ -391,12 +344,15 @@ async fn multi_hop_relay_with_wrong_host_key_fails_host_mismatch() -> Result<()>
         "expected bad host signature error, got: {err_str}"
     );
 
+    eprintln!("TEST: before client shutdown");
     sdk_client.shutdown().await?;
+    eprintln!("TEST: after client shutdown, before topo shutdown");
     topo.shutdown().await
 }
 
 #[tokio::test]
 async fn test_outbound_relay() -> Result<()> {
+    let logs = init_trace_collector();
     let temp_dir = tempfile::tempdir()?;
     let base_path = temp_dir.path();
     let info_client = Client::new();
@@ -417,22 +373,32 @@ async fn test_outbound_relay() -> Result<()> {
 
     // 5. Client in private network dials Cp, the forwarding entry point. Cp looks
     //    Sx up in R and dials it via Sx's home relay (C's relay).
-    let addr_cp: EndpointAddr = serde_json::from_slice(&cp_info.endpoint_addr_bytes)?;
-    let host_cp = derive_did_key(&VerifyingKey::from_bytes(addr_cp.id.as_bytes())?);
     let mut sdk_client = SyneroymClient::new_with_mechanisms(
         target_x.did.clone(),
         vec![EndpointMechanism::Iroh {
             endpoint_addr_bytes: cp_info.endpoint_addr_bytes,
             relay_url: cp_info.relay_url,
         }],
-    )
-    .with_host(&host_cp);
+    );
 
     sdk_client.connect().await?;
 
     // Request readyz!
     let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
+
+    let line = {
+        let captured = logs.read().unwrap();
+        captured
+            .iter()
+            .find(|l| l.contains("Forwarding preamble") && l.contains(&target_x.did))
+            .cloned()
+            .expect("must contain Forwarding preamble line for target_x")
+    };
+    assert!(line.contains("enc=ecdh-p256"), "must have enc: {line}");
+    assert!(line.contains("master=-"), "must have master=-: {line}");
+    assert!(line.contains("sig=-"), "must have sig=-: {line}");
+    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
 
     sdk_client.shutdown().await?;
     let _ = target_x.router.shutdown().await;

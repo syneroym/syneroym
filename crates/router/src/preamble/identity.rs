@@ -1,7 +1,8 @@
 use std::fmt::{self, Formatter};
 
 use anyhow::{Result, anyhow};
-use syneroym_identity::DelegationCertificate;
+use ed25519_dalek::VerifyingKey;
+use syneroym_identity::{DelegationCertificate, substrate};
 use syneroym_rpc::OnBehalfProof;
 use syneroym_ucan::CapabilityToken;
 
@@ -155,12 +156,18 @@ pub(crate) fn decode_on_behalf(v: &str) -> Result<OnBehalfProof> {
 
 impl fmt::Debug for IdentityFields {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let caller_did = self.pubkey.as_deref().and_then(|pk_hex| {
+            let bytes = hex::decode(pk_hex).ok()?;
+            let array: [u8; 32] = bytes.try_into().ok()?;
+            let vk = VerifyingKey::from_bytes(&array).ok()?;
+            Some(substrate::derive_did_key(&vk))
+        });
         let master = self.delegation.as_ref().map(|c| c.master_did.as_str()).unwrap_or("-");
         let sig = if self.sig.is_some() { "set" } else { "-" };
         let ucan = if self.ucan.is_some() { "set" } else { "-" };
         let on_behalf = if self.on_behalf.is_some() { "set" } else { "-" };
         f.debug_struct("IdentityFields")
-            .field("pubkey", &self.pubkey.as_deref().unwrap_or("-"))
+            .field("caller", &caller_did.as_deref().unwrap_or("-"))
             .field("master", &master)
             .field("ts", &self.ts)
             .field("sig", &sig)

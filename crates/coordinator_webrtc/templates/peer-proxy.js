@@ -327,10 +327,6 @@ async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, client
     const signature = serverKeyBytes.slice(65, 129);
     const leftovers = serverKeyBytes.slice(129);
 
-    if (serverPubBytes[0] !== 0x04) {
-        throw new Error("the server refused before the handshake; no identity was sent");
-    }
-
     console.debug("[Page][BlindTunnel] Verifying server signature...");
 
     if (!TARGET_PUBKEY_HEX || TARGET_PUBKEY_HEX.length !== 64) {
@@ -469,6 +465,8 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
             tunnelWS.binaryType = 'arraybuffer';
 
             let serverKeyBytes = new Uint8Array(0);
+            let plainRefusal = false;
+            let handshakeInProgress = false;
 
             tunnelWS.onopen = () => {
                 console.debug(`[Page][BlindTunnel] WS open. Sending preamble: ${finalPreamble.trim()}`);
@@ -493,13 +491,48 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                 if (closed) return;
                 const bytes = new Uint8Array(event.data);
 
-                if (clientKeyPair && !channelKeys && !plainRefusal) {
+                if (plainRefusal) {
+                    onData(bytes);
+                    return;
+                }
+
+                if (clientKeyPair && !channelKeys) {
                     const combined = new Uint8Array(serverKeyBytes.length + bytes.length);
                     combined.set(serverKeyBytes, 0);
                     combined.set(bytes, serverKeyBytes.length);
                     serverKeyBytes = combined;
 
+                    if (handshakeInProgress) {
+                        return;
+                    }
+
                     if (serverKeyBytes.length > 0 && serverKeyBytes[0] !== 0x04) {
+                        const text = new TextDecoder().decode(serverKeyBytes);
+                        if (!text.startsWith("HTTP/")) {
+                            closed = true;
+                            activeWebSockets.delete(tunnelWS);
+                            tunnelWS.close();
+                            reject(new Error("invalid pre-handshake response: expected HTTP refusal"));
+                            return;
+                        }
+                        const hasHeaderEnd = text.includes("\r\n\r\n");
+                        if (!hasHeaderEnd && serverKeyBytes.length < 1024) {
+                            return;
+                        }
+                        const headerPart = text.split("\r\n\r\n")[0];
+                        const statusLine = headerPart.split("\r\n")[0] || "";
+                        const statusCode = parseInt(statusLine.split(" ")[1] || "0", 10);
+                        const isErrorStatus = statusCode >= 400 && statusCode < 600;
+                        const hasRefusalHeader = headerPart.toLowerCase().includes("x-syneroym-refusal:");
+
+                        if (!isErrorStatus || !hasRefusalHeader) {
+                            closed = true;
+                            activeWebSockets.delete(tunnelWS);
+                            tunnelWS.close();
+                            reject(new Error("pre-handshake response is not an authorized refusal"));
+                            return;
+                        }
+
                         plainRefusal = true;
                         resolve({
                             send: async () => {},
@@ -515,6 +548,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                     }
 
                     if (serverKeyBytes.length >= 129) {
+                        handshakeInProgress = true;
                         try {
                             const result = await verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw);
                             if (result) {
@@ -527,7 +561,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
 
                                 console.debug("[Page][BlindTunnel] E2E ECDH key negotiated! Encrypted tunnel ready.");
 
-                                // Write the empty identity line inside the channel (C4c-1)
+                                // Write the empty identity line inside the channel
                                 const identityChunk = await encryptChunk(channelKeys.sendKey, new TextEncoder().encode('\n'));
                                 tunnelWS.send(identityChunk);
 
@@ -559,6 +593,8 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                             activeWebSockets.delete(tunnelWS);
                             tunnelWS.close();
                             reject(e);
+                        } finally {
+                            handshakeInProgress = false;
                         }
                     }
                 } else {

@@ -49,8 +49,6 @@ use super::{
     dispatch,
     refusal::{Refusal, write_refusal},
 };
-#[cfg(test)]
-pub(super) use crate::handshake::HandshakeVerifier;
 use crate::{
     e2e_channel::{OwnedStream, ReaderWriter},
     handshake::{MasterAnchorResolver, VerifiedIdentity},
@@ -466,7 +464,7 @@ impl RouteHandler {
         &self,
         preamble: RoutePreamble,
         reader: BufReader<impl AsyncRead + Unpin + Send + 'static>,
-        mut writer: impl AsyncWrite + Unpin + Send + 'static,
+        writer: impl AsyncWrite + Unpin + Send + 'static,
     ) -> Result<()> {
         // Community registry / DHT lookup
         debug!(
@@ -475,19 +473,7 @@ impl RouteHandler {
         );
 
         let next_hop_addr =
-            match net_iroh::resolve_iroh_addr(&self.inner.registry_client, &preamble.service_id)
-                .await
-            {
-                Ok(addr) => addr,
-                Err(e) => {
-                    debug!(
-                        service_id = %preamble.service_id,
-                        "relay lookup failed ({e}); refusing with not_hosted_here"
-                    );
-                    write_refusal(&mut writer, preamble.transport, Refusal::NotHostedHere).await;
-                    return Ok(());
-                }
-            };
+            net_iroh::resolve_iroh_addr(&self.inner.registry_client, &preamble.service_id).await?;
 
         // 3. Connect outbound to next hop
         let ep = self
@@ -497,19 +483,7 @@ impl RouteHandler {
             .ok_or_else(|| anyhow!("No Iroh endpoint configured for relay forwarding"))?;
         debug!("[Router] Relay connecting to next hop: {:?}", next_hop_addr.id);
         let conn =
-            match connect_with_retry(ep, next_hop_addr, SYNEROYM_ALPN, &self.inner.retry_policy)
-                .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    debug!(
-                        service_id = %preamble.service_id,
-                        "relay connect failed ({e}); refusing with not_hosted_here"
-                    );
-                    write_refusal(&mut writer, preamble.transport, Refusal::NotHostedHere).await;
-                    return Ok(());
-                }
-            };
+            connect_with_retry(ep, next_hop_addr, SYNEROYM_ALPN, &self.inner.retry_policy).await?;
         let (mut out_send, out_recv) = conn.open_bi().await?;
 
         // 4. Send original preamble

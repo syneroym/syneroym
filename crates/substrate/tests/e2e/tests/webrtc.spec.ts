@@ -99,5 +99,44 @@ import { readE2EPorts } from '../ports';
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       }
     });
+    test('JS channel KDF matches reference test vector', async ({ page }) => {
+      const result = await page.evaluate(async () => {
+        const KDF_SALT = new TextEncoder().encode("syneroym-e2e-v1");
+        const sharedBits = new Uint8Array(32).fill(1).buffer;
+        const clientPubRaw = new Uint8Array(65).fill(2);
+        clientPubRaw[0] = 0x04;
+        const serverPubBytes = new Uint8Array(65).fill(3);
+        serverPubBytes[0] = 0x04;
+
+        const base = await window.crypto.subtle.importKey("raw", sharedBits, "HKDF", false, ["deriveKey"]);
+        const info = (label) => {
+          const l = new TextEncoder().encode(label);
+          const out = new Uint8Array(l.length + 65 + 65);
+          out.set(l, 0);
+          out.set(new Uint8Array(clientPubRaw), l.length);
+          out.set(serverPubBytes, l.length + 65);
+          return out;
+        };
+        const derive = (label, usage) => window.crypto.subtle.deriveKey(
+          { name: "HKDF", hash: "SHA-256", salt: KDF_SALT, info: info(label) },
+          base, { name: "AES-GCM", length: 256 }, true, [usage]);
+
+        const sendKey = await derive("c2s", "encrypt");
+        const recvKey = await derive("s2c", "decrypt");
+
+        const exportRaw = async (k) => {
+          const raw = await window.crypto.subtle.exportKey("raw", k);
+          return Array.from(new Uint8Array(raw)).map(b => b.toString(16).padStart(2, '0')).join('');
+        };
+
+        return {
+          c2s: await exportRaw(sendKey),
+          s2c: await exportRaw(recvKey),
+        };
+      });
+
+      expect(result.c2s).toBe("d2f3bfc8d7382442a0d68fadfa725144e589164a57a1cd7de9f4fd37723bfc86");
+      expect(result.s2c).toBe("edf347eb9a7ea22d897d206517cf4ff7055d9eab2759cbc4cdd6e2ff197790c9");
+    });
   });
 });

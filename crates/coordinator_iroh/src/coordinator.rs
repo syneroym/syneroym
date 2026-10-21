@@ -26,7 +26,6 @@ use syneroym_core::{
     host_identity::HostIdentity,
     tls::TlsCertLoader,
 };
-use syneroym_identity::Identity;
 use syneroym_passport::LeaseStore;
 use syneroym_router::{RouteHandler, SYNEROYM_ALPN, net_iroh};
 use tokio::{net::TcpListener, sync::watch, task::JoinHandle, time};
@@ -278,7 +277,6 @@ impl CoordinatorIroh {
         iroh_cfg: &CoordinatorIrohConfig,
         config: &SubstrateConfig,
         parent_relay_url: Option<String>,
-        identity: Arc<Identity>,
     ) -> Result<(IrohRouter, Arc<AtomicUsize>)> {
         let registry_client = RegistryClient::new(
             config.substrate.enable_bep0044_dht,
@@ -290,7 +288,6 @@ impl CoordinatorIroh {
             parent_relay_url,
             config.retry.clone(),
             iroh_cfg.max_connections,
-            identity,
         )?;
         let active_connections = route_handler.active_connections();
 
@@ -311,13 +308,11 @@ impl CoordinatorIroh {
         } = args;
         let relay_url = resolve_relay_url(parent_relay_url, relay_server, iroh_cfg)?;
         let endpoint = Self::build_iroh_endpoint(iroh_cfg, relay_url.clone(), &secret_key).await?;
-        let identity = Arc::new(Identity::from_bytes(&secret_key.to_bytes()));
         let (iroh_router, active_connections) = Self::spawn_iroh_router(
             &endpoint,
             iroh_cfg,
             config,
             parent_relay_url.map(ToString::to_string),
-            identity,
         )?;
 
         let registry_url =

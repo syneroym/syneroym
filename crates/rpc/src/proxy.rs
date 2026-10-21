@@ -148,7 +148,7 @@ pub const NOT_HOSTED_HERE_RPC_CODE: i32 = -32096;
 pub const STREAM_UNAUTHENTICATED_RPC_CODE: i32 = -32097;
 /// JSON-RPC code a client gives itself when the node that answered the
 /// end-to-end handshake is not the host its record names (ADR-0002 A1).
-/// No node sends it; it never crosses the wire.
+/// No router sends it; it is local to the SDK and Universal Proxy.
 pub const HOST_MISMATCH_RPC_CODE: i32 = -32098;
 pub const UNSUPPORTED_PROTOCOL_RPC_CODE: i32 = -32091;
 /// Reserved JSON-RPC error code for a proxy transport failure (connect

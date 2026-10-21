@@ -54,6 +54,9 @@ neighbourhood.
 | **Route preamble** | The initial header line framing every transport stream (`<scheme>://<interface>\|<service_id>?<params>`). Declares wire transport, application protocol, target service and interface, caller public key, proof-of-possession signature and timestamp, and optional delegations. See [ADR-0002](decisions/0002-handshake-authorization-point.md). | An HTTP request line. |
 | **On-behalf proof** | A cryptographic proof carried in a route preamble showing that an intermediate service calls a downstream service on behalf of an originating user, verified against that user's anchor. See [ADR-0016](decisions/0016-native-dispatch-identity-threading.md). | A UCAN delegation token. |
 | **Forwarder** | A coordinator node that accepts a transport stream for a service hosted on another substrate and relays it to the host destination (`relay_to_next_hop`) without inspecting caller credentials. See [ADR-0002](decisions/0002-handshake-authorization-point.md). | A destination host or proxy client. |
+| **Direct connection** | A stream connection where the client dials the node hosting the target service directly. Identity parameters travel in the route preamble line. | Indirect connection. |
+| **Indirect connection** | A stream connection routed through a forwarder coordinator to reach the target service. Caller identity parameters are sent inside an end-to-end encrypted channel after the host verifies itself. | Direct connection. |
+| **Identity line** | The first encrypted line sent after the end-to-end handshake on an indirect or encrypted stream (`params.join("&") + "\n"`). Carries caller proof (`pubkey`, `sig`, `ts`, `delegation`, `ucan`, `on_behalf`) hidden from forwarders. | Route preamble line. |
 
 ## Key phrasings
 

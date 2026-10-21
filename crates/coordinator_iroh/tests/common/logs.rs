@@ -1,4 +1,8 @@
-use std::sync::{Arc, OnceLock, RwLock};
+use std::{
+    io::{self, Write},
+    str,
+    sync::{Arc, OnceLock, RwLock},
+};
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -11,16 +15,17 @@ struct LogWriter {
     buffer: Arc<RwLock<Vec<String>>>,
 }
 
-impl std::io::Write for LogWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if let Ok(s) = std::str::from_utf8(buf) {
-            let mut lines = self.buffer.write().unwrap();
+impl Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if let Ok(s) = str::from_utf8(buf)
+            && let Ok(mut lines) = self.buffer.write()
+        {
             lines.push(s.to_string());
         }
         Ok(buf.len())
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
