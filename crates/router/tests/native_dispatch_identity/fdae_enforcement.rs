@@ -378,6 +378,7 @@ fn fdae_writer_caller(subject_did: &str, service_id: &str) -> CallerContext {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

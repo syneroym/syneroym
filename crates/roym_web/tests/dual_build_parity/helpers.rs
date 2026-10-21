@@ -248,13 +248,7 @@ pub(crate) fn caller() -> CallerContext {
 }
 
 pub(crate) fn custom_caller(did: &str) -> CallerContext {
-    CallerContext {
-        caller_did: did.to_string(),
-        app_instance: None,
-        session: SessionContext { subject_did: did.to_string(), ..Default::default() },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    }
+    CallerContext::verified(did, AuthLevel::Delegated, Vec::new())
 }
 
 /// The second directory's own owner, presented on its local dispatches:
@@ -280,6 +274,7 @@ pub(crate) fn anon_wire_caller() -> CallerContext {
         session: SessionContext::default(),
         auth: AuthLevel::System,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

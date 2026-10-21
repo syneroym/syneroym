@@ -34,31 +34,25 @@ use super::*;
 /// dispatch calls themselves, which stay ungated: the five data
 /// interfaces are not closed by this gate.
 fn node_wide_caller(caller_did: &str) -> CallerContext {
-    use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
+    use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri};
 
     let resource = ResourceUri::substrate("did:key:zTestNode");
-    CallerContext {
-        caller_did: caller_did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: caller_did.to_string(),
-            capabilities: vec![
-                Capability {
-                    with: resource.clone(),
-                    can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
-                    caveats: None,
-                },
-                Capability {
-                    with: resource,
-                    can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
-                    caveats: None,
-                },
-            ],
-            ..Default::default()
-        },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    }
+    CallerContext::verified(
+        caller_did,
+        AuthLevel::Delegated,
+        vec![
+            Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: None,
+            },
+            Capability {
+                with: resource,
+                can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+                caveats: None,
+            },
+        ],
+    )
 }
 
 /// A caller holding `substrate/admin` on the test node -- what a
@@ -67,24 +61,18 @@ fn node_wide_caller(caller_did: &str) -> CallerContext {
 /// entails *everything*, so using it as generic deploy-test setup would
 /// make the orchestrator gate tests prove less than they claim.
 fn substrate_admin_caller(caller_did: &str) -> CallerContext {
-    use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
+    use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri};
 
     let resource = ResourceUri::substrate("did:key:zTestNode");
-    CallerContext {
-        caller_did: caller_did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: caller_did.to_string(),
-            capabilities: vec![Capability {
-                with: resource,
-                can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    }
+    CallerContext::verified(
+        caller_did,
+        AuthLevel::Delegated,
+        vec![Capability {
+            with: resource,
+            can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+            caveats: None,
+        }],
+    )
 }
 
 const MESSAGING_TEST_DRIVER_INTERFACE: &str =

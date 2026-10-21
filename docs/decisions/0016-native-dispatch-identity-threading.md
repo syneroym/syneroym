@@ -172,6 +172,35 @@ service is the general form for longer grants, and is not needed here.
 Landing slice: **M06D C4b** —
 [signed-route-preamble change doc](../planning/changes/signed-route-preamble/change.md).
 
+**Amendment 3 (2026-10-21, `on_behalf` answers only `resolve-relation`).**
+Amendment 2 rules 2 and 4 change as follows. Its rules 1 and 3 stand.
+
+1. **`on_behalf` no longer sets `anchor_did`.** The destination still checks
+   the proof as Amendment 2 says. When the check passes, it puts the original
+   caller's master DID in a separate field of the caller context,
+   `on_behalf_did`.
+2. **Only `resolve-relation` reads `on_behalf_did`.** It answers for the
+   principal in this order: `on_behalf_did`, then `anchor_did`, then
+   `subject_did`. The row policy and write attribution read only `anchor_did`
+   and `subject_did`. So a service that received the proof reads and writes
+   rows as itself, never as the original caller.
+3. **A preamble still carries `on_behalf` or `ucan`, not both.** The reason
+   changes: `resolve-relation` answers for one principal, and the two fields
+   could name two.
+
+Why: under Amendment 2, any service the caller called could read and write
+that caller's rows at any destination for 15 minutes. The only real use of
+`on_behalf` is the cross-service relationship check of a federated FDAE
+policy. This amendment keeps that use and closes the rest. A person who wants
+a service to read or write for them gives it a UCAN, with limits the person
+chooses. That general form is future work.
+
+Rejected: removing `on_behalf`. Cross-service relationship checks for a
+caller with a preamble proof would then fail until UCAN delegation exists.
+
+Landing slice: **M06D C4c** —
+[signed-route-preamble change doc](../planning/changes/signed-route-preamble/change.md).
+
 **Consequences**:
 
 - **Enables**: closes gate items #1 and #4 in one slice (B0); a single

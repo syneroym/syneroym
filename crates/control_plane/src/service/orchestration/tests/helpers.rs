@@ -57,31 +57,25 @@ pub(super) fn wire_service_proxy(service: &ControlPlaneService, proxy: &Arc<Reco
 /// a caller that holds it -- `CallerContext::service_system` (zero
 /// capabilities) no longer suffices on its own.
 pub(super) fn node_wide_caller(caller_did: &str) -> CallerContext {
-    use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+    use syneroym_rpc::{AuthLevel, Capability};
 
     let resource = ResourceUri::substrate("did:key:zTestNode");
-    CallerContext {
-        caller_did: caller_did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: caller_did.to_string(),
-            capabilities: vec![
-                Capability {
-                    with: resource.clone(),
-                    can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
-                    caveats: None,
-                },
-                Capability {
-                    with: resource,
-                    can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
-                    caveats: None,
-                },
-            ],
-            ..Default::default()
-        },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    }
+    CallerContext::verified(
+        caller_did,
+        AuthLevel::Delegated,
+        vec![
+            Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: None,
+            },
+            Capability {
+                with: resource,
+                can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+                caveats: None,
+            },
+        ],
+    )
 }
 
 /// A caller holding an app-scoped `orchestrator/deploy`
@@ -92,24 +86,18 @@ pub(super) fn node_wide_caller(caller_did: &str) -> CallerContext {
 /// takeover/ownership rejection, which a node-wide caller always
 /// bypasses.
 pub(super) fn scoped_deploy_caller(caller_did: &str, service_id: &str) -> CallerContext {
-    use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+    use syneroym_rpc::{AuthLevel, Capability};
 
     let resource = ResourceUri(format!("substrate:did:key:zTestNode/app/{service_id}"));
-    CallerContext {
-        caller_did: caller_did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: caller_did.to_string(),
-            capabilities: vec![Capability {
-                with: resource,
-                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    }
+    CallerContext::verified(
+        caller_did,
+        AuthLevel::Delegated,
+        vec![Capability {
+            with: resource,
+            can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+            caveats: None,
+        }],
+    )
 }
 
 pub(super) fn app_context(
@@ -514,36 +502,30 @@ pub(super) fn owner_test_manifest() -> DeployManifest {
 /// `instance_identity` tests below, which `deploy`/`undeploy` never gate
 /// on.
 pub(super) fn status_capable_caller(caller_did: &str) -> CallerContext {
-    use syneroym_rpc::{AuthLevel, Capability, SessionContext};
+    use syneroym_rpc::{AuthLevel, Capability};
 
     let resource = ResourceUri::substrate("did:key:zTestNode");
-    CallerContext {
-        caller_did: caller_did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: caller_did.to_string(),
-            capabilities: vec![
-                Capability {
-                    with: resource.clone(),
-                    can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
-                    caveats: None,
-                },
-                Capability {
-                    with: resource.clone(),
-                    can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
-                    caveats: None,
-                },
-                Capability {
-                    with: resource,
-                    can: Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
-                    caveats: None,
-                },
-            ],
-            ..Default::default()
-        },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    }
+    CallerContext::verified(
+        caller_did,
+        AuthLevel::Delegated,
+        vec![
+            Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_DEPLOY.to_string()),
+                caveats: None,
+            },
+            Capability {
+                with: resource.clone(),
+                can: Ability(Ability::ORCHESTRATOR_UNDEPLOY.to_string()),
+                caveats: None,
+            },
+            Capability {
+                with: resource,
+                can: Ability(Ability::ORCHESTRATOR_STATUS.to_string()),
+                caveats: None,
+            },
+        ],
+    )
 }
 
 /// Builds a `ControlPlaneService` rooted at `temp_dir` with a caller-

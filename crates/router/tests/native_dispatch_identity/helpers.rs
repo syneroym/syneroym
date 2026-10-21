@@ -83,6 +83,7 @@ pub(crate) fn test_caller(did: &str) -> CallerContext {
         session: SessionContext { subject_did: did.to_string(), ..Default::default() },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -141,6 +142,7 @@ pub(crate) fn admin_caller(did: &str) -> CallerContext {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -274,6 +276,7 @@ pub(crate) fn fdae_reader_caller(subject_did: &str, service_id: &str) -> CallerC
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -325,6 +328,7 @@ pub(crate) fn employee_reader_caller(subject_did: &str, service_id: &str) -> Cal
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -351,6 +355,7 @@ pub(crate) fn unrelated_resource_capability_caller(
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -383,6 +388,7 @@ pub(crate) fn wrong_ability_on_the_right_resource_caller(
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -398,6 +404,7 @@ pub(crate) fn zero_capability_caller(subject_did: &str) -> CallerContext {
         session: SessionContext { subject_did: subject_did.to_string(), ..Default::default() },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

@@ -120,5 +120,6 @@ pub(super) fn resolve_effective_session_caller(
         app_instance: None,
         session,
         proof: None,
+        on_behalf_did: None,
     })
 }

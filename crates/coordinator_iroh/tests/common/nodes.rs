@@ -377,6 +377,7 @@ pub async fn spawn_z_target_substrate(
 pub struct CapturingNativeService {
     pub captured_caller_did: Mutex<Option<String>>,
     pub captured_anchor_did: Mutex<Option<String>>,
+    pub captured_on_behalf_did: Mutex<Option<String>>,
 }
 
 #[async_trait]
@@ -384,6 +385,7 @@ impl NativeService for CapturingNativeService {
     async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         *self.captured_caller_did.lock().unwrap() = Some(invocation.caller.caller_did.clone());
         *self.captured_anchor_did.lock().unwrap() = invocation.caller.session.anchor_did.clone();
+        *self.captured_on_behalf_did.lock().unwrap() = invocation.caller.on_behalf_did.clone();
         Ok(NativeResponse { payload: serde_json::json!({"status": "ok"}) })
     }
 }
@@ -542,6 +544,7 @@ pub async fn build_delegated_proxy_request(
             session: SessionContext::default(),
             auth: AuthLevel::Delegated,
             proof,
+            on_behalf_did: None,
         },
         origin: CallOrigin::Native { service_id: None },
         protocol: ProxyProtocol::JsonRpcV1,

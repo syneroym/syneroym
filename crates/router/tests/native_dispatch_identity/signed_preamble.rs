@@ -245,7 +245,7 @@ async fn on_behalf_and_ucan_together_is_refused() {
 }
 
 #[tokio::test]
-async fn valid_on_behalf_sets_anchor_did_and_preserves_immediate_caller_did() {
+async fn valid_on_behalf_sets_on_behalf_did_but_not_anchor_did() {
     let (route_handler, _) = test_route_handler().await;
     let service = Arc::new(CapturingNativeService::default());
     let service_id = "test-hosted-service";
@@ -298,7 +298,11 @@ async fn valid_on_behalf_sets_anchor_did_and_preserves_immediate_caller_did() {
     let p_did = substrate::derive_did_key(&p_id.public_key());
     let captured = service.caller.lock().unwrap().take().expect("caller captured");
     assert_eq!(captured.caller_did, immediate_did);
-    assert_eq!(captured.session.anchor_did, Some(p_did));
+    assert_eq!(captured.on_behalf_did, Some(p_did));
+    // The row policy and write attribution read the anchor, so P's proof
+    // must not reach it: rows are read and written as the immediate caller.
+    assert_eq!(captured.session.anchor_did, None);
+    assert_eq!(captured.write_attribution(service_id), immediate_did);
 
     drop(client);
     assert!(handler_task.await.unwrap().is_ok());

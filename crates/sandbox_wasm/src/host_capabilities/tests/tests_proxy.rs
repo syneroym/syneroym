@@ -253,6 +253,7 @@ async fn self_proxy_forwarding_does_not_extend_to_a_different_target_service() {
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
 
     let mut host = HostState::new(
@@ -576,6 +577,7 @@ async fn a_dependency_resolving_to_the_components_own_service_still_forwards_the
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
     let temp_dir = tempfile::tempdir().unwrap();
     let mut host = HostState::new(

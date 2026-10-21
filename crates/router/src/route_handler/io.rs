@@ -263,6 +263,7 @@ pub(super) async fn build_caller(
         session,
         auth,
         proof: preamble.caller_proof(),
+        on_behalf_did: None,
     }
 }
 

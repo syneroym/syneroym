@@ -171,26 +171,21 @@ pub(super) fn unauthenticated_caller() -> CallerContext {
         session: Default::default(),
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
 pub(super) fn admin_caller(node_did: &str) -> CallerContext {
-    use syneroym_rpc::{Capability, SessionContext};
-    CallerContext {
-        caller_did: "did:key:zAdmin".to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: "did:key:zAdmin".to_string(),
-            capabilities: vec![Capability {
-                with: ResourceUri::substrate(node_did),
-                can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    }
+    use syneroym_rpc::Capability;
+    CallerContext::verified(
+        "did:key:zAdmin",
+        AuthLevel::Ucan,
+        vec![Capability {
+            with: ResourceUri::substrate(node_did),
+            can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+            caveats: None,
+        }],
+    )
 }
 
 pub(super) async fn dispatch(
@@ -1187,22 +1182,16 @@ pub(super) async fn adopted_instance(
 /// -- not `substrate/admin`, so this is an honest reading of the
 /// reference scenario's "a caller outside the app instance".
 pub(super) fn resolve_grant(caller_did: &str, app_did: &str) -> CallerContext {
-    use syneroym_rpc::{Capability, SessionContext};
-    CallerContext {
-        caller_did: caller_did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: caller_did.to_string(),
-            capabilities: vec![Capability {
-                with: ResourceUri(format!("synapp:{app_did}")),
-                can: Ability(Ability::SUPERVISOR_RESOLVE.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    }
+    use syneroym_rpc::Capability;
+    CallerContext::verified(
+        caller_did,
+        AuthLevel::Ucan,
+        vec![Capability {
+            with: ResourceUri(format!("synapp:{app_did}")),
+            can: Ability(Ability::SUPERVISOR_RESOLVE.to_string()),
+            caveats: None,
+        }],
+    )
 }
 
 pub(super) fn caller_with_no_capabilities(caller_did: &str) -> CallerContext {
@@ -1212,6 +1201,7 @@ pub(super) fn caller_with_no_capabilities(caller_did: &str) -> CallerContext {
         session: Default::default(),
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

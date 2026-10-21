@@ -97,6 +97,8 @@ impl RouteHandler {
     }
 
     pub(super) async fn check_caller(&self, preamble: &RoutePreamble) -> Result<CallerContext> {
+        // `resolve-relation` answers for one principal: the `on_behalf`
+        // person or the UCAN anchor, never a choice between two.
         if preamble.on_behalf.is_some() && preamble.ucan.is_some() {
             return Err(anyhow!("a preamble carries on_behalf or ucan, not both"));
         }
@@ -115,7 +117,7 @@ impl RouteHandler {
         .await;
         if let Some(proof) = &preamble.on_behalf {
             let original = HandshakeVerifier::verify_on_behalf_at(proof, resolver, now).await?;
-            caller.session.anchor_did = Some(original.master_did);
+            caller.on_behalf_did = Some(original.master_did);
         }
         Ok(caller)
     }

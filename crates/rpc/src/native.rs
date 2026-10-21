@@ -7,7 +7,7 @@ use std::fmt::{self, Debug};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use syneroym_ucan::{Ability, ResourceUri, SessionContext};
+use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 
 use crate::RpcResult;
 
@@ -38,6 +38,13 @@ pub struct CallerContext {
     /// it as its own identity. A native call made for this caller passes it
     /// on in `on_behalf` when it is signed.
     pub proof: Option<CallerProof>,
+    /// The verified master DID of the person this caller presented an
+    /// `on_behalf` proof for (ADR-0016 Amendment 3). Only `resolve-relation`
+    /// reads it, to answer a question about that person. It is deliberately
+    /// not `session.anchor_did`: the row policy and write attribution read
+    /// the anchor, and a service the person called must not read or write
+    /// the person's rows with this proof.
+    pub on_behalf_did: Option<String>,
 }
 
 /// See [`CallerContext::proof`].
@@ -174,8 +181,6 @@ impl CallerContext {
     /// `data-layer/admin` on `service_id`'s own resource.
     #[must_use]
     pub fn local_elevated(service_id: &str) -> Self {
-        use syneroym_ucan::Capability;
-
         let resource = ResourceUri::service(service_id, service_id);
         Self {
             caller_did: format!("system:local-elevated:{service_id}"),
@@ -191,6 +196,7 @@ impl CallerContext {
             },
             auth: AuthLevel::LocalElevated,
             proof: None,
+            on_behalf_did: None,
         }
     }
 
@@ -208,6 +214,7 @@ impl CallerContext {
             },
             auth: AuthLevel::System,
             proof: None,
+            on_behalf_did: None,
         }
     }
 
@@ -226,6 +233,26 @@ impl CallerContext {
             },
             auth: AuthLevel::LocalReadOnly,
             proof: None,
+            on_behalf_did: None,
+        }
+    }
+
+    /// A caller verified as `did`, as the router builds one for a direct
+    /// caller: no app instance, no forwardable proof, no `on_behalf`
+    /// person, and `capabilities` as its whole session grant.
+    #[must_use]
+    pub fn verified(did: &str, auth: AuthLevel, capabilities: Vec<Capability>) -> Self {
+        Self {
+            caller_did: did.to_string(),
+            app_instance: None,
+            session: SessionContext {
+                subject_did: did.to_string(),
+                capabilities,
+                ..Default::default()
+            },
+            auth,
+            proof: None,
+            on_behalf_did: None,
         }
     }
 
@@ -296,6 +323,7 @@ mod tests {
             },
             auth,
             proof: None,
+            on_behalf_did: None,
         }
     }
 

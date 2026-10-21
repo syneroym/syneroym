@@ -471,6 +471,7 @@ mod tests {
             },
             auth,
             proof: None,
+            on_behalf_did: None,
         }
     }
 

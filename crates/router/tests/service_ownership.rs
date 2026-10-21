@@ -63,6 +63,7 @@ fn plain_caller(did: &str) -> CallerContext {
         session: SessionContext::default(),
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -97,6 +98,7 @@ fn app_grantee(did: &str, service_id: &str) -> CallerContext {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -136,6 +138,7 @@ fn node_wide_caller(did: &str) -> CallerContext {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

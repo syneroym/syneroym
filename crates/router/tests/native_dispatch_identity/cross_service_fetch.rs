@@ -64,6 +64,7 @@ async fn plan_read_resolve_fetches_finalize_join_end_to_end_through_a_real_proxy
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
 
     // Step 1: `plan_read` on the *local* policy -- must produce a
@@ -242,6 +243,7 @@ async fn native_dispatch_query_resolves_a_cross_service_fetch_end_to_end() {
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
 
     let resp = app_service
@@ -308,6 +310,7 @@ async fn resolve_fetches_denies_when_the_real_proxys_asserter_does_not_match_the
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
     let plan = syneroym_fdae::plan_read(
         &local_policy,
@@ -413,6 +416,7 @@ async fn native_dispatch_denies_closed_on_a_cross_service_fetch_failure() {
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
     let resp = app_service
         .dispatch(NativeInvocation {

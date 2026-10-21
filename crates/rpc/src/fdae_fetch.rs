@@ -185,6 +185,7 @@ mod tests {
             },
             auth: AuthLevel::Ucan,
             proof: None,
+            on_behalf_did: None,
         }
     }
 

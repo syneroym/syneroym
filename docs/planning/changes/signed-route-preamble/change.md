@@ -116,7 +116,7 @@ Related gaps:
 | SP-4 | A signature made for one `service_id` or `interface` is refused at another. | |
 | SP-5 | The router reads the handshake key only from `epk`. The browser tunnel works with `epk`. | |
 | SP-6 | A node that is not a coordinator and does not host the service answers `not_hosted_here` and does not forward. The SDK and `ProxyRouter` then look the service up again and reach the new host, for idempotent and non-idempotent calls. | |
-| SP-7 | Person P, with a preamble proof (not a session cookie), calls service A, A calls B, and B calls C, each on a different node. C sets `anchor_did` to P, and `resolve-relation(principal = P)` succeeds. C refuses the stream when P's proof has a `ts` outside the window or a forged signature. A guest cannot send `on_behalf`. A preamble with both `on_behalf` and `ucan` is refused. | |
+| SP-7 | Person P, with a preamble proof (not a session cookie), calls service A, A calls B, and B calls C, each on a different node. C sets `on_behalf_did` to P and leaves `anchor_did` unset (D-C4c-12), and `resolve-relation(principal = P)` succeeds. C refuses the stream when P's proof has a `ts` outside the window or a forged signature. A guest cannot send `on_behalf`. A preamble with both `on_behalf` and `ucan` is refused. | |
 | SP-8 | After `roymctl identity` revokes a temporary key and publishes the anchor, the router refuses that key. | |
 | SP-9 | The router's logs do not contain `sig`, a certificate, a `ucan` chain or `on_behalf`. | |
 | SP-10 | On an indirect connection (through C and through Cp in `crates/coordinator_iroh/tests/multi_hop_relay.rs`), the Rust client runs the handshake, checks the host's key, and then sends its identity encrypted. The forwarder sees no identity field. On a direct connection the client runs no handshake. | |
@@ -382,7 +382,8 @@ the key. The router and `peer-proxy.js` change together.
 These are recorded in the deferred backlog when C4b lands.
 
 - Any service that P called in the last 15 minutes can act on behalf of P
-  through `on_behalf`.
+  through `on_behalf`. C4c narrows this to `resolve-relation` questions
+  about P (D-C4c-12).
 - Between C4b and C4c, a Rust call through a forwarder still carries its
   identity in plaintext. Both slices land before C5.
 - A sender that does not follow Part 2 on an indirect connection exposes its
@@ -527,6 +528,7 @@ Part 2 (C4c):
 - **D-C4c-9 (Handshake timeout):** The E2E channel handshake enforces a 10-second timeout on waiting for the peer's ephemeral public key and signature.
 - **D-C4c-10 (`RemoteHop::call` and `RemotePeer`):** `RemoteHop::call` accepts `peer: &RemotePeer`, combining the dial address with the expected host DID key (`host_key: Option<VerifyingKey>`).
 - **D-C4c-11 (`SyneroymClient::with_identity` builder):** `SyneroymClient::with_identity(identity: Identity) -> Self` builder method allows callers and test harnesses to configure or reconfigure caller identity on an existing client instance.
+- **D-C4c-12 (`on_behalf` answers only `resolve-relation`, ADR-0016 Amendment 3):** The design above says the destination sets `anchor_did` to P. That gave every service P called P's full access to rows for 15 minutes, because the FDAE row policy and write attribution read `anchor_did`. Now the destination puts P's verified master DID in `CallerContext::on_behalf_did` and leaves `anchor_did` unset. Only `resolve_relation` (`crates/control_plane/src/synsvc_native/relation.rs`) reads it, in the order `on_behalf_did`, `anchor_did`, `subject_did`. Rows are read and written as the immediate caller. The rule "`on_behalf` or `ucan`, not both" stays, because `resolve-relation` answers for one principal. Federated FDAE keeps working. Removing `on_behalf` entirely was rejected: it would break cross-service relationship checks until UCAN delegation exists.
 
 ## Close-out
 

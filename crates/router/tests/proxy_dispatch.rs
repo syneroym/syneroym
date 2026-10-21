@@ -45,7 +45,7 @@ use syneroym_router::{
 };
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
-    NativeResponse, NativeService, ResourceUri, RowAuthorizer, RpcResult, SessionContext,
+    NativeResponse, NativeService, ResourceUri, RowAuthorizer, RpcResult,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -867,16 +867,7 @@ async fn guest_self_proxy_put_attributes_creator_id_to_the_real_caller_not_the_s
             .expect("wasm artifacts not built");
 
     const REAL_CALLER_DID: &str = "did:key:zSelfProxyWriterB35";
-    let real_caller = CallerContext {
-        caller_did: REAL_CALLER_DID.to_string(),
-        app_instance: None,
-        // `subject_did` mirrors `caller_did`, as production's `build_caller`
-        // always sets it -- `write_attribution` reads the verified
-        // session identity, not the raw `caller_did` field.
-        session: SessionContext { subject_did: REAL_CALLER_DID.to_string(), ..Default::default() },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    };
+    let real_caller = CallerContext::verified(REAL_CALLER_DID, AuthLevel::Ucan, Vec::new());
 
     let resp =
         self_proxy_call(&route_handler, "create-collection", json!({"name": "items"}), None).await;
@@ -1006,21 +997,15 @@ async fn guest_self_proxy_data_layer_filters_for_a_real_caller_d04_02_h_closed()
     assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
 
     const REAL_CALLER_DID: &str = "did:key:zSelfProxyRealCallerB35";
-    let real_caller = CallerContext {
-        caller_did: REAL_CALLER_DID.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: REAL_CALLER_DID.to_string(),
-            capabilities: vec![Capability {
-                with: ResourceUri::service("proxy-caller", "proxy-caller"),
-                can: Ability(Ability::DATA_LAYER_READ.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    };
+    let real_caller = CallerContext::verified(
+        REAL_CALLER_DID,
+        AuthLevel::Ucan,
+        vec![Capability {
+            with: ResourceUri::service("proxy-caller", "proxy-caller"),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: None,
+        }],
+    );
 
     let store = storage_provider.open_service_db("proxy-caller", &key_store).await.unwrap();
     store
@@ -1120,21 +1105,15 @@ async fn guest_self_proxy_data_layer_applies_stage4() {
     assert!(resp.get("error").is_none(), "create-collection failed: {resp:?}");
 
     const REAL_CALLER_DID: &str = "did:key:zSelfProxyStage4Caller";
-    let real_caller = CallerContext {
-        caller_did: REAL_CALLER_DID.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: REAL_CALLER_DID.to_string(),
-            capabilities: vec![Capability {
-                with: ResourceUri::service("proxy-caller", "proxy-caller"),
-                can: Ability(Ability::DATA_LAYER_READ.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    };
+    let real_caller = CallerContext::verified(
+        REAL_CALLER_DID,
+        AuthLevel::Ucan,
+        vec![Capability {
+            with: ResourceUri::service("proxy-caller", "proxy-caller"),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: None,
+        }],
+    );
 
     let store = storage_provider.open_service_db("proxy-caller", &key_store).await.unwrap();
     store

@@ -194,9 +194,14 @@ async fn cross_node_native_capability_identity_forwarding() -> Result<()> {
         "destination sees caller node DID"
     );
     assert_eq!(
-        callee.capturing_service.captured_anchor_did.lock().unwrap().as_deref(),
+        callee.capturing_service.captured_on_behalf_did.lock().unwrap().as_deref(),
         Some(master_did.as_str()),
-        "destination sees delegated master anchor DID"
+        "destination sees the delegated master as the on_behalf person"
+    );
+    assert_eq!(
+        callee.capturing_service.captured_anchor_did.lock().unwrap().as_deref(),
+        None,
+        "on_behalf never sets the anchor that the row policy reads"
     );
 
     let _ = caller.route_handler;
@@ -226,12 +231,15 @@ async fn chain_three_nodes_two_on_behalf_hops() -> Result<()> {
 
     let sb_captured = sb.service.captured_caller.lock().unwrap().take().unwrap();
     assert_eq!(sb_captured.caller_did, sa.did);
-    assert_eq!(sb_captured.session.anchor_did.as_deref(), Some(master_did.as_str()));
+    assert_eq!(sb_captured.on_behalf_did.as_deref(), Some(master_did.as_str()));
+    assert_eq!(sb_captured.session.anchor_did, None);
 
     let sc_caller_did = sc.capturing_service.captured_caller_did.lock().unwrap().take().unwrap();
-    let sc_anchor_did = sc.capturing_service.captured_anchor_did.lock().unwrap().take().unwrap();
+    let sc_on_behalf_did =
+        sc.capturing_service.captured_on_behalf_did.lock().unwrap().take().unwrap();
     assert_eq!(sc_caller_did, sb.did);
-    assert_eq!(sc_anchor_did, master_did);
+    assert_eq!(sc_on_behalf_did, master_did);
+    assert!(sc.capturing_service.captured_anchor_did.lock().unwrap().is_none());
 
     let _ = sa.route_handler;
     let _ = sb.router.shutdown().await;

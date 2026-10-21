@@ -60,16 +60,7 @@ pub(crate) const SERVICE_ID: &str = "dual-build-fixture-parity";
 /// router's own distinct treatment of an anonymous caller per interface
 /// kind is a router concern, out of scope for this shim-parity suite.
 pub(crate) fn caller() -> CallerContext {
-    CallerContext {
-        caller_did: "did:key:zParityTestCaller".to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: "did:key:zParityTestCaller".to_string(),
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    }
+    CallerContext::verified("did:key:zParityTestCaller", AuthLevel::Ucan, Vec::new())
 }
 
 pub(crate) trait Driver {
@@ -77,13 +68,7 @@ pub(crate) trait Driver {
 }
 
 pub(crate) fn caller_with_did(did: &str) -> CallerContext {
-    CallerContext {
-        caller_did: did.to_string(),
-        app_instance: None,
-        session: SessionContext { subject_did: did.to_string(), ..Default::default() },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    }
+    CallerContext::verified(did, AuthLevel::Ucan, Vec::new())
 }
 
 /// Drives the component through the real sandbox engine.

@@ -45,6 +45,7 @@ fn fdae_caller(subject_did: &str, capabilities: Vec<Capability>) -> CallerContex
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

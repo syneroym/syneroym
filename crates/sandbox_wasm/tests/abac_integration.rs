@@ -27,9 +27,7 @@ use syneroym_data_db::{
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{Policy, parse_and_validate};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_rpc::{
-    Ability, AuthLevel, CallerContext, Capability, ResourceUri, RowAuthorizer, SessionContext,
-};
+use syneroym_rpc::{Ability, AuthLevel, CallerContext, Capability, ResourceUri, RowAuthorizer};
 use syneroym_sandbox_wasm::{
     AppSandboxEngine, HostState, MessagingContext, StreamContext, empty_service_proxy,
 };
@@ -147,21 +145,15 @@ async fn make_engine_with_storage(
 }
 
 fn real_caller(did: &str) -> CallerContext {
-    CallerContext {
-        caller_did: did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: did.to_string(),
-            capabilities: vec![Capability {
-                with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
-                can: Ability(Ability::DATA_LAYER_READ.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    }
+    CallerContext::verified(
+        did,
+        AuthLevel::Ucan,
+        vec![Capability {
+            with: ResourceUri::service(SERVICE_ID, SERVICE_ID),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: None,
+        }],
+    )
 }
 
 /// Coerces the concrete engine to `Arc<dyn RowAuthorizer>` at this typed
@@ -782,21 +774,15 @@ async fn stage4_missing_export_under_an_opted_in_policy_denies_closed() {
     // (a `deny_all()` sieve with empty `abac_permissions`, which would
     // reach `Ok(empty)` without the after-step ever running -- silently
     // proving nothing about `MissingExport`).
-    let caller = CallerContext {
-        caller_did: "did:key:zAlice".to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: "did:key:zAlice".to_string(),
-            capabilities: vec![Capability {
-                with: ResourceUri::service(GREETER_SERVICE_ID, GREETER_SERVICE_ID),
-                can: Ability(Ability::DATA_LAYER_READ.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Ucan,
-        proof: None,
-    };
+    let caller = CallerContext::verified(
+        "did:key:zAlice",
+        AuthLevel::Ucan,
+        vec![Capability {
+            with: ResourceUri::service(GREETER_SERVICE_ID, GREETER_SERVICE_ID),
+            can: Ability(Ability::DATA_LAYER_READ.to_string()),
+            caveats: None,
+        }],
+    );
     let mut host = HostState::new(
         GREETER_SERVICE_ID.to_string(),
         None,
