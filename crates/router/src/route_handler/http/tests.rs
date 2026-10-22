@@ -140,6 +140,7 @@ fn caller_context(auth: AuthLevel) -> CallerContext {
         session: SessionContext { subject_did: "did:key:caller".to_string(), ..Default::default() },
         auth,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

@@ -152,23 +152,22 @@ impl SynSvcNativeService {
         let req: Req = parse_params(invocation)?;
 
         // The wire caller must be re-verified as exactly the principal
-        // being asked about -- either the direct verified identity or the
-        // anchor it's proxying for (`anchor_did.unwrap_or(subject_did)`,
-        // the same fallback `compile::terminal_value`/`emit_remote_terminal`
-        // use). B3 exists precisely because `caller != anchor`: a forwarded
-        // chain `alice -> svc-A` re-verifies here with `subject_did =
-        // svc-A` (whoever actually authenticated this connection) and
-        // `anchor_did = alice`, while `RemoteFetch.principal_did` is always
-        // the anchor -- comparing against `subject_did` alone would reject
-        // every genuinely cross-service ask. `principal` is still a
-        // caller-declared label that must match one of these, never a free
-        // parameter naming an arbitrary third party.
-        let effective_principal = invocation
-            .caller
-            .session
-            .anchor_did
+        // being asked about: the person whose `on_behalf` proof it
+        // presented, else the anchor of its UCAN chain, else its own
+        // verified identity. A forwarded chain `alice -> svc-A`
+        // re-verifies here with `subject_did = svc-A` (whoever actually
+        // authenticated this connection), while `RemoteFetch.principal_did`
+        // names alice -- comparing against `subject_did` alone would reject
+        // every genuinely cross-service ask. This is the only place that
+        // reads `on_behalf_did` (ADR-0016 Amendment 3). `principal` is
+        // still a caller-declared label that must match one of these,
+        // never a free parameter naming an arbitrary third party.
+        let caller = &invocation.caller;
+        let effective_principal = caller
+            .on_behalf_did
             .as_deref()
-            .unwrap_or(&invocation.caller.session.subject_did);
+            .or(caller.session.anchor_did.as_deref())
+            .unwrap_or(&caller.session.subject_did);
         if req.principal != effective_principal {
             return Err(data_layer_error(DataLayerError::PermissionDenied));
         }

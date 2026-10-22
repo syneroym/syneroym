@@ -386,6 +386,7 @@ async fn set_secret_refuses_a_reserved_vault_name() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
     let call = |name: &str| NativeInvocation {
         caller: admin.clone(),

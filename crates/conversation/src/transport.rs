@@ -655,6 +655,7 @@ pub(super) fn classify(error: ProxyError) -> Disposition {
         {
             Disposition::Retry
         }
+        ProxyError::HostMismatch(_) => Disposition::Retry,
         ProxyError::ServiceNotFound(_) | ProxyError::Timeout(_) | ProxyError::Transport(_) => {
             Disposition::Unreachable
         }

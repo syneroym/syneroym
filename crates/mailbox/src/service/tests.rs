@@ -414,6 +414,7 @@ async fn raw_key_caller_with_no_delegation_is_refused_on_deposit_and_status() {
             delegation_json: None,
             ..Default::default()
         }),
+        on_behalf_did: None,
     };
 
     let now = syneroym_passport::now_secs();

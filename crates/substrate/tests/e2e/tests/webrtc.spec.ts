@@ -3,6 +3,72 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readE2EPorts } from '../ports';
 
+// The channel functions the page ships, loaded from the template file.
+// This checks the code the browser runs, not a copy of it. The page
+// template supplies `HTTP_REFUSALS` from the router's own `Refusal`
+// values (checked on the Rust side), so here it is a stand-in table.
+const TEST_REFUSALS = { not_hosted_here: 'HTTP/1.1 421 Misdirected Request\r\n\r\n{}' };
+
+function loadPageChannelFunctions() {
+  const file = path.resolve(__dirname, '../../../../coordinator_webrtc/templates/peer-proxy.js');
+  const src = fs.readFileSync(file, 'utf8');
+  const body = src.slice(
+    src.indexOf('const KDF_SALT'),
+    src.indexOf('async function verifyAndDeriveSharedSecret'),
+  );
+  return new Function(
+    'window',
+    'HTTP_REFUSALS',
+    `${body}; return { deriveChannelKeys, handshakeSignedBytes, httpRefusalResponse, refusalReason };`,
+  )({ crypto: globalThis.crypto }, TEST_REFUSALS);
+}
+
+// Pinned in `crates/router/src/e2e_channel/tests.rs` (`kdf_known_answer`).
+const PINNED_C2S = 'd2f3bfc8d7382442a0d68fadfa725144e589164a57a1cd7de9f4fd37723bfc86';
+const PINNED_S2C = 'edf347eb9a7ea22d897d206517cf4ff7055d9eab2759cbc4cdd6e2ff197790c9';
+
+test('page channel functions match the router', async () => {
+  const page = loadPageChannelFunctions();
+  const subtle = globalThis.crypto.subtle;
+  const clientPub = new Uint8Array(65).fill(2);
+  clientPub[0] = 0x04;
+  const serverPub = new Uint8Array(65).fill(3);
+  serverPub[0] = 0x04;
+  const keys = await page.deriveChannelKeys(new Uint8Array(32).fill(1).buffer, clientPub.buffer, serverPub);
+
+  // The page's keys are not extractable, so each one is checked against
+  // the pinned key by a round trip.
+  const pinned = (hex: string, usage: KeyUsage) =>
+    subtle.importKey('raw', Buffer.from(hex, 'hex'), 'AES-GCM', false, [usage]);
+  const iv = new Uint8Array(12);
+  const msg = new TextEncoder().encode('kdf parity');
+  const c2s = await subtle.encrypt({ name: 'AES-GCM', iv }, keys.sendKey, msg);
+  const c2sPlain = await subtle.decrypt({ name: 'AES-GCM', iv }, await pinned(PINNED_C2S, 'decrypt'), c2s);
+  expect(Buffer.from(c2sPlain).toString()).toBe('kdf parity');
+  const s2c = await subtle.encrypt({ name: 'AES-GCM', iv }, await pinned(PINNED_S2C, 'encrypt'), msg);
+  const s2cPlain = await subtle.decrypt({ name: 'AES-GCM', iv }, keys.recvKey, s2c);
+  expect(Buffer.from(s2cPlain).toString()).toBe('kdf parity');
+
+  // Same layout as `e2e_channel::handshake_signed_bytes`.
+  const signed = page.handshakeSignedBytes(serverPub, clientPub.buffer);
+  const tag = Buffer.from('syneroym-e2e-handshake-v1');
+  expect(Buffer.from(signed.slice(0, tag.length)).equals(tag)).toBe(true);
+  expect(Buffer.from(signed.slice(tag.length)).equals(Buffer.concat([serverPub, clientPub]))).toBe(true);
+
+  // A refusal is accepted only with an error status and a known reason,
+  // and the page shows its own copy of it.
+  expect(page.refusalReason('HTTP/1.1 200 OK\r\nx-syneroym-refusal: unauthenticated')).toBeNull();
+  expect(page.refusalReason('HTTP/1.1 401 Unauthorized\r\ncontent-type: text/html')).toBeNull();
+  expect(page.refusalReason('HTTP/1.1 401 Unauthorized\r\nX-Syneroym-Refusal: unauthenticated'))
+    .toBe('unauthenticated');
+  expect(page.httpRefusalResponse('forged')).toBeNull();
+  for (const inherited of ['constructor', 'toString', '__proto__']) {
+    expect(page.httpRefusalResponse(inherited)).toBeNull();
+  }
+  expect(Buffer.from(page.httpRefusalResponse('not_hosted_here')).toString())
+    .toBe(TEST_REFUSALS.not_hosted_here);
+});
+
 [false, true].forEach(forceTunnel => {
   test.describe(`WebRTC Substrate E2E (forceTunnel=${forceTunnel})`, () => {
     test.beforeEach(async ({ page }) => {

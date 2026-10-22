@@ -9,9 +9,8 @@ use syneroym_core::{local_registry::SubstrateEndpoint, streaming::StreamDirectio
 use syneroym_identity::{Identity, substrate};
 use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport};
 use syneroym_rpc::{
-    AuthLevel, CallerContext, CapabilityToken, NOT_HOSTED_HERE_RPC_CODE, NativeInvocation,
-    NativeResponse, NativeService, OnBehalfProof, RpcResult, STREAM_UNAUTHENTICATED_RPC_CODE,
-    framing,
+    AuthLevel, CapabilityToken, NOT_HOSTED_HERE_RPC_CODE, OnBehalfProof,
+    STREAM_UNAUTHENTICATED_RPC_CODE, framing,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
@@ -36,19 +35,6 @@ async fn register_test_endpoint(route_handler: &RouteHandler, service_id: &str) 
 async fn read_refusal_response(client: &mut tokio::io::DuplexStream) -> Value {
     let frame = framing::read_frame(client).await.expect("read refusal frame failed");
     serde_json::from_slice(&frame).expect("expected JSON-RPC response")
-}
-
-#[derive(Debug, Default)]
-struct CapturingNativeService {
-    caller: Mutex<Option<CallerContext>>,
-}
-
-#[async_trait::async_trait]
-impl NativeService for CapturingNativeService {
-    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        *self.caller.lock().unwrap() = Some(invocation.caller);
-        Ok(NativeResponse { payload: json!({"status": "ok"}) })
-    }
 }
 
 #[tokio::test]
@@ -259,7 +245,7 @@ async fn on_behalf_and_ucan_together_is_refused() {
 }
 
 #[tokio::test]
-async fn valid_on_behalf_sets_anchor_did_and_preserves_immediate_caller_did() {
+async fn valid_on_behalf_sets_on_behalf_did_but_not_anchor_did() {
     let (route_handler, _) = test_route_handler().await;
     let service = Arc::new(CapturingNativeService::default());
     let service_id = "test-hosted-service";
@@ -312,7 +298,11 @@ async fn valid_on_behalf_sets_anchor_did_and_preserves_immediate_caller_did() {
     let p_did = substrate::derive_did_key(&p_id.public_key());
     let captured = service.caller.lock().unwrap().take().expect("caller captured");
     assert_eq!(captured.caller_did, immediate_did);
-    assert_eq!(captured.session.anchor_did, Some(p_did));
+    assert_eq!(captured.on_behalf_did, Some(p_did));
+    // The row policy and write attribution read the anchor, so P's proof
+    // must not reach it: rows are read and written as the immediate caller.
+    assert_eq!(captured.session.anchor_did, None);
+    assert_eq!(captured.write_attribution(service_id), immediate_did);
 
     drop(client);
     assert!(handler_task.await.unwrap().is_ok());
@@ -531,7 +521,7 @@ async fn refused_stream_returns_ok_reaches_eof_and_never_invokes_service() {
 }
 
 #[tokio::test]
-async fn sp9_node_side_log_redaction() {
+async fn node_side_logs_redact_proof_material() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use tracing_subscriber::filter::EnvFilter;

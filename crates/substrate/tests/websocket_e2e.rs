@@ -309,6 +309,7 @@ async fn test_websocket_broadcast_pubsub() {
         "test-ws-pubsub".to_string(),
         ctx.substrate_mechanisms.clone(),
     )
+    .with_host(&ctx.node_did)
     .with_registry_dht(false);
     publisher.connect().await.unwrap();
 

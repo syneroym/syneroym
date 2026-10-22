@@ -691,7 +691,8 @@ async fn client_without_registry_receives_readable_not_hosted_here_error() -> an
     let _record2 = deploy_target_service(&node2, &operator, &member_master, port2).await;
 
     let mut client =
-        SyneroymClient::new_with_mechanisms(member_master_did.clone(), node1_mechanisms);
+        SyneroymClient::new_with_mechanisms(member_master_did.clone(), node1_mechanisms)
+            .with_host(node1.did());
     client.connect().await?;
 
     let err1 = client.request("default", "echo", json!({"step": 1})).await.unwrap_err();

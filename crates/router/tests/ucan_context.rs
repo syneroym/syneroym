@@ -162,6 +162,7 @@ fn caller_from_verified_chain(
         session,
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

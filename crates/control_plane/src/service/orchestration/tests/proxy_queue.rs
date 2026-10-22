@@ -81,6 +81,7 @@ async fn the_new_verbs_are_refused_without_the_gate_their_neighbours_use() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
 
     assert!(service.proxy_outbox("svc-a".to_string(), &ungranted).await.is_err());
@@ -120,6 +121,7 @@ async fn proxy_replay_is_not_reachable_with_only_the_read_grant() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
 
     // The listings are reads and stay reachable.
@@ -165,6 +167,7 @@ async fn sagas_is_refused_without_a_status_grant() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
 
     assert!(service.sagas("svc-a".to_string(), &ungranted).await.is_err());
@@ -196,6 +199,7 @@ async fn saga_compensate_is_not_reachable_with_only_the_read_grant() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
 
     assert!(service.sagas("svc-a".to_string(), &read_only).await.is_ok());

@@ -94,6 +94,7 @@ mod resolve_peer {
         let peer = resolve_peer(&client, None, &record.info.service_id).await.unwrap();
 
         assert_eq!(peer.mailbox, record.info.mailbox);
+        assert_eq!(peer.host_key, substrate::resolve_did_key(&record.info.substrate_id).ok());
         assert!(peer.addr.is_none());
         // The registry never answers the substrate lookup, and the HTTP
         // client waits 10 s; only the bound makes this fast.

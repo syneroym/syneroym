@@ -3,6 +3,7 @@ mod helpers;
 mod local_dispatch;
 mod on_behalf;
 mod outbox;
+mod refused_hop;
 mod rehome;
 mod remote_dispatch;
 mod saga_walk;

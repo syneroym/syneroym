@@ -290,6 +290,26 @@ async fn resolve_relation_a2_resolves_structurally_with_zero_capabilities() {
     assert_eq!(resp["result"]["ids"], json!(["emp-bob"]), "A2 must resolve bob's own row");
 }
 
+/// A service that presented bob's `on_behalf` proof may ask about bob,
+/// even though it authenticated as itself and holds no anchor.
+#[tokio::test]
+async fn resolve_relation_answers_for_the_on_behalf_person() {
+    let service_id = "resolve-relation-on-behalf-svc";
+    let (route_handler, pipeline, preamble, _temp_dir, _storage_provider, _key_store) =
+        resolve_relation_service_and_pipeline(service_id, Some(resolvable_employee_policy())).await;
+
+    let mut svc_a = zero_capability_caller("did:key:svc-A");
+    svc_a.on_behalf_did = Some("did:key:bob".to_string());
+    let body = resolve_relation_body("employee", "did:key:bob");
+    let resp = route_handler
+        .dispatch_json_rpc_once(&pipeline, &preamble, Some(&svc_a), &body)
+        .await
+        .unwrap();
+    let resp: Value = serde_json::from_slice(&resp).unwrap();
+    assert!(resp.get("error").is_none(), "resolve-relation must succeed: {resp:?}");
+    assert_eq!(resp["result"]["ids"], json!(["emp-bob"]));
+}
+
 /// A caller with zero capabilities against a definition that has **not**
 /// opted into `resolvable_without_capability` gets an empty result --
 /// neither A1 (no capabilities to evaluate) nor A2 (not opted in) applies.

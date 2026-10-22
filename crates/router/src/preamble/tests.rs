@@ -1,5 +1,5 @@
 use syneroym_core::streaming::StreamDirection;
-use syneroym_identity::Identity;
+use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_rpc::OnBehalfProof;
 use syneroym_ucan::CapabilityToken;
 
@@ -260,4 +260,92 @@ fn test_sig_hex_strict_parsing() {
     // Contains uppercase 'A'
     let with_upper = format!("{}A", "a".repeat(127));
     assert!(RoutePreamble::parse(&format!("json-rpc://svc?sig={with_upper}")).is_err());
+}
+
+#[test]
+fn identity_line_round_trips() {
+    let master = Identity::generate().expect("master");
+    let temp = Identity::generate().expect("temp");
+    let cert =
+        DelegationCertificate::issue(&master, temp.public_key(), 3600, "routing".to_string())
+            .expect("delegation");
+
+    let sig_hex = "2a".repeat(64);
+    let original = super::IdentityFields {
+        pubkey: Some("0123456789abcdef".to_string()),
+        delegation: Some(cert),
+        ucan: None,
+        ts: Some(1_700_000_000),
+        sig: Some(sig_hex),
+        on_behalf: Some(OnBehalfProof {
+            pubkey: "aa".into(),
+            delegation: None,
+            service_id: "s".into(),
+            interface: "i".into(),
+            ts: 10,
+            sig: "bb".into(),
+        }),
+    };
+
+    let line = original.to_line();
+    assert!(line.ends_with('\n'));
+    let parsed = super::IdentityFields::parse_line(&line).expect("parse identity line");
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn empty_identity_line_is_anonymous() {
+    let parsed = super::IdentityFields::parse_line("\n").expect("empty line parses");
+    assert!(parsed.is_empty());
+    let parsed_crlf = super::IdentityFields::parse_line("\r\n").expect("crlf parses");
+    assert!(parsed_crlf.is_empty());
+}
+
+#[test]
+fn identity_line_refuses_route_keys() {
+    assert!(super::IdentityFields::parse_line("enc=ecdh-p256\n").is_err());
+    assert!(super::IdentityFields::parse_line("epk=04aabb\n").is_err());
+    assert!(super::IdentityFields::parse_line("dir=upload\n").is_err());
+    assert!(super::IdentityFields::parse_line("foo=1\n").is_err());
+}
+
+#[test]
+fn identity_line_checks_sig_and_ts() {
+    let bad_len_sig = format!("sig={}\n", "a".repeat(127));
+    assert!(super::IdentityFields::parse_line(&bad_len_sig).is_err());
+
+    let uppercase_sig = format!("sig={}\n", "A".repeat(128));
+    assert!(super::IdentityFields::parse_line(&uppercase_sig).is_err());
+
+    assert!(super::IdentityFields::parse_line("ts=notanumber\n").is_err());
+}
+
+#[test]
+fn take_identity_leaves_only_the_route_and_display_is_unchanged() {
+    let sig_hex = "33".repeat(64);
+    let mut preamble = RoutePreamble::binary_json_rpc("svc", "iface");
+    preamble.enc = Some("ecdh-p256".to_string());
+    preamble.epk = Some("04aabb".to_string());
+    preamble.pubkey = Some("1122".to_string());
+    preamble.ts = Some(1_700_000_000);
+    preamble.sig = Some(sig_hex.clone());
+    preamble.dir = Some(StreamDirection::Upload);
+
+    let expected = format!(
+        "json-rpc://iface|svc?enc=ecdh-p256&epk=04aabb&pubkey=1122&ts=1700000000&sig={sig_hex}&\
+         dir=upload"
+    );
+    assert_eq!(preamble.to_string(), expected);
+
+    let id = preamble.take_identity();
+    assert!(!preamble.has_identity_fields());
+    assert_eq!(preamble.route_base(), "json-rpc://iface|svc");
+    assert_eq!(id.pubkey.as_deref(), Some("1122"));
+    assert_eq!(id.sig.as_deref(), Some(sig_hex.as_str()));
+    assert_eq!(preamble.enc.as_deref(), Some("ecdh-p256"));
+    assert_eq!(preamble.epk.as_deref(), Some("04aabb"));
+    assert_eq!(
+        preamble.to_preamble_line(),
+        "json-rpc://iface|svc?enc=ecdh-p256&epk=04aabb&dir=upload\n"
+    );
 }

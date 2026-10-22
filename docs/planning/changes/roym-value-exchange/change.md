@@ -82,6 +82,7 @@ These hold for every module.
 9. **A party may tell others how a deal went, not what it cost.** Either party may disclose the outcome of each commitment without the other's consent. Amounts and payment details stay hidden unless the other party grants their disclosure. See [Disclosure of deal evidence](#disclosure-of-deal-evidence).
 10. **EEPs and barter are enforced by reputation, not by Roym.** An EEP is a commitment to make an earnest effort, not a debt. Roym records how each one was honoured and makes the pattern visible. It makes no claim about legal enforceability.
 11. **Credit grows only as far as people believe each issuer can deliver.** No interest, no issuance granted by the system, no pooled risk. Any participant with an offering can issue. Holders decide whose EEPs to accept.
+12. **Language-neutral structure, language-tagged text.** Participants speak many languages. Structured fields (categories, units, areas, commitment kinds) are codes with a label per language, so people can find and trade with each other across languages with no translation. Every free-text field (a description, a want, a quote's scope, an opinion) carries a language tag. A machine translation is shown on the reader's own node, labelled, and never signed. The signed original always wins. The rules are in the multilingual foundation change document.
 
 ## Scope and non-goals
 
@@ -681,6 +682,7 @@ Milestone 8 is too big for one milestone, so it is split in two. Phases are in b
 - [ ] Revocations gain `effective_from` and a reason, with the countersign rule after a key compromise. Built before EEPs.
 
 **M8A: agreements and EEPs between two parties**
+- [ ] **Phase 0, multilingual foundation.** Its own change document (`docs/planning/changes/roym-multilingual/change.md`): a string catalog in the Hub, local formats, a category taxonomy with labels, language tags on signed records with free text, the languages a participant speaks, and the translation host interface with no engine yet. It comes first, so every screen and record that M8 adds is multilingual from the start.
 - [ ] **Phase 1, agreements.** Resource kinds. Commitments with kinds, states (each with a failure end) and declared values, in one currency. Quote author as the single writer, and slot claims by the slot owner. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. Work items: new card types, Hub UI for multi-commitment agreements and the statement, WIT changes.
 - [ ] **Phase 2, two-party EEPs.** The `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths. Issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements. The restore rule. Per-issuer limit. Stated outstanding total on the standing card. Work items: a wallet screen in the Hub, card types for EEPs, demands and declines, WIT changes.
 

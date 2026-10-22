@@ -277,7 +277,7 @@ impl CoordinatorIroh {
         iroh_cfg: &CoordinatorIrohConfig,
         config: &SubstrateConfig,
         parent_relay_url: Option<String>,
-    ) -> (IrohRouter, Arc<AtomicUsize>) {
+    ) -> Result<(IrohRouter, Arc<AtomicUsize>)> {
         let registry_client = RegistryClient::new(
             config.substrate.enable_bep0044_dht,
             iroh_cfg.community_registry_url.clone(),
@@ -288,12 +288,12 @@ impl CoordinatorIroh {
             parent_relay_url,
             config.retry.clone(),
             iroh_cfg.max_connections,
-        );
+        )?;
         let active_connections = route_handler.active_connections();
 
         let router =
             IrohRouter::builder(iroh_endpoint.clone()).accept(SYNEROYM_ALPN, route_handler).spawn();
-        (router, active_connections)
+        Ok((router, active_connections))
     }
 
     async fn start_endpoint(args: EndpointArgs<'_>) -> Result<EndpointParts> {
@@ -313,12 +313,13 @@ impl CoordinatorIroh {
             iroh_cfg,
             config,
             parent_relay_url.map(ToString::to_string),
-        );
+        )?;
 
         let registry_url =
             iroh_cfg.community_registry_url.clone().filter(|_| iroh_cfg.share_in_registry);
         let (registered_tx, registered_rx) = watch::channel(false);
 
+        let coord_did = registration::coordinator_did(&secret_key);
         let state = InfoState {
             endpoint_addr_bytes: info_addr_bytes(endpoint.id(), relay_url.as_ref())?,
             substrate_id: endpoint.id().to_string(),
@@ -329,9 +330,7 @@ impl CoordinatorIroh {
             tls_cert_path: config.tls.as_ref().map(|t| t.cert_path.clone()),
             relay_metrics: relay_server.as_ref().map(|s| s.metrics().server.clone()),
             max_relay_clients: iroh_cfg.max_relay_clients,
-            registry: registry_url
-                .is_some()
-                .then(|| (registration::coordinator_did(&secret_key), registered_rx)),
+            registry: registry_url.is_some().then(|| (coord_did.clone(), registered_rx)),
             identity: host.identity_info(),
         };
         let app = info_endpoint::info_router(state).merge(passport::routes(relay_passports));

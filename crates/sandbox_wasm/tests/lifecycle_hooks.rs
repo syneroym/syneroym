@@ -172,6 +172,7 @@ async fn test_execute_ddl_allowed_for_admin_ucan_root_caller() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
 
     let mut host_state = HostState::new(

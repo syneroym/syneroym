@@ -19,6 +19,7 @@ fn origin_host_state(
         },
         auth,
         proof: None,
+        on_behalf_did: None,
     };
     HostState::new(
         "origin-test".to_string(),

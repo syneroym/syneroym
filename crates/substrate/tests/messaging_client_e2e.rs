@@ -58,6 +58,7 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
     )
+    .with_host(&ctx.node_did)
     .with_registry_dht(false);
     subscriber.connect().await.expect("subscriber failed to connect");
     let mut stream =
@@ -70,6 +71,7 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
     )
+    .with_host(&ctx.node_did)
     .with_registry_dht(false);
     publisher.connect().await.expect("publisher failed to connect");
 
@@ -143,7 +145,7 @@ async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() 
     // detects it on a separate task) and this next publish landing at the
     // broker, so a stray delivery or two before the router notices is
     // expected, not a bug -- only a stream that never closes is.
-    stream.stop().expect("failed to stop subscriber stream");
+    stream.stop().await.expect("failed to stop subscriber stream");
     let unsubscribe_deadline = Instant::now() + Duration::from_secs(5);
     loop {
         publisher

@@ -389,6 +389,7 @@ async fn test_deployed_policy_filters_guest_originated_query_for_a_real_caller_d
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
 
     // Seed two rows directly, bypassing the guest's own `put` (whose
@@ -496,6 +497,7 @@ async fn test_deployed_policy_authorizes_guest_originated_writes_for_a_real_call
         },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
 
     let request = JsonRpcRequest {
@@ -522,6 +524,7 @@ async fn test_deployed_policy_authorizes_guest_originated_writes_for_a_real_call
         session: SessionContext { subject_did: STRANGER_DID.to_string(), ..Default::default() },
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     };
     let request = JsonRpcRequest {
         jsonrpc: "2.0".to_string(),

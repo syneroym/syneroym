@@ -358,6 +358,7 @@ async fn test_wasm_app_scenario(ctx: &SubstrateTestContext) {
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
     )
+    .with_host(&ctx.substrate_service_id)
     .with_registry_dht(false);
     app_client.connect().await.expect("Failed to connect to app on substrate");
 

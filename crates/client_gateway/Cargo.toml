@@ -23,5 +23,8 @@ httparse.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
 iroh.workspace = true
+p256.workspace = true
 syneroym-router.workspace = true

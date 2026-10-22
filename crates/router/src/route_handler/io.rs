@@ -4,6 +4,8 @@
 
 use std::{
     collections::HashSet,
+    future::Future,
+    pin::Pin,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -28,7 +30,7 @@ use tracing::debug;
 /// without this a slow/idle peer could hold a stream open indefinitely
 /// (matches the 5s budget `HandshakeVerifier` already uses for its own
 /// pre-auth network round trip in `crates/router/src/handshake.rs`).
-const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Upper bound on the route preamble line's byte length -- read before any
 /// peer authentication happens, so without this an unauthenticated peer
@@ -38,20 +40,22 @@ const PRE_AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// `syneroym-ucan` chain at its own `MAX_CHAIN_NODES` cap (64 tokens),
 /// hex-encoded, comes to roughly 100 KiB in the worst case; a `delegation=`
 /// cert is a few hundred bytes.
-const MAX_PREAMBLE_LINE_BYTES: u64 = 256 * 1024;
+pub(super) const MAX_PREAMBLE_LINE_BYTES: u64 = 256 * 1024;
 
 use super::{
     super::SYNEROYM_ALPN,
-    RouteHandler, dispatch,
-    encryption::ReaderWriter,
+    RouteHandler,
+    caller::CallerCheck,
+    dispatch,
     refusal::{Refusal, write_refusal},
 };
 use crate::{
-    handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity},
+    e2e_channel::{OwnedStream, ReaderWriter},
+    handshake::{MasterAnchorResolver, VerifiedIdentity},
     net_iroh,
     net_iroh::{IrohStream, connect_with_retry},
     preamble::{RoutePreamble, RouteTransport},
-    route_handler::encryption::{OwnedStream, apply_encryption_stage},
+    route_handler::encryption::apply_encryption_stage,
     routing::{RoutePipeline, ServiceStage, TransportStage},
     stop_signal::StopSignal,
 };
@@ -160,7 +164,7 @@ fn owning_service_id(res: &ResourceUri) -> Option<&str> {
 /// FDAE owns Tier 3 (rows/columns) only.
 /// The `None` rejection below is correct and settled:
 /// native interfaces reject anonymous callers, WASM guests admit them.
-async fn build_caller(
+pub(super) async fn build_caller(
     preamble: &RoutePreamble,
     id: &VerifiedIdentity,
     admin_root: Option<&str>,
@@ -259,17 +263,14 @@ async fn build_caller(
         session,
         auth,
         proof: preamble.caller_proof(),
+        on_behalf_did: None,
     }
 }
 
-/// Reads a single line from the reader and parses it as a `RoutePreamble`.
-/// Bounded to `MAX_PREAMBLE_LINE_BYTES`: the read happens before any peer
-/// authentication, so leaving it unbounded would let an anonymous peer force
-/// arbitrary allocation.
-pub async fn read_preamble<R>(reader: &mut BufReader<R>) -> Result<RoutePreamble>
-where
-    R: AsyncRead + Unpin,
-{
+/// Reads a bounded single line from the reader without parsing.
+pub(crate) async fn read_line_bounded<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> Result<String> {
     let mut raw_preamble = String::new();
     let read = reader.take(MAX_PREAMBLE_LINE_BYTES).read_line(&mut raw_preamble).await?;
     if read == 0 {
@@ -280,18 +281,29 @@ where
             "preamble line exceeds the maximum length of {MAX_PREAMBLE_LINE_BYTES} bytes"
         ));
     }
+    Ok(raw_preamble)
+}
 
-    RoutePreamble::parse(&raw_preamble)
+/// Reads a single line from the reader and parses it as a `RoutePreamble`.
+/// Bounded to `MAX_PREAMBLE_LINE_BYTES`: the read happens before any peer
+/// authentication, so leaving it unbounded would let an anonymous peer force
+/// arbitrary allocation.
+pub async fn read_preamble<R>(reader: &mut BufReader<R>) -> Result<RoutePreamble>
+where
+    R: AsyncRead + Unpin,
+{
+    RoutePreamble::parse(&read_line_bounded(reader).await?)
 }
 
 impl RouteHandler {
     /// The main entry point for handling an incoming stream.
     ///
-    /// It implements a clean 5-step routing pipeline:
-    /// 1. Parse preamble
+    /// It implements a clean routing pipeline:
+    /// 1. Parse preamble and check early plain-text caller rules
     /// 2. Registry lookup & normalization
     /// 3. Plan the pipeline stages
-    /// 4. Apply encryption stage -> `OwnedStream`
+    /// 4. Apply encryption stage, read encrypted identity line, and verify
+    ///    caller
     /// 5. Dispatch by transport stage
     pub async fn handle_stream<S>(self, stream: S) -> Result<()>
     where
@@ -306,15 +318,15 @@ impl RouteHandler {
         let mut reader = BufReader::new(read_half);
         let mut writer = write_half;
 
-        let mut preamble =
-            match time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await {
-                Err(_) => return Err(anyhow!("timed out reading route preamble")),
-                Ok(Err(e)) => {
-                    debug!("[Router] unreadable preamble: {e}");
-                    return Ok(());
-                }
-                Ok(Ok(p)) => p,
-            };
+        let preamble = match time::timeout(PRE_AUTH_READ_TIMEOUT, read_preamble(&mut reader)).await
+        {
+            Err(_) => return Err(anyhow!("timed out reading route preamble")),
+            Ok(Err(e)) => {
+                debug!("[Router] unreadable preamble: {e}");
+                return Ok(());
+            }
+            Ok(Ok(p)) => p,
+        };
         debug!("[Router] Preamble received: {}", preamble.redacted());
 
         if !self.inner.registry.hosts_service(&preamble.service_id) {
@@ -326,16 +338,27 @@ impl RouteHandler {
             return Ok(());
         }
 
-        // The signature is checked against the interface as sent, before the rewrite
-        // below.
-        let caller = match self.verify_caller(&preamble).await {
-            CallerCheck::Anonymous => None,
-            CallerCheck::Verified(caller) => Some(*caller),
-            CallerCheck::Refused => {
-                write_refusal(&mut writer, preamble.transport, Refusal::Unauthenticated).await;
-                return Ok(());
-            }
-        };
+        self.serve_hosted(preamble, reader, writer, stop_signal).await
+    }
+
+    async fn serve_hosted<R, W>(
+        &self,
+        mut preamble: RoutePreamble,
+        reader: BufReader<R>,
+        mut writer: W,
+        stop_signal: Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) -> Result<()>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        // The signature covers the interface as sent, before the rewrite below.
+        let sent_interface = preamble.interface.clone();
+        let early = self.check_plain_caller(&preamble).await;
+        if matches!(early, CallerCheck::Refused) {
+            write_refusal(&mut writer, preamble.transport, Refusal::Unauthenticated).await;
+            return Ok(());
+        }
 
         // 2. Registry lookup & normalization
         self.rewrite_empty_http_interface(&mut preamble);
@@ -355,7 +378,7 @@ impl RouteHandler {
         dispatch::log_pipeline(&preamble, &pipeline, &endpoint);
 
         // 4. Apply encryption stage -> OwnedStream
-        let stream = apply_encryption_stage(
+        let mut stream = apply_encryption_stage(
             reader,
             writer,
             &pipeline.encryption,
@@ -364,12 +387,24 @@ impl RouteHandler {
         )
         .await?;
 
+        let check = match early {
+            CallerCheck::InChannel => {
+                self.check_channel_caller(&mut stream, &mut preamble, &sent_interface).await
+            }
+            other => other,
+        };
+        if matches!(check, CallerCheck::Refused | CallerCheck::InChannel) {
+            write_refusal(&mut stream.writer, preamble.transport, Refusal::Unauthenticated).await;
+            return Ok(());
+        }
+        let caller = check.into_caller();
+
         // 5. Dispatch by transport stage
         match pipeline.transport {
             TransportStage::Raw => self.handle_raw_stream(stream, &preamble, &pipeline).await,
             TransportStage::Http => {
                 let io = TokioIo::new(stream);
-                self.handle_http_stream(io, preamble, pipeline, caller).await
+                self.clone().handle_http_stream(io, preamble, pipeline, caller).await
             }
             TransportStage::Binary => {
                 let (r, w) = (stream.reader, stream.writer);
@@ -384,55 +419,6 @@ impl RouteHandler {
                 .await
             }
         }
-    }
-}
-
-/// The caller of a stream this node hosts.
-enum CallerCheck {
-    /// The preamble has no identity field at all.
-    Anonymous,
-    Verified(Box<CallerContext>),
-    /// The preamble names an identity that did not prove itself.
-    Refused,
-}
-
-impl RouteHandler {
-    async fn verify_caller(&self, preamble: &RoutePreamble) -> CallerCheck {
-        if !preamble.has_identity_fields() {
-            return CallerCheck::Anonymous;
-        }
-        match self.check_caller(preamble).await {
-            Ok(caller) => CallerCheck::Verified(Box::new(caller)),
-            Err(e) => {
-                // Log once at debug: forged streams must not flood the logs.
-                debug!(service_id = %preamble.service_id, "caller refused: {e}");
-                CallerCheck::Refused
-            }
-        }
-    }
-
-    async fn check_caller(&self, preamble: &RoutePreamble) -> Result<CallerContext> {
-        if preamble.on_behalf.is_some() && preamble.ucan.is_some() {
-            return Err(anyhow!("a preamble carries on_behalf or ucan, not both"));
-        }
-        let now = now_secs();
-        let resolver = self.inner.registry_client.as_ref();
-        let id = HandshakeVerifier::verify_preamble_at(preamble, resolver, now).await?;
-        let mut caller = build_caller(
-            preamble,
-            &id,
-            self.inner.admin_ucan_root.as_deref(),
-            &self.inner.node_did,
-            &self.inner.registry,
-            resolver,
-            self.inner.grant_resolve_to_node_did,
-        )
-        .await;
-        if let Some(proof) = &preamble.on_behalf {
-            let original = HandshakeVerifier::verify_on_behalf_at(proof, resolver, now).await?;
-            caller.session.anchor_did = Some(original.master_did);
-        }
-        Ok(caller)
     }
 
     /// Step 2's interface normalization: an HTTP request with no interface

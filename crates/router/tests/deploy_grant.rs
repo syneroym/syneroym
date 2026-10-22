@@ -72,6 +72,7 @@ fn plain_caller(did: &str) -> CallerContext {
         session: SessionContext::default(),
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -106,6 +107,7 @@ fn app_grantee(did: &str, service_id: &str) -> CallerContext {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -395,6 +397,7 @@ fn owner_rooted_caller_from_real_token(
         session,
         auth: AuthLevel::Ucan,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

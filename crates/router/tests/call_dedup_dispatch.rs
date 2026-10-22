@@ -163,6 +163,7 @@ fn caller(did: &str) -> CallerContext {
         session: SessionContext::default(),
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

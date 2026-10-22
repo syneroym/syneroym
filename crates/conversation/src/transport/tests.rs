@@ -730,7 +730,8 @@ async fn a_stranger_is_still_refused() {
 #[test]
 fn test_classify_retries_not_hosted_and_unauthenticated() {
     use syneroym_rpc::{
-        NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE, STREAM_UNAUTHENTICATED_RPC_CODE,
+        HOST_MISMATCH_RPC_CODE, NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE,
+        STREAM_UNAUTHENTICATED_RPC_CODE,
     };
 
     assert_eq!(
@@ -745,6 +746,16 @@ fn test_classify_retries_not_hosted_and_unauthenticated() {
         classify(ProxyError::Callee {
             code: NOT_HOSTED_HERE_RPC_CODE,
             message: "not hosted here".into(),
+            data: None,
+        }),
+        Disposition::Retry
+    );
+    assert_eq!(classify(ProxyError::HostMismatch("host mismatch".into())), Disposition::Retry);
+    // The same code in a callee's own answer is an ordinary callee error.
+    assert_ne!(
+        classify(ProxyError::Callee {
+            code: HOST_MISMATCH_RPC_CODE,
+            message: "passed on".into(),
             data: None,
         }),
         Disposition::Retry

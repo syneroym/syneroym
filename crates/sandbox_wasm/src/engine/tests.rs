@@ -6,7 +6,7 @@ use serde_json::Number;
 use syneroym_core::{storage::MockStorage, test_constants};
 use syneroym_data_db::{ServiceStore, SqliteStorageProvider};
 use syneroym_mqtt_broker::MqttBrokerConfig;
-use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri, SessionContext};
+use syneroym_rpc::{Ability, AuthLevel, Capability, ResourceUri};
 use tokio::sync::Notify;
 use wasmtime::component::Component;
 
@@ -393,21 +393,15 @@ async fn prepare_wasm_execution_forwards_a_wire_admin_caller_that_reaches_guest_
         .unwrap();
 
     let admin_did = "did:key:z6MkAdminRootWire";
-    let admin_caller = CallerContext {
-        caller_did: admin_did.to_string(),
-        app_instance: None,
-        session: SessionContext {
-            subject_did: admin_did.to_string(),
-            capabilities: vec![Capability {
-                with: ResourceUri::substrate(admin_did),
-                can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
-                caveats: None,
-            }],
-            ..Default::default()
-        },
-        auth: AuthLevel::Delegated,
-        proof: None,
-    };
+    let admin_caller = CallerContext::verified(
+        admin_did,
+        AuthLevel::Delegated,
+        vec![Capability {
+            with: ResourceUri::substrate(admin_did),
+            can: Ability(Ability::SUBSTRATE_ADMIN.to_string()),
+            caveats: None,
+        }],
+    );
 
     let (mut store, _func, _results_len, _item) = app_engine
         .prepare_wasm_execution(

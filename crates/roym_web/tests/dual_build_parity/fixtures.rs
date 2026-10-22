@@ -491,6 +491,7 @@ pub(crate) async fn wire_invoke_as(
         session: SessionContext::default(),
         auth,
         proof: None,
+        on_behalf_did: None,
     };
     let wasm = h
         .wasm

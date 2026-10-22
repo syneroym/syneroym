@@ -72,7 +72,9 @@ fn target_produced(error: &ProxyError) -> bool {
         // been mid-restart, which is exactly a call worth being able to
         // replay later. Excluding it would silently drop the second tier
         // of the dead-letter rule for the most transient failure there is.
-        ProxyError::ServiceNotFound(_) => true,
+        // A host mismatch is the same "not yet": the record names a host
+        // that has not answered as the host yet.
+        ProxyError::ServiceNotFound(_) | ProxyError::HostMismatch(_) => true,
         // Raised instead of a dispatch, and settled: a denied gate, an
         // unusable target kind, a protocol this node does not speak, or a
         // store it could not open. Replaying any of these re-earns the

@@ -1,11 +1,12 @@
 ---
-status: in-progress
+status: done
 living-docs-touched:
   - docs/system-architecture.md
   - docs/system-requirements-spec.md
   - docs/TERMINOLOGY.md
   - docs/developer-guide.md
   - docs/planning/traceability-matrix.md
+  - docs/planning/deferred-backlog.md
 ---
 # Signed route preamble
 
@@ -115,7 +116,7 @@ Related gaps:
 | SP-4 | A signature made for one `service_id` or `interface` is refused at another. | |
 | SP-5 | The router reads the handshake key only from `epk`. The browser tunnel works with `epk`. | |
 | SP-6 | A node that is not a coordinator and does not host the service answers `not_hosted_here` and does not forward. The SDK and `ProxyRouter` then look the service up again and reach the new host, for idempotent and non-idempotent calls. | |
-| SP-7 | Person P, with a preamble proof (not a session cookie), calls service A, A calls B, and B calls C, each on a different node. C sets `anchor_did` to P, and `resolve-relation(principal = P)` succeeds. C refuses the stream when P's proof has a `ts` outside the window or a forged signature. A guest cannot send `on_behalf`. A preamble with both `on_behalf` and `ucan` is refused. | |
+| SP-7 | Person P, with a preamble proof (not a session cookie), calls service A, A calls B, and B calls C, each on a different node. C sets `on_behalf_did` to P and leaves `anchor_did` unset (D-C4c-12), and `resolve-relation(principal = P)` succeeds. C refuses the stream when P's proof has a `ts` outside the window or a forged signature. A guest cannot send `on_behalf`. A preamble with both `on_behalf` and `ucan` is refused. | |
 | SP-8 | After `roymctl identity` revokes a temporary key and publishes the anchor, the router refuses that key. | |
 | SP-9 | The router's logs do not contain `sig`, a certificate, a `ucan` chain or `on_behalf`. | |
 | SP-10 | On an indirect connection (through C and through Cp in `crates/coordinator_iroh/tests/multi_hop_relay.rs`), the Rust client runs the handshake, checks the host's key, and then sends its identity encrypted. The forwarder sees no identity field. On a direct connection the client runs no handshake. | |
@@ -381,12 +382,24 @@ the key. The router and `peer-proxy.js` change together.
 These are recorded in the deferred backlog when C4b lands.
 
 - Any service that P called in the last 15 minutes can act on behalf of P
-  through `on_behalf`.
+  through `on_behalf`. C4c narrows this to `resolve-relation` questions
+  about P (D-C4c-12).
 - Between C4b and C4c, a Rust call through a forwarder still carries its
   identity in plaintext. Both slices land before C5.
 - A sender that does not follow Part 2 on an indirect connection exposes its
   own identity. Our clients follow it. A third-party client is responsible for
   its own.
+- The browser trusts the coordinator that serves its page. That coordinator
+  also runs signalling and is the tunnel's first hop, and the page does not
+  check that the SDP answer comes from the target substrate. So it can read
+  the session, or change the page's code. Part 2 protects the browser only
+  against forwarders after that first coordinator.
+- "A replay does not decrypt" holds for a whole stream, not for chunks
+  inside one stream. A forwarder can repeat, drop or reorder whole chunks.
+  On a long-lived tunnel (gateway keep-alive, a browser WebSocket) it can
+  repeat a whole request, so a non-idempotent request may run twice. It can
+  also cut a stream at a chunk boundary, which the receiver reads as a normal
+  end of stream.
 
 ### Rejected options
 
@@ -433,15 +446,8 @@ These are recorded in the deferred backlog when C4b lands.
    today no refusal is readable. `not_hosted_here` must be readable, because
    the client acts on it.
 2. The name and flags of the revoke command. Decide in its PR.
-3. The HKDF salt and `info` tag, and the format of the encrypted identity
-   line. Decide in the C4c plan.
-4. **Tests that dial with no record.** About 13 uses of
-   `SyneroymClient::new_with_mechanisms` in 10 test files (outside the SDK)
-   dial with no record. Under C4c they cannot tell direct from indirect, and
-   with no host key they send no identity through a forwarder. Decide in the
-   C4c plan: a way to pass the host key to the client, or give these tests a
-   record. When the target id is a substrate `did:key`, the host key is
-   already known.
+3. **The HKDF salt and `info` tag, and the format of the encrypted identity line.** Decided in C4c: see [D-C4c-1](#deviations) and [D-C4c-2](#deviations).
+4. **Tests that dial with no record.** Decided in C4c: `SyneroymClient::with_host` allows tests without registry records to provide the expected host DID key directly. See [D-C4c-7](#deviations).
 
 ## Tasks
 
@@ -464,13 +470,13 @@ Part 1 (C4b):
 
 Part 2 (C4c):
 
-- [ ] The client handshake module, used by the SDK request path,
+- [x] The client handshake module, used by the SDK request path,
       `passthrough_with_conn` and `IrohHop`.
-- [ ] Direct or indirect, and the expected host key.
-- [ ] The encrypted identity line on both sides.
-- [ ] HKDF in the router and in `peer-proxy.js`.
-- [ ] A host key for the tests that dial with no record (open question 4).
-- [ ] Tests for SP-10 to SP-13.
+- [x] Direct or indirect, and the expected host key.
+- [x] The encrypted identity line on both sides.
+- [x] HKDF in the router and in `peer-proxy.js`.
+- [x] A host key for the tests that dial with no record (open question 4).
+- [x] Tests for SP-10 to SP-13.
 
 ## Deviations
 
@@ -522,6 +528,22 @@ Part 2 (C4c):
 - **D-C4b-19 (Queued calls retry on `-32096` and `-32097`; conversation outbox behavior change):** `proxy_outbox` and `conversation/transport` classify
   `-32096` and `-32097` as `Disposition::Retry` rather than terminal errors. In the conversation outbox, refused messages now consume their attempt budget
   and dead-letter upon exhaustion instead of remaining in `Unreachable` state for up to 30 days (`max_pending_age_secs`).
+- **D-C4c-1 (HKDF salt, info tags, and directional keys):** ECDH derivation uses salt `"syneroym-e2e-v1"` and info tags `"c2s"` (client-to-server) and `"s2c"` (server-to-client) concatenated with the client's 65-byte uncompressed ephemeral public key and server's 65-byte uncompressed ephemeral public key. Client and server derive two separate 32-byte AES-256-GCM keys (`client_to_server` and `server_to_client`, `e2e_channel/kdf.rs`) to eliminate reflection attacks. `peer-proxy.js` derives and uses matching directional keys and tags.
+- **D-C4c-2 (Encrypted identity line format and strict validation):** On an encrypted stream (`enc=ecdh-p256`), identity parameters (`pubkey`, `delegation`, `ucan`, `ts`, `sig`, `on_behalf`) are stripped from the initial preamble line and transmitted as a single encrypted line (`params.join("&") + "\n"`) immediately after the handshake. Only identity keys are permitted in this line; any other key (for example `enc`, `epk` or `dir`) triggers an encrypted `-32097` refusal. The line has the same cap as a preamble line (`MAX_PREAMBLE_LINE_BYTES`, 256 KiB) and must arrive within 5 seconds (`PRE_AUTH_READ_TIMEOUT`). An anonymous stream transmits an empty encrypted line (`"\n"`).
+- **D-C4c-3 (Order of checks on encrypted streams):** Forwarders perform no handshake and no decryption. On a destination host, `unknown_interface` (`SERVICE_NOT_FOUND_RPC_CODE`, `-32601`) is checked and answered in plain text before the handshake. Decryption and verification of the encrypted identity line occur after the handshake.
+- **D-C4c-4 (First-byte rule for indirect streams):** On indirect connections, the client sends no application data or identity line before reading and verifying the server's handshake response (`epk` and signature). The server's handshake answer begins with `0x04` (65-byte uncompressed P-256 public key). Any refusal frame (such as a 4-byte-framed JSON-RPC error starting with `0x00`, or HTTP 4xx/5xx plain text) is read as a pre-handshake refusal; caller identity is never sent.
+- **D-C4c-5 (`write_frame` flushes):** `syneroym_rpc::framing::write_frame` explicitly flushes its writer. Because encrypted writers buffer ciphertexts, flushing ensures frames reach the remote peer before the client waits for replies.
+- **D-C4c-6 (Strict `epk` requirement):** When `enc=ecdh-p256` is present in the route preamble, `epk` is mandatory and must be a 65-byte uncompressed P-256 public key (starting with `0x04`), hex-encoded (130 hex characters). Compressed points or invalid keys are rejected immediately.
+- **D-C4c-7 (SDK host selection rule order):** `SyneroymClient` picks the host key it expects (`choose_host`, `crates/sdk/src/client/host.rs`) in this order: (1) a host a registry lookup already named, or one given by `with_host` or by a record (`HostChoice::Known`); (2) the target itself, when the client dialed exactly the target's key (`HostChoice::Target`); (3) a fresh registry lookup, when the client has a registry (`HostChoice::LookUp`); (4) else the target DID, when it is a valid `did:key` (`HostChoice::Target`).
+- **D-C4c-8 (Host mismatch error handling and `-32098`):** When handshake verification fails due to a mismatched host signature, the client terminates with code `-32098` (`HOST_MISMATCH_RPC_CODE`). No router sends it across the wire; it is local to the SDK, Universal Proxy, and Client Gateway (`PassthroughOutcome::HostMismatch`), which handle `-32098` by refreshing registry records, re-homing, and retrying. Both proxy outbox and conversation outbox classify `-32098` as `Retry`. `HostKeyUnknown` maps to `ServiceNotFound`.
+- **D-C4c-9 (Handshake timeout):** The E2E channel handshake enforces a 10-second timeout on waiting for the peer's ephemeral public key and signature.
+- **D-C4c-10 (`RemoteHop::call` and `RemotePeer`):** `RemoteHop::call` accepts `peer: &RemotePeer`, combining the dial address with the expected host DID key (`host_key: Option<VerifyingKey>`).
+- **D-C4c-11 (`SyneroymClient::with_identity` builder):** `SyneroymClient::with_identity(identity: Identity) -> Self` builder method allows callers and test harnesses to configure or reconfigure caller identity on an existing client instance.
+- **D-C4c-12 (`on_behalf` answers only `resolve-relation`, ADR-0016 Amendment 3):** The design above says the destination sets `anchor_did` to P. That gave every service P called P's full access to rows for 15 minutes, because the FDAE row policy and write attribution read `anchor_did`. Now the destination puts P's verified master DID in `CallerContext::on_behalf_did` and leaves `anchor_did` unset. Only `resolve_relation` (`crates/control_plane/src/synsvc_native/relation.rs`) reads it, in the order `on_behalf_did`, `anchor_did`, `subject_did`. Rows are read and written as the immediate caller. The rule "`on_behalf` or `ucan`, not both" stays, because `resolve-relation` answers for one principal. Federated FDAE keeps working. Removing `on_behalf` entirely was rejected: it would break cross-service relationship checks until UCAN delegation exists.
+- **D-C4c-13 (Domain tag on the handshake signature):** The host signs `syneroym-e2e-handshake-v1 || server key || client epk`, not the two keys alone (`e2e_channel::handshake_signed_bytes`, and `handshakeSignedBytes` in `peer-proxy.js`). The node key also signs preamble proofs and registry records, so the tag keeps a handshake signature from ever matching another signed format.
+- **D-C4c-14 (A client shows its own copy of a refusal):** Before the handshake, a refusal on an indirect path passed a forwarder, so no client passes on what it received. On an HTTP stream, the SDK passthrough and the browser read the head (at most 4 KiB, up to the blank line), accept it only with a 4xx/5xx status and a known `x-syneroym-refusal` reason, and then show the router's own copy (`Refusal::http_response`). The page gets that copy from the page template (`HTTP_REFUSALS`, built from `Refusal`), so it cannot drift from the router. On a binary stream, one shared function, `authorized_refusal_frame`, accepts a frame only as a JSON-RPC error with a refusal code and no `result` key, and returns the `Refusal`. The SDK and `IrohHop` then report `Refusal::json_rpc_error`, never the frame, its message or its data. Before this, the SDK returned the raw frame, and a frame carrying both a forged `result` and a refusal code was later read as a success.
+- **D-C4c-15 (Host mismatch is a local error variant):** `ProxyError::HostMismatch` is built only from the local handshake check. A `-32098` that a service sends in its own answer stays an ordinary `ProxyError::Callee`, so it does not make the Universal Proxy look the service up again and send the call twice. Guests still see `-32098` as a callee error. The same is not yet true for `-32096` (see the deferred backlog).
+- **D-C4c-16 (Browser tunnel keeps chunk order):** On the encrypted WebSocket tunnel, `peer-proxy.js` sends every chunk through one promise chain and decrypts chunks one at a time in arrival order. WebCrypto does not finish concurrent calls in call order, so before this a large WebSocket message, or two quick ones, could reach the router or the page out of order. Bytes that arrive while the host signature is being checked are queued before any later message. A failed encryption or decryption closes the tunnel, so the page sees `onClose` instead of later sends being dropped with no error.
 
 ## Close-out
 

@@ -30,6 +30,9 @@
         const TARGET_INTERFACE = {{ target_interface|json|safe }};
         const HTTP_VERSION = {{ http_version|json|safe }};
         const TARGET_PUBKEY_HEX = {{ target_pubkey_hex|json|safe }};
+        // The router's own response for each pre-handshake refusal, keyed
+        // by its `x-syneroym-refusal` reason (`Refusal::http_response`).
+        const HTTP_REFUSALS = {{ http_refusals|json|safe }};
         const urlParams = new URLSearchParams(window.location.search);
         let FORCE_TUNNEL = urlParams.get('force_tunnel') === 'true';
         if (FORCE_TUNNEL) {

@@ -1,266 +1,21 @@
-//! Stream encryption and decryption stages
+//! Server-side stream encryption and decryption stage
 //!
-//! Encapsulates ECDH-P256 handshakes, signature verification, and AES-256-GCM
-//! chunk framing.
+//! Encapsulates the destination side of the ECDH-P256 handshake, signing
+//! the server ephemeral key and deriving channel keys via HKDF.
 
-use std::{
-    cmp,
-    io::{self, ErrorKind},
-    pin::Pin,
-    task::{Context as TaskContext, Poll},
-};
-
-use aes_gcm::{Aes256Gcm, Key, Nonce, aead::OsRng};
+use aes_gcm::aead::OsRng;
 use anyhow::{Result, anyhow};
 use p256::{EncodedPoint, PublicKey, ecdh::EphemeralSecret};
 use syneroym_identity::Identity;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tracing::debug;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-use crate::{preamble::RoutePreamble, routing::EncryptionStage};
-
-macro_rules! ready {
-    ($e:expr $(,)?) => {
-        match $e {
-            Poll::Ready(t) => t,
-            Poll::Pending => return Poll::Pending,
-        }
-    };
-}
-
-/// A simple wrapper that combines an `AsyncRead` and `AsyncWrite` into a single
-/// type.
-pub struct ReaderWriter<R, W> {
-    pub reader: R,
-    pub writer: W,
-}
-
-impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for ReaderWriter<R, W> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.reader).poll_read(cx, buf)
-    }
-}
-
-impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for ReaderWriter<R, W> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.writer).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.writer).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.writer).poll_shutdown(cx)
-    }
-}
-
-/// A type-erased bidirectional stream, owned by the caller.
-/// Used after the encryption stage to allow downstream stages to be
-/// generic over whether the stream is encrypted or plaintext.
-pub type OwnedStream =
-    ReaderWriter<Box<dyn AsyncRead + Unpin + Send>, Box<dyn AsyncWrite + Unpin + Send>>;
-
-enum ReadState {
-    ReadLen { buf: [u8; 2], bytes_read: usize },
-    ReadPayload { len: u16, buf: Vec<u8>, bytes_read: usize },
-    Decrypted { buf: Vec<u8>, pos: usize },
-    Eof,
-}
-
-struct EncryptedReader<R> {
-    reader: R,
-    cipher: Aes256Gcm,
-    state: ReadState,
-}
-
-impl<R: AsyncRead + Unpin> AsyncRead for EncryptedReader<R> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let this = &mut *self;
-        loop {
-            match &mut this.state {
-                ReadState::Decrypted { buf: decrypted_buf, pos } => {
-                    if *pos < decrypted_buf.len() {
-                        let to_read = cmp::min(decrypted_buf.len() - *pos, buf.remaining());
-                        buf.put_slice(&decrypted_buf[*pos..*pos + to_read]);
-                        *pos += to_read;
-                        return Poll::Ready(Ok(()));
-                    }
-                    this.state = ReadState::ReadLen { buf: [0; 2], bytes_read: 0 };
-                }
-                ReadState::ReadLen { buf: len_buf, bytes_read } => {
-                    while *bytes_read < 2 {
-                        let mut temp_buf = ReadBuf::new(&mut len_buf[*bytes_read..]);
-                        ready!(Pin::new(&mut this.reader).poll_read(cx, &mut temp_buf))?;
-                        let n = temp_buf.filled().len();
-                        if n == 0 {
-                            if *bytes_read == 0 {
-                                this.state = ReadState::Eof;
-                                return Poll::Ready(Ok(()));
-                            }
-                            return Poll::Ready(Err(io::Error::new(
-                                ErrorKind::UnexpectedEof,
-                                "unexpected EOF reading chunk length",
-                            )));
-                        }
-                        *bytes_read += n;
-                    }
-                    let payload_len = u16::from_be_bytes(*len_buf);
-                    if payload_len < 12 {
-                        return Poll::Ready(Err(io::Error::new(
-                            ErrorKind::InvalidData,
-                            "invalid chunk length",
-                        )));
-                    }
-                    this.state = ReadState::ReadPayload {
-                        len: payload_len,
-                        buf: vec![0; payload_len as usize],
-                        bytes_read: 0,
-                    };
-                }
-                ReadState::ReadPayload { len, buf: payload_buf, bytes_read } => {
-                    let target = *len as usize;
-                    while *bytes_read < target {
-                        let mut temp_buf = ReadBuf::new(&mut payload_buf[*bytes_read..]);
-                        ready!(Pin::new(&mut this.reader).poll_read(cx, &mut temp_buf))?;
-                        let n = temp_buf.filled().len();
-                        if n == 0 {
-                            return Poll::Ready(Err(io::Error::new(
-                                ErrorKind::UnexpectedEof,
-                                "unexpected EOF reading chunk payload",
-                            )));
-                        }
-                        *bytes_read += n;
-                    }
-                    // Decrypt payload
-                    let nonce = Nonce::from_slice(&payload_buf[..12]);
-                    let ciphertext = &payload_buf[12..];
-                    use aes_gcm::aead::Aead;
-                    let plaintext = this.cipher.decrypt(nonce, ciphertext).map_err(|e| {
-                        io::Error::new(ErrorKind::InvalidData, format!("Decryption failed: {e}"))
-                    })?;
-                    this.state = ReadState::Decrypted { buf: plaintext, pos: 0 };
-                }
-                ReadState::Eof => {
-                    return Poll::Ready(Ok(()));
-                }
-            }
-        }
-    }
-}
-
-struct PendingWrite {
-    buf: Vec<u8>,
-    pos: usize,
-}
-
-struct EncryptedWriter<W> {
-    writer: W,
-    cipher: Aes256Gcm,
-    write_buf: Vec<u8>,
-    pending_write: Option<PendingWrite>,
-}
-
-impl<W: AsyncWrite + Unpin> EncryptedWriter<W> {
-    fn encrypt_and_start_write(&mut self) -> io::Result<()> {
-        if self.write_buf.is_empty() {
-            return Ok(());
-        }
-        use aes_gcm::aead::Aead;
-        use rand::RngCore;
-        let mut nonce_bytes = [0u8; 12];
-        rand::rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        let ciphertext = self
-            .cipher
-            .encrypt(nonce, self.write_buf.as_slice())
-            .map_err(|e| io::Error::other(format!("Encryption failed: {e}")))?;
-
-        let payload_len = (12 + ciphertext.len()) as u16;
-        let mut pending_buf = Vec::with_capacity(2 + 12 + ciphertext.len());
-        pending_buf.extend_from_slice(&payload_len.to_be_bytes());
-        pending_buf.extend_from_slice(&nonce_bytes);
-        pending_buf.extend_from_slice(&ciphertext);
-
-        self.pending_write = Some(PendingWrite { buf: pending_buf, pos: 0 });
-        self.write_buf.clear();
-        Ok(())
-    }
-
-    fn poll_flush_pending(&mut self, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        if let Some(pending) = &mut self.pending_write {
-            while pending.pos < pending.buf.len() {
-                let n =
-                    ready!(Pin::new(&mut self.writer).poll_write(cx, &pending.buf[pending.pos..]))?;
-                if n == 0 {
-                    return Poll::Ready(Err(io::Error::new(
-                        ErrorKind::WriteZero,
-                        "failed to write encrypted chunk to underlying stream",
-                    )));
-                }
-                pending.pos += n;
-            }
-            self.pending_write = None;
-        }
-        Poll::Ready(Ok(()))
-    }
-}
-
-impl<W: AsyncWrite + Unpin> AsyncWrite for EncryptedWriter<W> {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let this = &mut *self;
-        // First, flush any pending encrypted write
-        ready!(this.poll_flush_pending(cx))?;
-
-        // Buffer the incoming plaintext
-        let space = 8192 - this.write_buf.len();
-        let to_write = cmp::min(space, buf.len());
-        this.write_buf.extend_from_slice(&buf[..to_write]);
-
-        // If the buffer is full, encrypt and start writing it
-        if this.write_buf.len() >= 8192 {
-            this.encrypt_and_start_write()?;
-        }
-
-        Poll::Ready(Ok(to_write))
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        let this = &mut *self;
-        // If we have buffered plaintext, encrypt and start writing it
-        if !this.write_buf.is_empty() {
-            this.encrypt_and_start_write()?;
-        }
-        // Flush any pending encrypted write
-        ready!(this.poll_flush_pending(cx))?;
-        // Finally, flush the underlying writer
-        Pin::new(&mut this.writer).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
-        // First, flush all buffered plaintext and pending writes
-        ready!(self.as_mut().poll_flush(cx))?;
-        // Then shutdown the underlying writer
-        Pin::new(&mut self.get_mut().writer).poll_shutdown(cx)
-    }
-}
+use crate::{
+    e2e_channel::{
+        self, OwnedStream, P256_POINT_LEN, ReaderWriter, SEC1_UNCOMPRESSED, derive as derive_kdf,
+    },
+    preamble::RoutePreamble,
+    routing::EncryptionStage,
+};
 
 /// Applies the encryption stage to the stream, returning an `OwnedStream`
 /// that downstream transport/service stages can use without knowing
@@ -277,75 +32,30 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     match stage {
-        EncryptionStage::None => Ok(ReaderWriter {
-            reader: Box::new(reader) as Box<dyn AsyncRead + Unpin + Send>,
-            writer: Box::new(writer) as Box<dyn AsyncWrite + Unpin + Send>,
-        }),
+        EncryptionStage::None => {
+            Ok(ReaderWriter { reader: Box::new(reader), writer: Box::new(writer) })
+        }
         EncryptionStage::TerminateEcdhP256 => {
-            debug!("[Router] TerminateEcdhP256 encryption stage: performing handshake");
-
-            let pubkey_hex = preamble.epk.as_deref().ok_or_else(|| {
+            let epk_hex = preamble.epk.as_deref().ok_or_else(|| {
                 anyhow!("Missing 'epk' query parameter required for ecdh-p256 encryption")
             })?;
-
-            let client_pub_key_bytes =
-                hex::decode(pubkey_hex).map_err(|e| anyhow!("Invalid hex epk in preamble: {e}"))?;
-
-            let client_pub_key = EncodedPoint::from_bytes(&client_pub_key_bytes)
-                .map_err(|e| anyhow!("Invalid public key bytes: {e}"))?;
-
-            let public_key = PublicKey::from_sec1_bytes(client_pub_key.as_bytes())
-                .map_err(|e| anyhow!("Invalid public key point: {e}"))?;
-
+            let client_epk =
+                hex::decode(epk_hex).map_err(|e| anyhow!("Invalid hex epk in preamble: {e}"))?;
+            if client_epk.len() != P256_POINT_LEN || client_epk[0] != SEC1_UNCOMPRESSED {
+                return Err(anyhow!("epk must be a 65-byte uncompressed P-256 point"));
+            }
+            let client_point = PublicKey::from_sec1_bytes(&client_epk)
+                .map_err(|e| anyhow!("Invalid epk point: {e}"))?;
             let secret = EphemeralSecret::random(&mut OsRng);
-            let server_pub_key = EncodedPoint::from(secret.public_key());
-
-            let shared = secret.diffie_hellman(&public_key);
-            let shared_bytes = shared.raw_secret_bytes();
-
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&shared_bytes[..32]);
-
-            use aes_gcm::KeyInit;
-            let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-
-            // Send our server public key and signature
-            let mut payload = Vec::with_capacity(130);
-            payload.extend_from_slice(server_pub_key.as_bytes());
-            payload.extend_from_slice(&client_pub_key_bytes);
-
-            let signature = identity.sign(&payload);
-            let signature_bytes = signature.to_bytes();
-
-            debug!(
-                "[Router] Sending server public key ({} bytes) and signature ({} bytes)",
-                server_pub_key.as_bytes().len(),
-                signature_bytes.len()
-            );
-
-            writer.write_all(server_pub_key.as_bytes()).await?;
-            writer.write_all(&signature_bytes).await?;
+            let server_pk = EncodedPoint::from(secret.public_key());
+            let shared = secret.diffie_hellman(&client_point);
+            let keys = derive_kdf(shared.raw_secret_bytes(), &client_epk, server_pk.as_bytes())?;
+            let signed = e2e_channel::handshake_signed_bytes(server_pk.as_bytes(), &client_epk);
+            let signature = identity.sign(&signed);
+            writer.write_all(server_pk.as_bytes()).await?;
+            writer.write_all(&signature.to_bytes()).await?;
             writer.flush().await?;
-
-            debug!("[Router] ECDH key exchange complete; starting encrypted bidirectional pipe");
-
-            let encrypted_reader = EncryptedReader {
-                reader,
-                cipher: cipher.clone(),
-                state: ReadState::ReadLen { buf: [0; 2], bytes_read: 0 },
-            };
-
-            let encrypted_writer = EncryptedWriter {
-                writer,
-                cipher,
-                write_buf: Vec::with_capacity(8192),
-                pending_write: None,
-            };
-
-            Ok(ReaderWriter {
-                reader: Box::new(encrypted_reader) as Box<dyn AsyncRead + Unpin + Send>,
-                writer: Box::new(encrypted_writer) as Box<dyn AsyncWrite + Unpin + Send>,
-            })
+            Ok(e2e_channel::wrap(reader, writer, &keys.server_to_client, &keys.client_to_server))
         }
     }
 }

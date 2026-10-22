@@ -1,6 +1,6 @@
 pub(crate) use std::{
     sync::{
-        Arc, Weak,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -57,6 +57,19 @@ impl NativeService for RecordingNativeService {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct CapturingNativeService {
+    pub(crate) caller: Mutex<Option<CallerContext>>,
+}
+
+#[async_trait::async_trait]
+impl NativeService for CapturingNativeService {
+    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
+        *self.caller.lock().unwrap() = Some(invocation.caller);
+        Ok(NativeResponse { payload: json!({"status": "ok"}) })
+    }
+}
+
 pub(crate) fn test_caller(did: &str) -> CallerContext {
     CallerContext {
         caller_did: did.to_string(),
@@ -70,6 +83,7 @@ pub(crate) fn test_caller(did: &str) -> CallerContext {
         session: SessionContext { subject_did: did.to_string(), ..Default::default() },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -128,6 +142,7 @@ pub(crate) fn admin_caller(did: &str) -> CallerContext {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -261,6 +276,7 @@ pub(crate) fn fdae_reader_caller(subject_did: &str, service_id: &str) -> CallerC
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -312,6 +328,7 @@ pub(crate) fn employee_reader_caller(subject_did: &str, service_id: &str) -> Cal
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -338,6 +355,7 @@ pub(crate) fn unrelated_resource_capability_caller(
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -370,6 +388,7 @@ pub(crate) fn wrong_ability_on_the_right_resource_caller(
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 
@@ -385,6 +404,7 @@ pub(crate) fn zero_capability_caller(subject_did: &str) -> CallerContext {
         session: SessionContext { subject_did: subject_did.to_string(), ..Default::default() },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     }
 }
 

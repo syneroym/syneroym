@@ -219,14 +219,23 @@ async function decryptChunk(key, bytes) {
     return new Uint8Array(decrypted);
 }
 
+// Decrypts chunks strictly in arrival order. WebCrypto does not finish
+// concurrent calls in call order, so each `addBytes` waits for the one
+// before it.
 class Decryptor {
     constructor(key, onDecrypted) {
         this.key = key;
         this.onDecrypted = onDecrypted;
         this.buffer = new Uint8Array(0);
+        this.queue = Promise.resolve();
     }
 
-    async addBytes(bytes) {
+    addBytes(bytes) {
+        this.queue = this.queue.then(() => this.process(bytes));
+        return this.queue;
+    }
+
+    async process(bytes) {
         const newBuf = new Uint8Array(this.buffer.length + bytes.length);
         newBuf.set(this.buffer, 0);
         newBuf.set(bytes, this.buffer.length);
@@ -300,6 +309,60 @@ function cleanupAllConnections() {
 window.addEventListener('beforeunload', cleanupAllConnections);
 window.addEventListener('pagehide', cleanupAllConnections);
 
+const KDF_SALT = new TextEncoder().encode("syneroym-e2e-v1");
+const HANDSHAKE_SIGN_TAG = new TextEncoder().encode("syneroym-e2e-handshake-v1");
+
+// The bytes the host signs with its node key; the router builds the same
+// bytes (`e2e_channel::handshake_signed_bytes`).
+function handshakeSignedBytes(serverPubBytes, clientPubRaw) {
+    const out = new Uint8Array(HANDSHAKE_SIGN_TAG.length + 65 + 65);
+    out.set(HANDSHAKE_SIGN_TAG, 0);
+    out.set(serverPubBytes, HANDSHAKE_SIGN_TAG.length);
+    out.set(new Uint8Array(clientPubRaw), HANDSHAKE_SIGN_TAG.length + 65);
+    return out;
+}
+
+// The response the page shows for a pre-handshake refusal with this
+// reason: the router's own copy, from `HTTP_REFUSALS` in the page
+// template, never the bytes it received, so a forwarder cannot put its own
+// body in front of the user. `null` for any other reason, including the
+// names of `Object.prototype` members.
+function httpRefusalResponse(reason) {
+    if (!Object.prototype.hasOwnProperty.call(HTTP_REFUSALS, reason)) return null;
+    return new TextEncoder().encode(HTTP_REFUSALS[reason]);
+}
+
+// The reason of an authorized refusal head (status 4xx/5xx and an
+// `x-syneroym-refusal` header), or null.
+function refusalReason(headerPart) {
+    const lines = headerPart.split("\r\n");
+    const statusCode = parseInt((lines[0] || "").split(" ")[1] || "0", 10);
+    if (!lines[0].startsWith("HTTP/1.1 ") || statusCode < 400 || statusCode >= 600) return null;
+    for (const line of lines.slice(1)) {
+        const i = line.indexOf(":");
+        if (i > 0 && line.slice(0, i).trim().toLowerCase() === "x-syneroym-refusal") {
+            return line.slice(i + 1).trim();
+        }
+    }
+    return null;
+}
+
+async function deriveChannelKeys(sharedBits, clientPubRaw, serverPubBytes) {
+    const base = await window.crypto.subtle.importKey("raw", sharedBits, "HKDF", false, ["deriveKey"]);
+    const info = (label) => {
+        const l = new TextEncoder().encode(label);
+        const out = new Uint8Array(l.length + 65 + 65);
+        out.set(l, 0);
+        out.set(new Uint8Array(clientPubRaw), l.length);
+        out.set(serverPubBytes, l.length + 65);
+        return out;
+    };
+    const derive = (label, usage) => window.crypto.subtle.deriveKey(
+        { name: "HKDF", hash: "SHA-256", salt: KDF_SALT, info: info(label) },
+        base, { name: "AES-GCM", length: 256 }, false, [usage]);
+    return { sendKey: await derive("c2s", "encrypt"), recvKey: await derive("s2c", "decrypt") };
+}
+
 async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw) {
     if (serverKeyBytes.length < 129) {
         return null;
@@ -307,7 +370,6 @@ async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, client
 
     const serverPubBytes = serverKeyBytes.slice(0, 65);
     const signature = serverKeyBytes.slice(65, 129);
-    const leftovers = serverKeyBytes.slice(129);
 
     console.debug("[Page][BlindTunnel] Verifying server signature...");
 
@@ -325,9 +387,7 @@ async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, client
         ["verify"]
     );
 
-    const payload = new Uint8Array(130);
-    payload.set(serverPubBytes, 0);
-    payload.set(new Uint8Array(clientPubRaw), 65);
+    const payload = handshakeSignedBytes(serverPubBytes, clientPubRaw);
 
     const isValid = await window.crypto.subtle.verify(
         { name: "Ed25519" },
@@ -351,15 +411,13 @@ async function verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, client
         []
     );
 
-    const sharedSecret = await window.crypto.subtle.deriveKey(
+    const sharedBits = await window.crypto.subtle.deriveBits(
         { name: "ECDH", public: serverPub },
         clientKeyPair.privateKey,
-        { name: "AES-GCM", length: 256 },
-        false,
-        ["encrypt", "decrypt"]
+        256
     );
 
-    return { sharedSecret, leftovers };
+    return deriveChannelKeys(sharedBits, clientPubRaw, serverPubBytes);
 }
 
 async function connectTunnel(preamble, isRaw, onData, onClose) {
@@ -422,7 +480,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
         let finalPreamble = preamble;
         let clientKeyPair = null;
         let clientPubRaw = null;
-        let sharedSecret = null;
+        let channelKeys = null;
         let decryptor = null;
 
         const runFallback = async () => {
@@ -447,6 +505,16 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
             tunnelWS.binaryType = 'arraybuffer';
 
             let serverKeyBytes = new Uint8Array(0);
+            let plainRefusal = false;
+            let handshakeInProgress = false;
+
+            // A failed encrypt or decrypt closes the tunnel, so the page sees
+            // `onClose` instead of losing data with no error.
+            const failTunnel = (e) => {
+                console.error("[Page][BlindTunnel] Channel failed, closing tunnel:", e);
+                activeWebSockets.delete(tunnelWS);
+                tunnelWS.close();
+            };
 
             tunnelWS.onopen = () => {
                 console.debug(`[Page][BlindTunnel] WS open. Sending preamble: ${finalPreamble.trim()}`);
@@ -471,46 +539,98 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                 if (closed) return;
                 const bytes = new Uint8Array(event.data);
 
-                if (clientKeyPair && !sharedSecret) {
+                if (plainRefusal) {
+                    return;
+                }
+
+                if (clientKeyPair && !channelKeys) {
                     const combined = new Uint8Array(serverKeyBytes.length + bytes.length);
                     combined.set(serverKeyBytes, 0);
                     combined.set(bytes, serverKeyBytes.length);
                     serverKeyBytes = combined;
 
-                    if (serverKeyBytes.length >= 129) {
-                        try {
-                            const result = await verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw);
-                            if (result) {
-                                sharedSecret = result.sharedSecret;
-                                const leftovers = result.leftovers;
+                    if (handshakeInProgress) {
+                        return;
+                    }
 
-                                decryptor = new Decryptor(sharedSecret, (decrypted) => {
+                    if (serverKeyBytes.length > 0 && serverKeyBytes[0] !== 0x04) {
+                        const text = new TextDecoder().decode(serverKeyBytes);
+                        if (!text.startsWith("HTTP/")) {
+                            closed = true;
+                            activeWebSockets.delete(tunnelWS);
+                            tunnelWS.close();
+                            reject(new Error("invalid pre-handshake response: expected HTTP refusal"));
+                            return;
+                        }
+                        const headerEnd = text.indexOf("\r\n\r\n");
+                        if (headerEnd < 0 && serverKeyBytes.length < 4096) {
+                            return;
+                        }
+                        const response = headerEnd < 0
+                            ? null
+                            : httpRefusalResponse(refusalReason(text.slice(0, headerEnd)));
+
+                        if (!response) {
+                            closed = true;
+                            activeWebSockets.delete(tunnelWS);
+                            tunnelWS.close();
+                            reject(new Error("pre-handshake response is not an authorized refusal"));
+                            return;
+                        }
+
+                        plainRefusal = true;
+                        resolve({
+                            send: async () => {},
+                            close: () => {
+                                closed = true;
+                                activeWebSockets.delete(tunnelWS);
+                                tunnelWS.close();
+                            }
+                        });
+                        onData(response);
+                        serverKeyBytes = new Uint8Array(0);
+                        return;
+                    }
+
+                    if (serverKeyBytes.length >= 129) {
+                        handshakeInProgress = true;
+                        try {
+                            const keys = await verifyAndDeriveSharedSecret(serverKeyBytes, clientKeyPair, clientPubRaw);
+                            if (keys) {
+                                channelKeys = keys;
+                                decryptor = new Decryptor(channelKeys.recvKey, (decrypted) => {
                                     if (!closed) onData(decrypted);
                                 });
+                                // Bytes that arrived while the signature was being checked
+                                // were appended to serverKeyBytes; queue them before any
+                                // later message can reach the decryptor.
+                                const leftovers = serverKeyBytes.slice(129);
+                                if (leftovers.length > 0) {
+                                    decryptor.addBytes(leftovers).catch(failTunnel);
+                                }
 
                                 console.debug("[Page][BlindTunnel] E2E ECDH key negotiated! Encrypted tunnel ready.");
 
+                                // One chain, so chunks leave in the order `send` was called,
+                                // starting with the empty identity line.
+                                let sendChain = Promise.resolve();
+                                const sendEncrypted = (data) => {
+                                    sendChain = sendChain.then(async () => {
+                                        if (closed || tunnelWS.readyState !== NativeWebSocket.OPEN) return;
+                                        tunnelWS.send(await encryptChunk(channelKeys.sendKey, data));
+                                    }).catch(failTunnel);
+                                    return sendChain;
+                                };
+                                sendEncrypted(new TextEncoder().encode('\n'));
+
                                 resolve({
-                                    send: async (data) => {
-                                        if (tunnelWS.readyState === NativeWebSocket.OPEN) {
-                                            if (sharedSecret) {
-                                                const encrypted = await encryptChunk(sharedSecret, data);
-                                                tunnelWS.send(encrypted);
-                                            } else {
-                                                tunnelWS.send(data);
-                                            }
-                                        }
-                                    },
+                                    send: sendEncrypted,
                                     close: () => {
                                         closed = true;
                                         activeWebSockets.delete(tunnelWS);
                                         tunnelWS.close();
                                     }
                                 });
-
-                                if (leftovers.length > 0) {
-                                    await decryptor.addBytes(leftovers);
-                                }
                             }
                         } catch (e) {
                             console.error("[Page][BlindTunnel] Handshake error:", e);
@@ -518,11 +638,13 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                             activeWebSockets.delete(tunnelWS);
                             tunnelWS.close();
                             reject(e);
+                        } finally {
+                            handshakeInProgress = false;
                         }
                     }
                 } else {
-                    if (sharedSecret) {
-                        await decryptor.addBytes(bytes);
+                    if (channelKeys) {
+                        decryptor.addBytes(bytes).catch(failTunnel);
                     } else {
                         onData(bytes);
                     }

@@ -64,6 +64,7 @@ impl Member {
                 delegation_json: Some(self.cert.to_json().unwrap()),
                 ..Default::default()
             }),
+            on_behalf_did: None,
         }
     }
 

@@ -3,7 +3,7 @@ use std::sync::{PoisonError, atomic::Ordering};
 use anyhow::Result;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl};
 use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_router::SYNEROYM_ALPN;
+use syneroym_router::{E2eError, SYNEROYM_ALPN};
 use syneroym_rpc::{JsonRpcError, NOT_HOSTED_HERE_RPC_CODE};
 use tokio::time;
 
@@ -17,6 +17,7 @@ impl SyneroymClient {
     pub(crate) async fn dial(
         &self,
         mechanisms: Vec<EndpointMechanism>,
+        looked_up_host: Option<&str>,
     ) -> Result<TransportConnection> {
         // Try mechanisms. Currently only Iroh is implemented.
         for mechanism in mechanisms {
@@ -38,7 +39,10 @@ impl SyneroymClient {
                     let dial = endpoint.connect(endpoint_addr, SYNEROYM_ALPN);
                     match time::timeout(self.connect_timeout, dial).await {
                         Ok(Ok(conn)) => {
-                            return Ok(TransportConnection::Iroh { endpoint, conn });
+                            let host_key = self
+                                .host_key_for(looked_up_host, conn.remote_id().as_bytes())
+                                .await;
+                            return Ok(TransportConnection::Iroh { endpoint, conn, host_key });
                         }
                         Ok(Err(e)) => {
                             self.push_pending_close(spawn_background_close(endpoint));
@@ -78,7 +82,7 @@ impl SyneroymClient {
         }
         let target = self.registry_lookup_override.as_deref().unwrap_or(&self.service_id);
         let info = self.registry_client().lookup(target, true).await?.info;
-        let conn = self.dial(info.mechanisms).await?;
+        let conn = self.dial(info.mechanisms, Some(&info.substrate_id)).await?;
         self.rehome_count.fetch_add(1, Ordering::SeqCst);
         let old = self.connection.lock().unwrap_or_else(PoisonError::into_inner).replace(conn);
         if let Some(TransportConnection::Iroh { endpoint, .. }) = old {
@@ -90,4 +94,8 @@ impl SyneroymClient {
 
 pub(crate) fn is_not_hosted_here(e: &anyhow::Error) -> bool {
     e.downcast_ref::<JsonRpcError>().is_some_and(|j| j.code == NOT_HOSTED_HERE_RPC_CODE)
+}
+
+pub(crate) fn is_bad_host(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<E2eError>().is_some_and(|x| matches!(x, E2eError::BadHostSignature { .. }))
 }

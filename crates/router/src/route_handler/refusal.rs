@@ -1,5 +1,7 @@
+use serde_json::Value;
 use syneroym_rpc::{
-    NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE, STREAM_UNAUTHENTICATED_RPC_CODE, framing,
+    JsonRpcError, JsonRpcErrorResponse, NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE,
+    STREAM_UNAUTHENTICATED_RPC_CODE, framing,
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
@@ -7,14 +9,47 @@ use crate::{RouteTransport, preamble::REFUSAL_HEADER};
 
 /// Why the router closed a stream before dispatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     NotHostedHere,
     Unauthenticated,
     UnknownInterface,
 }
 
 impl Refusal {
-    pub(crate) const fn code(self) -> i32 {
+    pub const ALL: [Self; 3] = [Self::NotHostedHere, Self::Unauthenticated, Self::UnknownInterface];
+
+    /// The refusal a `REFUSAL_HEADER` value names, or `None` for any other
+    /// value.
+    #[must_use]
+    pub fn from_reason(reason: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.reason() == reason)
+    }
+
+    /// The refusal a JSON-RPC error code names, or `None` for any other
+    /// code.
+    #[must_use]
+    pub fn from_code(code: i32) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.code() == code)
+    }
+
+    /// The whole HTTP response the router writes for this refusal. A client
+    /// that receives a refusal through a forwarder shows this copy, never
+    /// the bytes it received.
+    #[must_use]
+    pub fn http_response(self) -> Vec<u8> {
+        let body = self.json_body();
+        let header = format!(
+            "HTTP/1.1 {}\r\n{REFUSAL_HEADER}: {}\r\ncontent-type: \
+             application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            self.http_status(),
+            self.reason(),
+            body.len()
+        );
+        [header.into_bytes(), body].concat()
+    }
+
+    #[must_use]
+    pub const fn code(self) -> i32 {
         match self {
             Self::NotHostedHere => NOT_HOSTED_HERE_RPC_CODE,
             Self::Unauthenticated => STREAM_UNAUTHENTICATED_RPC_CODE,
@@ -22,7 +57,8 @@ impl Refusal {
         }
     }
 
-    pub(crate) const fn reason(self) -> &'static str {
+    #[must_use]
+    pub const fn reason(self) -> &'static str {
         match self {
             Self::NotHostedHere => "not_hosted_here",
             Self::Unauthenticated => "unauthenticated",
@@ -30,7 +66,8 @@ impl Refusal {
         }
     }
 
-    pub(crate) const fn message(self) -> &'static str {
+    #[must_use]
+    pub const fn message(self) -> &'static str {
         match self {
             Self::NotHostedHere => "not hosted here",
             Self::Unauthenticated => "unauthenticated",
@@ -46,20 +83,48 @@ impl Refusal {
         }
     }
 
-    pub(crate) fn json_body(self) -> Vec<u8> {
-        let json = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": {
-                "code": self.code(),
-                "message": self.message(),
-                "data": {
-                    "reason": self.reason()
-                }
-            }
-        });
-        serde_json::to_vec(&json).unwrap_or_default()
+    /// The JSON-RPC error the router writes for this refusal. A client that
+    /// receives a refusal through a forwarder reports this copy, never the
+    /// received message or data.
+    #[must_use]
+    pub fn json_rpc_error(self) -> JsonRpcError {
+        JsonRpcError {
+            code: self.code(),
+            message: self.message().to_string(),
+            data: Some(serde_json::json!({ "reason": self.reason() })),
+        }
     }
+
+    pub(crate) fn json_body(self) -> Vec<u8> {
+        let response = JsonRpcErrorResponse {
+            jsonrpc: "2.0".to_string(),
+            error: self.json_rpc_error(),
+            id: None,
+        };
+        serde_json::to_vec(&response).unwrap_or_default()
+    }
+}
+
+/// Reads the binary-framed answer to a stream the node refused before the
+/// handshake. It is accepted only as a JSON-RPC error with a refusal code
+/// and no `result`: on an indirect path the answer passed a forwarder,
+/// which could otherwise forge a result or any other error. The caller
+/// reports the returned refusal's own copy (`Refusal::json_rpc_error`),
+/// never the frame.
+///
+/// # Errors
+/// A message naming why the frame is not an authorized refusal.
+pub fn authorized_refusal_frame(frame: &[u8]) -> Result<Refusal, String> {
+    let value: Value =
+        serde_json::from_slice(frame).map_err(|e| format!("refusal response is not JSON: {e}"))?;
+    if value.get("result").is_some() {
+        return Err("refusal response carries a result".to_string());
+    }
+    let err: JsonRpcErrorResponse = serde_json::from_value(value)
+        .map_err(|e| format!("refusal response is not a valid JSON-RPC error: {e}"))?;
+    Refusal::from_code(err.error.code).ok_or_else(|| {
+        format!("refusal response code {} is not an authorized pre-handshake error", err.error.code)
+    })
 }
 
 /// Writes `refusal` in the framing `transport` uses, flushes, shuts the
@@ -80,17 +145,7 @@ pub(crate) async fn write_refusal(
             let _ = framing::write_frame(writer, &body).await;
         }
         RouteTransport::Http => {
-            let body = refusal.json_body();
-            let status = refusal.http_status();
-            let reason = refusal.reason();
-            let header = format!(
-                "HTTP/1.1 {status}\r\n{REFUSAL_HEADER}: {reason}\r\ncontent-type: \
-                 application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                body.len()
-            );
-            if writer.write_all(header.as_bytes()).await.is_ok() {
-                let _ = writer.write_all(&body).await;
-            }
+            let _ = writer.write_all(&refusal.http_response()).await;
         }
         RouteTransport::Raw => {
             let line = format!("{}\n", refusal.reason());
@@ -100,3 +155,6 @@ pub(crate) async fn write_refusal(
     let _ = writer.flush().await;
     let _ = writer.shutdown().await;
 }
+
+#[cfg(test)]
+mod tests;

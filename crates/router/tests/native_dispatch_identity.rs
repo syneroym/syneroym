@@ -20,6 +20,8 @@ mod helpers;
 mod access_control;
 #[path = "native_dispatch_identity/cross_service_fetch.rs"]
 mod cross_service_fetch;
+#[path = "native_dispatch_identity/encrypted_identity.rs"]
+mod encrypted_identity;
 #[path = "native_dispatch_identity/fdae_enforcement.rs"]
 mod fdae_enforcement;
 #[path = "native_dispatch_identity/queries.rs"]

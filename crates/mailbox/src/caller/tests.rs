@@ -97,6 +97,7 @@ fn routing_scope_is_not_an_instance() {
             delegation_json: Some(cert.to_json().unwrap()),
             ..Default::default()
         }),
+        on_behalf_did: None,
     };
     assert!(matches!(
         instance_of(&caller, cert.issued_at_secs + 10).unwrap_err(),

@@ -233,6 +233,7 @@ async fn whoami_reflects_the_forwarded_caller_identity() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
     let outcome =
         engine.handle_guest_http_request(SERVICE_ID, &req, Some(caller_context)).await.unwrap();

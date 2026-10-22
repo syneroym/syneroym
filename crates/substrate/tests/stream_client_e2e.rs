@@ -113,6 +113,7 @@ async fn test_real_client_opens_direct_stream_both_directions() {
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
     )
+    .with_host(&ctx.node_did)
     .with_registry_dht(false);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");
@@ -194,6 +195,7 @@ async fn test_unregistered_stream_protocol_rejected_cleanly() {
         app_service_id.clone(),
         ctx.substrate_mechanisms.clone(),
     )
+    .with_host(&ctx.node_did)
     .with_registry_dht(false);
     peer.connect().await.expect("peer failed to connect");
     let conn = peer.connection().expect("peer has no live connection");

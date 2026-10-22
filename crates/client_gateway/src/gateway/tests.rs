@@ -1,10 +1,15 @@
 use std::sync::{
-    Arc, RwLock,
+    self, Arc, RwLock,
     atomic::{AtomicUsize, Ordering},
 };
 
 use dashmap::DashMap;
+use ed25519_dalek::VerifyingKey;
 use iroh::Endpoint;
+use p256::{
+    ecdh::EphemeralSecret,
+    elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
+};
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
     config::IdentityMode,
@@ -12,11 +17,12 @@ use syneroym_core::{
     protocol_utils::{TargetHost, parse_target_host},
     util::short_hash,
 };
-use syneroym_identity::Identity;
-use syneroym_router::SYNEROYM_ALPN;
+use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_router::{RoutePreamble, SYNEROYM_ALPN};
 use syneroym_sdk::topology::{
     AppHostResolver, CredentialWarning, Tier1Lookup, Tier2Fetch, credential_warning,
 };
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use super::*;
 
@@ -159,8 +165,10 @@ async fn forward_to_service_retries_on_not_hosted_here() {
         endpoint_addr_bytes: serde_json::to_vec(&server_addr).unwrap(),
         relay_url: None,
     }];
+    let host_did = derive_did_key(&VerifyingKey::from_bytes(server_ep.id().as_bytes()).unwrap());
     let client = Arc::new(Mutex::new(
         SyneroymClient::new_with_mechanisms("target-svc".to_string(), mechanisms)
+            .with_host(host_did)
             .with_registry_dht(false),
     ));
     state.clients.insert("target-svc".to_string(), client);
@@ -230,8 +238,10 @@ async fn forward_to_service_returns_bad_gateway_when_retry_also_refused() {
         endpoint_addr_bytes: serde_json::to_vec(&server_addr).unwrap(),
         relay_url: None,
     }];
+    let host_did = derive_did_key(&VerifyingKey::from_bytes(server_ep.id().as_bytes()).unwrap());
     let client = Arc::new(Mutex::new(
         SyneroymClient::new_with_mechanisms("target-svc-2".to_string(), mechanisms)
+            .with_host(host_did)
             .with_registry_dht(false),
     ));
     state.clients.insert("target-svc-2".to_string(), client);
@@ -280,5 +290,105 @@ async fn forward_to_service_returns_bad_gateway_when_retry_also_refused() {
     assert_eq!(attempts.load(Ordering::SeqCst), 2, "must have made 2 attempts");
 
     assert!(forward_task.await.unwrap().is_ok());
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn forward_to_service_rehomes_and_replays_on_host_mismatch() {
+    let state = test_state(None);
+    let server_ep =
+        Endpoint::empty_builder().alpns(vec![SYNEROYM_ALPN.to_vec()]).bind().await.unwrap();
+    let server_addr = server_ep.addr();
+
+    let expected_host_id = Identity::generate().unwrap();
+    let expected_host_did = derive_did_key(&expected_host_id.public_key());
+
+    let mechanisms = vec![EndpointMechanism::Iroh {
+        endpoint_addr_bytes: serde_json::to_vec(&server_addr).unwrap(),
+        relay_url: None,
+    }];
+    let client = Arc::new(Mutex::new(
+        SyneroymClient::new_with_mechanisms("target-svc-mismatch".to_string(), mechanisms)
+            .with_host(expected_host_did)
+            .with_registry_dht(false),
+    ));
+    state.clients.insert("target-svc-mismatch".to_string(), client);
+
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let server_attempts = Arc::clone(&attempts);
+    let recorded_post_preamble = Arc::new(sync::Mutex::new(Vec::new()));
+    let server_recorded = Arc::clone(&recorded_post_preamble);
+
+    let server_task = tokio::spawn(async move {
+        let incoming = server_ep.accept().await.unwrap();
+        let connecting = incoming.accept().unwrap();
+        let conn = connecting.await.unwrap();
+
+        while let Ok((mut send, recv)) = conn.accept_bi().await {
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            let server_recorded = Arc::clone(&server_recorded);
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(recv);
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let preamble = RoutePreamble::parse(&line).unwrap();
+                assert_eq!(preamble.enc.as_deref(), Some("ecdh-p256"));
+                assert!(preamble.pubkey.is_none());
+                let client_epk_bytes = hex::decode(preamble.epk.expect("epk present")).unwrap();
+                assert_eq!(client_epk_bytes.len(), 65);
+
+                let server_secret = EphemeralSecret::random(&mut OsRng);
+                let server_point = server_secret.public_key().to_encoded_point(false);
+                assert_eq!(server_point.as_bytes().len(), 65);
+                let wrong_identity = Identity::generate().unwrap();
+                let mut sign_bytes = Vec::new();
+                sign_bytes.extend_from_slice(server_point.as_bytes());
+                sign_bytes.extend_from_slice(&client_epk_bytes);
+                let sig = wrong_identity.sign(&sign_bytes);
+
+                send.write_all(server_point.as_bytes()).await.unwrap();
+                send.write_all(&sig.to_bytes()).await.unwrap();
+                let _ = send.finish();
+
+                let mut extra = Vec::new();
+                let _ = reader.read_to_end(&mut extra).await;
+                server_recorded.lock().unwrap().push(extra);
+            });
+        }
+    });
+
+    let (mut client_stream, mut gw_stream) = tcp_pair().await;
+    let forward_task = tokio::spawn(async move {
+        forward_to_service(
+            &mut gw_stream,
+            &state,
+            "target-svc-mismatch",
+            "http",
+            false,
+            b"GET / HTTP/1.1\r\nHost: target-svc-mismatch\r\n\r\n",
+        )
+        .await
+    });
+
+    client_stream.shutdown().await.unwrap();
+    let mut buf = [0u8; 1024];
+    let n = client_stream.read(&mut buf).await.unwrap();
+    let response = String::from_utf8_lossy(&buf[..n]);
+
+    let forward_res = forward_task.await.unwrap();
+    assert!(response.contains("HTTP/1.1 502"), "must return 502 Bad Gateway: {response}");
+    assert_eq!(attempts.load(Ordering::SeqCst), 2, "must have made 2 attempts");
+    for _ in 0..50 {
+        if recorded_post_preamble.lock().unwrap().len() == 2 {
+            break;
+        }
+        time::sleep(Duration::from_millis(10)).await;
+    }
+    let recorded = recorded_post_preamble.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert!(recorded[0].is_empty(), "attempt 1 must have no bytes after preamble line");
+    assert!(recorded[1].is_empty(), "attempt 2 must have no bytes after preamble line");
+
+    assert!(forward_res.is_ok());
     server_task.abort();
 }

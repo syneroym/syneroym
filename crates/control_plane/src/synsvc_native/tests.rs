@@ -88,6 +88,7 @@ fn admit_privileged_capability_admits_self_and_owner_refuses_stranger() {
         session: Default::default(),
         auth: syneroym_rpc::AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
     assert!(svc.admit_privileged_capability(&system_caller).is_ok());
 
@@ -97,6 +98,7 @@ fn admit_privileged_capability_admits_self_and_owner_refuses_stranger() {
         session: Default::default(),
         auth: syneroym_rpc::AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
     let err = svc.admit_privileged_capability(&stranger_caller).unwrap_err();
     assert!(matches!(err, RpcError::Custom(PERMISSION_DENIED_CODE, _, _)));

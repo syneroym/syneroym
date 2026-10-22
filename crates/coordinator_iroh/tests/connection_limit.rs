@@ -13,6 +13,8 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use ed25519_dalek::VerifyingKey;
+use iroh::EndpointAddr;
 use reqwest::Client;
 use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
@@ -20,6 +22,7 @@ use syneroym_core::{
     coordinator_info::{CoordinatorInfo, CoordinatorStatus, INFO_PATH},
     dht_registry::EndpointMechanism,
 };
+use syneroym_identity::substrate;
 use syneroym_sdk::SyneroymClient;
 use tokio::{
     sync::{Notify, mpsc},
@@ -165,6 +168,7 @@ async fn tally_verdicts(rx: &mut mpsc::Receiver<Verdict>) -> Result<(usize, usiz
 #[derive(Clone)]
 struct DialInfo {
     substrate_id: String,
+    did: String,
     endpoint_addr_bytes: Vec<u8>,
     relay_url: String,
 }
@@ -178,6 +182,7 @@ impl DialInfo {
                 relay_url: Some(self.relay_url.clone()),
             }],
         )
+        .with_host(&self.did)
     }
 }
 
@@ -214,8 +219,12 @@ async fn fetch_dial_info(coordinator: &CoordinatorIroh) -> Result<DialInfo> {
     let info_addr = coordinator.info_addr().context("coordinator has no info address")?;
     let info: CoordinatorInfo =
         Client::new().get(format!("http://{info_addr}{INFO_PATH}")).send().await?.json().await?;
+    let addr: EndpointAddr = serde_json::from_slice(&info.endpoint_addr_bytes)?;
+    let pubkey = VerifyingKey::from_bytes(addr.id.as_bytes())?;
+    let did = substrate::derive_did_key(&pubkey);
     Ok(DialInfo {
         substrate_id: info.substrate_id,
+        did,
         endpoint_addr_bytes: info.endpoint_addr_bytes,
         relay_url: info.relay_url.context("coordinator did not advertise a relay URL")?,
     })

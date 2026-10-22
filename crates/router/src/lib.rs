@@ -6,6 +6,7 @@
 
 mod call_dedup;
 mod connection_router;
+pub mod e2e_channel;
 pub mod handshake;
 mod home_relay;
 pub mod net_iroh;
@@ -24,14 +25,21 @@ mod test_support;
 
 pub use call_dedup::{ASYNC_DB_NAME, CallDedupGuard, DedupClaim, GuardOutcome, replay_as_result};
 pub use connection_router::{ConnectionRouter, SYNEROYM_ALPN};
+pub use e2e_channel::{
+    E2eError, HANDSHAKE_TIMEOUT, Opened, OwnedStream, Path, ReaderWriter, open_stream, path,
+};
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};
 pub use home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
 pub use preamble::{
-    OutboundIdentity, PREAMBLE_SEPARATOR, PROOF_WINDOW_SECS, REFUSAL_HEADER, RoutePreamble,
-    RouteProtocol, RouteTransport, route_text,
+    ENC_ECDH_P256, IdentityFields, OutboundIdentity, PREAMBLE_SEPARATOR, PROOF_WINDOW_SECS,
+    REFUSAL_HEADER, RoutePreamble, RouteProtocol, RouteTransport, route_text,
 };
-pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop};
+pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop, RemotePeer};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};
-pub use route_handler::{RouteHandler, RouteHandlerDeps, io::ucan_chain_not_revoked};
+pub use route_handler::{
+    RouteHandler, RouteHandlerDeps,
+    io::ucan_chain_not_revoked,
+    refusal::{Refusal, authorized_refusal_frame},
+};
 pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};
 pub use saga::SagaStore;

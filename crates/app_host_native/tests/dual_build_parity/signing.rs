@@ -238,6 +238,7 @@ async fn caller_origin_is_identical_on_both_builds() {
         },
         auth: AuthLevel::Delegated,
         proof: None,
+        on_behalf_did: None,
     };
 
     // The guest's `run` returns a JSON document *as a string*; unwrap that
