@@ -4,7 +4,7 @@
 //! and WebRTC initialization inside web clients.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt::{self, Debug, Formatter},
     io::{Error as IoError, Write},
     str,
@@ -36,7 +36,7 @@ use syneroym_core::{
     protocol_utils::{TargetHost, parse_target_host},
 };
 use syneroym_identity::substrate::resolve_did_key;
-use syneroym_router::{RoutePreamble, SYNEROYM_ALPN, net_iroh::IrohStream};
+use syneroym_router::{Refusal, RoutePreamble, SYNEROYM_ALPN, net_iroh::IrohStream};
 use syneroym_sdk::topology::AppHostResolver;
 use tokio::{
     io,
@@ -100,6 +100,19 @@ struct PeerProxyTemplate {
     /// browser a third implementation of a grammar that now lives in one
     /// function.
     target_interface: String,
+    /// See [`http_refusals`].
+    http_refusals: BTreeMap<&'static str, String>,
+}
+
+/// The whole HTTP response the router writes for each pre-handshake
+/// refusal, keyed by its `x-syneroym-refusal` reason. The page shows this
+/// copy instead of the bytes it received through the tunnel, and taking it
+/// from `Refusal` keeps the two from drifting apart.
+fn http_refusals() -> BTreeMap<&'static str, String> {
+    Refusal::ALL
+        .into_iter()
+        .map(|r| (r.reason(), String::from_utf8_lossy(&r.http_response()).into_owned()))
+        .collect()
 }
 
 pub async fn start(listener: TcpListener, state: Arc<BootstrapState>) -> anyhow::Result<()> {
@@ -123,6 +136,8 @@ fn app(state: Arc<BootstrapState>) -> Router {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Deserializer;
+
     use super::*;
 
     #[test]
@@ -502,6 +517,7 @@ mod tests {
             http_version: "HTTP/1.1".to_string(),
             target_pubkey_hex: "deadbeef".to_string(),
             target_interface: hostile.to_string(),
+            http_refusals: http_refusals(),
         };
         let html = tpl.render().unwrap();
 
@@ -525,6 +541,16 @@ mod tests {
             .trim_end_matches(';');
         let decoded: String = serde_json::from_str(literal).unwrap();
         assert_eq!(decoded, hostile);
+
+        // The page's refusal table is the router's own responses. The
+        // filter may spread the object over several lines, so read the
+        // first JSON value after the name.
+        let rest = html.split_once("const HTTP_REFUSALS = ").expect("HTTP_REFUSALS").1;
+        let table: BTreeMap<String, String> =
+            Deserializer::from_str(rest).into_iter().next().unwrap().unwrap();
+        for r in Refusal::ALL {
+            assert_eq!(table[r.reason()].as_bytes(), r.http_response());
+        }
     }
 
     /// The no-regression half, on the same handler -- an unscoped

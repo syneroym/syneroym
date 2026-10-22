@@ -4,7 +4,11 @@ import * as path from 'path';
 import { readE2EPorts } from '../ports';
 
 // The channel functions the page ships, loaded from the template file.
-// This checks the code the browser runs, not a copy of it.
+// This checks the code the browser runs, not a copy of it. The page
+// template supplies `HTTP_REFUSALS` from the router's own `Refusal`
+// values (checked on the Rust side), so here it is a stand-in table.
+const TEST_REFUSALS = { not_hosted_here: 'HTTP/1.1 421 Misdirected Request\r\n\r\n{}' };
+
 function loadPageChannelFunctions() {
   const file = path.resolve(__dirname, '../../../../coordinator_webrtc/templates/peer-proxy.js');
   const src = fs.readFileSync(file, 'utf8');
@@ -14,8 +18,9 @@ function loadPageChannelFunctions() {
   );
   return new Function(
     'window',
+    'HTTP_REFUSALS',
     `${body}; return { deriveChannelKeys, handshakeSignedBytes, httpRefusalResponse, refusalReason };`,
-  )({ crypto: globalThis.crypto });
+  )({ crypto: globalThis.crypto }, TEST_REFUSALS);
 }
 
 // Pinned in `crates/router/src/e2e_channel/tests.rs` (`kdf_known_answer`).
@@ -57,9 +62,11 @@ test('page channel functions match the router', async () => {
   expect(page.refusalReason('HTTP/1.1 401 Unauthorized\r\nX-Syneroym-Refusal: unauthenticated'))
     .toBe('unauthenticated');
   expect(page.httpRefusalResponse('forged')).toBeNull();
-  const response = Buffer.from(page.httpRefusalResponse('not_hosted_here')).toString();
-  expect(response.startsWith('HTTP/1.1 421 Misdirected Request\r\n')).toBe(true);
-  expect(JSON.parse(response.split('\r\n\r\n')[1]).error.code).toBe(-32096);
+  for (const inherited of ['constructor', 'toString', '__proto__']) {
+    expect(page.httpRefusalResponse(inherited)).toBeNull();
+  }
+  expect(Buffer.from(page.httpRefusalResponse('not_hosted_here')).toString())
+    .toBe(TEST_REFUSALS.not_hosted_here);
 });
 
 [false, true].forEach(forceTunnel => {

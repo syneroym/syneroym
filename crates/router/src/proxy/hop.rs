@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use ed25519_dalek::VerifyingKey;
+use syneroym_rpc::JsonRpcError;
 use tokio::io::AsyncWriteExt;
 
 use super::*;
@@ -80,12 +81,9 @@ pub(super) async fn handle_refused_hop(
         .await
         .map_err(|_| ProxyError::Timeout(e2e_channel::HANDSHAKE_TIMEOUT))?
         .map_err(transport_err)?;
-    let err = authorized_refusal_frame(&frame).map_err(ProxyError::Transport)?;
-    Err(ProxyError::Callee {
-        code: err.error.code,
-        message: err.error.message,
-        data: err.error.data,
-    })
+    let refusal = authorized_refusal_frame(&frame).map_err(ProxyError::Transport)?;
+    let JsonRpcError { code, message, data } = refusal.json_rpc_error();
+    Err(ProxyError::Callee { code, message, data })
 }
 
 #[async_trait::async_trait]

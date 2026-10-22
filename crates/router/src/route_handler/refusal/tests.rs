@@ -28,7 +28,16 @@ async fn http_response_is_what_the_router_writes() {
 fn a_forged_result_is_not_an_authorized_refusal() {
     let err =
         authorized_refusal_frame(br#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#).unwrap_err();
-    assert!(err.contains("not a valid JSON-RPC error"), "{err}");
+    assert!(err.contains("carries a result"), "{err}");
+}
+
+/// A frame with both keys would pass an error-only parse; a caller that
+/// later parsed it as a response would take the `result` as a success.
+#[test]
+fn a_result_next_to_a_refusal_code_is_not_an_authorized_refusal() {
+    let frame = br#"{"jsonrpc":"2.0","id":1,"result":true,"error":{"code":-32096,"message":"x"}}"#;
+    let err = authorized_refusal_frame(frame).unwrap_err();
+    assert!(err.contains("carries a result"), "{err}");
 }
 
 #[test]
@@ -44,8 +53,7 @@ async fn every_refusal_the_router_writes_is_authorized() {
         let mut written = Vec::new();
         write_refusal(&mut written, RouteTransport::Binary, r).await;
         let frame = framing::read_frame(&mut written.as_slice()).await.expect("frame");
-        let err = authorized_refusal_frame(&frame).expect("authorized");
-        assert_eq!(err.error.code, r.code());
+        assert_eq!(authorized_refusal_frame(&frame), Ok(r));
     }
     assert_eq!(Refusal::NotHostedHere.code(), NOT_HOSTED_HERE_RPC_CODE);
 }

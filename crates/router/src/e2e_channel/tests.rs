@@ -1,14 +1,21 @@
-use std::{io::Cursor, time::Duration};
+use std::{io::Cursor, mem, time::Duration};
 
+use aes_gcm::aead::OsRng;
 use ed25519_dalek::VerifyingKey;
+use p256::{EncodedPoint, ecdh::EphemeralSecret};
 use syneroym_identity::Identity;
 use syneroym_rpc::{NOT_HOSTED_HERE_RPC_CODE, framing};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex, empty, sink};
+use tokio::io::{
+    AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, duplex, empty, sink, split,
+};
 
 use super::{E2eError, Opened, Path, SEC1_UNCOMPRESSED, derive as derive_kdf, open_stream, path};
 use crate::{
     RoutePreamble,
-    route_handler::{encryption::apply_encryption_stage, io::read_line_bounded},
+    route_handler::{
+        encryption::apply_encryption_stage,
+        io::{read_line_bounded, read_preamble},
+    },
     routing::EncryptionStage,
 };
 
@@ -62,15 +69,15 @@ async fn open_stream_direct_writes_identity_in_preamble() {
     preamble.sign(&id, 1_700_000_000);
 
     let (client_stream, mut server_stream) = duplex(1024);
-    let (cr, cw) = tokio::io::split(client_stream);
+    let (cr, cw) = split(client_stream);
 
     let path = Path::Direct;
     let opened = open_stream(cr, cw, preamble, &path).await.expect("open stream");
     assert!(matches!(opened, Opened::Ready(_)));
 
     let mut line = String::new();
-    let mut reader = tokio::io::BufReader::new(&mut server_stream);
-    tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await.expect("read line");
+    let mut reader = BufReader::new(&mut server_stream);
+    reader.read_line(&mut line).await.expect("read line");
 
     assert!(line.contains("pubkey="));
     assert!(line.contains("sig="));
@@ -89,13 +96,12 @@ async fn open_stream_indirect_round_trip() {
     let expected_sig = preamble.sig.clone();
 
     let (client_stream, server_stream) = duplex(4096);
-    let (cr, cw) = tokio::io::split(client_stream);
-    let (sr, sw) = tokio::io::split(server_stream);
+    let (cr, cw) = split(client_stream);
+    let (sr, sw) = split(server_stream);
 
     let server_task = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(sr);
-        let parsed_preamble =
-            crate::route_handler::io::read_preamble(&mut reader).await.expect("read preamble");
+        let mut reader = BufReader::new(sr);
+        let parsed_preamble = read_preamble(&mut reader).await.expect("read preamble");
         assert_eq!(parsed_preamble.enc.as_deref(), Some("ecdh-p256"));
         assert!(parsed_preamble.pubkey.is_none());
 
@@ -109,8 +115,7 @@ async fn open_stream_indirect_round_trip() {
         .await
         .expect("encryption stage");
 
-        let mut r =
-            tokio::io::BufReader::new(std::mem::replace(&mut stream.reader, Box::new(empty())));
+        let mut r = BufReader::new(mem::replace(&mut stream.reader, Box::new(empty())));
         let id_line = read_line_bounded(&mut r).await.expect("read id line");
         stream.reader = Box::new(r);
 
@@ -145,12 +150,11 @@ async fn open_stream_refused_before_handshake() {
 
     // Case 1: Binary refusal
     let (client_stream, mut server_stream) = duplex(1024);
-    let (cr, cw) = tokio::io::split(client_stream);
+    let (cr, cw) = split(client_stream);
 
     let server_task = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(&mut server_stream);
-        let _preamble =
-            crate::route_handler::io::read_preamble(&mut reader).await.expect("preamble");
+        let mut reader = BufReader::new(&mut server_stream);
+        let _preamble = read_preamble(&mut reader).await.expect("preamble");
         let body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": null,
@@ -178,12 +182,11 @@ async fn open_stream_refused_before_handshake() {
 
     // Case 2: HTTP refusal (first byte 'H')
     let (client_stream2, mut server_stream2) = duplex(1024);
-    let (cr2, cw2) = tokio::io::split(client_stream2);
+    let (cr2, cw2) = split(client_stream2);
 
     let server_task2 = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(&mut server_stream2);
-        let _preamble =
-            crate::route_handler::io::read_preamble(&mut reader).await.expect("preamble");
+        let mut reader = BufReader::new(&mut server_stream2);
+        let _preamble = read_preamble(&mut reader).await.expect("preamble");
         server_stream2.write_all(b"HTTP/1.1 421 Misdirected Request\r\n\r\n").await.unwrap();
     });
 
@@ -215,15 +218,14 @@ async fn assert_reply_refused(signer: Identity, expected: &Identity, tagged: boo
         VerifyingKey::from_bytes(&expected.public_key().to_bytes()).expect("expected vk");
 
     let (client_stream, server_stream) = duplex(1024);
-    let (cr, cw) = tokio::io::split(client_stream);
-    let (sr, mut sw) = tokio::io::split(server_stream);
+    let (cr, cw) = split(client_stream);
+    let (sr, mut sw) = split(server_stream);
 
     let server_task = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(sr);
-        let preamble =
-            crate::route_handler::io::read_preamble(&mut reader).await.expect("preamble");
-        let server_secret = p256::ecdh::EphemeralSecret::random(&mut aes_gcm::aead::OsRng);
-        let server_pk = p256::EncodedPoint::from(server_secret.public_key());
+        let mut reader = BufReader::new(sr);
+        let preamble = read_preamble(&mut reader).await.expect("preamble");
+        let server_secret = EphemeralSecret::random(&mut OsRng);
+        let server_pk = EncodedPoint::from(server_secret.public_key());
         let client_epk = hex::decode(preamble.epk.expect("epk")).expect("decode");
         let signed = if tagged {
             super::handshake_signed_bytes(server_pk.as_bytes(), &client_epk)
@@ -305,7 +307,7 @@ async fn open_stream_times_out() {
         VerifyingKey::from_bytes(&expected_id.public_key().to_bytes()).expect("expected vk");
 
     let (client_stream, _server_stream) = duplex(1024);
-    let (cr, cw) = tokio::io::split(client_stream);
+    let (cr, cw) = split(client_stream);
 
     let caller_id = Identity::generate().expect("caller id");
     let mut preamble = RoutePreamble::binary_json_rpc("svc", "api");

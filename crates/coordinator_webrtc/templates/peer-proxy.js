@@ -322,27 +322,14 @@ function handshakeSignedBytes(serverPubBytes, clientPubRaw) {
     return out;
 }
 
-// The pre-handshake refusals the router writes on an HTTP stream, keyed by
-// the `x-syneroym-refusal` reason. The page shows its own copy, never the
-// bytes it received, so a forwarder cannot put its own body in front of
-// the user (crates/router/src/route_handler/refusal.rs).
-const HTTP_REFUSALS = {
-    not_hosted_here: { status: "421 Misdirected Request", code: -32096, message: "not hosted here" },
-    unauthenticated: { status: "401 Unauthorized", code: -32097, message: "unauthenticated" },
-    unknown_interface: { status: "404 Not Found", code: -32601, message: "unknown interface" },
-};
-
+// The response the page shows for a pre-handshake refusal with this
+// reason: the router's own copy, from `HTTP_REFUSALS` in the page
+// template, never the bytes it received, so a forwarder cannot put its own
+// body in front of the user. `null` for any other reason, including the
+// names of `Object.prototype` members.
 function httpRefusalResponse(reason) {
-    const r = HTTP_REFUSALS[reason];
-    if (!r) return null;
-    const body = JSON.stringify({
-        jsonrpc: "2.0", id: null,
-        error: { code: r.code, message: r.message, data: { reason } },
-    });
-    const head = `HTTP/1.1 ${r.status}\r\nx-syneroym-refusal: ${reason}\r\n` +
-        `content-type: application/json\r\ncontent-length: ${body.length}\r\n` +
-        `connection: close\r\n\r\n`;
-    return new TextEncoder().encode(head + body);
+    if (!Object.prototype.hasOwnProperty.call(HTTP_REFUSALS, reason)) return null;
+    return new TextEncoder().encode(HTTP_REFUSALS[reason]);
 }
 
 // The reason of an authorized refusal head (status 4xx/5xx and an
@@ -522,8 +509,10 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
             let plainRefusal = false;
             let handshakeInProgress = false;
 
-            const failDecrypt = (e) => {
-                console.error("[Page][BlindTunnel] Decryption failed, closing tunnel:", e);
+            // A failed encrypt or decrypt closes the tunnel, so the page sees
+            // `onClose` instead of losing data with no error.
+            const failTunnel = (e) => {
+                console.error("[Page][BlindTunnel] Channel failed, closing tunnel:", e);
                 activeWebSockets.delete(tunnelWS);
                 tunnelWS.close();
             };
@@ -618,7 +607,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                                 // later message can reach the decryptor.
                                 const leftovers = serverKeyBytes.slice(129);
                                 if (leftovers.length > 0) {
-                                    decryptor.addBytes(leftovers).catch(failDecrypt);
+                                    decryptor.addBytes(leftovers).catch(failTunnel);
                                 }
 
                                 console.debug("[Page][BlindTunnel] E2E ECDH key negotiated! Encrypted tunnel ready.");
@@ -630,7 +619,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                                     sendChain = sendChain.then(async () => {
                                         if (closed || tunnelWS.readyState !== NativeWebSocket.OPEN) return;
                                         tunnelWS.send(await encryptChunk(channelKeys.sendKey, data));
-                                    });
+                                    }).catch(failTunnel);
                                     return sendChain;
                                 };
                                 sendEncrypted(new TextEncoder().encode('\n'));
@@ -656,7 +645,7 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
                     }
                 } else {
                     if (channelKeys) {
-                        decryptor.addBytes(bytes).catch(failDecrypt);
+                        decryptor.addBytes(bytes).catch(failTunnel);
                     } else {
                         onData(bytes);
                     }

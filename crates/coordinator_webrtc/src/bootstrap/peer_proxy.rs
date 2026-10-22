@@ -88,6 +88,7 @@ pub(super) async fn handle_bootstrap(
         http_version: "HTTP/1.1".to_string(),
         target_pubkey_hex,
         target_interface,
+        http_refusals: http_refusals(),
     };
 
     match tpl.render() {

@@ -1,5 +1,6 @@
+use serde_json::Value;
 use syneroym_rpc::{
-    JsonRpcErrorResponse, NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE,
+    JsonRpcError, JsonRpcErrorResponse, NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE,
     STREAM_UNAUTHENTICATED_RPC_CODE, framing,
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -15,7 +16,7 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    const ALL: [Self; 3] = [Self::NotHostedHere, Self::Unauthenticated, Self::UnknownInterface];
+    pub const ALL: [Self; 3] = [Self::NotHostedHere, Self::Unauthenticated, Self::UnknownInterface];
 
     /// The refusal a `REFUSAL_HEADER` value names, or `None` for any other
     /// value.
@@ -47,7 +48,8 @@ impl Refusal {
         [header.into_bytes(), body].concat()
     }
 
-    pub(crate) const fn code(self) -> i32 {
+    #[must_use]
+    pub const fn code(self) -> i32 {
         match self {
             Self::NotHostedHere => NOT_HOSTED_HERE_RPC_CODE,
             Self::Unauthenticated => STREAM_UNAUTHENTICATED_RPC_CODE,
@@ -64,7 +66,8 @@ impl Refusal {
         }
     }
 
-    pub(crate) const fn message(self) -> &'static str {
+    #[must_use]
+    pub const fn message(self) -> &'static str {
         match self {
             Self::NotHostedHere => "not hosted here",
             Self::Unauthenticated => "unauthenticated",
@@ -80,39 +83,48 @@ impl Refusal {
         }
     }
 
+    /// The JSON-RPC error the router writes for this refusal. A client that
+    /// receives a refusal through a forwarder reports this copy, never the
+    /// received message or data.
+    #[must_use]
+    pub fn json_rpc_error(self) -> JsonRpcError {
+        JsonRpcError {
+            code: self.code(),
+            message: self.message().to_string(),
+            data: Some(serde_json::json!({ "reason": self.reason() })),
+        }
+    }
+
     pub(crate) fn json_body(self) -> Vec<u8> {
-        let json = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": {
-                "code": self.code(),
-                "message": self.message(),
-                "data": {
-                    "reason": self.reason()
-                }
-            }
-        });
-        serde_json::to_vec(&json).unwrap_or_default()
+        let response = JsonRpcErrorResponse {
+            jsonrpc: "2.0".to_string(),
+            error: self.json_rpc_error(),
+            id: None,
+        };
+        serde_json::to_vec(&response).unwrap_or_default()
     }
 }
 
 /// Reads the binary-framed answer to a stream the node refused before the
-/// handshake. It is accepted only as a JSON-RPC error with a refusal code:
-/// on an indirect path the answer passed a forwarder, which could
-/// otherwise forge a result or any other error.
+/// handshake. It is accepted only as a JSON-RPC error with a refusal code
+/// and no `result`: on an indirect path the answer passed a forwarder,
+/// which could otherwise forge a result or any other error. The caller
+/// reports the returned refusal's own copy (`Refusal::json_rpc_error`),
+/// never the frame.
 ///
 /// # Errors
 /// A message naming why the frame is not an authorized refusal.
-pub fn authorized_refusal_frame(frame: &[u8]) -> Result<JsonRpcErrorResponse, String> {
-    let err: JsonRpcErrorResponse = serde_json::from_slice(frame)
-        .map_err(|e| format!("refusal response is not a valid JSON-RPC error: {e}"))?;
-    if Refusal::from_code(err.error.code).is_none() {
-        return Err(format!(
-            "refusal response code {} is not an authorized pre-handshake error",
-            err.error.code
-        ));
+pub fn authorized_refusal_frame(frame: &[u8]) -> Result<Refusal, String> {
+    let value: Value =
+        serde_json::from_slice(frame).map_err(|e| format!("refusal response is not JSON: {e}"))?;
+    if value.get("result").is_some() {
+        return Err("refusal response carries a result".to_string());
     }
-    Ok(err)
+    let err: JsonRpcErrorResponse = serde_json::from_value(value)
+        .map_err(|e| format!("refusal response is not a valid JSON-RPC error: {e}"))?;
+    Refusal::from_code(err.error.code).ok_or_else(|| {
+        format!("refusal response code {} is not an authorized pre-handshake error", err.error.code)
+    })
 }
 
 /// Writes `refusal` in the framing `transport` uses, flushes, shuts the

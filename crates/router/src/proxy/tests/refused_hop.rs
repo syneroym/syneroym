@@ -4,7 +4,7 @@
 use syneroym_rpc::{NOT_HOSTED_HERE_RPC_CODE, ProxyError, framing};
 use tokio::io::{AsyncWriteExt, duplex, split};
 
-use crate::{e2e_channel::ReaderWriter, proxy::hop::handle_refused_hop};
+use crate::{Refusal, e2e_channel::ReaderWriter, proxy::hop::handle_refused_hop};
 
 async fn refused_with(frame: &[u8]) -> ProxyError {
     let (mut peer, ours) = duplex(4096);
@@ -28,14 +28,19 @@ async fn an_error_with_another_code_is_a_transport_error() {
     assert!(matches!(err, ProxyError::Transport(_)), "{err:?}");
 }
 
+/// The code reaches the caller, but with the router's own message and
+/// data, not the forwarder's.
 #[tokio::test]
-async fn not_hosted_here_reaches_the_caller() {
+async fn not_hosted_here_reaches_the_caller_as_the_routers_copy() {
     let frame = format!(
-        r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{NOT_HOSTED_HERE_RPC_CODE},"message":"not hosted here"}}}}"#
+        r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{NOT_HOSTED_HERE_RPC_CODE},"message":"forged text","data":{{"forged":true}}}}}}"#
     );
     let err = refused_with(frame.as_bytes()).await;
-    assert!(
-        matches!(err, ProxyError::Callee { code, .. } if code == NOT_HOSTED_HERE_RPC_CODE),
-        "{err:?}"
-    );
+    let own = Refusal::NotHostedHere.json_rpc_error();
+    match err {
+        ProxyError::Callee { code, message, data } => {
+            assert_eq!((code, message, data), (own.code, own.message, own.data));
+        }
+        other => panic!("expected a callee error, got {other:?}"),
+    }
 }

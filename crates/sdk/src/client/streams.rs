@@ -18,6 +18,25 @@ pub(crate) enum Sent {
     Answered(Vec<u8>),
 }
 
+/// The error for a stream the node refused before the handshake: the
+/// router's own copy of the refusal (`Refusal::json_rpc_error`), never the
+/// received frame. On an indirect path that frame passed a forwarder, and
+/// a later parse could read a forged `result` in it as a success.
+pub(crate) async fn refusal_error(mut s: OwnedStream) -> anyhow::Error {
+    let frame =
+        match time::timeout(e2e_channel::HANDSHAKE_TIMEOUT, framing::read_frame(&mut s.reader))
+            .await
+        {
+            Err(_) => return anyhow::anyhow!("timeout waiting for refusal response"),
+            Ok(Err(e)) => return e,
+            Ok(Ok(frame)) => frame,
+        };
+    match authorized_refusal_frame(&frame) {
+        Ok(refusal) => refusal.json_rpc_error().into(),
+        Err(why) => anyhow::Error::msg(why),
+    }
+}
+
 impl SyneroymClient {
     pub(crate) fn build_preamble(&self, interface_name: &str) -> RoutePreamble {
         let mut preamble = RoutePreamble::binary_json_rpc(&self.service_id, interface_name);
@@ -45,17 +64,7 @@ impl SyneroymClient {
             match e2e_channel::open_stream(recv, send, self.build_preamble(interface), &path)
                 .await?
             {
-                Opened::Refused(mut s) => {
-                    let frame = time::timeout(
-                        e2e_channel::HANDSHAKE_TIMEOUT,
-                        framing::read_frame(&mut s.reader),
-                    )
-                    .await
-                    .map_err(|_| anyhow::anyhow!("timeout waiting for refusal response"))??;
-
-                    authorized_refusal_frame(&frame).map_err(anyhow::Error::msg)?;
-                    return Ok(Sent::Answered(frame));
-                }
+                Opened::Refused(s) => return Err(refusal_error(s).await),
                 Opened::Ready(s) => s,
             };
         let wrote: Result<()> = async {
@@ -151,3 +160,6 @@ impl SyneroymClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
