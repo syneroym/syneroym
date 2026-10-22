@@ -54,6 +54,12 @@ pub const ASYNC_DB_NAME: &str = "async.db";
 /// such a service directly and again from its mailbox, days apart.
 const MAILBOX_DEDUP_MAX_ROWS: u32 = 100_000;
 
+/// The live rows in the whole fence of a service with a mailbox at which the
+/// long window closes. Callers cost nothing to make, so the per-caller cap
+/// alone does not bound the store. Past this, new calls get the node's
+/// default window, which is what every service had before it had a mailbox.
+const MAILBOX_DEDUP_MAX_TOTAL_ROWS: u32 = 200_000;
+
 /// What the guard decided about one incoming request.
 #[derive(Debug)]
 pub enum GuardOutcome {
@@ -77,9 +83,6 @@ pub struct DedupClaim {
     /// Identifies *this* attempt's hold, so a settlement that arrives
     /// after the claim was retaken cannot stamp over the newer one.
     token: ClaimToken,
-    /// The window the claim was made with. The settlement records its
-    /// outcome with the same one.
-    window: DedupWindow,
 }
 
 impl DedupClaim {
@@ -129,7 +132,7 @@ impl DedupClaim {
         let now = now_ms();
         let recorded = task::spawn_blocking(move || match settlement {
             Settlement::Record(outcome) => {
-                self.store.finish(&self.caller, &self.key, self.token, &outcome, now, self.window)
+                self.store.finish(&self.caller, &self.key, self.token, &outcome, now)
             }
             Settlement::Release => self.store.release(&self.caller, &self.key, self.token),
             Settlement::LeaveInFlight => Ok(()),
@@ -374,6 +377,7 @@ impl CallDedupGuard {
         DedupWindow {
             ttl_ms: ttl_ms.max(base.ttl_ms),
             max_rows: MAILBOX_DEDUP_MAX_ROWS.max(base.max_rows),
+            max_total_rows: MAILBOX_DEDUP_MAX_TOTAL_ROWS,
         }
     }
 
@@ -438,7 +442,7 @@ impl CallDedupGuard {
         };
         match probe {
             Ok(Ok(DedupDecision::Execute(token))) => {
-                GuardOutcome::Execute(Some(DedupClaim { store, caller, key, token, window }))
+                GuardOutcome::Execute(Some(DedupClaim { store, caller, key, token }))
             }
             Ok(Ok(DedupDecision::Replay(outcome))) => {
                 metrics::counter!("substrate.proxy.dedup.replayed").increment(1);

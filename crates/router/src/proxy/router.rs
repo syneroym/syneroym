@@ -512,22 +512,21 @@ impl ProxyRouter {
 
         metrics::counter!("substrate.proxy.calls").increment(1);
         let started = Instant::now();
+        let outcome = self.dispatch_call(req).await;
+        record_call_outcome(started, &outcome);
+        outcome
+    }
 
-        // Local first: the endpoint registry is authoritative for services
-        // hosted on this node (this is also the <5ms same-node path).
-        let outcome = match self.registry.lookup(&req.target_service, &req.interface) {
+    /// The dispatch of one call, with no gate and no metrics: local first,
+    /// since the endpoint registry is authoritative for services hosted on
+    /// this node (this is also the <5ms same-node path), else remote.
+    pub(super) async fn dispatch_call(&self, req: &ProxyRequest) -> Result<Value, ProxyError> {
+        match self.registry.lookup(&req.target_service, &req.interface) {
             Some((endpoint, canonical_iface)) => {
                 self.invoke_local_guarded(req, endpoint, canonical_iface).await
             }
             None => self.invoke_remote(req).await,
-        };
-
-        metrics::histogram!("substrate.proxy.duration_ms")
-            .record(started.elapsed().as_secs_f64() * 1000.0);
-        if outcome.is_err() {
-            metrics::counter!("substrate.proxy.errors").increment(1);
         }
-        outcome
     }
 
     /// Try-then-queue. A reachable target costs one call and zero queue
@@ -682,6 +681,16 @@ impl ServiceProxy for ProxyRouter {
 
     async fn saga_status(&self, service_id: &str, saga_id: &str) -> Result<SagaInfo, ProxyError> {
         ProxyRouter::saga_status_impl(self, service_id, saga_id).await
+    }
+}
+
+/// The duration and error metrics every delivery records, whichever way it
+/// is made.
+pub(super) fn record_call_outcome<T>(started: Instant, outcome: &Result<T, ProxyError>) {
+    metrics::histogram!("substrate.proxy.duration_ms")
+        .record(started.elapsed().as_secs_f64() * 1000.0);
+    if outcome.is_err() {
+        metrics::counter!("substrate.proxy.errors").increment(1);
     }
 }
 

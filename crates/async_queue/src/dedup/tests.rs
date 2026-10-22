@@ -42,7 +42,6 @@ fn a_call_with_a_fresh_key_executes_and_records_its_result() {
             claim_of(&store, "did:key:zA", "k1"),
             &FirstOutcome::Success(b"42".to_vec()),
             1_500,
-            store.config.window(),
         )
         .unwrap();
     assert_eq!(
@@ -56,16 +55,7 @@ fn a_repeat_of_a_completed_call_that_failed_returns_the_same_callee_error() {
     let store = store();
     store.begin("did:key:zA", "k1", 1_000, store.config.window()).unwrap();
     let err = FirstOutcome::CalleeError { code: -32010, message: "denied".to_string() };
-    store
-        .finish(
-            "did:key:zA",
-            "k1",
-            claim_of(&store, "did:key:zA", "k1"),
-            &err,
-            1_500,
-            store.config.window(),
-        )
-        .unwrap();
+    store.finish("did:key:zA", "k1", claim_of(&store, "did:key:zA", "k1"), &err, 1_500).unwrap();
     assert_eq!(
         store.begin("did:key:zA", "k1", 2_000, store.config.window()).unwrap(),
         DedupDecision::Replay(err)
@@ -105,7 +95,6 @@ fn a_key_is_scoped_to_its_caller() {
             claim_of(&store, "did:key:zA", "k1"),
             &FirstOutcome::Success(b"a".to_vec()),
             1_100,
-            store.config.window(),
         )
         .unwrap();
     assert!(
@@ -128,7 +117,6 @@ fn a_record_past_its_ttl_does_not_answer_and_is_pruned_on_the_next_write() {
             claim_of(&store, "did:key:zA", "k1"),
             &FirstOutcome::Success(b"a".to_vec()),
             1_100,
-            store.config.window(),
         )
         .unwrap();
     assert_eq!(store.len().unwrap(), 1);
@@ -184,14 +172,7 @@ fn a_finish_from_an_attempt_that_lost_its_claim_records_nothing() {
 
     // Attempt 1 finally finishes, far too late, quoting its own claim.
     store
-        .finish(
-            "did:key:zA",
-            "k1",
-            stale,
-            &FirstOutcome::Success(b"stale".to_vec()),
-            61_500,
-            store.config.window(),
-        )
+        .finish("did:key:zA", "k1", stale, &FirstOutcome::Success(b"stale".to_vec()), 61_500)
         .unwrap();
 
     assert_eq!(
@@ -214,7 +195,6 @@ fn a_finish_from_the_attempt_holding_the_claim_records_its_outcome() {
             claim_of(&store, "did:key:zA", "k1"),
             &FirstOutcome::Success(b"ok".to_vec()),
             1_500,
-            store.config.window(),
         )
         .unwrap();
     assert_eq!(
@@ -237,7 +217,6 @@ fn one_caller_cannot_evict_another_callers_records() {
             claim_of(&store, "did:key:zVictim", "important"),
             &FirstOutcome::Success(b"v".to_vec()),
             1_010,
-            store.config.window(),
         )
         .unwrap();
 
@@ -278,7 +257,6 @@ fn an_oversized_result_is_recorded_as_done_without_its_body() {
             claim_of(&store, "did:key:zA", "k1"),
             &FirstOutcome::Success(b"far too long".to_vec()),
             1_100,
-            store.config.window(),
         )
         .unwrap();
     assert_eq!(
@@ -314,7 +292,6 @@ fn releasing_a_finished_record_does_not_erase_its_outcome() {
             claim_of(&store, "did:key:zA", "k1"),
             &FirstOutcome::Success(b"a".to_vec()),
             1_100,
-            store.config.window(),
         )
         .unwrap();
     store.release("did:key:zA", "k1", claim_of(&store, "did:key:zA", "k1")).unwrap();
@@ -347,16 +324,24 @@ fn the_ttl_is_at_least_the_senders_own_total_retry_window() {
     assert_eq!(cfg.claim_window_ms, 60_000);
 }
 
+fn long_window(store: &DedupStore, max_total_rows: u32) -> DedupWindow {
+    DedupWindow {
+        ttl_ms: store.config.ttl_ms * 100,
+        max_rows: store.config.max_rows,
+        max_total_rows,
+    }
+}
+
 #[test]
 fn a_record_written_with_a_long_window_outlives_the_default_window() {
     let store = store();
-    let long = DedupWindow { ttl_ms: store.config.ttl_ms * 100, max_rows: store.config.max_rows };
+    let long = long_window(&store, u32::MAX);
     let claim = match store.begin("did:key:zA", "k1", 1_000, long).unwrap() {
         DedupDecision::Execute(token) => token,
         other => panic!("expected a fresh claim, got {other:?}"),
     };
     let outcome = FirstOutcome::Success(b"a".to_vec());
-    store.finish("did:key:zA", "k1", claim, &outcome, 1_100, long).unwrap();
+    store.finish("did:key:zA", "k1", claim, &outcome, 1_100).unwrap();
 
     let after_default_ttl = 1_100 + store.config.ttl_ms as i64 + 1;
     assert_eq!(
@@ -369,7 +354,7 @@ fn a_record_written_with_a_long_window_outlives_the_default_window() {
 #[test]
 fn the_per_caller_cap_is_the_one_in_the_window_of_the_call() {
     let store = store();
-    let tight = DedupWindow { ttl_ms: store.config.ttl_ms, max_rows: 2 };
+    let tight = DedupWindow { max_rows: 2, ..store.config.window() };
     // Pruning counts rows once per cap-check interval, and the first claim
     // always checks, so write enough claims to pass one check after the
     // third row.
@@ -380,4 +365,42 @@ fn the_per_caller_cap_is_the_one_in_the_window_of_the_call() {
         store.len().unwrap() < CAP_CHECK_INTERVAL + 3,
         "rows past the window's cap were pruned, though the store's own cap is larger"
     );
+}
+
+fn expiry_of(store: &DedupStore, caller: &str) -> i64 {
+    let conn = store.conn.lock().unwrap();
+    conn.query_row("SELECT expires_at FROM call_dedup WHERE caller = ?1", [caller], |row| {
+        row.get(0)
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_long_window_closes_when_the_store_holds_too_many_live_rows() {
+    let store = store();
+    let long = long_window(&store, 10);
+    // The cap is read once per cap-check interval, so claim past two of them.
+    let claims = 2 * CAP_CHECK_INTERVAL + 1;
+    for i in 0..claims {
+        store.begin(&format!("did:key:zCaller{i}"), "k", 1_000, long).unwrap();
+    }
+
+    assert_eq!(expiry_of(&store, "did:key:zCaller0"), 1_000 + long.ttl_ms as i64);
+    let last = expiry_of(&store, &format!("did:key:zCaller{}", claims - 1));
+    assert_eq!(last, 1_000 + store.config.ttl_ms as i64, "a late claim gets the default window");
+    assert_eq!(store.len().unwrap(), claims, "no record was evicted to make room");
+}
+
+#[test]
+fn a_record_keeps_its_long_window_when_the_call_finishes() {
+    let store = store();
+    let long = long_window(&store, u32::MAX);
+    let claim = match store.begin("did:key:zA", "k1", 1_000, long).unwrap() {
+        DedupDecision::Execute(token) => token,
+        other => panic!("expected a fresh claim, got {other:?}"),
+    };
+
+    store.finish("did:key:zA", "k1", claim, &FirstOutcome::Success(b"a".to_vec()), 2_000).unwrap();
+
+    assert_eq!(expiry_of(&store, "did:key:zA"), 1_000 + long.ttl_ms as i64);
 }

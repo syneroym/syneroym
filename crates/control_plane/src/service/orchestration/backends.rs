@@ -6,6 +6,11 @@ impl ControlPlaneService {
         service_id: &str,
         interfaces: Vec<String>,
     ) -> Result<()> {
+        // A deposit hands the mailbox caller a context the router built, so
+        // only the native mailbox may answer on this name.
+        if interfaces.iter().any(|interface| interface == MAILBOX_INTERFACE) {
+            anyhow::bail!("'{MAILBOX_INTERFACE}' is reserved for the node's mailbox role");
+        }
         for interface in interfaces {
             self.registry
                 .register(

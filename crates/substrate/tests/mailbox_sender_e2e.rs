@@ -215,6 +215,18 @@ impl World {
             .collect()
     }
 
+    /// How many attempts the outbox row for `key` has used.
+    async fn attempts_of(&self, key: &str) -> u32 {
+        self.sender
+            .substrate_client
+            .proxy_outbox(self.guest_did.clone())
+            .await
+            .expect("proxy-outbox failed")
+            .into_iter()
+            .find(|row| row.idempotency_key == key)
+            .map_or(0, |row| row.attempts)
+    }
+
     async fn is_deposited(&self, key: &str) -> bool {
         self.outbox().await.contains(&(key.to_string(), true))
     }
@@ -380,10 +392,16 @@ async fn a_receiver_without_a_mailbox_is_never_deposited() {
     .await;
 
     guest_enqueue(&sender, &guest_did, &target_did, "msg-1").await.unwrap();
-    time::sleep(Duration::from_secs(15)).await;
 
+    // Today's behaviour: every failed direct attempt spends an attempt.
+    let spent = wait_until(DEPOSIT_WAIT, || async {
+        let rows = sender.substrate_client.proxy_outbox(guest_did.clone()).await.unwrap();
+        rows.first().is_some_and(|row| row.attempts >= 2)
+    })
+    .await;
     let rows = sender.substrate_client.proxy_outbox(guest_did.clone()).await.unwrap();
-    assert_eq!(rows.len(), 1, "the call keeps waiting for direct delivery");
+    assert!(spent, "the call keeps being tried directly; outbox {rows:?}");
+    assert_eq!(rows.len(), 1);
     assert!(!rows[0].deposited, "a receiver with no mailbox is never deposited");
     mailbox.teardown().await;
     sender.teardown().await;
@@ -397,7 +415,10 @@ async fn a_stopped_mailbox_keeps_the_call_on_direct_attempts() {
     time::sleep(Duration::from_secs(1)).await;
 
     world.enqueue("msg-1").await;
-    time::sleep(Duration::from_secs(20)).await;
+    assert!(
+        wait_until(DEPOSIT_WAIT, || async { world.attempts_of("msg-1").await >= 2 }).await,
+        "the call keeps being tried directly"
+    );
     assert_eq!(world.outbox().await, vec![("msg-1".to_string(), false)]);
     assert!(dead_letter_keys(&world.sender, &world.guest_did).await.is_empty());
 

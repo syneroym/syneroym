@@ -431,6 +431,21 @@ async fn the_same_member_on_two_substrates_stores_the_same_key() {
     assert_eq!(stored[0], stored[1]);
 }
 
+#[tokio::test]
+async fn a_guest_cannot_export_the_mailbox_interface() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, registry) =
+        service_with_node_identity(dir.path(), Arc::new(Identity::generate().unwrap())).await;
+
+    let refused = service
+        .register_wasm_endpoints("svc-guest", vec!["greeter".to_string(), "mailbox".to_string()])
+        .await
+        .unwrap_err();
+
+    assert!(refused.to_string().contains("reserved"), "{refused}");
+    assert!(registry.lookup("svc-guest", "greeter").is_none(), "nothing was registered");
+}
+
 // -- the operator door -----------------------------------------------------
 
 #[tokio::test]

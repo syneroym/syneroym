@@ -201,3 +201,54 @@ fn a_backed_up_deposited_message_comes_back_failed() {
     assert_eq!(restored.state, ConversationDeliveryState::Failed);
     assert_eq!(restored.last_error.as_deref(), Some("restored from a backup"));
 }
+
+#[test]
+fn parking_does_nothing_for_a_message_that_is_no_longer_pending() {
+    let s = store();
+    let conv = conversation(&s);
+    let item = sent(&s, &conv, "m:1");
+    assert!(s.delete_message(&conv, "m:1", 1_500).unwrap());
+
+    let parked = s.park_deposited(item, "m:1", None, &park(2_000)).unwrap();
+
+    assert!(!parked);
+    assert_eq!(state_of(&s, "m:1"), ConversationDeliveryState::Failed, "the delete stays");
+    assert!(s.queue().all().unwrap()[0].parked.is_none());
+}
+
+#[test]
+fn unparking_does_nothing_for_a_message_that_is_no_longer_deposited() {
+    let s = store();
+    let conv = conversation(&s);
+    let item = sent(&s, &conv, "m:1");
+    s.park_deposited(item, "m:1", None, &park(2_000)).unwrap();
+    assert!(s.delete_message(&conv, "m:1", 2_500).unwrap());
+
+    let back = s.unpark_to_pending(item, "m:1", None, 3_000).unwrap();
+
+    assert!(!back);
+    assert_eq!(state_of(&s, "m:1"), ConversationDeliveryState::Failed, "the delete stays");
+    assert!(s.queue().all().unwrap()[0].parked.is_some(), "the row is left for the worker to end");
+}
+
+#[test]
+fn a_member_copy_is_not_moved_once_the_group_message_was_deleted() {
+    let s = store();
+    let conv = conversation(&s);
+    let item = sent(&s, &conv, "m:1");
+    s.conn
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO message_recipients (message_id, member_address, state, last_error) \
+             VALUES ('m:1', 'peer1', 'pending', NULL)",
+            [],
+        )
+        .unwrap();
+    assert!(s.delete_message(&conv, "m:1", 1_500).unwrap());
+
+    let parked = s.park_deposited(item, "m:1", Some("peer1"), &park(2_000)).unwrap();
+
+    assert!(!parked);
+    assert_eq!(s.recipient_state("m:1", "peer1").unwrap(), Some(ConversationDeliveryState::Failed));
+}

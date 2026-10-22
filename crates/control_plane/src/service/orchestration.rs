@@ -30,6 +30,7 @@ use syneroym_core::{
     dht_registry::{EndpointMailbox, SignedEndpointInfo},
     http_routes::HttpRoute,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
+    mailbox::MAILBOX_INTERFACE,
     storage::AppInstanceManagement,
     util,
 };

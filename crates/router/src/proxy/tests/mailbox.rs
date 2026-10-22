@@ -1,5 +1,5 @@
 use serde_json::json;
-use syneroym_core::config::MailboxRole;
+use syneroym_core::{config::MailboxRole, mailbox::codes};
 use syneroym_mailbox_format::{OPEN_MAX_TTL_SECS, Receipt};
 use syneroym_rpc::{
     Delivery, DepositStatus, DepositTicket, NOT_HOSTED_HERE_RPC_CODE, PreambleSignature,
@@ -7,7 +7,7 @@ use syneroym_rpc::{
 };
 
 use super::{helpers::*, mailbox_helpers::*};
-use crate::handshake::now_secs;
+use crate::{handshake::now_secs, proxy::mailbox::poll::AnchorCache};
 
 const WEEK_SECS: u64 = OPEN_MAX_TTL_SECS;
 
@@ -308,10 +308,11 @@ async fn poll_retries_on_an_unsigned_rejection_expiry_or_an_unknown_state() {
         Receipt::Unknown,
     ];
     for receipt in receipts {
-        let status = node.router.judge(Some(&receipt), &sent, at_secs).await;
+        let status =
+            node.router.judge(Some(&receipt), &sent, at_secs, &mut AnchorCache::new()).await;
         assert!(is_retry(&status), "{receipt:?}: {status:?}");
     }
-    assert!(is_retry(&node.router.judge(None, &sent, at_secs).await));
+    assert!(is_retry(&node.router.judge(None, &sent, at_secs, &mut AnchorCache::new()).await));
 }
 
 #[tokio::test]
@@ -342,7 +343,10 @@ async fn poll_retries_on_a_receipt_for_another_message() {
     node.receiver_delivers().await;
     let receipt_of_second = node.receipt_for(&second).await;
 
-    let status = node.router.judge(Some(&receipt_of_second), &first, now_secs()).await;
+    let status = node
+        .router
+        .judge(Some(&receipt_of_second), &first, now_secs(), &mut AnchorCache::new())
+        .await;
 
     assert!(is_retry(&status), "{status:?}");
 }
@@ -388,4 +392,81 @@ async fn poll_splits_more_than_one_hundred_ids_into_batches() {
     assert_eq!(out.len(), 101);
     assert!(out.iter().all(|s| *s == DepositStatus::Waiting));
     assert_eq!(node.mailbox.count("status"), 2);
+}
+
+#[tokio::test]
+async fn poll_reads_a_receivers_anchor_once_for_all_its_receipts() {
+    let node = node(vec![MockOutcome::Transport; 3]).await;
+    let mut contexts = Vec::new();
+    for _ in 0..3 {
+        contexts.push(deposited(&node).await.context);
+    }
+    node.receiver_delivers().await;
+
+    let out = poll(&node, contexts).await;
+
+    assert_eq!(out, vec![DepositStatus::Delivered; 3]);
+    assert_eq!(node.router_anchors.lookups.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn poll_asks_an_unreadable_anchor_once_and_waits_for_every_receipt() {
+    let node = node(vec![MockOutcome::Transport; 3]).await;
+    let mut contexts = Vec::new();
+    for _ in 0..3 {
+        contexts.push(deposited(&node).await.context);
+    }
+    node.receiver_delivers().await;
+    node.router_anchors.unreadable.store(true, Ordering::SeqCst);
+
+    let out = poll(&node, contexts).await;
+
+    assert_eq!(out, vec![DepositStatus::Waiting; 3]);
+    assert_eq!(node.router_anchors.lookups.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_mailbox_that_is_a_local_guest_is_never_used() {
+    let node = node(vec![MockOutcome::Transport]).await;
+    let context = deposited(&node).await.context;
+    node.registry
+        .register(
+            node.mailbox_did.clone(),
+            "mailbox".to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: node.mailbox_did.clone() },
+        )
+        .await
+        .unwrap();
+    node.hop.outcomes.lock().unwrap().push_back(MockOutcome::Transport);
+
+    let delivery = node.router.deliver_to_peer(&node.request(), node.peer(true), WEEK_SECS).await;
+
+    assert!(matches!(delivery, Err(ProxyError::Transport(_))), "{delivery:?}");
+    assert_eq!(node.mailbox.count("deposit"), 1, "only the first, native one");
+    assert_eq!(poll(&node, vec![context]).await, vec![DepositStatus::Waiting]);
+    assert_eq!(node.mailbox.count("status"), 0, "a guest is never asked");
+}
+
+#[tokio::test]
+async fn a_mailbox_refusal_leaves_the_call_on_direct_delivery() {
+    let refusals = [
+        codes::UNKNOWN_DESTINATION,
+        codes::TOO_LARGE,
+        codes::QUEUE_FULL,
+        codes::RATE_LIMITED,
+        codes::MAILBOX_FULL,
+        codes::NOT_AN_INSTANCE,
+        codes::UNAUTHENTICATED,
+    ];
+    for code in refusals {
+        let node = node(vec![MockOutcome::Transport]).await;
+        node.mailbox.refuse_deposits_with(code);
+
+        let delivery =
+            node.router.deliver_to_peer(&node.request(), node.peer(true), WEEK_SECS).await;
+
+        // The caller gets what the direct attempt said, not the mailbox's code.
+        assert!(matches!(delivery, Err(ProxyError::Transport(_))), "{code}: {delivery:?}");
+        assert_eq!(node.mailbox.count("deposit"), 1, "{code}: one deposit, no reseal");
+    }
 }

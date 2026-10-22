@@ -13,7 +13,7 @@ use ed25519_dalek::VerifyingKey;
 use reqwest::Client;
 use serde_json::{Value, json};
 use syneroym_core::{
-    config::AppSandboxRole,
+    config::{AppSandboxRole, SubstrateConfig},
     dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
     test_constants,
 };
@@ -63,7 +63,7 @@ pub fn fast_queue_role(max_attempts: u8) -> AppSandboxRole {
 /// nothing -- the outbox is already the retry mechanism.
 pub fn configure_queue_node(
     max_attempts: u8,
-) -> impl Fn(&mut syneroym_core::config::SubstrateConfig) + Send + Sync + 'static {
+) -> impl Fn(&mut SubstrateConfig) + Send + Sync + 'static {
     move |config| {
         config.roles.app_sandbox = Some(fast_queue_role(max_attempts));
         config.retry.max_attempts = 1;

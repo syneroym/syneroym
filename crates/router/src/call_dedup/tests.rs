@@ -465,6 +465,7 @@ async fn a_service_with_a_mailbox_gets_a_window_that_outlasts_the_senders_age_li
     let thirty_one_days_ms = (30 + 1) * 24 * 3600 * 1000;
     assert_eq!(long.ttl_ms, thirty_one_days_ms);
     assert_eq!(long.max_rows, 100_000);
+    assert_eq!(long.max_total_rows, 200_000, "callers are free, so the whole store is capped");
 
     // Another service on the same node keeps the default.
     assert_eq!(node.guard.window_for("svc-b"), config().window());
@@ -514,4 +515,23 @@ async fn a_record_for_a_service_with_a_mailbox_is_kept_for_the_long_window() {
     assert!(long >= before + thirty_one_days_ms, "mailbox service record expires at {long}");
     let short = recorded_expiry(&node, "svc-b").await;
     assert!(short < before + 2 * config().ttl_ms as i64, "plain service record expires at {short}");
+}
+
+#[tokio::test]
+async fn a_claim_keeps_its_long_window_when_the_mailbox_fact_goes_before_it_settles() {
+    let node = node(false, &["svc-a"]).await;
+    node.guard
+        .registry
+        .set_mailbox("svc-a".to_string(), mailbox_of_service(7 * 24 * 3600))
+        .await
+        .unwrap();
+    let before = now_ms();
+    let first = node.guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
+    let GuardOutcome::Execute(Some(claim)) = first else { panic!("expected a claim") };
+
+    node.guard.registry.remove_mailbox("svc-a").await.unwrap();
+    claim.settle(&Ok(serde_json::json!("done"))).await;
+
+    let thirty_one_days_ms = 31 * 24 * 3600 * 1000;
+    assert!(recorded_expiry(&node, "svc-a").await >= before + thirty_one_days_ms);
 }

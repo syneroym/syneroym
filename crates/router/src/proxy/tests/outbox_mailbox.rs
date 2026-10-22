@@ -2,6 +2,8 @@
 
 use serde_json::json;
 use syneroym_async_queue::{DeadLetter, Queue, QueueItem};
+use syneroym_core::mailbox::codes;
+use tokio::time;
 
 use super::{helpers::*, mailbox_helpers::*};
 use crate::proxy_outbox::{MAX_ROW_AGE_MS, now_ms};
@@ -49,7 +51,7 @@ async fn make_parked_rows_due(node: &SenderNode) {
             queue.park(item.id, now_ms(), 1, parked.deadline_at, &parked.context).unwrap();
         }
     }
-    tokio::time::sleep(Duration::from_millis(5)).await;
+    time::sleep(Duration::from_millis(5)).await;
 }
 
 #[tokio::test]
@@ -142,7 +144,7 @@ async fn a_deposit_that_is_still_waiting_past_its_deadline_goes_back_to_direct_a
     let item = queue.all().unwrap().remove(0);
     let parked = item.parked.unwrap();
     queue.park(item.id, now_ms(), 1, now_ms() + 3, &parked.context).unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    time::sleep(Duration::from_millis(10)).await;
 
     node.router.drain_outboxes_once().await;
 
@@ -171,10 +173,24 @@ async fn a_parked_row_older_than_the_age_limit_is_dead_lettered() {
     let queue = queue_of(&node).await;
     let id = queue.enqueue("group", "old", &payload, now_ms() - THIRTY_ONE_DAYS_MS).unwrap();
     queue.park(id, now_ms(), 1, now_ms() + MAX_ROW_AGE_MS, b"not a context").unwrap();
-    tokio::time::sleep(Duration::from_millis(5)).await;
+    time::sleep(Duration::from_millis(5)).await;
 
     node.router.drain_outboxes_once().await;
 
     assert!(rows(&node).await.is_empty());
     assert_eq!(dead_letters(&node).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_refused_deposit_leaves_the_row_pending_and_spends_an_attempt() {
+    let node = outbox_sender_node(3).await;
+    node.mailbox.refuse_deposits_with(codes::QUEUE_FULL);
+
+    deposited_call(&node).await;
+
+    let rows = rows(&node).await;
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].parked.is_none(), "nothing waits at the mailbox");
+    assert_eq!(rows[0].attempts, 1, "the failed delivery counts like any other");
+    assert!(dead_letters(&node).await.is_empty());
 }

@@ -25,7 +25,10 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
 };
 
 use anyhow::Result;
@@ -77,17 +80,26 @@ pub struct DedupConfig {
 /// How long a record answers, and how many one caller may hold. Chosen per
 /// target service on each call, so one store can serve both a short and a
 /// long window.
+///
+/// A window longer than the store's own default is a long window. Callers
+/// are not limited in number, so a long window also has a total: while the
+/// store holds `max_total_rows` live records or more, new claims get the
+/// default window instead. Existing records are never evicted for it, so a
+/// flood cannot push out a record that still has to answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DedupWindow {
     pub ttl_ms: u64,
+    /// Rows one caller may hold.
     pub max_rows: u32,
+    /// Live rows in the whole store at which a long window closes.
+    pub max_total_rows: u32,
 }
 
 impl DedupConfig {
     /// The window this config gives every service by default.
     #[must_use]
     pub fn window(&self) -> DedupWindow {
-        DedupWindow { ttl_ms: self.ttl_ms, max_rows: self.max_rows }
+        DedupWindow { ttl_ms: self.ttl_ms, max_rows: self.max_rows, max_total_rows: u32::MAX }
     }
 
     /// Row ceiling per service. Pruning the oldest-expiring row first
@@ -169,7 +181,10 @@ pub struct DedupStore {
     /// Claims taken since the row cap was last checked. The TTL sweep is
     /// an indexed range delete and runs every time; the cap check is a
     /// `COUNT`, so it is amortised rather than paid on every claim.
-    since_cap_check: Arc<std::sync::atomic::AtomicU32>,
+    since_cap_check: Arc<AtomicU32>,
+    /// Set while the store holds too many live rows to grant a long window.
+    /// Refreshed with the cap check, so a `COUNT` stays off the hot path.
+    long_window_closed: Arc<AtomicBool>,
 }
 
 /// One stored row, as [`DedupStore::begin`]'s lookup reads it.
@@ -202,7 +217,12 @@ impl DedupStore {
 
     pub fn from_connection(conn: Arc<Mutex<Connection>>, config: DedupConfig) -> Result<Self> {
         Self::init_schema(&conn.lock().expect("dedup connection lock poisoned"))?;
-        Ok(Self { conn, config, since_cap_check: Arc::new(std::sync::atomic::AtomicU32::new(0)) })
+        Ok(Self {
+            conn,
+            config,
+            since_cap_check: Arc::new(AtomicU32::new(0)),
+            long_window_closed: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
@@ -293,6 +313,13 @@ impl DedupStore {
             }
         }
 
+        let requested = window;
+        let is_long = requested.ttl_ms > self.config.ttl_ms;
+        let window = if is_long && self.long_window_closed.load(Ordering::Relaxed) {
+            self.config.window()
+        } else {
+            requested
+        };
         let token = ClaimToken(rand::random::<i64>());
         tx.execute(
             "INSERT INTO call_dedup
@@ -323,11 +350,18 @@ impl DedupStore {
         // The cap is a ceiling, not a precise limit, so checking it every
         // `CAP_CHECK_INTERVAL` claims is enough -- and keeps a `COUNT` off
         // the hot path. Overshoot is bounded by that interval.
-        let check_cap = self
-            .since_cap_check
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .is_multiple_of(CAP_CHECK_INTERVAL);
+        let check_cap =
+            self.since_cap_check.fetch_add(1, Ordering::Relaxed).is_multiple_of(CAP_CHECK_INTERVAL);
         Self::prune(&tx, caller, window.max_rows, now, check_cap)?;
+        if check_cap && is_long {
+            let live: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM call_dedup WHERE expires_at > ?1 LIMIT ?2)",
+                params![now, requested.max_total_rows],
+                |row| row.get(0),
+            )?;
+            self.long_window_closed
+                .store(live >= i64::from(requested.max_total_rows), Ordering::Relaxed);
+        }
         tx.commit().map_err(|e| anyhow::anyhow!("could not commit a dedup claim: {e}"))?;
         Ok(DedupDecision::Execute(token))
     }
@@ -335,7 +369,8 @@ impl DedupStore {
     /// Records the first outcome of a call this store handed
     /// [`DedupDecision::Execute`] for. A result past
     /// [`DedupConfig::max_result_bytes`] is recorded as done without its
-    /// body.
+    /// body. The record keeps the window it was claimed with: it lasts the
+    /// longer of that and the store's default from now.
     pub fn finish(
         &self,
         caller: &str,
@@ -343,7 +378,6 @@ impl DedupStore {
         claim: ClaimToken,
         outcome: &FirstOutcome,
         now: i64,
-        window: DedupWindow,
     ) -> Result<()> {
         let conn = self.conn.lock().expect("dedup connection lock poisoned");
         let (result, retained, code, message) = match outcome {
@@ -367,7 +401,7 @@ impl DedupStore {
         conn.execute(
             "UPDATE call_dedup
              SET state = ?1, result = ?2, result_retained = ?3, error_code = ?4,
-                 error_message = ?5, expires_at = ?6
+                 error_message = ?5, expires_at = MAX(expires_at, ?6)
              WHERE caller = ?7 AND idem_key = ?8 AND claim_token = ?9",
             params![
                 STATE_DONE,
@@ -375,7 +409,7 @@ impl DedupStore {
                 retained,
                 code,
                 message,
-                now + window.ttl_ms as i64,
+                now + self.config.ttl_ms as i64,
                 caller,
                 key,
                 claim.0,

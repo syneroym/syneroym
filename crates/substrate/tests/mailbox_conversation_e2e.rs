@@ -14,8 +14,8 @@ use std::time::Duration;
 use common::{
     SubstrateNode,
     conversation_fixture::{
-        FIXTURE_INTERFACE, fixture_run, fixture_wasm, history_messages, open_conversation,
-        publish_master_anchor, send_message, wait_for_state,
+        FIXTURE_INTERFACE, fixture_run, fixture_wasm, history_messages, message_row,
+        open_conversation, publish_master_anchor, send_message, wait_for_state,
     },
     conversation_peer::Peer,
     mailbox_receiver::MailboxReceiver,
@@ -175,6 +175,11 @@ async fn a_group_push_to_one_stopped_member_is_deposited_and_the_others_are_deli
         "the push to the stopped member must wait at its mailbox"
     );
     client.shutdown().await.ok();
+
+    // One member's copy waits at a mailbox, so the group message is not
+    // delivered yet; `deposited` is a state of the member's copy only.
+    let row = message_row(&world.a.node, &world.a.did, &group, &message).await.unwrap();
+    assert_eq!(row["state"], "pending", "{row}");
 
     assert!(
         wait_for_state(&world.a.node, &world.a.did, &message, "delivered", ANSWER_BUDGET).await,

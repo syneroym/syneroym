@@ -107,7 +107,7 @@ const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
 const SAGA_UNDO_CALL_BUDGET: Duration = Duration::from_secs(5);
 
 mod hop;
-mod mailbox;
+pub(in crate::proxy) mod mailbox;
 mod outbox_forwarding;
 mod outbox_parked;
 mod router;

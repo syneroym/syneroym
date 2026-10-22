@@ -34,6 +34,8 @@ pub const MAX_ACK_BATCH: usize = 32;
 pub const MAX_STATUS_BATCH: usize = 100;
 pub const MAX_RECEIPT_JSON_BYTES: usize = 4 * 1024;
 
+pub const MAX_RECORD_JSON_BYTES: usize = 4 * 1024;
+
 /// The mailbox a hosted service pulls from, as its signed record names it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedMailbox {
@@ -43,7 +45,6 @@ pub struct HostedMailbox {
     /// until the receiver has registered and learned the real one.
     pub max_ttl_secs: u64,
 }
-pub const MAX_RECORD_JSON_BYTES: usize = 4 * 1024;
 
 /// JSON-RPC error codes. Each answer also carries `data.kind`, the
 /// matching `ErrorKind` text.

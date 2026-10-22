@@ -43,6 +43,18 @@ struct ScriptedProxy {
     /// `(method, target)` of each plain `invoke`.
     invoked: Mutex<Vec<(String, String)>>,
     polled: AtomicUsize,
+    /// Runs once, inside the next `deliver_or_deposit` / `poll_deposits`:
+    /// what a person does while the worker waits on the network.
+    during_deliver: Mutex<Option<Hook>>,
+    during_poll: Mutex<Option<Hook>>,
+}
+
+struct Hook(Box<dyn FnOnce() + Send>);
+
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Hook")
+    }
 }
 
 impl ScriptedProxy {
@@ -96,6 +108,9 @@ impl ServiceProxy for ScriptedProxy {
         max_wait_secs: u64,
     ) -> Result<Delivery, ProxyError> {
         let key = (request.method.clone(), request.target_service.clone());
+        if let Some(hook) = self.during_deliver.lock().unwrap().take() {
+            (hook.0)();
+        }
         self.deliveries.lock().unwrap().push((
             request.method.clone(),
             request.target_service.clone(),
@@ -112,6 +127,9 @@ impl ServiceProxy for ScriptedProxy {
 
     async fn poll_deposits(&self, _sender: &str, contexts: Vec<Vec<u8>>) -> Vec<DepositStatus> {
         self.polled.fetch_add(contexts.len(), Ordering::SeqCst);
+        if let Some(hook) = self.during_poll.lock().unwrap().take() {
+            (hook.0)();
+        }
         let mut statuses = self.statuses.lock().unwrap();
         contexts.iter().map(|_| statuses.pop_front().unwrap_or(DepositStatus::Waiting)).collect()
     }
@@ -351,6 +369,55 @@ async fn a_deleted_deposited_message_has_its_row_completed_without_a_poll() {
     assert!(world.rows().is_empty());
     assert_eq!(world.proxy.polled.load(Ordering::SeqCst), 0);
     assert_eq!(world.state(&message), ConversationDeliveryState::Failed);
+}
+
+/// What a person does while the worker waits: deletes `message`.
+fn deleting(world: &World, message: &str) -> Hook {
+    let store = world.store.clone();
+    let message = message.to_string();
+    Hook(Box::new(move || {
+        let conv = store.get_message(&message).unwrap().unwrap().conversation_id;
+        assert!(store.delete_message(&conv, &message, now_ms()).unwrap());
+    }))
+}
+
+#[tokio::test]
+async fn a_message_deleted_while_the_deposit_is_made_stays_deleted() {
+    let world = world().await;
+    world.proxy.script("deliver", BOB, Next::Deposit);
+    let message = world.send_direct().await;
+    *world.proxy.during_deliver.lock().unwrap() = Some(deleting(&world, &message));
+
+    world.pass().await;
+    world.pass().await;
+
+    let stored = world.store.get_message(&message).unwrap().unwrap();
+    assert_eq!(stored.state, ConversationDeliveryState::Failed);
+    assert_eq!(stored.last_error.as_deref(), Some("deleted before delivery"));
+    assert!(world.rows().is_empty(), "nothing is left to wait for");
+    assert!(world.log.of(&message).is_empty(), "the app is never told it was deposited");
+    assert_eq!(world.proxy.deliveries_of("deliver").len(), 1, "nothing is sent again");
+}
+
+#[tokio::test]
+async fn a_message_deleted_while_the_poll_runs_is_not_sent_again() {
+    let world = world().await;
+    world.proxy.script("deliver", BOB, Next::Deposit);
+    let message = world.send_direct().await;
+    world.pass().await;
+    world.proxy.answers([DepositStatus::Retry { reason: "expired".to_string() }]);
+    *world.proxy.during_poll.lock().unwrap() = Some(deleting(&world, &message));
+
+    world.parked_pass().await;
+    world.pass().await;
+    world.pass().await;
+
+    let stored = world.store.get_message(&message).unwrap().unwrap();
+    assert_eq!(stored.state, ConversationDeliveryState::Failed, "the delete is not undone");
+    assert!(stored.body.is_empty(), "the body stays gone");
+    assert!(world.rows().is_empty());
+    assert_eq!(world.proxy.deliveries_of("deliver").len(), 1, "no send of an empty body");
+    assert_eq!(world.log.of(&message), vec![ConversationDeliveryState::Deposited]);
 }
 
 // -- groups -----------------------------------------------------------------

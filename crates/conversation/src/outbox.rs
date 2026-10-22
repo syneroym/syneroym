@@ -217,7 +217,10 @@ impl ConversationService {
             let _ = store.queue().complete(item.id);
             return;
         };
-        if msg.restored || msg.state != ConversationDeliveryState::Pending {
+        if msg.restored
+            || msg.deleted_at.is_some()
+            || msg.state != ConversationDeliveryState::Pending
+        {
             let _ = store.delete_outbound_envelope(&msg.id);
             let _ = store.queue().complete(item.id);
             return;
@@ -298,7 +301,7 @@ impl ConversationService {
             context: &ticket.context,
         };
         match row.store.park_deposited(row.item.id, &row.msg.id, row.member(), &park) {
-            Ok(()) => {
+            Ok(true) => {
                 if !row.is_group() {
                     self.notify_state(
                         row.svc,
@@ -309,10 +312,22 @@ impl ConversationService {
                 }
                 metrics::counter!("substrate.conversation.outbox.deposited").increment(1);
             }
+            // Deleted or restored while the deposit was made: the message
+            // must stay as it is, and nothing is left to wait for.
+            Ok(false) => self.drop_row(row),
             // The row comes back after the visibility timeout. A second
             // deposit is safe: the receiver fence runs the call once.
             Err(e) => warn!(message = row.msg.id, error = %e, "could not park a deposited message"),
         }
+    }
+
+    /// Ends a row whose message was deleted or restored while the worker
+    /// waited on the network. The message keeps the state that change gave it.
+    fn drop_row(&self, row: &Row<'_>) {
+        if !row.is_group() {
+            let _ = row.store.delete_outbound_envelope(&row.msg.id);
+        }
+        let _ = row.store.queue().complete(row.item.id);
     }
 
     /// Settles one item whose delivery attempt reported success (or the

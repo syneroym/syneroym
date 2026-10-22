@@ -134,10 +134,14 @@ impl ConversationService {
     /// The mailbox did not take the message after all: deliver it directly
     /// again, with the envelope already made.
     async fn back_to_direct(&self, row: &Row<'_>, now: i64) {
-        let back = row.store.unpark_to_pending(row.item.id, &row.msg.id, row.member(), now);
-        if back.is_ok() && !row.is_group() {
-            self.notify_state(row.svc, row.msg.id.clone(), ConversationDeliveryState::Pending)
-                .await;
+        match row.store.unpark_to_pending(row.item.id, &row.msg.id, row.member(), now) {
+            Ok(true) if !row.is_group() => {
+                self.notify_state(row.svc, row.msg.id.clone(), ConversationDeliveryState::Pending)
+                    .await;
+            }
+            // Deleted or restored while the poll ran: it must not be sent.
+            Ok(false) => self.drop_row(row),
+            Ok(true) | Err(_) => {}
         }
     }
 }

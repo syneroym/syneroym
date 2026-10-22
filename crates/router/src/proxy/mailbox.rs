@@ -18,10 +18,10 @@ use syneroym_mailbox_format::{
 };
 use syneroym_rpc::{AuthLevel, Delivery, DepositTicket, STREAM_UNAUTHENTICATED_RPC_CODE};
 
-use super::*;
+use super::{router::record_call_outcome, *};
 use crate::{handshake::now_secs, net_iroh::ResolvedPeer};
 
-mod poll;
+pub(in crate::proxy) mod poll;
 
 /// One direct attempt at a receiver that has a mailbox. Short: if it fails,
 /// the message waits at the mailbox instead. It covers connect, the
@@ -64,6 +64,8 @@ enum DepositFailure {
     Call(ProxyError),
     #[error("mailbox refused with code {0}")]
     Refused(i32),
+    #[error("'{0}' is not the native mailbox of its node")]
+    NotNative(String),
 }
 
 /// Only an error that says "not delivered, and nothing ran" is worth a
@@ -121,6 +123,17 @@ impl ProxyRouter {
         Some(DepositSender { service_id: service_id.to_string(), key: identity.key, certificate })
     }
 
+    /// Whether `mailbox_did`, when it is hosted on this node, is the native
+    /// mailbox. The receiver names the mailbox in its own signed record, and
+    /// the caller of a mailbox call is a context the router built, so no
+    /// other kind of service may receive one.
+    pub(in crate::proxy) fn is_native_mailbox(&self, mailbox_did: &str) -> bool {
+        match self.registry.lookup(mailbox_did, MAILBOX_INTERFACE) {
+            Some((endpoint, _)) => matches!(endpoint, SubstrateEndpoint::NativeHostChannel { .. }),
+            None => true,
+        }
+    }
+
     /// The caller every mailbox call carries. A same-node mailbox reads the
     /// proof from this context, because there is no stream to sign. On a
     /// remote call the proof is unsigned, so it is never passed on: the hop
@@ -172,7 +185,18 @@ impl ProxyRouter {
         }
         self.check_native_capability_gate(req)?;
         metrics::counter!("substrate.proxy.calls").increment(1);
+        let started = Instant::now();
+        let outcome = self.deliver_resolved(req, max_wait_secs).await;
+        record_call_outcome(started, &outcome);
+        outcome
+    }
 
+    /// Finds the receiver, then delivers or deposits.
+    async fn deliver_resolved(
+        &self,
+        req: &ProxyRequest,
+        max_wait_secs: u64,
+    ) -> Result<Delivery, ProxyError> {
         // A receiver on this node is never asleep.
         if let Some((endpoint, interface)) =
             self.registry.lookup(&req.target_service, &req.interface)
@@ -245,6 +269,9 @@ impl ProxyRouter {
         mailbox: &EndpointMailbox,
         mut ttl_secs: u64,
     ) -> Result<DepositTicket, DepositFailure> {
+        if !self.is_native_mailbox(&mailbox.service_id) {
+            return Err(DepositFailure::NotNative(mailbox.service_id.clone()));
+        }
         let content = MessageContent {
             interface: req.interface.clone(),
             method: req.method.clone(),
@@ -262,7 +289,7 @@ impl ProxyRouter {
                 .map_err(|e| DepositFailure::Encode(e.to_string()))?;
             let call =
                 Self::mailbox_request(sender, &mailbox.service_id, wire::METHOD_DEPOSIT, params);
-            match self.invoke_inner(&call).await {
+            match self.dispatch_call(&call).await {
                 // Any answer means the mailbox took it; `status` tells the rest.
                 Ok(_) => return Self::ticket(&mailbox.service_id, sealed.sent, ttl_secs),
                 Err(ProxyError::Callee { code, data, .. }) if code == codes::TTL_TOO_LONG => {

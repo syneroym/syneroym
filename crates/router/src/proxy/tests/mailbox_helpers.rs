@@ -2,7 +2,7 @@
 //! that registered there, and a `MockHop` standing in for the receiver's
 //! own node.
 
-use std::sync::atomic::AtomicBool;
+use std::{fs, path::Path, sync::atomic::AtomicBool};
 
 use serde_json::json;
 use syneroym_core::{
@@ -21,7 +21,7 @@ use syneroym_mailbox_format::{
 use syneroym_rpc::{DepositTicket, NativeDispatchRegistry};
 
 use super::helpers::*;
-use crate::{handshake::now_secs, net_iroh::ResolvedPeer};
+use crate::{handshake::now_secs, net_iroh::ResolvedPeer, peer_records::PeerRecordStore};
 
 pub(super) const SENDER: &str = "did:key:zMailboxSender";
 const OWNER: &str = "did:key:zOwner";
@@ -37,6 +37,8 @@ fn fresh_did() -> String {
 pub(super) struct TestAnchors {
     pub(super) revoked: Mutex<Vec<String>>,
     pub(super) unreadable: AtomicBool,
+    /// How many anchors were asked for.
+    pub(super) lookups: AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -45,6 +47,7 @@ impl MasterAnchorResolver for TestAnchors {
         &self,
         _master_id: &str,
     ) -> Result<MasterAnchorPayload, anyhow::Error> {
+        self.lookups.fetch_add(1, Ordering::SeqCst);
         if self.unreadable.load(Ordering::SeqCst) {
             return Err(anyhow::anyhow!("the anchor cannot be read"));
         }
@@ -60,9 +63,15 @@ impl MasterAnchorResolver for TestAnchors {
 pub(super) struct CountingMailbox {
     inner: MailboxService,
     methods: Mutex<Vec<String>>,
+    /// When set, every `deposit` is refused with this code.
+    refuse_deposits: Mutex<Option<i32>>,
 }
 
 impl CountingMailbox {
+    pub(super) fn refuse_deposits_with(&self, code: i32) {
+        *self.refuse_deposits.lock().unwrap() = Some(code);
+    }
+
     pub(super) fn count(&self, method: &str) -> usize {
         self.methods.lock().unwrap().iter().filter(|m| *m == method).count()
     }
@@ -72,6 +81,12 @@ impl CountingMailbox {
 impl NativeService for CountingMailbox {
     async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         self.methods.lock().unwrap().push(invocation.method.clone());
+        let refusal = *self.refuse_deposits.lock().unwrap();
+        if let Some(code) = refusal
+            && invocation.method == "deposit"
+        {
+            return Err(RpcError::Custom(code, "refused".to_string(), None));
+        }
         self.inner.dispatch(invocation).await
     }
 }
@@ -184,7 +199,11 @@ async fn build_sender_node(
     let mailbox_did = fresh_did();
     let mailbox_anchors = Arc::new(TestAnchors::default());
     let service = MailboxService::open(&role, dir.path(), &mailbox_did, mailbox_anchors).unwrap();
-    let mailbox = Arc::new(CountingMailbox { inner: service, methods: Mutex::new(Vec::new()) });
+    let mailbox = Arc::new(CountingMailbox {
+        inner: service,
+        methods: Mutex::new(Vec::new()),
+        refuse_deposits: Mutex::new(None),
+    });
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     native_dispatch.insert(mailbox_did.clone(), mailbox.clone() as Arc<dyn NativeService>);
     registry
@@ -248,12 +267,13 @@ async fn build_sender_node(
 async fn with_outbox(
     router: ProxyRouter,
     registry: &EndpointRegistry,
-    root: &std::path::Path,
+    root: &Path,
     max_attempts: u8,
     receiver: &Receiver,
     mailbox_did: &str,
 ) -> (ProxyRouter, Arc<ProxyOutbox>) {
     use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
+    use syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS;
     use syneroym_data_db::SqliteStorageProvider;
     use syneroym_data_keystore::KeyStore;
 
@@ -267,8 +287,8 @@ async fn with_outbox(
         .await
         .unwrap();
     let service_dir = root.join("services").join(SENDER);
-    std::fs::create_dir_all(&service_dir).unwrap();
-    std::fs::write(service_dir.join("state.db"), b"").unwrap();
+    fs::create_dir_all(&service_dir).unwrap();
+    fs::write(service_dir.join("state.db"), b"").unwrap();
 
     let provider = Arc::new(SqliteStorageProvider::new(root, false).unwrap());
     let config = QueueConfig {
@@ -280,12 +300,12 @@ async fn with_outbox(
         },
         visibility_timeout_ms: 0,
         dlq_max_rows: 100,
-        max_pending_rows: syneroym_async_queue::DEFAULT_MAX_PENDING_ROWS,
+        max_pending_rows: DEFAULT_MAX_PENDING_ROWS,
     };
     let resolver = Arc::new(LogicalResolver::new(Arc::new(StaticInventory::new())));
     let outbox = Arc::new(ProxyOutbox::new(provider, Arc::new(KeyStore::new()), resolver, config));
 
-    let records = Arc::new(crate::peer_records::PeerRecordStore::open_in_memory().unwrap());
+    let records = Arc::new(PeerRecordStore::open_in_memory().unwrap());
     records.remember(&receiver.record(mailbox_did)).await.unwrap();
     (router.with_outbox(outbox.clone()).with_peer_records(records), outbox)
 }
@@ -391,7 +411,7 @@ impl SenderNode {
         let sender = self.router.sender_identity(SENDER).unwrap();
         let params = json!({ "deposit_ids": [sent.deposit_id] });
         let call = ProxyRouter::mailbox_request(&sender, &self.mailbox_did, METHOD_STATUS, params);
-        let answer = self.router.invoke_inner(&call).await.unwrap();
+        let answer = self.router.dispatch_call(&call).await.unwrap();
         let answer: StatusAnswer = serde_json::from_value(answer).unwrap();
         answer.receipts.into_iter().next().unwrap().receipt
     }
