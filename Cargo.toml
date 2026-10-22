@@ -112,8 +112,9 @@ tower = "0.5"
 tower-service = "0.3"
 tower-http = { version = "0.6", features = ["full"] }
 webrtc = "0.17" # Using a slightly older stable version as v0.17 might have breaking changes for this specific codebase
-askama = { version = "0.12", features = ["with-axum", "serde-json"] }
-askama_axum = "0.4"
+# No `config` feature: it parses `askama.toml` with the unmaintained `basic-toml`,
+# and this workspace has no `askama.toml`.
+askama = { version = "0.16", default-features = false, features = ["derive", "std", "serde_json", "urlencode"] }
 tls-parser = "0.12"
 x509-parser = "0.18"
 

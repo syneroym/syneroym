@@ -101,7 +101,13 @@ const GATES: &[Gate] = &[
         skip_on_docs_only: true,
         commands: &[&["cargo", "test", "--workspace", "--doc"]],
     },
-    Gate { name: "audit", skip_on_docs_only: false, commands: &[&["cargo", "audit"]] },
+    // `--deny warnings`: a warning (an unmaintained crate, for example) exits 0
+    // by default, but the CI audit action fails on it.
+    Gate {
+        name: "audit",
+        skip_on_docs_only: false,
+        commands: &[&["cargo", "audit", "--deny", "warnings"]],
+    },
     Gate {
         name: "deny-licenses",
         skip_on_docs_only: false,
