@@ -190,6 +190,7 @@ impl AppSandboxEngine {
     fn conversation_state_str(s: ConversationDeliveryState) -> &'static str {
         match s {
             ConversationDeliveryState::Pending => "pending",
+            ConversationDeliveryState::Deposited => "deposited",
             ConversationDeliveryState::Delivered => "delivered",
             ConversationDeliveryState::Failed => "failed",
         }

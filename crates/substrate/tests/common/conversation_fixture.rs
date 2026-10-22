@@ -8,10 +8,7 @@ use std::{fs, time::Duration};
 use ed25519_dalek::VerifyingKey;
 use reqwest::Client;
 use serde_json::{Value, json};
-use syneroym_core::{
-    dht_registry::{EndpointInfo, EndpointMechanism, EndpointType, RegistryClient},
-    test_constants,
-};
+use syneroym_core::{dht_registry::RegistryClient, test_constants};
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
@@ -30,49 +27,7 @@ pub fn fixture_wasm() -> Option<Vec<u8>> {
     fs::read(test_constants::dual_build_fixture_wasm_path()).ok()
 }
 
-/// Publishes `service_id`'s endpoint record so the other node's proxy can
-/// resolve it -- copied verbatim from `proxy_outbox_e2e.rs`.
-pub async fn publish_endpoint(
-    service_id: &str,
-    substrate_id: &str,
-    mechanisms: Vec<EndpointMechanism>,
-    signer: &Identity,
-    registry_url: &str,
-) {
-    let mechanisms_snapshot = mechanisms.clone();
-    let info = EndpointInfo {
-        service_id: service_id.to_string(),
-        substrate_id: substrate_id.to_string(),
-        endpoint_type: EndpointType::Service,
-        nickname: None,
-        mechanisms,
-        is_private: false,
-        ttl: None,
-        not_after: u64::MAX / 2,
-        generation: 0,
-        mailbox: None,
-    };
-    let signed = info.sign(signer).unwrap();
-    let res = Client::new()
-        .post(format!("{registry_url}/register"))
-        .json(&signed)
-        .send()
-        .await
-        .expect("registry register request failed");
-    assert!(res.status().is_success(), "registry rejected the record: {:?}", res.text().await);
-
-    let readback = wait_until(Duration::from_secs(20), || {
-        let url = format!("{registry_url}/lookup/{service_id}");
-        async move { Client::new().get(&url).send().await.is_ok_and(|r| r.status().is_success()) }
-    })
-    .await;
-    assert!(readback, "the registry never served back the record for {service_id}");
-
-    assert!(
-        mechanisms_snapshot.iter().any(|m| matches!(m, EndpointMechanism::Iroh { .. })),
-        "the published record for {service_id} carries no Iroh mechanism: {mechanisms_snapshot:?}"
-    );
-}
+pub use super::outbox::publish_endpoint;
 
 /// How a fixture service is deployed. `NoCertificate` exists to test a peer
 /// that is missing something an honest one has.

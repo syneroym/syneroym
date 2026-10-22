@@ -220,7 +220,12 @@ impl RouteHandler {
                     Err(e) => {
                         error!("Native service error: {}", e);
                         metrics::counter!("substrate.request.errors").increment(1);
-                        JsonRpcConverter::json_error(request.id.clone(), e.code(), e.to_string())
+                        JsonRpcConverter::json_error_with_data(
+                            request.id.clone(),
+                            e.code(),
+                            e.to_string(),
+                            e.data(),
+                        )
                     }
                 }
             }

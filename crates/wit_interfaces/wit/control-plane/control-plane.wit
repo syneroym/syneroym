@@ -369,6 +369,9 @@ interface orchestrator {
         /// one row here, not two.
         idempotency-key: string,
         attempts: u32,
+        /// A sealed copy of the call waits at the receiver's mailbox, and
+        /// the outbox sends no direct attempt for it meanwhile.
+        deposited: bool,
     }
 
     /// One queued proxy call that will never be delivered: its attempt

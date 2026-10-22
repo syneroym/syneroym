@@ -303,7 +303,7 @@ impl ProxyRouter {
         self.invoke_rehoming(req, || self.resolve_peer_target(&req.target_service)).await
     }
 
-    async fn resolve_peer_target(&self, target: &str) -> Result<RemotePeer, ProxyError> {
+    pub(super) async fn resolve_peer_target(&self, target: &str) -> Result<RemotePeer, ProxyError> {
         let peer =
             net_iroh::resolve_peer(&self.registry_client, self.peer_records.as_deref(), target)
                 .await
@@ -363,7 +363,7 @@ impl ProxyRouter {
     /// member master this substrate derived and was certified for. `None`
     /// for either the certificate or the recorded owner falls back to
     /// presenting nothing.
-    fn outbound_identity(&self, req: &ProxyRequest) -> Option<OutboundIdentity> {
+    pub(super) fn outbound_identity(&self, req: &ProxyRequest) -> Option<OutboundIdentity> {
         match &req.origin {
             CallOrigin::Native { service_id } => {
                 let mut id = service_id
@@ -383,11 +383,56 @@ impl ProxyRouter {
     /// hard-rejects any connection whose delegation fails to verify
     /// (`route_handler/io.rs`), where a `None` pubkey instead falls back to
     /// anonymous.
-    fn instance_identity(&self, service_id: &str) -> Option<OutboundIdentity> {
+    pub(super) fn instance_identity(&self, service_id: &str) -> Option<OutboundIdentity> {
         let cert = self.registry.instance_cert(service_id).filter(|c| !c.is_expired())?;
         let owner = self.registry.owner_of(service_id)?;
         let key = self.node_identity.derive_service_identity(&owner, service_id);
         Some(OutboundIdentity { key: Arc::new(key), delegation: Some(cert), on_behalf: None })
+    }
+
+    /// The JSON-RPC request every remote call sends.
+    fn outbound_request(req: &ProxyRequest) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: req.method.clone(),
+            params: req.params.clone(),
+            id: Some(Value::from(1)),
+            idempotency_key: req.idempotency_key.clone(),
+        }
+    }
+
+    /// Exactly one call to `peer`: no retry and no re-homing, bounded by
+    /// `timeout`. It presents the same identity as any remote call, and the
+    /// hop signs it when it writes the preamble.
+    pub(super) async fn invoke_remote_once(
+        &self,
+        peer: &RemotePeer,
+        req: &ProxyRequest,
+        timeout: Duration,
+    ) -> Result<Value, ProxyError> {
+        let route = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
+        let identity = self.outbound_identity(req);
+        self.hop.call(peer, &route, identity.as_ref(), &Self::outbound_request(req), timeout).await
+    }
+
+    /// `invoke_remote` for a peer the caller has already resolved: the same
+    /// retry loop and re-homing, without a second lookup first.
+    pub(super) async fn invoke_remote_resolved(
+        &self,
+        first: RemotePeer,
+        req: &ProxyRequest,
+    ) -> Result<Value, ProxyError> {
+        let mut first = Some(first);
+        self.invoke_rehoming(req, || {
+            let ready = first.take();
+            async move {
+                match ready {
+                    Some(peer) => Ok(peer),
+                    None => self.resolve_peer_target(&req.target_service).await,
+                }
+            }
+        })
+        .await
     }
 
     /// The retry loop and preamble construction, split out from
@@ -400,14 +445,7 @@ impl ProxyRouter {
     ) -> Result<Value, ProxyError> {
         let route = RoutePreamble::binary_json_rpc(&req.target_service, &req.interface);
         let identity = self.outbound_identity(req);
-
-        let json_rpc_request = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: req.method.clone(),
-            params: req.params.clone(),
-            id: Some(Value::from(1)),
-            idempotency_key: req.idempotency_key.clone(),
-        };
+        let json_rpc_request = Self::outbound_request(req);
         let call_timeout = req.timeout.unwrap_or(DEFAULT_PROXY_CALL_TIMEOUT);
 
         // Retry loop. Only *transport* failures are retried; a
@@ -608,6 +646,22 @@ impl ServiceProxy for ProxyRouter {
 
     async fn enqueue(&self, call: QueuedCall) -> Result<(), ProxyError> {
         ProxyRouter::enqueue_call(self, call).await
+    }
+
+    async fn deliver_or_deposit(
+        &self,
+        request: ProxyRequest,
+        max_wait_secs: u64,
+    ) -> Result<Delivery, ProxyError> {
+        self.deliver_or_deposit_inner(&request, max_wait_secs).await
+    }
+
+    async fn poll_deposits(
+        &self,
+        sender_service_id: &str,
+        contexts: Vec<Vec<u8>>,
+    ) -> Vec<DepositStatus> {
+        self.poll_deposits_inner(sender_service_id, &contexts).await
     }
 
     async fn saga_begin(&self, req: SagaBegin) -> Result<String, ProxyError> {

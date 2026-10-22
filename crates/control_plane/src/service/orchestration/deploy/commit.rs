@@ -1,6 +1,22 @@
 use super::*;
 
 impl ControlPlaneService {
+    /// Records the mailbox this deploy names, or forgets the one an earlier
+    /// deploy recorded. The receiver fence reads it on every keyed call.
+    async fn commit_hosted_mailbox(
+        &self,
+        service_id: &str,
+        mailbox: Option<&str>,
+    ) -> anyhow::Result<()> {
+        match mailbox {
+            Some(mailbox) => self.record_hosted_mailbox(service_id, mailbox).await,
+            None => {
+                self.forget_hosted_mailbox(service_id).await;
+                Ok(())
+            }
+        }
+    }
+
     /// Registers this deploy's owner attribution, installs (or clears) its
     /// instance certificate, and records its deploy facts -- the three
     /// registry writes that commit the deploy once every earlier fallible
@@ -81,6 +97,18 @@ impl ControlPlaneService {
                 }
             }
             None => self.clear_mailbox_key(service_id).await,
+        }
+        if let Err(e) = self.commit_hosted_mailbox(service_id, validated.mailbox.as_deref()).await {
+            self.undeploy_and_rollback_late_failure(
+                service_id,
+                generation,
+                caller,
+                new_gen,
+                previous_fdae_policy,
+                "mailbox record",
+            )
+            .await;
+            return Err(format!("Mailbox record installation failed: {e}"));
         }
 
         // What this deploy said the service is, and its declared probe if

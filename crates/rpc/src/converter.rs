@@ -43,9 +43,21 @@ impl JsonRpcConverter {
     }
 
     pub fn json_error<T: ToString>(id: Option<Value>, code: i32, message: T) -> Result<Vec<u8>> {
+        Self::json_error_with_data(id, code, message, None)
+    }
+
+    /// Like [`Self::json_error`], keeping the `data` a native service put in
+    /// its error. A caller may need it to act, for example a mailbox's
+    /// longest time-to-live in a `ttl_too_long` answer.
+    pub fn json_error_with_data<T: ToString>(
+        id: Option<Value>,
+        code: i32,
+        message: T,
+        data: Option<Value>,
+    ) -> Result<Vec<u8>> {
         let error_response = JsonRpcErrorResponse {
             jsonrpc: "2.0".to_string(),
-            error: JsonRpcError { code, message: message.to_string(), data: None },
+            error: JsonRpcError { code, message: message.to_string(), data },
             id,
         };
         serde_json::to_vec(&error_response).map_err(Into::into)
@@ -105,6 +117,19 @@ mod tests {
         assert_eq!(parsed["error"]["message"], "Not found");
         assert_eq!(parsed["id"], 42);
         assert!(!bytes.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn a_native_error_keeps_its_data_on_the_wire() {
+        let data = serde_json::json!({ "max_ttl_secs": 3 });
+        let bytes =
+            JsonRpcConverter::json_error_with_data(None, -32050, "too long", Some(data)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["error"]["data"]["max_ttl_secs"], 3);
+
+        let plain = JsonRpcConverter::json_error(None, -32601, "Not found").unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&plain).unwrap();
+        assert!(parsed["error"].get("data").is_none_or(serde_json::Value::is_null));
     }
 
     #[test]

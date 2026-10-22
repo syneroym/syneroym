@@ -110,14 +110,18 @@ impl ControlPlaneService {
             manifest.config.visibility,
             manifest.registry_certificate.as_deref(),
         )?;
-        let mailbox_key = validate_mailbox(
+        let mailbox = validate_mailbox(
             service_id,
             manifest.mailbox.as_ref(),
             visibility,
             manifest.registry_certificate.as_deref(),
             instance_cert.is_some(),
         )?;
-        Ok(ValidatedDeploy { instance_cert, visibility, mailbox_key })
+        let (mailbox_key, mailbox) = match mailbox {
+            Some((key, mailbox)) => (Some(key), Some(mailbox)),
+            None => (None, None),
+        };
+        Ok(ValidatedDeploy { instance_cert, visibility, mailbox_key, mailbox })
     }
 
     /// ADR-0021 §2: validates and prepares `app_context`'s bindings, and

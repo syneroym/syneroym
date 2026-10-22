@@ -21,6 +21,11 @@ pub const METHOD_CLAIM: &str = "claim";
 pub const METHOD_ACK: &str = "ack";
 pub const METHOD_STATUS: &str = "status";
 
+/// How long a sender keeps trying a message to a receiver with a mailbox,
+/// direct and by deposit. The receiver fence for such a service lasts at
+/// least this long, plus the clock skew allowance.
+pub const MAILBOX_SENDER_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
+
 /// A message claimed this many times without an ack is closed.
 pub const MAX_CLAIMS: u32 = 5;
 pub const MAX_CLAIM_BATCH: u32 = 32;
@@ -28,6 +33,16 @@ pub const MAX_CLAIM_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_ACK_BATCH: usize = 32;
 pub const MAX_STATUS_BATCH: usize = 100;
 pub const MAX_RECEIPT_JSON_BYTES: usize = 4 * 1024;
+
+/// The mailbox a hosted service pulls from, as its signed record names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedMailbox {
+    /// The node DID of the mailbox host.
+    pub mailbox: String,
+    /// The longest time-to-live of this service's queue. The open limit
+    /// until the receiver has registered and learned the real one.
+    pub max_ttl_secs: u64,
+}
 pub const MAX_RECORD_JSON_BYTES: usize = 4 * 1024;
 
 /// JSON-RPC error codes. Each answer also carries `data.kind`, the

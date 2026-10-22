@@ -19,6 +19,7 @@ pub(crate) fn conversation_error_out(v: HostConversationError) -> GuestConversat
 pub(crate) fn delivery_state_out(v: HostDeliveryState) -> GuestDeliveryState {
     match v {
         HostDeliveryState::Pending => GuestDeliveryState::Pending,
+        HostDeliveryState::Deposited => GuestDeliveryState::Deposited,
         HostDeliveryState::Delivered => GuestDeliveryState::Delivered,
         HostDeliveryState::Failed => GuestDeliveryState::Failed,
     }
@@ -153,6 +154,7 @@ pub(crate) fn rpc_admission_to_guest(v: RpcAdmission) -> GuestAdmission {
 pub(crate) fn rpc_delivery_state_to_guest(v: RpcDeliveryState) -> GuestDeliveryState {
     match v {
         RpcDeliveryState::Pending => GuestDeliveryState::Pending,
+        RpcDeliveryState::Deposited => GuestDeliveryState::Deposited,
         RpcDeliveryState::Delivered => GuestDeliveryState::Delivered,
         RpcDeliveryState::Failed => GuestDeliveryState::Failed,
     }

@@ -27,8 +27,10 @@ use crate::dag::{EntryKind, MembershipPayload, ProfilePayload, WireEntry};
 mod backup;
 mod conversation;
 mod dag_store;
+mod deposit;
 mod history;
 mod message;
+pub(crate) use deposit::Park;
 #[cfg(test)]
 pub(crate) use message::UNDECIDED_PER_PASS;
 pub(crate) use message::is_searchable_content_type;
@@ -295,6 +297,7 @@ pub(crate) struct OutboxItem {
 pub fn state_str(state: ConversationDeliveryState) -> &'static str {
     match state {
         ConversationDeliveryState::Pending => "pending",
+        ConversationDeliveryState::Deposited => "deposited",
         ConversationDeliveryState::Delivered => "delivered",
         ConversationDeliveryState::Failed => "failed",
     }
@@ -302,6 +305,7 @@ pub fn state_str(state: ConversationDeliveryState) -> &'static str {
 
 pub(super) fn state_from_str(s: &str) -> ConversationDeliveryState {
     match s {
+        "deposited" => ConversationDeliveryState::Deposited,
         "delivered" => ConversationDeliveryState::Delivered,
         "failed" => ConversationDeliveryState::Failed,
         _ => ConversationDeliveryState::Pending,

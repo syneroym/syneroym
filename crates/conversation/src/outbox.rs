@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use syneroym_async_queue::{FailOutcome, QueueItem};
 use syneroym_rpc::{
-    Admission, ConversationDeliveryState, ConversationKind, DropAnswer, NotifyOutcome,
+    Admission, ConversationDeliveryState, ConversationKind, DepositTicket, DropAnswer,
+    NotifyOutcome,
 };
 use tokio::time;
 use tokio_util::sync::CancellationToken;
@@ -17,13 +18,36 @@ use tracing::warn;
 use crate::{
     ConversationService,
     dag::{self, EntryKind, REFUSAL_NOTICE_CONTENT_TYPE},
-    store::{ConversationStore, OutboxItem, StoredMessage, now_ms},
-    transport::Disposition,
+    store::{ConversationStore, OutboxItem, Park, StoredMessage, now_ms},
+    transport::{Disposition, Sent},
 };
+
+mod parked;
 
 /// How many items one service may have claimed in a single worker tick —
 /// set to 64 because group fan-out multiplies outbox rows by member count.
 const CLAIM_LIMIT_PER_TICK: u32 = 64;
+
+/// One outbox row being settled: the claimed item, the message it carries,
+/// and where it goes.
+struct Row<'a> {
+    svc: &'a str,
+    store: &'a ConversationStore,
+    item: &'a QueueItem,
+    msg: &'a StoredMessage,
+    out: &'a OutboxItem,
+}
+
+impl Row<'_> {
+    fn is_group(&self) -> bool {
+        self.out.group.is_some()
+    }
+
+    /// The member whose copy this row is, for a group message.
+    fn member(&self) -> Option<&str> {
+        self.is_group().then_some(self.out.peer_address.as_str())
+    }
+}
 
 /// The longest one service's re-ask pass may run, in ask timeouts.
 const ASK_PASS_BUDGET_FACTOR: u32 = 4;
@@ -38,6 +62,7 @@ impl ConversationService {
                 () = cancel.cancelled() => return,
                 () = tokio::time::sleep(tick) => {
                     self.drain_once().await;
+                    self.drain_parked_once().await;
                     self.drain_relay_pending_once().await;
                     self.renotify_undecided_once().await;
                     self.expire_held_once().await;
@@ -78,11 +103,16 @@ impl ConversationService {
         }
     }
 
+    /// Whether `svc` still has a recorded owner or certificate. An outbox
+    /// can outlive the service that wrote it.
+    fn is_deployed(&self, svc: &str) -> bool {
+        self.registry.owner_of(svc).is_some() || self.registry.instance_cert(svc).is_some()
+    }
+
     async fn drain_once(&self) {
         let services = self.candidate_service_ids();
         for svc in services {
-            let still_deployed = self.registry.owner_of(&svc).is_some()
-                || self.registry.instance_cert(&svc).is_some();
+            let still_deployed = self.is_deployed(&svc);
             if let Ok(store) = self.store_for(&svc).await {
                 self.drain_one(&svc, &store, still_deployed).await;
             }
@@ -137,7 +167,7 @@ impl ConversationService {
                             targets.push(payload.subject_address.clone());
                         }
                         for m in targets {
-                            let _ = self.push_group_entry(&store, &svc, &m, &wire).await;
+                            let _ = self.push_group_entry(&store, &svc, &m, &wire, None).await;
                         }
                     }
                 }
@@ -206,16 +236,22 @@ impl ConversationService {
             return;
         }
 
+        let left_ms = max_age_ms.saturating_sub(now.saturating_sub(msg.received_at_ms));
+        let max_wait_secs = u64::try_from(left_ms / 1000).unwrap_or(0);
         let delivery_result = if is_group {
-            self.deliver_group_one(svc, &parsed.peer_address, &msg).await
+            self.deliver_group_one(svc, &parsed.peer_address, &msg, max_wait_secs).await
         } else {
-            self.deliver_one(svc, &parsed.peer_address, &msg).await
+            self.deliver_one(svc, &parsed.peer_address, &msg, max_wait_secs).await
         };
 
         match delivery_result {
-            Ok(()) | Err(Disposition::Delivered) => {
+            Ok(Sent::Delivered) | Err(Disposition::Delivered) => {
                 self.settle_delivered(svc, store, &item, &msg, is_group, &parsed.peer_address)
                     .await;
+            }
+            Ok(Sent::Deposited(ticket)) => {
+                let row = Row { svc, store, item: &item, msg: &msg, out: &parsed };
+                self.settle_deposited(&row, &ticket, now).await;
             }
             Err(Disposition::Unreachable) => {
                 // `defer` un-counts the claim and does not advance
@@ -246,6 +282,36 @@ impl ConversationService {
                     Ok(FailOutcome::Retrying { .. }) | Err(_) => {}
                 }
             }
+        }
+    }
+
+    /// The receiver could not be reached and a sealed copy waits at its
+    /// mailbox: park the row, and mark the message (1:1) or this member's
+    /// copy (group) `deposited`, in one commit.
+    async fn settle_deposited(&self, row: &Row<'_>, ticket: &DepositTicket, now: i64) {
+        let max_age_ms = (row.store.config().max_pending_age_secs as i64).saturating_mul(1000);
+        let age_deadline = row.msg.received_at_ms.saturating_add(max_age_ms);
+        let park = Park {
+            now,
+            poll_interval_ms: u64::try_from(ticket.poll_interval.as_millis()).unwrap_or(u64::MAX),
+            deadline_at: ticket.deadline_at_ms.min(age_deadline).max(now + 1),
+            context: &ticket.context,
+        };
+        match row.store.park_deposited(row.item.id, &row.msg.id, row.member(), &park) {
+            Ok(()) => {
+                if !row.is_group() {
+                    self.notify_state(
+                        row.svc,
+                        row.msg.id.clone(),
+                        ConversationDeliveryState::Deposited,
+                    )
+                    .await;
+                }
+                metrics::counter!("substrate.conversation.outbox.deposited").increment(1);
+            }
+            // The row comes back after the visibility timeout. A second
+            // deposit is safe: the receiver fence runs the call once.
+            Err(e) => warn!(message = row.msg.id, error = %e, "could not park a deposited message"),
         }
     }
 

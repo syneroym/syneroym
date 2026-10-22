@@ -1,7 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use syneroym_core::dht_registry::{EndpointInfo, EndpointMailbox, EndpointType};
+use syneroym_core::{
+    dht_registry::{EndpointInfo, EndpointMailbox, EndpointType},
+    mailbox::HostedMailbox,
+};
 use syneroym_identity::Identity;
+use syneroym_mailbox_format::OPEN_MAX_TTL_SECS;
 use syneroym_rpc::{NativeInvocation, RpcError};
 
 use super::{super::*, helpers::*};
@@ -200,7 +204,8 @@ fn a_key_that_differs_from_the_record_is_refused_without_showing_it() {
 fn the_matching_key_is_accepted() {
     let member = Member::new();
     let key = member.mailbox_key();
-    let record = member.record(Some(member.mailbox_route(&key)), false);
+    let route = member.mailbox_route(&key);
+    let record = member.record(Some(route.clone()), false);
     let accepted = validate_mailbox(
         &member.service_id,
         Some(&credentials_for(&key)),
@@ -210,7 +215,8 @@ fn the_matching_key_is_accepted() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(accepted.public_key(), key.public_key());
+    assert_eq!(accepted.0.public_key(), key.public_key());
+    assert_eq!(accepted.1, route.service_id);
 }
 
 /// A record whose JSON `info` was changed after signing: the signed packet
@@ -301,6 +307,68 @@ async fn undeploy_clears_the_mailbox_key() {
     service.undeploy(member.service_id.clone(), 0, &caller).await.unwrap();
 
     assert!(service.mailbox_key(&member.service_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_deploy_with_a_mailbox_records_it_and_a_redeploy_without_one_forgets_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let (service, registry) =
+        service_with_node_identity(dir.path(), member.node_identity.clone()).await;
+    let caller = caller();
+    let key = member.mailbox_key();
+    let route = member.mailbox_route(&key);
+    let with = member.manifest(&caller, Some(route.clone()), Some(&key));
+    service.deploy(member.service_id.clone(), with, &caller).await.unwrap();
+
+    let hosted = registry.mailbox_of(&member.service_id).unwrap();
+    assert_eq!(hosted.mailbox, route.service_id);
+    assert_eq!(hosted.max_ttl_secs, OPEN_MAX_TTL_SECS);
+
+    let without = member.manifest(&caller, None, None);
+    service.deploy(member.service_id.clone(), without, &caller).await.unwrap();
+    assert_eq!(registry.mailbox_of(&member.service_id), None);
+}
+
+#[tokio::test]
+async fn undeploy_forgets_the_recorded_mailbox() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let (service, registry) =
+        service_with_node_identity(dir.path(), member.node_identity.clone()).await;
+    let caller = caller();
+    let key = member.mailbox_key();
+    let manifest = member.manifest(&caller, Some(member.mailbox_route(&key)), Some(&key));
+    service.deploy(member.service_id.clone(), manifest, &caller).await.unwrap();
+    assert!(registry.mailbox_of(&member.service_id).is_some());
+
+    service.undeploy(member.service_id.clone(), 0, &caller).await.unwrap();
+
+    assert_eq!(registry.mailbox_of(&member.service_id), None);
+}
+
+#[tokio::test]
+async fn a_redeploy_to_the_same_mailbox_keeps_the_queue_lifetime_the_receiver_learned() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let (service, registry) =
+        service_with_node_identity(dir.path(), member.node_identity.clone()).await;
+    let caller = caller();
+    let key = member.mailbox_key();
+    let route = member.mailbox_route(&key);
+    let first = member.manifest(&caller, Some(route.clone()), Some(&key));
+    service.deploy(member.service_id.clone(), first, &caller).await.unwrap();
+
+    let learned = HostedMailbox { mailbox: route.service_id.clone(), max_ttl_secs: 3 * 24 * 3600 };
+    registry.set_mailbox(member.service_id.clone(), learned.clone()).await.unwrap();
+
+    // A changed argument makes this deploy more than a no-op, so the commit
+    // step runs again with the same mailbox.
+    let mut redeploy = member.manifest(&caller, Some(route), Some(&key));
+    redeploy.config.args = vec!["--changed".to_string()];
+    service.deploy(member.service_id.clone(), redeploy, &caller).await.unwrap();
+
+    assert_eq!(registry.mailbox_of(&member.service_id), Some(learned));
 }
 
 #[tokio::test]

@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use rusqlite::Connection;
+use syneroym_core::mailbox::HostedMailbox;
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
 
@@ -445,4 +447,71 @@ fn the_guard_never_runs_sqlite_on_the_async_worker_thread() {
 fn the_mailbox_interface_is_a_node_level_interface() {
     assert!(is_node_level_interface("mailbox"));
     assert!(is_node_level_interface(&syneroym_core::util::short_hash("mailbox")));
+}
+
+fn mailbox_of_service(max_ttl_secs: u64) -> HostedMailbox {
+    HostedMailbox { mailbox: "did:key:zBox".to_string(), max_ttl_secs }
+}
+
+#[tokio::test]
+async fn a_service_with_a_mailbox_gets_a_window_that_outlasts_the_senders_age_limit() {
+    let node = node(false, &["svc-a"]).await;
+    let default = node.guard.window_for("svc-a");
+    assert_eq!(default, config().window());
+
+    let registry = &node.guard.registry;
+    registry.set_mailbox("svc-a".to_string(), mailbox_of_service(7 * 24 * 3600)).await.unwrap();
+    let long = node.guard.window_for("svc-a");
+    let thirty_one_days_ms = (30 + 1) * 24 * 3600 * 1000;
+    assert_eq!(long.ttl_ms, thirty_one_days_ms);
+    assert_eq!(long.max_rows, 100_000);
+
+    // Another service on the same node keeps the default.
+    assert_eq!(node.guard.window_for("svc-b"), config().window());
+
+    registry.remove_mailbox("svc-a").await.unwrap();
+    assert_eq!(node.guard.window_for("svc-a"), config().window());
+}
+
+#[tokio::test]
+async fn a_queue_lifetime_longer_than_the_age_limit_sets_the_window() {
+    let node = node(false, &["svc-a"]).await;
+    let sixty_days = 60 * 24 * 3600;
+    node.guard
+        .registry
+        .set_mailbox("svc-a".to_string(), mailbox_of_service(sixty_days))
+        .await
+        .unwrap();
+    assert_eq!(node.guard.window_for("svc-a").ttl_ms, (sixty_days + 24 * 3600) * 1000);
+}
+
+/// The `expires_at` of the one record in a service's fence, read straight
+/// from its (unencrypted, in these tests) database file.
+async fn recorded_expiry(node: &Node, service: &str) -> i64 {
+    let dir = node.guard.storage_provider.service_db_dir(service).unwrap();
+    let conn = Connection::open(dir.join(ASYNC_DB_NAME)).unwrap();
+    conn.query_row("SELECT expires_at FROM call_dedup", [], |row| row.get(0)).unwrap()
+}
+
+#[tokio::test]
+async fn a_record_for_a_service_with_a_mailbox_is_kept_for_the_long_window() {
+    let node = node(false, &["svc-a", "svc-b"]).await;
+    node.guard
+        .registry
+        .set_mailbox("svc-a".to_string(), mailbox_of_service(7 * 24 * 3600))
+        .await
+        .unwrap();
+
+    let before = now_ms();
+    for service in ["svc-a", "svc-b"] {
+        let first = node.guard.begin(service, "greeter", Some("did:key:zC"), Some("k1")).await;
+        let GuardOutcome::Execute(Some(claim)) = first else { panic!("expected a claim") };
+        claim.settle(&Ok(serde_json::json!("done"))).await;
+    }
+
+    let thirty_one_days_ms = 31 * 24 * 3600 * 1000;
+    let long = recorded_expiry(&node, "svc-a").await;
+    assert!(long >= before + thirty_one_days_ms, "mailbox service record expires at {long}");
+    let short = recorded_expiry(&node, "svc-b").await;
+    assert!(short < before + 2 * config().ttl_ms as i64, "plain service record expires at {short}");
 }

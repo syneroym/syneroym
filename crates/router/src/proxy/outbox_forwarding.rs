@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    outbox_parked::{complete_row, delivered_row, fail_row, park_row},
+    *,
+};
 
 impl ProxyRouter {
     /// same cross-service call exactly -- `service_system(caller)` plus a
@@ -40,12 +43,15 @@ impl ProxyRouter {
             .resolve_target(call)
     }
 
+    /// Delivers one queued item directly, or deposits it at the receiver's
+    /// mailbox when the receiver cannot be reached.
     pub(super) async fn deliver_queued(
         &self,
         call: &QueuedCall,
         target: String,
-    ) -> Result<Value, ProxyError> {
-        self.invoke_inner(&self.request_from(call, target)).await
+        max_wait_secs: u64,
+    ) -> Result<Delivery, ProxyError> {
+        self.deliver_or_deposit_inner(&self.request_from(call, target), max_wait_secs).await
     }
 
     /// [`Self::invoke_local`] under the receiver-side fence.
@@ -84,6 +90,7 @@ impl ProxyRouter {
             // about a service nobody is going to act on.
             let still_deployed = deployed.contains(&service_id);
             settled += self.drain_one_outbox(&queue, still_deployed).await;
+            settled += self.drain_parked_outbox(&queue, &service_id, still_deployed).await;
         }
         settled
     }
@@ -102,82 +109,75 @@ impl ProxyRouter {
             }
         };
 
-        let mut settled = 0;
+        let settled = claimed.len();
         for item in claimed {
-            let queue = queue.clone();
-            if !still_deployed {
-                let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
-                settled += 1;
-                continue;
-            }
-            // A claim that never resolves through `fail`/`complete` -- a
-            // panic, a crash, a shutdown caught mid-delivery -- is bounded
-            // by this rather than by the attempt count, which only `fail`
-            // advances.
-            if item.claim_count > u32::from(queue.max_attempts()) {
-                let _ = tokio::task::spawn_blocking(move || {
-                    queue.fail(item.id, now, "claimed repeatedly without ever completing", true)
-                })
-                .await;
-                settled += 1;
-                continue;
-            }
-            let Ok(call) = serde_json::from_slice::<QueuedCall>(&item.payload) else {
-                let _ = tokio::task::spawn_blocking(move || {
-                    queue.fail(item.id, now, "queued payload is unreadable", true)
-                })
-                .await;
-                settled += 1;
-                continue;
-            };
-            settled += 1;
-            // A name bound to nobody is terminal on its own terms: this is
-            // a failure to have a target at all, not a failed delivery, so
-            // it does not go through the retry classification.
-            let target = match self.resolve_queued_target(&call) {
-                Ok(target) => target,
-                Err(e) => {
-                    proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
-                    let message = e.to_string();
-                    let outcome = tokio::task::spawn_blocking(move || {
-                        queue.fail(item.id, now, &message, true)
-                    })
-                    .await;
-                    if let Ok(Ok(FailOutcome::DeadLettered { .. })) = outcome {
-                        metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
-                    }
-                    continue;
-                }
-            };
-            match self.deliver_queued(&call, target).await {
-                Ok(_) => {
-                    metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
-                    let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
-                }
-                Err(e) => match proxy_outbox::disposition_of(&e) {
-                    // The receiver already ran this item and could not
-                    // hand back its result. That is a delivery reported
-                    // through the error channel, so the item is done.
-                    Disposition::Delivered => {
-                        metrics::counter!("substrate.proxy.outbox.delivered").increment(1);
-                        let _ = tokio::task::spawn_blocking(move || queue.complete(item.id)).await;
-                    }
-                    disposition => {
-                        proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
-                        let terminal = disposition == Disposition::Terminal;
-                        let message = e.to_string();
-                        let outcome = tokio::task::spawn_blocking(move || {
-                            queue.fail(item.id, now, &message, terminal)
-                        })
-                        .await;
-                        if let Ok(Ok(FailOutcome::DeadLettered { .. })) = outcome {
-                            metrics::counter!("substrate.proxy.outbox.dead_lettered").increment(1);
-                        }
-                    }
-                },
-            }
+            self.settle_pending(queue, item, still_deployed, now).await;
         }
         settled
+    }
+
+    /// One claimed pending item: deliver it, deposit it, or end it.
+    async fn settle_pending(&self, queue: &Queue, item: QueueItem, still_deployed: bool, now: i64) {
+        if !still_deployed {
+            complete_row(queue, item.id).await;
+            return;
+        }
+        // A claim that never resolves through `fail`/`complete` -- a
+        // panic, a crash, a shutdown caught mid-delivery -- is bounded
+        // by this rather than by the attempt count, which only `fail`
+        // advances.
+        if item.claim_count > u32::from(queue.max_attempts()) {
+            fail_row(queue, item.id, now, "claimed repeatedly without ever completing", true).await;
+            return;
+        }
+        // Only a call to a receiver with a mailbox can be this old: deposit
+        // and direct attempts take turns without using the attempt budget.
+        if now - item.created_at > proxy_outbox::MAX_ROW_AGE_MS {
+            fail_row(queue, item.id, now, "the receiver never took this call", true).await;
+            return;
+        }
+        let Ok(call) = serde_json::from_slice::<QueuedCall>(&item.payload) else {
+            fail_row(queue, item.id, now, "queued payload is unreadable", true).await;
+            return;
+        };
+        // A name bound to nobody is terminal on its own terms: this is
+        // a failure to have a target at all, not a failed delivery, so
+        // it does not go through the retry classification.
+        let target = match self.resolve_queued_target(&call) {
+            Ok(target) => target,
+            Err(e) => {
+                proxy_outbox::log_delivery_failure(&call.idempotency_key, &e);
+                fail_row(queue, item.id, now, &e.to_string(), true).await;
+                return;
+            }
+        };
+        let max_wait_secs = proxy_outbox::max_wait_secs(item.created_at, now);
+        match self.deliver_queued(&call, target, max_wait_secs).await {
+            Ok(Delivery::Direct(_)) => delivered_row(queue, item.id).await,
+            Ok(Delivery::Deposited(ticket)) => park_row(queue, &item, now, &ticket).await,
+            Err(e) => self.settle_failed_delivery(queue, &item, &call, &e, now).await,
+        }
+    }
+
+    async fn settle_failed_delivery(
+        &self,
+        queue: &Queue,
+        item: &QueueItem,
+        call: &QueuedCall,
+        error: &ProxyError,
+        now: i64,
+    ) {
+        match proxy_outbox::disposition_of(error) {
+            // The receiver already ran this item and could not hand back
+            // its result. That is a delivery reported through the error
+            // channel, so the item is done.
+            Disposition::Delivered => delivered_row(queue, item.id).await,
+            disposition => {
+                proxy_outbox::log_delivery_failure(&call.idempotency_key, error);
+                let terminal = disposition == Disposition::Terminal;
+                fail_row(queue, item.id, now, &error.to_string(), terminal).await;
+            }
+        }
     }
 
     /// The resident loop: drains outboxes and sweeps saga logs, then races

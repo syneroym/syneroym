@@ -17,12 +17,12 @@ use serde_json::Value;
 use syneroym_app_orchestration::saga_undo_name;
 use syneroym_async_queue::{
     CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, CompensationOutcome,
-    FailOutcome, MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, Queue, SagaHead,
+    FailOutcome, MAX_SAGA_PAYLOAD_BYTES, MIN_STEP_CALL_BUDGET_MS, Queue, QueueItem, SagaHead,
     SagaInfo as QueueSagaInfo, SagaLog, StepIntent, StepRow,
 };
 use syneroym_core::{
     config::RetryPolicy,
-    dht_registry::RegistryClient,
+    dht_registry::{MasterAnchorResolver, RegistryClient},
     local_registry::{
         EndpointRegistry, NATIVE_CAPABILITY_INTERFACES, NODE_NATIVE_INTERFACES, SubstrateEndpoint,
     },
@@ -30,8 +30,8 @@ use syneroym_core::{
 };
 use syneroym_identity::Identity;
 use syneroym_rpc::{
-    CallOrigin, CallerContext, CallerProof, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo,
-    JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, NOT_HOSTED_HERE_RPC_CODE,
+    CallOrigin, CallerContext, CallerProof, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, Delivery,
+    DepositStatus, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, NOT_HOSTED_HERE_RPC_CODE,
     NativeInvocation, ProxyError, ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall,
     QueuedCallInfo, QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo,
     SagaState as RpcSagaState, SagaStepRequest, ServiceProxy, WeakNativeDispatchRegistry, framing,
@@ -107,7 +107,9 @@ const ENQUEUE_PROBE_BUDGET: Duration = Duration::from_secs(2);
 const SAGA_UNDO_CALL_BUDGET: Duration = Duration::from_secs(5);
 
 mod hop;
+mod mailbox;
 mod outbox_forwarding;
+mod outbox_parked;
 mod router;
 mod saga_dispatch;
 mod state;
@@ -132,6 +134,9 @@ pub use state::*;
 pub struct ProxyRouter {
     registry: EndpointRegistry,
     registry_client: Arc<RegistryClient>,
+    /// Reads a receiver master's revoked keys before a receipt is accepted.
+    /// The registry client by default; tests give their own.
+    anchor_resolver: Arc<dyn MasterAnchorResolver>,
     native_dispatch: WeakNativeDispatchRegistry,
     app_sandbox_engine: Weak<AppSandboxEngine>,
     hop: Arc<dyn RemoteHop>,
@@ -199,6 +204,7 @@ impl ProxyRouter {
     ) -> Self {
         Self {
             registry,
+            anchor_resolver: registry_client.clone(),
             registry_client,
             native_dispatch,
             app_sandbox_engine,
@@ -212,6 +218,13 @@ impl ProxyRouter {
             saga_undeploy_candidates: Mutex::new(BTreeSet::new()),
             proxy_state: None,
         }
+    }
+
+    /// Replaces the resolver that reads a receiver master's revoked keys.
+    #[must_use]
+    pub fn with_anchor_resolver(mut self, resolver: Arc<dyn MasterAnchorResolver>) -> Self {
+        self.anchor_resolver = resolver;
+        self
     }
 
     /// Gives this router the fence it applies to keyed calls arriving for

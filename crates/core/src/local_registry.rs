@@ -14,6 +14,7 @@ use dashmap::DashMap;
 use syneroym_identity::DelegationCertificate;
 
 use crate::{
+    mailbox::HostedMailbox,
     storage::{AppInstanceManagement, DeployFacts, EndpointStorage, MockStorage},
     util,
 };
@@ -84,6 +85,9 @@ pub struct EndpointRegistry {
     /// `service_id` -> `owner_did`. Separate from
     /// `active_endpoints`, which is keyed per interface.
     service_owners: Arc<DashMap<String, String>>,
+    /// `service_id` -> the mailbox that service pulls from. Absent for a
+    /// service with no mailbox.
+    service_mailboxes: Arc<DashMap<String, HostedMailbox>>,
     /// `service_id` -> the installed `DelegationCertificate` binding this
     /// substrate's derived instance key to the member master that
     /// `service_id` names. Absent for a service deployed without a master
@@ -123,6 +127,7 @@ impl EndpointRegistry {
             active_endpoints: Arc::new(DashMap::new()),
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
+            service_mailboxes: Arc::new(DashMap::new()),
             service_certs: Arc::new(DashMap::new()),
             service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
@@ -147,6 +152,10 @@ impl EndpointRegistry {
 
         for (service_id, owner_did) in self.storage.load_all_owners().await? {
             self.service_owners.insert(service_id, owner_did);
+        }
+
+        for (service_id, mailbox) in self.storage.load_all_mailboxes().await? {
+            self.service_mailboxes.insert(service_id, mailbox);
         }
 
         for (service_id, certificate_json) in self.storage.load_all_certs().await? {
@@ -298,6 +307,7 @@ impl EndpointRegistry {
             active_endpoints: Arc::new(DashMap::new()),
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
+            service_mailboxes: Arc::new(DashMap::new()),
             service_certs: Arc::new(DashMap::new()),
             service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
@@ -326,6 +336,27 @@ impl EndpointRegistry {
     pub async fn remove_owner(&self, service_id: &str) -> Result<()> {
         self.storage.remove_owner(service_id).await?;
         self.service_owners.remove(service_id);
+        Ok(())
+    }
+
+    /// Record the mailbox `service_id` pulls from (upsert).
+    pub async fn set_mailbox(&self, service_id: String, mailbox: HostedMailbox) -> Result<()> {
+        self.storage.save_mailbox(&service_id, &mailbox).await?;
+        self.service_mailboxes.insert(service_id, mailbox);
+        Ok(())
+    }
+
+    /// The mailbox `service_id` pulls from, or `None` for a service with
+    /// no mailbox.
+    #[must_use]
+    pub fn mailbox_of(&self, service_id: &str) -> Option<HostedMailbox> {
+        self.service_mailboxes.get(service_id).map(|e| e.value().clone())
+    }
+
+    /// Forget `service_id`'s mailbox. Idempotent.
+    pub async fn remove_mailbox(&self, service_id: &str) -> Result<()> {
+        self.storage.remove_mailbox(service_id).await?;
+        self.service_mailboxes.remove(service_id);
         Ok(())
     }
 

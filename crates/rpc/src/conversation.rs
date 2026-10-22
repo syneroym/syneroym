@@ -35,6 +35,9 @@ pub enum ConversationError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConversationDeliveryState {
     Pending,
+    /// Waiting at the receiver's mailbox. Not a final success: only
+    /// `Delivered` is (ADR-0026).
+    Deposited,
     Delivered,
     Failed,
 }

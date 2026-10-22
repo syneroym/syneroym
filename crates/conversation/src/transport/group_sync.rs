@@ -1,22 +1,26 @@
 use std::time::Duration;
 
 use rand::RngCore;
-use syneroym_rpc::ConversationError;
+use syneroym_rpc::{ConversationError, Delivery};
 
-use super::{Disposition, internal};
+use super::{Disposition, Sent, internal};
 use crate::{
     ConversationService,
     store::{ConversationStore, StoredMessage, now_ms},
 };
 
 impl ConversationService {
+    /// Pushes one entry to one member. `deferrable` is `Some(max_wait_secs)`
+    /// for an outbox row, whose push may wait at the member's mailbox; the
+    /// relay push has no row to park and passes `None`.
     pub(crate) async fn push_group_entry(
         &self,
         store: &ConversationStore,
         svc: &str,
         peer_address: &str,
         entry: &crate::dag::WireEntry,
-    ) -> Result<(), Disposition> {
+        deferrable: Option<u64>,
+    ) -> Result<Sent, Disposition> {
         let ident = store
             .local_identity_or_generate(crate::crypto::generate_identity_bytes)
             .map_err(|_| Disposition::Retry)?;
@@ -37,19 +41,25 @@ impl ConversationService {
         };
         let json = serde_json::to_value(&req)
             .map_err(|_| Disposition::Terminal("serialize error".to_string()))?;
-        let ack_json = self
-            .call_peer(
-                svc,
-                peer_address,
-                "group-push",
-                json,
-                Some(format!("{}:{}", entry.entry_id, peer_address)),
-                Some(Duration::from_secs(10)),
-            )
-            .await?;
+        let key = format!("{}:{}", entry.entry_id, peer_address);
+        let timeout = Some(Duration::from_secs(10));
+        let ack_json = match deferrable {
+            Some(max_wait_secs) => {
+                let request =
+                    self.peer_request(svc, peer_address, "group-push", json, Some(key), timeout)?;
+                let delivery = self.call_peer_deferrable(request, max_wait_secs).await?;
+                match delivery {
+                    Delivery::Direct(ack_json) => ack_json,
+                    Delivery::Deposited(ticket) => return Ok(Sent::Deposited(ticket)),
+                }
+            }
+            None => {
+                self.call_peer(svc, peer_address, "group-push", json, Some(key), timeout).await?
+            }
+        };
         let _ack: crate::dag::GroupPushAck = serde_json::from_value(ack_json)
             .map_err(|_| Disposition::Terminal("invalid ack".to_string()))?;
-        Ok(())
+        Ok(Sent::Delivered)
     }
 
     pub(crate) async fn deliver_group_one(
@@ -57,7 +67,8 @@ impl ConversationService {
         svc: &str,
         peer_address: &str,
         msg: &StoredMessage,
-    ) -> Result<(), Disposition> {
+        max_wait_secs: u64,
+    ) -> Result<Sent, Disposition> {
         let store = self.store_for(svc).await.map_err(|_| Disposition::Retry)?;
         let entry_id = msg
             .entry_id
@@ -67,7 +78,7 @@ impl ConversationService {
             .wire_entry(entry_id)
             .map_err(|_| Disposition::Retry)?
             .ok_or_else(|| Disposition::Terminal("DAG entry not found".to_string()))?;
-        self.push_group_entry(&store, svc, peer_address, &entry).await
+        self.push_group_entry(&store, svc, peer_address, &entry, Some(max_wait_secs)).await
     }
 
     pub(crate) async fn group_push_impl(

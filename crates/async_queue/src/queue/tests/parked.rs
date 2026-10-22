@@ -653,3 +653,20 @@ fn deferring_an_unclaimed_item_keeps_claim_count_at_zero() {
     assert_eq!(all[0].claim_count, 0, "claim_count must floor at 0 on defer");
     assert_eq!(all[0].attempts, 0);
 }
+
+#[test]
+fn created_at_is_the_write_time_and_survives_park_and_unpark() {
+    let queue = Queue::open_in_memory(config()).unwrap();
+    let id = queue.enqueue("g", "k", b"payload", 1_000).unwrap();
+
+    let claimed = queue.claim_due(5_000, 10).unwrap();
+    assert_eq!(claimed[0].created_at, 1_000);
+
+    queue.park(id, 6_000, 1_000, 100_000, b"ctx").unwrap();
+    let parked = queue.claim_parked_due(7_000, 10).unwrap();
+    assert_eq!(parked[0].created_at, 1_000);
+
+    queue.unpark(id, 8_000).unwrap();
+    let again = queue.claim_due(8_000, 10).unwrap();
+    assert_eq!(again[0].created_at, 1_000);
+}

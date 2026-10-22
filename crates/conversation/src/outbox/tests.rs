@@ -320,3 +320,5 @@ async fn a_zero_ask_timeout_still_asks_one_row_per_tick() {
 
     assert!(asked >= 1, "the pass must not stop before its first ask");
 }
+
+mod deposit;

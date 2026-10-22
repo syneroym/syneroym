@@ -40,6 +40,8 @@ interface ConversationRow {
   message_count: number;
 }
 
+export type MessageState = "pending" | "deposited" | "delivered" | "failed";
+
 interface MessageRow {
   id: string;
   conversation: string;
@@ -49,7 +51,7 @@ interface MessageRow {
   content_type: string;
   body_encoding: "utf8" | "base64";
   body?: string;
-  state: "pending" | "delivered" | "failed";
+  state: MessageState;
   last_error?: string;
   refused?: string | null;
   restored?: boolean;
@@ -410,6 +412,18 @@ export function isQuoteSuperseded(
 }
 
 /** What a sender is told when the other side turned a delivered message away. */
+/** A short explanation for a state word that needs one, else null. */
+export function stateHint(state: MessageState): string | null {
+  return state === "deposited"
+    ? "The other side is offline. The message waits in their mailbox."
+    : null;
+}
+
+/** Only a failed message of the user's own history can be sent again. */
+export function canRetry(m: { state: MessageState; deleted_at_secs?: number; restored?: boolean }): boolean {
+  return m.state === "failed" && m.deleted_at_secs == null && !m.restored;
+}
+
 export function refusalText(reason: string): string {
   if (reason === "rate-limited") {
     return "Not accepted: this person limits messages from new contacts. Try again later.";
@@ -472,7 +486,12 @@ function messageElement(
 
   // The state word is exactly what the API returned -- never inferred, and
   // "delivered" is never shown until the service says so.
-  wrap.appendChild(text("span", m.state, `message-state state-${m.state}`));
+  const stateSpan = text("span", m.state, `message-state state-${m.state}`);
+  const hint = stateHint(m.state);
+  if (hint) {
+    stateSpan.title = hint;
+  }
+  wrap.appendChild(stateSpan);
   if (m.refused) {
     wrap.appendChild(text("span", refusalText(m.refused), "message-refused"));
   }
@@ -485,7 +504,7 @@ function messageElement(
 
   // A deleted or restored message is never offered for sending again; the
   // service refuses both.
-  if (m.state === "failed" && m.deleted_at_secs == null && !m.restored) {
+  if (canRetry(m)) {
     const retryBtn = text("button", "Retry", "button retry-message") as HTMLButtonElement;
     retryBtn.onclick = async () => {
       retryBtn.disabled = true;

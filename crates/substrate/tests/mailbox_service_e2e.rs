@@ -2,46 +2,33 @@
 //! End-to-end integration tests for the service mailbox role against a live
 //! substrate.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use common::SubstrateNode;
+use common::{
+    SubstrateNode,
+    mailbox_receiver::{call, did_of, not_after},
+};
 use rustls::crypto::ring;
-use serde_json::{Value, from_value, json};
+use serde_json::{from_value, json};
 use syneroym_core::{
     config::MailboxRole,
     dht_registry::{
-        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMailbox, EndpointType,
-        RegistryClient, SignedEndpointInfo,
+        EndpointInfo, EndpointMailbox, EndpointType, RegistryClient, SignedEndpointInfo,
     },
     mailbox::{
-        AckAnswer, AckOutcome, ClaimAnswer, MAILBOX_INTERFACE, METHOD_ACK, METHOD_CLAIM,
-        METHOD_DEPOSIT, METHOD_REGISTER, METHOD_STATUS, StatusAnswer, codes,
+        AckAnswer, AckOutcome, ClaimAnswer, METHOD_ACK, METHOD_CLAIM, METHOD_DEPOSIT,
+        METHOD_REGISTER, METHOD_STATUS, StatusAnswer, codes,
     },
 };
-use syneroym_identity::{
-    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
-};
+use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE};
 use syneroym_mailbox_format::{
     DepositId, MailboxSecretKey, MessageContent, OpenPolicy, Receipt, Recipient, Sealed, Sender,
     SignedOutcome, open, seal,
 };
-use syneroym_rpc::JsonRpcError;
 use syneroym_sdk::SyneroymClient;
 use tokio::time;
 
 mod common;
-
-fn did_of(id: &Identity) -> String {
-    substrate::derive_did_key(&id.public_key())
-}
-
-fn not_after() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS)
-}
 
 struct Member {
     master: Identity,
@@ -136,19 +123,6 @@ fn make_sealed_deposit(
     let r_id = did_of(&receiver.master);
     let r = Recipient { service_id: &r_id, mailbox_key: &receiver.mailbox_key.public_key() };
     seal(&content, r, s, ttl, now).unwrap()
-}
-
-async fn call(client: &SyneroymClient, method: &str, params: Value) -> Result<Value, (i32, Value)> {
-    match client.request(MAILBOX_INTERFACE, method, params).await {
-        Ok(res) => Ok(res.result),
-        Err(e) => {
-            if let Some(rpc_err) = e.downcast_ref::<JsonRpcError>() {
-                Err((rpc_err.code, rpc_err.data.clone().unwrap_or(Value::Null)))
-            } else {
-                panic!("unexpected transport or parse error: {e:?}");
-            }
-        }
-    }
 }
 
 async fn boot_mailbox_node() -> SubstrateNode {

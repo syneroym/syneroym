@@ -12,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use syneroym_core::{
     config::SubstrateConfig,
     local_registry::SubstrateEndpoint,
+    mailbox::HostedMailbox,
     storage::{AppInstanceManagement, EndpointStorage},
 };
 use tokio::task;
@@ -81,6 +82,17 @@ impl SqliteEndpointStorage {
                     service_id TEXT PRIMARY KEY,
                     owner_did  TEXT NOT NULL,
                     created_at INTEGER NOT NULL
+                );",
+                [],
+            )?;
+            // The mailbox a hosted service pulls from, and the longest
+            // time-to-live of its queue. One row per service.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS service_mailboxes (
+                    service_id   TEXT PRIMARY KEY,
+                    mailbox      TEXT NOT NULL,
+                    max_ttl_secs INTEGER NOT NULL,
+                    created_at   INTEGER NOT NULL
                 );",
                 [],
             )?;
@@ -325,6 +337,61 @@ impl EndpointStorage for SqliteEndpointStorage {
         task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute("DELETE FROM service_owners WHERE service_id = ?1", params![sid])?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn load_all_mailboxes(&self) -> Result<Vec<(String, HostedMailbox)>> {
+        let conn_arc = self.conn.clone();
+        task::spawn_blocking(move || -> Result<Vec<(String, HostedMailbox)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt =
+                conn.prepare("SELECT service_id, mailbox, max_ttl_secs FROM service_mailboxes")?;
+            let mut mailboxes = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let mailbox = HostedMailbox {
+                    mailbox: row.get(1)?,
+                    max_ttl_secs: row.get::<_, i64>(2)? as u64,
+                };
+                mailboxes.push((row.get(0)?, mailbox));
+            }
+            Ok(mailboxes)
+        })
+        .await?
+    }
+
+    async fn save_mailbox(&self, service_id: &str, mailbox: &HostedMailbox) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+        let mailbox = mailbox.clone();
+        let created_at: i64 =
+            SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute(
+                "INSERT INTO service_mailboxes (service_id, mailbox, max_ttl_secs, created_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(service_id) DO UPDATE SET
+                    mailbox = excluded.mailbox,
+                    max_ttl_secs = excluded.max_ttl_secs,
+                    created_at = excluded.created_at",
+                params![sid, mailbox.mailbox, mailbox.max_ttl_secs as i64, created_at],
+            )?;
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn remove_mailbox(&self, service_id: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        let sid = service_id.to_string();
+
+        task::spawn_blocking(move || -> Result<()> {
+            let conn = lock_db(&conn_arc)?;
+            conn.execute("DELETE FROM service_mailboxes WHERE service_id = ?1", params![sid])?;
             Ok(())
         })
         .await?

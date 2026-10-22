@@ -1,5 +1,6 @@
 #![allow(clippy::cognitive_complexity)]
 
+pub(super) mod failing_storage;
 pub(super) mod helpers;
 
 mod app_instance;

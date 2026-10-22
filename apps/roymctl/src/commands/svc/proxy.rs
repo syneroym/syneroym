@@ -8,10 +8,14 @@ pub(super) async fn handle_outbox(client: &mut SyneroymClient, svc_id: &str) -> 
     if items.is_empty() {
         println!("No queued proxy calls for {svc_id}");
     } else {
-        println!("{:<8} {:<10} {:<50}", "ID", "ATTEMPTS", "IDEMPOTENCY KEY");
-        println!("{:-<70}", "");
+        println!("{:<8} {:<10} {:<10} {:<50}", "ID", "ATTEMPTS", "STATE", "IDEMPOTENCY KEY");
+        println!("{:-<80}", "");
         for item in items {
-            println!("{:<8} {:<10} {:<50}", item.id, item.attempts, item.idempotency_key);
+            let state = if item.deposited { "deposited" } else { "pending" };
+            println!(
+                "{:<8} {:<10} {:<10} {:<50}",
+                item.id, item.attempts, state, item.idempotency_key
+            );
         }
     }
     Ok(())

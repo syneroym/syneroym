@@ -22,7 +22,9 @@ interface conversation {
         internal(string),
     }
 
-    enum delivery-state { pending, delivered, failed }
+    /// `deposited`: the receiver was not reachable, and a sealed copy waits
+    /// at its mailbox. Not a final success: only `delivered` is.
+    enum delivery-state { pending, delivered, failed, deposited }
 
     /// `direct` for a 1:1 conversation, `group` for a group created by
     /// `create-group` or joined by receiving its key.

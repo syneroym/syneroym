@@ -30,12 +30,16 @@ use std::{
 
 use syneroym_async_queue::{
     CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
-    DedupDecision, DedupStore, FirstOutcome,
+    DedupDecision, DedupStore, DedupWindow, FirstOutcome,
 };
 use syneroym_control_plane::{MAILBOX_RESERVED_SERVICE_ID, SUPERVISOR_RESERVED_SERVICE_ID};
-use syneroym_core::local_registry::{EndpointRegistry, NODE_NATIVE_INTERFACES};
+use syneroym_core::{
+    local_registry::{EndpointRegistry, NODE_NATIVE_INTERFACES},
+    mailbox::MAILBOX_SENDER_MAX_AGE_SECS,
+};
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
+use syneroym_mailbox_format::MAX_CLOCK_SKEW_SECS;
 use syneroym_rpc::ProxyError;
 use tokio::task;
 use tracing::warn;
@@ -45,6 +49,10 @@ use crate::service_async_db::{AsyncDbLocationError, async_db_location};
 /// The database a service's outbox, dead letters, and dedup records all
 /// live in, beside its own `state.db` and protected by the same key.
 pub const ASYNC_DB_NAME: &str = "async.db";
+
+/// The row cap per caller for a service with a mailbox. A message may reach
+/// such a service directly and again from its mailbox, days apart.
+const MAILBOX_DEDUP_MAX_ROWS: u32 = 100_000;
 
 /// What the guard decided about one incoming request.
 #[derive(Debug)]
@@ -69,6 +77,9 @@ pub struct DedupClaim {
     /// Identifies *this* attempt's hold, so a settlement that arrives
     /// after the claim was retaken cannot stamp over the newer one.
     token: ClaimToken,
+    /// The window the claim was made with. The settlement records its
+    /// outcome with the same one.
+    window: DedupWindow,
 }
 
 impl DedupClaim {
@@ -118,7 +129,7 @@ impl DedupClaim {
         let now = now_ms();
         let recorded = task::spawn_blocking(move || match settlement {
             Settlement::Record(outcome) => {
-                self.store.finish(&self.caller, &self.key, self.token, &outcome, now)
+                self.store.finish(&self.caller, &self.key, self.token, &outcome, now, self.window)
             }
             Settlement::Release => self.store.release(&self.caller, &self.key, self.token),
             Settlement::LeaveInFlight => Ok(()),
@@ -346,7 +357,24 @@ impl CallDedupGuard {
         key: &str,
     ) -> bool {
         let Ok(store) = self.store_for(target_service).await else { return false };
-        matches!(store.begin(caller, key, now_ms()), Ok(DedupDecision::Replay(_)))
+        matches!(
+            store.begin(caller, key, now_ms(), self.window_for(target_service)),
+            Ok(DedupDecision::Replay(_))
+        )
+    }
+
+    /// The fence window for `target_service`: the node's own default, or a
+    /// longer one when the service has a mailbox. A sender may still try a
+    /// message to it, directly or by deposit, for its whole age limit.
+    fn window_for(&self, target_service: &str) -> DedupWindow {
+        let base = self.config.window();
+        let Some(mailbox) = self.registry.mailbox_of(target_service) else { return base };
+        let wait_secs = mailbox.max_ttl_secs.max(MAILBOX_SENDER_MAX_AGE_SECS);
+        let ttl_ms = wait_secs.saturating_add(MAX_CLOCK_SKEW_SECS).saturating_mul(1000);
+        DedupWindow {
+            ttl_ms: ttl_ms.max(base.ttl_ms),
+            max_rows: MAILBOX_DEDUP_MAX_ROWS.max(base.max_rows),
+        }
     }
 
     /// The one entry point both dispatch sites call.
@@ -394,6 +422,7 @@ impl CallDedupGuard {
         };
 
         let (caller, key) = (caller.to_string(), key.to_string());
+        let window = self.window_for(target_service);
         let probe = {
             let (store, caller, key) = (store.clone(), caller.clone(), key.clone());
             // `DedupStore` is synchronous over a file lock. Run inline and
@@ -403,13 +432,13 @@ impl CallDedupGuard {
             task::spawn_blocking(move || {
                 #[cfg(test)]
                 record_probe_thread();
-                store.begin(&caller, &key, now_ms())
+                store.begin(&caller, &key, now_ms(), window)
             })
             .await
         };
         match probe {
             Ok(Ok(DedupDecision::Execute(token))) => {
-                GuardOutcome::Execute(Some(DedupClaim { store, caller, key, token }))
+                GuardOutcome::Execute(Some(DedupClaim { store, caller, key, token, window }))
             }
             Ok(Ok(DedupDecision::Replay(outcome))) => {
                 metrics::counter!("substrate.proxy.dedup.replayed").increment(1);

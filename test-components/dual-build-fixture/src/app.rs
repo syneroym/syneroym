@@ -277,6 +277,7 @@ async fn ensure_collection<H: AppHost>(host: &H, collection: &str) -> Result<(),
 fn delivery_state_str(state: DeliveryState) -> &'static str {
     match state {
         DeliveryState::Pending => "pending",
+        DeliveryState::Deposited => "deposited",
         DeliveryState::Delivered => "delivered",
         DeliveryState::Failed => "failed",
     }

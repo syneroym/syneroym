@@ -454,6 +454,7 @@ impl ControlPlaneService {
             tracing::warn!("Failed to remove deploy facts for {}: {}", service_id, e);
         }
         self.clear_mailbox_key(service_id).await;
+        self.forget_hosted_mailbox(service_id).await;
         self.probe_cache.remove(service_id);
     }
 

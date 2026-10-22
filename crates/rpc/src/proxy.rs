@@ -216,6 +216,43 @@ pub struct QueuedCallInfo {
     pub id: u64,
     pub idempotency_key: String,
     pub attempts: u32,
+    /// A sealed copy of the call waits at the receiver's mailbox, and the
+    /// outbox sends no direct attempt for it meanwhile.
+    pub deposited: bool,
+}
+
+/// What a delivery that may use the receiver's mailbox did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Delivery {
+    /// The receiver answered a direct attempt.
+    Direct(Value),
+    /// The receiver could not be reached; a sealed copy waits at its mailbox.
+    Deposited(DepositTicket),
+}
+
+/// How an outbox waits for a deposit. `context` is opaque to the outbox: it
+/// stores it and gives it back to [`ServiceProxy::poll_deposits`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DepositTicket {
+    pub context: Vec<u8>,
+    pub poll_interval: Duration,
+    /// Unix ms. After this, a deposit that still waits is treated as lost,
+    /// and the message goes back to direct attempts.
+    pub deadline_at_ms: i64,
+}
+
+/// What the receiver's mailbox says about one deposit, already checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepositStatus {
+    /// Still at the mailbox, or the mailbox could not be asked now.
+    Waiting,
+    /// The receiver signed a delivery.
+    Delivered,
+    /// The receiver signed a final rejection.
+    Rejected { code: String },
+    /// Expired, unknown, unsigned, or an answer that cannot be trusted:
+    /// deliver directly again.
+    Retry { reason: String },
 }
 
 /// One terminally failed queued call, as an operator listing shows it.
@@ -303,6 +340,35 @@ pub trait ProxyQueueInspector: Send + Sync + Debug {
 pub trait ServiceProxy: Send + Sync + Debug {
     /// Returns the callee's JSON-RPC `result` value on success.
     async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError>;
+
+    /// A delivery for an outbox row that may wait at the receiver's
+    /// mailbox. `max_wait_secs` is how much longer the row may live. The
+    /// default body delivers directly: a proxy with no mailbox support
+    /// never has a deposit to poll.
+    async fn deliver_or_deposit(
+        &self,
+        request: ProxyRequest,
+        max_wait_secs: u64,
+    ) -> Result<Delivery, ProxyError> {
+        let _ = max_wait_secs;
+        self.invoke(request).await.map(Delivery::Direct)
+    }
+
+    /// One status per context, in the same order. `sender_service_id` is
+    /// the service that made the deposits.
+    async fn poll_deposits(
+        &self,
+        sender_service_id: &str,
+        contexts: Vec<Vec<u8>>,
+    ) -> Vec<DepositStatus> {
+        let _ = sender_service_id;
+        contexts
+            .iter()
+            .map(|_| DepositStatus::Retry {
+                reason: "this proxy cannot read a mailbox".to_string(),
+            })
+            .collect()
+    }
 
     /// Hands a call to the calling service's durable outbox: delivery
     /// survives an unreachable target and a process restart, and the caller
