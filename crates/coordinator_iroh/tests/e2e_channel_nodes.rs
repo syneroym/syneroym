@@ -26,7 +26,7 @@ use tokio::{
 mod common;
 
 use common::{
-    logs::init_trace_collector,
+    logs::{forwarded_without_identity, init_trace_collector},
     nodes::{CapturingNativeService, InboundRelayTopology},
 };
 
@@ -71,19 +71,7 @@ async fn iroh_hop_through_forwarder() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("IrohHop call failed: {e:?}"))?;
 
     assert_eq!(val, serde_json::json!({"status": "ok"}));
-
-    let line = {
-        let captured = logs.read().unwrap();
-        captured
-            .iter()
-            .find(|l| l.contains("Forwarding preamble") && l.contains(&topo.target_z.did))
-            .cloned()
-            .expect("must contain Forwarding preamble line for target_z")
-    };
-    assert!(line.contains("enc=ecdh-p256"), "must have enc: {line}");
-    assert!(line.contains("master=-"), "must have master=-: {line}");
-    assert!(line.contains("sig=-"), "must have sig=-: {line}");
-    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
+    forwarded_without_identity(&logs, &topo.target_z.did);
 
     client_ep.close().await;
     topo.shutdown().await
@@ -91,7 +79,7 @@ async fn iroh_hop_through_forwarder() -> Result<()> {
 
 #[tokio::test]
 async fn passthrough_through_forwarder() -> Result<()> {
-    let _logs = init_trace_collector();
+    let logs = init_trace_collector();
     let temp_dir = tempfile::tempdir()?;
     let info_client = Client::new();
     let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
@@ -138,6 +126,7 @@ async fn passthrough_through_forwarder() -> Result<()> {
     let resp_str = client_task.await??;
     assert!(resp_str.contains("200 OK"), "expected 200 OK, got: {resp_str}");
     assert!(resp_str.contains("\"status\":\"ok\""), "expected status ok, got: {resp_str}");
+    forwarded_without_identity(&logs, &topo.target_z.did);
 
     client.shutdown().await?;
     topo.shutdown().await
@@ -215,15 +204,7 @@ async fn service_target_through_forwarder_looks_up_the_host() -> Result<()> {
     );
     assert!(err_str.contains("with_host"), "error must mention with_host: {err_str}");
 
-    let line = {
-        let captured = logs.read().unwrap();
-        captured
-            .iter()
-            .find(|l| l.contains("Forwarding preamble") && l.contains(&member_did))
-            .cloned()
-            .expect("must contain Forwarding preamble line for member_did")
-    };
-    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
+    forwarded_without_identity(&logs, &member_did);
 
     client1.shutdown().await?;
     client2.shutdown().await?;

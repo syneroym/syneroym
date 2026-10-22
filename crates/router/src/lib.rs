@@ -36,6 +36,10 @@ pub use preamble::{
 };
 pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop, RemotePeer};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};
-pub use route_handler::{RouteHandler, RouteHandlerDeps, io::ucan_chain_not_revoked};
+pub use route_handler::{
+    RouteHandler, RouteHandlerDeps,
+    io::ucan_chain_not_revoked,
+    refusal::{Refusal, authorized_refusal_frame},
+};
 pub use routing::{AdaptationStage, EncryptionStage, RoutePipeline, ServiceStage, TransportStage};
 pub use saga::SagaStore;

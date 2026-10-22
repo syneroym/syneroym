@@ -115,12 +115,11 @@ pub fn disposition_of(error: &ProxyError) -> Disposition {
             if *code == CALL_ALREADY_RUNNING_RPC_CODE
                 || *code == SERVICE_NOT_FOUND_RPC_CODE
                 || *code == syneroym_rpc::NOT_HOSTED_HERE_RPC_CODE
-                || *code == syneroym_rpc::STREAM_UNAUTHENTICATED_RPC_CODE
-                || *code == syneroym_rpc::HOST_MISMATCH_RPC_CODE =>
+                || *code == syneroym_rpc::STREAM_UNAUTHENTICATED_RPC_CODE =>
         {
             Disposition::Retry
         }
-        ProxyError::ServiceNotFound(_) => Disposition::Retry,
+        ProxyError::ServiceNotFound(_) | ProxyError::HostMismatch(_) => Disposition::Retry,
         ProxyError::Callee { .. }
         | ProxyError::UnsupportedTarget(_)
         | ProxyError::PermissionDenied(_)
@@ -585,9 +584,14 @@ mod tests {
             Disposition::Retry
         );
         assert_eq!(
+            disposition_of(&ProxyError::HostMismatch("host mismatch".into())),
+            Disposition::Retry
+        );
+        // The same code in a callee's own answer is an ordinary callee error.
+        assert_ne!(
             disposition_of(&ProxyError::Callee {
                 code: syneroym_rpc::HOST_MISMATCH_RPC_CODE,
-                message: "host mismatch".into(),
+                message: "passed on".into(),
                 data: None,
             }),
             Disposition::Retry

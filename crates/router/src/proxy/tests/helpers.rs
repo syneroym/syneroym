@@ -445,6 +445,7 @@ pub(super) enum MockOutcome {
     Success(Value),
     Transport,
     Callee { code: i32, message: String },
+    HostMismatch,
 }
 
 #[derive(Debug)]
@@ -506,6 +507,9 @@ impl RemoteHop for MockHop {
             }
             Some(MockOutcome::Callee { code, message }) => {
                 Err(ProxyError::Callee { code, message, data: None })
+            }
+            Some(MockOutcome::HostMismatch) => {
+                Err(ProxyError::HostMismatch("mock host mismatch".to_string()))
             }
         }
     }

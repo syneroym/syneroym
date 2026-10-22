@@ -32,7 +32,7 @@ use tokio::time;
 
 mod common;
 use common::{
-    logs::init_trace_collector,
+    logs::{forwarded_without_identity, init_trace_collector},
     nodes::{
         InboundRelayTopology, TargetSubstrate, build_test_route_handler_deps,
         create_signed_info_with_full_addr, spawn_global_coordinator, spawn_private_coordinator,
@@ -227,18 +227,7 @@ async fn test_inbound_relay() -> Result<()> {
     let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
-    let line = {
-        let captured = logs.read().unwrap();
-        captured
-            .iter()
-            .find(|l| l.contains("Forwarding preamble") && l.contains(&topo.target_z.did))
-            .cloned()
-            .expect("must contain Forwarding preamble line for target_z")
-    };
-    assert!(line.contains("enc=ecdh-p256"), "must have enc: {line}");
-    assert!(line.contains("master=-"), "must have master=-: {line}");
-    assert!(line.contains("sig=-"), "must have sig=-: {line}");
-    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
+    forwarded_without_identity(&logs, &topo.target_z.did);
 
     sdk_client.shutdown().await?;
     topo.shutdown().await
@@ -300,20 +289,11 @@ async fn multi_hop_relay_with_host_key_keeps_identity_inside_encrypted_channel()
     let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
-    let line = {
-        let captured = logs.read().unwrap();
-        captured
-            .iter()
-            .find(|l| l.contains("Forwarding preamble") && l.contains(&topo.target_z.did))
-            .cloned()
-            .expect("must contain Forwarding preamble line for target_z")
-    };
-    assert!(line.contains("enc=ecdh-p256"), "must have enc: {line}");
-    assert!(line.contains("master=-"), "must have master=-: {line}");
-    assert!(line.contains("sig=-"), "must have sig=-: {line}");
-    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
-    assert!(!line.contains(&caller_did), "caller DID leaked into preamble: {line}");
-    assert!(!line.contains(&caller_hex), "caller key hex leaked into preamble: {line}");
+    let lines = forwarded_without_identity(&logs, &topo.target_z.did);
+    for line in &lines {
+        assert!(!line.contains(&caller_did), "caller DID leaked into preamble: {line}");
+        assert!(!line.contains(&caller_hex), "caller key hex leaked into preamble: {line}");
+    }
 
     sdk_client.shutdown().await?;
     topo.shutdown().await
@@ -344,9 +324,7 @@ async fn multi_hop_relay_with_wrong_host_key_fails_host_mismatch() -> Result<()>
         "expected bad host signature error, got: {err_str}"
     );
 
-    eprintln!("TEST: before client shutdown");
     sdk_client.shutdown().await?;
-    eprintln!("TEST: after client shutdown, before topo shutdown");
     topo.shutdown().await
 }
 
@@ -387,18 +365,7 @@ async fn test_outbound_relay() -> Result<()> {
     let response = sdk_client.request("orchestrator", "readyz", serde_json::json!({})).await?;
     assert_eq!(response.result, serde_json::json!({"status": "ok"}));
 
-    let line = {
-        let captured = logs.read().unwrap();
-        captured
-            .iter()
-            .find(|l| l.contains("Forwarding preamble") && l.contains(&target_x.did))
-            .cloned()
-            .expect("must contain Forwarding preamble line for target_x")
-    };
-    assert!(line.contains("enc=ecdh-p256"), "must have enc: {line}");
-    assert!(line.contains("master=-"), "must have master=-: {line}");
-    assert!(line.contains("sig=-"), "must have sig=-: {line}");
-    assert!(!line.contains("pubkey="), "must not have pubkey=: {line}");
+    forwarded_without_identity(&logs, &target_x.did);
 
     sdk_client.shutdown().await?;
     let _ = target_x.router.shutdown().await;

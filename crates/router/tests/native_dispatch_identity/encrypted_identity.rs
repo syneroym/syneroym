@@ -3,6 +3,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit, Nonce};
 use hkdf::Hkdf;
 use p256::{
     EncodedPoint, PublicKey,
@@ -13,7 +14,7 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 use syneroym_identity::{Identity, substrate};
 use syneroym_router::{
-    E2eError, RoutePreamble, RouteProtocol, RouteTransport,
+    E2eError, REFUSAL_HEADER, RoutePreamble, RouteProtocol, RouteTransport,
     e2e_channel::{Opened, Path, open_stream},
 };
 use syneroym_rpc::{
@@ -155,7 +156,6 @@ fn derive_test_channel_keys(
 }
 
 fn encrypt_channel_chunk(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
-    use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit, Nonce};
     let cipher = Aes256Gcm::new(key.into());
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
@@ -173,7 +173,6 @@ async fn read_and_decrypt_channel_chunk<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     key: &[u8; 32],
 ) -> anyhow::Result<Vec<u8>> {
-    use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit, Nonce};
     let mut len_bytes = [0u8; 2];
     reader.read_exact(&mut len_bytes).await?;
     let len = u16::from_be_bytes(len_bytes) as usize;
@@ -428,11 +427,8 @@ async fn swapped_epk_fails_bad_host_signature_and_sends_nothing_more() {
 
     let recorded = recorded_bytes.lock().unwrap().clone();
     let text = String::from_utf8_lossy(&recorded);
-    assert_eq!(
-        recorded.iter().filter(|&&b| b == b'\n').count(),
-        1,
-        "only preamble line sent: {text}"
-    );
+    let first_newline = recorded.iter().position(|&b| b == b'\n').expect("preamble line");
+    assert_eq!(recorded.len(), first_newline + 1, "only the preamble line was sent: {text}");
 }
 
 #[tokio::test]
@@ -603,50 +599,57 @@ async fn empty_identity_line_treated_as_anonymous() {
     let _ = handler_task.await;
 }
 
-#[tokio::test]
-async fn http_stream_with_empty_interface_verifies_sent_interface() {
+/// The router rewrites an empty HTTP interface before dispatch, but checks
+/// the signature against the interface as the caller sent it. The answer
+/// to a request shows which one it checked: a wrong interface gets the
+/// encrypted `401` refusal.
+async fn http_answer_with_empty_interface(signed_interface: &str) -> String {
     let (route_handler, http_routes) = test_route_handler().await;
     let service_id = "test-http-service";
-    let target_iface = "http-native";
-
-    route_handler
-        .registry()
-        .register(
-            service_id.to_string(),
-            "".to_string(),
-            SubstrateEndpoint::WasmChannel { service_id: service_id.to_string() },
-        )
-        .await
-        .unwrap();
-    route_handler
-        .registry()
-        .register(
-            service_id.to_string(),
-            target_iface.to_string(),
-            SubstrateEndpoint::NativeHostChannel { service_id: service_id.to_string() },
-        )
-        .await
-        .unwrap();
-
+    let registry = route_handler.registry();
+    let wasm = SubstrateEndpoint::WasmChannel { service_id: service_id.to_string() };
+    let native = SubstrateEndpoint::NativeHostChannel { service_id: service_id.to_string() };
+    registry.register(service_id.to_string(), String::new(), wasm).await.unwrap();
+    registry.register(service_id.to_string(), "http-native".to_string(), native).await.unwrap();
+    // Any entry makes the router rewrite the empty interface.
     http_routes.insert(service_id.to_string(), vec![]);
 
-    let host_identity = Identity::from_bytes(&[7u8; 32]);
     let caller = Identity::generate().unwrap();
-
-    let mut preamble =
-        RoutePreamble::new(RouteTransport::Http, RouteProtocol::JsonRpc, service_id, "");
+    let mut preamble = RoutePreamble::new(
+        RouteTransport::Http,
+        RouteProtocol::JsonRpc,
+        service_id,
+        signed_interface,
+    );
     preamble.sign(&caller, now_secs());
+    preamble.interface = String::new();
 
     let (client_stream, server_stream) = duplex(4096);
     let _handler_task = tokio::spawn(route_handler.clone().handle_stream(server_stream));
-
     let (client_read, client_write) = io::split(client_stream);
-    let path = Path::Indirect(host_identity.public_key());
-    let opened = open_stream(client_read, client_write, preamble, &path)
+    let path = Path::Indirect(Identity::from_bytes(&[7u8; 32]).public_key());
+    let Opened::Ready(mut stream) =
+        open_stream(client_read, client_write, preamble, &path).await.expect("open_stream")
+    else {
+        panic!("expected the handshake to complete");
+    };
+    stream.writer.write_all(b"GET / HTTP/1.1\r\nhost: x\r\n\r\n").await.unwrap();
+    stream.writer.flush().await.unwrap();
+    let mut answer = vec![0u8; 512];
+    let n = time::timeout(Duration::from_secs(10), stream.reader.read(&mut answer))
         .await
-        .expect("open_stream should succeed");
+        .expect("an answer")
+        .unwrap();
+    String::from_utf8_lossy(&answer[..n]).into_owned()
+}
 
-    assert!(matches!(opened, Opened::Ready(_)));
+#[tokio::test]
+async fn http_stream_with_empty_interface_verifies_sent_interface() {
+    let answer = http_answer_with_empty_interface("").await;
+    assert!(!answer.contains(REFUSAL_HEADER), "the sent interface must verify: {answer}");
+
+    let answer = http_answer_with_empty_interface("http-native").await;
+    assert!(answer.contains("unauthenticated"), "a signature over another interface: {answer}");
 }
 
 #[tokio::test]

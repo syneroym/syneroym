@@ -144,7 +144,7 @@ async fn transport_error_is_not_rehomed() {
 #[tokio::test]
 async fn host_mismatch_resolves_again_and_retries() {
     let hop = Arc::new(MockHop::with_outcomes(vec![
-        MockOutcome::Callee { code: HOST_MISMATCH_RPC_CODE, message: "host mismatch".to_string() },
+        MockOutcome::HostMismatch,
         MockOutcome::Success(Value::String("ok".to_string())),
     ]));
     let router = test_router(hop.clone(), empty_registry());
@@ -168,15 +168,37 @@ async fn host_mismatch_resolves_again_and_retries() {
 
 #[tokio::test]
 async fn host_mismatch_with_same_peer_keeps_the_error() {
-    let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::Callee {
-        code: HOST_MISMATCH_RPC_CODE,
-        message: "host mismatch".to_string(),
-    }]));
+    let hop = Arc::new(MockHop::with_outcomes(vec![MockOutcome::HostMismatch]));
     let router = test_router(hop.clone(), empty_registry());
     let req = base_request("target-svc", "op");
 
     let peer = synthetic_peer();
     let peers = Arc::new(Mutex::new(vec![peer.clone(), peer]));
+
+    let err = router
+        .invoke_rehoming(&req, || {
+            let peers = peers.clone();
+            async move { Ok(peers.lock().unwrap().remove(0)) }
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, ProxyError::HostMismatch(_)));
+    assert_eq!(hop.call_count(), 1);
+}
+
+/// A service that answers `-32098` after it ran the call is a normal
+/// callee error: the caller must not look the service up again and send
+/// the call a second time.
+#[tokio::test]
+async fn a_wire_host_mismatch_code_is_not_retried() {
+    let hop = Arc::new(MockHop::with_outcomes(vec![
+        MockOutcome::Callee { code: HOST_MISMATCH_RPC_CODE, message: "passed on".to_string() },
+        MockOutcome::Success(Value::String("must not run".to_string())),
+    ]));
+    let router = test_router(hop.clone(), empty_registry());
+    let req = base_request("target-svc", "op");
+    let peers = Arc::new(Mutex::new(vec![synthetic_peer(), synthetic_peer()]));
 
     let err = router
         .invoke_rehoming(&req, || {

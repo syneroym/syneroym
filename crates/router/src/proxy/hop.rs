@@ -1,16 +1,13 @@
 use std::fmt::Display;
 
 use ed25519_dalek::VerifyingKey;
-use syneroym_rpc::{
-    HOST_MISMATCH_RPC_CODE, NOT_HOSTED_HERE_RPC_CODE, SERVICE_NOT_FOUND_RPC_CODE,
-    STREAM_UNAUTHENTICATED_RPC_CODE,
-};
 use tokio::io::AsyncWriteExt;
 
 use super::*;
 use crate::{
     e2e_channel::{self, E2eError, Opened},
     handshake::now_secs,
+    route_handler::refusal::authorized_refusal_frame,
 };
 
 const REFUSAL_READ_GRACE: Duration = Duration::from_secs(2);
@@ -71,30 +68,19 @@ fn transport_err(e: impl Display) -> ProxyError {
 fn e2e_err(e: E2eError) -> ProxyError {
     match e {
         E2eError::HostKeyUnknown { target } => ProxyError::ServiceNotFound(target),
-        e @ E2eError::BadHostSignature { .. } => {
-            ProxyError::Callee { code: HOST_MISMATCH_RPC_CODE, message: e.to_string(), data: None }
-        }
+        e @ E2eError::BadHostSignature { .. } => ProxyError::HostMismatch(e.to_string()),
         other => transport_err(other),
     }
 }
 
-async fn handle_refused_hop(mut s: e2e_channel::OwnedStream) -> Result<Vec<u8>, ProxyError> {
+pub(super) async fn handle_refused_hop(
+    mut s: e2e_channel::OwnedStream,
+) -> Result<Vec<u8>, ProxyError> {
     let frame = time::timeout(e2e_channel::HANDSHAKE_TIMEOUT, framing::read_frame(&mut s.reader))
         .await
         .map_err(|_| ProxyError::Timeout(e2e_channel::HANDSHAKE_TIMEOUT))?
         .map_err(transport_err)?;
-
-    let err: JsonRpcErrorResponse = serde_json::from_slice(&frame)
-        .map_err(|e| ProxyError::Transport(format!("malformed refusal response: {e}")))?;
-    if !matches!(
-        err.error.code,
-        NOT_HOSTED_HERE_RPC_CODE | STREAM_UNAUTHENTICATED_RPC_CODE | SERVICE_NOT_FOUND_RPC_CODE
-    ) {
-        return Err(ProxyError::Transport(format!(
-            "refusal response code {} is not an authorized pre-handshake error",
-            err.error.code
-        )));
-    }
+    let err = authorized_refusal_frame(&frame).map_err(ProxyError::Transport)?;
     Err(ProxyError::Callee {
         code: err.error.code,
         message: err.error.message,

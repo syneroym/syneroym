@@ -13,12 +13,13 @@ use iroh::{Endpoint, endpoint::Connection};
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
+use syneroym_router::ReaderWriter;
 use syneroym_rpc::{
     CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
     MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
 };
 use tokio::{
-    io::AsyncWrite,
+    io::{AsyncWrite, AsyncWriteExt},
     sync::{Mutex as AsyncMutex, mpsc},
     task::JoinHandle,
     time,
@@ -220,7 +221,6 @@ impl MessageStream {
     /// `.recv()` remains usable afterward and resolves to `None` once the
     /// router's own writer task exits in response and closes its side.
     pub async fn stop(&mut self) -> Result<()> {
-        use tokio::io::AsyncWriteExt;
         self.send.shutdown().await.map_err(Into::into)
     }
 }
@@ -598,7 +598,7 @@ impl SyneroymClient {
             .open_request_stream(interface, request)
             .await
             .map_err(|e| Box::new((e, conn_wrapper.clone())))?;
-        let syneroym_router::ReaderWriter { reader: mut recv, writer: send } = stream;
+        let ReaderWriter { reader: mut recv, writer: send } = stream;
 
         let ack_frame = framing::read_frame(&mut recv)
             .await

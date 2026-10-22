@@ -66,9 +66,7 @@ async fn test_encryption_handshake_with_epk_succeeds() {
     let mut sig_buf = [0u8; 64];
     client_stream.read_exact(&mut sig_buf).await.unwrap();
 
-    let mut signed_payload = Vec::with_capacity(130);
-    signed_payload.extend_from_slice(&server_pub_buf);
-    signed_payload.extend_from_slice(client_pub_bytes);
+    let signed_payload = e2e_channel::handshake_signed_bytes(&server_pub_buf, client_pub_bytes);
 
     let signature = ed25519_dalek::Signature::from_bytes(&sig_buf);
     let verifying_key =

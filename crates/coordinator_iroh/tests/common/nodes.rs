@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, protocol::Router};
 use reqwest::Client;
+use syneroym_community_registry::EcosystemRegistry;
 use syneroym_control_plane::ControlPlaneService;
 use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
@@ -258,7 +259,7 @@ pub async fn spawn_private_coordinator(
 }
 
 pub struct InboundRelayTopology {
-    pub registry_r: syneroym_community_registry::EcosystemRegistry,
+    pub registry_r: EcosystemRegistry,
     pub r_url: String,
     pub c: CoordinatorIroh,
     pub c_info: CoordinatorInfo,

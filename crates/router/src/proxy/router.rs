@@ -636,5 +636,5 @@ fn is_not_hosted_here(e: &ProxyError) -> bool {
 }
 
 fn is_host_mismatch(e: &ProxyError) -> bool {
-    matches!(e, ProxyError::Callee { code, .. } if *code == HOST_MISMATCH_RPC_CODE)
+    matches!(e, ProxyError::HostMismatch(_))
 }

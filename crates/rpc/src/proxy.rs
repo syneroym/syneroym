@@ -109,6 +109,12 @@ pub enum ProxyError {
     Callee { code: i32, message: String, data: Option<Value> },
     #[error("timed out after {0:?}")]
     Timeout(Duration),
+    /// The node that answered the end-to-end handshake is not the host the
+    /// record names. Built only from the local handshake check, never from
+    /// a wire answer, so a service that answers `-32098` cannot make the
+    /// caller look the service up again and send the call twice.
+    #[error("host mismatch: {0}")]
+    HostMismatch(String),
     #[error("internal proxy error: {0}")]
     Internal(String),
 }
@@ -124,6 +130,7 @@ impl ProxyError {
             Self::PermissionDenied(_) => -32010, // same shape as data-layer denial
             Self::Transport(_) | Self::Timeout(_) => PROXY_TRANSPORT_RPC_CODE,
             Self::Callee { code, .. } => *code,
+            Self::HostMismatch(_) => HOST_MISMATCH_RPC_CODE,
             Self::Internal(_) => -32603,
         }
     }

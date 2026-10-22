@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_router::{
-    Opened, REFUSAL_HEADER, ReaderWriter, RoutePreamble, RouteProtocol, RouteTransport,
+    Opened, REFUSAL_HEADER, ReaderWriter, Refusal, RoutePreamble, RouteProtocol, RouteTransport,
     e2e_channel::{self, E2eError, OwnedStream},
 };
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt},
+    io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     time::{self, Duration},
 };
@@ -30,22 +30,33 @@ pub enum PassthroughOutcome {
     HostMismatch,
 }
 
-fn is_authorized_http_refusal(chunk: &[u8]) -> bool {
-    let valid_status = chunk.starts_with(b"HTTP/1.1 4") || chunk.starts_with(b"HTTP/1.1 5");
-    if !valid_status {
-        return false;
+/// Most bytes a refusal head may take before its blank line.
+const MAX_REFUSAL_HEAD: usize = 4096;
+
+/// The refusal an HTTP head names: status 4xx or 5xx and a known
+/// `REFUSAL_HEADER` reason. `None` for anything else.
+fn authorized_http_refusal(head: &[u8]) -> Option<Refusal> {
+    if !(head.starts_with(b"HTTP/1.1 4") || head.starts_with(b"HTTP/1.1 5")) {
+        return None;
     }
-    let header_end = chunk.windows(4).position(|w| w == b"\r\n\r\n").unwrap_or(chunk.len());
-    let header_bytes = &chunk[..header_end];
-    let header_str = String::from_utf8_lossy(header_bytes);
-    for line in header_str.lines() {
-        if let Some((k, _)) = line.split_once(':')
-            && k.trim().eq_ignore_ascii_case(REFUSAL_HEADER)
-        {
-            return true;
-        }
+    String::from_utf8_lossy(head).lines().find_map(|line| {
+        let (k, v) = line.split_once(':')?;
+        k.trim().eq_ignore_ascii_case(REFUSAL_HEADER).then(|| Refusal::from_reason(v.trim()))?
+    })
+}
+
+/// Reads up to the blank line that ends the HTTP head, at most
+/// `MAX_REFUSAL_HEAD` bytes.
+async fn read_refusal_head(recv: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> {
+    let mut head = Vec::new();
+    let mut buf = [0u8; 512];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        anyhow::ensure!(head.len() < MAX_REFUSAL_HEAD, "refusal head is too long");
+        let n = recv.read(&mut buf).await?;
+        anyhow::ensure!(n > 0, "refused stream closed before the refusal head ended");
+        head.extend_from_slice(&buf[..n]);
     }
-    false
+    Ok(head)
 }
 
 pub(crate) fn starts_with_not_hosted_refusal(chunk: &[u8]) -> bool {
@@ -66,6 +77,10 @@ pub(crate) fn starts_with_not_hosted_refusal(chunk: &[u8]) -> bool {
     false
 }
 
+/// Handles a stream the node refused before the handshake. The client
+/// gets the router's own copy of the refusal (`Refusal::http_response`),
+/// never the received bytes: on an indirect path they passed a forwarder
+/// that could have added any body.
 async fn handle_refused_passthrough(
     s: OwnedStream,
     tcp_stream: &mut TcpStream,
@@ -73,27 +88,17 @@ async fn handle_refused_passthrough(
     let ReaderWriter { reader: mut recv, writer: mut send } = s;
     let _ = send.shutdown().await;
 
-    let mut buf = vec![0u8; 4096];
-    let n = time::timeout(e2e_channel::HANDSHAKE_TIMEOUT, recv.read(&mut buf))
+    let head = time::timeout(e2e_channel::HANDSHAKE_TIMEOUT, read_refusal_head(&mut recv))
         .await
         .map_err(|_| anyhow::anyhow!("timeout waiting for refusal response"))??;
-
-    if n == 0 {
-        anyhow::bail!("refused stream closed without refusal response");
-    }
-
-    if !is_authorized_http_refusal(&buf[..n]) {
-        anyhow::bail!("refusal response is not an authorized HTTP refusal");
-    }
-
-    if starts_with_not_hosted_refusal(&buf[..n]) {
+    let refusal = authorized_http_refusal(&head)
+        .ok_or_else(|| anyhow::anyhow!("refusal response is not an authorized HTTP refusal"))?;
+    if refusal == Refusal::NotHostedHere {
         return Ok(PassthroughOutcome::NotHostedHere { replayable: true });
     }
 
-    tcp_stream.write_all(&buf[..n]).await?;
-    let (_, mut tcp_w) = tcp_stream.split();
-    let _ = io::copy(&mut recv, &mut tcp_w).await;
-    let _ = tcp_w.shutdown().await;
+    tcp_stream.write_all(&refusal.http_response()).await?;
+    let _ = tcp_stream.shutdown().await;
     Ok(PassthroughOutcome::Done)
 }
 
@@ -264,3 +269,6 @@ async fn read_first_response(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

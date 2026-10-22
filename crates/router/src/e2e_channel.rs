@@ -17,3 +17,14 @@ pub(crate) use kdf::derive;
 pub(crate) const SEC1_UNCOMPRESSED: u8 = 0x04;
 /// Length of a SEC1 uncompressed P-256 point.
 pub(crate) const P256_POINT_LEN: usize = 65;
+
+/// Tag in front of the bytes the host signs in the handshake. The node key
+/// also signs preamble proofs and registry records, so the tag keeps a
+/// handshake signature from ever matching another signed format.
+const HANDSHAKE_SIGN_TAG: &[u8] = b"syneroym-e2e-handshake-v1";
+
+/// The bytes the host signs with its node key: the tag, its one-time
+/// P-256 key, then the client's. `peer-proxy.js` builds the same bytes.
+pub(crate) fn handshake_signed_bytes(server_pk: &[u8], client_epk: &[u8]) -> Vec<u8> {
+    [HANDSHAKE_SIGN_TAG, server_pk, client_epk].concat()
+}

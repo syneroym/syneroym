@@ -3,7 +3,7 @@ use std::sync::{PoisonError, atomic::Ordering};
 use anyhow::Result;
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl};
 use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_router::SYNEROYM_ALPN;
+use syneroym_router::{E2eError, SYNEROYM_ALPN};
 use syneroym_rpc::{JsonRpcError, NOT_HOSTED_HERE_RPC_CODE};
 use tokio::time;
 
@@ -97,6 +97,5 @@ pub(crate) fn is_not_hosted_here(e: &anyhow::Error) -> bool {
 }
 
 pub(crate) fn is_bad_host(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<syneroym_router::E2eError>()
-        .is_some_and(|x| matches!(x, syneroym_router::E2eError::BadHostSignature { .. }))
+    e.downcast_ref::<E2eError>().is_some_and(|x| matches!(x, E2eError::BadHostSignature { .. }))
 }

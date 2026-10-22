@@ -3,6 +3,65 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readE2EPorts } from '../ports';
 
+// The channel functions the page ships, loaded from the template file.
+// This checks the code the browser runs, not a copy of it.
+function loadPageChannelFunctions() {
+  const file = path.resolve(__dirname, '../../../../coordinator_webrtc/templates/peer-proxy.js');
+  const src = fs.readFileSync(file, 'utf8');
+  const body = src.slice(
+    src.indexOf('const KDF_SALT'),
+    src.indexOf('async function verifyAndDeriveSharedSecret'),
+  );
+  return new Function(
+    'window',
+    `${body}; return { deriveChannelKeys, handshakeSignedBytes, httpRefusalResponse, refusalReason };`,
+  )({ crypto: globalThis.crypto });
+}
+
+// Pinned in `crates/router/src/e2e_channel/tests.rs` (`kdf_known_answer`).
+const PINNED_C2S = 'd2f3bfc8d7382442a0d68fadfa725144e589164a57a1cd7de9f4fd37723bfc86';
+const PINNED_S2C = 'edf347eb9a7ea22d897d206517cf4ff7055d9eab2759cbc4cdd6e2ff197790c9';
+
+test('page channel functions match the router', async () => {
+  const page = loadPageChannelFunctions();
+  const subtle = globalThis.crypto.subtle;
+  const clientPub = new Uint8Array(65).fill(2);
+  clientPub[0] = 0x04;
+  const serverPub = new Uint8Array(65).fill(3);
+  serverPub[0] = 0x04;
+  const keys = await page.deriveChannelKeys(new Uint8Array(32).fill(1).buffer, clientPub.buffer, serverPub);
+
+  // The page's keys are not extractable, so each one is checked against
+  // the pinned key by a round trip.
+  const pinned = (hex: string, usage: KeyUsage) =>
+    subtle.importKey('raw', Buffer.from(hex, 'hex'), 'AES-GCM', false, [usage]);
+  const iv = new Uint8Array(12);
+  const msg = new TextEncoder().encode('kdf parity');
+  const c2s = await subtle.encrypt({ name: 'AES-GCM', iv }, keys.sendKey, msg);
+  const c2sPlain = await subtle.decrypt({ name: 'AES-GCM', iv }, await pinned(PINNED_C2S, 'decrypt'), c2s);
+  expect(Buffer.from(c2sPlain).toString()).toBe('kdf parity');
+  const s2c = await subtle.encrypt({ name: 'AES-GCM', iv }, await pinned(PINNED_S2C, 'encrypt'), msg);
+  const s2cPlain = await subtle.decrypt({ name: 'AES-GCM', iv }, keys.recvKey, s2c);
+  expect(Buffer.from(s2cPlain).toString()).toBe('kdf parity');
+
+  // Same layout as `e2e_channel::handshake_signed_bytes`.
+  const signed = page.handshakeSignedBytes(serverPub, clientPub.buffer);
+  const tag = Buffer.from('syneroym-e2e-handshake-v1');
+  expect(Buffer.from(signed.slice(0, tag.length)).equals(tag)).toBe(true);
+  expect(Buffer.from(signed.slice(tag.length)).equals(Buffer.concat([serverPub, clientPub]))).toBe(true);
+
+  // A refusal is accepted only with an error status and a known reason,
+  // and the page shows its own copy of it.
+  expect(page.refusalReason('HTTP/1.1 200 OK\r\nx-syneroym-refusal: unauthenticated')).toBeNull();
+  expect(page.refusalReason('HTTP/1.1 401 Unauthorized\r\ncontent-type: text/html')).toBeNull();
+  expect(page.refusalReason('HTTP/1.1 401 Unauthorized\r\nX-Syneroym-Refusal: unauthenticated'))
+    .toBe('unauthenticated');
+  expect(page.httpRefusalResponse('forged')).toBeNull();
+  const response = Buffer.from(page.httpRefusalResponse('not_hosted_here')).toString();
+  expect(response.startsWith('HTTP/1.1 421 Misdirected Request\r\n')).toBe(true);
+  expect(JSON.parse(response.split('\r\n\r\n')[1]).error.code).toBe(-32096);
+});
+
 [false, true].forEach(forceTunnel => {
   test.describe(`WebRTC Substrate E2E (forceTunnel=${forceTunnel})`, () => {
     test.beforeEach(async ({ page }) => {
@@ -98,45 +157,6 @@ import { readE2EPorts } from '../ports';
       } finally {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       }
-    });
-    test('JS channel KDF matches reference test vector', async ({ page }) => {
-      const result = await page.evaluate(async () => {
-        const KDF_SALT = new TextEncoder().encode("syneroym-e2e-v1");
-        const sharedBits = new Uint8Array(32).fill(1).buffer;
-        const clientPubRaw = new Uint8Array(65).fill(2);
-        clientPubRaw[0] = 0x04;
-        const serverPubBytes = new Uint8Array(65).fill(3);
-        serverPubBytes[0] = 0x04;
-
-        const base = await window.crypto.subtle.importKey("raw", sharedBits, "HKDF", false, ["deriveKey"]);
-        const info = (label) => {
-          const l = new TextEncoder().encode(label);
-          const out = new Uint8Array(l.length + 65 + 65);
-          out.set(l, 0);
-          out.set(new Uint8Array(clientPubRaw), l.length);
-          out.set(serverPubBytes, l.length + 65);
-          return out;
-        };
-        const derive = (label, usage) => window.crypto.subtle.deriveKey(
-          { name: "HKDF", hash: "SHA-256", salt: KDF_SALT, info: info(label) },
-          base, { name: "AES-GCM", length: 256 }, true, [usage]);
-
-        const sendKey = await derive("c2s", "encrypt");
-        const recvKey = await derive("s2c", "decrypt");
-
-        const exportRaw = async (k) => {
-          const raw = await window.crypto.subtle.exportKey("raw", k);
-          return Array.from(new Uint8Array(raw)).map(b => b.toString(16).padStart(2, '0')).join('');
-        };
-
-        return {
-          c2s: await exportRaw(sendKey),
-          s2c: await exportRaw(recvKey),
-        };
-      });
-
-      expect(result.c2s).toBe("d2f3bfc8d7382442a0d68fadfa725144e589164a57a1cd7de9f4fd37723bfc86");
-      expect(result.s2c).toBe("edf347eb9a7ea22d897d206517cf4ff7055d9eab2759cbc4cdd6e2ff197790c9");
     });
   });
 });

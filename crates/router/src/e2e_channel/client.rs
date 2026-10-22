@@ -150,7 +150,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let signed = [params.server_pk.as_slice(), params.client_epk.as_bytes()].concat();
+    let signed = super::handshake_signed_bytes(&params.server_pk, params.client_epk.as_bytes());
     let signature = Signature::from_bytes(&params.sig);
     params.host.verify_strict(&signed, &signature).map_err(|_| E2eError::BadHostSignature {
         host: substrate::derive_did_key(params.host),

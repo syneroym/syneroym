@@ -750,10 +750,12 @@ fn test_classify_retries_not_hosted_and_unauthenticated() {
         }),
         Disposition::Retry
     );
-    assert_eq!(
+    assert_eq!(classify(ProxyError::HostMismatch("host mismatch".into())), Disposition::Retry);
+    // The same code in a callee's own answer is an ordinary callee error.
+    assert_ne!(
         classify(ProxyError::Callee {
             code: HOST_MISMATCH_RPC_CODE,
-            message: "host mismatch".into(),
+            message: "passed on".into(),
             data: None,
         }),
         Disposition::Retry

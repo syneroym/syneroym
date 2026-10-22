@@ -21,6 +21,13 @@ fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
             message,
             data: data.map(|v| v.to_string()),
         }),
+        // The guest interface has no variant for it; the guest keeps
+        // seeing the code it saw before the error became its own variant.
+        e @ RpcProxyError::HostMismatch(_) => proxy::ProxyError::Callee(CalleeError {
+            code: e.code(),
+            message: e.to_string(),
+            data: None,
+        }),
         RpcProxyError::Internal(s) => proxy::ProxyError::Internal(s),
     }
 }

@@ -50,7 +50,7 @@ where
             let server_pk = EncodedPoint::from(secret.public_key());
             let shared = secret.diffie_hellman(&client_point);
             let keys = derive_kdf(shared.raw_secret_bytes(), &client_epk, server_pk.as_bytes())?;
-            let signed = [server_pk.as_bytes(), client_epk.as_slice()].concat();
+            let signed = e2e_channel::handshake_signed_bytes(server_pk.as_bytes(), &client_epk);
             let signature = identity.sign(&signed);
             writer.write_all(server_pk.as_bytes()).await?;
             writer.write_all(&signature.to_bytes()).await?;

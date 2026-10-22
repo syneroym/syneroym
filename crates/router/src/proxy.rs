@@ -31,11 +31,10 @@ use syneroym_core::{
 use syneroym_identity::Identity;
 use syneroym_rpc::{
     CallOrigin, CallerContext, CallerProof, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo,
-    HOST_MISMATCH_RPC_CODE, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
-    NOT_HOSTED_HERE_RPC_CODE, NativeInvocation, ProxyError, ProxyProtocol, ProxyQueueInspector,
-    ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE,
-    SagaBegin, SagaInfo, SagaState as RpcSagaState, SagaStepRequest, ServiceProxy,
-    WeakNativeDispatchRegistry, framing,
+    JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, NOT_HOSTED_HERE_RPC_CODE,
+    NativeInvocation, ProxyError, ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall,
+    QueuedCallInfo, QueuedTarget, RpcError, SERVICE_NOT_FOUND_RPC_CODE, SagaBegin, SagaInfo,
+    SagaState as RpcSagaState, SagaStepRequest, ServiceProxy, WeakNativeDispatchRegistry, framing,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tokio::{task, time};
@@ -73,7 +72,9 @@ fn target_produced(error: &ProxyError) -> bool {
         // been mid-restart, which is exactly a call worth being able to
         // replay later. Excluding it would silently drop the second tier
         // of the dead-letter rule for the most transient failure there is.
-        ProxyError::ServiceNotFound(_) => true,
+        // A host mismatch is the same "not yet": the record names a host
+        // that has not answered as the host yet.
+        ProxyError::ServiceNotFound(_) | ProxyError::HostMismatch(_) => true,
         // Raised instead of a dispatch, and settled: a denied gate, an
         // unusable target kind, a protocol this node does not speak, or a
         // store it could not open. Replaying any of these re-earns the

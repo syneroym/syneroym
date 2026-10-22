@@ -1,9 +1,9 @@
-use std::time::Duration;
+use std::{io::Cursor, time::Duration};
 
 use ed25519_dalek::VerifyingKey;
 use syneroym_identity::Identity;
 use syneroym_rpc::{NOT_HOSTED_HERE_RPC_CODE, framing};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex, empty, sink};
 
 use super::{E2eError, Opened, Path, SEC1_UNCOMPRESSED, derive as derive_kdf, open_stream, path};
 use crate::{
@@ -109,10 +109,8 @@ async fn open_stream_indirect_round_trip() {
         .await
         .expect("encryption stage");
 
-        let mut r = tokio::io::BufReader::new(std::mem::replace(
-            &mut stream.reader,
-            Box::new(tokio::io::empty()),
-        ));
+        let mut r =
+            tokio::io::BufReader::new(std::mem::replace(&mut stream.reader, Box::new(empty())));
         let id_line = read_line_bounded(&mut r).await.expect("read id line");
         stream.reader = Box::new(r);
 
@@ -209,12 +207,12 @@ async fn open_stream_refused_before_handshake() {
     server_task2.await.expect("server 2");
 }
 
-#[tokio::test]
-async fn open_stream_bad_host_signature_sends_nothing_more() {
-    let wrong_id = Identity::generate().expect("wrong id");
-    let expected_id = Identity::generate().expect("expected id");
+/// A host reply signed by `signer`, over the tagged handshake bytes or
+/// over the same bytes without the tag. The client expects `expected`; it
+/// must refuse the reply with `BadHostSignature` and send nothing more.
+async fn assert_reply_refused(signer: Identity, expected: &Identity, tagged: bool) {
     let expected_vk =
-        VerifyingKey::from_bytes(&expected_id.public_key().to_bytes()).expect("expected vk");
+        VerifyingKey::from_bytes(&expected.public_key().to_bytes()).expect("expected vk");
 
     let (client_stream, server_stream) = duplex(1024);
     let (cr, cw) = tokio::io::split(client_stream);
@@ -224,20 +222,21 @@ async fn open_stream_bad_host_signature_sends_nothing_more() {
         let mut reader = tokio::io::BufReader::new(sr);
         let preamble =
             crate::route_handler::io::read_preamble(&mut reader).await.expect("preamble");
-        // Server signs with wrong_id instead of expected_id
-        let client_secret = p256::ecdh::EphemeralSecret::random(&mut aes_gcm::aead::OsRng);
-        let server_pk = p256::EncodedPoint::from(client_secret.public_key());
-        let client_epk_hex = preamble.epk.expect("epk");
-        let client_epk = hex::decode(client_epk_hex).expect("decode");
-        let signed = [server_pk.as_bytes(), client_epk.as_slice()].concat();
-        let signature = wrong_id.sign(&signed);
+        let server_secret = p256::ecdh::EphemeralSecret::random(&mut aes_gcm::aead::OsRng);
+        let server_pk = p256::EncodedPoint::from(server_secret.public_key());
+        let client_epk = hex::decode(preamble.epk.expect("epk")).expect("decode");
+        let signed = if tagged {
+            super::handshake_signed_bytes(server_pk.as_bytes(), &client_epk)
+        } else {
+            [server_pk.as_bytes(), client_epk.as_slice()].concat()
+        };
+        let signature = signer.sign(&signed);
         sw.write_all(server_pk.as_bytes()).await.expect("write pk");
         sw.write_all(&signature.to_bytes()).await.expect("write sig");
         sw.flush().await.expect("flush");
 
         let mut remaining = Vec::new();
         reader.read_to_end(&mut remaining).await.expect("read remaining");
-        // Nothing should be sent by client after bad signature
         assert!(remaining.is_empty(), "client sent bytes after bad signature: {remaining:?}");
     });
 
@@ -250,6 +249,53 @@ async fn open_stream_bad_host_signature_sends_nothing_more() {
     assert!(matches!(err, E2eError::BadHostSignature { .. }));
 
     server_task.await.expect("server task");
+}
+
+#[tokio::test]
+async fn open_stream_bad_host_signature_sends_nothing_more() {
+    let expected = Identity::generate().expect("expected id");
+    assert_reply_refused(Identity::generate().expect("wrong id"), &expected, true).await;
+}
+
+/// The host's own key over the bytes without the domain tag: a signature
+/// made for another format never passes as a handshake signature.
+#[tokio::test]
+async fn a_host_signature_without_the_domain_tag_is_refused() {
+    let host = Identity::from_bytes(&[9u8; 32]);
+    assert_reply_refused(Identity::from_bytes(&[9u8; 32]), &host, false).await;
+}
+
+/// Each direction has its own key, so bytes the server wrote do not
+/// decrypt when they are fed back to the server as if the client sent
+/// them. The client reads the same bytes as a control.
+#[tokio::test]
+async fn a_reflected_chunk_does_not_decrypt() {
+    let mut client_epk = [2u8; 65];
+    client_epk[0] = SEC1_UNCOMPRESSED;
+    let mut server_pk = [3u8; 65];
+    server_pk[0] = SEC1_UNCOMPRESSED;
+    let keys = derive_kdf(&[1u8; 32], &client_epk, &server_pk).expect("derive keys");
+
+    let (raw_out, raw_in) = duplex(4096);
+    let mut server_out =
+        super::wrap(empty(), raw_out, &keys.server_to_client, &keys.client_to_server);
+    server_out.writer.write_all(b"reflected").await.expect("write");
+    server_out.writer.shutdown().await.expect("shutdown");
+    drop(server_out);
+    let mut raw = Vec::new();
+    let mut raw_in = raw_in;
+    raw_in.read_to_end(&mut raw).await.expect("raw bytes");
+
+    let open = |send: &[u8; 32], recv: &[u8; 32]| {
+        super::wrap(Cursor::new(raw.clone()), sink(), send, recv)
+    };
+    let mut plain = Vec::new();
+    let mut client_in = open(&keys.client_to_server, &keys.server_to_client);
+    client_in.reader.read_to_end(&mut plain).await.expect("client decrypts");
+    assert_eq!(plain, b"reflected");
+
+    let mut server_in = open(&keys.server_to_client, &keys.client_to_server);
+    assert!(server_in.reader.read_to_end(&mut Vec::new()).await.is_err());
 }
 
 #[tokio::test(start_paused = true)]

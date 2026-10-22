@@ -1,11 +1,8 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use syneroym_router::{Opened, OwnedStream, RoutePreamble, e2e_channel};
-use syneroym_rpc::{
-    JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, NOT_HOSTED_HERE_RPC_CODE,
-    SERVICE_NOT_FOUND_RPC_CODE, STREAM_UNAUTHENTICATED_RPC_CODE, framing,
-};
+use syneroym_router::{Opened, OwnedStream, RoutePreamble, authorized_refusal_frame, e2e_channel};
+use syneroym_rpc::{JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse, framing};
 use tokio::{io::AsyncWriteExt, time};
 
 use super::{SyneroymClient, TransportConnection, check_frame_size, now_secs};
@@ -56,19 +53,7 @@ impl SyneroymClient {
                     .await
                     .map_err(|_| anyhow::anyhow!("timeout waiting for refusal response"))??;
 
-                    let err: JsonRpcErrorResponse = serde_json::from_slice(&frame)
-                        .context("refusal response is not a valid JSON-RPC error")?;
-                    if !matches!(
-                        err.error.code,
-                        NOT_HOSTED_HERE_RPC_CODE
-                            | STREAM_UNAUTHENTICATED_RPC_CODE
-                            | SERVICE_NOT_FOUND_RPC_CODE
-                    ) {
-                        anyhow::bail!(
-                            "refusal response code {} is not an authorized pre-handshake error",
-                            err.error.code
-                        );
-                    }
+                    authorized_refusal_frame(&frame).map_err(anyhow::Error::msg)?;
                     return Ok(Sent::Answered(frame));
                 }
                 Opened::Ready(s) => s,

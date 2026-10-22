@@ -521,7 +521,7 @@ async fn refused_stream_returns_ok_reaches_eof_and_never_invokes_service() {
 }
 
 #[tokio::test]
-async fn sp9_node_side_log_redaction() {
+async fn node_side_logs_redact_proof_material() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use tracing_subscriber::filter::EnvFilter;
