@@ -481,7 +481,6 @@ async function connectTunnel(preamble, isRaw, onData, onClose) {
         let clientKeyPair = null;
         let clientPubRaw = null;
         let channelKeys = null;
-        let plainRefusal = false;
         let decryptor = null;
 
         const runFallback = async () => {
