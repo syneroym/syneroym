@@ -20,6 +20,7 @@ pub(super) enum Note {
     RecordExpired,
     MailboxFull,
     ServedRecordDiffers,
+    NotStarted,
 }
 
 impl Note {
@@ -36,6 +37,7 @@ impl Note {
             Self::RecordExpired => "record_expired",
             Self::MailboxFull => "mailbox_full",
             Self::ServedRecordDiffers => "served_record_differs",
+            Self::NotStarted => "not_started",
         }
     }
 
@@ -68,6 +70,10 @@ impl Note {
                 "the record the registry serves names another mailbox than the stored record; the \
                  stored record is used"
             }
+            Self::NotStarted => {
+                "the service is not started in this process yet (a restart before its next \
+                 deploy); its messages wait at the mailbox"
+            }
         }
     }
 }
@@ -79,6 +85,11 @@ pub(super) struct Notes {
 }
 
 impl Notes {
+    /// Forgets the notes of services that no longer have a mailbox.
+    pub(super) fn retain_services(&mut self, keep: impl Fn(&str) -> bool) {
+        self.last.retain(|(service_id, _), _| keep(service_id));
+    }
+
     /// Warns and counts the first time and then once an hour for each
     /// service and note; logs at debug in between. `true` when it warned.
     pub(super) fn note(&mut self, service_id: &str, note: Note, detail: &str) -> bool {

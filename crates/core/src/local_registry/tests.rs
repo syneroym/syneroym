@@ -357,3 +357,24 @@ fn node_level_interfaces_match_by_name_and_by_short_hash() {
     assert!(!is_node_level_interface("data-layer"));
     assert!(!is_node_level_interface("greeter"));
 }
+
+#[tokio::test]
+async fn a_lifetime_update_changes_only_a_fact_that_still_names_the_mailbox() {
+    let storage = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
+    assert!(!registry.set_mailbox_ttl("svc-1", "did:key:zBox", 50).await.unwrap(), "no fact");
+    let mailbox = HostedMailbox {
+        mailbox: "did:key:zBox".to_string(),
+        max_ttl_secs: 100,
+        methods: vec!["greeter#greet".to_string()],
+    };
+    registry.set_mailbox("svc-1".to_string(), mailbox.clone()).await.unwrap();
+
+    assert!(!registry.set_mailbox_ttl("svc-1", "did:key:zOther", 50).await.unwrap());
+    assert!(registry.set_mailbox_ttl("svc-1", "did:key:zBox", 50).await.unwrap());
+
+    let expected = HostedMailbox { max_ttl_secs: 50, ..mailbox };
+    assert_eq!(registry.mailbox_of("svc-1"), Some(expected.clone()));
+    let reopened = EndpointRegistry::new(storage).await.unwrap();
+    assert_eq!(reopened.mailbox_of("svc-1"), Some(expected));
+}

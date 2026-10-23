@@ -96,8 +96,12 @@ impl HostedMailbox {
 pub struct PullSummary {
     /// Services with a mailbox that the pass looked at.
     pub services: u32,
-    /// Services skipped (no certificate, no key, no record, blocked).
+    /// Services skipped or stopped in this pass (no certificate, no key, no
+    /// record, a certificate or a register the mailbox refused, a full
+    /// mailbox, not started yet after a restart).
     pub blocked: u32,
+    /// Services whose queue the mailbox accepted at the last register.
+    pub registered: u32,
     pub delivered: u32,
     pub rejected: u32,
     /// Messages left for a later claim (a temporary local failure).

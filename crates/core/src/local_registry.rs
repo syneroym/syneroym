@@ -12,6 +12,7 @@ use std::{
 use anyhow::Result;
 use dashmap::DashMap;
 use syneroym_identity::DelegationCertificate;
+use tokio::sync::Mutex;
 
 use crate::{
     mailbox::{HostedMailbox, MAILBOX_INTERFACE},
@@ -115,6 +116,10 @@ pub struct EndpointRegistry {
     /// `service_id` -> the mailbox that service pulls from. Absent for a
     /// service with no mailbox.
     service_mailboxes: Arc<DashMap<String, HostedMailbox>>,
+    /// Held across each write of `service_mailboxes` and its stored row, so
+    /// the map and the database agree, and a conditional update sees no
+    /// write in between.
+    mailbox_writes: Arc<Mutex<()>>,
     /// `service_id` -> the installed `DelegationCertificate` binding this
     /// substrate's derived instance key to the member master that
     /// `service_id` names. Absent for a service deployed without a master
@@ -155,6 +160,7 @@ impl EndpointRegistry {
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
             service_mailboxes: Arc::new(DashMap::new()),
+            mailbox_writes: Arc::new(Mutex::new(())),
             service_certs: Arc::new(DashMap::new()),
             service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
@@ -335,6 +341,7 @@ impl EndpointRegistry {
             interface_hashes: Arc::new(DashMap::new()),
             service_owners: Arc::new(DashMap::new()),
             service_mailboxes: Arc::new(DashMap::new()),
+            mailbox_writes: Arc::new(Mutex::new(())),
             service_certs: Arc::new(DashMap::new()),
             service_deploy_facts: Arc::new(DashMap::new()),
             service_app_contexts: Arc::new(DashMap::new()),
@@ -368,9 +375,31 @@ impl EndpointRegistry {
 
     /// Record the mailbox `service_id` pulls from (upsert).
     pub async fn set_mailbox(&self, service_id: String, mailbox: HostedMailbox) -> Result<()> {
+        let _write = self.mailbox_writes.lock().await;
         self.storage.save_mailbox(&service_id, &mailbox).await?;
         self.service_mailboxes.insert(service_id, mailbox);
         Ok(())
+    }
+
+    /// Changes only the queue lifetime of `service_id`'s mailbox, and only
+    /// while the recorded mailbox is still `mailbox`. A fact a deploy
+    /// removed or replaced meanwhile stays as the deploy wrote it. `true`
+    /// when the lifetime changed.
+    pub async fn set_mailbox_ttl(
+        &self,
+        service_id: &str,
+        mailbox: &str,
+        max_ttl_secs: u64,
+    ) -> Result<bool> {
+        let _write = self.mailbox_writes.lock().await;
+        let Some(current) = self.mailbox_of(service_id) else { return Ok(false) };
+        if current.mailbox != mailbox || current.max_ttl_secs == max_ttl_secs {
+            return Ok(false);
+        }
+        let updated = HostedMailbox { max_ttl_secs, ..current };
+        self.storage.save_mailbox(service_id, &updated).await?;
+        self.service_mailboxes.insert(service_id.to_string(), updated);
+        Ok(true)
     }
 
     /// The mailbox `service_id` pulls from, or `None` for a service with
@@ -391,6 +420,7 @@ impl EndpointRegistry {
 
     /// Forget `service_id`'s mailbox. Idempotent.
     pub async fn remove_mailbox(&self, service_id: &str) -> Result<()> {
+        let _write = self.mailbox_writes.lock().await;
         self.storage.remove_mailbox(service_id).await?;
         self.service_mailboxes.remove(service_id);
         Ok(())

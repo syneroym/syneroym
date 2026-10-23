@@ -30,6 +30,19 @@ impl ControlPlaneService {
         Ok(())
     }
 
+    /// Forgets the recorded mailbox and removes its queue, when this deploy
+    /// names another mailbox or none. The fact goes first, so a pass that
+    /// is running cannot register the queue again. `commit_hosted_mailbox`
+    /// then finds no old mailbox left to remove.
+    async fn retire_old_mailbox(&self, service_id: &str, mailbox: Option<&ValidatedMailbox>) {
+        let Some(old) = self.registry.mailbox_of(service_id) else { return };
+        if mailbox.is_some_and(|new| new.mailbox == old.mailbox) {
+            return;
+        }
+        self.forget_hosted_mailbox(service_id).await;
+        self.release_mailbox_queue(service_id, &old.mailbox).await;
+    }
+
     /// Stores the member's mailbox key, or clears a key an earlier deploy
     /// stored when this deploy has no mailbox. The error text is for the
     /// caller of the deploy.
@@ -82,6 +95,13 @@ impl ControlPlaneService {
             )
             .await;
             return Err(format!("Owner attribution failed: {e}"));
+        }
+
+        // A remote mailbox admits the `unregister` only from an instance.
+        // With no new certificate, that is the old one, so the old queue
+        // goes before the certificate is removed.
+        if validated.instance_cert.is_none() {
+            self.retire_old_mailbox(service_id, validated.mailbox.as_ref()).await;
         }
 
         // Installed right after the owner row, under the same rollback:

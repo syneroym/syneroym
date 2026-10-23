@@ -6,7 +6,7 @@ use syneroym_core::{
     dht_registry::SignedEndpointInfo,
     mailbox::{HostedMailbox, codes},
 };
-use syneroym_mailbox_format::{MailboxSecretKey, Receipt};
+use syneroym_mailbox_format::{MailboxSecretKey, OPEN_MAX_TTL_SECS, Receipt};
 use syneroym_rpc::RpcError;
 use tokio::time;
 
@@ -210,4 +210,62 @@ async fn a_release_waits_for_a_register_in_flight() {
     release.await.unwrap();
 
     assert!(queue_is_gone(&node).await);
+}
+
+fn expired_record(node: &PullNode) -> SignedEndpointInfo {
+    let mut info = fresh_record(node).info;
+    info.not_after = now_secs() - 10;
+    info.sign(&node.svc_master).unwrap()
+}
+
+#[tokio::test]
+async fn a_huge_queue_lifetime_from_the_mailbox_is_cut_to_the_open_limit() {
+    let node = pull_node(&["greeter#greet"]).await;
+    node.mailbox.answer_register_ttl(u64::MAX);
+
+    let summary = node.pass().await;
+
+    assert_eq!(summary.registered, 1);
+    let fact = node.registry.mailbox_of(&node.service_id).unwrap();
+    assert_eq!(fact.max_ttl_secs, OPEN_MAX_TTL_SECS);
+    let sender = SenderMember::new();
+    let sent = node.deposit(&sender, &greet()).await;
+    assert_eq!(node.pass().await.delivered, 1);
+    assert!(matches!(node.receipt(&sender, &sent).await, Receipt::Delivered { .. }));
+}
+
+#[tokio::test]
+async fn an_expired_record_is_not_sent_again_on_every_pass() {
+    let node = pull_node(&["greeter#greet"]).await;
+    *node.vault.record.lock().unwrap() = Some(expired_record(&node));
+
+    let summary = node.pass().await;
+    node.pass().await;
+
+    assert_eq!(summary.registered, 0);
+    assert_eq!(node.mailbox.count("register"), 1, "one register until the record changes");
+    assert_eq!(node.mailbox.count("info"), 1, "the visibility time is still read");
+    assert_eq!(node.mailbox.count("claim"), 2, "one claim a pass, which finds no queue");
+
+    *node.vault.record.lock().unwrap() = Some(fresh_record(&node));
+    assert_eq!(node.pass().await.registered, 1);
+}
+
+#[tokio::test]
+async fn an_undeploy_while_the_lifetime_is_learned_is_not_undone() {
+    let role = MailboxRole { max_ttl_secs: 3600, ..MailboxRole::default() };
+    let node = Arc::new(pull_node_with(Setup { mailbox_role: role, ..Setup::default() }).await);
+    // `info` runs after the register and before the lifetime is written.
+    let (entered, proceed) = node.mailbox.hold("info");
+    let pass = {
+        let node = node.clone();
+        tokio::spawn(async move { node.pass().await })
+    };
+    entered.notified().await;
+    node.registry.remove_mailbox(&node.service_id).await.unwrap();
+
+    proceed.notify_one();
+    pass.await.unwrap();
+
+    assert_eq!(node.registry.mailbox_of(&node.service_id), None);
 }

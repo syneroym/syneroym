@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use syneroym_control_plane::MailboxPullControl;
-use syneroym_core::mailbox::codes;
+use syneroym_core::mailbox::{HostedMailbox, codes};
 use syneroym_mailbox_format::Receipt;
 use tokio::{sync::Notify, time};
 
@@ -94,4 +94,26 @@ async fn release_does_not_wait_for_a_running_pass() {
     assert!(released.is_ok(), "the release did not wait for the pass");
     proceed.notify_one();
     running.await.unwrap();
+}
+
+#[tokio::test]
+async fn release_also_removes_the_queue_the_stored_record_named() {
+    let node = pull_node(&["greeter#greet"]).await;
+    // The fact names another mailbox than the stored record, which the pull
+    // follows.
+    let elsewhere = HostedMailbox {
+        mailbox: "did:key:zOtherMailbox".to_string(),
+        max_ttl_secs: WEEK_SECS,
+        methods: vec!["greeter#greet".to_string()],
+    };
+    node.registry.set_mailbox(node.service_id.clone(), elsewhere.clone()).await.unwrap();
+    assert_eq!(node.pass().await.registered, 1);
+    let sender = SenderMember::new();
+    let sent = node.deposit(&sender, &greet()).await;
+
+    node.registry.remove_mailbox(&node.service_id).await.unwrap();
+    node.puller.release(&node.service_id, &elsewhere.mailbox).await;
+
+    assert_eq!(node.mailbox.count("unregister"), 1);
+    assert!(matches!(node.receipt(&sender, &sent).await, Receipt::Expired { .. }));
 }

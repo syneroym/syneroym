@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
 
 use syneroym_control_plane::MailboxPullControl;
 use syneroym_core::mailbox::codes;
@@ -44,7 +47,8 @@ async fn an_expired_certificate_waits_and_then_pulls() {
 async fn a_refused_instance_waits_for_a_new_certificate() {
     let node = pull_node(&["greeter#greet"]).await;
     node.mailbox.fail_with("register", codes::NOT_AN_INSTANCE);
-    assert_eq!(node.pass().await.blocked, 0, "the refusal is noted, the pass goes on");
+    let summary = node.pass().await;
+    assert_eq!((summary.blocked, summary.registered), (1, 0), "{summary:?}");
     node.mailbox.clear_failures();
 
     // The mailbox would accept now, but the certificate is the same.
@@ -144,4 +148,37 @@ async fn pull_now_runs_after_a_running_pass() {
     proceed.notify_one();
     assert_eq!(running.await.unwrap().delivered, 1);
     assert_eq!(waiting.await.unwrap().delivered, 0, "its own pass finds nothing left");
+}
+
+#[tokio::test]
+async fn a_full_mailbox_or_a_newer_instance_counts_as_blocked() {
+    let node = pull_node(&["greeter#greet"]).await;
+    node.mailbox.fail_with("register", codes::MAILBOX_FULL);
+    let summary = node.pass().await;
+    assert_eq!((summary.blocked, summary.registered), (1, 0), "{summary:?}");
+    node.mailbox.clear_failures();
+    assert_eq!(node.pass().await.registered, 1);
+
+    node.mailbox.fail_with("claim", codes::STALE_INSTANCE);
+    let summary = node.pass().await;
+    assert_eq!((summary.blocked, summary.registered), (1, 0), "{summary:?}");
+}
+
+#[tokio::test]
+async fn a_service_without_routes_after_a_restart_is_not_claimed() {
+    let node = pull_node(&["greeter#greet"]).await;
+    node.dispatch.not_started.store(true, Ordering::SeqCst);
+    let sender = SenderMember::new();
+    node.pass().await;
+    let sent = node.deposit(&sender, &greet()).await;
+
+    let summary = node.pass().await;
+
+    assert_eq!((summary.blocked, summary.registered), (1, 1), "{summary:?}");
+    assert_eq!(node.mailbox.count("claim"), 0, "no claim is used up");
+    assert!(matches!(node.receipt(&sender, &sent).await, Receipt::Stored { .. }));
+
+    // The deploy after the restart registers the routes again.
+    node.dispatch.not_started.store(false, Ordering::SeqCst);
+    assert_eq!(node.pass().await.delivered, 1);
 }

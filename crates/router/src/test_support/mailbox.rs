@@ -6,8 +6,12 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use syneroym_core::dht_registry::{
-    EndpointInfo, EndpointMailbox, EndpointType, MasterAnchorPayload, SignedEndpointInfo,
+use serde_json::Value;
+use syneroym_core::{
+    dht_registry::{
+        EndpointInfo, EndpointMailbox, EndpointType, MasterAnchorPayload, SignedEndpointInfo,
+    },
+    mailbox::AckOutcome,
 };
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
@@ -62,6 +66,10 @@ pub(crate) struct CountingMailbox {
     hold: Mutex<Option<Hold>>,
     /// Added to `visible_again_at_secs` in every claim answer.
     claim_clock_shift_secs: Mutex<i64>,
+    /// Replaces `limits.max_ttl_secs` in every register answer.
+    register_ttl: Mutex<Option<u64>>,
+    /// Replaces the results of every ack answer.
+    ack_results: Mutex<Option<Vec<AckOutcome>>>,
 }
 
 /// The two ends of a held call.
@@ -81,6 +89,8 @@ impl CountingMailbox {
             failures: Mutex::new(Vec::new()),
             hold: Mutex::new(None),
             claim_clock_shift_secs: Mutex::new(0),
+            register_ttl: Mutex::new(None),
+            ack_results: Mutex::new(None),
         }
     }
 
@@ -106,6 +116,35 @@ impl CountingMailbox {
     /// Moves the time a claim answer says its messages come back.
     pub(crate) fn shift_claim_clock(&self, secs: i64) {
         *self.claim_clock_shift_secs.lock().unwrap() = secs;
+    }
+
+    /// Every register answer says the queue's lifetime is `secs`.
+    pub(crate) fn answer_register_ttl(&self, secs: u64) {
+        *self.register_ttl.lock().unwrap() = Some(secs);
+    }
+
+    /// Every ack answer says `results`, whatever the mailbox did.
+    pub(crate) fn answer_acks(&self, results: Vec<AckOutcome>) {
+        *self.ack_results.lock().unwrap() = Some(results);
+    }
+
+    /// Rewrites a real answer as the test asked.
+    fn rewrite(&self, method: &str, payload: &mut Value) {
+        let shift = *self.claim_clock_shift_secs.lock().unwrap();
+        if method == "claim" && shift != 0 {
+            let at = payload["visible_again_at_secs"].as_i64().unwrap_or(0);
+            payload["visible_again_at_secs"] = (at + shift).into();
+        }
+        if let Some(secs) = *self.register_ttl.lock().unwrap()
+            && method == "register"
+        {
+            payload["limits"]["max_ttl_secs"] = secs.into();
+        }
+        if let Some(results) = self.ack_results.lock().unwrap().clone()
+            && method == "ack"
+        {
+            payload["results"] = serde_json::to_value(results).unwrap();
+        }
     }
 
     fn failure_of(&self, method: &str) -> Option<i32> {
@@ -148,13 +187,9 @@ impl NativeService for CountingMailbox {
         {
             return Err(RpcError::Custom(code, "refused".to_string(), None));
         }
-        let is_claim = invocation.method == "claim";
+        let method = invocation.method.clone();
         let mut answer = self.inner.dispatch(invocation).await?;
-        let shift = *self.claim_clock_shift_secs.lock().unwrap();
-        if is_claim && shift != 0 {
-            let at = answer.payload["visible_again_at_secs"].as_i64().unwrap_or(0);
-            answer.payload["visible_again_at_secs"] = (at + shift).into();
-        }
+        self.rewrite(&method, &mut answer.payload);
         Ok(answer)
     }
 }

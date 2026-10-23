@@ -286,15 +286,15 @@ The "Recommendation" column is now the decision.
   `Replayed(CalleeError { code, .. })` → `Failed { code }`;
   `Ran(Ok(frame))` → `frame_as_outcome(&Ok(frame))`: `Ok` → `Succeeded`,
   `Err(Callee { code, .. })` → `Failed { code }`, an unreadable frame →
-  `Failed { code: -32603 }` (the service made it); `Ran(Err(e))` →
-  `NotRun`.
+  `NotRun` (the fence records nothing for it and keeps its claim, so the
+  call is not "answered" yet); `Ran(Err(e))` → `NotRun`.
 - **C6-8 Writing the learned time-to-live back.** After a successful
-  `register`, if `limits.max_ttl_secs` differs from the fact, call
-  `registry.set_mailbox(service_id, HostedMailbox { max_ttl_secs, ..fact })`
-  **only if** `registry.mailbox_of(service_id)` still names the mailbox the
-  puller registered with. A deploy that changed the mailbox meanwhile must
-  not be overwritten. The small race left is accepted (one pass later the
-  next `register` corrects it).
+  `register`, cut `limits.max_ttl_secs` to `OPEN_MAX_TTL_SECS` (a mailbox
+  may answer any number), then call
+  `registry.set_mailbox_ttl(service_id, mailbox, max_ttl_secs)`. It changes
+  only the lifetime, and only while the fact still names the mailbox the
+  puller registered with. It runs under the same lock as every other write
+  of the fact, so a deploy or undeploy meanwhile is never overwritten.
 - **C6-9 `mailbox_methods`: type and path.**
   - `MailboxMethod` (text `<interface>#<method>`) lives in
     `crates/app_orchestration/src/models/service.rs`, beside

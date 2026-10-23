@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use syneroym_core::config::MailboxRole;
+use syneroym_core::{config::MailboxRole, mailbox::AckOutcome};
 
 use super::helpers::*;
 
@@ -85,4 +85,31 @@ async fn a_mailbox_clock_far_ahead_or_behind_does_not_change_the_round() {
         assert_eq!(summary.delivered, 5, "shift {shift}");
         assert_eq!(summary.not_acked, 0, "shift {shift}");
     }
+}
+
+#[tokio::test]
+async fn every_ack_outcome_is_read() {
+    let node = pull_node(&["greeter#greet"]).await;
+    node.pass().await;
+    deposit_many(&node, 3).await;
+    node.mailbox.answer_acks(vec![AckOutcome::Stored, AckOutcome::NotFound, AckOutcome::Refused]);
+
+    let summary = node.pass().await;
+
+    assert_eq!(summary.delivered, 1, "only a stored receipt counts");
+    assert_eq!(summary.not_acked, 1, "a refused receipt leaves the message for later");
+    assert_eq!(node.mailbox.count("ack"), 1);
+}
+
+#[tokio::test]
+async fn a_message_is_not_counted_when_its_ack_fails() {
+    let node = pull_node(&["greeter#greet"]).await;
+    node.pass().await;
+    deposit_many(&node, 2).await;
+    node.mailbox.fail_with("ack", -32603);
+
+    let summary = node.pass().await;
+
+    assert_eq!((summary.delivered, summary.rejected), (0, 0), "{summary:?}");
+    assert_eq!(node.dispatch.call_count(), 2);
 }

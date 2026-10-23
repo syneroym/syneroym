@@ -5,7 +5,10 @@ use std::{
     collections::VecDeque,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -140,6 +143,10 @@ pub(super) struct FakeDispatch {
     pub(super) delay: Mutex<Duration>,
     /// Runs once, at the first delivery, before it answers.
     pub(super) on_first: Mutex<Option<Hook>>,
+    /// The service has no routes in this process yet.
+    pub(super) not_started: AtomicBool,
+    /// Deliveries that ran to their answer.
+    pub(super) finished: AtomicUsize,
 }
 
 impl FakeDispatch {
@@ -158,6 +165,10 @@ impl FakeDispatch {
 
 #[async_trait::async_trait]
 impl DeferredDispatch for FakeDispatch {
+    fn is_ready(&self, _service_id: &str) -> bool {
+        !self.not_started.load(Ordering::SeqCst)
+    }
+
     async fn dispatch_deferred(
         &self,
         _service_id: &str,
@@ -178,6 +189,7 @@ impl DeferredDispatch for FakeDispatch {
         if !delay.is_zero() {
             time::sleep(delay).await;
         }
+        self.finished.fetch_add(1, Ordering::SeqCst);
         self.outcomes.lock().unwrap().pop_front().unwrap_or(DeferredOutcome::Succeeded)
     }
 }

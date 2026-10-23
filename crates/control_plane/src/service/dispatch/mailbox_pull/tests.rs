@@ -34,7 +34,14 @@ async fn a_receiver_that_is_gone_answers_method_not_found() {
 
 #[tokio::test]
 async fn the_summary_of_one_pass_is_the_answer() {
-    let summary = PullSummary { services: 2, blocked: 1, delivered: 3, rejected: 1, not_acked: 0 };
+    let summary = PullSummary {
+        services: 2,
+        blocked: 1,
+        registered: 1,
+        delivered: 3,
+        rejected: 1,
+        not_acked: 0,
+    };
     let puller: Arc<dyn MailboxPullControl> = Arc::new(FakePuller(summary));
     let weak = Arc::downgrade(&puller);
     for params in [json!([]), json!(null)] {

@@ -86,8 +86,9 @@ async fn world() -> World {
         .owner(&Identity::generate().unwrap())
         .shared_registry(a.registry())
         .configure(|c| {
+            // The default visibility time: a message claimed too early after
+            // a restart would stay hidden past every budget here.
             c.roles.mailbox = Some(MailboxRole {
-                visibility_secs: 2,
                 sweep_interval_secs: 1,
                 republish_interval_secs: 2,
                 ..Default::default()

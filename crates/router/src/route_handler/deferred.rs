@@ -23,13 +23,22 @@ pub enum DeferredOutcome {
     /// The call ran and answered an error, now or before. The fence keeps
     /// this answer, so a direct call with the same key gets it too.
     Failed { code: i32 },
-    /// Nothing ran, for a reason that may pass.
+    /// Nothing ran, for a reason that may pass. Also a call whose answer
+    /// the fence did not record (an unreadable frame, a failed dispatch):
+    /// the fence holds its claim, and the call runs again after the claim
+    /// window.
     NotRun(String),
     /// This service cannot take a JSON-RPC call (a TCP or container one).
     NotServed,
 }
 
 impl RouteHandler {
+    /// Whether this process registered `service_id`'s native capability
+    /// routes. Every deploy registers them, and a boot starts with none.
+    pub(crate) fn has_native_service(&self, service_id: &str) -> bool {
+        self.inner.native_dispatch.contains_key(service_id)
+    }
+
     /// Hands a call that waited at the service's mailbox to the service,
     /// through the same fence and dispatch a call from the wire meets.
     /// `interface` is the canonical name. `caller` is the original sender.
@@ -99,12 +108,12 @@ fn outcome_of(outcome: FirstOutcome) -> DeferredOutcome {
     }
 }
 
-/// A fresh response frame. A frame that does not parse was made by the
-/// target, so it counts as an error answer.
+/// A fresh response frame. A frame that does not parse is answered as not
+/// run, like the fence, which records nothing for it.
 fn answer_of(frame: &anyhow::Result<Vec<u8>>) -> DeferredOutcome {
     match frame_as_outcome(frame) {
         Ok(_) => DeferredOutcome::Succeeded,
         Err(ProxyError::Callee { code, .. }) => DeferredOutcome::Failed { code },
-        Err(_) => DeferredOutcome::Failed { code: -32603 },
+        Err(e) => DeferredOutcome::NotRun(e.to_string()),
     }
 }

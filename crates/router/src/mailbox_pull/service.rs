@@ -12,7 +12,9 @@ use syneroym_core::{
     },
 };
 use syneroym_identity::DelegationCertificate;
-use syneroym_mailbox_format::{MAX_CLOCK_SKEW_SECS, MailboxSecretKey, OpenPolicy};
+use syneroym_mailbox_format::{
+    MAX_CLOCK_SKEW_SECS, MailboxSecretKey, OPEN_MAX_TTL_SECS, OpenPolicy,
+};
 use syneroym_rpc::{DEFAULT_PROXY_CALL_TIMEOUT, ProxyError};
 use tokio::time::{self, Duration, Instant};
 use tracing::{debug, warn};
@@ -20,6 +22,7 @@ use tracing::{debug, warn};
 use super::{
     MAX_CLAIM_ROUNDS, MailboxPuller, REREGISTER_INTERVAL, SERVED_RECORD_CHECK_INTERVAL,
     SERVED_RECORD_LOOKUP_TIMEOUT,
+    message::Count,
     notes::{Note, Notes},
 };
 use crate::proxy::{AnchorCache, ServiceInstance};
@@ -27,6 +30,8 @@ use crate::proxy::{AnchorCache, ServiceInstance};
 /// How long a claimed message stays hidden at a mailbox, when the mailbox
 /// did not say.
 const DEFAULT_VISIBILITY_SECS: u64 = 300;
+/// How long the `info` call after a register may take.
+const INFO_TIMEOUT: Duration = Duration::from_secs(5);
 /// A round stops this long before the visibility time ends, to leave room
 /// for the acks.
 const ACK_MARGIN_SECS: u64 = 30;
@@ -59,12 +64,17 @@ pub(super) struct ServiceState {
     served_checked_at: Option<Instant>,
 }
 
+/// The last register of a service: accepted, or refused as an expired
+/// record. Either way it is not sent again until the record or the mailbox
+/// changes, or an hour passes.
 struct Registration {
     mailbox: String,
     /// `pkarr_packet_hex` of the record registered.
     record_hex: String,
     at: Instant,
-    max_ttl_secs: u64,
+    /// `None` when the mailbox refused the record as expired. A queue made
+    /// with an earlier record keeps the lifetime it had.
+    max_ttl_secs: Option<u64>,
     /// From the mailbox's `info`, read at register; a default when it
     /// failed.
     visibility_secs: u64,
@@ -80,6 +90,16 @@ impl ServiceState {
                     || r.at.elapsed() >= REREGISTER_INTERVAL
             }
         }
+    }
+
+    /// Whether the mailbox refused the record of the last register.
+    fn record_refused(&self) -> bool {
+        self.registered.as_ref().is_some_and(|r| r.max_ttl_secs.is_none())
+    }
+
+    /// Whether the mailbox accepted the last register.
+    fn holds_queue(&self) -> bool {
+        self.registered.as_ref().is_some_and(|r| r.max_ttl_secs.is_some())
     }
 }
 
@@ -107,16 +127,54 @@ impl ServicePass<'_> {
         let _warned = self.notes.note(self.service_id, note, detail);
     }
 
-    /// Stops pulling for this service until its certificate changes.
-    fn block(&mut self, instance: &ServiceInstance, note: Note) {
-        self.entry.blocked_on = Some((CertId::of(&instance.certificate), note));
+    /// Counts one message by what the mailbox did with its receipt.
+    pub(super) fn count_ack(&mut self, outcome: AckOutcome, count: Count) {
+        let result = match (outcome, count) {
+            (AckOutcome::Stored, Count::Delivered) => {
+                self.summary.delivered += 1;
+                "delivered"
+            }
+            (AckOutcome::Stored, Count::Rejected) => {
+                self.summary.rejected += 1;
+                "rejected"
+            }
+            // Acked before, or closed by the mailbox.
+            (AckOutcome::NotFound, _) => {
+                debug!(service_id = self.service_id, "the mailbox no longer holds a message");
+                "not_found"
+            }
+            (AckOutcome::Refused, _) => {
+                warn!(service_id = self.service_id, "the mailbox refused a receipt");
+                self.summary.not_acked += 1;
+                "not_acked"
+            }
+        };
+        metrics::counter!("substrate.mailbox_receiver.messages", "result" => result).increment(1);
+    }
+
+    /// Ends this pass for the service, and counts it as blocked.
+    fn stop(&mut self, note: Note) {
+        self.summary.blocked += 1;
         self.note(note, "");
     }
 
-    /// The longest time-to-live of the queue: what the mailbox said at the
-    /// last register, else the stored fact.
-    fn max_ttl_secs(&self) -> u64 {
-        self.entry.registered.as_ref().map_or(self.fact.max_ttl_secs, |r| r.max_ttl_secs)
+    /// Stops pulling for this service until its certificate changes. The
+    /// next certificate registers again.
+    fn block(&mut self, instance: &ServiceInstance, note: Note) {
+        self.entry.blocked_on = Some((CertId::of(&instance.certificate), note));
+        self.entry.registered = None;
+        self.stop(note);
+    }
+
+    /// The limits a message must meet to be opened. The longest
+    /// time-to-live of the queue is what the mailbox said at the last
+    /// register, else the stored fact.
+    fn open_policy(&self) -> OpenPolicy {
+        let learned = self.entry.registered.as_ref().and_then(|r| r.max_ttl_secs);
+        OpenPolicy {
+            max_ttl_secs: learned.unwrap_or(self.fact.max_ttl_secs),
+            max_clock_skew_secs: MAX_CLOCK_SKEW_SECS,
+        }
     }
 
     /// How long a round may run on this node's clock.
@@ -144,10 +202,20 @@ impl MailboxPuller {
         self.check_served_record(pass, &inputs.mailbox).await;
         // A different mailbox shows up in `needs_register`; the control
         // plane already removed the old queue.
-        if pass.entry.needs_register(&inputs) && !self.register(pass, &inputs).await {
-            return;
+        let may_claim = !pass.entry.needs_register(&inputs) || self.register(pass, &inputs).await;
+        if may_claim {
+            // After a restart, a service has no routes in this process until
+            // it is deployed again. A message claimed before that would fail
+            // and use up one of its claims.
+            if self.dispatch.is_ready(pass.service_id) {
+                self.claim_rounds(pass, &inputs).await;
+            } else {
+                pass.stop(Note::NotStarted);
+            }
         }
-        self.claim_rounds(pass, &inputs).await;
+        if pass.entry.holds_queue() {
+            pass.summary.registered += 1;
+        }
     }
 
     /// The inputs of a pass, or `None` after a note.
@@ -219,7 +287,7 @@ impl MailboxPuller {
         // the queue, so a removed queue is never registered again.
         let answer = {
             let gate = self.register_gate(pass.service_id);
-            let _held = gate.lock().await;
+            let mut registered_at = gate.lock().await;
             let current = self.registry.mailbox_of(pass.service_id).map(|f| f.mailbox);
             if current.as_deref() != Some(pass.fact.mailbox.as_str()) {
                 debug!(
@@ -229,9 +297,14 @@ impl MailboxPuller {
                 pass.entry.registered = None;
                 return false;
             }
-            self.proxy
+            let answer = self
+                .proxy
                 .call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_REGISTER, params)
-                .await
+                .await;
+            if answer.is_ok() {
+                *registered_at = Some(inputs.mailbox.clone());
+            }
+            answer
         };
         match answer {
             Ok(value) => match serde_json::from_value::<RegisterAnswer>(value) {
@@ -244,48 +317,55 @@ impl MailboxPuller {
                     false
                 }
             },
-            Err(e) => Self::register_failed(pass, inputs, &e),
-        }
-    }
-
-    /// `true` when claiming may go on despite the error.
-    fn register_failed(pass: &mut ServicePass<'_>, inputs: &Inputs, error: &ProxyError) -> bool {
-        match code_of(error) {
-            Some(codes::BAD_RECORD) => {
+            Err(e) if code_of(&e) == Some(codes::BAD_RECORD) => {
+                // A queue made with an earlier record may still hold
+                // messages, so claiming goes on.
                 pass.note(Note::RecordExpired, "");
+                self.keep_registration(pass, inputs, None).await;
                 true
             }
-            Some(codes::NOT_AN_INSTANCE) => {
-                pass.block(&inputs.instance, Note::InstanceRefused);
-                false
-            }
-            Some(codes::STALE_INSTANCE) => {
-                pass.block(&inputs.instance, Note::StaleInstance);
-                false
-            }
-            Some(codes::MAILBOX_FULL) => {
-                pass.note(Note::MailboxFull, "");
-                false
-            }
-            _ => {
-                debug!(error = %error, "could not register at the mailbox");
+            Err(e) => {
+                Self::register_failed(pass, inputs, &e);
                 false
             }
         }
     }
 
-    /// Keeps the registration, reads the visibility time with one `info`
-    /// call, and writes the queue's real time-to-live back into the fact.
+    fn register_failed(pass: &mut ServicePass<'_>, inputs: &Inputs, error: &ProxyError) {
+        match code_of(error) {
+            Some(codes::NOT_AN_INSTANCE) => pass.block(&inputs.instance, Note::InstanceRefused),
+            Some(codes::STALE_INSTANCE) => pass.block(&inputs.instance, Note::StaleInstance),
+            Some(codes::MAILBOX_FULL) => pass.stop(Note::MailboxFull),
+            _ => debug!(error = %error, "could not register at the mailbox"),
+        }
+    }
+
+    /// Keeps the registration and writes the queue's real time-to-live back
+    /// into the fact. A mailbox may answer any number: above the open limit
+    /// it would turn off the age check of a message and make the receiver
+    /// fence window endless, so it is cut to that limit.
     async fn learn(&self, pass: &mut ServicePass<'_>, inputs: &Inputs, limits: QueueLimits) {
+        let max_ttl_secs = limits.max_ttl_secs.min(OPEN_MAX_TTL_SECS);
+        self.keep_registration(pass, inputs, Some(max_ttl_secs)).await;
+        self.write_back_ttl(pass.service_id, &inputs.mailbox, max_ttl_secs).await;
+    }
+
+    /// Remembers the register, with the visibility time read by one `info`
+    /// call.
+    async fn keep_registration(
+        &self,
+        pass: &mut ServicePass<'_>,
+        inputs: &Inputs,
+        max_ttl_secs: Option<u64>,
+    ) {
         let visibility_secs = self.read_visibility(inputs).await;
         pass.entry.registered = Some(Registration {
             mailbox: inputs.mailbox.clone(),
             record_hex: inputs.record.pkarr_packet_hex.clone(),
             at: Instant::now(),
-            max_ttl_secs: limits.max_ttl_secs,
+            max_ttl_secs,
             visibility_secs,
         });
-        self.write_back_ttl(pass.service_id, &inputs.mailbox, limits.max_ttl_secs).await;
     }
 
     async fn read_visibility(&self, inputs: &Inputs) -> u64 {
@@ -295,33 +375,28 @@ impl MailboxPuller {
             METHOD_INFO,
             serde_json::json!({}),
         );
-        match time::timeout(SERVED_RECORD_LOOKUP_TIMEOUT, call).await {
+        match time::timeout(INFO_TIMEOUT, call).await {
             Ok(Ok(value)) => serde_json::from_value::<InfoAnswer>(value)
                 .map_or(DEFAULT_VISIBILITY_SECS, |info| info.visibility_secs),
             _ => DEFAULT_VISIBILITY_SECS,
         }
     }
 
-    /// Only while the fact still names the mailbox registered at: a deploy
-    /// that changed the mailbox meanwhile must not be overwritten.
+    /// Only while the fact still names the mailbox registered at, and
+    /// atomically with the control plane's own writes of the fact: a deploy
+    /// or undeploy meanwhile is never overwritten.
     async fn write_back_ttl(&self, service_id: &str, mailbox: &str, max_ttl_secs: u64) {
-        let Some(current) = self.registry.mailbox_of(service_id) else { return };
-        if current.mailbox != mailbox || current.max_ttl_secs == max_ttl_secs {
-            return;
-        }
-        let updated = HostedMailbox { max_ttl_secs, ..current };
-        if let Err(e) = self.registry.set_mailbox(service_id.to_string(), updated).await {
+        if let Err(e) = self.registry.set_mailbox_ttl(service_id, mailbox, max_ttl_secs).await {
             warn!(service_id, error = %e, "could not record the mailbox queue lifetime");
         }
     }
 
     async fn claim_rounds(&self, pass: &mut ServicePass<'_>, inputs: &Inputs) {
-        let policy = OpenPolicy {
-            max_ttl_secs: pass.max_ttl_secs(),
-            max_clock_skew_secs: MAX_CLOCK_SKEW_SECS,
-        };
         let mut registered_again = false;
         for _ in 0..MAX_CLAIM_ROUNDS {
+            // Built for each round: a register after a `-32040` may have
+            // learned another lifetime.
+            let policy = pass.open_policy();
             let params = serde_json::json!(ClaimParams { max: Some(MAX_CLAIM_BATCH) });
             // Taken before the call, so the local window is never longer
             // than the mailbox's. The mailbox's own times are never compared
@@ -337,8 +412,12 @@ impl MailboxPuller {
                     Err(_) => return,
                 },
                 Err(e) if code_of(&e) == Some(codes::UNKNOWN_DESTINATION) && !registered_again => {
-                    pass.entry.registered = None;
                     registered_again = true;
+                    // A refused record cannot make the queue again.
+                    if pass.entry.record_refused() {
+                        return;
+                    }
+                    pass.entry.registered = None;
                     if self.register(pass, inputs).await {
                         continue;
                     }
@@ -401,16 +480,18 @@ impl MailboxPuller {
 
     /// One `ack` call. `false` when the call failed: the messages come back
     /// after the visibility time and the fence replays them. An empty list
-    /// makes no call.
+    /// makes no call. A message is counted only when the mailbox stored its
+    /// receipt.
     async fn send_acks(
         &self,
-        pass: &ServicePass<'_>,
+        pass: &mut ServicePass<'_>,
         inputs: &Inputs,
-        acks: Vec<AckEntry>,
+        handled: Vec<(AckEntry, Count)>,
     ) -> bool {
-        if acks.is_empty() {
+        if handled.is_empty() {
             return true;
         }
+        let (acks, counts): (Vec<_>, Vec<_>) = handled.into_iter().unzip();
         let Ok(params) = serde_json::to_value(AckParams { acks }) else { return false };
         let answer =
             self.proxy.call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_ACK, params).await;
@@ -425,16 +506,8 @@ impl MailboxPuller {
                 return false;
             }
         };
-        for outcome in results {
-            match outcome {
-                AckOutcome::Stored => {}
-                AckOutcome::NotFound => {
-                    debug!(service_id = pass.service_id, "the mailbox no longer holds a message");
-                }
-                AckOutcome::Refused => {
-                    warn!(service_id = pass.service_id, "the mailbox refused a receipt");
-                }
-            }
+        for (outcome, count) in results.into_iter().zip(counts) {
+            pass.count_ack(outcome, count);
         }
         true
     }

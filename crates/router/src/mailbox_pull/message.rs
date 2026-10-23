@@ -16,9 +16,10 @@ use super::{
 };
 use crate::{handshake::now_secs, route_handler::deferred::DeferredOutcome};
 
-/// Which counter an acked message adds to.
+/// Which counter an acked message adds to, once the mailbox stored its
+/// receipt.
 #[derive(Clone, Copy)]
-enum Count {
+pub(super) enum Count {
     Delivered,
     Rejected,
 }
@@ -70,33 +71,23 @@ fn reject(
 }
 
 impl MailboxPuller {
-    /// Handles one message and counts it. The ack to send, if any.
+    /// Handles one message. The ack to send, if any, and how to count it
+    /// once the mailbox stored it.
     pub(super) async fn handle_one(
         &self,
         pass: &mut ServicePass<'_>,
         inputs: &Inputs,
         claimed: &ClaimedMessage,
         policy: OpenPolicy,
-    ) -> Option<AckEntry> {
+    ) -> Option<(AckEntry, Count)> {
         match self.handle(pass, inputs, claimed, policy, now_secs()).await {
             Handled::Ack(receipt, count) => {
-                let result = match count {
-                    Count::Delivered => {
-                        pass.summary.delivered += 1;
-                        "delivered"
-                    }
-                    Count::Rejected => {
-                        pass.summary.rejected += 1;
-                        "rejected"
-                    }
-                };
-                metrics::counter!("substrate.mailbox_receiver.messages", "result" => result)
-                    .increment(1);
-                Some(AckEntry {
+                let entry = AckEntry {
                     sender: claimed.sender.clone(),
                     deposit_id: claimed.deposit_id,
                     receipt,
-                })
+                };
+                Some((entry, count))
             }
             Handled::NoAck(why) => {
                 debug!(service_id = pass.service_id, why, "message left unacked");
@@ -199,25 +190,43 @@ impl MailboxPuller {
         let Ok(caller) = delivery_caller(opened, now) else {
             return Handled::NoAck("the sender key does not resolve".into());
         };
-        let delivery =
-            self.dispatch.dispatch_deferred(pass.service_id, &interface, &opened.content, &caller);
+        // A task of its own, so a timeout here stops only the wait. The call
+        // is never cut off halfway: it finishes and settles its fence claim,
+        // and the next claim of the message gets its answer.
+        let dispatch = self.dispatch.clone();
+        let (service_id, content) = (pass.service_id.to_string(), opened.content.clone());
+        let delivery = tokio::spawn(async move {
+            dispatch.dispatch_deferred(&service_id, &interface, &content, &caller).await
+        });
         match time::timeout(DEFAULT_PROXY_CALL_TIMEOUT, delivery).await {
             Err(_) => Handled::NoAck("the service did not answer in time".into()),
-            Ok(DeferredOutcome::Succeeded) => {
-                receipt_of(opened.sign_delivered(me, certificate, now), Count::Delivered)
-            }
-            Ok(DeferredOutcome::Failed { code }) => {
-                // The sender goes back to direct attempts and gets the same
-                // answer from the receiver fence there. A signed rejection
-                // would let a mailbox end a message by delaying it.
-                debug!(code, "the service answered an error");
-                let receipt = Receipt::unsigned_rejection(RejectCode::CallFailed, now);
-                Handled::Ack(receipt, Count::Rejected)
-            }
-            Ok(DeferredOutcome::NotServed) => {
-                reject(opened, me, certificate, RejectCode::NotEligible, now)
-            }
-            Ok(DeferredOutcome::NotRun(why)) => Handled::NoAck(why),
+            Ok(Err(e)) => Handled::NoAck(format!("the delivery task failed: {e}")),
+            Ok(Ok(outcome)) => answer_receipt(outcome, opened, me, certificate, now),
         }
+    }
+}
+
+/// What to ack for the service's answer.
+fn answer_receipt(
+    outcome: DeferredOutcome,
+    opened: &OpenedMessage,
+    me: &Identity,
+    certificate: &DelegationCertificate,
+    now: u64,
+) -> Handled {
+    match outcome {
+        DeferredOutcome::Succeeded => {
+            receipt_of(opened.sign_delivered(me, certificate, now), Count::Delivered)
+        }
+        DeferredOutcome::Failed { code } => {
+            // The sender goes back to direct attempts and gets the same
+            // answer from the receiver fence there. A signed rejection
+            // would let a mailbox end a message by delaying it.
+            debug!(code, "the service answered an error");
+            let receipt = Receipt::unsigned_rejection(RejectCode::CallFailed, now);
+            Handled::Ack(receipt, Count::Rejected)
+        }
+        DeferredOutcome::NotServed => reject(opened, me, certificate, RejectCode::NotEligible, now),
+        DeferredOutcome::NotRun(why) => Handled::NoAck(why),
     }
 }

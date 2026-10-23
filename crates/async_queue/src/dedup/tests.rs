@@ -426,3 +426,20 @@ fn the_long_window_opens_again_once_the_records_have_expired() {
 
     assert!(!store.long_window_closed(), "after the records expired it opened again");
 }
+
+#[test]
+fn a_window_too_long_for_the_clock_never_expires_the_record_at_once() {
+    let store = store();
+    let endless = DedupWindow { ttl_ms: u64::MAX, ..store.config.window() };
+    let claim = match store.begin("did:key:zA", "k1", 1_000, endless).unwrap() {
+        DedupDecision::Execute(token) => token,
+        other => panic!("expected a fresh claim, got {other:?}"),
+    };
+    store.finish("did:key:zA", "k1", claim, &FirstOutcome::Success(b"a".to_vec()), 2_000).unwrap();
+
+    assert_eq!(expiry_of(&store, "did:key:zA"), i64::MAX);
+    assert!(matches!(
+        store.begin("did:key:zA", "k1", 3_000, store.config.window()).unwrap(),
+        DedupDecision::Replay(_)
+    ));
+}

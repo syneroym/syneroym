@@ -459,6 +459,39 @@ async fn a_redeploy_to_another_mailbox_or_to_none_releases_the_old_one_after_the
 }
 
 #[tokio::test]
+async fn a_redeploy_without_a_mailbox_or_a_certificate_releases_before_the_certificate_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let member = Member::new();
+    let (service, registry, puller) = host(&member, dir.path()).await;
+    let caller = caller();
+    let route = member.route(&mailbox_host());
+    service
+        .deploy(
+            member.service_id.clone(),
+            member.manifest(&caller, Some(route.clone()), &[]),
+            &caller,
+        )
+        .await
+        .unwrap();
+    let mut bare = member.manifest(&caller, None, &[]);
+    bare.instance_certificate = None;
+
+    service.deploy(member.service_id.clone(), bare, &caller).await.unwrap();
+
+    assert_eq!(
+        puller.releases(),
+        [ReleaseCall {
+            service_id: member.service_id.clone(),
+            mailbox: route.service_id,
+            had_instance_cert: true,
+            had_owner: true,
+            fact: None,
+        }]
+    );
+    assert!(registry.instance_cert(&member.service_id).is_none());
+}
+
+#[tokio::test]
 async fn a_redeploy_to_the_same_mailbox_releases_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let member = Member::new();

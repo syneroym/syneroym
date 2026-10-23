@@ -214,7 +214,8 @@ impl World {
             .await;
     }
 
-    /// One pass of the receiver node's mailbox receiver, waited for.
+    /// One pass of the receiver node's mailbox receiver, waited for. The
+    /// receiver's queue is registered at the end of it.
     async fn receiver_pulls(&self) {
         let summary = self
             .receiver_node()
@@ -223,6 +224,7 @@ impl World {
             .await
             .expect("security.mailbox-pull-now must answer");
         assert_eq!(summary.blocked, 0, "{summary:?}");
+        assert_eq!(summary.registered, 1, "{summary:?}");
     }
 
     async fn mailbox_client(&self) -> SyneroymClient {
@@ -529,8 +531,9 @@ async fn an_undeployed_service_removes_its_queue_at_a_remote_mailbox() {
     // While the service holds the queue, another instance of the member is
     // told a newer instance holds it.
     let mut client = world.mailbox_client().await;
-    let held = mailbox_client::call(&client, "claim", json!({})).await;
-    assert!(held.is_err(), "the queue exists: {held:?}");
+    let (code, _) =
+        mailbox_client::call(&client, "claim", json!({})).await.expect_err("the queue exists");
+    assert_eq!(code, codes::STALE_INSTANCE);
 
     world.receiver_node().substrate_client.undeploy(world.receiver_id(), 0).await.unwrap();
 

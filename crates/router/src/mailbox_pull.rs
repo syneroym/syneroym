@@ -12,7 +12,7 @@ mod service;
 
 use std::{
     collections::HashMap,
-    fmt,
+    fmt, iter,
     sync::{self, Arc, PoisonError},
     time::Duration,
 };
@@ -38,7 +38,7 @@ use self::{
     service::{ServicePass, ServiceState},
 };
 use crate::{
-    proxy::{AnchorCache, ProxyRouter},
+    proxy::{AnchorCache, ProxyRouter, ServiceInstance},
     route_handler::{RouteHandler, deferred::DeferredOutcome},
 };
 
@@ -64,6 +64,10 @@ pub trait ReceiverVault: Send + Sync {
 /// How a call from the mailbox reaches a service on this node.
 #[async_trait::async_trait]
 pub trait DeferredDispatch: Send + Sync {
+    /// Whether this process registered the service's routes. They start
+    /// empty at boot and come back with the next deploy of the service.
+    fn is_ready(&self, service_id: &str) -> bool;
+
     async fn dispatch_deferred(
         &self,
         service_id: &str,
@@ -82,9 +86,12 @@ pub struct MailboxPuller {
     state: Mutex<PullState>,
     wake: Notify,
     /// One gate for each service, outside the pass lock: a `register` and a
-    /// `release` of the same service never cross.
-    register_gates: sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// `release` of the same service never cross. It holds the mailbox the
+    /// last accepted register went to.
+    register_gates: sync::Mutex<HashMap<String, RegisterGate>>,
 }
+
+type RegisterGate = Arc<Mutex<Option<String>>>;
 
 #[derive(Default)]
 struct PullState {
@@ -112,7 +119,7 @@ impl MailboxPuller {
     }
 
     /// The register gate of `service_id`, made on first use.
-    fn register_gate(&self, service_id: &str) -> Arc<Mutex<()>> {
+    fn register_gate(&self, service_id: &str) -> RegisterGate {
         let mut gates = self.register_gates.lock().unwrap_or_else(PoisonError::into_inner);
         gates.entry(service_id.to_string()).or_default().clone()
     }
@@ -136,7 +143,9 @@ impl MailboxPuller {
         let hosted = self.registry.hosted_mailboxes();
         // The control plane removed the queue of a service that is gone;
         // only its state is left to forget.
-        services.retain(|id, _| hosted.iter().any(|(h, _)| h == id));
+        let is_hosted = |id: &str| hosted.iter().any(|(h, _)| h == id);
+        services.retain(|id, _| is_hosted(id));
+        notes.retain_services(is_hosted);
         self.drop_unused_gates(&hosted);
         let mut anchors = AnchorCache::new();
         let mut summary = PullSummary::default();
@@ -156,13 +165,15 @@ impl MailboxPuller {
         summary
     }
 
-    /// Drops the gate of a service that is gone, when no one holds it. A
-    /// `release` in progress keeps its own. A poisoned lock only skips this
-    /// clean-up.
+    /// Drops the gate of a service that is gone, when no one holds it and
+    /// it names no queue left for a `release`. A `release` in progress
+    /// keeps its own. A poisoned lock only skips this clean-up.
     fn drop_unused_gates(&self, hosted: &[(String, HostedMailbox)]) {
         if let Ok(mut gates) = self.register_gates.lock() {
             gates.retain(|id, gate| {
-                Arc::strong_count(gate) > 1 || hosted.iter().any(|(h, _)| h == id)
+                let in_use = Arc::strong_count(gate) > 1;
+                let names_a_queue = gate.try_lock().map_or(true, |at| at.is_some());
+                in_use || names_a_queue || hosted.iter().any(|(h, _)| h == id)
             });
         }
     }
@@ -181,7 +192,8 @@ impl MailboxPullControl for MailboxPuller {
     /// Takes no pass lock: the control plane calls this inside an undeploy
     /// or deploy, which must not wait for a pass. It takes the service's
     /// register gate, so a `register` in flight lands first and this
-    /// `unregister` removes it.
+    /// `unregister` removes it. When the stored record named another
+    /// mailbox than the fact, the queue there is removed too.
     async fn release(&self, service_id: &str, mailbox: &str) {
         let Some(instance) = self.proxy.service_instance(service_id) else {
             debug!(
@@ -191,12 +203,22 @@ impl MailboxPullControl for MailboxPuller {
             return;
         };
         let gate = self.register_gate(service_id);
-        let _held = gate.lock().await;
-        match self.proxy.call_mailbox(&instance, mailbox, METHOD_UNREGISTER, json!({})).await {
+        let mut registered_at = gate.lock().await;
+        let other = registered_at.take().filter(|at| at != mailbox);
+        for mailbox in iter::once(mailbox).chain(other.as_deref()) {
+            self.unregister(&instance, service_id, mailbox).await;
+        }
+    }
+}
+
+impl MailboxPuller {
+    async fn unregister(&self, instance: &ServiceInstance, service_id: &str, mailbox: &str) {
+        match self.proxy.call_mailbox(instance, mailbox, METHOD_UNREGISTER, json!({})).await {
             Ok(_) => {}
             // A newer instance holds the queue: the expected answer after a
-            // relocation.
-            Err(ProxyError::Callee { code, .. }) if code == codes::STALE_INSTANCE => {}
+            // relocation. No queue: nothing to remove.
+            Err(ProxyError::Callee { code, .. })
+                if code == codes::STALE_INSTANCE || code == codes::UNKNOWN_DESTINATION => {}
             Err(e) => debug!(service_id, mailbox, error = %e, "could not remove the old queue"),
         }
     }
@@ -221,6 +243,10 @@ impl ReceiverVault for ControlPlaneService {
 
 #[async_trait::async_trait]
 impl DeferredDispatch for RouteHandler {
+    fn is_ready(&self, service_id: &str) -> bool {
+        RouteHandler::has_native_service(self, service_id)
+    }
+
     async fn dispatch_deferred(
         &self,
         service_id: &str,

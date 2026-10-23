@@ -293,3 +293,21 @@ async fn a_message_from_the_future_is_rejected_signed() {
     assert_eq!(outcome_of(&receipt, &sealed.sent), Err(ReceiptError::BeforeSend));
     assert_eq!(node.dispatch.call_count(), 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_delivery_past_its_timeout_is_not_cut_off() {
+    let node = pull_node(&["greeter#greet"]).await;
+    node.pass().await;
+    let sender = SenderMember::new();
+    let sent = node.deposit(&sender, &greet()).await;
+    *node.dispatch.delay.lock().unwrap() = Duration::from_secs(40);
+
+    let summary = node.pass().await;
+
+    assert_eq!(summary.not_acked, 1);
+    assert!(matches!(node.receipt(&sender, &sent).await, Receipt::Stored { .. }));
+    assert_eq!(node.dispatch.finished.load(Ordering::SeqCst), 0);
+    // The call goes on after the wait stopped, and settles its fence claim.
+    time::sleep(Duration::from_secs(15)).await;
+    assert_eq!(node.dispatch.finished.load(Ordering::SeqCst), 1);
+}
