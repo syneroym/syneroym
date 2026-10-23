@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use rusqlite::Connection;
-use syneroym_async_queue::DedupWindow;
+use syneroym_async_queue::{CAP_CHECK_INTERVAL, DedupWindow};
 use syneroym_core::mailbox::HostedMailbox;
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -542,7 +542,7 @@ async fn a_closed_long_window_is_noted_for_the_service() {
     let node = node(false, &["svc-a"]).await;
     let store = node.guard.store_for("svc-a").await.unwrap();
     let tiny = DedupWindow { ttl_ms: config().ttl_ms + 1, max_rows: 100, max_total_rows: 10 };
-    for i in 0..=2 * 64 {
+    for i in 0..=2 * CAP_CHECK_INTERVAL {
         store.begin(&format!("did:key:zCaller{i}"), "k", 1_000, tiny).unwrap();
     }
     assert!(store.long_window_closed());
@@ -550,4 +550,15 @@ async fn a_closed_long_window_is_noted_for_the_service() {
     node.guard.report_long_window("svc-a", &store);
 
     assert!(node.guard.closed_long_windows.lock().unwrap().contains("svc-a"));
+}
+
+#[tokio::test]
+async fn a_window_that_is_open_takes_no_note_and_no_lock_work() {
+    let node = node(false, &["svc-a"]).await;
+    let store = node.guard.store_for("svc-a").await.unwrap();
+
+    node.guard.report_long_window("svc-a", &store);
+
+    assert!(node.guard.closed_long_windows.lock().unwrap().is_empty());
+    assert_eq!(node.guard.closed_long_window_count.load(Ordering::Relaxed), 0);
 }

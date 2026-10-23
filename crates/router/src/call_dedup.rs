@@ -25,7 +25,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use syneroym_async_queue::{
@@ -220,6 +223,9 @@ pub struct CallDedupGuard {
     /// Services whose long window is closed, so the warning is made once for
     /// each time it closes and not for each call.
     closed_long_windows: Mutex<HashSet<String>>,
+    /// The size of `closed_long_windows`, so a call can skip the lock when
+    /// nothing is closed.
+    closed_long_window_count: AtomicUsize,
     /// Serialises the *opening* of a store, so two callers that miss the
     /// cache at the same moment cannot each build an independent handle to
     /// the same file. Two handles are two connections, and the claim's
@@ -249,6 +255,7 @@ impl CallDedupGuard {
             config,
             stores: Mutex::new(HashMap::new()),
             closed_long_windows: Mutex::new(HashSet::new()),
+            closed_long_window_count: AtomicUsize::new(0),
             open_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -387,10 +394,16 @@ impl CallDedupGuard {
 
     /// Makes a closed long window visible. While it is closed, a service
     /// with a mailbox has only the default window, and nothing else says so.
+    /// The lock is taken only when the state may change: when the window is
+    /// closed, or when some service is noted as closed.
     fn report_long_window(&self, target_service: &str, store: &DedupStore) {
+        let closed_now = store.long_window_closed();
+        if !closed_now && self.closed_long_window_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
         // Only a report: a poisoned lock just skips it.
         let Ok(mut closed) = self.closed_long_windows.lock() else { return };
-        if store.long_window_closed() {
+        if closed_now {
             metrics::counter!("substrate.proxy.dedup.long_window_closed").increment(1);
             if closed.insert(target_service.to_string()) {
                 warn!(
@@ -402,6 +415,7 @@ impl CallDedupGuard {
         } else if closed.remove(target_service) {
             info!(target_service, "the receiver fence has room for a long window again");
         }
+        self.closed_long_window_count.store(closed.len(), Ordering::Relaxed);
     }
 
     /// The one entry point both dispatch sites call.

@@ -50,7 +50,7 @@ pub const CALL_RESULT_NOT_RETAINED_RPC_CODE: i32 = -32095;
 
 /// How many claims may pass between row-cap checks. The TTL sweep still
 /// runs on every claim; only the `COUNT` behind the cap is amortised.
-const CAP_CHECK_INTERVAL: u32 = 64;
+pub const CAP_CHECK_INTERVAL: u32 = 64;
 
 const STATE_IN_FLIGHT: i64 = 0;
 const STATE_DONE: i64 = 1;
@@ -480,8 +480,6 @@ impl DedupStore {
         Ok(())
     }
 
-    /// How many records this store currently holds -- the row bound's own
-    /// assertion, and operator inspection.
     /// Whether the store is too full to grant a long window right now, as
     /// of its last cap check. A caller reports this so the closed state is
     /// seen: while it lasts, a long window protects nothing.
@@ -490,6 +488,8 @@ impl DedupStore {
         self.long_window_closed.load(Ordering::Relaxed)
     }
 
+    /// How many records this store currently holds -- the row bound's own
+    /// assertion, and operator inspection.
     pub fn len(&self) -> Result<u32> {
         let conn = self.conn.lock().expect("dedup connection lock poisoned");
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM call_dedup", [], |r| r.get(0))?;

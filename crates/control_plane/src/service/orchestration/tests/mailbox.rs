@@ -7,6 +7,7 @@ use syneroym_core::{
 use syneroym_identity::Identity;
 use syneroym_mailbox_format::OPEN_MAX_TTL_SECS;
 use syneroym_rpc::{NativeInvocation, RpcError};
+use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::ContainerPortMapping;
 
 use super::{super::*, helpers::*};
 
@@ -459,6 +460,27 @@ async fn a_tcp_service_cannot_take_the_mailbox_interface_either() {
 
     assert!(err.contains("reserved"), "{err}");
     assert!(registry.lookup("svc-tcp", "mailbox").is_none());
+}
+
+#[tokio::test]
+async fn a_container_service_cannot_take_the_mailbox_interface_either() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, _registry) =
+        service_with_node_identity(dir.path(), Arc::new(Identity::generate().unwrap())).await;
+    let mut manifest = container_manifest_with(None);
+    let WitServiceType::Container(container) = &mut manifest.service_type else {
+        panic!("a container manifest")
+    };
+    container.ports.push(ContainerPortMapping {
+        interface_name: "mailbox".to_string(),
+        host_port: None,
+        container_port: 80,
+        protocol: "tcp".to_string(),
+    });
+
+    let err = service.deploy("svc-box".to_string(), manifest, &caller()).await.unwrap_err();
+
+    assert!(err.contains("reserved"), "{err}");
 }
 
 // -- the operator door -----------------------------------------------------
