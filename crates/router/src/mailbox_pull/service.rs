@@ -478,10 +478,10 @@ impl MailboxPuller {
         self.send_acks(pass, inputs, acks).await
     }
 
-    /// One `ack` call. `false` when the call failed: the messages come back
-    /// after the visibility time and the fence replays them. An empty list
-    /// makes no call. A message is counted only when the mailbox stored its
-    /// receipt.
+    /// One `ack` call. `false` when the call failed: the messages count as
+    /// not acked, come back after the visibility time, and the fence
+    /// replays them. An empty list makes no call. A message is counted as
+    /// delivered or rejected only when the mailbox stored its receipt.
     async fn send_acks(
         &self,
         pass: &mut ServicePass<'_>,
@@ -492,24 +492,32 @@ impl MailboxPuller {
             return true;
         }
         let (acks, counts): (Vec<_>, Vec<_>) = handled.into_iter().unzip();
-        let Ok(params) = serde_json::to_value(AckParams { acks }) else { return false };
-        let answer =
-            self.proxy.call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_ACK, params).await;
-        let results = match answer.map(serde_json::from_value::<AckAnswer>) {
-            Ok(Ok(answer)) => answer.results,
-            Ok(Err(e)) => {
-                debug!(error = %e, "the ack answer does not parse");
-                return false;
-            }
-            Err(e) => {
-                debug!(error = %e, "could not ack at the mailbox");
-                return false;
-            }
+        let Some(results) = self.ack(inputs, acks).await else {
+            pass.summary.not_acked += u32::try_from(counts.len()).unwrap_or(u32::MAX);
+            return false;
         };
         for (outcome, count) in results.into_iter().zip(counts) {
             pass.count_ack(outcome, count);
         }
         true
+    }
+
+    /// The mailbox's answer to one `ack` call, or `None` when there is none.
+    async fn ack(&self, inputs: &Inputs, acks: Vec<AckEntry>) -> Option<Vec<AckOutcome>> {
+        let params = serde_json::to_value(AckParams { acks }).ok()?;
+        let answer =
+            self.proxy.call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_ACK, params).await;
+        match answer.map(serde_json::from_value::<AckAnswer>) {
+            Ok(Ok(answer)) => Some(answer.results),
+            Ok(Err(e)) => {
+                debug!(error = %e, "the ack answer does not parse");
+                None
+            }
+            Err(e) => {
+                debug!(error = %e, "could not ack at the mailbox");
+                None
+            }
+        }
     }
 
     /// At most once an hour, looks up the record the registry serves for

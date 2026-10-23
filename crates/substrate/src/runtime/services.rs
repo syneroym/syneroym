@@ -397,7 +397,10 @@ impl RuntimeServices {
 
         // Aborted, not detached: an old puller must not keep pulling with
         // this node's certificates after it stops. Unacked messages come back
-        // after the mailbox's visibility time.
+        // after the mailbox's visibility time. A delivery already handed to
+        // a service runs in its own task and is not aborted: it is one call
+        // that ends on its own and settles its fence claim, so the message
+        // gets its recorded answer when it comes back.
         self.mailbox_pull_cancel.cancel();
         if let Some(handle) = self.mailbox_pull_join.take() {
             handle.abort();

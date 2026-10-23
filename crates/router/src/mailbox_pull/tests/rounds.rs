@@ -111,5 +111,6 @@ async fn a_message_is_not_counted_when_its_ack_fails() {
     let summary = node.pass().await;
 
     assert_eq!((summary.delivered, summary.rejected), (0, 0), "{summary:?}");
+    assert_eq!(summary.not_acked, 2, "{summary:?}");
     assert_eq!(node.dispatch.call_count(), 2);
 }

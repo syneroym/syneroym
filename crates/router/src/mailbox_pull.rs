@@ -195,6 +195,11 @@ impl MailboxPullControl for MailboxPuller {
     /// `unregister` removes it. When the stored record named another
     /// mailbox than the fact, the queue there is removed too.
     async fn release(&self, service_id: &str, mailbox: &str) {
+        let gate = self.register_gate(service_id);
+        let mut registered_at = gate.lock().await;
+        // Taken first, so the gate names no queue even when nothing can be
+        // sent and can be dropped once the service is gone.
+        let other = registered_at.take().filter(|at| at != mailbox);
         let Some(instance) = self.proxy.service_instance(service_id) else {
             debug!(
                 service_id,
@@ -202,9 +207,6 @@ impl MailboxPullControl for MailboxPuller {
             );
             return;
         };
-        let gate = self.register_gate(service_id);
-        let mut registered_at = gate.lock().await;
-        let other = registered_at.take().filter(|at| at != mailbox);
         for mailbox in iter::once(mailbox).chain(other.as_deref()) {
             self.unregister(&instance, service_id, mailbox).await;
         }

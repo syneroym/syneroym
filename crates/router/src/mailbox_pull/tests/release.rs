@@ -52,6 +52,20 @@ async fn release_without_a_certificate_sends_nothing() {
 }
 
 #[tokio::test]
+async fn release_without_a_certificate_leaves_no_gate_behind() {
+    let node = pull_node(&["greeter#greet"]).await;
+    node.pass().await;
+    node.registry.remove_mailbox(&node.service_id).await.unwrap();
+    node.registry.remove_instance_cert(&node.service_id).await.unwrap();
+
+    node.puller.release(&node.service_id, &node.mailbox_did).await;
+    node.pass().await;
+
+    let gates = node.puller.register_gates.lock().unwrap();
+    assert!(!gates.contains_key(&node.service_id), "the gate of a gone service is dropped");
+}
+
+#[tokio::test]
 async fn release_ignores_a_newer_instance() {
     let node = pull_node(&["greeter#greet"]).await;
     node.pass().await;
