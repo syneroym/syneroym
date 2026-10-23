@@ -2,6 +2,7 @@
 
 use std::{
     sync::{Arc, mpsc},
+    thread,
     time::Duration,
 };
 
@@ -560,17 +561,20 @@ async fn an_open_window_is_reported_without_taking_the_lock() {
     let node = node(false, &["svc-a"]).await;
     let store = node.guard.store_for("svc-a").await.unwrap();
 
-    // Hold the lock: a report that needs it cannot finish.
+    // Hold the lock: a report that needs it cannot finish. The lock is let
+    // go inside the scope, because the scope waits for its thread, so a
+    // report that is stuck would otherwise hang the test and hide the message.
     let held = node.guard.closed_long_windows.lock().unwrap();
     let (done, finished) = mpsc::channel();
-    let in_time = std::thread::scope(|scope| {
+    let in_time = thread::scope(|scope| {
         scope.spawn(|| {
             node.guard.report_long_window("svc-a", &store);
             let _ = done.send(());
         });
-        finished.recv_timeout(Duration::from_secs(5)).is_ok()
+        let in_time = finished.recv_timeout(Duration::from_secs(5)).is_ok();
+        drop(held);
+        in_time
     });
-    drop(held);
 
     assert!(in_time, "an open window must not wait for the lock");
     assert!(node.guard.closed_long_windows.lock().unwrap().is_empty());
