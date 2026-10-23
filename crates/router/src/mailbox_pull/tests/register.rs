@@ -1,15 +1,19 @@
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+
 use syneroym_control_plane::MailboxPullControl;
 use syneroym_core::{
     config::MailboxRole,
+    dht_registry::SignedEndpointInfo,
     mailbox::{HostedMailbox, codes},
 };
-use syneroym_mailbox_format::MailboxSecretKey;
+use syneroym_mailbox_format::{MailboxSecretKey, Receipt};
 use syneroym_rpc::RpcError;
+use tokio::time;
 
 use super::helpers::*;
 use crate::handshake::now_secs;
 
-fn fresh_record(node: &PullNode) -> syneroym_core::dht_registry::SignedEndpointInfo {
+fn fresh_record(node: &PullNode) -> SignedEndpointInfo {
     service_record(&node.svc_master, &node.service_id, &node.mailbox_did, &node.vault.key)
 }
 
@@ -90,10 +94,7 @@ async fn an_expired_record_keeps_claiming_with_the_known_time_to_live() {
     let summary = node.pass().await;
 
     assert_eq!(summary.delivered, 1);
-    assert!(matches!(
-        node.receipt(&sender, &sent).await,
-        syneroym_mailbox_format::Receipt::Delivered { .. }
-    ));
+    assert!(matches!(node.receipt(&sender, &sent).await, Receipt::Delivered { .. }));
 }
 
 #[tokio::test]
@@ -158,7 +159,7 @@ async fn a_move_to_another_mailbox_registers_there_without_unregistering() {
 
 #[tokio::test]
 async fn an_undeploy_during_a_pass_leaves_no_queue() {
-    let node = std::sync::Arc::new(pull_node(&["greeter#greet"]).await);
+    let node = Arc::new(pull_node(&["greeter#greet"]).await);
     node.pass().await;
     // Enough messages for a second claim round.
     let sender = SenderMember::new();
@@ -169,7 +170,7 @@ async fn an_undeploy_during_a_pass_leaves_no_queue() {
     // is delivering.
     let undeploy = {
         let node = node.clone();
-        move || -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        move || -> Pin<Box<dyn Future<Output = ()> + Send>> {
             Box::pin(async move {
                 node.registry.remove_mailbox(&node.service_id).await.unwrap();
                 node.puller.release(&node.service_id, &node.mailbox_did).await;
@@ -186,7 +187,7 @@ async fn an_undeploy_during_a_pass_leaves_no_queue() {
 
 #[tokio::test]
 async fn a_release_waits_for_a_register_in_flight() {
-    let node = std::sync::Arc::new(pull_node(&["greeter#greet"]).await);
+    let node = Arc::new(pull_node(&["greeter#greet"]).await);
     let (entered, proceed) = node.mailbox.hold("register");
     let pass = {
         let node = node.clone();
@@ -201,7 +202,7 @@ async fn a_release_waits_for_a_register_in_flight() {
             node.puller.release(&node.service_id, &node.mailbox_did).await;
         })
     };
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    time::sleep(Duration::from_millis(200)).await;
     assert!(!release.is_finished(), "the release waits for the register in flight");
 
     proceed.notify_one();

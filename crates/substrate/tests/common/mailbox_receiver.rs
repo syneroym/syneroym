@@ -1,79 +1,31 @@
-//! A test double that plays a receiver at a mailbox: it registers, claims,
-//! opens what a sender deposited, and answers with a receipt it signs with
-//! its own instance key.
+//! One receiver member of a mailbox test: the master, the mailbox key it
+//! derives, the service deployed on a node with a mailbox in its record, and
+//! a double that registers the queue itself.
 //!
-//! The receiver's service is usually also deployed on a node (and then
-//! stopped), so a sender has a real record to resolve. Its mailbox key is
-//! the one the deploy derives from the master, so a deploy and this double
-//! agree on one key.
+//! The deploy is the real thing: the node's own mailbox receiver registers
+//! and pulls. The double is only for a receiver whose node no longer hosts
+//! the service, where the queue must be made by hand.
 
 #![allow(clippy::cognitive_complexity, dead_code)]
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use serde_json::{Value, json};
+use serde_json::json;
 use syneroym_core::{
     dht_registry::{
-        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMailbox, EndpointType,
-        RegistryClient, SignedEndpointInfo,
+        EndpointInfo, EndpointMailbox, EndpointType, RegistryClient, SignedEndpointInfo,
     },
-    mailbox::{
-        AckAnswer, AckOutcome, ClaimAnswer, MAILBOX_INTERFACE, METHOD_ACK, METHOD_CLAIM,
-        METHOD_REGISTER,
-    },
+    mailbox::METHOD_REGISTER,
 };
-use syneroym_identity::{
-    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
-};
-use syneroym_mailbox_format::{
-    MailboxSecretKey, OpenPolicy, OpenedMessage, Receipt, RejectCode, open,
-};
-use syneroym_rpc::JsonRpcError;
+use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE};
+use syneroym_mailbox_format::MailboxSecretKey;
 use syneroym_sdk::{
     Publication, SyneroymClient,
     deploy::{Visibility, certify_instance, member_registry_record},
 };
 
-use super::SubstrateNode;
-
-pub fn did_of(identity: &Identity) -> String {
-    substrate::derive_did_key(&identity.public_key())
-}
-
-pub fn not_after() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .saturating_add(DEFAULT_ENDPOINT_NOT_AFTER_SECS)
-}
-
-/// A client that presents `instance` and its certificate to `node`.
-pub async fn instance_client(
-    node: &SubstrateNode,
-    instance: &Identity,
-    cert: &DelegationCertificate,
-) -> SyneroymClient {
-    let mut client =
-        node.client_as(Identity::from_bytes(&instance.to_bytes())).with_delegation(cert.clone());
-    client.connect().await.expect("failed to connect instance client");
-    client
-}
-
-/// One mailbox method, with the JSON-RPC error split out as `(code, data)`.
-pub async fn call(
-    client: &SyneroymClient,
-    method: &str,
-    params: Value,
-) -> Result<Value, (i32, Value)> {
-    match client.request(MAILBOX_INTERFACE, method, params).await {
-        Ok(res) => Ok(res.result),
-        Err(e) => match e.downcast_ref::<JsonRpcError>() {
-            Some(rpc_err) => Err((rpc_err.code, rpc_err.data.clone().unwrap_or(Value::Null))),
-            None => panic!("unexpected transport or parse error: {e:?}"),
-        },
-    }
-}
+use super::{
+    SubstrateNode,
+    mailbox_client::{call, did_of, instance_client, not_after},
+};
 
 pub struct MailboxReceiver {
     pub master: Identity,
@@ -197,65 +149,4 @@ impl MailboxReceiver {
             .await
             .expect("the mailbox must accept the receiver's record");
     }
-
-    /// Claims everything that waits, opens each message and acks it with
-    /// the receipt `receipt_for` makes. Returns how many messages it acked.
-    pub async fn claim_and_ack(
-        &self,
-        client: &SyneroymClient,
-        receipt_for: impl Fn(&OpenedMessage, &Self) -> Receipt,
-    ) -> usize {
-        let claimed = call(client, METHOD_CLAIM, json!({ "max": 10 })).await.expect("claim failed");
-        let claimed: ClaimAnswer = serde_json::from_value(claimed).unwrap();
-        let mut acks = Vec::new();
-        for message in &claimed.messages {
-            let opened = open(
-                &self.mailbox_key,
-                &self.service_id(),
-                &message.deposit_id,
-                &message.sealed,
-                OpenPolicy::default(),
-                now_secs(),
-            )
-            .expect("the message must open with the receiver's mailbox key");
-            acks.push(json!({
-                "sender": opened.sender_master_did(),
-                "deposit_id": message.deposit_id,
-                "receipt": receipt_for(&opened, self),
-            }));
-        }
-        if acks.is_empty() {
-            return 0;
-        }
-        let count = acks.len();
-        let acked = call(client, METHOD_ACK, json!({ "acks": acks })).await.expect("ack failed");
-        let acked: AckAnswer = serde_json::from_value(acked).unwrap();
-        assert!(acked.results.iter().all(|r| *r == AckOutcome::Stored), "{acked:?}");
-        count
-    }
-
-    pub async fn deliver_all(&self, client: &SyneroymClient) -> usize {
-        self.claim_and_ack(client, |opened, receiver| {
-            opened.sign_delivered(&receiver.instance, &receiver.cert, now_secs()).unwrap()
-        })
-        .await
-    }
-
-    pub async fn reject_all_as_not_eligible(&self, client: &SyneroymClient) -> usize {
-        self.claim_and_ack(client, |opened, receiver| {
-            opened
-                .sign_rejection(
-                    &receiver.instance,
-                    &receiver.cert,
-                    RejectCode::NotEligible,
-                    now_secs(),
-                )
-                .unwrap()
-        })
-        .await
-    }
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }

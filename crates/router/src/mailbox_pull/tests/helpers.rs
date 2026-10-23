@@ -10,6 +10,7 @@ use std::{
 };
 
 use dashmap::DashMap;
+use iroh::{EndpointAddr, SecretKey};
 use serde_json::{Value, json};
 use syneroym_core::{
     config::{MailboxRole, RetryPolicy},
@@ -18,7 +19,7 @@ use syneroym_core::{
         SignedEndpointInfo,
     },
     local_registry::{EndpointRegistry, SubstrateEndpoint},
-    mailbox::HostedMailbox,
+    mailbox::{HostedMailbox, PullSummary, StatusAnswer},
     storage::MockStorage,
 };
 use syneroym_identity::{
@@ -32,6 +33,7 @@ use syneroym_rpc::{
     AuthLevel, CallerContext, CallerProof, NativeDispatchRegistry, NativeInvocation, NativeService,
     ProxyError,
 };
+use tokio::time;
 
 use super::super::{DeferredDispatch, MailboxPuller, ReceiverVault};
 use crate::{
@@ -174,7 +176,7 @@ impl DeferredDispatch for FakeDispatch {
         }
         let delay = *self.delay.lock().unwrap();
         if !delay.is_zero() {
-            tokio::time::sleep(delay).await;
+            time::sleep(delay).await;
         }
         self.outcomes.lock().unwrap().pop_front().unwrap_or(DeferredOutcome::Succeeded)
     }
@@ -239,6 +241,38 @@ pub(super) async fn pull_node(methods: &[&str]) -> PullNode {
     .await
 }
 
+/// The hosted service: its master names the service id, and the node derives
+/// the instance key from its own key and the owner.
+async fn host_service(
+    registry: &EndpointRegistry,
+    node_identity: &Identity,
+    svc_master: &Identity,
+    mailbox_did: &str,
+    methods: Vec<String>,
+) {
+    let service_id = substrate::derive_did_key(&svc_master.public_key());
+    let instance = node_identity.derive_service_identity(OWNER, &service_id);
+    let cert = DelegationCertificate::issue(
+        svc_master,
+        instance.public_key(),
+        3600,
+        SCOPE_SERVICE_INSTANCE.to_string(),
+    )
+    .unwrap();
+    registry.set_owner(service_id.clone(), OWNER.to_string()).await.unwrap();
+    registry.set_instance_cert(service_id.clone(), cert).await.unwrap();
+    registry
+        .register(
+            service_id.clone(),
+            INTERFACE.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: service_id.clone() },
+        )
+        .await
+        .unwrap();
+    let fact = HostedMailbox { mailbox: mailbox_did.to_string(), max_ttl_secs: WEEK_SECS, methods };
+    registry.set_mailbox(service_id, fact).await.unwrap();
+}
+
 pub(super) async fn pull_node_with(setup: Setup) -> PullNode {
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     let node_identity = Arc::new(Identity::generate().unwrap());
@@ -264,39 +298,9 @@ pub(super) async fn pull_node_with(setup: Setup) -> PullNode {
             .unwrap();
     }
 
-    // The hosted service: its master names the service id, and the node
-    // derives the instance key from its own key and the owner.
     let svc_master = Identity::generate().unwrap();
     let service_id = substrate::derive_did_key(&svc_master.public_key());
-    let instance = node_identity.derive_service_identity(OWNER, &service_id);
-    let cert = DelegationCertificate::issue(
-        &svc_master,
-        instance.public_key(),
-        3600,
-        SCOPE_SERVICE_INSTANCE.to_string(),
-    )
-    .unwrap();
-    registry.set_owner(service_id.clone(), OWNER.to_string()).await.unwrap();
-    registry.set_instance_cert(service_id.clone(), cert).await.unwrap();
-    registry
-        .register(
-            service_id.clone(),
-            INTERFACE.to_string(),
-            SubstrateEndpoint::WasmChannel { service_id: service_id.clone() },
-        )
-        .await
-        .unwrap();
-    registry
-        .set_mailbox(
-            service_id.clone(),
-            HostedMailbox {
-                mailbox: mailbox_did.clone(),
-                max_ttl_secs: WEEK_SECS,
-                methods: setup.methods,
-            },
-        )
-        .await
-        .unwrap();
+    host_service(&registry, &node_identity, &svc_master, &mailbox_did, setup.methods).await;
 
     let mailbox_key = MailboxSecretKey::generate().unwrap();
     let record = service_record(&svc_master, &service_id, &mailbox_did, &mailbox_key);
@@ -358,7 +362,7 @@ pub(super) async fn pull_node_with(setup: Setup) -> PullNode {
 /// to a mailbox that is not on this node reaches the recording hop.
 async fn mailbox_registry_url(mailbox_identity: &Identity) -> String {
     let did = substrate::derive_did_key(&mailbox_identity.public_key());
-    let addr = iroh::EndpointAddr::new(iroh::SecretKey::generate(&mut rand::rng()).public());
+    let addr = EndpointAddr::new(SecretKey::generate(&mut rand::rng()).public());
     let record = EndpointInfo {
         service_id: did.clone(),
         substrate_id: did,
@@ -419,7 +423,7 @@ pub(super) fn with_key(key: &str) -> MessageContent {
 
 impl PullNode {
     /// Runs one pass, which registers the queue when it is new.
-    pub(super) async fn pass(&self) -> syneroym_core::mailbox::PullSummary {
+    pub(super) async fn pass(&self) -> PullSummary {
         self.puller.pull_once().await
     }
 
@@ -463,7 +467,7 @@ impl PullNode {
     pub(super) async fn receipt(&self, sender: &SenderMember, sent: &SentDeposit) -> Receipt {
         let params = json!({ "deposit_ids": [sent.deposit_id] });
         let answer = self.call_mailbox_as(sender, "status", params).await.unwrap();
-        let answer: syneroym_core::mailbox::StatusAnswer = serde_json::from_value(answer).unwrap();
+        let answer: StatusAnswer = serde_json::from_value(answer).unwrap();
         answer.receipts.into_iter().find(|e| e.deposit_id == sent.deposit_id).unwrap().receipt
     }
 }

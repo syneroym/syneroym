@@ -1,6 +1,8 @@
 //! One hosted service: its inputs, its registration at the mailbox, and its
 //! claim rounds.
 
+use std::mem;
+
 use syneroym_core::{
     dht_registry::SignedEndpointInfo,
     mailbox::{
@@ -389,8 +391,7 @@ impl MailboxPuller {
             if let Some(entry) = self.handle_one(pass, inputs, claimed, policy).await {
                 acks.push(entry);
             }
-            if acks.len() >= ACK_FLUSH
-                && !self.send_acks(pass, inputs, std::mem::take(&mut acks)).await
+            if acks.len() >= ACK_FLUSH && !self.send_acks(pass, inputs, mem::take(&mut acks)).await
             {
                 return false;
             }

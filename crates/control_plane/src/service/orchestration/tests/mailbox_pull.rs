@@ -1,7 +1,7 @@
 //! The control plane's side of the mailbox receiver: deploy-time method
 //! checks, the stored record, the wakes, and removing an old queue.
 
-use std::sync::Mutex;
+use std::{future, path::Path, sync::Mutex};
 
 use syneroym_core::{
     dht_registry::{EndpointInfo, EndpointType},
@@ -12,6 +12,7 @@ use syneroym_core::{
 };
 use syneroym_identity::Identity;
 use syneroym_rpc::{Ability, AuthLevel, Capability, NativeInvocation, NativeService, RpcError};
+use tokio::time::Instant;
 
 use super::{super::*, helpers::*};
 use crate::mailbox_pull::MailboxPullControl;
@@ -83,7 +84,7 @@ impl MailboxPullControl for FakePuller {
             fact: self.registry.mailbox_of(service_id).map(|f| f.mailbox),
         });
         if self.hang_on_release {
-            std::future::pending::<()>().await;
+            future::pending::<()>().await;
         }
     }
 }
@@ -170,7 +171,7 @@ fn admin() -> CallerContext {
 
 async fn host(
     member: &Member,
-    dir: &std::path::Path,
+    dir: &Path,
 ) -> (ControlPlaneService, EndpointRegistry, Arc<FakePuller>) {
     let (service, registry) = service_with_node_identity(dir, member.node_identity.clone()).await;
     let puller = FakePuller::new(registry.clone());
@@ -488,7 +489,7 @@ async fn a_release_that_never_returns_is_given_up_after_the_timeout() {
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     let puller = FakePuller::hanging(registry);
 
-    let started = tokio::time::Instant::now();
+    let started = Instant::now();
     mailbox_key::release_within(
         mailbox_key::RELEASE_TIMEOUT,
         puller.as_ref(),

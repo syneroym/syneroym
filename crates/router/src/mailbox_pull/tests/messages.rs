@@ -1,9 +1,12 @@
+use std::{sync::atomic::Ordering, time::Duration};
+
 use syneroym_core::{local_registry::SubstrateEndpoint, util};
 use syneroym_identity::DelegationCertificate;
 use syneroym_mailbox_format::{
     DepositId, MAX_CLOCK_SKEW_SECS, MailboxSecretKey, MessageContent, Receipt, ReceiptError,
     Recipient, RejectCode, Sender, SentDeposit, SignedOutcome, seal, seal_unchecked,
 };
+use tokio::time;
 
 use super::helpers::*;
 use crate::{handshake::now_secs, route_handler::deferred::DeferredOutcome};
@@ -52,7 +55,7 @@ async fn a_sender_certificate_that_expired_after_the_send_time_is_still_delivere
     node.pass().await;
     let sender = SenderMember::with_cert_life(2);
     node.deposit(&sender, &greet()).await;
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    time::sleep(Duration::from_secs(3)).await;
     assert!(sender.cert.is_expired());
 
     // The mailbox no longer admits the sender, so the receipt cannot be read
@@ -204,7 +207,7 @@ async fn an_unreadable_anchor_leaves_the_message_unacked() {
     node.pass().await;
     let sender = SenderMember::new();
     let sent = node.deposit(&sender, &greet()).await;
-    node.anchors.unreadable.store(true, std::sync::atomic::Ordering::SeqCst);
+    node.anchors.unreadable.store(true, Ordering::SeqCst);
 
     let summary = node.pass().await;
 

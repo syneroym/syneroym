@@ -44,7 +44,7 @@ use syneroym_rpc::{
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tempfile::{TempDir, tempdir};
-use tokio::sync::Notify;
+use tokio::{sync::Notify, time};
 
 const TARGET_SERVICE: &str = "svc-target";
 
@@ -364,7 +364,7 @@ async fn a_call_from_the_mailbox_reaches_the_service_as_its_sender() {
         SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    time::sleep(Duration::from_secs(2)).await;
     assert!(cert.is_expired(), "nothing on the path may check the certificate again");
     let mut who = caller(&cert.master_did);
     who.proof = Some(CallerProof {

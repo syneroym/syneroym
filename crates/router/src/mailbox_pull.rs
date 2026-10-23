@@ -13,7 +13,7 @@ mod service;
 use std::{
     collections::HashMap,
     fmt,
-    sync::{Arc, PoisonError},
+    sync::{self, Arc, PoisonError},
     time::Duration,
 };
 
@@ -22,7 +22,7 @@ use syneroym_control_plane::{ControlPlaneService, MailboxPullControl};
 use syneroym_core::{
     dht_registry::SignedEndpointInfo,
     local_registry::EndpointRegistry,
-    mailbox::{METHOD_UNREGISTER, PullSummary, codes},
+    mailbox::{HostedMailbox, METHOD_UNREGISTER, PullSummary, codes},
 };
 use syneroym_mailbox_format::{MailboxSecretKey, MessageContent};
 use syneroym_rpc::{CallerContext, ProxyError};
@@ -83,7 +83,7 @@ pub struct MailboxPuller {
     wake: Notify,
     /// One gate for each service, outside the pass lock: a `register` and a
     /// `release` of the same service never cross.
-    register_gates: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    register_gates: sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Default)]
@@ -107,7 +107,7 @@ impl MailboxPuller {
             registry,
             state: Mutex::new(PullState::default()),
             wake: Notify::new(),
-            register_gates: std::sync::Mutex::new(HashMap::new()),
+            register_gates: sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -159,7 +159,7 @@ impl MailboxPuller {
     /// Drops the gate of a service that is gone, when no one holds it. A
     /// `release` in progress keeps its own. A poisoned lock only skips this
     /// clean-up.
-    fn drop_unused_gates(&self, hosted: &[(String, syneroym_core::mailbox::HostedMailbox)]) {
+    fn drop_unused_gates(&self, hosted: &[(String, HostedMailbox)]) {
         if let Ok(mut gates) = self.register_gates.lock() {
             gates.retain(|id, gate| {
                 Arc::strong_count(gate) > 1 || hosted.iter().any(|(h, _)| h == id)

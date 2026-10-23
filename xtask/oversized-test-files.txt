@@ -1,8 +1,8 @@
 crates/app_host_native/tests/dual_build_parity/helpers.rs 869
-crates/app_orchestration/src/models/tests.rs 1002
+crates/app_orchestration/src/models/tests.rs 886
 crates/app_orchestration/src/resolver/tests.rs 881
 crates/app_supervisor/src/service/tests/bindings.rs 996
-crates/app_supervisor/src/service/tests/helpers.rs 1210
+crates/app_supervisor/src/service/tests/helpers.rs 1156
 crates/app_supervisor/src/service/tests/resident_loop.rs 961
 crates/app_supervisor/src/service/tests/schedules.rs 802
 crates/app_supervisor/src/service/tests/verbs.rs 988

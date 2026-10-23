@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use syneroym_control_plane::MailboxPullControl;
 use syneroym_core::mailbox::codes;
 use syneroym_mailbox_format::Receipt;
+use tokio::{sync::Notify, time};
 
 use super::helpers::*;
 
@@ -68,8 +69,7 @@ async fn release_does_not_wait_for_a_running_pass() {
     let node = Arc::new(pull_node(&["greeter#greet"]).await);
     node.pass().await;
     node.deposit(&SenderMember::new(), &greet()).await;
-    let (started, proceed) =
-        (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+    let (started, proceed) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
     {
         let (started, proceed) = (started.clone(), proceed.clone());
         *node.dispatch.on_first.lock().unwrap() = Some(Box::new(move || {
@@ -85,7 +85,7 @@ async fn release_does_not_wait_for_a_running_pass() {
     };
     started.notified().await;
 
-    let released = tokio::time::timeout(
+    let released = time::timeout(
         Duration::from_secs(5),
         node.puller.release(&node.service_id, &node.mailbox_did),
     )

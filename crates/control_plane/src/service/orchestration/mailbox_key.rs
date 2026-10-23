@@ -1,6 +1,8 @@
 //! The member's mailbox secret key, kept in the service's own vault under a
 //! name guests cannot read.
 
+use std::io::ErrorKind;
+
 use syneroym_core::{dht_registry::SignedEndpointInfo, mailbox::HostedMailbox};
 use syneroym_data_db::vault_names;
 use syneroym_mailbox_format::OPEN_MAX_TTL_SECS;
@@ -86,7 +88,7 @@ impl ControlPlaneService {
         let path = self.hosted_apps_dir.join(format!("{service_id}.json"));
         match async_fs::read_to_string(&path).await {
             Ok(text) => Ok(Some(serde_json::from_str(&text)?)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.into()),
         }
     }

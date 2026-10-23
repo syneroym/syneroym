@@ -3,7 +3,8 @@ use std::{sync::Arc, time::Duration};
 use syneroym_control_plane::MailboxPullControl;
 use syneroym_core::mailbox::codes;
 use syneroym_identity::{DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE};
-use tokio::sync::Notify;
+use syneroym_mailbox_format::Receipt;
+use tokio::{sync::Notify, time};
 
 use super::helpers::*;
 use crate::mailbox_pull::notes::{Note, Notes};
@@ -31,10 +32,7 @@ async fn an_expired_certificate_waits_and_then_pulls() {
     let summary = node.pass().await;
     assert_eq!(summary.blocked, 1);
     assert_eq!(node.dispatch.call_count(), 0);
-    assert!(matches!(
-        node.receipt(&sender, &sent).await,
-        syneroym_mailbox_format::Receipt::Stored { .. }
-    ));
+    assert!(matches!(node.receipt(&sender, &sent).await, Receipt::Stored { .. }));
 
     // The supervisor renews the certificate.
     node.registry.set_instance_cert(node.service_id.clone(), renewed_cert(&node)).await.unwrap();
@@ -108,9 +106,9 @@ async fn a_note_is_written_once_an_hour() {
     assert!(notes.note("svc", Note::NoRecord, ""), "another note is its own");
     assert!(notes.note("other", Note::NoKey, ""), "another service is its own");
 
-    tokio::time::advance(Duration::from_secs(3599)).await;
+    time::advance(Duration::from_secs(3599)).await;
     assert!(!notes.note("svc", Note::NoKey, ""));
-    tokio::time::advance(Duration::from_secs(2)).await;
+    time::advance(Duration::from_secs(2)).await;
     assert!(notes.note("svc", Note::NoKey, ""));
 }
 
@@ -140,7 +138,7 @@ async fn pull_now_runs_after_a_running_pass() {
         let node = node.clone();
         tokio::spawn(async move { node.puller.pull_now().await })
     };
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    time::sleep(Duration::from_millis(200)).await;
     assert!(!waiting.is_finished(), "pull-now waits for the pass that is running");
 
     proceed.notify_one();
