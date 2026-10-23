@@ -6,7 +6,7 @@ planning conversation. This plan is meant to stand alone.*
 **Status: ready, 2026-10-23. The owner accepted the recommendations for
 Q1 to Q9 (section 2) on 2026-10-23. A review on the same day changed Q3
 (an error answer is now an unsigned rejection, not `delivered`, so no
-ADR-0026 amendment is needed) and added C6-15 to C6-17. The owner accepted
+ADR-0026 amendment is needed) and added C6-15 to C6-18. The owner accepted
 the revised Q3 on 2026-10-23. You can start Step 1 once C5 has merged (see
 Base).**
 
@@ -28,7 +28,7 @@ PR has merged. All C5 work is committed (the last C5 commit is
   names; ADR ids are fine), simple English in comments, 800-line files,
   100-line functions, short match arms, the module layout rule, and no
   hard-coded ports in substrate tests.
-  **This plan names its decisions `C6-1` to `C6-17`. Those ids are for this
+  **This plan names its decisions `C6-1` to `C6-18`. Those ids are for this
   plan only. When a step says "for the reason in C6-n", write the reason
   itself in the comment.**
 - `task.md` in this folder: §3 C4 (forward note), C5 (all notes), C6 (all
@@ -229,7 +229,7 @@ The "Recommendation" column is now the decision.
   | `register` or `claim` `-32045` | Block on this certificate (`instance_refused`). Stop for this pass. |
   | `register` or `claim` `-32046` | Block on this certificate (`stale_instance`: "a newer instance holds the queue"). Stop for this pass. |
   | `register` `-32044` (`mailbox_full`) | Note `mailbox_full`. Stop for this pass. |
-  | `claim` `-32040` | Forget the registration. Register once more in this pass, then claim again. A second `-32040` stops the pass for this service. |
+  | `claim` `-32040` | Forget the registration. Register once more in this pass, then claim again. A second `-32040` stops the pass for this service. This register, like every other, first checks that the hosted-mailbox fact did not change during the pass (C6-18): `-32040` is also what a claim gets just after the control plane removed the queue. |
   | Any other error (transport, timeout, `-32043`, `-32603`, not the native mailbox) | Stop for this pass, log at debug. |
   | The registered mailbox differs from the stored record's mailbox (a redeploy to another mailbox) | Forget the registration and register at the new one. The control plane already removed the old queue (C6-15). |
   | A service is no longer in `hosted_mailboxes` (undeploy, or a redeploy with no mailbox) | Forget its state. The control plane already removed the queue (C6-15). |
@@ -386,24 +386,30 @@ The "Recommendation" column is now the decision.
     `async fn release(&self, service_id: &str, mailbox: &str)`: one
     `unregister` at `mailbox`, made as the service's **current** instance
     (`ProxyRouter::service_instance`, read from the registry now). It does
-    not take the pass lock (a pass may run for minutes); it needs no puller
-    state. No instance (no valid certificate) → nothing is sent, debug log.
+    not take the pass lock (a pass may run for minutes); it takes only the
+    service's register gate (C6-18), which a pass holds for one `register`
+    call at most. No instance (no valid certificate) → nothing is sent, debug log.
     `stale_instance` (`-32046`) is the expected answer after a relocation
     (a newer instance on another node holds the queue) and is ignored; any
     other error is logged at debug.
   - **Undeploy** (`remove_deploy_registry_rows`): read
-    `registry.mailbox_of(service_id)` and call `release` **first**, before
-    `remove_owner` and `remove_instance_cert`.
+    `registry.mailbox_of(service_id)`, then **remove the fact**
+    (`forget_hosted_mailbox`), then call `release`, and only then
+    `remove_owner` and `remove_instance_cert`. The fact goes first so a
+    running pass cannot register the queue again (C6-18); the certificate
+    goes last so the remote mailbox still admits the `unregister`.
   - **Redeploy that changes or drops the mailbox** (`commit_hosted_mailbox`):
-    read the old fact; if the new mailbox differs or is `None`, call
-    `release(service_id, old.mailbox)` after the new instance certificate
-    is installed (it already is at that point: `commit.rs` installs it
-    first) and before the fact is rewritten. The new certificate has the
-    same master and is newer, so the mailbox admits it (newest-certificate
-    rule).
-  - The control plane bounds each `release` with a 15 s timeout (a remote
-    call resolves the mailbox first) and only warns on failure: an
-    undeploy or deploy never fails because of it.
+    read the old fact; if the new mailbox differs or is `None`, **write the
+    new fact first** (`record_hosted_mailbox` or `forget_hosted_mailbox`),
+    then call `release(service_id, old.mailbox)`. The new instance
+    certificate is already installed at that point (`commit.rs` installs it
+    first). It has the same master and is newer, so the mailbox admits it
+    (newest-certificate rule).
+  - The control plane bounds each `release` with a 30 s timeout. It covers
+    the wait for a `register` in flight (C6-18; one mailbox call, up to
+    about 20 s when a remote call looks the mailbox up again) and the
+    `unregister` itself. It only warns on failure: an undeploy or deploy
+    never fails because of it.
   - The puller itself sends no `unregister`. At the start of a pass it
     only forgets the state of services that left `hosted_mailboxes`; when
     the stored record names another mailbox than its registration, it
@@ -428,6 +434,40 @@ The "Recommendation" column is now the decision.
   parts (C6-12) but not as a whole: with many services it can take
   minutes. The client's request timeout ends the wait for the caller; the
   pass still finishes. Written in the developer guide and as a backlog row.
+- **C6-18 A register never brings back a removed queue.** `release` does
+  not take the pass lock, so without more care a pass that is running for
+  the same service can register at the mailbox after `release` removed the
+  queue. The pass already holds its `Inputs`, with the stored record. It
+  registers again when it was about to register anyway (the first pass,
+  a new record, the hourly register), and when its next `claim` answers
+  `-32040` (C6-4). The queue then comes back. The puller never sends
+  `unregister` itself, so the mailbox keeps it and republishes the old
+  record every hour until its `not_after`. The same happens to the old
+  mailbox on a redeploy to another mailbox. (For a remote mailbox the late
+  `register` mostly goes out after the certificate is removed, under the
+  node key, and is refused; a same-node mailbox reads the instance proof
+  from the `CallerContext` and admits it.) Two rules close it:
+  - **Order.** The control plane changes the hosted-mailbox fact *before*
+    it calls `release` (C6-15).
+  - **Register gate.** The puller keeps one `tokio::sync::Mutex<()>` for
+    each service (`register_gates`, outside the pass lock). A pass holds it
+    around "check, then `register`"; `release` holds it around its
+    `unregister`. The check, under the gate: `registry.mailbox_of(service_id)`
+    still names the mailbox of the fact this pass started with
+    (`pass.fact.mailbox`). It compares with the fact, not with the stored
+    record, so the C6-4 rule "use the stored record when the two differ"
+    still holds; it only asks whether the fact *changed* during the pass.
+    When it did, the pass does not register, forgets the registration, and
+    stops for this service; the next pass reads the new fact.
+
+  With both rules the two calls cannot cross. If the register runs first,
+  the `unregister` that follows removes the queue. If `release` runs
+  first, the fact has already changed, so the check fails and no register
+  is sent. The gate is held only for the `register` call itself, not for
+  the `info` call after it or for claims, so `release` waits at most one
+  mailbox call. A `claim` sent to the removed queue just answers `-32040`.
+  Gates of services that left `hosted_mailboxes` are dropped at the start
+  of a pass when no one holds them.
 
 ## 4. Step-by-step changes
 
@@ -437,13 +477,15 @@ The owner accepted Q1 to Q9 as recommended (Q3 as revised after review:
 no ADR amendment):
 
 - `docs/planning/changes/service-mailbox/change.md` `## Deviations`: add
-  `D-C6-1` … for C6-1 to C6-17 and the answers to Q1 to Q9 that change the
+  `D-C6-1` … for C6-1 to C6-18 and the answers to Q1 to Q9 that change the
   design (pull-now name and gate, always-eligible Conversation methods,
   reserved interfaces and short-hash entries, a success acked `delivered`
   and an error answer acked with the unsigned `call_failed`, no
   capabilities on the delivery caller, unsigned proof cannot be passed on,
   fence-caller scope, no long-fence narrowing, `api#invoke` granularity,
-  best-effort `unregister`, the C5 e2e migration). Update the Open
+  best-effort `unregister` driven by the control plane, the fact changed
+  before `release` and the register gate, the C5 e2e migration). Update
+  the Open
   questions: the eligibility question is built; the pull-now question
   stays open only for "who wakes the substrate".
 - Change doc **Design → "Receiver flow"** (`change.md:224-226`): rewrite
@@ -877,9 +919,10 @@ pub trait MailboxPullControl: Send + Sync + fmt::Debug {
 `mailbox_key.rs` gets the caller of `release` (C6-15):
 
 ```rust
-/// How long removing an old queue may hold up an undeploy or deploy. A
-/// remote mailbox is looked up first.
-const RELEASE_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long removing an old queue may hold up an undeploy or deploy: the
+/// wait for a `register` in flight, then the `unregister`. A remote mailbox
+/// is looked up first.
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Removes `service_id`'s queue at `mailbox`, while its instance
 /// certificate is still installed: a remote mailbox only admits the call
@@ -893,17 +936,26 @@ pub(super) async fn release_mailbox_queue(&self, service_id: &str, mailbox: &str
 ```
 
 Callers:
-- `lifecycle.rs::remove_deploy_registry_rows` (`:441`): first line,
-  `if let Some(fact) = self.registry.mailbox_of(service_id) {
-  self.release_mailbox_queue(service_id, &fact.mailbox).await; }`, before
-  `remove_owner` and `remove_instance_cert`. Write the reason in a
-  comment (the remote mailbox admits only the instance, which the next
-  two lines remove).
+- `lifecycle.rs::remove_deploy_registry_rows` (`:442`): the function
+  starts with
+  ```rust
+  let old = self.registry.mailbox_of(service_id);
+  self.forget_hosted_mailbox(service_id).await; // moved up from the end
+  if let Some(old) = old {
+      self.release_mailbox_queue(service_id, &old.mailbox).await;
+  }
+  ```
+  before `remove_owner` and `remove_instance_cert`. Write both reasons in
+  a comment: the fact goes first so a running pass does not register the
+  queue again; the certificate goes after, because the remote mailbox
+  admits only the instance. `clear_mailbox_key` stays where it is.
 - `commit.rs::commit_hosted_mailbox` (`:6`): read
-  `let old = self.registry.mailbox_of(service_id);` first; when
-  `old.mailbox` differs from the new mailbox, or the new one is `None`,
-  call `release_mailbox_queue(service_id, &old.mailbox)` before
-  `record_hosted_mailbox` / `forget_hosted_mailbox`. The new instance
+  `let old = self.registry.mailbox_of(service_id);` first, then run
+  `record_hosted_mailbox` / `forget_hosted_mailbox` as today; after that
+  write succeeds, when `old.mailbox` differs from the new mailbox, or the
+  new one is `None`, call `release_mailbox_queue(service_id,
+  &old.mailbox)`. If the write fails, the deploy rolls back through
+  undeploy, which releases the queue the same way. The new instance
   certificate is installed earlier in `commit_deploy_registry_writes`, so
   the call goes out as the new instance of the same master.
 
@@ -944,7 +996,10 @@ the registry** (the fake checks `registry.instance_cert` and `owner_of`
 inside `release`); a redeploy to another mailbox and a redeploy with no
 mailbox call `release` with the old one; a redeploy to the same mailbox
 does not; a `release` that never returns holds the undeploy for at most
-`RELEASE_TIMEOUT` (paused time).
+`RELEASE_TIMEOUT` (paused time); when `release` runs, the hosted-mailbox
+fact is already gone (undeploy) or already names the new mailbox
+(redeploy) (the fake checks `registry.mailbox_of` inside `release`,
+C6-18).
 
 **5.5 The supervisor.** `crates/app_supervisor/src/service/verbs/submit.rs`
 (`:337`, after `validate_plan_member_settings`): refuse a plan whose
@@ -1189,6 +1244,9 @@ pub struct MailboxPuller {
     registry: EndpointRegistry,
     state: tokio::sync::Mutex<PullState>,
     wake: Notify,
+    /// One gate for each service, outside the pass lock: a `register` and
+    /// a `release` of the same service never cross (C6-18).
+    register_gates: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Default)]
@@ -1199,6 +1257,12 @@ struct PullState {
 
 impl MailboxPuller {
     pub fn new(proxy, dispatch, vault, registry) -> Self;
+
+    /// The register gate of `service_id` (C6-18), made on first use.
+    fn register_gate(&self, service_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut gates = self.register_gates.lock().unwrap_or_else(PoisonError::into_inner);
+        gates.entry(service_id.to_string()).or_default().clone()
+    }
 
     /// Pulls at start, then every minute, and when woken, until cancelled.
     pub async fn run(self: Arc<Self>, cancel: CancellationToken) {
@@ -1220,6 +1284,12 @@ impl MailboxPuller {
         // The control plane removed the queue of a service that is gone
         // (`release`); only the state is left to forget.
         services.retain(|id, _| hosted.iter().any(|(h, _)| h == id));
+        // A gate nobody holds (only the map has it) of a service that is
+        // gone is dropped; a `release` in progress keeps its own. A
+        // poisoned lock only skips this clean-up.
+        if let Ok(mut gates) = self.register_gates.lock() {
+            gates.retain(|id, gate| Arc::strong_count(gate) > 1 || hosted.iter().any(|(h, _)| h == id));
+        }
         let mut anchors = AnchorCache::new();
         let mut summary = PullSummary::default();
         for (service_id, fact) in hosted {
@@ -1239,12 +1309,16 @@ impl MailboxPullControl for MailboxPuller {
     fn wake(&self) { self.wake.notify_one(); }
 
     /// C6-15. No pass lock: the control plane calls this inside an undeploy
-    /// or deploy, which must not wait for a pass.
+    /// or deploy, which must not wait for a pass. It takes the service's
+    /// register gate (C6-18), so a `register` in flight lands first and
+    /// this `unregister` removes it.
     async fn release(&self, service_id: &str, mailbox: &str) {
         let Some(instance) = self.proxy.service_instance(service_id) else {
             debug!(service_id, "no instance certificate; the old queue stays until its lifetime ends");
             return;
         };
+        let gate = self.register_gate(service_id);
+        let _held = gate.lock().await;
         match self.proxy.call_mailbox(&instance, mailbox, METHOD_UNREGISTER, json!({})).await {
             Ok(_) => {}
             Err(e) if code_of(&e) == Some(codes::STALE_INSTANCE) => {} // a newer instance holds it
@@ -1338,10 +1412,25 @@ impl MailboxPuller {
         Some(Inputs { instance, key, record, mailbox })
     }
 
-    /// `true` when claiming may go on (C6-4 register rows).
+    /// `true` when claiming may go on (C6-4 register rows). Every register
+    /// of a pass goes through here, also the one after a `-32040`.
     async fn register(&self, pass: &mut ServicePass<'_>, inputs: &Inputs) -> bool {
         let params = json!(RegisterParams { record: inputs.record.clone() });
-        match self.proxy.call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_REGISTER, params).await {
+        // C6-18: under the gate, register only while the fact is the one
+        // this pass started with. The control plane changes the fact before
+        // it calls `release`, so a removed queue is never registered again.
+        let answer = {
+            let gate = self.register_gate(pass.service_id);
+            let _held = gate.lock().await;
+            let current = self.registry.mailbox_of(pass.service_id).map(|f| f.mailbox);
+            if current.as_deref() != Some(pass.fact.mailbox.as_str()) {
+                debug!(service_id = pass.service_id, "the mailbox changed during the pass; not registering");
+                pass.entry.registered = None;
+                return false;
+            }
+            self.proxy.call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_REGISTER, params).await
+        }; // the gate is released here: `learn` (and its `info` call) runs without it
+        match answer {
             Ok(value) => match serde_json::from_value::<RegisterAnswer>(value) {
                 Ok(answer) => { self.learn(pass, inputs, answer.limits).await; true }
                 Err(e) => { debug!(…); false }
@@ -1629,7 +1718,7 @@ as the sender. Tests then call `puller.pull_once()` and read the mailbox
 
 | File | Tests (names are the behaviour) |
 | --- | --- |
-| `register.rs` | `the_first_pass_registers_and_later_passes_only_claim`; `a_new_stored_record_registers_again`; `a_removed_queue_is_registered_again_in_the_same_pass`; `an_expired_record_keeps_claiming_with_the_known_time_to_live`; `the_learned_time_to_live_is_written_to_the_fact`; `a_fact_changed_by_a_deploy_is_not_overwritten`; `the_receiver_on_the_mailbox_host_presents_its_instance_proof` (the local `invoke_local` path carries `pubkey_hex` and `delegation_json`; `CountingMailbox` checks it); `a_move_to_another_mailbox_registers_there_without_unregistering` (the puller sends no `unregister` itself) |
+| `register.rs` | `the_first_pass_registers_and_later_passes_only_claim`; `a_new_stored_record_registers_again`; `a_removed_queue_is_registered_again_in_the_same_pass`; `an_expired_record_keeps_claiming_with_the_known_time_to_live`; `the_learned_time_to_live_is_written_to_the_fact`; `a_fact_changed_by_a_deploy_is_not_overwritten`; `the_receiver_on_the_mailbox_host_presents_its_instance_proof` (the local `invoke_local` path carries `pubkey_hex` and `delegation_json`; `CountingMailbox` checks it); `a_move_to_another_mailbox_registers_there_without_unregistering` (the puller sends no `unregister` itself); `an_undeploy_during_a_pass_leaves_no_queue` (C6-18: a `FakeDispatch` that, on the first delivery, removes the fact and calls `release` the way the control plane does; the next `claim` answers `-32040`, the pass does not register again, and after the pass the mailbox has no queue for the service); `a_release_waits_for_a_register_in_flight` (C6-18: the mailbox holds a `register` until the test lets it go; a `release` started meanwhile returns only after it, and the queue is gone at the end); `a_fact_rewritten_with_the_same_mailbox_still_registers` (the write-back of C6-8, or a redeploy to the same mailbox, does not count as a change) |
 | `release.rs` | `release_removes_the_queue_at_a_local_mailbox` (waiting messages read `expired` for their sender); `release_reaches_a_remote_mailbox_as_the_instance` (remote mailbox set up as in `proxy/tests/mailbox.rs::a_remote_mailbox_call_is_signed_by_the_sender_instance_and_carries_no_on_behalf`: the `MockHop` sees a preamble with the service's instance key and certificate, not the node key); `release_without_a_certificate_sends_nothing` (owner and certificate removed first: no call at all, which is why the control plane calls `release` before it removes them); `release_ignores_a_newer_instance` (`-32046`, queue still there); `release_does_not_wait_for_a_running_pass` (a pass blocked in a slow `FakeDispatch`; `release` still returns) |
 | `messages.rs` | `a_message_is_delivered_as_its_sender_and_acked_delivered` (caller DID is the sealed master, proof has the sender key and certificate, no capabilities); `a_sender_certificate_that_expired_after_the_send_time_is_still_delivered` (R-4 accept case: a certificate valid for about 2 s, seal, wait until it has expired, pull: `delivered`); `a_sender_certificate_that_does_not_verify_is_rejected_unsigned` (sealed with `seal_unchecked` from the `test-support` feature); `an_error_answer_is_rejected_unsigned_as_call_failed` (and a replayed error too); `a_method_that_did_not_opt_in_is_rejected_signed`; `the_conversation_methods_are_always_accepted`; `a_short_hash_interface_matches_its_listed_name`; `an_entry_that_names_the_hash_matches_the_canonical_interface`; `an_empty_key_is_rejected_signed`; `a_revoked_sender_is_rejected_signed`; `an_unreadable_anchor_leaves_the_message_unacked`; `a_temporary_failure_is_not_acked`; `a_tcp_service_rejects_signed`; `a_message_for_another_key_is_rejected_unsigned`; `a_message_older_than_the_queue_allows_is_rejected_unsigned`; `a_message_from_the_future_is_rejected_signed` (and the sender's `Receipt::verify_signed` accepts each signed receipt and refuses `call_failed` as unsigned) |
 | `rounds.rs` | `acks_are_sent_every_eight_messages` (a slow `FakeDispatch`; the mailbox shows acks before the batch ends); `a_round_stops_before_its_visibility_time_ends` (paused time; a fake whose deliveries take long enough to cross the local budget: the delivered messages are acked, the rest are not handled and come back); `the_first_message_of_a_round_is_always_handled` (a visibility time shorter than one delivery timeout); `a_mailbox_clock_far_ahead_or_behind_does_not_change_the_round` (a mailbox whose `visible_again_at_secs` is hours off this node's clock, for example by wrapping `CountingMailbox` to shift it: the round handles the same messages); `every_ack_outcome_is_read` (a message closed at the mailbox meanwhile answers `not_found`, logged, not counted as delivered) |
@@ -1753,6 +1842,9 @@ and that no test leaves a puller warning in a loop that slows it.
 | `seal_unchecked` | public behind the `test-support` feature | router `[dev-dependencies]` |
 | `is_node_level_interface` | moved from `router/src/call_dedup.rs:195` to `core/src/local_registry.rs`; method wrapper `call_dedup.rs:291` removed | `call_dedup.rs:449` (`begin`), `proxy/router.rs:548`, `proxy/saga_dispatch.rs:142`, `call_dedup/tests.rs:453-454` (moved to core tests), new `is_reserved_mailbox_interface` |
 | `MailboxPullControl` | `+ release` | `mailbox_key.rs::release_mailbox_queue`, called from `lifecycle.rs::remove_deploy_registry_rows` and `commit.rs::commit_hosted_mailbox` |
+| `remove_deploy_registry_rows` | reads the fact, then `forget_hosted_mailbox` moves from its end to before `release`, before `remove_owner` (C6-18) | `lifecycle.rs:442` |
+| `commit_hosted_mailbox` | writes the new fact, then `release`s the old mailbox (C6-18) | `commit.rs:6` |
+| `MailboxPuller` | `+ register_gates`, `+ register_gate`; `register` checks the fact under the gate (C6-18) | `mailbox_pull.rs`, `mailbox_pull/service.rs` |
 | `SUPERVISOR_RESERVED_SERVICE_ID` | now refers to core `SUPERVISOR_INTERFACE` | `control_plane/src/service.rs:69` |
 | `HostedMailbox` | `+ methods`, `+ accepts` | literals in Step 2; readers `call_dedup.rs::window_for` (unchanged), puller |
 | `EndpointRegistry` | `+ hosted_mailboxes` | puller |
