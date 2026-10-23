@@ -3,6 +3,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    fmt,
     sync::Mutex,
     time::Duration,
 };
@@ -51,8 +52,8 @@ struct ScriptedProxy {
 
 struct Hook(Box<dyn FnOnce() + Send>);
 
-impl std::fmt::Debug for Hook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Hook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Hook")
     }
 }

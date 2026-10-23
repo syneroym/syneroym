@@ -446,6 +446,21 @@ async fn a_guest_cannot_export_the_mailbox_interface() {
     assert!(registry.lookup("svc-guest", "greeter").is_none(), "nothing was registered");
 }
 
+#[tokio::test]
+async fn a_tcp_service_cannot_take_the_mailbox_interface_either() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, registry) =
+        service_with_node_identity(dir.path(), Arc::new(Identity::generate().unwrap())).await;
+    let mut manifest = owner_test_manifest();
+    let WitServiceType::Tcp(tcp) = &mut manifest.service_type else { panic!("a tcp manifest") };
+    tcp.endpoints[0].interface_name = "mailbox".to_string();
+
+    let err = service.deploy("svc-tcp".to_string(), manifest, &caller()).await.unwrap_err();
+
+    assert!(err.contains("reserved"), "{err}");
+    assert!(registry.lookup("svc-tcp", "mailbox").is_none());
+}
+
 // -- the operator door -----------------------------------------------------
 
 #[tokio::test]

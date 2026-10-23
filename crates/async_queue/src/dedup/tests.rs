@@ -404,3 +404,25 @@ fn a_record_keeps_its_long_window_when_the_call_finishes() {
 
     assert_eq!(expiry_of(&store, "did:key:zA"), 1_000 + long.ttl_ms as i64);
 }
+
+#[test]
+fn the_long_window_opens_again_once_the_records_have_expired() {
+    let store = store();
+    // Barely longer than the default, so the records are gone by `later`.
+    let long = DedupWindow {
+        ttl_ms: store.config.ttl_ms + 1,
+        max_rows: store.config.max_rows,
+        max_total_rows: 100,
+    };
+    for i in 0..=2 * CAP_CHECK_INTERVAL {
+        store.begin(&format!("did:key:zCaller{i}"), "k", 1_000, long).unwrap();
+    }
+    assert!(store.long_window_closed(), "too many live records close the long window");
+
+    let later = 10 * store.config.ttl_ms as i64;
+    for i in 0..=CAP_CHECK_INTERVAL {
+        store.begin(&format!("did:key:zLater{i}"), "k", later, long).unwrap();
+    }
+
+    assert!(!store.long_window_closed(), "after the records expired it opened again");
+}

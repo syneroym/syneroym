@@ -1,16 +1,22 @@
 use super::*;
 
+/// A deposit hands the mailbox caller a context the router built, so only the
+/// native mailbox may answer on the name `mailbox`. A deploy of any kind
+/// (WASM, TCP, container) that names it is refused.
+fn reject_reserved_interface<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    if names.into_iter().any(|name| name == MAILBOX_INTERFACE) {
+        anyhow::bail!("'{MAILBOX_INTERFACE}' is reserved for the node's mailbox role");
+    }
+    Ok(())
+}
+
 impl ControlPlaneService {
     pub(super) async fn register_wasm_endpoints(
         &self,
         service_id: &str,
         interfaces: Vec<String>,
     ) -> Result<()> {
-        // A deposit hands the mailbox caller a context the router built, so
-        // only the native mailbox may answer on this name.
-        if interfaces.iter().any(|interface| interface == MAILBOX_INTERFACE) {
-            anyhow::bail!("'{MAILBOX_INTERFACE}' is reserved for the node's mailbox role");
-        }
+        reject_reserved_interface(interfaces.iter().map(String::as_str))?;
         for interface in interfaces {
             self.registry
                 .register(
@@ -356,6 +362,13 @@ impl ControlPlaneService {
                  export it"
             ));
         }
+        if let Err(e) = reject_reserved_interface(
+            tcp_manifest.endpoints.iter().map(|endpoint| endpoint.interface_name.as_str()),
+        ) {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!("Endpoint registration failed: {e}"));
+        }
         for endpoint in &tcp_manifest.endpoints {
             info!(
                 "Deploying TCP service {} endpoint {}: {}:{}",
@@ -402,6 +415,13 @@ impl ControlPlaneService {
                  after-step (authorize_rows: true), but a container service has no guest \
                  component to export it"
             ));
+        }
+        if let Err(e) = reject_reserved_interface(
+            container_manifest.ports.iter().map(|port| port.interface_name.as_str()),
+        ) {
+            self.rollback_config_generation(service_id, new_gen).await;
+            self.rollback_fdae_policy(service_id, previous_fdae_policy).await;
+            return Err(format!("Endpoint registration failed: {e}"));
         }
         info!("Deploying container service {}: image={}", service_id, container_manifest.image);
         let actual_mappings = match self.podman_sandbox_engine.deploy(service_id, manifest).await {

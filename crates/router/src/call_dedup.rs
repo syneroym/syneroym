@@ -24,7 +24,7 @@
 //! requirement; exceeding it was never asked for.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -42,7 +42,7 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_mailbox_format::MAX_CLOCK_SKEW_SECS;
 use syneroym_rpc::ProxyError;
 use tokio::task;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::service_async_db::{AsyncDbLocationError, async_db_location};
 
@@ -217,6 +217,9 @@ pub struct CallDedupGuard {
     /// hot path and one no structural test notices unless it asks.
     /// Bounded by the number of services on the node.
     stores: Mutex<HashMap<String, DedupStore>>,
+    /// Services whose long window is closed, so the warning is made once for
+    /// each time it closes and not for each call.
+    closed_long_windows: Mutex<HashSet<String>>,
     /// Serialises the *opening* of a store, so two callers that miss the
     /// cache at the same moment cannot each build an independent handle to
     /// the same file. Two handles are two connections, and the claim's
@@ -245,6 +248,7 @@ impl CallDedupGuard {
             registry,
             config,
             stores: Mutex::new(HashMap::new()),
+            closed_long_windows: Mutex::new(HashSet::new()),
             open_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -381,6 +385,24 @@ impl CallDedupGuard {
         }
     }
 
+    /// Makes a closed long window visible. While it is closed, a service
+    /// with a mailbox has only the default window, and nothing else says so.
+    fn report_long_window(&self, target_service: &str, store: &DedupStore) {
+        let mut closed = self.closed_long_windows.lock().expect("closed windows poisoned");
+        if store.long_window_closed() {
+            metrics::counter!("substrate.proxy.dedup.long_window_closed").increment(1);
+            if closed.insert(target_service.to_string()) {
+                warn!(
+                    target_service,
+                    "the receiver fence holds too many records for a long window; new calls get \
+                     the default window until records expire"
+                );
+            }
+        } else if closed.remove(target_service) {
+            info!(target_service, "the receiver fence has room for a long window again");
+        }
+    }
+
     /// The one entry point both dispatch sites call.
     ///
     /// `caller` is the identity this node already verified: a DID for a
@@ -440,6 +462,9 @@ impl CallDedupGuard {
             })
             .await
         };
+        if window.ttl_ms > self.config.ttl_ms {
+            self.report_long_window(target_service, &store);
+        }
         match probe {
             Ok(Ok(DedupDecision::Execute(token))) => {
                 GuardOutcome::Execute(Some(DedupClaim { store, caller, key, token }))

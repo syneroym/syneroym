@@ -482,6 +482,14 @@ impl DedupStore {
 
     /// How many records this store currently holds -- the row bound's own
     /// assertion, and operator inspection.
+    /// Whether the store is too full to grant a long window right now, as
+    /// of its last cap check. A caller reports this so the closed state is
+    /// seen: while it lasts, a long window protects nothing.
+    #[must_use]
+    pub fn long_window_closed(&self) -> bool {
+        self.long_window_closed.load(Ordering::Relaxed)
+    }
+
     pub fn len(&self) -> Result<u32> {
         let conn = self.conn.lock().expect("dedup connection lock poisoned");
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM call_dedup", [], |r| r.get(0))?;
