@@ -388,7 +388,8 @@ impl CallDedupGuard {
     /// Makes a closed long window visible. While it is closed, a service
     /// with a mailbox has only the default window, and nothing else says so.
     fn report_long_window(&self, target_service: &str, store: &DedupStore) {
-        let mut closed = self.closed_long_windows.lock().expect("closed windows poisoned");
+        // Only a report: a poisoned lock just skips it.
+        let Ok(mut closed) = self.closed_long_windows.lock() else { return };
         if store.long_window_closed() {
             metrics::counter!("substrate.proxy.dedup.long_window_closed").increment(1);
             if closed.insert(target_service.to_string()) {
