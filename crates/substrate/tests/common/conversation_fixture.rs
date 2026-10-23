@@ -152,6 +152,22 @@ pub async fn fixture_run(node: &SubstrateNode, service_id: &str, request: &Value
     serde_json::from_str(raw).expect("fixture response is not valid JSON")
 }
 
+/// [`fixture_run`] for a poll: a connection or request that fails (a busy
+/// node may miss the connect timeout) answers `None`, so the poll tries
+/// again instead of failing the test.
+async fn try_fixture_run(node: &SubstrateNode, service_id: &str, request: &Value) -> Option<Value> {
+    let mut client = SyneroymClient::new_with_identity(
+        service_id.to_string(),
+        node.registry_url().to_string(),
+        Identity::generate().unwrap(),
+    )
+    .with_registry_dht(false);
+    client.connect().await.ok()?;
+    let response = client.request(FIXTURE_INTERFACE, "run", json!([request.to_string()])).await;
+    client.shutdown().await.ok();
+    serde_json::from_str(response.ok()?.result.as_str()?).ok()
+}
+
 /// The `ok` payload of a fixture reply; panics with the reply if the
 /// fixture answered with an error instead.
 fn ok_of(reply: Value, what: &str) -> Value {
@@ -235,10 +251,8 @@ pub async fn wait_for_state(
     budget: Duration,
 ) -> bool {
     wait_until(budget, || async {
-        let reply =
-            fixture_run(node, service_id, &json!({"op": "delivery-status", "message": message}))
-                .await;
-        reply["ok"]["state"] == want
+        let request = json!({"op": "delivery-status", "message": message});
+        try_fixture_run(node, service_id, &request).await.is_some_and(|r| r["ok"]["state"] == want)
     })
     .await
 }
