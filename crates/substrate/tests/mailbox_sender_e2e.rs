@@ -11,7 +11,7 @@
 //! The sender asks about a deposit once a minute (the receiver pulls about
 //! that often), so a test that needs the answer waits about that long.
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use common::{
     SubstrateNode,
@@ -64,13 +64,43 @@ struct World {
     /// `mailbox` is `None`.
     sender: SubstrateNode,
     mailbox: Option<SubstrateNode>,
-    mailbox_builder: Option<common::NodeBuilder>,
     receiver_node: Option<SubstrateNode>,
-    receiver_builder: common::NodeBuilder,
+    /// What a node needs to come back: the same identity and directory. Each
+    /// boot gets a new builder, so it gets new ports. A reused builder would
+    /// dial the old ports again, which another test may hold by then.
+    restart: Restart,
     receiver: MailboxReceiver,
     guest_did: String,
     greeter_wasm: Vec<u8>,
     _dirs: Vec<TempDir>,
+}
+
+struct Restart {
+    owner: Identity,
+    registry_url: String,
+    mailbox_role: MailboxRole,
+    mailbox_dir: Option<PathBuf>,
+    receiver_dir: PathBuf,
+}
+
+impl Restart {
+    fn mailbox_builder(&self) -> common::NodeBuilder {
+        let role = self.mailbox_role.clone();
+        SubstrateNode::builder()
+            .owner(&self.owner)
+            .base_path(self.mailbox_dir.as_ref().expect("a separate mailbox node"))
+            .shared_registry(&self.registry_url)
+            .configure(move |c| c.roles.mailbox = Some(role.clone()))
+            .inject_kek_bytes(KEK)
+    }
+
+    fn receiver_builder(&self) -> common::NodeBuilder {
+        SubstrateNode::builder()
+            .owner(&self.owner)
+            .base_path(&self.receiver_dir)
+            .shared_registry(&self.registry_url)
+            .inject_kek_bytes(KEK)
+    }
 }
 
 struct Options {
@@ -91,7 +121,6 @@ async fn world(options: Options) -> World {
         artifacts().expect("proxy-test/greeter wasm artifacts not built");
     let owner = Identity::generate().unwrap();
     let role = mailbox_role(options.max_ttl_secs);
-    let mut dirs = Vec::new();
 
     let sender_role = options.same_node.then(|| role.clone());
     let mut sender = SubstrateNode::builder()
@@ -102,29 +131,21 @@ async fn world(options: Options) -> World {
         .await;
     let registry_url = sender.registry_url().to_string();
 
-    let (mailbox, mailbox_builder) = if options.same_node {
-        (None, None)
-    } else {
-        let dir = tempfile::tempdir().unwrap();
-        let mailbox_role = role.clone();
-        let builder = SubstrateNode::builder()
-            .owner(&owner)
-            .base_path(dir.path())
-            .shared_registry(&registry_url)
-            .configure(move |c| c.roles.mailbox = Some(mailbox_role.clone()))
-            .inject_kek_bytes(KEK);
-        dirs.push(dir);
-        (Some(builder.clone().boot().await), Some(builder))
-    };
-
+    let mailbox_dir = (!options.same_node).then(|| tempfile::tempdir().unwrap());
     let receiver_dir = tempfile::tempdir().unwrap();
-    let receiver_builder = SubstrateNode::builder()
-        .owner(&owner)
-        .base_path(receiver_dir.path())
-        .shared_registry(&registry_url)
-        .inject_kek_bytes(KEK);
-    dirs.push(receiver_dir);
-    let receiver_node = receiver_builder.clone().boot().await;
+    let restart = Restart {
+        owner,
+        registry_url,
+        mailbox_role: role,
+        mailbox_dir: mailbox_dir.as_ref().map(|dir| dir.path().to_path_buf()),
+        receiver_dir: receiver_dir.path().to_path_buf(),
+    };
+    let mailbox = match options.same_node {
+        true => None,
+        false => Some(restart.mailbox_builder().boot().await),
+    };
+    let receiver_node = restart.receiver_builder().boot().await;
+    let dirs: Vec<TempDir> = mailbox_dir.into_iter().chain([receiver_dir]).collect();
 
     let caller_master = Identity::generate().unwrap();
     let guest_did = deploy_guest(&mut sender, &caller_master, proxy_wasm).await;
@@ -132,9 +153,8 @@ async fn world(options: Options) -> World {
     let world = World {
         sender,
         mailbox,
-        mailbox_builder,
         receiver_node: Some(receiver_node),
-        receiver_builder,
+        restart,
         receiver: MailboxReceiver::new(),
         guest_did,
         greeter_wasm,
@@ -192,7 +212,7 @@ impl World {
     /// The receiver node comes back: same identity and directory, new
     /// ports, and its greeter deployed again.
     async fn restart_receiver(&mut self) {
-        self.receiver_node = Some(self.receiver_builder.clone().boot().await);
+        self.receiver_node = Some(self.restart.receiver_builder().boot().await);
         self.deploy_receiver().await;
     }
 
@@ -423,7 +443,7 @@ async fn a_stopped_mailbox_keeps_the_call_on_direct_attempts() {
     assert!(dead_letter_keys(&world.sender, &world.guest_did).await.is_empty());
 
     // The mailbox returns, and the deposit is made on a later attempt.
-    world.mailbox = Some(world.mailbox_builder.clone().unwrap().boot().await);
+    world.mailbox = Some(world.restart.mailbox_builder().boot().await);
     world.wait_deposited("msg-1").await;
     world.teardown().await;
 }
