@@ -72,7 +72,11 @@ mod publication_split_tests {
 
     #[test]
     fn public_and_internal_split_to_a_serialized_certificate() {
-        let public = Publication::Public { record: sample_record(), mailbox_key: None };
+        let public = Publication::Public {
+            record: sample_record(),
+            mailbox_key: None,
+            mailbox_methods: Vec::new(),
+        };
         let parts = public.split().unwrap();
         assert_eq!(parts.visibility, Visibility::Public);
         assert!(parts.registry_certificate.is_some());
@@ -87,18 +91,44 @@ mod publication_split_tests {
     #[test]
     fn the_debug_text_of_split_parts_does_not_show_the_mailbox_key() {
         let key = MailboxSecretKey::generate().unwrap();
-        let public =
-            Publication::Public { record: sample_record(), mailbox_key: Some(key.clone()) };
+        let public = Publication::Public {
+            record: sample_record(),
+            mailbox_key: Some(key.clone()),
+            mailbox_methods: Vec::new(),
+        };
         let parts = public.split().unwrap();
         assert!(parts.mailbox.is_some());
         assert!(!format!("{parts:?}").contains(key.to_z32().as_str()));
     }
 
     #[test]
+    fn mailbox_methods_split_to_credentials_with_the_key_only() {
+        let key = MailboxSecretKey::generate().unwrap();
+        let methods = vec!["greeter#greet".parse().unwrap(), "api#invoke".parse().unwrap()];
+        let public = Publication::Public {
+            record: sample_record(),
+            mailbox_key: Some(key),
+            mailbox_methods: methods,
+        };
+        let credentials = public.split().unwrap().mailbox.unwrap();
+        assert_eq!(credentials.methods, ["greeter#greet", "api#invoke"]);
+
+        let without_key = Publication::Public {
+            record: sample_record(),
+            mailbox_key: None,
+            mailbox_methods: vec!["greeter#greet".parse().unwrap()],
+        };
+        assert!(without_key.split().unwrap().mailbox.is_none());
+    }
+
+    #[test]
     fn a_public_mailbox_key_splits_to_credentials_in_its_text_form() {
         let key = MailboxSecretKey::generate().unwrap();
-        let public =
-            Publication::Public { record: sample_record(), mailbox_key: Some(key.clone()) };
+        let public = Publication::Public {
+            record: sample_record(),
+            mailbox_key: Some(key.clone()),
+            mailbox_methods: Vec::new(),
+        };
         let credentials = public.split().unwrap().mailbox.unwrap();
         assert_eq!(credentials.secret_key, key.to_z32().as_str());
     }

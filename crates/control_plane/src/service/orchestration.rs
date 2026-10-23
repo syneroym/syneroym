@@ -9,10 +9,10 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashMap},
-    fs,
+    fmt, fs,
     path::{Component, PathBuf},
     result,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -20,9 +20,9 @@ use anyhow::Result;
 use serde_json::Value;
 use syneroym_app_orchestration::{
     AppInstanceId, BindingWriteOutcome, HealthCheck, HttpProbe, InterfaceName, LogicalServiceName,
-    RpcProbe, ServiceId as AppServiceId, ServiceType as AppServiceType, TcpProbe, TopologyEntry,
-    TopologyEpoch, TopologyKey, TopologyMode as AppTopologyMode, Visibility as AppVisibility,
-    classify_binding_write, compensated_operation,
+    MailboxMethod, RpcProbe, ServiceId as AppServiceId, ServiceType as AppServiceType, TcpProbe,
+    TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode as AppTopologyMode,
+    Visibility as AppVisibility, classify_binding_write, compensated_operation,
 };
 use syneroym_core::{
     asset_manifest::ServiceAssets,
@@ -30,7 +30,7 @@ use syneroym_core::{
     dht_registry::{EndpointMailbox, SignedEndpointInfo},
     http_routes::HttpRoute,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
-    mailbox::MAILBOX_INTERFACE,
+    mailbox::{MAILBOX_INTERFACE, MAX_MAILBOX_METHODS, is_reserved_mailbox_interface},
     storage::AppInstanceManagement,
     util,
 };

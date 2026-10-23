@@ -320,7 +320,11 @@ async fn a_mailbox_round_trips_and_persists_across_a_new_registry() {
     let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
     assert_eq!(registry.mailbox_of("svc-1"), None);
 
-    let mailbox = HostedMailbox { mailbox: "did:key:zBox".to_string(), max_ttl_secs: 100 };
+    let mailbox = HostedMailbox {
+        mailbox: "did:key:zBox".to_string(),
+        max_ttl_secs: 100,
+        methods: vec!["greeter#greet".to_string()],
+    };
     registry.set_mailbox("svc-1".to_string(), mailbox.clone()).await.unwrap();
     assert_eq!(registry.mailbox_of("svc-1"), Some(mailbox.clone()));
 
@@ -330,4 +334,26 @@ async fn a_mailbox_round_trips_and_persists_across_a_new_registry() {
     reopened.remove_mailbox("svc-1").await.unwrap();
     reopened.remove_mailbox("svc-1").await.unwrap();
     assert_eq!(reopened.mailbox_of("svc-1"), None);
+}
+
+#[tokio::test]
+async fn hosted_mailboxes_lists_every_service_with_a_mailbox_sorted() {
+    let registry = EndpointRegistry::new(Arc::new(MockStorage::new())).await.unwrap();
+    let mailbox =
+        HostedMailbox { mailbox: "did:key:zBox".to_string(), max_ttl_secs: 100, methods: vec![] };
+    for id in ["svc-b", "svc-a"] {
+        registry.set_mailbox(id.to_string(), mailbox.clone()).await.unwrap();
+    }
+    let ids: Vec<String> = registry.hosted_mailboxes().into_iter().map(|(id, _)| id).collect();
+    assert_eq!(ids, ["svc-a", "svc-b"]);
+}
+
+#[test]
+fn node_level_interfaces_match_by_name_and_by_short_hash() {
+    for name in ["orchestrator", "security", "supervisor", "mailbox"] {
+        assert!(is_node_level_interface(name), "{name}");
+        assert!(is_node_level_interface(&util::short_hash(name)), "{name} hash");
+    }
+    assert!(!is_node_level_interface("data-layer"));
+    assert!(!is_node_level_interface("greeter"));
 }

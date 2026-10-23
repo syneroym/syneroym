@@ -181,6 +181,10 @@ interface orchestrator {
     record mailbox-credentials {
         /// The member's mailbox secret key: z-base-32 of its 32-byte seed.
         secret-key: string,
+        /// Guest methods (`<interface>#<method>`) that accept delivery from
+        /// the mailbox. Conversation `deliver` and `group-push` are always
+        /// accepted and are not listed.
+        methods: list<string>,
     }
 
     /// A comprehensive manifest for deploying a service on the substrate.

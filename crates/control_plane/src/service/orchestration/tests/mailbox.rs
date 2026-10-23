@@ -75,8 +75,7 @@ impl Member {
         manifest.config.visibility = Some(WitVisibility::Public);
         manifest.registry_certificate = Some(self.record(route, false));
         manifest.instance_certificate = Some(cert.to_json().unwrap());
-        manifest.mailbox =
-            key.map(|key| MailboxCredentials { secret_key: key.to_z32().to_string() });
+        manifest.mailbox = key.map(credentials_for);
         manifest
     }
 }
@@ -90,7 +89,7 @@ async fn host_of(member: &Member, dir: &std::path::Path) -> ControlPlaneService 
 }
 
 fn credentials_for(key: &MailboxSecretKey) -> MailboxCredentials {
-    MailboxCredentials { secret_key: key.to_z32().to_string() }
+    MailboxCredentials { secret_key: key.to_z32().to_string(), methods: Vec::new() }
 }
 
 // -- validate_mailbox ------------------------------------------------------
@@ -170,7 +169,8 @@ fn a_key_that_does_not_parse_is_refused_without_showing_it() {
     let member = Member::new();
     let key = member.mailbox_key();
     let record = member.record(Some(member.mailbox_route(&key)), false);
-    let bad = MailboxCredentials { secret_key: "not-a-key-but-secret".to_string() };
+    let bad =
+        MailboxCredentials { secret_key: "not-a-key-but-secret".to_string(), methods: Vec::new() };
     let err = validate_mailbox(
         &member.service_id,
         Some(&bad),
@@ -216,8 +216,9 @@ fn the_matching_key_is_accepted() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(accepted.0.public_key(), key.public_key());
-    assert_eq!(accepted.1, route.service_id);
+    assert_eq!(accepted.key.public_key(), key.public_key());
+    assert_eq!(accepted.mailbox, route.service_id);
+    assert!(accepted.methods.is_empty());
 }
 
 /// A record whose JSON `info` was changed after signing: the signed packet
@@ -360,7 +361,11 @@ async fn a_redeploy_to_the_same_mailbox_keeps_the_queue_lifetime_the_receiver_le
     let first = member.manifest(&caller, Some(route.clone()), Some(&key));
     service.deploy(member.service_id.clone(), first, &caller).await.unwrap();
 
-    let learned = HostedMailbox { mailbox: route.service_id.clone(), max_ttl_secs: 3 * 24 * 3600 };
+    let learned = HostedMailbox {
+        mailbox: route.service_id.clone(),
+        max_ttl_secs: 3 * 24 * 3600,
+        methods: Vec::new(),
+    };
     registry.set_mailbox(member.service_id.clone(), learned.clone()).await.unwrap();
 
     // A changed argument makes this deploy more than a no-op, so the commit

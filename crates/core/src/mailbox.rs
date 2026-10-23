@@ -8,7 +8,11 @@
 use serde::{Deserialize, Serialize};
 use syneroym_mailbox_format::{DepositId, Receipt, SealedBytes};
 
-use crate::dht_registry::SignedEndpointInfo;
+use crate::{
+    dht_registry::SignedEndpointInfo,
+    local_registry::{self, NATIVE_CAPABILITY_INTERFACES},
+    util,
+};
 
 pub const MAILBOX_INTERFACE: &str = "mailbox";
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -36,6 +40,26 @@ pub const MAX_RECEIPT_JSON_BYTES: usize = 4 * 1024;
 
 pub const MAX_RECORD_JSON_BYTES: usize = 4 * 1024;
 
+/// Conversation calls a sender may always deposit. Every service with a
+/// mailbox accepts them; they arrive on the native `conversation` interface,
+/// which no manifest declares.
+pub const ALWAYS_ELIGIBLE: [(&str, &str); 2] =
+    [("conversation", "deliver"), ("conversation", "group-push")];
+
+/// The longest `mailbox_methods` list a service may declare.
+pub const MAX_MAILBOX_METHODS: usize = 64;
+
+/// Whether `interface` belongs to the node or the platform, so no service
+/// may list it in `mailbox_methods`. Matched by name and by short hash,
+/// like `local_registry::is_node_level_interface`.
+#[must_use]
+pub fn is_reserved_mailbox_interface(interface: &str) -> bool {
+    local_registry::is_node_level_interface(interface)
+        || NATIVE_CAPABILITY_INTERFACES
+            .iter()
+            .any(|name| *name == interface || util::short_hash(name) == interface)
+}
+
 /// The mailbox a hosted service pulls from, as its signed record names it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedMailbox {
@@ -44,6 +68,40 @@ pub struct HostedMailbox {
     /// The longest time-to-live of this service's queue. The open limit
     /// until the receiver has registered and learned the real one.
     pub max_ttl_secs: u64,
+    /// The guest methods this service accepts from its mailbox, as
+    /// `<interface>#<method>`, besides `ALWAYS_ELIGIBLE`. Checked at deploy.
+    #[serde(default)]
+    pub methods: Vec<String>,
+}
+
+impl HostedMailbox {
+    /// Whether a call to `interface` (canonical name) and `method` may be
+    /// delivered from the mailbox. An entry may name the interface by its
+    /// short hash.
+    #[must_use]
+    pub fn accepts(&self, interface: &str, method: &str) -> bool {
+        if ALWAYS_ELIGIBLE.contains(&(interface, method)) {
+            return true;
+        }
+        let hash = util::short_hash(interface);
+        self.methods
+            .iter()
+            .filter_map(|entry| entry.split_once('#'))
+            .any(|(i, m)| m == method && (i == interface || i == hash))
+    }
+}
+
+/// What one pull pass did (`security.mailbox-pull-now`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullSummary {
+    /// Services with a mailbox that the pass looked at.
+    pub services: u32,
+    /// Services skipped (no certificate, no key, no record, blocked).
+    pub blocked: u32,
+    pub delivered: u32,
+    pub rejected: u32,
+    /// Messages left for a later claim (a temporary local failure).
+    pub not_acked: u32,
 }
 
 /// JSON-RPC error codes. Each answer also carries `data.kind`, the

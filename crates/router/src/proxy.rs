@@ -24,7 +24,8 @@ use syneroym_core::{
     config::RetryPolicy,
     dht_registry::{MasterAnchorResolver, RegistryClient},
     local_registry::{
-        EndpointRegistry, NATIVE_CAPABILITY_INTERFACES, NODE_NATIVE_INTERFACES, SubstrateEndpoint,
+        self, EndpointRegistry, NATIVE_CAPABILITY_INTERFACES, NODE_NATIVE_INTERFACES,
+        SubstrateEndpoint,
     },
     retry, util,
 };
@@ -108,6 +109,7 @@ const SAGA_UNDO_CALL_BUDGET: Duration = Duration::from_secs(5);
 
 mod hop;
 pub(in crate::proxy) mod mailbox;
+pub(crate) use mailbox::{ServiceInstance, poll::AnchorCache};
 mod outbox_forwarding;
 mod outbox_parked;
 mod router;
@@ -218,6 +220,11 @@ impl ProxyRouter {
             saga_undeploy_candidates: Mutex::new(BTreeSet::new()),
             proxy_state: None,
         }
+    }
+
+    /// The client for the community registry and the DHT.
+    pub(crate) fn registry_client(&self) -> &Arc<RegistryClient> {
+        &self.registry_client
     }
 
     /// Replaces the resolver that reads a receiver master's revoked keys.

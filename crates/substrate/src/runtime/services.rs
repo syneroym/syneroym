@@ -90,6 +90,14 @@ pub struct RuntimeServices {
     mailbox_join: Option<JoinHandle<()>>,
     /// Cancels the mailbox worker loop on shutdown.
     mailbox_cancel: CancellationToken,
+    /// The mailbox receiver's task: pulls the messages that wait for this
+    /// node's services. Raced beside the others. At shutdown it is aborted,
+    /// not awaited: a pass may wait on a mailbox that cannot be reached, and
+    /// an old puller must not keep pulling with this node's certificates
+    /// after the node stops. A message left unacked comes back after the
+    /// mailbox's visibility time.
+    mailbox_pull_join: Option<JoinHandle<()>>,
+    mailbox_pull_cancel: CancellationToken,
 }
 
 impl Debug for RuntimeServices {
@@ -148,6 +156,8 @@ impl RuntimeServices {
             queue_worker_join: None,
             proxy_outbox_join: None,
             proxy_outbox_cancel: CancellationToken::new(),
+            mailbox_pull_join: None,
+            mailbox_pull_cancel: CancellationToken::new(),
             conversation: None,
             conversation_worker_join: None,
             conversation_worker_cancel: CancellationToken::new(),
@@ -235,6 +245,10 @@ impl RuntimeServices {
             let cancel = self.conversation_worker_cancel.clone();
             tokio::spawn(async move { svc.run_worker(tick, cancel).await })
         });
+        self.mailbox_pull_join = connection_router.mailbox_puller().map(|puller| {
+            let cancel = self.mailbox_pull_cancel.clone();
+            tokio::spawn(puller.run(cancel))
+        });
         #[cfg(feature = "mailbox")]
         {
             self.mailbox_join = self.mailbox.take().map(|parts| {
@@ -321,6 +335,8 @@ impl RuntimeServices {
         ));
         let mut mailbox_fut =
             pin::pin!(join_unit_or_pending(self.mailbox_join.as_mut(), "mailbox worker"));
+        let mut mailbox_pull_fut =
+            pin::pin!(join_unit_or_pending(self.mailbox_pull_join.as_mut(), "mailbox receiver"));
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -336,6 +352,7 @@ impl RuntimeServices {
             res = &mut proxy_outbox_fut => log_component_exit("proxy outbox worker", res),
             res = &mut conversation_outbox_fut => log_component_exit("conversation outbox worker", res),
             res = &mut mailbox_fut => log_component_exit("mailbox worker", res),
+            res = &mut mailbox_pull_fut => log_component_exit("mailbox receiver", res),
             () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
@@ -377,6 +394,14 @@ impl RuntimeServices {
         // queue exists for.
         self.conversation_worker_cancel.cancel();
         drop(self.conversation_worker_join.take());
+
+        // Aborted, not detached: an old puller must not keep pulling with
+        // this node's certificates after it stops. Unacked messages come back
+        // after the mailbox's visibility time.
+        self.mailbox_pull_cancel.cancel();
+        if let Some(handle) = self.mailbox_pull_join.take() {
+            handle.abort();
+        }
 
         self.mailbox_cancel.cancel();
         if let Some(h) = self.mailbox_join.take()

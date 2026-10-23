@@ -545,7 +545,7 @@ impl ProxyRouter {
 
         // A node-level interface keeps no record to fence a key with, so
         // it could never honour the guarantee a queued call depends on.
-        if call_dedup::is_node_level_interface(&call.interface) {
+        if local_registry::is_node_level_interface(&call.interface) {
             return Err(ProxyError::PermissionDenied(format!(
                 "node-level interface '{}' cannot be reached through the durable outbox: it keeps \
                  no record to deduplicate a redelivery against",

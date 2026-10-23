@@ -3,18 +3,31 @@ use super::*;
 impl ControlPlaneService {
     /// Records the mailbox this deploy names, or forgets the one an earlier
     /// deploy recorded. The receiver fence reads it on every keyed call.
+    ///
+    /// When the mailbox changes or goes, the queue at the old one is removed
+    /// after the new fact is written, so a pass that is running cannot
+    /// register the old queue again. The new instance certificate is already
+    /// installed, so the call goes out as the new instance of the same
+    /// master, which the mailbox admits (newest certificate wins).
     async fn commit_hosted_mailbox(
         &self,
         service_id: &str,
-        mailbox: Option<&str>,
+        mailbox: Option<&ValidatedMailbox>,
     ) -> anyhow::Result<()> {
+        let old = self.registry.mailbox_of(service_id);
         match mailbox {
-            Some(mailbox) => self.record_hosted_mailbox(service_id, mailbox).await,
-            None => {
-                self.forget_hosted_mailbox(service_id).await;
-                Ok(())
+            Some(mailbox) => {
+                self.record_hosted_mailbox(service_id, &mailbox.mailbox, mailbox.methods.clone())
+                    .await?;
             }
+            None => self.forget_hosted_mailbox(service_id).await,
         }
+        if let Some(old) = old
+            && mailbox.is_none_or(|new| new.mailbox != old.mailbox)
+        {
+            self.release_mailbox_queue(service_id, &old.mailbox).await;
+        }
+        Ok(())
     }
 
     /// Registers this deploy's owner attribution, installs (or clears) its
@@ -78,9 +91,9 @@ impl ControlPlaneService {
         // The key is kept next to the certificate it needs: a receiver
         // registers with the certificate and opens messages with the key.
         // A deploy without a mailbox clears a key an earlier deploy stored.
-        match &validated.mailbox_key {
-            Some(key) => {
-                if let Err(e) = self.store_mailbox_key(service_id, key).await {
+        match &validated.mailbox {
+            Some(mailbox) => {
+                if let Err(e) = self.store_mailbox_key(service_id, &mailbox.key).await {
                     self.undeploy_and_rollback_late_failure(
                         service_id,
                         generation,
@@ -98,7 +111,7 @@ impl ControlPlaneService {
             }
             None => self.clear_mailbox_key(service_id).await,
         }
-        if let Err(e) = self.commit_hosted_mailbox(service_id, validated.mailbox.as_deref()).await {
+        if let Err(e) = self.commit_hosted_mailbox(service_id, validated.mailbox.as_ref()).await {
             self.undeploy_and_rollback_late_failure(
                 service_id,
                 generation,
@@ -146,6 +159,10 @@ impl ControlPlaneService {
             return Err(format!("Deploy facts installation failed: {e}"));
         }
 
+        if validated.mailbox.is_some() {
+            // The receiver can start pulling without waiting for its timer.
+            self.wake_mailbox_pull();
+        }
         info!(
             "service '{service_id}' deployed with visibility '{}'",
             validated.visibility.as_str()

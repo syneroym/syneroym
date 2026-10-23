@@ -1,6 +1,7 @@
 //! Orchestrator and administrative operations on SyneroymClient.
 
 use anyhow::Result;
+use syneroym_core::mailbox::PullSummary;
 use syneroym_identity::DelegationCertificate;
 use syneroym_passport::{
     PassportId,
@@ -418,6 +419,13 @@ impl SyneroymClient {
     /// The stored home-relay passport, if any. Node owner only.
     pub async fn home_relay_status(&self) -> Result<Option<HomeRelayStatus>> {
         let res = self.request("security", "home-relay-status", serde_json::json!([])).await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
+    /// Runs one mailbox pull pass on the node now and answers what it did.
+    /// Node owner only.
+    pub async fn mailbox_pull_now(&self) -> Result<PullSummary> {
+        let res = self.request("security", "mailbox-pull-now", serde_json::json!([])).await?;
         Ok(serde_json::from_value(res.result)?)
     }
 }

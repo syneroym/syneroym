@@ -117,11 +117,7 @@ impl ControlPlaneService {
             manifest.registry_certificate.as_deref(),
             instance_cert.is_some(),
         )?;
-        let (mailbox_key, mailbox) = match mailbox {
-            Some((key, mailbox)) => (Some(key), Some(mailbox)),
-            None => (None, None),
-        };
-        Ok(ValidatedDeploy { instance_cert, visibility, mailbox_key, mailbox })
+        Ok(ValidatedDeploy { instance_cert, visibility, mailbox })
     }
 
     /// ADR-0021 §2: validates and prepares `app_context`'s bindings, and

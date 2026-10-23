@@ -5,6 +5,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub(crate) mod mailbox;
+
 use syneroym_core::dht_registry::{
     EndpointInfo, EndpointMailbox, EndpointType, SignedEndpointInfo,
 };

@@ -10,6 +10,7 @@ mod deploy;
 mod fdae_policy;
 mod lifecycle;
 mod mailbox;
+mod mailbox_pull;
 mod probes;
 mod proxy_queue;
 mod rollback;

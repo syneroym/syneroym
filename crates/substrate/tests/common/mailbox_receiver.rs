@@ -138,6 +138,19 @@ impl MailboxReceiver {
         interface: &str,
         wasm: Vec<u8>,
     ) -> String {
+        self.deploy_with_methods(node, mailbox_node_did, interface, wasm, &[]).await
+    }
+
+    /// [`Self::deploy`], with the guest methods that accept delivery from the
+    /// mailbox (`<interface>#<method>`).
+    pub async fn deploy_with_methods(
+        &self,
+        node: &SubstrateNode,
+        mailbox_node_did: &str,
+        interface: &str,
+        wasm: Vec<u8>,
+        methods: &[&str],
+    ) -> String {
         let id = self.service_id();
         RegistryClient::new(false, Some(node.registry_url().to_string()))
             .publish_master_anchor(&id, vec![], None, &self.master, true)
@@ -159,6 +172,7 @@ impl MailboxReceiver {
         let publication = Publication::Public {
             record: serde_json::from_str(&record).unwrap(),
             mailbox_key: Some(self.mailbox_key.clone()),
+            mailbox_methods: methods.iter().map(|m| m.parse().unwrap()).collect(),
         };
         node.substrate_client
             .deploy_svc_wasm(id.clone(), vec![interface.to_string()], wasm, publication, Some(cert))

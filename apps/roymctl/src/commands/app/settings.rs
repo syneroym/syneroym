@@ -46,3 +46,15 @@ pub(crate) fn refuse_settings_without_masters(
     }
     Ok(())
 }
+
+/// Refuses a `mailbox_methods` entry that names a node or platform
+/// interface, in every compiled plan including spawned apps. The substrate
+/// refuses it at deploy too; this fails before anything is placed.
+pub(crate) fn refuse_reserved_mailbox_methods(plans: &[DeploymentPlan]) -> anyhow::Result<()> {
+    for plan in plans {
+        if let Err(errors) = syneroym_sdk::refuse_reserved_mailbox_methods(plan) {
+            anyhow::bail!("{}", errors.join("; "));
+        }
+    }
+    Ok(())
+}

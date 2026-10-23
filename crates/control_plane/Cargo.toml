@@ -50,4 +50,5 @@ sha2.workspace = true
 [dev-dependencies]
 wit-parser.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true

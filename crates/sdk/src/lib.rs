@@ -7,6 +7,7 @@
 pub mod client;
 pub mod deploy;
 pub mod health;
+pub mod mailbox_methods;
 pub mod mapper;
 pub mod topology;
 pub mod types;
@@ -18,6 +19,7 @@ pub use deploy::{
     ApplyReport, ApplyRequest, DeployTarget, ServiceFailure, SubstrateActor, apply_plan,
     resolve_targets,
 };
+pub use mailbox_methods::refuse_reserved_mailbox_methods;
 pub use syneroym_rpc::{DeadLetterInfo, QueuedCallInfo, SagaInfo, SagaState};
 pub use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, AssetBundle, BindingWrite, ContainerManifest, ContainerPortMapping,

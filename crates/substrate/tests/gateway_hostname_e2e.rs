@@ -103,6 +103,7 @@ fn service_manifest_with_vis(
             topology_visibility,
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         },
     );
     SynAppManifest {

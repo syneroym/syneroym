@@ -208,6 +208,7 @@ fn test_deployment_plan_serialization() {
             topology_visibility: TopologyVisibility::Restricted,
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         }],
     };
 
@@ -353,6 +354,7 @@ fn backend_member() -> PlannedService {
         topology_visibility: TopologyVisibility::Restricted,
         mailbox: None,
         instance_cert_expires_hours: None,
+        mailbox_methods: Vec::new(),
     }
 }
 
@@ -453,6 +455,7 @@ fn test_toml_env_serialization() {
             topology_visibility: TopologyVisibility::Restricted,
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         }],
     };
 
@@ -577,6 +580,7 @@ fn a_planned_service_round_trips_its_substrate() {
         topology_visibility: TopologyVisibility::Restricted,
         mailbox: None,
         instance_cert_expires_hours: None,
+        mailbox_methods: Vec::new(),
     };
 
     let toml_round = toml::to_string(&svc).unwrap();
@@ -914,6 +918,7 @@ fn more_than_the_cap_of_scheduled_services_is_refused_at_validation() {
                 topology_visibility: TopologyVisibility::Restricted,
                 mailbox: None,
                 instance_cert_expires_hours: None,
+                mailbox_methods: Vec::new(),
             },
         );
     }

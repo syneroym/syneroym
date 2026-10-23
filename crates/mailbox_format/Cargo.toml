@@ -8,6 +8,11 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Exports `seal_unchecked`, so tests in other crates can make a message a
+# real sender would refuse to make. Only for `[dev-dependencies]`.
+test-support = []
+
 [dependencies]
 syneroym-identity.workspace = true
 base64.workspace = true

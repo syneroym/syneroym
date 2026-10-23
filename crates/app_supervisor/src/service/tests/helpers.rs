@@ -433,6 +433,7 @@ pub(super) fn dependent_service(name: &str, dep_name: &str) -> PlannedService {
         topology_visibility: Default::default(),
         mailbox: None,
         instance_cert_expires_hours: None,
+        mailbox_methods: Vec::new(),
     }
 }
 

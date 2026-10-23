@@ -47,11 +47,13 @@ struct DepositContext {
     sent: SentDeposit,
 }
 
-/// The sending instance: what it seals with and what it shows the mailbox.
-pub(in crate::proxy) struct DepositSender {
-    pub(in crate::proxy) service_id: String,
-    pub(in crate::proxy) key: Arc<Identity>,
-    pub(in crate::proxy) certificate: DelegationCertificate,
+/// A hosted service's instance: the key it signs with and the certificate
+/// that ties the key to its master. The sender seals with it and the
+/// receiver shows it to the mailbox.
+pub(crate) struct ServiceInstance {
+    pub(crate) service_id: String,
+    pub(crate) key: Arc<Identity>,
+    pub(crate) certificate: DelegationCertificate,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,8 +66,6 @@ enum DepositFailure {
     Call(ProxyError),
     #[error("mailbox refused with code {0}")]
     Refused(i32),
-    #[error("'{0}' is not the native mailbox of its node")]
-    NotNative(String),
 }
 
 /// Only an error that says "not delivered, and nothing ran" is worth a
@@ -100,7 +100,7 @@ fn shorter_ttl(data: Option<&Value>, asked: u64) -> Option<u64> {
 
 impl ProxyRouter {
     /// The sending service of `req`, when `req` may use a mailbox at all.
-    fn deposit_sender(&self, req: &ProxyRequest) -> Option<DepositSender> {
+    fn deposit_sender(&self, req: &ProxyRequest) -> Option<ServiceInstance> {
         req.idempotency_key.as_ref()?;
         // A call made for a person passes that person's proof on. A sealed
         // message cannot carry it, so the receiver would lose the person.
@@ -112,15 +112,15 @@ impl ProxyRouter {
             CallOrigin::Native { service_id: Some(id) } => id,
             CallOrigin::Native { service_id: None } => return None,
         };
-        self.sender_identity(service_id)
+        self.service_instance(service_id)
     }
 
     /// The same key and certificate a remote call of `service_id` presents,
     /// so the seal and the transport always agree.
-    pub(in crate::proxy) fn sender_identity(&self, service_id: &str) -> Option<DepositSender> {
+    pub(crate) fn service_instance(&self, service_id: &str) -> Option<ServiceInstance> {
         let identity = self.instance_identity(service_id)?;
         let certificate = identity.delegation?;
-        Some(DepositSender { service_id: service_id.to_string(), key: identity.key, certificate })
+        Some(ServiceInstance { service_id: service_id.to_string(), key: identity.key, certificate })
     }
 
     /// Whether `mailbox_did`, when it is hosted on this node, is the native
@@ -138,7 +138,7 @@ impl ProxyRouter {
     /// proof from this context, because there is no stream to sign. On a
     /// remote call the proof is unsigned, so it is never passed on: the hop
     /// presents the instance identity of the origin and signs it.
-    fn instance_caller(sender: &DepositSender) -> CallerContext {
+    fn instance_caller(sender: &ServiceInstance) -> CallerContext {
         let mut caller = CallerContext::verified(
             &sender.certificate.master_did,
             AuthLevel::Delegated,
@@ -153,7 +153,7 @@ impl ProxyRouter {
     }
 
     pub(in crate::proxy) fn mailbox_request(
-        sender: &DepositSender,
+        sender: &ServiceInstance,
         mailbox: &str,
         method: &str,
         params: Value,
@@ -170,6 +170,23 @@ impl ProxyRouter {
             idempotency_key: None,
             timeout: Some(MAILBOX_CALL_TIMEOUT),
         }
+    }
+
+    /// One mailbox call made as `instance`. Refused unless the mailbox, when
+    /// it is on this node, is the native one.
+    pub(crate) async fn call_mailbox(
+        &self,
+        instance: &ServiceInstance,
+        mailbox: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, ProxyError> {
+        if !self.is_native_mailbox(mailbox) {
+            return Err(ProxyError::PermissionDenied(format!(
+                "'{mailbox}' is not the native mailbox of its node"
+            )));
+        }
+        self.dispatch_call(&Self::mailbox_request(instance, mailbox, method, params)).await
     }
 
     /// Delivers `req` directly, or seals it and deposits it at the
@@ -265,13 +282,10 @@ impl ProxyRouter {
     async fn deposit(
         &self,
         req: &ProxyRequest,
-        sender: &DepositSender,
+        sender: &ServiceInstance,
         mailbox: &EndpointMailbox,
         mut ttl_secs: u64,
     ) -> Result<DepositTicket, DepositFailure> {
-        if !self.is_native_mailbox(&mailbox.service_id) {
-            return Err(DepositFailure::NotNative(mailbox.service_id.clone()));
-        }
         let content = MessageContent {
             interface: req.interface.clone(),
             method: req.method.clone(),
@@ -287,9 +301,8 @@ impl ProxyRouter {
                 .map_err(DepositFailure::Seal)?;
             let params = serde_json::to_value(&sealed.deposit)
                 .map_err(|e| DepositFailure::Encode(e.to_string()))?;
-            let call =
-                Self::mailbox_request(sender, &mailbox.service_id, wire::METHOD_DEPOSIT, params);
-            match self.dispatch_call(&call).await {
+            match self.call_mailbox(sender, &mailbox.service_id, wire::METHOD_DEPOSIT, params).await
+            {
                 // Any answer means the mailbox took it; `status` tells the rest.
                 Ok(_) => return Self::ticket(&mailbox.service_id, sealed.sent, ttl_secs),
                 Err(ProxyError::Callee { code, data, .. }) if code == codes::TTL_TOO_LONG => {

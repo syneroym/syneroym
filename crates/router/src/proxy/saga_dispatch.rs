@@ -139,7 +139,7 @@ impl ProxyRouter {
         let started = Instant::now();
         let Some(store) = &self.sagas else { return Err(no_saga_store_error()) };
 
-        if call_dedup::is_node_level_interface(&req.interface) {
+        if local_registry::is_node_level_interface(&req.interface) {
             return Err(ProxyError::PermissionDenied(format!(
                 "node-level interface '{}' cannot take part in a saga: its compensation could \
                  never be fenced, so the first undo would fail the whole saga",

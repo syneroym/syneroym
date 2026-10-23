@@ -6,7 +6,9 @@ use syneroym_app_orchestration::{
 };
 use tokio::runtime::Builder;
 
-use crate::commands::app::settings::{apply_mailbox_overrides, refuse_settings_without_masters};
+use crate::commands::app::settings::{
+    apply_mailbox_overrides, refuse_reserved_mailbox_methods, refuse_settings_without_masters,
+};
 
 const HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
 
@@ -116,4 +118,17 @@ fn a_spawned_apps_settings_without_mint_masters_are_refused() {
     let err = refuse_settings_without_masters(&compiled, false).unwrap_err().to_string();
     assert!(err.contains("--mint-masters"), "{err}");
     assert!(refuse_settings_without_masters(&compiled, true).is_ok());
+}
+
+#[test]
+fn a_manifest_that_lists_a_node_interface_as_a_mailbox_method_is_refused() {
+    let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+    let ok = manifest(&format!("mailbox = \"{HOST}\"\nmailbox_methods = [\"greeter#greet\"]"));
+    assert!(refuse_reserved_mailbox_methods(&plans_of(&ok, &catalog)).is_ok());
+
+    let bad =
+        manifest(&format!("mailbox = \"{HOST}\"\nmailbox_methods = [\"security#inject-kek\"]"));
+    let err = refuse_reserved_mailbox_methods(&plans_of(&bad, &catalog)).unwrap_err().to_string();
+    assert!(err.contains("security#inject-kek"), "{err}");
+    assert!(err.contains("node or platform interface"), "{err}");
 }

@@ -46,6 +46,7 @@ use tracing::{debug, error};
 
 use crate::{
     call_dedup::CallDedupGuard,
+    mailbox_pull::{MailboxPuller, ReceiverVault},
     net_iroh::IrohStream,
     peer_records::PeerRecordStore,
     proxy::{IrohHop, ProxyRouter},
@@ -54,6 +55,7 @@ use crate::{
 };
 
 pub(crate) mod caller;
+pub mod deferred;
 pub mod dispatch;
 pub mod encryption;
 pub mod http;
@@ -507,6 +509,22 @@ impl RouteHandler {
     #[must_use]
     pub fn proxy(&self) -> Option<Arc<ProxyRouter>> {
         self.inner._proxy.clone()
+    }
+
+    /// The mailbox receiver of this node, or `None` in coordinator mode.
+    ///
+    /// The puller holds a clone of this handler. The handler never holds the
+    /// puller, and the control plane holds only a `Weak`, so there is no
+    /// reference cycle.
+    #[must_use]
+    pub fn mailbox_puller(&self, vault: Arc<dyn ReceiverVault>) -> Option<Arc<MailboxPuller>> {
+        let proxy = self.proxy()?;
+        Some(Arc::new(MailboxPuller::new(
+            proxy,
+            Arc::new(self.clone()),
+            vault,
+            self.inner.registry.clone(),
+        )))
     }
 
     pub fn register_native_service(&self, service_id: String, service: Arc<dyn NativeService>) {

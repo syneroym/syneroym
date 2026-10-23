@@ -122,6 +122,7 @@ fn manifest(backend_replicas: u32) -> SynAppManifest {
             topology_visibility: Default::default(),
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         },
     );
     services.insert(
@@ -151,6 +152,7 @@ fn manifest(backend_replicas: u32) -> SynAppManifest {
             topology_visibility: Default::default(),
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         },
     );
     SynAppManifest {

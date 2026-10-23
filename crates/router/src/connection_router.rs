@@ -15,6 +15,7 @@ use iroh::{
     Endpoint, EndpointAddr, SecretKey,
     protocol::{Router, Router as IrohRouter},
 };
+use syneroym_control_plane::MailboxPullControl;
 use syneroym_core::{
     config::{SubstrateConfig, WebRtcParentConfig},
     local_registry::EndpointRegistry,
@@ -39,6 +40,7 @@ use webrtc::{
 
 use crate::{
     home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay},
+    mailbox_pull::MailboxPuller,
     net_iroh,
     net_webrtc::WebRTCStream,
     proxy::ProxyRouter,
@@ -62,6 +64,9 @@ pub struct ConnectionRouter {
     /// proxy call, so it needs the same router every live call uses, not a
     /// second one with its own caches.
     proxy: Option<Arc<ProxyRouter>>,
+    /// The mailbox receiver of this node. Published so the substrate's
+    /// composition root can run it. Absent in coordinator mode.
+    mailbox_puller: Option<Arc<MailboxPuller>>,
 }
 
 impl ConnectionRouter {
@@ -72,7 +77,8 @@ impl ConnectionRouter {
         service_id: String,
         route_handler_deps: RouteHandlerDeps,
     ) -> Result<Self> {
-        let mut router = Self { iroh_router: None, proxy: None, home_relay: None };
+        let mut router =
+            Self { iroh_router: None, proxy: None, home_relay: None, mailbox_puller: None };
 
         // Built *before* `RouteHandler::init`: the Universal Proxy's outbound
         // remote hop needs an Iroh endpoint, and `RouteHandler::init` wires it
@@ -101,6 +107,7 @@ impl ConnectionRouter {
         router.home_relay =
             iroh_endpoint.clone().map(|ep| HomeRelay::new(ep, HOME_RELAY_CONFIRM_TIMEOUT));
 
+        let control_plane = route_handler_deps.control_plane.clone();
         let route_handler = RouteHandler::init(
             service_id.clone(),
             &config,
@@ -111,6 +118,12 @@ impl ConnectionRouter {
         )
         .await?;
         router.proxy = route_handler.proxy();
+        router.mailbox_puller = control_plane.and_then(|control_plane| {
+            let puller = route_handler.mailbox_puller(control_plane.clone())?;
+            let control: Arc<dyn MailboxPullControl> = puller.clone();
+            control_plane.set_mailbox_pull(Arc::downgrade(&control));
+            Some(puller)
+        });
 
         for comm in &config.substrate.communication_interfaces {
             match comm.as_str() {
@@ -143,6 +156,13 @@ impl ConnectionRouter {
     #[must_use]
     pub fn proxy(&self) -> Option<Arc<ProxyRouter>> {
         self.proxy.clone()
+    }
+
+    /// The mailbox receiver of this node, when it has one (absent in
+    /// coordinator mode).
+    #[must_use]
+    pub fn mailbox_puller(&self) -> Option<Arc<MailboxPuller>> {
+        self.mailbox_puller.clone()
     }
 
     /// The home-relay handle of the Iroh endpoint, when there is one.

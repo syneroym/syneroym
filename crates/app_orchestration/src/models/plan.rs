@@ -10,7 +10,7 @@ use super::{
         SubstrateAlias,
     },
     service::{
-        MailboxChoice, ScheduleSpec, ServiceConfig, ShardingStrategy, TopologyMode,
+        MailboxChoice, MailboxMethod, ScheduleSpec, ServiceConfig, ShardingStrategy, TopologyMode,
         TopologyVisibility, is_restricted,
     },
 };
@@ -78,6 +78,10 @@ pub struct PlannedService {
     /// holds no manifest, so the plan is where it reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_cert_expires_hours: Option<u32>,
+    /// Cloned from `ServiceSpec.mailbox_methods`; the supervisor holds no
+    /// manifest, so the plan is where it reads it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mailbox_methods: Vec<MailboxMethod>,
 }
 
 impl PlannedService {

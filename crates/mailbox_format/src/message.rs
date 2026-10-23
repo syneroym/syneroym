@@ -301,8 +301,9 @@ pub fn seal(
 }
 
 /// Builds and seals without the sender-side checks, so tests can make
-/// messages a real sender would refuse to make.
-pub(crate) fn seal_unchecked(
+/// messages a real sender would refuse to make. Exported only with the
+/// `test-support` feature, for tests in other crates.
+pub fn seal_unchecked(
     content: &MessageContent,
     recipient: Recipient<'_>,
     sender: Sender<'_>,

@@ -9,7 +9,7 @@ use std::{
 };
 
 use clap::Subcommand;
-use syneroym_app_orchestration::MailboxChoice;
+use syneroym_app_orchestration::{MailboxChoice, MailboxMethod};
 
 pub mod deploy;
 pub mod lifecycle;
@@ -159,6 +159,11 @@ pub enum SvcCommands {
         /// supported yet.
         #[arg(long)]
         mailbox: Option<MailboxChoice>,
+        /// A guest method that accepts delivery from the mailbox, as
+        /// `<interface>#<method>`. Repeat for more. Needs `--mailbox`.
+        /// Conversation `deliver` and `group-push` are always accepted.
+        #[arg(long = "mailbox-method", value_name = "INTERFACE#METHOD")]
+        mailbox_methods: Vec<MailboxMethod>,
         /// Lifetime of the instance certificate `--master` issues, in
         /// hours (1 to 720). Needs `--master`: no other flag issues a
         /// certificate. Use a long value for a substrate that sleeps.
@@ -250,6 +255,7 @@ pub async fn handle(
             visibility,
             record_out,
             mailbox,
+            mailbox_methods,
             cert_expires_hours,
         } => {
             deploy::handle_deploy(
@@ -273,6 +279,7 @@ pub async fn handle(
                 visibility,
                 record_out,
                 mailbox,
+                mailbox_methods,
                 *cert_expires_hours,
                 dir,
             )

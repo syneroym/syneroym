@@ -9,6 +9,7 @@ mod connection_router;
 pub mod e2e_channel;
 pub mod handshake;
 mod home_relay;
+pub mod mailbox_pull;
 pub mod net_iroh;
 pub mod net_webrtc;
 pub mod peer_records;
@@ -30,6 +31,7 @@ pub use e2e_channel::{
 };
 pub use handshake::{HandshakeVerifier, MasterAnchorResolver, VerifiedIdentity};
 pub use home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
+pub use mailbox_pull::{DeferredDispatch, MailboxPuller, ReceiverVault};
 pub use preamble::{
     ENC_ECDH_P256, IdentityFields, OutboundIdentity, PREAMBLE_SEPARATOR, PROOF_WINDOW_SECS,
     REFUSAL_HEADER, RoutePreamble, RouteProtocol, RouteTransport, route_text,
@@ -38,6 +40,7 @@ pub use proxy::{IrohHop, ProxyRouter, ProxyState, RemoteHop, RemotePeer};
 pub use proxy_outbox::{Disposition, ProxyOutbox, disposition_of, group_key_of};
 pub use route_handler::{
     RouteHandler, RouteHandlerDeps,
+    deferred::DeferredOutcome,
     io::ucan_chain_not_revoked,
     refusal::{Refusal, authorized_refusal_frame},
 };

@@ -25,9 +25,9 @@ pub use journal::{
 pub use models::{
     AppBlueprintId, AppDependencySpec, AppDid, AppInstanceId, DependencyName, DeploymentPlan,
     HealthCheck, HttpProbe, InterfaceName, LogicalServiceName, LogicalServiceRef,
-    MAX_INSTANCE_CERT_EXPIRES_HOURS, MailboxChoice, ParseError, PlacementSelector, PlannedService,
-    RpcProbe, ScheduleSpec, ServiceConfig, ServiceId, ServiceSpec, ServiceType, SubstrateAlias,
-    SynAppManifest, TcpProbe, TopologyMode, TopologyVisibility, Visibility,
+    MAX_INSTANCE_CERT_EXPIRES_HOURS, MailboxChoice, MailboxMethod, ParseError, PlacementSelector,
+    PlannedService, RpcProbe, ScheduleSpec, ServiceConfig, ServiceId, ServiceSpec, ServiceType,
+    SubstrateAlias, SynAppManifest, TcpProbe, TopologyMode, TopologyVisibility, Visibility,
 };
 pub use reconcile::{ReconcileAction, ReconcilePlan, Reconciler};
 pub use resolver::{
