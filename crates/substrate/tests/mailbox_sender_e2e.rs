@@ -39,6 +39,11 @@ const KEK: [u8; 32] = [0xcd; 32];
 const DEPOSIT_WAIT: Duration = Duration::from_secs(60);
 /// The sender asks about a deposit once a minute.
 const ANSWER_WAIT: Duration = Duration::from_secs(150);
+/// Long enough to see two failed direct attempts when the target has no
+/// mailbox. Each attempt uses the full `DEFAULT_PROXY_CALL_TIMEOUT` (30 s),
+/// so two attempts can take up to 60 s after the outbox starts, plus setup.
+/// 120 s gives a 2× buffer over that worst case.
+const NO_MAILBOX_ATTEMPT_WAIT: Duration = Duration::from_secs(120);
 
 /// Short sweeps so an expired deposit is noticed quickly.
 fn mailbox_role(max_ttl_secs: u64) -> MailboxRole {
@@ -414,7 +419,10 @@ async fn a_receiver_without_a_mailbox_is_never_deposited() {
     guest_enqueue(&sender, &guest_did, &target_did, "msg-1").await.unwrap();
 
     // Today's behaviour: every failed direct attempt spends an attempt.
-    let spent = wait_until(DEPOSIT_WAIT, || async {
+    // Each attempt waits up to DEFAULT_PROXY_CALL_TIMEOUT (30 s) for the
+    // iroh connect, so two attempts need up to 60 s just for delivery;
+    // NO_MAILBOX_ATTEMPT_WAIT gives headroom for that plus CI overhead.
+    let spent = wait_until(NO_MAILBOX_ATTEMPT_WAIT, || async {
         let rows = sender.substrate_client.proxy_outbox(guest_did.clone()).await.unwrap();
         rows.first().is_some_and(|row| row.attempts >= 2)
     })
