@@ -50,6 +50,7 @@ pub const CALL_RESULT_NOT_RETAINED_RPC_CODE: i32 = -32095;
 
 /// How many claims may pass between row-cap checks. The TTL sweep still
 /// runs on every claim; only the `COUNT` behind the cap is amortised.
+#[doc(hidden)]
 pub const CAP_CHECK_INTERVAL: u32 = 64;
 
 const STATE_IN_FLIGHT: i64 = 0;

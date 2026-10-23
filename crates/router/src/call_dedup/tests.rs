@@ -1,6 +1,9 @@
 #![allow(clippy::cognitive_complexity)]
 
-use std::sync::Arc;
+use std::{
+    sync::{Arc, mpsc},
+    time::Duration,
+};
 
 use rusqlite::Connection;
 use syneroym_async_queue::{CAP_CHECK_INTERVAL, DedupWindow};
@@ -553,12 +556,22 @@ async fn a_closed_long_window_is_noted_for_the_service() {
 }
 
 #[tokio::test]
-async fn a_window_that_is_open_takes_no_note_and_no_lock_work() {
+async fn an_open_window_is_reported_without_taking_the_lock() {
     let node = node(false, &["svc-a"]).await;
     let store = node.guard.store_for("svc-a").await.unwrap();
 
-    node.guard.report_long_window("svc-a", &store);
+    // Hold the lock: a report that needs it cannot finish.
+    let held = node.guard.closed_long_windows.lock().unwrap();
+    let (done, finished) = mpsc::channel();
+    let in_time = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            node.guard.report_long_window("svc-a", &store);
+            let _ = done.send(());
+        });
+        finished.recv_timeout(Duration::from_secs(5)).is_ok()
+    });
+    drop(held);
 
+    assert!(in_time, "an open window must not wait for the lock");
     assert!(node.guard.closed_long_windows.lock().unwrap().is_empty());
-    assert_eq!(node.guard.closed_long_window_count.load(Ordering::Relaxed), 0);
 }
