@@ -263,6 +263,9 @@ pub(crate) struct ValidatedDeploy {
     pub(super) instance_cert: Option<DelegationCertificate>,
     pub(super) visibility: AppVisibility,
     pub(super) mailbox_key: Option<MailboxSecretKey>,
+    /// The node DID of the mailbox the verified record names. `Some` exactly
+    /// when `mailbox_key` is.
+    pub(super) mailbox: Option<String>,
 }
 
 /// The mailbox the record names. When either the record names one or a key
@@ -291,7 +294,8 @@ fn verified_record_mailbox(
 }
 
 /// A mailbox needs a public record that names it with this key, and an
-/// instance certificate the receiver can show at registration.
+/// instance certificate the receiver can show at registration. Returns the
+/// key and the node DID of the mailbox the record names.
 ///
 /// The record is signed by the member master, so it is the one place the
 /// mailbox choice is fixed. The substrate only checks that the key it was
@@ -303,7 +307,7 @@ pub(crate) fn validate_mailbox(
     visibility: AppVisibility,
     registry_certificate: Option<&str>,
     has_instance_certificate: bool,
-) -> Result<Option<MailboxSecretKey>, String> {
+) -> Result<Option<(MailboxSecretKey, String)>, String> {
     let record_mailbox = verified_record_mailbox(service_id, credentials, registry_certificate)?;
     match (credentials, record_mailbox) {
         (None, None) => Ok(None),
@@ -334,7 +338,7 @@ pub(crate) fn validate_mailbox(
                     "mailbox key for '{service_id}' does not match the key in its record"
                 ));
             }
-            Ok(Some(key))
+            Ok(Some((key, mailbox.service_id)))
         }
     }
 }

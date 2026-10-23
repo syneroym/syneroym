@@ -365,7 +365,7 @@ impl ConversationStore {
                 ))
                 .into());
             }
-            if !matches!(m.state.as_str(), "pending" | "delivered" | "failed") {
+            if !matches!(m.state.as_str(), "pending" | "deposited" | "delivered" | "failed") {
                 return Err(StoreError::InvalidInput(format!(
                     "invalid state value in backup: {}",
                     m.state
@@ -385,11 +385,12 @@ impl ConversationStore {
                 continue;
             }
 
-            let (state, last_error) = if m.outgoing && m.state == "pending" {
-                ("failed".to_string(), Some("restored from a backup".to_string()))
-            } else {
-                (m.state, m.last_error)
-            };
+            let (state, last_error) =
+                if m.outgoing && matches!(m.state.as_str(), "pending" | "deposited") {
+                    ("failed".to_string(), Some("restored from a backup".to_string()))
+                } else {
+                    (m.state, m.last_error)
+                };
 
             let vseq = Self::next_visible_seq(tx, &m.conversation_id)?;
             tx.execute(

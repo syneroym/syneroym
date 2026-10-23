@@ -45,6 +45,7 @@ pub struct ConversationRow {
 #[serde(rename_all = "kebab-case")]
 pub enum StoredState {
     Pending,
+    Deposited,
     Delivered,
     Failed,
 }
@@ -53,6 +54,7 @@ impl From<DeliveryState> for StoredState {
     fn from(s: DeliveryState) -> Self {
         match s {
             DeliveryState::Pending => StoredState::Pending,
+            DeliveryState::Deposited => StoredState::Deposited,
             DeliveryState::Delivered => StoredState::Delivered,
             DeliveryState::Failed => StoredState::Failed,
         }
@@ -63,6 +65,7 @@ impl From<StoredState> for DeliveryState {
     fn from(s: StoredState) -> Self {
         match s {
             StoredState::Pending => DeliveryState::Pending,
+            StoredState::Deposited => DeliveryState::Deposited,
             StoredState::Delivered => DeliveryState::Delivered,
             StoredState::Failed => DeliveryState::Failed,
         }
@@ -246,10 +249,20 @@ mod tests {
 
     #[test]
     fn stored_state_round_trips_through_delivery_state() {
-        for s in [StoredState::Pending, StoredState::Delivered, StoredState::Failed] {
+        for s in [
+            StoredState::Pending,
+            StoredState::Deposited,
+            StoredState::Delivered,
+            StoredState::Failed,
+        ] {
             assert_eq!(StoredState::from(DeliveryState::from(s)), s);
         }
-        for d in [DeliveryState::Pending, DeliveryState::Delivered, DeliveryState::Failed] {
+        for d in [
+            DeliveryState::Pending,
+            DeliveryState::Deposited,
+            DeliveryState::Delivered,
+            DeliveryState::Failed,
+        ] {
             assert_eq!(DeliveryState::from(StoredState::from(d)), d);
         }
     }

@@ -25,7 +25,10 @@
 
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
 };
 
 use anyhow::Result;
@@ -47,7 +50,8 @@ pub const CALL_RESULT_NOT_RETAINED_RPC_CODE: i32 = -32095;
 
 /// How many claims may pass between row-cap checks. The TTL sweep still
 /// runs on every claim; only the `COUNT` behind the cap is amortised.
-const CAP_CHECK_INTERVAL: u32 = 64;
+#[doc(hidden)]
+pub const CAP_CHECK_INTERVAL: u32 = 64;
 
 const STATE_IN_FLIGHT: i64 = 0;
 const STATE_DONE: i64 = 1;
@@ -74,7 +78,31 @@ pub struct DedupConfig {
     pub max_result_bytes: usize,
 }
 
+/// How long a record answers, and how many one caller may hold. Chosen per
+/// target service on each call, so one store can serve both a short and a
+/// long window.
+///
+/// A window longer than the store's own default is a long window. Callers
+/// are not limited in number, so a long window also has a total: while the
+/// store holds `max_total_rows` live records or more, new claims get the
+/// default window instead. Existing records are never evicted for it, so a
+/// flood cannot push out a record that still has to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DedupWindow {
+    pub ttl_ms: u64,
+    /// Rows one caller may hold.
+    pub max_rows: u32,
+    /// Live rows in the whole store at which a long window closes.
+    pub max_total_rows: u32,
+}
+
 impl DedupConfig {
+    /// The window this config gives every service by default.
+    #[must_use]
+    pub fn window(&self) -> DedupWindow {
+        DedupWindow { ttl_ms: self.ttl_ms, max_rows: self.max_rows, max_total_rows: u32::MAX }
+    }
+
     /// Row ceiling per service. Pruning the oldest-expiring row first
     /// means the record most likely to still matter is the last to go.
     pub const DEFAULT_MAX_ROWS: u32 = 10_000;
@@ -154,7 +182,10 @@ pub struct DedupStore {
     /// Claims taken since the row cap was last checked. The TTL sweep is
     /// an indexed range delete and runs every time; the cap check is a
     /// `COUNT`, so it is amortised rather than paid on every claim.
-    since_cap_check: Arc<std::sync::atomic::AtomicU32>,
+    since_cap_check: Arc<AtomicU32>,
+    /// Set while the store holds too many live rows to grant a long window.
+    /// Refreshed with the cap check, so a `COUNT` stays off the hot path.
+    long_window_closed: Arc<AtomicBool>,
 }
 
 /// One stored row, as [`DedupStore::begin`]'s lookup reads it.
@@ -187,7 +218,12 @@ impl DedupStore {
 
     pub fn from_connection(conn: Arc<Mutex<Connection>>, config: DedupConfig) -> Result<Self> {
         Self::init_schema(&conn.lock().expect("dedup connection lock poisoned"))?;
-        Ok(Self { conn, config, since_cap_check: Arc::new(std::sync::atomic::AtomicU32::new(0)) })
+        Ok(Self {
+            conn,
+            config,
+            since_cap_check: Arc::new(AtomicU32::new(0)),
+            long_window_closed: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
@@ -223,7 +259,13 @@ impl DedupStore {
     /// The lookup is a single primary-key probe. Pruning runs on the write
     /// path only -- a lookup that finds a live record does no maintenance
     /// work at all.
-    pub fn begin(&self, caller: &str, key: &str, now: i64) -> Result<DedupDecision> {
+    pub fn begin(
+        &self,
+        caller: &str,
+        key: &str,
+        now: i64,
+        window: DedupWindow,
+    ) -> Result<DedupDecision> {
         let mut conn = self.conn.lock().expect("dedup connection lock poisoned");
         // One immediate transaction around the read *and* the claiming
         // write. Holding this struct's own mutex is not enough on its own:
@@ -272,6 +314,13 @@ impl DedupStore {
             }
         }
 
+        let requested = window;
+        let is_long = requested.ttl_ms > self.config.ttl_ms;
+        let window = if is_long && self.long_window_closed.load(Ordering::Relaxed) {
+            self.config.window()
+        } else {
+            requested
+        };
         let token = ClaimToken(rand::random::<i64>());
         tx.execute(
             "INSERT INTO call_dedup
@@ -293,7 +342,7 @@ impl DedupStore {
                 STATE_IN_FLIGHT,
                 now + self.config.claim_window_ms as i64,
                 token.0,
-                now + self.config.ttl_ms as i64,
+                now + window.ttl_ms as i64,
             ],
         )?;
         // After the insert, not before: the count the cap is measured
@@ -302,11 +351,18 @@ impl DedupStore {
         // The cap is a ceiling, not a precise limit, so checking it every
         // `CAP_CHECK_INTERVAL` claims is enough -- and keeps a `COUNT` off
         // the hot path. Overshoot is bounded by that interval.
-        let check_cap = self
-            .since_cap_check
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .is_multiple_of(CAP_CHECK_INTERVAL);
-        Self::prune(&tx, caller, self.config.max_rows, now, check_cap)?;
+        let check_cap =
+            self.since_cap_check.fetch_add(1, Ordering::Relaxed).is_multiple_of(CAP_CHECK_INTERVAL);
+        Self::prune(&tx, caller, window.max_rows, now, check_cap)?;
+        if check_cap && is_long {
+            let live: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM call_dedup WHERE expires_at > ?1 LIMIT ?2)",
+                params![now, requested.max_total_rows],
+                |row| row.get(0),
+            )?;
+            self.long_window_closed
+                .store(live >= i64::from(requested.max_total_rows), Ordering::Relaxed);
+        }
         tx.commit().map_err(|e| anyhow::anyhow!("could not commit a dedup claim: {e}"))?;
         Ok(DedupDecision::Execute(token))
     }
@@ -314,7 +370,8 @@ impl DedupStore {
     /// Records the first outcome of a call this store handed
     /// [`DedupDecision::Execute`] for. A result past
     /// [`DedupConfig::max_result_bytes`] is recorded as done without its
-    /// body.
+    /// body. The record keeps the window it was claimed with: it lasts the
+    /// longer of that and the store's default from now.
     pub fn finish(
         &self,
         caller: &str,
@@ -345,7 +402,7 @@ impl DedupStore {
         conn.execute(
             "UPDATE call_dedup
              SET state = ?1, result = ?2, result_retained = ?3, error_code = ?4,
-                 error_message = ?5, expires_at = ?6
+                 error_message = ?5, expires_at = MAX(expires_at, ?6)
              WHERE caller = ?7 AND idem_key = ?8 AND claim_token = ?9",
             params![
                 STATE_DONE,
@@ -424,6 +481,14 @@ impl DedupStore {
         Ok(())
     }
 
+    /// Whether the store is too full to grant a long window right now, as
+    /// of its last cap check. A caller reports this so the closed state is
+    /// seen: while it lasts, a long window protects nothing.
+    #[must_use]
+    pub fn long_window_closed(&self) -> bool {
+        self.long_window_closed.load(Ordering::Relaxed)
+    }
+
     /// How many records this store currently holds -- the row bound's own
     /// assertion, and operator inspection.
     pub fn len(&self) -> Result<u32> {
@@ -475,315 +540,4 @@ impl DedupStore {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
-mod tests {
-    use super::*;
-
-    fn config() -> DedupConfig {
-        DedupConfig {
-            ttl_ms: 600_000,
-            claim_window_ms: 60_000,
-            max_rows: 10_000,
-            max_result_bytes: 64 * 1024,
-        }
-    }
-
-    fn store() -> DedupStore {
-        DedupStore::open_in_memory(config()).unwrap()
-    }
-
-    /// Whichever attempt holds the claim right now.
-    fn claim_of(store: &DedupStore, caller: &str, key: &str) -> ClaimToken {
-        store.current_claim(caller, key)
-    }
-
-    /// Asserts a fresh claim was granted, and hands back its token.
-    fn expect_claim(store: &DedupStore, caller: &str, key: &str, now: i64) -> ClaimToken {
-        match store.begin(caller, key, now).unwrap() {
-            DedupDecision::Execute(token) => token,
-            other => panic!("expected a fresh claim, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_call_with_a_fresh_key_executes_and_records_its_result() {
-        let store = store();
-        assert!(matches!(
-            store.begin("did:key:zA", "k1", 1_000).unwrap(),
-            DedupDecision::Execute(_)
-        ));
-        store
-            .finish(
-                "did:key:zA",
-                "k1",
-                claim_of(&store, "did:key:zA", "k1"),
-                &FirstOutcome::Success(b"42".to_vec()),
-                1_500,
-            )
-            .unwrap();
-        assert_eq!(
-            store.begin("did:key:zA", "k1", 2_000).unwrap(),
-            DedupDecision::Replay(FirstOutcome::Success(b"42".to_vec()))
-        );
-    }
-
-    #[test]
-    fn a_repeat_of_a_completed_call_that_failed_returns_the_same_callee_error() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        let err = FirstOutcome::CalleeError { code: -32010, message: "denied".to_string() };
-        store
-            .finish("did:key:zA", "k1", claim_of(&store, "did:key:zA", "k1"), &err, 1_500)
-            .unwrap();
-        assert_eq!(store.begin("did:key:zA", "k1", 2_000).unwrap(), DedupDecision::Replay(err));
-    }
-
-    #[test]
-    fn a_repeat_while_the_first_call_is_still_running_is_refused() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        assert_eq!(store.begin("did:key:zA", "k1", 30_000).unwrap(), DedupDecision::AlreadyRunning);
-    }
-
-    /// The honest at-least-once case, asserted against a supplied clock
-    /// rather than by sleeping.
-    #[test]
-    fn a_claim_whose_expiry_passed_is_retaken_and_the_call_runs_again() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        assert!(matches!(
-            store.begin("did:key:zA", "k1", 61_001).unwrap(),
-            DedupDecision::Execute(_)
-        ));
-    }
-
-    #[test]
-    fn a_key_is_scoped_to_its_caller() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        store
-            .finish(
-                "did:key:zA",
-                "k1",
-                claim_of(&store, "did:key:zA", "k1"),
-                &FirstOutcome::Success(b"a".to_vec()),
-                1_100,
-            )
-            .unwrap();
-        assert!(
-            matches!(store.begin("did:key:zB", "k1", 1_200).unwrap(), DedupDecision::Execute(_)),
-            "the same key string from a different caller is a different call"
-        );
-    }
-
-    #[test]
-    fn a_record_past_its_ttl_does_not_answer_and_is_pruned_on_the_next_write() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        store
-            .finish(
-                "did:key:zA",
-                "k1",
-                claim_of(&store, "did:key:zA", "k1"),
-                &FirstOutcome::Success(b"a".to_vec()),
-                1_100,
-            )
-            .unwrap();
-        assert_eq!(store.len().unwrap(), 1);
-
-        // Past `finish`'s refreshed expiry: no longer an answer.
-        let now = 1_100 + 600_001;
-        assert!(matches!(
-            store.begin("did:key:zB", "other", now).unwrap(),
-            DedupDecision::Execute(_)
-        ));
-        assert_eq!(store.len().unwrap(), 1, "the expired record must have been swept");
-    }
-
-    /// The row bound, as the code actually promises it: a ceiling checked
-    /// every `CAP_CHECK_INTERVAL` claims, not an exact limit enforced on
-    /// every single write -- the `COUNT` behind it is amortised off the
-    /// hot path. Overshoot up to that interval is expected; unbounded
-    /// growth is not.
-    #[test]
-    fn the_dedup_table_is_bounded_and_prunes_oldest_first() {
-        let store = DedupStore::open_in_memory(DedupConfig { max_rows: 3, ..config() }).unwrap();
-        let claims = CAP_CHECK_INTERVAL * 5;
-        for i in 0..claims {
-            store.begin("did:key:zA", &format!("k{i}"), 1_000 + i64::from(i)).unwrap();
-        }
-        let held = store.len().unwrap();
-        assert!(
-            held <= 3 + CAP_CHECK_INTERVAL,
-            "the table must stay bounded; held {held} against a cap of 3 checked every \
-             {CAP_CHECK_INTERVAL} claims"
-        );
-        assert!(held < claims, "and must actually prune, not merely grow more slowly");
-
-        // Oldest-first: the very first key is long gone.
-        assert!(matches!(
-            store.begin("did:key:zA", "k0", 90_000).unwrap(),
-            DedupDecision::Execute(_)
-        ));
-    }
-
-    /// A late attempt must not stamp its outcome over a claim a newer
-    /// attempt already retook, or a duplicate arriving in that gap is
-    /// served the stale answer and the newer attempt then overwrites it.
-    #[test]
-    fn a_finish_from_an_attempt_that_lost_its_claim_records_nothing() {
-        let store = store();
-        let stale = expect_claim(&store, "did:key:zA", "k1", 1_000);
-        // Attempt 1 outruns its claim window; attempt 2 retakes the key.
-        let fresh = expect_claim(&store, "did:key:zA", "k1", 61_001);
-        assert_ne!(stale, fresh, "the retake must mint a new claim");
-
-        // Attempt 1 finally finishes, far too late, quoting its own claim.
-        store
-            .finish("did:key:zA", "k1", stale, &FirstOutcome::Success(b"stale".to_vec()), 61_500)
-            .unwrap();
-
-        assert_eq!(
-            store.begin("did:key:zA", "k1", 61_600).unwrap(),
-            DedupDecision::AlreadyRunning,
-            "attempt 2 still holds the key; the late finish must not have marked it done"
-        );
-    }
-
-    /// The attempt that holds the claim records normally -- the guard must
-    /// not break the ordinary path it is protecting.
-    #[test]
-    fn a_finish_from_the_attempt_holding_the_claim_records_its_outcome() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        store
-            .finish(
-                "did:key:zA",
-                "k1",
-                claim_of(&store, "did:key:zA", "k1"),
-                &FirstOutcome::Success(b"ok".to_vec()),
-                1_500,
-            )
-            .unwrap();
-        assert_eq!(
-            store.begin("did:key:zA", "k1", 2_000).unwrap(),
-            DedupDecision::Replay(FirstOutcome::Success(b"ok".to_vec()))
-        );
-    }
-
-    /// The row cap is per caller, so a noisy peer can only evict its own
-    /// records. A shared cap would be an eviction channel: flush someone
-    /// else's fence and their next duplicate re-executes.
-    #[test]
-    fn one_caller_cannot_evict_another_callers_records() {
-        let store = DedupStore::open_in_memory(DedupConfig { max_rows: 2, ..config() }).unwrap();
-        store.begin("did:key:zVictim", "important", 1_000).unwrap();
-        store
-            .finish(
-                "did:key:zVictim",
-                "important",
-                claim_of(&store, "did:key:zVictim", "important"),
-                &FirstOutcome::Success(b"v".to_vec()),
-                1_010,
-            )
-            .unwrap();
-
-        // Far past the cap *and* past several cap-check intervals. Twenty
-        // claims would not do it: the check is amortised, so the eviction
-        // branch would never run and this would pass against a global cap
-        // too -- proving nothing about the per-caller scoping it exists to
-        // pin.
-        let noisy = CAP_CHECK_INTERVAL * 5;
-        for i in 0..noisy {
-            store.begin("did:key:zNoisy", &format!("n{i}"), 1_100 + i64::from(i)).unwrap();
-        }
-        assert!(
-            store.len().unwrap() < u32::from(u16::try_from(noisy).unwrap()),
-            "precondition: the noisy caller must actually have triggered eviction"
-        );
-
-        assert!(
-            matches!(
-                store.begin("did:key:zVictim", "important", 2_000).unwrap(),
-                DedupDecision::Replay(_)
-            ),
-            "the victim's fence must survive another caller's overflow"
-        );
-    }
-
-    #[test]
-    fn an_oversized_result_is_recorded_as_done_without_its_body() {
-        let store =
-            DedupStore::open_in_memory(DedupConfig { max_result_bytes: 8, ..config() }).unwrap();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        store
-            .finish(
-                "did:key:zA",
-                "k1",
-                claim_of(&store, "did:key:zA", "k1"),
-                &FirstOutcome::Success(b"far too long".to_vec()),
-                1_100,
-            )
-            .unwrap();
-        assert_eq!(
-            store.begin("did:key:zA", "k1", 1_200).unwrap(),
-            DedupDecision::Replay(FirstOutcome::SuccessNotRetained),
-            "the call must still not be re-executed, even with no body to return"
-        );
-    }
-
-    #[test]
-    fn a_failure_before_the_target_ran_leaves_no_claim_behind() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        store.release("did:key:zA", "k1", claim_of(&store, "did:key:zA", "k1")).unwrap();
-        assert!(
-            matches!(store.begin("did:key:zA", "k1", 1_100).unwrap(), DedupDecision::Execute(_)),
-            "a corrected retry must not be blocked by a claim nothing executed under"
-        );
-    }
-
-    /// A finished record must survive `release`: an outcome is not a claim.
-    #[test]
-    fn releasing_a_finished_record_does_not_erase_its_outcome() {
-        let store = store();
-        store.begin("did:key:zA", "k1", 1_000).unwrap();
-        store
-            .finish(
-                "did:key:zA",
-                "k1",
-                claim_of(&store, "did:key:zA", "k1"),
-                &FirstOutcome::Success(b"a".to_vec()),
-                1_100,
-            )
-            .unwrap();
-        store.release("did:key:zA", "k1", claim_of(&store, "did:key:zA", "k1")).unwrap();
-        assert!(matches!(
-            store.begin("did:key:zA", "k1", 1_200).unwrap(),
-            DedupDecision::Replay(_)
-        ));
-    }
-
-    #[test]
-    fn the_dedup_lookup_is_one_indexed_probe_and_no_scan() {
-        let store = store();
-        let plan = store.explain_lookup_plan().unwrap();
-        assert!(
-            plan.contains("USING INDEX") || plan.contains("USING PRIMARY KEY"),
-            "expected the lookup to use the primary key, got: {plan}"
-        );
-        assert!(!plan.to_uppercase().contains("SCAN TABLE"), "expected no table scan, got: {plan}");
-    }
-
-    #[test]
-    fn the_ttl_is_at_least_the_senders_own_total_retry_window() {
-        let queue = crate::QueueConfig::from(&syneroym_core::config::AppSandboxRole::default());
-        let cfg =
-            DedupConfig::derive(queue.total_retry_window_ms(), queue.visibility_timeout_ms, 30_000);
-        assert!(
-            cfg.ttl_ms >= queue.total_retry_window_ms(),
-            "a TTL shorter than the retry window silently converts dedup into no dedup"
-        );
-        assert_eq!(cfg.claim_window_ms, 60_000);
-    }
-}
+mod tests;

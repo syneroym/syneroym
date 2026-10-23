@@ -34,7 +34,7 @@ const CLEAR_PARK: &str =
 macro_rules! item_columns {
     () => {
         "id, queue_key, payload, attempts, claim_count, parked_at, park_deadline, park_poll_ms, \
-         park_context"
+         park_context, created_at"
     };
 }
 
@@ -60,6 +60,7 @@ fn read_item(row: &Row<'_>) -> rusqlite::Result<QueueItem> {
         attempts: row.get::<_, i64>(3)? as u32,
         claim_count: row.get::<_, i64>(4)? as u32,
         parked,
+        created_at: row.get(9)?,
     })
 }
 

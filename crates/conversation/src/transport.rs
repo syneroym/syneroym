@@ -6,8 +6,8 @@ use std::{fmt, time::Duration};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rusqlite::Transaction;
 use syneroym_rpc::{
-    Admission, CallOrigin, CallerContext, ConversationError, NotifyOutcome, ProxyError,
-    ProxyProtocol, ProxyRequest,
+    Admission, CallOrigin, CallerContext, ConversationError, Delivery, DepositTicket,
+    NotifyOutcome, ProxyError, ProxyProtocol, ProxyRequest,
 };
 use tokio::time;
 
@@ -64,6 +64,14 @@ pub(crate) enum Disposition {
     Delivered,
 }
 
+/// How a delivery attempt that did not fail ended.
+#[derive(Debug)]
+pub(crate) enum Sent {
+    Delivered,
+    /// The peer was not reachable, and a sealed copy waits at its mailbox.
+    Deposited(DepositTicket),
+}
+
 impl ConversationService {
     /// Builds the delivery worker's outbound `CallerContext` with
     /// `proof: None` and `CallOrigin::Native`, and refuses up front if
@@ -87,6 +95,31 @@ impl ConversationService {
         Ok(())
     }
 
+    /// The request every peer call sends, after the identity check.
+    pub(crate) fn peer_request(
+        &self,
+        svc: &str,
+        peer_address: &str,
+        method: &str,
+        params: serde_json::Value,
+        idempotency_key: Option<String>,
+        timeout: Option<Duration>,
+    ) -> Result<ProxyRequest, Disposition> {
+        self.check_outbound_identity(svc)?;
+        Ok(ProxyRequest {
+            target_service: peer_address.to_string(),
+            interface: "conversation".to_string(),
+            method: method.to_string(),
+            params,
+            caller: CallerContext::service_system(svc),
+            origin: CallOrigin::Native { service_id: Some(svc.to_string()) },
+            protocol: ProxyProtocol::default(),
+            idempotent: idempotency_key.is_some(),
+            idempotency_key,
+            timeout: Some(timeout.unwrap_or(Duration::from_secs(30))),
+        })
+    }
+
     pub(crate) async fn call_peer(
         &self,
         svc: &str,
@@ -96,24 +129,26 @@ impl ConversationService {
         idempotency_key: Option<String>,
         timeout: Option<Duration>,
     ) -> Result<serde_json::Value, Disposition> {
-        self.check_outbound_identity(svc)?;
+        let request =
+            self.peer_request(svc, peer_address, method, params, idempotency_key, timeout)?;
         let Some(proxy) = self.current_service_proxy().upgrade() else {
             return Err(Disposition::Retry);
         };
-        let caller = CallerContext::service_system(svc);
-        let request = ProxyRequest {
-            target_service: peer_address.to_string(),
-            interface: "conversation".to_string(),
-            method: method.to_string(),
-            params,
-            caller,
-            origin: CallOrigin::Native { service_id: Some(svc.to_string()) },
-            protocol: ProxyProtocol::default(),
-            idempotent: idempotency_key.is_some(),
-            idempotency_key,
-            timeout: Some(timeout.unwrap_or(Duration::from_secs(30))),
-        };
         proxy.invoke(request).await.map_err(classify)
+    }
+
+    /// For an outbox row only: the peer's mailbox may take the message
+    /// when the peer cannot be reached. `max_wait_secs` is how much longer
+    /// the row may live.
+    pub(crate) async fn call_peer_deferrable(
+        &self,
+        request: ProxyRequest,
+        max_wait_secs: u64,
+    ) -> Result<Delivery, Disposition> {
+        let Some(proxy) = self.current_service_proxy().upgrade() else {
+            return Err(Disposition::Retry);
+        };
+        proxy.deliver_or_deposit(request, max_wait_secs).await.map_err(classify)
     }
 
     /// The session to encrypt on: the stored one, or a new one built from
@@ -217,15 +252,19 @@ impl ConversationService {
         svc: &str,
         peer_address: &str,
         msg: &StoredMessage,
-    ) -> Result<(), Disposition> {
+        max_wait_secs: u64,
+    ) -> Result<Sent, Disposition> {
         let store = self.store_for(svc).await.map_err(|_| Disposition::Retry)?;
         let env_json = self.sealed_envelope(svc, &store, peer_address, msg).await?;
 
-        let call = self
-            .call_peer(svc, peer_address, "deliver", env_json, Some(msg.id.clone()), None)
-            .await;
+        let request =
+            self.peer_request(svc, peer_address, "deliver", env_json, Some(msg.id.clone()), None)?;
+        let call = self.call_peer_deferrable(request, max_wait_secs).await;
         let ack_json = match call {
-            Ok(json) => json,
+            Ok(Delivery::Direct(json)) => json,
+            // No ack to read and no refusal to record: the mailbox answer
+            // does not carry the receiver's verdict.
+            Ok(Delivery::Deposited(ticket)) => return Ok(Sent::Deposited(ticket)),
             Err(Disposition::Terminal(reason)) => {
                 self.forget_unanswered_session(svc, &store, peer_address).await;
                 return Err(Disposition::Terminal(reason));
@@ -255,7 +294,7 @@ impl ConversationService {
             }
         }
 
-        Ok(())
+        Ok(Sent::Delivered)
     }
 
     /// Validates and decrypts an inbound `deliver` envelope, returning the

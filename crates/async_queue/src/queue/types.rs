@@ -136,6 +136,9 @@ pub struct QueueItem {
     /// [`Queue::claim_due`]; always `Some` for one from
     /// [`Queue::claim_parked_due`]. [`Queue::all`] returns both kinds.
     pub parked: Option<Parked>,
+    /// When the item was first written (Unix ms). Parking and unparking
+    /// keep it. A replayed dead letter gets a new one.
+    pub created_at: i64,
 }
 
 /// How a parked item waits: outside the attempt budget, on its own poll

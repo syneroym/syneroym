@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   type CardRow,
+  canRetry,
   computeNewestRequestMap,
   isQuoteSuperseded,
   refusalText,
+  stateHint,
 } from "./messages.js";
 
 describe("newestRequestMap and quote superseded notice", () => {
@@ -109,5 +111,28 @@ describe("refusalText", () => {
 
   it("shows any other reason as given", () => {
     expect(refusalText("too-large")).toBe("Not accepted: too-large.");
+  });
+});
+
+describe("a deposited message", () => {
+  it("shows a hint that the other side is offline", () => {
+    expect(stateHint("deposited")).toBe(
+      "The other side is offline. The message waits in their mailbox.",
+    );
+  });
+
+  it("has no hint for the other states", () => {
+    for (const state of ["pending", "delivered", "failed"] as const) {
+      expect(stateHint(state)).toBeNull();
+    }
+  });
+
+  it("has no retry button, and only a failed message has one", () => {
+    expect(canRetry({ state: "deposited" })).toBe(false);
+    expect(canRetry({ state: "pending" })).toBe(false);
+    expect(canRetry({ state: "delivered" })).toBe(false);
+    expect(canRetry({ state: "failed" })).toBe(true);
+    expect(canRetry({ state: "failed", restored: true })).toBe(false);
+    expect(canRetry({ state: "failed", deleted_at_secs: 1 })).toBe(false);
   });
 });

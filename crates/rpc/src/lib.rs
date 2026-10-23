@@ -39,9 +39,9 @@ pub use native::{
 };
 pub use native_http::{NativeHttpRegistry, NativeHttpService};
 pub use proxy::{
-    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, HOST_MISMATCH_RPC_CODE,
-    NOT_HOSTED_HERE_RPC_CODE, PROXY_TRANSPORT_RPC_CODE, ProxyError, ProxyProtocol,
-    ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget,
+    CallOrigin, DEFAULT_PROXY_CALL_TIMEOUT, DeadLetterInfo, Delivery, DepositStatus, DepositTicket,
+    HOST_MISMATCH_RPC_CODE, NOT_HOSTED_HERE_RPC_CODE, PROXY_TRANSPORT_RPC_CODE, ProxyError,
+    ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCall, QueuedCallInfo, QueuedTarget,
     SERVICE_NOT_FOUND_RPC_CODE, STREAM_UNAUTHENTICATED_RPC_CODE, SagaBegin, SagaInfo, SagaState,
     SagaStepRequest, ServiceProxy, UNSUPPORTED_PROTOCOL_RPC_CODE, UNSUPPORTED_TARGET_RPC_CODE,
 };

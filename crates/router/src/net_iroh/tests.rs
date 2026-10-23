@@ -100,4 +100,23 @@ mod resolve_peer {
         // client waits 10 s; only the bound makes this fast.
         assert!(started.elapsed() < Duration::from_secs(6), "{:?}", started.elapsed());
     }
+
+    #[tokio::test]
+    async fn a_stored_record_with_a_mailbox_bounds_the_wait_for_a_silent_registry() {
+        let stored = sleeping_peer_record();
+        let store = PeerRecordStore::open_in_memory().unwrap();
+        store.remember(&stored).await.unwrap();
+        // The registry knows another service and never answers for this one.
+        let other = sleeping_peer_record();
+        let client =
+            RegistryClient::new(false, Some(registry_serving_only(&other, Substrate::Hangs).await));
+
+        let started = Instant::now();
+        let peer = resolve_peer(&client, Some(&store), &stored.info.service_id).await.unwrap();
+
+        assert_eq!(peer.mailbox, stored.info.mailbox);
+        // The HTTP client alone would wait 10 s; the bound is 3 s, and the
+        // substrate lookup then adds its own bound of 3 s.
+        assert!(started.elapsed() < Duration::from_secs(8), "{:?}", started.elapsed());
+    }
 }

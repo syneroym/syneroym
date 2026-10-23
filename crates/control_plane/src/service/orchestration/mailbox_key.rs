@@ -1,7 +1,9 @@
 //! The member's mailbox secret key, kept in the service's own vault under a
 //! name guests cannot read.
 
+use syneroym_core::mailbox::HostedMailbox;
 use syneroym_data_db::vault_names;
+use syneroym_mailbox_format::OPEN_MAX_TTL_SECS;
 
 use super::*;
 
@@ -39,6 +41,29 @@ impl ControlPlaneService {
         .await;
         if let Err(e) = result {
             tracing::warn!("Failed to clear the mailbox key of service {service_id}: {e}");
+        }
+    }
+
+    /// Records the mailbox the service pulls from. A redeploy to the same
+    /// mailbox keeps the queue lifetime the receiver already learned.
+    pub(super) async fn record_hosted_mailbox(
+        &self,
+        service_id: &str,
+        mailbox: &str,
+    ) -> anyhow::Result<()> {
+        let max_ttl_secs = match self.registry.mailbox_of(service_id) {
+            Some(known) if known.mailbox == mailbox => known.max_ttl_secs,
+            _ => OPEN_MAX_TTL_SECS,
+        };
+        let hosted = HostedMailbox { mailbox: mailbox.to_string(), max_ttl_secs };
+        self.registry.set_mailbox(service_id.to_string(), hosted).await
+    }
+
+    /// Forgets it. Only a warning, like the key: a stale record only makes
+    /// the receiver fence longer than needed.
+    pub(super) async fn forget_hosted_mailbox(&self, service_id: &str) {
+        if let Err(e) = self.registry.remove_mailbox(service_id).await {
+            tracing::warn!("Failed to remove the mailbox record of service {service_id}: {e}");
         }
     }
 

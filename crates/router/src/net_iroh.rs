@@ -192,16 +192,35 @@ fn iroh_addr_from_mechanisms(
     Ok(None)
 }
 
+/// How long a sender waits for the registry when it already holds a stored
+/// record with a mailbox for the peer. That record can answer at once, and a
+/// registry that does not answer would otherwise add its full timeout and a
+/// DHT try to the short direct attempt.
+pub const MAILBOX_PEER_RECORD_LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// The service record of `service_id`: from the registry, which is also
 /// remembered, else from the peer record store. `lookup` gives the same
 /// error for "registry down" and "not found", and a stored record is the
-/// right answer to both.
+/// right answer to both. When the store already holds a record with a
+/// mailbox, the registry gets only a short time to answer.
 async fn record_of(
     registry_client: &RegistryClient,
     peer_records: Option<&PeerRecordStore>,
     service_id: &str,
 ) -> anyhow::Result<SignedEndpointInfo> {
-    match registry_client.lookup(service_id, false).await {
+    let stored = match peer_records {
+        Some(store) => store.recall(service_id).await,
+        None => None,
+    };
+    let lookup = registry_client.lookup(service_id, false);
+    let looked_up = if stored.is_some() {
+        time::timeout(MAILBOX_PEER_RECORD_LOOKUP_TIMEOUT, lookup)
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("registry lookup of '{service_id}' timed out")))
+    } else {
+        lookup.await
+    };
+    match looked_up {
         Ok(record) => {
             if let Some(store) = peer_records
                 && let Err(e) = store.remember(&record).await
@@ -210,10 +229,7 @@ async fn record_of(
             }
             Ok(record)
         }
-        Err(e) => match peer_records {
-            Some(store) => store.recall(service_id).await.ok_or(e),
-            None => Err(e),
-        },
+        Err(e) => stored.ok_or(e),
     }
 }
 

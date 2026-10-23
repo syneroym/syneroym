@@ -45,4 +45,5 @@ chrono.workspace = true
 aes-gcm.workspace = true
 
 [dev-dependencies]
+syneroym-identity.workspace = true
 tempfile.workspace = true

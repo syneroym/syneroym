@@ -2,7 +2,7 @@
 
 *Reader: developers who build these changes.*
 
-**Status: in progress (2026-10-21).** S0, A1 to A4, C1, B1 to B3, C2 to C4, C4b, and C4c are done. C5 comes next. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-22).** S0, A1 to A4, C1, B1 to B3, C2 to C4, C4b, C4c, and C5 are done. C6 comes next. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -162,8 +162,8 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Carried forward note from C4b (§3 item 1): `outbound_preamble` selects identity credentials without signing; `IrohHop::call` signs at stream transmission on every attempt and performs the E2E handshake with encrypted identity over indirect connections.
 - The client side of the end-to-end handshake in Rust (SDK, client gateway passthrough, `IrohHop`). On a connection through a forwarder, the client checks the host's key and then sends its identity encrypted. With no known host key it sends no identity. HKDF over the handshake secret.
 
-**C5 — Sender path (L).** Needs C1, C3, C4, C4b, C4c and R-7 of C6. Parallel with C6, but the R-7 part of C6 must merge first.
-- Needs R-7 (C6) in `main` first, or carries R-7 itself. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver.
+**C5 — Sender path (L, Done).** Needs C1, C3, C4, C4b and C4c. C5 carries R-7 itself (decisions `D-C5-1` to `D-C5-26` in the [mailbox change doc](../../changes/service-mailbox/change.md)). Parallel with C6.
+- Carries R-7 itself, because the serial order puts C5 before C6. Without it, an unparked row, or a mailbox delivery of a message that already landed by a direct attempt, can run twice on the receiver. C6 only feeds the queue's real `max_ttl_secs` from `register` into the stored field (`registry.set_mailbox`).
 - First: decide where a guest method declares that it is mailbox-eligible (app manifest or WIT interface).
 - Eligibility (`S-1`) also needs a valid instance certificate: a `SealError::BadCertificate` or `SealError::TooLarge` from `seal` keeps the call on direct delivery. Each deposit is a new `seal` call; keep the plaintext call and store only the `SentDeposit` and the mailbox id in the park context (`D-C2-9`). Handle receipts by the rule in ADR-0026 A1: only a `verify_signed` result fails or completes a message; everything else goes back to direct attempts, including a `status` answer that does not parse. Before it accepts a receipt, check the receiver certificate's `temporary_did` against the receiver master's revoked keys, as C6 does for the sender (`D-C2-11` only bounds the receipt time).
 - `resolve_peer` bounds the substrate lookup of a peer with a mailbox (`MAILBOX_PEER_ADDR_LOOKUP_TIMEOUT`, 3 s). The "one direct attempt with a short timeout" of `S-2` comes after it. Tune both together. The lookup of the **service** record is not bounded: the stored record (`record_of` in `net_iroh.rs`) is used only after `lookup` fails, which with a registry that does not answer takes the 10 s HTTP timeout and a DHT try. Bound that lookup too, or the wait adds to the short direct attempt.
@@ -175,7 +175,8 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 **C6 — Receiver path (L).** Needs C3, C4, C4b and C4c. Parallel with C5.
 - Read the key with `ControlPlaneService::mailbox_key`. Pull only for a service whose stored record names a mailbox **and** whose key is present. The vault needs the KEK, so the pull waits for it after a restart. The pull always follows the **stored deploy record**: it is the only record whose mailbox matches the key the substrate holds. If the record the registry serves names another mailbox or none (only the master holder can sign one, for example by an old `registry register` over an expired record), keep pulling from the stored one and log a warning, once an hour, naming both.
 - Pull worker, unseal, `dispatch_json_rpc_once` with the sender's identity, signed ack, waiting for a renewed certificate, `mailbox.pull-now` (`R-1` to `R-6`).
-- Longer idempotency memory and a larger row limit for services with a mailbox (`R-7`).
+- Longer idempotency memory and a larger row limit for services with a mailbox (`R-7`). Done in C5: the registry fact `EndpointRegistry::mailbox_of` holds `max_ttl_secs` (the open limit until the receiver registers). C6 overwrites it from the `register` answer with `registry.set_mailbox`, and the receiver fence picks it up on the next keyed call.
+- **Forward note from C5:** C5 declared no mailbox-eligible methods. The `mailbox_methods` manifest field (`["<interface>#<method>", ...]`, per service) and the R-5 check are C6's. A refused `group-push` that comes from the mailbox after more than 24 hours fails the receiver's clock-skew check; ack it as `delivered` (group sync repairs the missed entry) or check freshness against the sealed send time (backlog row). The sender accepts only a receipt the receiver signed (`delivered`, or `rejected` with `not_eligible`, `revoked` or `from_future`), so the receiver must sign those and leave every other rejection unsigned. Two more points for C6, with a test for each: the receiver fence keys on `(caller, key)`, so a direct attempt and the mailbox delivery must present the same caller (the sender master, from the sealed certificate) or the call can run twice; and the fence does not move when a service moves to another node, so a direct run on one node and a mailbox delivery on another both run. C5 has no test of a real direct plus mailbox duplicate.
 - Check revocation after `open` and ack with `OpenedMessage::sign_rejection(Revoked, ..)` (`D-C2-5`). Ack every `open` failure: `RefusedMessage::receipt` for `OpenError::Refused`, `Receipt::unsigned_rejection(e.reject_code(), ..)` for the rest. Pass the queue's own `max_ttl_secs` from `register` in `OpenPolicy`, and size the idempotency memory (`R-7`) from the same value, not from a 7-day constant. A signed `from_future` rejection is decided by the receiver's own clock: log a warning on it, so a receiver whose clock is slow by more than 24 hours is noticed.
 - **Forward note from C4:** Register with the stored deploy record; use `limits.max_ttl_secs` from the answer for `OpenPolicy` and for the idempotency memory (R-7). Ack by `(sender, deposit_id)` from the claim answer, at most 32 per call. Re-register when `claim` answers `-32040` (queue was removed). `-32046` means a newer instance holds the queue: stop pulling for that service and log it. `-32045` at `register` or `claim` means the instance key is revoked: stop pulling and wait for a renewed certificate. `-32047` at `register` for an existing queue means the stored record is past `not_after`: keep claiming, use limits from last successful `register` (or `info`), and log a warning once an hour that owner must deploy again to renew record (mailbox stops republishing at `not_after`). A receiver on the mailbox host must present its instance proof in `CallerContext`. C6 must test that router's `invoke_local` path carries this certificate proof to local native services.
 
@@ -213,7 +214,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 | C4 | C2, C3 | L |
 | C4b | C4 | L |
 | C4c | C4b | M |
-| C5 | C1, C3, C4, C4b, C4c, R-7 of C6 | L |
+| C5 | C1, C3, C4, C4b, C4c | L |
 | C6 | C3, C4, C4b, C4c | L |
 | C7 | A2, C3, C4b, C4c | S |
 | C8 | B1, C4, C7 | M |

@@ -33,7 +33,7 @@ use syneroym_app_orchestration::{AppInstanceId, LogicalResolver, LogicalServiceN
 use syneroym_async_queue::{
     CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, Queue, QueueConfig,
 };
-use syneroym_core::local_registry::EndpointRegistry;
+use syneroym_core::{local_registry::EndpointRegistry, mailbox::MAILBOX_SENDER_MAX_AGE_SECS};
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
@@ -48,6 +48,18 @@ use crate::{call_dedup::ASYNC_DB_NAME, service_async_db::async_db_location};
 /// Ceiling on one queued call's stored payload. The params are the
 /// guest's own data and travel on every attempt.
 const MAX_QUEUED_PAYLOAD_BYTES: usize = 256 * 1024;
+
+/// How long a queued call may wait in all, as Unix ms since it was written.
+/// Only a call to a receiver with a mailbox can come near it: the attempt
+/// budget ends any other call in about ten hours.
+pub(crate) const MAX_ROW_AGE_MS: i64 = (MAILBOX_SENDER_MAX_AGE_SECS as i64) * 1000;
+
+/// What is left of a row's age limit, in whole seconds. Zero once the limit
+/// has passed.
+pub(crate) fn max_wait_secs(created_at_ms: i64, now_ms: i64) -> u64 {
+    let left_ms = created_at_ms.saturating_add(MAX_ROW_AGE_MS).saturating_sub(now_ms);
+    u64::try_from(left_ms / 1000).unwrap_or(0)
+}
 
 /// How many items one service may have claimed in a single worker tick.
 /// One service with a permanently unreachable target must not spend the
@@ -411,6 +423,7 @@ impl ProxyOutbox {
                 id: item.id as u64,
                 idempotency_key: item.queue_key,
                 attempts: item.attempts,
+                deposited: item.parked.is_some(),
             })
             .collect())
     }

@@ -313,3 +313,21 @@ async fn the_mailbox_does_not_make_the_supervisor_ambiguous() {
 
     assert_eq!(registry.resolve_interface(node_did, ""), Some("supervisor".to_string()));
 }
+
+#[tokio::test]
+async fn a_mailbox_round_trips_and_persists_across_a_new_registry() {
+    let storage = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(storage.clone()).await.unwrap();
+    assert_eq!(registry.mailbox_of("svc-1"), None);
+
+    let mailbox = HostedMailbox { mailbox: "did:key:zBox".to_string(), max_ttl_secs: 100 };
+    registry.set_mailbox("svc-1".to_string(), mailbox.clone()).await.unwrap();
+    assert_eq!(registry.mailbox_of("svc-1"), Some(mailbox.clone()));
+
+    let reopened = EndpointRegistry::new(storage).await.unwrap();
+    assert_eq!(reopened.mailbox_of("svc-1"), Some(mailbox));
+
+    reopened.remove_mailbox("svc-1").await.unwrap();
+    reopened.remove_mailbox("svc-1").await.unwrap();
+    assert_eq!(reopened.mailbox_of("svc-1"), None);
+}

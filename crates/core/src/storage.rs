@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::local_registry::SubstrateEndpoint;
+use crate::{local_registry::SubstrateEndpoint, mailbox::HostedMailbox};
 
 /// (`service_type`, `health_check_json`, `manifest_hash`, `visibility`) --
 /// what a deploy recorded about a service. `visibility` is `None` only for a
@@ -59,6 +59,13 @@ pub trait EndpointStorage: Send + Sync {
     async fn save_owner(&self, service_id: &str, owner_did: &str) -> Result<()>;
     /// Forget `service_id`'s owner. Idempotent.
     async fn remove_owner(&self, service_id: &str) -> Result<()>;
+
+    /// Load every hosted service's mailbox as (`service_id`, mailbox).
+    async fn load_all_mailboxes(&self) -> Result<Vec<(String, HostedMailbox)>>;
+    /// Record the mailbox `service_id` pulls from (upsert).
+    async fn save_mailbox(&self, service_id: &str, mailbox: &HostedMailbox) -> Result<()>;
+    /// Forget `service_id`'s mailbox. Idempotent.
+    async fn remove_mailbox(&self, service_id: &str) -> Result<()>;
 
     /// Load every recorded instance certificate as (`service_id`, certificate
     /// JSON).
@@ -156,6 +163,7 @@ pub trait EndpointStorage: Send + Sync {
 pub struct MockStorage {
     data: Arc<DashMap<(String, String), SubstrateEndpoint>>,
     owners: Arc<DashMap<String, String>>,
+    mailboxes: Arc<DashMap<String, HostedMailbox>>,
     certs: Arc<DashMap<String, String>>,
     deploy_facts: Arc<DashMap<String, DeployFacts>>,
     app_contexts: Arc<DashMap<String, (String, String)>>,
@@ -175,6 +183,7 @@ impl MockStorage {
         Self {
             data: Arc::new(DashMap::new()),
             owners: Arc::new(DashMap::new()),
+            mailboxes: Arc::new(DashMap::new()),
             certs: Arc::new(DashMap::new()),
             deploy_facts: Arc::new(DashMap::new()),
             app_contexts: Arc::new(DashMap::new()),
@@ -210,6 +219,17 @@ impl EndpointStorage for MockStorage {
     }
     async fn remove_owner(&self, service_id: &str) -> Result<()> {
         self.owners.remove(service_id);
+        Ok(())
+    }
+    async fn load_all_mailboxes(&self) -> Result<Vec<(String, HostedMailbox)>> {
+        Ok(self.mailboxes.iter().map(|e| (e.key().clone(), e.value().clone())).collect())
+    }
+    async fn save_mailbox(&self, service_id: &str, mailbox: &HostedMailbox) -> Result<()> {
+        self.mailboxes.insert(service_id.to_string(), mailbox.clone());
+        Ok(())
+    }
+    async fn remove_mailbox(&self, service_id: &str) -> Result<()> {
+        self.mailboxes.remove(service_id);
         Ok(())
     }
     async fn load_all_certs(&self) -> Result<Vec<(String, String)>> {

@@ -16,12 +16,11 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use common::{
-    SubstrateNode,
     conversation_fixture::{
-        Deploy, deploy_fixture, fixture_run, fixture_wasm, history_messages, message_row,
-        open_conversation, publish_endpoint, publish_master_anchor, publish_node_record,
-        send_message, try_send_message, wait_for_state,
+        Deploy, fixture_run, fixture_wasm, message_row, open_conversation, send_message,
+        try_send_message, wait_for_state,
     },
+    conversation_peer::Peer,
     roym::fast_conversation_role,
 };
 use rustls::crypto::ring;
@@ -39,68 +38,6 @@ mod common;
 const DELIVER_BUDGET: Duration = Duration::from_secs(30);
 const FAIL_BUDGET: Duration = Duration::from_secs(30);
 const YEAR_MS: i64 = 365 * 24 * 3600 * 1000;
-
-/// One conversation node with the fixture guest deployed on it.
-struct Peer {
-    node: SubstrateNode,
-    master: Identity,
-    did: String,
-}
-
-impl Peer {
-    /// Boots a node with a fast delivery tick and deploys the fixture as a
-    /// certified service. `shared_registry` is the first node's registry.
-    async fn boot(shared_registry: Option<&str>, role: AppSandboxRole, wasm: &[u8]) -> Self {
-        Self::boot_as(Identity::generate().unwrap(), shared_registry, role, wasm, Deploy::Certified)
-            .await
-    }
-
-    async fn boot_as(
-        master: Identity,
-        shared_registry: Option<&str>,
-        role: AppSandboxRole,
-        wasm: &[u8],
-        mode: Deploy,
-    ) -> Self {
-        let mut builder = SubstrateNode::builder()
-            .owner(&Identity::generate().unwrap())
-            .inject_kek_bytes([0xcd; 32])
-            .configure(move |c| c.roles.app_sandbox = Some(role.clone()));
-        if let Some(url) = shared_registry {
-            builder = builder.shared_registry(url);
-        }
-        let mut node = builder.boot().await;
-        let did = deploy_fixture(&mut node, &master, wasm.to_vec(), mode).await;
-        Self { node, master, did }
-    }
-
-    fn registry(&self) -> &str {
-        self.node.registry_url()
-    }
-
-    /// This peer's own view of its conversation with `other`.
-    fn conversation_with(&self, other: &Peer) -> String {
-        derive_conversation_id(&self.did, &other.did)
-    }
-
-    /// Makes `other` resolvable through this peer's own registry, for a peer
-    /// that does not share the others' registry.
-    async fn introduce(&self, other: &Peer) {
-        let mechanisms = other.node.substrate_client.lookup().await.unwrap().info.mechanisms;
-        publish_endpoint(&other.did, other.node.did(), mechanisms, &other.master, self.registry())
-            .await;
-        publish_master_anchor(&other.did, &other.master, self.registry()).await;
-        publish_node_record(&other.node, self.registry()).await;
-    }
-
-    async fn history_with(&self, other: &Peer) -> Vec<Value> {
-        history_messages(&self.node, &self.did, &self.conversation_with(other)).await
-    }
-
-    async fn teardown(self) {
-        self.node.teardown().await;
-    }
-}
 
 fn default_role() -> AppSandboxRole {
     fast_conversation_role(AppSandboxRole::default().conversation_max_pending_age_secs)

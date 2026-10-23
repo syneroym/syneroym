@@ -470,3 +470,39 @@ async fn removing_an_app_context_is_idempotent() {
     let (store, _dir) = make_store().await;
     store.remove_app_context("never-deployed").await.unwrap();
 }
+
+fn hosted_mailbox(mailbox: &str, max_ttl_secs: u64) -> HostedMailbox {
+    HostedMailbox { mailbox: mailbox.to_string(), max_ttl_secs }
+}
+
+#[tokio::test]
+async fn a_saved_mailbox_survives_a_real_reopen_of_the_database_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("registry.db");
+    {
+        let store = SqliteEndpointStorage::new(&path).await.unwrap();
+        store.save_mailbox("svc-1", &hosted_mailbox("did:key:zBox", 604_800)).await.unwrap();
+    }
+    let reopened = SqliteEndpointStorage::new(&path).await.unwrap();
+    let loaded = reopened.load_all_mailboxes().await.unwrap();
+    assert_eq!(loaded, vec![("svc-1".to_string(), hosted_mailbox("did:key:zBox", 604_800))]);
+}
+
+#[tokio::test]
+async fn saving_a_mailbox_upserts() {
+    let (store, _dir) = make_store().await;
+    store.save_mailbox("svc-1", &hosted_mailbox("did:key:zOne", 100)).await.unwrap();
+    store.save_mailbox("svc-1", &hosted_mailbox("did:key:zTwo", 200)).await.unwrap();
+
+    let loaded = store.load_all_mailboxes().await.unwrap();
+    assert_eq!(loaded, vec![("svc-1".to_string(), hosted_mailbox("did:key:zTwo", 200))]);
+}
+
+#[tokio::test]
+async fn removing_a_mailbox_is_idempotent() {
+    let (store, _dir) = make_store().await;
+    store.save_mailbox("svc-1", &hosted_mailbox("did:key:zBox", 100)).await.unwrap();
+    store.remove_mailbox("svc-1").await.unwrap();
+    store.remove_mailbox("svc-1").await.unwrap();
+    assert!(store.load_all_mailboxes().await.unwrap().is_empty());
+}

@@ -29,6 +29,7 @@ async fn proxy_outbox_lists_an_item_before_it_lands() {
         id: 1,
         idempotency_key: "msg-7".to_string(),
         attempts: 2,
+        deposited: true,
     });
     let service = service_with_proxy_queues(temp_dir.path(), &queues).await;
 
@@ -37,6 +38,7 @@ async fn proxy_outbox_lists_an_item_before_it_lands() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].idempotency_key, "msg-7");
     assert_eq!(listed[0].attempts, 2);
+    assert!(listed[0].deposited);
 }
 
 #[tokio::test]

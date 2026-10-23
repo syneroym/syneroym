@@ -30,10 +30,13 @@ pub mod dedup;
 pub mod queue;
 pub mod saga;
 
+// Exported for tests of the crates that use the store; not part of its API.
+#[doc(hidden)]
+pub use crate::dedup::CAP_CHECK_INTERVAL;
 pub use crate::{
     dedup::{
         CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
-        DedupDecision, DedupStore, FirstOutcome,
+        DedupDecision, DedupStore, DedupWindow, FirstOutcome,
     },
     queue::{
         DEFAULT_MAX_PENDING_ROWS, DeadLetter, FailOutcome, MAX_PARK_CONTEXT_BYTES, Parked, Queue,

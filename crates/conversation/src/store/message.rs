@@ -72,7 +72,8 @@ impl ConversationStore {
         let max_messages = self.config.max_messages_per_conversation;
         self.queue.transaction(|tx, txq| {
             let pending_count: u32 = tx.query_row(
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state = 'pending'",
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND state IN \
+                 ('pending', 'deposited')",
                 rusqlite::params![conversation_id],
                 |r| r.get::<_, i64>(0),
             )? as u32;
@@ -402,7 +403,7 @@ impl ConversationStore {
                 params![rowid, body_str],
             );
         }
-        if outgoing != 0 && state == "pending" {
+        if outgoing != 0 && matches!(state.as_str(), "pending" | "deposited") {
             let _ = conn.execute(
                 "DELETE FROM outbound_envelopes WHERE message_id = ?1",
                 params![message_id],
@@ -415,7 +416,7 @@ impl ConversationStore {
             // Members who already have it keep their delivered state.
             let _ = conn.execute(
                 "UPDATE message_recipients SET state = 'failed', last_error = 'deleted before \
-                 delivery' WHERE message_id = ?1 AND state = 'pending'",
+                 delivery' WHERE message_id = ?1 AND state IN ('pending', 'deposited')",
                 params![message_id],
             );
         } else if outgoing == 0 && matches!(admission.as_str(), "undecided" | "held") {
@@ -640,7 +641,7 @@ impl ConversationStore {
              body, signature, outgoing, verified, state, last_error, system, entry_id, admission, \
              admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
              report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE state \
-             IN ('pending', 'failed') AND system = 0 ORDER BY sender_timestamp ASC",
+             IN ('pending', 'deposited', 'failed') AND system = 0 ORDER BY sender_timestamp ASC",
         )?;
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
@@ -669,7 +670,8 @@ impl ConversationStore {
     pub fn recipients_remaining(&self, message_id: &str) -> Result<u32> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM message_recipients WHERE message_id = ?1 AND state = 'pending'",
+            "SELECT COUNT(*) FROM message_recipients WHERE message_id = ?1 AND state IN \
+             ('pending', 'deposited')",
             params![message_id],
             |r| r.get(0),
         )?;

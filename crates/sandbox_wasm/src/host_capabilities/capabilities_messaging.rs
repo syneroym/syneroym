@@ -49,6 +49,7 @@ mod conversation_wire {
     pub(super) fn map_state(s: rpc::ConversationDeliveryState) -> wit::DeliveryState {
         match s {
             rpc::ConversationDeliveryState::Pending => wit::DeliveryState::Pending,
+            rpc::ConversationDeliveryState::Deposited => wit::DeliveryState::Deposited,
             rpc::ConversationDeliveryState::Delivered => wit::DeliveryState::Delivered,
             rpc::ConversationDeliveryState::Failed => wit::DeliveryState::Failed,
         }
