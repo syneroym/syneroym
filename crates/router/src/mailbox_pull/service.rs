@@ -145,11 +145,20 @@ impl ServicePass<'_> {
             }
             (AckOutcome::Refused, _) => {
                 warn!(service_id = self.service_id, "the mailbox refused a receipt");
-                self.summary.not_acked += 1;
-                "not_acked"
+                self.count_not_acked(1);
+                return;
             }
         };
         metrics::counter!("substrate.mailbox_receiver.messages", "result" => result).increment(1);
+    }
+
+    /// Counts messages left for a later claim, in the summary and the
+    /// metric alike.
+    pub(super) fn count_not_acked(&mut self, messages: usize) {
+        let messages = u32::try_from(messages).unwrap_or(u32::MAX);
+        self.summary.not_acked = self.summary.not_acked.saturating_add(messages);
+        metrics::counter!("substrate.mailbox_receiver.messages", "result" => "not_acked")
+            .increment(u64::from(messages));
     }
 
     /// Ends this pass for the service, and counts it as blocked.
@@ -462,8 +471,7 @@ impl MailboxPuller {
         for (i, claimed) in answer.messages.iter().enumerate() {
             if i > 0 && claimed_at.elapsed() + DEFAULT_PROXY_CALL_TIMEOUT >= budget {
                 // The rest come back after the visibility time.
-                pass.summary.not_acked +=
-                    u32::try_from(answer.messages.len() - i).unwrap_or(u32::MAX);
+                pass.count_not_acked(answer.messages.len() - i);
                 self.send_acks(pass, inputs, acks).await;
                 return false;
             }
@@ -493,7 +501,7 @@ impl MailboxPuller {
         }
         let (acks, counts): (Vec<_>, Vec<_>) = handled.into_iter().unzip();
         let Some(results) = self.ack(inputs, acks).await else {
-            pass.summary.not_acked += u32::try_from(counts.len()).unwrap_or(u32::MAX);
+            pass.count_not_acked(counts.len());
             return false;
         };
         for (outcome, count) in results.into_iter().zip(counts) {

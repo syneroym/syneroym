@@ -91,9 +91,7 @@ impl MailboxPuller {
             }
             Handled::NoAck(why) => {
                 debug!(service_id = pass.service_id, why, "message left unacked");
-                pass.summary.not_acked += 1;
-                metrics::counter!("substrate.mailbox_receiver.messages", "result" => "not_acked")
-                    .increment(1);
+                pass.count_not_acked(1);
                 None
             }
         }
