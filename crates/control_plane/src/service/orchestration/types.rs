@@ -262,10 +262,56 @@ pub(crate) struct PreparedAppContext {
 pub(crate) struct ValidatedDeploy {
     pub(super) instance_cert: Option<DelegationCertificate>,
     pub(super) visibility: AppVisibility,
-    pub(super) mailbox_key: Option<MailboxSecretKey>,
-    /// The node DID of the mailbox the verified record names. `Some` exactly
-    /// when `mailbox_key` is.
-    pub(super) mailbox: Option<String>,
+    pub(super) mailbox: Option<ValidatedMailbox>,
+}
+
+/// The mailbox facts of a deploy whose record names one. `Debug` hides the
+/// key.
+pub(crate) struct ValidatedMailbox {
+    pub(super) key: MailboxSecretKey,
+    /// The node DID of the mailbox the verified record names.
+    pub(super) mailbox: String,
+    /// Checked `<interface>#<method>` texts.
+    pub(super) methods: Vec<String>,
+}
+
+impl fmt::Debug for ValidatedMailbox {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidatedMailbox")
+            .field("key", &"<hidden>")
+            .field("mailbox", &self.mailbox)
+            .field("methods", &self.methods)
+            .finish()
+    }
+}
+
+/// The `mailbox_methods` of a deploy: each entry parses, none is a node or
+/// platform interface, none repeats, and there are at most
+/// `MAX_MAILBOX_METHODS`. The error names the entry, never the key.
+fn validate_mailbox_methods(service_id: &str, methods: &[String]) -> Result<Vec<String>, String> {
+    if methods.len() > MAX_MAILBOX_METHODS {
+        return Err(format!(
+            "'{service_id}' lists {} mailbox methods; the most allowed is {MAX_MAILBOX_METHODS}",
+            methods.len()
+        ));
+    }
+    let mut checked = Vec::with_capacity(methods.len());
+    for text in methods {
+        let method: MailboxMethod =
+            text.parse().map_err(|e| format!("mailbox methods of '{service_id}': {e}"))?;
+        if is_reserved_mailbox_interface(method.interface()) {
+            return Err(format!(
+                "mailbox method '{method}' of '{service_id}' names a node or platform interface; \
+                 only a guest's own methods can accept delivery from a mailbox"
+            ));
+        }
+        let text = method.to_string();
+        if checked.contains(&text) {
+            return Err(format!("mailbox method '{text}' of '{service_id}' is listed twice"));
+        }
+        checked.push(text);
+    }
+    Ok(checked)
 }
 
 /// The mailbox the record names. When either the record names one or a key
@@ -295,7 +341,7 @@ fn verified_record_mailbox(
 
 /// A mailbox needs a public record that names it with this key, and an
 /// instance certificate the receiver can show at registration. Returns the
-/// key and the node DID of the mailbox the record names.
+/// key, the node DID of the mailbox the record names and the checked methods.
 ///
 /// The record is signed by the member master, so it is the one place the
 /// mailbox choice is fixed. The substrate only checks that the key it was
@@ -307,7 +353,7 @@ pub(crate) fn validate_mailbox(
     visibility: AppVisibility,
     registry_certificate: Option<&str>,
     has_instance_certificate: bool,
-) -> Result<Option<(MailboxSecretKey, String)>, String> {
+) -> Result<Option<ValidatedMailbox>, String> {
     let record_mailbox = verified_record_mailbox(service_id, credentials, registry_certificate)?;
     match (credentials, record_mailbox) {
         (None, None) => Ok(None),
@@ -338,7 +384,8 @@ pub(crate) fn validate_mailbox(
                     "mailbox key for '{service_id}' does not match the key in its record"
                 ));
             }
-            Ok(Some((key, mailbox.service_id)))
+            let methods = validate_mailbox_methods(service_id, &credentials.methods)?;
+            Ok(Some(ValidatedMailbox { key, mailbox: mailbox.service_id, methods }))
         }
     }
 }

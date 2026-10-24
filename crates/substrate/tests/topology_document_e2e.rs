@@ -97,6 +97,7 @@ fn service_manifest_with_vis(
             topology_visibility,
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         },
     );
     SynAppManifest {
@@ -154,6 +155,7 @@ fn two_service_manifest_with_topology_vis(
                 topology_visibility: vis,
                 mailbox: None,
                 instance_cert_expires_hours: None,
+                mailbox_methods: Vec::new(),
             },
         );
     }

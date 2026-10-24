@@ -41,7 +41,11 @@ async fn record_signing_e2e_service_and_delegated_flow() {
             service_id.clone(),
             vec!["greeter".to_string()],
             wasm_bytes,
-            syneroym_sdk::Publication::Public { record, mailbox_key: None },
+            syneroym_sdk::Publication::Public {
+                record,
+                mailbox_key: None,
+                mailbox_methods: Vec::new(),
+            },
             None,
         )
         .await

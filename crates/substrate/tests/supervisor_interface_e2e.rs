@@ -64,6 +64,7 @@ fn bound_app_manifest() -> SynAppManifest {
             topology_visibility: Default::default(),
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         },
     );
     services.insert(
@@ -93,6 +94,7 @@ fn bound_app_manifest() -> SynAppManifest {
             topology_visibility: Default::default(),
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         },
     );
     SynAppManifest {

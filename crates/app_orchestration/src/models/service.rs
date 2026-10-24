@@ -353,6 +353,73 @@ impl From<MailboxChoice> for String {
     }
 }
 
+/// A guest method that accepts delivery from the service's mailbox
+/// (ADR-0026 Decision 5). Text form `<interface>#<method>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct MailboxMethod {
+    interface: String,
+    method: String,
+}
+
+/// Longest interface or method name in a `MailboxMethod`, in bytes.
+const MAX_MAILBOX_METHOD_PART_BYTES: usize = 128;
+
+impl MailboxMethod {
+    #[must_use]
+    pub fn interface(&self) -> &str {
+        &self.interface
+    }
+
+    #[must_use]
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+}
+
+impl FromStr for MailboxMethod {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let refuse = |why: &str| anyhow::anyhow!("mailbox method '{text}' {why}");
+        let Some((interface, method)) = text.split_once('#') else {
+            return Err(refuse("is not '<interface>#<method>'"));
+        };
+        if method.contains('#') {
+            return Err(refuse("has more than one '#'"));
+        }
+        for part in [interface, method] {
+            if part.is_empty() || part.len() > MAX_MAILBOX_METHOD_PART_BYTES {
+                return Err(refuse("needs an interface and a method of 1 to 128 bytes each"));
+            }
+            if part.chars().any(|c| c.is_ascii_whitespace() || c.is_control()) {
+                return Err(refuse("contains whitespace or a control character"));
+            }
+        }
+        Ok(Self { interface: interface.to_string(), method: method.to_string() })
+    }
+}
+
+impl fmt::Display for MailboxMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#{}", self.interface, self.method)
+    }
+}
+
+impl TryFrom<String> for MailboxMethod {
+    type Error = anyhow::Error;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        text.parse()
+    }
+}
+
+impl From<MailboxMethod> for String {
+    fn from(method: MailboxMethod) -> Self {
+        method.to_string()
+    }
+}
+
 /// Represents the spec of a service in the application manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServiceSpec {
@@ -412,6 +479,11 @@ pub struct ServiceSpec {
     /// main control. 1 to 720.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_cert_expires_hours: Option<u32>,
+    /// Guest methods that accept delivery from the mailbox (ADR-0026). Needs
+    /// `mailbox`. Conversation `deliver` and `group-push` are always accepted
+    /// and are not listed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mailbox_methods: Vec<MailboxMethod>,
 }
 
 /// Defines a dependency on another application.

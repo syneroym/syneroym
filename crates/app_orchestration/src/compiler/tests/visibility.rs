@@ -40,6 +40,7 @@ pub(super) fn planned_service(
         topology_visibility: topo_vis,
         mailbox: None,
         instance_cert_expires_hours: None,
+        mailbox_methods: Vec::new(),
     }
 }
 

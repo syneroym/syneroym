@@ -8,6 +8,7 @@ use std::{
 
 use rusqlite::Connection;
 use syneroym_async_queue::{CAP_CHECK_INTERVAL, DedupWindow};
+use syneroym_control_plane::SUPERVISOR_RESERVED_SERVICE_ID;
 use syneroym_core::mailbox::HostedMailbox;
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -448,14 +449,8 @@ fn the_guard_never_runs_sqlite_on_the_async_worker_thread() {
     });
 }
 
-#[test]
-fn the_mailbox_interface_is_a_node_level_interface() {
-    assert!(is_node_level_interface("mailbox"));
-    assert!(is_node_level_interface(&syneroym_core::util::short_hash("mailbox")));
-}
-
 fn mailbox_of_service(max_ttl_secs: u64) -> HostedMailbox {
-    HostedMailbox { mailbox: "did:key:zBox".to_string(), max_ttl_secs }
+    HostedMailbox { mailbox: "did:key:zBox".to_string(), max_ttl_secs, methods: Vec::new() }
 }
 
 #[tokio::test]

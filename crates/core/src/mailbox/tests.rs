@@ -159,3 +159,56 @@ fn unknown_fields_are_ignored() {
     let reg_params: RegisterParams = serde_json::from_value(register_raw).unwrap();
     assert_eq!(reg_params.record.info.service_id, did);
 }
+
+fn hosted(methods: &[&str]) -> HostedMailbox {
+    HostedMailbox {
+        mailbox: "did:key:zBox".to_string(),
+        max_ttl_secs: 100,
+        methods: methods.iter().map(ToString::to_string).collect(),
+    }
+}
+
+#[test]
+fn the_conversation_methods_are_always_accepted() {
+    let none = hosted(&[]);
+    assert!(none.accepts("conversation", "deliver"));
+    assert!(none.accepts("conversation", "group-push"));
+    assert!(!none.accepts("conversation", "send"));
+}
+
+#[test]
+fn only_a_listed_method_is_accepted() {
+    let listed = hosted(&["greeter#greet"]);
+    assert!(listed.accepts("greeter", "greet"));
+    assert!(!listed.accepts("greeter", "other"));
+    assert!(!listed.accepts("other", "greet"));
+}
+
+#[test]
+fn an_entry_that_names_the_interface_by_its_short_hash_is_accepted() {
+    let entry = format!("{}#greet", util::short_hash("greeter"));
+    let listed = hosted(&[entry.as_str()]);
+    assert!(listed.accepts("greeter", "greet"));
+    assert!(!listed.accepts("greeter", "other"));
+}
+
+#[test]
+fn node_and_platform_interfaces_are_reserved_by_name_and_by_short_hash() {
+    let reserved =
+        ["orchestrator", "security", "supervisor", "mailbox", "data-layer", "conversation"];
+    for name in reserved {
+        assert!(is_reserved_mailbox_interface(name), "{name}");
+        assert!(is_reserved_mailbox_interface(&util::short_hash(name)), "{name} hash");
+    }
+    for name in NATIVE_CAPABILITY_INTERFACES {
+        assert!(is_reserved_mailbox_interface(name), "{name}");
+    }
+    assert!(!is_reserved_mailbox_interface("greeter"));
+}
+
+#[test]
+fn a_hosted_mailbox_without_methods_reads_as_empty() {
+    let parsed: HostedMailbox =
+        serde_json::from_value(json!({"mailbox": "did:key:zBox", "max_ttl_secs": 100})).unwrap();
+    assert_eq!(parsed, hosted(&[]));
+}

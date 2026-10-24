@@ -24,7 +24,7 @@ use tracing::{debug, error};
 
 use super::RouteHandler;
 use crate::{
-    call_dedup::{GuardOutcome, replay_as_result},
+    call_dedup::{CallDedupGuard, GuardOutcome, replay_as_result},
     preamble::{RoutePreamble, RouteProtocol, RouteTransport},
     routing::{AdaptationStage, RoutePipeline, ServiceStage},
 };
@@ -73,10 +73,20 @@ impl KeyProbe {
     }
 }
 
+/// What the fence decided for one keyed call, and the answer if it ran.
+pub(crate) enum Fenced {
+    /// The fence would not take the call, so nothing ran.
+    Refused(ProxyError),
+    /// The call ran before; this is its stored first answer.
+    Replayed(FirstOutcome),
+    /// The call ran now. `Err` means the dispatch itself failed.
+    Ran(Result<Vec<u8>>),
+}
+
 /// Reads what a dispatched frame answered, so the fence can remember it.
 /// A dispatch that failed outright answered nothing definitive, so it
 /// records nothing and the claim is released.
-fn frame_as_outcome(response: &Result<Vec<u8>>) -> Result<Value, ProxyError> {
+pub(super) fn frame_as_outcome(response: &Result<Vec<u8>>) -> Result<Value, ProxyError> {
     let Ok(bytes) = response else {
         return Err(ProxyError::Transport("dispatch failed".to_string()));
     };
@@ -136,11 +146,6 @@ impl RouteHandler {
             return self.dispatch_json_rpc_unfenced(pipeline, preamble, caller, body).await;
         };
 
-        let target_service = match &pipeline.service {
-            ServiceStage::NativeService { service_id }
-            | ServiceStage::WasmComponent { service_id } => service_id.as_str(),
-            _ => preamble.service_id.as_str(),
-        };
         let Some(guard) = &self.inner.dedup_guard else {
             return JsonRpcConverter::json_error(
                 probe.id,
@@ -150,27 +155,52 @@ impl RouteHandler {
             );
         };
 
-        match guard
+        match self.dispatch_fenced(guard, pipeline, preamble, caller, body, &probe.key).await {
+            Fenced::Refused(e) => {
+                metrics::counter!("substrate.request.errors").increment(1);
+                JsonRpcConverter::json_error(probe.id, e.code(), e.to_string())
+            }
+            Fenced::Replayed(outcome) => replay_frame(probe.id, outcome),
+            Fenced::Ran(response) => response,
+        }
+    }
+
+    /// Asks the fence about a keyed call and, when the call is new, runs it
+    /// and records its answer. Keeps the three results apart (refused,
+    /// replayed, ran), which a response frame alone cannot: a refusal and a
+    /// service's own error can carry the same code.
+    pub(super) async fn dispatch_fenced(
+        &self,
+        guard: &CallDedupGuard,
+        pipeline: &RoutePipeline,
+        preamble: &RoutePreamble,
+        caller: Option<&CallerContext>,
+        body: &[u8],
+        key: &str,
+    ) -> Fenced {
+        let target_service = match &pipeline.service {
+            ServiceStage::NativeService { service_id }
+            | ServiceStage::WasmComponent { service_id } => service_id.as_str(),
+            _ => preamble.service_id.as_str(),
+        };
+        let outcome = guard
             .begin(
                 target_service,
                 &preamble.interface,
                 caller.map(|c| c.caller_did.as_str()),
-                Some(&probe.key),
+                Some(key),
             )
-            .await
-        {
-            GuardOutcome::Refuse(e) => {
-                metrics::counter!("substrate.request.errors").increment(1);
-                JsonRpcConverter::json_error(probe.id, e.code(), e.to_string())
-            }
-            GuardOutcome::Answer(outcome) => replay_frame(probe.id, outcome),
+            .await;
+        match outcome {
+            GuardOutcome::Refuse(e) => Fenced::Refused(e),
+            GuardOutcome::Answer(outcome) => Fenced::Replayed(outcome),
             GuardOutcome::Execute(claim) => {
                 let response =
                     self.dispatch_json_rpc_unfenced(pipeline, preamble, caller, body).await;
                 if let Some(claim) = claim {
                     claim.settle(&frame_as_outcome(&response)).await;
                 }
-                response
+                Fenced::Ran(response)
             }
         }
     }

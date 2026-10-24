@@ -387,11 +387,10 @@ fn map_planned_service(
     let service_type = map_service_type(svc)?;
     let instance_certificate = ctx.members.instance_certificates.get(&svc.service_id).cloned();
     let registry_certificate = ctx.members.registry_certificates.get(&svc.service_id).cloned();
-    let mailbox = ctx
-        .members
-        .mailbox_keys
-        .get(&svc.service_id)
-        .map(|key| MailboxCredentials { secret_key: key.to_z32().to_string() });
+    let mailbox = ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredentials {
+        secret_key: key.to_z32().to_string(),
+        methods: svc.mailbox_methods.iter().map(ToString::to_string).collect(),
+    });
     let app_context = Some(map_app_context(svc, ctx));
     Ok(WitPlannedService {
         service_id: svc.service_id.to_string(),

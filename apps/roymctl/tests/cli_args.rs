@@ -641,6 +641,32 @@ fn test_svc_deploy_mailbox_and_cert_lifetime_flags() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// `--mailbox-method` is listed, repeats, parses `<interface>#<method>`, and
+/// needs `--mailbox`.
+#[test]
+fn test_svc_deploy_mailbox_method_flag() -> Result<(), Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(["svc", "deploy", "--help"]).assert().success().stdout(contains("--mailbox-method"));
+
+    let base = ["svc", "deploy", "--svc-id", "did:key:zTest", "--interfaces", "default", "--tcp"];
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["localhost:1", "--mailbox-method", "not-a-method"])
+        .assert()
+        .failure()
+        .stderr(contains("mailbox method"));
+
+    // Parses and repeats: the parser does not reject it, so the deploy fails
+    // later, for the missing substrate, not for the flag.
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.args(base)
+        .args(["localhost:1", "--mailbox-method", "a#b", "--mailbox-method", "c#d"])
+        .assert()
+        .failure()
+        .stderr(contains("Substrate DID not provided"));
+    Ok(())
+}
+
 #[test]
 fn test_app_deploy_mailbox_flag_needs_mint_masters() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;

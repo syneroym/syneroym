@@ -153,7 +153,7 @@ async fn a_sender_with_an_expired_certificate_is_never_deposited() {
     let node = node(vec![MockOutcome::Transport; 3]).await;
     let expired = DelegationCertificate::issue(
         &node.sender_master,
-        node.router.sender_identity(SENDER).unwrap().key.public_key(),
+        node.router.service_instance(SENDER).unwrap().key.public_key(),
         0,
         SCOPE_SERVICE_INSTANCE.to_string(),
     )
@@ -195,7 +195,7 @@ async fn a_receiver_without_a_mailbox_is_looked_up_again_on_not_hosted_here() {
 #[tokio::test]
 async fn a_remote_mailbox_call_is_signed_by_the_sender_instance_and_carries_no_on_behalf() {
     let node = node(vec![MockOutcome::Success(json!({ "receipts": [] }))]).await;
-    let sender = node.router.sender_identity(SENDER).unwrap();
+    let sender = node.router.service_instance(SENDER).unwrap();
     let call = ProxyRouter::mailbox_request(
         &sender,
         &node.mailbox_did,

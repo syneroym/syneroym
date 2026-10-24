@@ -253,6 +253,7 @@ mod tests {
             topology_visibility: TopologyVisibility::Restricted,
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         }
     }
 

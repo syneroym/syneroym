@@ -104,3 +104,45 @@ fn the_plan_check_reads_the_plan_so_the_supervisor_gets_it_too() {
     let errs = validate_plan_member_settings(&plan).unwrap_err();
     assert_eq!(errs.len(), 1);
 }
+
+#[tokio::test]
+async fn mailbox_methods_reach_every_member() {
+    let compiled = compile_service(&format!(
+        "visibility = \"public\"\nreplicas = 2\nmailbox = \"{HOST}\"\nmailbox_methods = \
+         [\"greeter#greet\"]"
+    ))
+    .await
+    .unwrap();
+    for member in &compiled.plans[0].services {
+        assert_eq!(member.mailbox_methods.len(), 1);
+        assert_eq!(member.mailbox_methods[0].to_string(), "greeter#greet");
+    }
+}
+
+#[tokio::test]
+async fn mailbox_methods_without_a_mailbox_are_refused() {
+    let err =
+        compile_service("mailbox_methods = [\"greeter#greet\"]").await.unwrap_err().to_string();
+    assert!(err.contains("lists mailbox_methods but has no mailbox"), "{err}");
+}
+
+#[tokio::test]
+async fn too_many_or_duplicate_mailbox_methods_are_refused() {
+    let many: Vec<String> = (0..65).map(|i| format!("\"i{i}#m\"")).collect();
+    let err = compile_service(&format!(
+        "visibility = \"public\"\nmailbox = \"{HOST}\"\nmailbox_methods = [{}]",
+        many.join(",")
+    ))
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("the most allowed is 64"), "{err}");
+
+    let err = compile_service(&format!(
+        "visibility = \"public\"\nmailbox = \"{HOST}\"\nmailbox_methods = [\"a#b\", \"a#b\"]"
+    ))
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("twice"), "{err}");
+}

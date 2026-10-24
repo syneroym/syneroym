@@ -24,8 +24,17 @@ pub(super) fn compute_deploy_idempotency_hash(
         installed_instance_cert.map(|c| (&c.master_did, &c.temporary_did, &c.scope));
     let registry_cert_for_hash =
         manifest.registry_certificate.as_deref().map(stable_registry_certificate_for_hash);
-    let manifest_for_hash =
-        (&manifest.config, &manifest.service_type, instance_cert_for_hash, registry_cert_for_hash);
+    // Only the method list of the mailbox credentials: a redeploy that
+    // changes what the mailbox may deliver must not be skipped as a no-op.
+    // The key is derived from the master and is never hashed.
+    let mailbox_methods = manifest.mailbox.as_ref().map(|m| &m.methods);
+    let manifest_for_hash = (
+        &manifest.config,
+        &manifest.service_type,
+        instance_cert_for_hash,
+        registry_cert_for_hash,
+        mailbox_methods,
+    );
     let canonical = serde_json::to_string(&(&manifest_for_hash, &context_for_hash))
         .map_err(|e| format!("Failed to canonicalize deploy manifest for dedup: {e}"))?;
     Ok(blake3::hash(canonical.as_bytes()).to_hex().to_string())

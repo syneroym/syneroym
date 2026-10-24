@@ -2,12 +2,12 @@
 //! that registered there, and a `MockHop` standing in for the receiver's
 //! own node.
 
-use std::{fs, path::Path, sync::atomic::AtomicBool};
+use std::{fs, path::Path};
 
 use serde_json::json;
 use syneroym_core::{
     config::MailboxRole,
-    dht_registry::{EndpointInfo, EndpointMailbox, EndpointType, SignedEndpointInfo},
+    dht_registry::EndpointMailbox,
     mailbox::{
         AckAnswer, AckOutcome, ClaimAnswer, METHOD_ACK, METHOD_CLAIM, METHOD_REGISTER,
         METHOD_STATUS, StatusAnswer,
@@ -15,13 +15,16 @@ use syneroym_core::{
 };
 use syneroym_identity::{DelegationCertificate, Identity};
 use syneroym_mailbox::MailboxService;
-use syneroym_mailbox_format::{
-    MailboxSecretKey, OpenPolicy, OpenedMessage, Receipt, RejectCode, SentDeposit, open,
-};
+use syneroym_mailbox_format::{OpenPolicy, OpenedMessage, Receipt, RejectCode, SentDeposit, open};
 use syneroym_rpc::{DepositTicket, NativeDispatchRegistry};
 
 use super::helpers::*;
-use crate::{handshake::now_secs, net_iroh::ResolvedPeer, peer_records::PeerRecordStore};
+use crate::{
+    handshake::now_secs,
+    net_iroh::ResolvedPeer,
+    peer_records::PeerRecordStore,
+    test_support::mailbox::{CountingMailbox, Receiver, TestAnchors},
+};
 
 pub(super) const SENDER: &str = "did:key:zMailboxSender";
 const OWNER: &str = "did:key:zOwner";
@@ -29,124 +32,6 @@ const OWNER: &str = "did:key:zOwner";
 /// A master DID with no key behind it that we ever use: any valid did:key.
 fn fresh_did() -> String {
     substrate::derive_did_key(&Identity::generate().unwrap().public_key())
-}
-
-/// Answers the master anchor lookups of a test: nothing is revoked unless
-/// a test says so.
-#[derive(Debug, Default)]
-pub(super) struct TestAnchors {
-    pub(super) revoked: Mutex<Vec<String>>,
-    pub(super) unreadable: AtomicBool,
-    /// How many anchors were asked for.
-    pub(super) lookups: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl MasterAnchorResolver for TestAnchors {
-    async fn resolve_master_anchor(
-        &self,
-        _master_id: &str,
-    ) -> Result<MasterAnchorPayload, anyhow::Error> {
-        self.lookups.fetch_add(1, Ordering::SeqCst);
-        if self.unreadable.load(Ordering::SeqCst) {
-            return Err(anyhow::anyhow!("the anchor cannot be read"));
-        }
-        Ok(MasterAnchorPayload {
-            revoked_keys: self.revoked.lock().unwrap().clone(),
-            ..Default::default()
-        })
-    }
-}
-
-/// The real mailbox service, with a count of the methods it was called with.
-#[derive(Debug)]
-pub(super) struct CountingMailbox {
-    inner: MailboxService,
-    methods: Mutex<Vec<String>>,
-    /// When set, every `deposit` is refused with this code.
-    refuse_deposits: Mutex<Option<i32>>,
-}
-
-impl CountingMailbox {
-    pub(super) fn refuse_deposits_with(&self, code: i32) {
-        *self.refuse_deposits.lock().unwrap() = Some(code);
-    }
-
-    pub(super) fn count(&self, method: &str) -> usize {
-        self.methods.lock().unwrap().iter().filter(|m| *m == method).count()
-    }
-}
-
-#[async_trait::async_trait]
-impl NativeService for CountingMailbox {
-    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        self.methods.lock().unwrap().push(invocation.method.clone());
-        let refusal = *self.refuse_deposits.lock().unwrap();
-        if let Some(code) = refusal
-            && invocation.method == "deposit"
-        {
-            return Err(RpcError::Custom(code, "refused".to_string(), None));
-        }
-        self.inner.dispatch(invocation).await
-    }
-}
-
-/// The receiving service member.
-pub(super) struct Receiver {
-    master: Identity,
-    pub(super) instance: Identity,
-    pub(super) cert: DelegationCertificate,
-    pub(super) mailbox_key: MailboxSecretKey,
-}
-
-impl Receiver {
-    fn new() -> Self {
-        let master = Identity::generate().unwrap();
-        let instance = Identity::generate().unwrap();
-        let cert = DelegationCertificate::issue(
-            &master,
-            instance.public_key(),
-            3600,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        Self { master, instance, cert, mailbox_key: MailboxSecretKey::generate().unwrap() }
-    }
-
-    pub(super) fn service_id(&self) -> String {
-        substrate::derive_did_key(&self.master.public_key())
-    }
-
-    fn caller(&self) -> CallerContext {
-        let mut caller =
-            CallerContext::verified(&self.service_id(), AuthLevel::Delegated, Vec::new());
-        caller.proof = Some(CallerProof {
-            pubkey_hex: hex::encode(self.instance.public_key().to_bytes()),
-            delegation_json: Some(self.cert.to_json().unwrap()),
-            ..Default::default()
-        });
-        caller
-    }
-
-    fn record(&self, mailbox_did: &str) -> SignedEndpointInfo {
-        EndpointInfo {
-            service_id: self.service_id(),
-            substrate_id: self.service_id(),
-            endpoint_type: EndpointType::Service,
-            mechanisms: Vec::new(),
-            nickname: None,
-            is_private: false,
-            ttl: None,
-            not_after: now_secs() + 30 * 24 * 3600,
-            generation: 0,
-            mailbox: Some(EndpointMailbox {
-                service_id: mailbox_did.to_string(),
-                key: self.mailbox_key.public_key(),
-            }),
-        }
-        .sign(&self.master)
-        .unwrap()
-    }
 }
 
 pub(super) struct SenderNode {
@@ -199,11 +84,7 @@ async fn build_sender_node(
     let mailbox_did = fresh_did();
     let mailbox_anchors = Arc::new(TestAnchors::default());
     let service = MailboxService::open(&role, dir.path(), &mailbox_did, mailbox_anchors).unwrap();
-    let mailbox = Arc::new(CountingMailbox {
-        inner: service,
-        methods: Mutex::new(Vec::new()),
-        refuse_deposits: Mutex::new(None),
-    });
+    let mailbox = Arc::new(CountingMailbox::new(service));
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     native_dispatch.insert(mailbox_did.clone(), mailbox.clone() as Arc<dyn NativeService>);
     registry
@@ -408,7 +289,7 @@ impl SenderNode {
 
     /// The receipt the mailbox holds for `sent`, as the sender reads it.
     pub(super) async fn receipt_for(&self, sent: &SentDeposit) -> Receipt {
-        let sender = self.router.sender_identity(SENDER).unwrap();
+        let sender = self.router.service_instance(SENDER).unwrap();
         let params = json!({ "deposit_ids": [sent.deposit_id] });
         let call = ProxyRouter::mailbox_request(&sender, &self.mailbox_did, METHOD_STATUS, params);
         let answer = self.router.dispatch_call(&call).await.unwrap();

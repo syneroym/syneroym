@@ -10,10 +10,12 @@ pub mod dummy_sandbox;
 pub mod http_routes;
 
 mod home_relay;
+mod mailbox_pull;
 mod service;
 mod synsvc_native;
 
 pub use home_relay::HomeRelayControl;
+pub use mailbox_pull::MailboxPullControl;
 pub use service::{
     AUTH_RESERVED_SERVICE_ID, ControlPlaneService, MAILBOX_RESERVED_SERVICE_ID,
     SUPERVISOR_RESERVED_SERVICE_ID,

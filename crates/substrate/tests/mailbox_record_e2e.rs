@@ -120,6 +120,7 @@ async fn a_deploy_with_a_mailbox_publishes_the_derived_key_and_keeps_the_certifi
     let publication = Publication::Public {
         record: serde_json::from_str(&record).unwrap(),
         mailbox_key: Some(key.clone()),
+        mailbox_methods: Vec::new(),
     };
 
     fx.operator
@@ -197,7 +198,10 @@ fn manifest(
         service_type: ServiceType::Tcp(TcpManifest { endpoints: endpoints(41502) }),
         registry_certificate: record.map(|r| serde_json::to_string(r).unwrap()),
         instance_certificate: None,
-        mailbox: Some(MailboxCredentials { secret_key: mailbox_key.to_z32().to_string() }),
+        mailbox: Some(MailboxCredentials {
+            secret_key: mailbox_key.to_z32().to_string(),
+            methods: Vec::new(),
+        }),
     }
 }
 

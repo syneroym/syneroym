@@ -4,6 +4,7 @@
 use std::fmt;
 
 use anyhow::Result;
+use syneroym_app_orchestration::MailboxMethod;
 use syneroym_core::dht_registry::SignedEndpointInfo;
 use syneroym_identity::DelegationCertificate;
 use syneroym_mailbox_format::MailboxSecretKey;
@@ -50,6 +51,9 @@ pub enum Publication {
         /// a `Public` service can have one. The substrate checks that the
         /// key is the one the record names.
         mailbox_key: Option<MailboxSecretKey>,
+        /// Guest methods that accept delivery from the mailbox. Used only
+        /// with `mailbox_key`.
+        mailbox_methods: Vec<MailboxMethod>,
     },
     /// Registered with the local registry only. The record's own
     /// `is_private` must be `true`.
@@ -86,9 +90,11 @@ impl Publication {
                     mailbox: None,
                 });
             }
-            Self::Public { record, mailbox_key } => {
-                let mailbox = mailbox_key
-                    .map(|key| MailboxCredentials { secret_key: key.to_z32().to_string() });
+            Self::Public { record, mailbox_key, mailbox_methods } => {
+                let mailbox = mailbox_key.map(|key| MailboxCredentials {
+                    secret_key: key.to_z32().to_string(),
+                    methods: mailbox_methods.iter().map(ToString::to_string).collect(),
+                });
                 (Visibility::Public, record, mailbox)
             }
             Self::Internal(record) => (Visibility::Internal, record, None),

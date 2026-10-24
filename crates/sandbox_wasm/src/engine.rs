@@ -648,6 +648,7 @@ impl AppSandboxEngine {
 }
 
 mod auth;
+mod epoch_ticker;
 mod execute;
 mod guest_http;
 mod guest_stream;

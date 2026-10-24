@@ -51,3 +51,45 @@ fn a_mailbox_that_is_a_did_prefix_with_garbage_is_refused() {
         assert!(text.parse::<MailboxChoice>().is_err(), "{text}");
     }
 }
+
+#[test]
+fn a_manifest_with_mailbox_methods_parses() {
+    let toml = format!(
+        r#"
+        id = "syneroym:settings-app"
+        version = "1.0.0"
+
+        [services.web]
+        service_type = "wasm"
+        source = "web.wasm"
+        visibility = "public"
+        mailbox = "{HOST}"
+        mailbox_methods = ["greeter#greet", "api#invoke"]
+        "#
+    );
+    let manifest = SynAppManifest::from_toml(&toml).unwrap();
+    let spec = &manifest.services[&LogicalServiceName::new("web")];
+    let methods: Vec<String> = spec.mailbox_methods.iter().map(ToString::to_string).collect();
+    assert_eq!(methods, ["greeter#greet", "api#invoke"]);
+    assert_eq!(spec.mailbox_methods[0].interface(), "greeter");
+    assert_eq!(spec.mailbox_methods[0].method(), "greet");
+}
+
+#[test]
+fn a_mailbox_method_that_is_not_interface_hash_method_is_refused() {
+    for text in ["a#b#c", "#m", "i#", "i #m", "i#m\n", "plain", "", "i#m n"] {
+        assert!(text.parse::<MailboxMethod>().is_err(), "{text:?}");
+    }
+    let long = "x".repeat(129);
+    assert!(format!("{long}#m").parse::<MailboxMethod>().is_err());
+    assert!(format!("i#{long}").parse::<MailboxMethod>().is_err());
+    assert!(format!("{}#m", "x".repeat(128)).parse::<MailboxMethod>().is_ok());
+}
+
+#[test]
+fn a_mailbox_method_round_trips_through_its_text_form() {
+    let method: MailboxMethod = "greeter#greet".parse().unwrap();
+    let json = serde_json::to_string(&method).unwrap();
+    assert_eq!(json, "\"greeter#greet\"");
+    assert_eq!(serde_json::from_str::<MailboxMethod>(&json).unwrap(), method);
+}

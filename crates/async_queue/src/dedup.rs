@@ -56,6 +56,12 @@ pub const CAP_CHECK_INTERVAL: u32 = 64;
 const STATE_IN_FLIGHT: i64 = 0;
 const STATE_DONE: i64 = 1;
 
+/// The time `span_ms` after `now`. A window too long for an `i64` ends at
+/// the end of time; it never wraps into the past.
+fn after(now: i64, span_ms: u64) -> i64 {
+    now.saturating_add(i64::try_from(span_ms).unwrap_or(i64::MAX))
+}
+
 /// The bounds and windows this store runs under. Derived from the queue's
 /// own configuration rather than separately configured: a TTL shorter than
 /// the sender's retry window silently converts dedup into no dedup, and a
@@ -340,9 +346,9 @@ impl DedupStore {
                 caller,
                 key,
                 STATE_IN_FLIGHT,
-                now + self.config.claim_window_ms as i64,
+                after(now, self.config.claim_window_ms),
                 token.0,
-                now + window.ttl_ms as i64,
+                after(now, window.ttl_ms),
             ],
         )?;
         // After the insert, not before: the count the cap is measured
@@ -410,7 +416,7 @@ impl DedupStore {
                 retained,
                 code,
                 message,
-                now + self.config.ttl_ms as i64,
+                after(now, self.config.ttl_ms),
                 caller,
                 key,
                 claim.0,

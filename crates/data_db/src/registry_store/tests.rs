@@ -472,7 +472,12 @@ async fn removing_an_app_context_is_idempotent() {
 }
 
 fn hosted_mailbox(mailbox: &str, max_ttl_secs: u64) -> HostedMailbox {
-    HostedMailbox { mailbox: mailbox.to_string(), max_ttl_secs }
+    HostedMailbox { mailbox: mailbox.to_string(), max_ttl_secs, methods: Vec::new() }
+}
+
+fn with_methods(mut mailbox: HostedMailbox, methods: &[&str]) -> HostedMailbox {
+    mailbox.methods = methods.iter().map(ToString::to_string).collect();
+    mailbox
 }
 
 #[tokio::test]
@@ -505,4 +510,16 @@ async fn removing_a_mailbox_is_idempotent() {
     store.remove_mailbox("svc-1").await.unwrap();
     store.remove_mailbox("svc-1").await.unwrap();
     assert!(store.load_all_mailboxes().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mailbox_methods_round_trip_and_an_upsert_replaces_them() {
+    let (store, _dir) = make_store().await;
+    let first = with_methods(hosted_mailbox("did:key:zOne", 100), &["greeter#greet", "a#b"]);
+    store.save_mailbox("svc-1", &first).await.unwrap();
+    assert_eq!(store.load_all_mailboxes().await.unwrap(), vec![("svc-1".to_string(), first)]);
+
+    let second = with_methods(hosted_mailbox("did:key:zOne", 100), &["greeter#other"]);
+    store.save_mailbox("svc-1", &second).await.unwrap();
+    assert_eq!(store.load_all_mailboxes().await.unwrap(), vec![("svc-1".to_string(), second)]);
 }

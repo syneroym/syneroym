@@ -17,7 +17,7 @@ const RECEIVER_ANCHOR_TIMEOUT: Duration = Duration::from_secs(5);
 /// where the anchor could not be read. Most receipts in a poll are from the
 /// same receiver, so each master is looked up once, and an anchor that does
 /// not answer costs one wait for the whole poll.
-pub(in crate::proxy) type AnchorCache = HashMap<String, Option<Vec<String>>>;
+pub(crate) type AnchorCache = HashMap<String, Option<Vec<String>>>;
 
 fn retry(reason: &str) -> DepositStatus {
     DepositStatus::Retry { reason: reason.to_string() }
@@ -38,7 +38,7 @@ impl ProxyRouter {
         let mut anchors = AnchorCache::new();
         // A sender with no valid certificate cannot ask now. The supervisor
         // renews it, and the deadline bounds the wait.
-        let Some(sender) = self.sender_identity(sender_service_id) else { return out };
+        let Some(sender) = self.service_instance(sender_service_id) else { return out };
 
         let mut by_mailbox: BTreeMap<String, Vec<(usize, SentDeposit)>> = BTreeMap::new();
         for (i, bytes) in contexts.iter().enumerate() {
@@ -65,20 +65,16 @@ impl ProxyRouter {
 
     async fn poll_chunk(
         &self,
-        sender: &DepositSender,
+        sender: &ServiceInstance,
         mailbox: &str,
         chunk: &[(usize, SentDeposit)],
         anchors: &mut AnchorCache,
         out: &mut [DepositStatus],
     ) {
-        if !self.is_native_mailbox(mailbox) {
-            return;
-        }
         let params =
             StatusParams { deposit_ids: chunk.iter().map(|(_, s)| s.deposit_id).collect() };
         let Ok(params) = serde_json::to_value(params) else { return };
-        let call = Self::mailbox_request(sender, mailbox, wire::METHOD_STATUS, params);
-        let answer = match self.dispatch_call(&call).await {
+        let answer = match self.call_mailbox(sender, mailbox, wire::METHOD_STATUS, params).await {
             Ok(value) => value,
             // The mailbox is down or refused us now: ask again later.
             Err(e) => {
@@ -146,16 +142,26 @@ impl ProxyRouter {
         else {
             return Some(false);
         };
-        if !anchors.contains_key(&sent.receiver_service_id) {
+        let revoked = self.revoked_keys(&sent.receiver_service_id, anchors).await?;
+        Some(revoked.contains(&proof.receiver_certificate.temporary_did))
+    }
+
+    /// The revoked keys of `master`, read once per `cache`; `None` when the
+    /// anchor cannot be read.
+    pub(crate) async fn revoked_keys<'a>(
+        &self,
+        master: &str,
+        cache: &'a mut AnchorCache,
+    ) -> Option<&'a [String]> {
+        if !cache.contains_key(master) {
             let read = time::timeout(
                 RECEIVER_ANCHOR_TIMEOUT,
-                self.anchor_resolver.resolve_master_anchor(&sent.receiver_service_id),
+                self.anchor_resolver.resolve_master_anchor(master),
             )
             .await;
             let revoked = read.ok().and_then(Result::ok).map(|anchor| anchor.revoked_keys);
-            anchors.insert(sent.receiver_service_id.clone(), revoked);
+            cache.insert(master.to_string(), revoked);
         }
-        let revoked = anchors.get(&sent.receiver_service_id)?.as_ref()?;
-        Some(revoked.contains(&proof.receiver_certificate.temporary_did))
+        cache.get(master)?.as_deref()
     }
 }

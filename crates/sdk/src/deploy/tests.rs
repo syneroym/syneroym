@@ -92,6 +92,7 @@ fn service(name: &str, substrate: Option<&str>) -> PlannedService {
         topology_visibility: TopologyVisibility::Restricted,
         mailbox: None,
         instance_cert_expires_hours: None,
+        mailbox_methods: Vec::new(),
     }
 }
 

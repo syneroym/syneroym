@@ -440,6 +440,15 @@ impl ControlPlaneService {
 
     /// Warn-not-fail, matching every other teardown step in `undeploy_impl`.
     async fn remove_deploy_registry_rows(&self, service_id: &str) {
+        // The fact goes first, so a pass that is running does not register
+        // the queue again. The owner and the instance certificate go after
+        // the queue is removed, because a remote mailbox admits the
+        // `unregister` only under that instance.
+        let old = self.registry.mailbox_of(service_id);
+        self.forget_hosted_mailbox(service_id).await;
+        if let Some(old) = old {
+            self.release_mailbox_queue(service_id, &old.mailbox).await;
+        }
         if let Err(e) = self.registry.remove_owner(service_id).await {
             tracing::warn!("Failed to remove owner record for service {}: {}", service_id, e);
         }
@@ -454,7 +463,6 @@ impl ControlPlaneService {
             tracing::warn!("Failed to remove deploy facts for {}: {}", service_id, e);
         }
         self.clear_mailbox_key(service_id).await;
-        self.forget_hosted_mailbox(service_id).await;
         self.probe_cache.remove(service_id);
     }
 

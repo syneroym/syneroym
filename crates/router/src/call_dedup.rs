@@ -35,9 +35,8 @@ use syneroym_async_queue::{
     CALL_ALREADY_RUNNING_RPC_CODE, CALL_RESULT_NOT_RETAINED_RPC_CODE, ClaimToken, DedupConfig,
     DedupDecision, DedupStore, DedupWindow, FirstOutcome,
 };
-use syneroym_control_plane::{MAILBOX_RESERVED_SERVICE_ID, SUPERVISOR_RESERVED_SERVICE_ID};
 use syneroym_core::{
-    local_registry::{EndpointRegistry, NODE_NATIVE_INTERFACES},
+    local_registry::{self, EndpointRegistry},
     mailbox::MAILBOX_SENDER_MAX_AGE_SECS,
 };
 use syneroym_data_db::StorageProvider;
@@ -184,29 +183,6 @@ pub fn replay_as_result(outcome: FirstOutcome) -> Result<serde_json::Value, Prox
     }
 }
 
-/// Whether `interface` is one of the node's own interfaces rather than a
-/// deployed service's.
-///
-/// These have no DEK and no directory, and asking for one anyway *works*:
-/// the id passes validation and the key layer generates a DEK on first
-/// use, so a naive caller would mint a key and a database for a service
-/// that does not exist. Matched by short hash as well as by name, since
-/// the hash is an unsalted prefix a guest can compute for itself.
-pub(crate) fn is_node_level_interface(interface: &str) -> bool {
-    // `NODE_NATIVE_INTERFACES` covers `orchestrator` and `security`. The
-    // supervisor's and the mailbox's interfaces are of the same kind -- they are
-    // registered under the node's own service id, not a deployed
-    // service's -- and they are *not* in that list, so they have to be named
-    // here. Left out, a keyed call aimed at them would sail past this check
-    // and mint a DEK and a database for the node's own id: precisely the
-    // pseudo-service database this refusal exists to prevent.
-    NODE_NATIVE_INTERFACES
-        .iter()
-        .chain(std::iter::once(&SUPERVISOR_RESERVED_SERVICE_ID))
-        .chain(std::iter::once(&MAILBOX_RESERVED_SERVICE_ID))
-        .any(|name| *name == interface || syneroym_core::util::short_hash(name) == interface)
-}
-
 /// The guard itself: one per node, holding a connection per target service.
 pub struct CallDedupGuard {
     storage_provider: Arc<dyn StorageProvider>,
@@ -275,21 +251,6 @@ impl CallDedupGuard {
     #[cfg(test)]
     fn cached_store_count(&self) -> usize {
         self.stores.lock().expect("dedup store cache poisoned").len()
-    }
-
-    /// Whether a keyed call to `(target_service, interface)` can be fenced
-    /// at all.
-    ///
-    /// `orchestrator`, `security`, and the supervisor's dispatch id are
-    /// node-level interfaces, not deployed services: they have no DEK and
-    /// no directory, and asking for one anyway *works* -- the id passes
-    /// validation and the key layer generates a DEK on first use -- so a
-    /// naive guard would mint a key and a database for a service that does
-    /// not exist before refusing the call. Refused up front instead. No
-    /// caller sends a key to one today: the supervisor's own traffic is
-    /// fenced by generations and epochs, not by keys.
-    fn is_node_level_interface(interface: &str) -> bool {
-        is_node_level_interface(interface)
     }
 
     /// Opens (once) the dedup store for `service_id`, on that service's own
@@ -446,7 +407,12 @@ impl CallDedupGuard {
             ));
         };
 
-        if Self::is_node_level_interface(interface) {
+        // `orchestrator`, `security`, the supervisor and the mailbox are
+        // node-level interfaces, not deployed services: refused up front, so
+        // no key and database get minted for the node's own id. No caller
+        // sends a key to one today: the supervisor's own traffic is fenced
+        // by generations and epochs, not by keys.
+        if local_registry::is_node_level_interface(interface) {
             return GuardOutcome::Refuse(ProxyError::PermissionDenied(format!(
                 "node-level interface '{interface}' cannot fence an idempotency key: it is not a \
                  deployed service and has no store to remember one in"

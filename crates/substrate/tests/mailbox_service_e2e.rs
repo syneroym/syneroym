@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use common::{
     SubstrateNode,
-    mailbox_receiver::{call, did_of, not_after},
+    mailbox_client::{call, did_of, not_after},
 };
 use rustls::crypto::ring;
 use serde_json::{from_value, json};

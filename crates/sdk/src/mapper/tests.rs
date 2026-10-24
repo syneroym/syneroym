@@ -52,6 +52,7 @@ fn plan_with_config(config: ServiceConfig) -> DeploymentPlan {
             topology_visibility: TopologyVisibility::Restricted,
             mailbox: None,
             instance_cert_expires_hours: None,
+            mailbox_methods: Vec::new(),
         }],
     }
 }
@@ -347,6 +348,7 @@ fn plan_with_a_dependency() -> DeploymentPlan {
                 topology_visibility: TopologyVisibility::Restricted,
                 mailbox: None,
                 instance_cert_expires_hours: None,
+                mailbox_methods: Vec::new(),
             },
             PlannedService {
                 service_id: ServiceId::new("did:key:hFrontend"),
@@ -367,6 +369,7 @@ fn plan_with_a_dependency() -> DeploymentPlan {
                 topology_visibility: TopologyVisibility::Restricted,
                 mailbox: None,
                 instance_cert_expires_hours: None,
+                mailbox_methods: Vec::new(),
             },
         ],
     }
@@ -510,4 +513,23 @@ fn a_members_mailbox_key_is_mapped_into_its_manifest_only() {
     };
     assert_eq!(mapped(with).unwrap().secret_key, key.to_z32().as_str());
     assert!(mapped(without).is_none());
+}
+
+/// The listed methods travel with the key, so the substrate can store them
+/// next to the mailbox.
+#[test]
+fn a_members_mailbox_methods_are_mapped_with_its_key() {
+    let mut plan = plan_with_a_dependency();
+    plan.services[0].mailbox_methods =
+        vec!["greeter#greet".parse().unwrap(), "api#invoke".parse().unwrap()];
+    let mut members = CertifiedMembers::default();
+    members
+        .mailbox_keys
+        .insert(plan.services[0].service_id.clone(), MailboxSecretKey::generate().unwrap());
+
+    let wit_plan = map_all(&plan, &members, true).unwrap();
+
+    let credentials = wit_plan.services[0].manifest.mailbox.clone().unwrap();
+    assert_eq!(credentials.methods, ["greeter#greet", "api#invoke"]);
+    assert!(wit_plan.services[1].manifest.mailbox.is_none());
 }

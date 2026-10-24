@@ -7,10 +7,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use syneroym_app_orchestration::MailboxChoice;
-use syneroym_core::dht_registry::{
-    DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMailbox, EndpointType,
-    SignedEndpointInfo,
+use syneroym_app_orchestration::{MailboxChoice, MailboxMethod};
+use syneroym_core::{
+    dht_registry::{
+        DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMailbox, EndpointType,
+        SignedEndpointInfo,
+    },
+    mailbox::{MAX_MAILBOX_METHODS, is_reserved_mailbox_interface},
 };
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
 use syneroym_mailbox_format::MailboxSecretKey;
@@ -88,12 +91,19 @@ fn require_stated_visibility_if_signable(
 /// without one, and a receiver cannot register without it.
 pub(crate) fn check_mailbox_args(
     mailbox: Option<&MailboxChoice>,
+    methods: &[MailboxMethod],
     visibility: Visibility,
     has_master: bool,
     has_identity: bool,
     has_instance_certificate: bool,
 ) -> anyhow::Result<()> {
-    let Some(mailbox) = mailbox else { return Ok(()) };
+    let Some(mailbox) = mailbox else {
+        if !methods.is_empty() {
+            anyhow::bail!("--mailbox-method needs --mailbox");
+        }
+        return Ok(());
+    };
+    check_mailbox_methods(methods)?;
     if *mailbox == MailboxChoice::Auto {
         anyhow::bail!("--mailbox auto is not supported yet; give the mailbox host's node DID");
     }
@@ -109,6 +119,31 @@ pub(crate) fn check_mailbox_args(
              record, which a private or internal service must keep to itself",
             visibility.as_str()
         );
+    }
+    Ok(())
+}
+
+/// `--mailbox-method` lists a guest's own methods: at most
+/// `MAX_MAILBOX_METHODS`, each once, none on a node or platform interface.
+/// The substrate checks the same rules at deploy; this fails before anything
+/// is signed.
+fn check_mailbox_methods(methods: &[MailboxMethod]) -> anyhow::Result<()> {
+    if methods.len() > MAX_MAILBOX_METHODS {
+        anyhow::bail!(
+            "--mailbox-method given {} times; the most allowed is {MAX_MAILBOX_METHODS}",
+            methods.len()
+        );
+    }
+    for (i, method) in methods.iter().enumerate() {
+        if methods[..i].contains(method) {
+            anyhow::bail!("--mailbox-method '{method}' is given twice");
+        }
+        if is_reserved_mailbox_interface(method.interface()) {
+            anyhow::bail!(
+                "--mailbox-method '{method}' names a node or platform interface; only a guest's \
+                 own methods can accept delivery from a mailbox"
+            );
+        }
     }
     Ok(())
 }
@@ -138,6 +173,7 @@ pub(crate) fn build_publication(
     not_after: u64,
     record_out: Option<&Path>,
     mailbox: Option<&MailboxChoice>,
+    mailbox_methods: &[MailboxMethod],
 ) -> anyhow::Result<Publication> {
     match (parsed_visibility, signing_identity) {
         (Visibility::Private, Some(id)) if record_out.is_some() => {
@@ -187,7 +223,11 @@ pub(crate) fn build_publication(
             )?;
             write_record_out(record_out, &record)?;
             Ok(if v == Visibility::Public {
-                Publication::Public { record, mailbox_key }
+                Publication::Public {
+                    record,
+                    mailbox_key,
+                    mailbox_methods: mailbox_methods.to_vec(),
+                }
             } else {
                 Publication::Internal(record)
             })
@@ -364,6 +404,7 @@ pub(super) async fn handle_deploy(
     visibility: &Option<String>,
     record_out: &Option<PathBuf>,
     mailbox: &Option<MailboxChoice>,
+    mailbox_methods: &[MailboxMethod],
     cert_expires_hours: u32,
     dir: &Path,
 ) -> anyhow::Result<()> {
@@ -399,6 +440,7 @@ pub(super) async fn handle_deploy(
 
     check_mailbox_args(
         mailbox.as_ref(),
+        mailbox_methods,
         parsed_visibility,
         master_identity.is_some(),
         named_identity.is_some(),
@@ -420,6 +462,7 @@ pub(super) async fn handle_deploy(
         not_after,
         record_out.as_deref(),
         mailbox.as_ref(),
+        mailbox_methods,
     )?;
 
     let instance_cert = resolve_instance_cert(

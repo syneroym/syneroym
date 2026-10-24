@@ -32,6 +32,7 @@ mod deploy;
 
 pub mod conversation_fixture;
 pub mod conversation_peer;
+pub mod mailbox_client;
 pub mod mailbox_receiver;
 pub mod outbox;
 pub mod passport;

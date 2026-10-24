@@ -235,6 +235,7 @@ fn no_code_the_mailbox_could_cause_can_be_signed() {
         RejectCode::BadCertificate,
         RejectCode::TooOld,
         RejectCode::TooManyClaims,
+        RejectCode::CallFailed,
     ] {
         let result = x.opened.sign_rejection(&x.receiver.instance, &x.receiver.cert, code, x.now);
         assert_eq!(result, Err(ReceiptError::NotSignable), "{code:?}");
@@ -331,10 +332,26 @@ fn stored_expired_unknown_and_unsigned_rejections_are_unsigned() {
         Receipt::Unknown,
         Receipt::unsigned_rejection(RejectCode::Revoked, 5),
         Receipt::unsigned_rejection(RejectCode::TooManyClaims, 5),
+        Receipt::unsigned_rejection(RejectCode::CallFailed, 5),
     ];
     for receipt in receipts {
         assert_eq!(verify(&receipt, &x.sealed.sent, x.now), Err(ReceiptError::Unsigned));
     }
+}
+
+#[test]
+fn a_call_failed_rejection_round_trips_and_is_never_signed() {
+    assert_eq!(RejectCode::parse("call_failed"), Some(RejectCode::CallFailed));
+    assert!(!RejectCode::CallFailed.is_sender_fault());
+    let receipt = Receipt::unsigned_rejection(RejectCode::CallFailed, 5);
+    let json = serde_json::to_string(&receipt).unwrap();
+    assert!(json.contains("\"code\":\"call_failed\""));
+    assert_eq!(serde_json::from_str::<Receipt>(&json).unwrap(), receipt);
+    let x = exchange();
+    assert_eq!(
+        verify(&hand_signed_rejection(&x, "call_failed"), &x.sealed.sent, x.now),
+        Err(ReceiptError::NotSignable)
+    );
 }
 
 #[test]

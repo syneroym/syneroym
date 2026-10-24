@@ -11,9 +11,12 @@
 //! directly, against a real `RouteHandler::init` composition, so "one
 //! guard, both entry points" is a fact rather than an intention.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
 
 use dashmap::DashMap;
@@ -27,17 +30,21 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider};
 use syneroym_data_keystore::KeyStore;
+use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE};
+use syneroym_mailbox_format::MessageContent;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
-    AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
-    ServiceStage, TransportStage,
+    AdaptationStage, DeferredOutcome, EncryptionStage, RouteHandler, RouteHandlerDeps,
+    RoutePipeline, RoutePreamble, ServiceStage, TransportStage,
 };
 use syneroym_rpc::{
-    AuthLevel, CallerContext, JsonRpcErrorResponse, JsonRpcResponse, NativeDispatchRegistry,
-    NativeInvocation, NativeResponse, NativeService, RpcResult, SessionContext,
+    AuthLevel, CallerContext, CallerProof, JsonRpcErrorResponse, JsonRpcResponse,
+    NativeDispatchRegistry, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
+    SessionContext,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 use tempfile::{TempDir, tempdir};
+use tokio::{sync::Notify, time};
 
 const TARGET_SERVICE: &str = "svc-target";
 
@@ -51,17 +58,31 @@ impl NativeService for NoopControlPlane {
     }
 }
 
-/// Counts how many times it actually ran, which is the only thing these
-/// tests really need to observe.
+/// Counts how many times it actually ran, which is the only thing most of
+/// these tests need to observe. It also keeps the caller it last saw, can be
+/// told to answer an error, and can hold its first call until released.
 #[derive(Debug, Default)]
 struct CountingService {
     invoked: AtomicUsize,
+    last_caller: Mutex<Option<CallerContext>>,
+    fails: AtomicBool,
+    hold_first: Mutex<Option<Arc<Notify>>>,
+    entered: Notify,
 }
 
 #[async_trait::async_trait]
 impl NativeService for CountingService {
-    async fn dispatch(&self, _invocation: NativeInvocation) -> RpcResult<NativeResponse> {
+    async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         let n = self.invoked.fetch_add(1, Ordering::SeqCst);
+        *self.last_caller.lock().unwrap() = Some(invocation.caller);
+        let hold = self.hold_first.lock().unwrap().take();
+        if let Some(release) = hold {
+            self.entered.notify_one();
+            release.notified().await;
+        }
+        if self.fails.load(Ordering::SeqCst) {
+            return Err(RpcError::InvalidParams("no".to_string()));
+        }
         Ok(NativeResponse { payload: json!({ "ran": n }) })
     }
 }
@@ -275,4 +296,155 @@ async fn an_unkeyed_remote_call_is_never_deduplicated() {
         !h.dir.path().join("services").join(TARGET_SERVICE).join("async.db").exists(),
         "an unkeyed call must not open, or create, any dedup store"
     );
+}
+
+// -- Calls that waited at the service's mailbox
+// --------------------------------
+
+fn from_mailbox(key: &str) -> MessageContent {
+    MessageContent {
+        interface: "greeter".to_string(),
+        method: "greet".to_string(),
+        params: json!({}),
+        idempotency_key: key.to_string(),
+    }
+}
+
+/// A direct attempt and a later delivery from the mailbox are one call to
+/// the fence, because both present the sender's master as the caller.
+#[tokio::test]
+async fn a_call_from_the_mailbox_after_the_same_direct_call_runs_once() {
+    let h = harness().await;
+    let who = caller("did:key:zSenderMaster");
+    h.handler
+        .dispatch_json_rpc_once(&pipeline(), &preamble(), Some(&who), &body(Some("k1")))
+        .await
+        .unwrap();
+
+    let outcome =
+        h.handler.dispatch_deferred(TARGET_SERVICE, "greeter", &from_mailbox("k1"), &who).await;
+
+    assert_eq!(outcome, DeferredOutcome::Succeeded);
+    assert_eq!(h.service.invoked.load(Ordering::SeqCst), 1);
+}
+
+/// This is what makes the unsigned `call_failed` receipt safe: the sender
+/// goes back to direct attempts and gets the same error, without a second
+/// run.
+#[tokio::test]
+async fn a_direct_retry_after_a_failed_mailbox_call_gets_the_same_error() {
+    let h = harness().await;
+    h.service.fails.store(true, Ordering::SeqCst);
+    let who = caller("did:key:zSenderMaster");
+
+    let outcome =
+        h.handler.dispatch_deferred(TARGET_SERVICE, "greeter", &from_mailbox("k1"), &who).await;
+    assert!(matches!(outcome, DeferredOutcome::Failed { code } if code != 0), "{outcome:?}");
+
+    let retry = h
+        .handler
+        .dispatch_json_rpc_once(&pipeline(), &preamble(), Some(&who), &body(Some("k1")))
+        .await
+        .unwrap();
+    let DeferredOutcome::Failed { code } = outcome else { unreachable!() };
+    assert_eq!(error_of(&retry).error.code, code);
+    assert_eq!(h.service.invoked.load(Ordering::SeqCst), 1);
+}
+
+/// The service sees the original sender, with the proof of the sealed
+/// certificate, even when that certificate has expired since the send time.
+#[tokio::test]
+async fn a_call_from_the_mailbox_reaches_the_service_as_its_sender() {
+    let h = harness().await;
+    let (master, instance) = (Identity::generate().unwrap(), Identity::generate().unwrap());
+    let cert = DelegationCertificate::issue(
+        &master,
+        instance.public_key(),
+        1,
+        SCOPE_SERVICE_INSTANCE.to_string(),
+    )
+    .unwrap();
+    time::sleep(Duration::from_secs(2)).await;
+    assert!(cert.is_expired(), "nothing on the path may check the certificate again");
+    let mut who = caller(&cert.master_did);
+    who.proof = Some(CallerProof {
+        pubkey_hex: hex::encode(instance.public_key().to_bytes()),
+        delegation_json: Some(cert.to_json().unwrap()),
+        signed: None,
+        on_behalf: None,
+    });
+
+    let outcome =
+        h.handler.dispatch_deferred(TARGET_SERVICE, "greeter", &from_mailbox("k1"), &who).await;
+
+    assert_eq!(outcome, DeferredOutcome::Succeeded);
+    let seen = h.service.last_caller.lock().unwrap().clone().unwrap();
+    assert_eq!(seen.caller_did, cert.master_did);
+    let proof = seen.proof.expect("the sender's proof reaches the service");
+    assert_eq!(proof.pubkey_hex, hex::encode(instance.public_key().to_bytes()));
+    assert!(proof.signed.is_none());
+}
+
+#[tokio::test]
+async fn a_refused_fence_is_not_run() {
+    let h = harness().await;
+    h.handler
+        .registry()
+        .register(
+            TARGET_SERVICE.to_string(),
+            "mailbox".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: TARGET_SERVICE.to_string() },
+        )
+        .await
+        .unwrap();
+    let who = caller("did:key:zSenderMaster");
+    let content = MessageContent { interface: "mailbox".to_string(), ..from_mailbox("k1") };
+
+    let outcome = h.handler.dispatch_deferred(TARGET_SERVICE, "mailbox", &content, &who).await;
+
+    assert!(matches!(outcome, DeferredOutcome::NotRun(_)), "{outcome:?}");
+    assert_eq!(h.service.invoked.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_running_call_is_not_run_again() {
+    let h = harness().await;
+    let release = Arc::new(Notify::new());
+    *h.service.hold_first.lock().unwrap() = Some(release.clone());
+    let who = caller("did:key:zSenderMaster");
+    let first = {
+        let (handler, who) = (h.handler.clone(), who.clone());
+        tokio::spawn(async move {
+            handler.dispatch_deferred(TARGET_SERVICE, "greeter", &from_mailbox("k1"), &who).await
+        })
+    };
+    h.service.entered.notified().await;
+
+    let second =
+        h.handler.dispatch_deferred(TARGET_SERVICE, "greeter", &from_mailbox("k1"), &who).await;
+
+    assert!(matches!(second, DeferredOutcome::NotRun(_)), "{second:?}");
+    release.notify_one();
+    assert_eq!(first.await.unwrap(), DeferredOutcome::Succeeded);
+    assert_eq!(h.service.invoked.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_tcp_service_cannot_take_a_call_from_the_mailbox() {
+    let h = harness().await;
+    h.handler
+        .registry()
+        .register(
+            TARGET_SERVICE.to_string(),
+            "raw".to_string(),
+            SubstrateEndpoint::TcpHostPort { host: "127.0.0.1".to_string(), port: 1 },
+        )
+        .await
+        .unwrap();
+    let who = caller("did:key:zSenderMaster");
+    let content = MessageContent { interface: "raw".to_string(), ..from_mailbox("k1") };
+
+    let outcome = h.handler.dispatch_deferred(TARGET_SERVICE, "raw", &content, &who).await;
+
+    assert_eq!(outcome, DeferredOutcome::NotServed);
 }

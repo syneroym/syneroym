@@ -43,6 +43,7 @@ use tracing::info;
 use crate::{
     dummy_sandbox::{AppSandboxEngine, ContainerEngine},
     home_relay::HomeRelayControl,
+    mailbox_pull::MailboxPullControl,
     synsvc_native::empty_conversation_host,
 };
 
@@ -66,7 +67,8 @@ pub(super) const SECURITY_INTERFACE: &str = "security";
 /// supervisor's vault (leaking every member master key it holds) and
 /// overwrite the dispatch entry `init_supervisor` registered, taking over
 /// every later `supervisor://` call.
-pub const SUPERVISOR_RESERVED_SERVICE_ID: &str = "supervisor";
+pub const SUPERVISOR_RESERVED_SERVICE_ID: &str =
+    syneroym_core::local_registry::SUPERVISOR_INTERFACE;
 pub const AUTH_RESERVED_SERVICE_ID: &str = syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS;
 /// The `native_dispatch` key the mailbox role registers under. A deploy
 /// under this name would take over every `mailbox` call to this node.
@@ -155,6 +157,10 @@ pub struct ControlPlaneService {
     /// The home-relay passport control of this node, when its home relay is
     /// fixed. Set after construction by the substrate's composition root.
     pub(crate) home_relay: OnceLock<Arc<dyn HomeRelayControl>>,
+    /// The mailbox receiver of this node. A `Weak`: the receiver holds the
+    /// route handler, which holds this service. Set after construction by
+    /// the router.
+    pub(crate) mailbox_pull: OnceLock<Weak<dyn MailboxPullControl>>,
     /// Signals the substrate's background registry-heartbeat loop
     /// (`publish_to_community_registry` in `crates/substrate/src/runtime.rs`)
     /// to publish this node's own endpoint record and every hosted
@@ -269,6 +275,7 @@ impl ControlPlaneService {
             endpoint_publisher: OnceLock::new(),
             relay_passports: OnceLock::new(),
             home_relay: OnceLock::new(),
+            mailbox_pull: OnceLock::new(),
             republish_trigger: OnceLock::new(),
             native_dispatch: Arc::downgrade(&native_dispatch),
             http_routes,
@@ -308,6 +315,20 @@ impl ControlPlaneService {
     /// Wires in the home-relay passport control. No-op after the first call.
     pub fn set_home_relay(&self, control: Arc<dyn HomeRelayControl>) {
         let _ = self.home_relay.set(control);
+    }
+
+    /// Wires in the mailbox receiver. `Weak`: the receiver holds the route
+    /// handler, which holds this service. No-op after the first call.
+    pub fn set_mailbox_pull(&self, puller: Weak<dyn MailboxPullControl>) {
+        let _ = self.mailbox_pull.set(puller);
+    }
+
+    /// Asks the mailbox receiver for a pass soon. Does nothing when none is
+    /// wired in.
+    pub(crate) fn wake_mailbox_pull(&self) {
+        if let Some(puller) = self.mailbox_pull.get().and_then(Weak::upgrade) {
+            puller.wake();
+        }
     }
 
     /// Wires in the channel that reaches the substrate's registry-heartbeat

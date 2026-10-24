@@ -5,16 +5,18 @@
 //! record names, and a receipt the receiver signed ends it.
 //!
 //! The receiver is a greeter deployed with a mailbox on its own node, which
-//! the tests then stop. A test double plays the receiver at the mailbox,
-//! because the substrate side of receiving is not part of this slice.
+//! the tests stop and start again. When it starts, its own mailbox receiver
+//! pulls the message (the tests ask for the pull instead of waiting for the
+//! timer). One test uses a double at the mailbox, for a receiver whose old
+//! node no longer hosts the service.
 //!
-//! The sender asks about a deposit once a minute (the receiver pulls about
-//! that often), so a test that needs the answer waits about that long.
+//! The sender asks about a deposit once a minute, so a test that needs the
+//! answer waits about that long.
 
 use std::{path::PathBuf, time::Duration};
 
 use common::{
-    SubstrateNode,
+    SubstrateNode, mailbox_client,
     mailbox_receiver::MailboxReceiver,
     outbox::{
         DELIVERY_ATTEMPT_BUDGET, artifacts, dead_letter_keys, deploy_guest, guest_enqueue,
@@ -22,8 +24,10 @@ use common::{
     },
 };
 use rustls::crypto::ring;
+use serde_json::json;
 use syneroym_core::{
     config::{MailboxRole, SubstrateConfig},
+    mailbox::codes,
     test_constants,
 };
 use syneroym_identity::{Identity, substrate};
@@ -77,6 +81,7 @@ struct World {
     receiver: MailboxReceiver,
     guest_did: String,
     greeter_wasm: Vec<u8>,
+    opted_in: bool,
     _dirs: Vec<TempDir>,
 }
 
@@ -112,12 +117,20 @@ struct Options {
     max_ttl_secs: u64,
     /// The sending guest lives on the mailbox node.
     same_node: bool,
+    /// The greeter lists its method for delivery from the mailbox.
+    opted_in: bool,
 }
 
 impl Options {
     fn standard() -> Self {
-        Self { max_ttl_secs: 7 * 24 * 3600, same_node: false }
+        Self { max_ttl_secs: 7 * 24 * 3600, same_node: false, opted_in: true }
     }
+}
+
+/// The greeter method the sending guest calls, as a service lists it for
+/// delivery from the mailbox.
+fn greet_entry() -> String {
+    format!("{}#greet", test_constants::GREETER_INTERFACE_NAME)
 }
 
 async fn world(options: Options) -> World {
@@ -163,10 +176,12 @@ async fn world(options: Options) -> World {
         receiver: MailboxReceiver::new(),
         guest_did,
         greeter_wasm,
+        opted_in: options.opted_in,
         _dirs: dirs,
     };
     world.deploy_receiver().await;
-    world.register_receiver().await;
+    // The receiver's own pass makes the queue the sender deposits into.
+    world.receiver_pulls().await;
     world
 }
 
@@ -183,23 +198,42 @@ impl World {
         self.receiver.service_id()
     }
 
-    /// The receiver's greeter, public, with a mailbox in its record.
+    /// The receiver's greeter, public, with a mailbox in its record. It lists
+    /// `greet` for delivery from the mailbox unless the test says not.
     async fn deploy_receiver(&self) {
+        let entry = greet_entry();
+        let methods: Vec<&str> = if self.opted_in { vec![entry.as_str()] } else { Vec::new() };
         self.receiver
-            .deploy(
+            .deploy_with_methods(
                 self.receiver_node(),
                 self.mailbox_node().did(),
                 test_constants::GREETER_INTERFACE_NAME,
                 self.greeter_wasm.clone(),
+                &methods,
             )
             .await;
+    }
+
+    /// One pass of the receiver node's mailbox receiver, waited for. The
+    /// receiver's queue is registered at the end of it.
+    async fn receiver_pulls(&self) {
+        let summary = self
+            .receiver_node()
+            .substrate_client
+            .mailbox_pull_now()
+            .await
+            .expect("security.mailbox-pull-now must answer");
+        assert_eq!(summary.blocked, 0, "{summary:?}");
+        assert_eq!(summary.registered, 1, "{summary:?}");
     }
 
     async fn mailbox_client(&self) -> SyneroymClient {
         self.receiver.client(self.mailbox_node()).await
     }
 
-    async fn register_receiver(&self) {
+    /// The double registers the queue itself, for a receiver whose node no
+    /// longer hosts the service.
+    async fn register_receiver_double(&self) {
         let mut client = self.mailbox_client().await;
         self.receiver
             .register(&client, self.receiver_node().did(), self.mailbox_node().did())
@@ -287,41 +321,46 @@ impl World {
 }
 
 #[tokio::test]
-async fn a_queued_call_to_a_stopped_receiver_waits_at_its_mailbox_until_a_signed_delivery() {
+async fn an_opted_in_queued_call_runs_once_and_completes_the_row() {
     let mut world = world(Options::standard()).await;
     world.stop_receiver().await;
 
     world.enqueue("msg-1").await;
     world.wait_deposited("msg-1").await;
 
-    // The row waits and sends nothing more directly; the receiver finds the
-    // message at its mailbox and says it delivered it.
-    let mut client = world.mailbox_client().await;
-    assert_eq!(world.receiver.deliver_all(&client).await, 1);
-    client.shutdown().await.ok();
+    // The row waits and sends nothing more directly. The receiver node comes
+    // back, pulls the message, runs the method once and signs a delivery.
+    world.restart_receiver().await;
+    let before = common::outbox::wasm_instantiations();
+    world.receiver_pulls().await;
 
     world.wait_outbox_empty().await;
     assert!(dead_letter_keys(&world.sender, &world.guest_did).await.is_empty());
+    time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(
+        common::outbox::wasm_instantiations() - before,
+        1,
+        "the receiver runs the method once"
+    );
     world.teardown().await;
 }
 
 #[tokio::test]
-async fn a_signed_not_eligible_rejection_dead_letters_the_queued_call() {
-    let mut world = world(Options::standard()).await;
+async fn a_queued_call_to_a_method_that_did_not_opt_in_is_dead_lettered() {
+    let mut world = world(Options { opted_in: false, ..Options::standard() }).await;
     world.stop_receiver().await;
 
     world.enqueue("msg-1").await;
     world.wait_deposited("msg-1").await;
-    let mut client = world.mailbox_client().await;
-    assert_eq!(world.receiver.reject_all_as_not_eligible(&client).await, 1);
-    client.shutdown().await.ok();
+    world.restart_receiver().await;
+    world.receiver_pulls().await;
 
     assert!(
         wait_until(ANSWER_WAIT, || async {
             dead_letter_keys(&world.sender, &world.guest_did).await == vec!["msg-1".to_string()]
         })
         .await,
-        "the rejection must dead-letter the call; outbox {:?}",
+        "the signed rejection must dead-letter the call; outbox {:?}",
         world.outbox().await
     );
     let letters =
@@ -334,7 +373,7 @@ async fn a_signed_not_eligible_rejection_dead_letters_the_queued_call() {
 async fn an_expired_deposit_goes_back_to_direct_and_lands_once_when_the_receiver_returns() {
     // A mailbox that keeps a message for 3 seconds: the sender's week is
     // refused and sealed again shorter.
-    let mut world = world(Options { max_ttl_secs: 3, same_node: false }).await;
+    let mut world = world(Options { max_ttl_secs: 3, ..Options::standard() }).await;
     world.stop_receiver().await;
 
     world.enqueue("msg-1").await;
@@ -465,9 +504,9 @@ async fn a_sender_on_the_mailbox_host_deposits_through_the_local_path() {
     world.wait_deposited("msg-1").await;
 
     // The message is really at the mailbox: the receiver finds it.
-    let mut client = world.mailbox_client().await;
-    assert_eq!(world.receiver.deliver_all(&client).await, 1);
-    client.shutdown().await.ok();
+    world.restart_receiver().await;
+    world.receiver_pulls().await;
+    world.wait_outbox_empty().await;
     world.teardown().await;
 }
 
@@ -476,10 +515,45 @@ async fn a_receiver_whose_old_host_answers_not_hosted_here_gets_a_deposit() {
     let world = world(Options::standard()).await;
     // The receiver's node keeps running but no longer hosts the service. The
     // registry still names that node, which refuses the call before any
-    // dispatch.
+    // dispatch. The queue is removed with the service, so the double makes
+    // one, as the node the service moved to would.
     world.receiver_node().substrate_client.undeploy(world.receiver_id(), 0).await.unwrap();
+    world.register_receiver_double().await;
 
     world.enqueue("msg-1").await;
     world.wait_deposited("msg-1").await;
+    world.teardown().await;
+}
+
+#[tokio::test]
+async fn an_undeployed_service_removes_its_queue_at_a_remote_mailbox() {
+    let world = world(Options::standard()).await;
+    // While the service holds the queue, another instance of the member is
+    // told a newer instance holds it.
+    let mut client = world.mailbox_client().await;
+    let (code, _) =
+        mailbox_client::call(&client, "claim", json!({})).await.expect_err("the queue exists");
+    assert_eq!(code, codes::STALE_INSTANCE);
+
+    world.receiver_node().substrate_client.undeploy(world.receiver_id(), 0).await.unwrap();
+
+    // No wait for a pass: the undeploy itself removed the queue.
+    let (code, _) =
+        mailbox_client::call(&client, "claim", json!({})).await.expect_err("the queue is gone");
+    assert_eq!(code, codes::UNKNOWN_DESTINATION);
+    client.shutdown().await.ok();
+    world.teardown().await;
+}
+
+#[tokio::test]
+async fn pull_now_is_for_the_node_owner_only() {
+    let world = world(Options::standard()).await;
+    let mut stranger = world.receiver_node().client_as(Identity::generate().unwrap());
+    stranger.connect().await.expect("the stranger connects");
+
+    let refused = stranger.mailbox_pull_now().await;
+
+    assert!(refused.is_err(), "a stranger must not run a pass: {refused:?}");
+    stranger.shutdown().await.ok();
     world.teardown().await;
 }

@@ -39,10 +39,14 @@ pub enum RejectCode {
     BadCertificate,
     TooOld,
     TooManyClaims,
+    /// The receiving service answered with an error. The sender goes back
+    /// to direct attempts, where the receiver fence gives it the same
+    /// answer.
+    CallFailed,
 }
 
 impl RejectCode {
-    pub const ALL: [RejectCode; 10] = [
+    pub const ALL: [RejectCode; 11] = [
         Self::FromFuture,
         Self::Revoked,
         Self::NotEligible,
@@ -53,6 +57,7 @@ impl RejectCode {
         Self::BadCertificate,
         Self::TooOld,
         Self::TooManyClaims,
+        Self::CallFailed,
     ];
 
     #[must_use]
@@ -68,6 +73,7 @@ impl RejectCode {
             Self::BadCertificate => "bad_certificate",
             Self::TooOld => "too_old",
             Self::TooManyClaims => "too_many_claims",
+            Self::CallFailed => "call_failed",
         }
     }
 

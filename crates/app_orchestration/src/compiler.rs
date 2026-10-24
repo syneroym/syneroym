@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, future::Future, pin::Pin};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
+};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -151,6 +155,7 @@ pub fn validate_plan_member_settings(plan: &DeploymentPlan) -> Result<(), Vec<St
             }
             Some(MailboxChoice::Service(_)) => {}
         }
+        check_mailbox_methods(service, &mut errors);
         if let Some(hours) = service.instance_cert_expires_hours
             && !(1..=MAX_INSTANCE_CERT_EXPIRES_HOURS).contains(&hours)
         {
@@ -161,6 +166,36 @@ pub fn validate_plan_member_settings(plan: &DeploymentPlan) -> Result<(), Vec<St
         }
     }
     if errors.is_empty() { Ok(()) } else { Err(errors) }
+}
+
+/// The substrate refuses a longer `mailbox_methods` list too
+/// (`syneroym_core::mailbox::MAX_MAILBOX_METHODS`). This crate cannot import
+/// that crate, so the value is repeated here.
+const MAX_MAILBOX_METHODS: usize = 64;
+
+/// A service lists `mailbox_methods` only with a mailbox, at most
+/// `MAX_MAILBOX_METHODS`, each once.
+fn check_mailbox_methods(service: &PlannedService, errors: &mut Vec<String>) {
+    let methods = &service.mailbox_methods;
+    if methods.is_empty() {
+        return;
+    }
+    let name = &service.logical_ref.service_name;
+    if service.mailbox.is_none() {
+        errors.push(format!("'{name}' lists mailbox_methods but has no mailbox"));
+    }
+    if methods.len() > MAX_MAILBOX_METHODS {
+        errors.push(format!(
+            "'{name}' lists {} mailbox_methods; the most allowed is {MAX_MAILBOX_METHODS}",
+            methods.len()
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for method in methods {
+        if !seen.insert(method) {
+            errors.push(format!("'{name}' lists mailbox method '{method}' twice"));
+        }
+    }
 }
 
 /// One `PlannedService` per member of `spec`: every member carries the same
@@ -187,6 +222,7 @@ fn planned_members(
             topology_visibility: spec.topology_visibility,
             mailbox: spec.mailbox.clone(),
             instance_cert_expires_hours: spec.instance_cert_expires_hours,
+            mailbox_methods: spec.mailbox_methods.clone(),
         })
         .collect()
 }

@@ -336,6 +336,8 @@ impl SupervisorService {
         validate_plan_visibility(plan).map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
         validate_plan_member_settings(plan)
             .map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
+        syneroym_sdk::refuse_reserved_mailbox_methods(plan)
+            .map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
         Ok(())
     }
 

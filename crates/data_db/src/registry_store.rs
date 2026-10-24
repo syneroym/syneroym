@@ -85,13 +85,16 @@ impl SqliteEndpointStorage {
                 );",
                 [],
             )?;
-            // The mailbox a hosted service pulls from, and the longest
-            // time-to-live of its queue. One row per service.
+            // The mailbox a hosted service pulls from, the longest
+            // time-to-live of its queue, and the guest methods it accepts
+            // from the mailbox (a JSON array of strings). One row per
+            // service.
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS service_mailboxes (
                     service_id   TEXT PRIMARY KEY,
                     mailbox      TEXT NOT NULL,
                     max_ttl_secs INTEGER NOT NULL,
+                    methods      TEXT NOT NULL DEFAULT '[]',
                     created_at   INTEGER NOT NULL
                 );",
                 [],
@@ -346,14 +349,16 @@ impl EndpointStorage for SqliteEndpointStorage {
         let conn_arc = self.conn.clone();
         task::spawn_blocking(move || -> Result<Vec<(String, HostedMailbox)>> {
             let conn = lock_db(&conn_arc)?;
-            let mut stmt =
-                conn.prepare("SELECT service_id, mailbox, max_ttl_secs FROM service_mailboxes")?;
+            let mut stmt = conn.prepare(
+                "SELECT service_id, mailbox, max_ttl_secs, methods FROM service_mailboxes",
+            )?;
             let mut mailboxes = Vec::new();
             let mut rows = stmt.query([])?;
             while let Some(row) = rows.next()? {
                 let mailbox = HostedMailbox {
                     mailbox: row.get(1)?,
                     max_ttl_secs: row.get::<_, i64>(2)? as u64,
+                    methods: serde_json::from_str(&row.get::<_, String>(3)?)?,
                 };
                 mailboxes.push((row.get(0)?, mailbox));
             }
@@ -366,19 +371,22 @@ impl EndpointStorage for SqliteEndpointStorage {
         let conn_arc = self.conn.clone();
         let sid = service_id.to_string();
         let mailbox = mailbox.clone();
+        let methods = serde_json::to_string(&mailbox.methods)?;
         let created_at: i64 =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
 
         task::spawn_blocking(move || -> Result<()> {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
-                "INSERT INTO service_mailboxes (service_id, mailbox, max_ttl_secs, created_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO service_mailboxes
+                    (service_id, mailbox, max_ttl_secs, methods, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(service_id) DO UPDATE SET
                     mailbox = excluded.mailbox,
                     max_ttl_secs = excluded.max_ttl_secs,
+                    methods = excluded.methods,
                     created_at = excluded.created_at",
-                params![sid, mailbox.mailbox, mailbox.max_ttl_secs as i64, created_at],
+                params![sid, mailbox.mailbox, mailbox.max_ttl_secs as i64, methods, created_at],
             )?;
             Ok(())
         })

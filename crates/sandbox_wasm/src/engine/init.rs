@@ -145,25 +145,6 @@ impl AppSandboxEngine {
         }
     }
 
-    /// Spawns the background task that advances the Wasmtime engine's epoch
-    /// clock -- the tick every in-flight call's epoch-interruption deadline
-    /// is measured against. Exits once `shutdown_rx` fires.
-    fn spawn_epoch_ticker(engine: Engine, mut shutdown_rx: oneshot::Receiver<()>) {
-        tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(EPOCH_TICK_MS));
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        engine.increment_epoch();
-                    }
-                    _ = &mut shutdown_rx => {
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
     /// Helper to validate service ID against path traversal and invalid
     /// characters
     pub fn validate_service_id(service_id: &str) -> Result<()> {
@@ -279,7 +260,8 @@ impl AppSandboxEngine {
         };
 
         app_engine.warm_up_wasm_endpoints(endpoints).await;
-        Self::spawn_epoch_ticker(app_engine.engine.clone(), shutdown_rx);
+        let engine = app_engine.engine.clone();
+        epoch_ticker::spawn(move || engine.increment_epoch(), shutdown_rx);
 
         Ok(app_engine)
     }

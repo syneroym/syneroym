@@ -501,6 +501,7 @@ fn a_public_record_out_file_carries_the_mailbox_and_the_derived_key() {
         9_999_999_999,
         Some(&path),
         Some(&host_choice()),
+        &[],
     )
     .unwrap();
 
@@ -532,10 +533,11 @@ fn a_deploy_without_a_mailbox_publishes_a_record_without_one() {
         9_999_999_999,
         None,
         None,
+        &[],
     )
     .unwrap();
     match publication {
-        Publication::Public { record, mailbox_key } => {
+        Publication::Public { record, mailbox_key, .. } => {
             assert!(record.info.mailbox.is_none());
             assert!(mailbox_key.is_none());
         }
@@ -545,25 +547,25 @@ fn a_deploy_without_a_mailbox_publishes_a_record_without_one() {
 
 #[test]
 fn mailbox_args_without_a_mailbox_are_always_fine() {
-    assert!(check_mailbox_args(None, Visibility::Private, false, false, false).is_ok());
+    assert!(check_mailbox_args(None, &[], Visibility::Private, false, false, false).is_ok());
 }
 
 #[test]
 fn a_mailbox_needs_a_master_or_an_identity_with_a_certificate() {
     let host = host_choice();
     let public = Visibility::Public;
-    assert!(check_mailbox_args(Some(&host), public, true, false, false).is_ok());
-    assert!(check_mailbox_args(Some(&host), public, false, true, true).is_ok());
-    let identity_alone = check_mailbox_args(Some(&host), public, false, true, false);
+    assert!(check_mailbox_args(Some(&host), &[], public, true, false, false).is_ok());
+    assert!(check_mailbox_args(Some(&host), &[], public, false, true, true).is_ok());
+    let identity_alone = check_mailbox_args(Some(&host), &[], public, false, true, false);
     assert!(identity_alone.unwrap_err().to_string().contains("--instance-certificate"));
-    assert!(check_mailbox_args(Some(&host), public, false, false, false).is_err());
+    assert!(check_mailbox_args(Some(&host), &[], public, false, false, false).is_err());
 }
 
 #[test]
 fn a_mailbox_needs_visibility_public() {
     let host = host_choice();
     for visibility in [Visibility::Internal, Visibility::Private] {
-        let err = check_mailbox_args(Some(&host), visibility, true, false, false).unwrap_err();
+        let err = check_mailbox_args(Some(&host), &[], visibility, true, false, false).unwrap_err();
         assert!(err.to_string().contains("--visibility public"), "{err}");
     }
 }
@@ -571,7 +573,7 @@ fn a_mailbox_needs_visibility_public() {
 #[test]
 fn an_auto_mailbox_is_refused_for_now() {
     let err =
-        check_mailbox_args(Some(&MailboxChoice::Auto), Visibility::Public, true, false, false)
+        check_mailbox_args(Some(&MailboxChoice::Auto), &[], Visibility::Public, true, false, false)
             .unwrap_err();
     assert!(err.to_string().contains("not supported yet"), "{err}");
 }
@@ -612,4 +614,69 @@ fn cert_expires_hours_is_refused_without_master_and_not_required_by_default() {
     assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
     // The default value does not make `--master` required.
     assert!(Wrapper::try_parse_from([&base[..], &["localhost:1"]].concat()).is_ok());
+}
+
+fn methods(texts: &[&str]) -> Vec<MailboxMethod> {
+    texts.iter().map(|t| t.parse().unwrap()).collect()
+}
+
+#[test]
+fn mailbox_methods_without_a_mailbox_are_refused() {
+    let err = check_mailbox_args(
+        None,
+        &methods(&["greeter#greet"]),
+        Visibility::Public,
+        true,
+        false,
+        false,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("--mailbox-method needs --mailbox"), "{err}");
+}
+
+#[test]
+fn a_guests_own_mailbox_methods_are_accepted() {
+    let host = host_choice();
+    let list = methods(&["greeter#greet", "api#invoke"]);
+    assert!(check_mailbox_args(Some(&host), &list, Visibility::Public, true, false, false).is_ok());
+}
+
+#[test]
+fn reserved_duplicate_and_too_many_mailbox_methods_are_refused() {
+    let host = host_choice();
+    let check = |list: &[MailboxMethod]| {
+        check_mailbox_args(Some(&host), list, Visibility::Public, true, false, false)
+    };
+    let err = check(&methods(&["security#mailbox-pull-now"])).unwrap_err();
+    assert!(err.to_string().contains("node or platform interface"), "{err}");
+    let err = check(&methods(&["data-layer#get"])).unwrap_err();
+    assert!(err.to_string().contains("node or platform interface"), "{err}");
+    let err = check(&methods(&["a#b", "a#b"])).unwrap_err();
+    assert!(err.to_string().contains("twice"), "{err}");
+    let many: Vec<MailboxMethod> = (0..65).map(|i| format!("i{i}#m").parse().unwrap()).collect();
+    let err = check(&many).unwrap_err();
+    assert!(err.to_string().contains("the most allowed is 64"), "{err}");
+}
+
+#[test]
+fn mailbox_methods_reach_the_public_publication() {
+    let identity = Identity::generate().unwrap();
+    let svc_id = substrate::derive_did_key(&identity.public_key());
+    let list = methods(&["greeter#greet"]);
+    let publication = build_publication(
+        Visibility::Public,
+        Some(&identity),
+        &svc_id,
+        "did:key:zSubstrate",
+        None,
+        9_999_999_999,
+        None,
+        Some(&host_choice()),
+        &list,
+    )
+    .unwrap();
+    match publication {
+        Publication::Public { mailbox_methods, .. } => assert_eq!(mailbox_methods, list),
+        other => panic!("expected a public publication, got {other:?}"),
+    }
 }

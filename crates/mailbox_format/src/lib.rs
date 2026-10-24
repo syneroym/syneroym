@@ -18,6 +18,9 @@ mod receipt;
 pub use deposit::{Deposit, DepositId, DepositIdParseError, SealedBytes, SealedBytesParseError};
 pub use error::{DepositError, OpenError, ReceiptError, SealError};
 pub use keys::{KeyParseError, MailboxPublicKey, MailboxSecretKey};
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use message::seal_unchecked;
 pub use message::{
     MessageContent, MessageHash, MessageHashParseError, OpenPolicy, OpenedMessage, Recipient,
     RefusedMessage, Sealed, Sender, SentDeposit, open, seal,

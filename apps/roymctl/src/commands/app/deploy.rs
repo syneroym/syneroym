@@ -241,6 +241,7 @@ fn resolve_manifest(manifest_path: &Path) -> anyhow::Result<SynAppManifest> {
                 topology_visibility: Default::default(),
                 mailbox: None,
                 instance_cert_expires_hours: None,
+                mailbox_methods: Vec::new(),
             },
         );
         Ok(SynAppManifest {
@@ -628,6 +629,7 @@ pub(super) async fn handle_deploy(
     settings::apply_mailbox_overrides(&mut manifest, mailboxes)?;
     let plans = compile_plans(&instance_id, &manifest, &manifest_path).await?;
     settings::refuse_settings_without_masters(&plans, mint_masters)?;
+    settings::refuse_reserved_mailbox_methods(&plans)?;
     let target_plan = plans.last().cloned().context("Compiled deployment contains no plans")?;
 
     // `app deploy` has no supervisor behind it, and

@@ -2,6 +2,7 @@ use super::*;
 use crate::synsvc_native;
 
 mod home_relay;
+mod mailbox_pull;
 mod relay_passport;
 
 #[async_trait::async_trait]
@@ -97,6 +98,8 @@ impl ControlPlaneService {
                 self.key_store
                     .inject_kek(arr)
                     .map_err(|e| RpcError::InternalError(e.to_string()))?;
+                // The vault is open now, so the mailbox keys can be read.
+                self.wake_mailbox_pull();
                 Ok(NativeResponse { payload: serde_json::json!({"status": "injected"}) })
             }
             "rotate-kek" => {
@@ -146,6 +149,9 @@ impl ControlPlaneService {
             "relay-passport-leases" => relay_passport::leases(self.relay_passports.get()),
             "home-relay-set" => home_relay::set(self.home_relay.get(), invocation.params).await,
             "home-relay-status" => home_relay::status(self.home_relay.get()),
+            "mailbox-pull-now" => {
+                mailbox_pull::pull_now(self.mailbox_pull.get(), invocation.params).await
+            }
             _ => Err(RpcError::MethodNotFound(invocation.method)),
         }
     }
@@ -330,6 +336,8 @@ impl ControlPlaneService {
         self.renew_cert(service_id, generation, instance_certificate, &invocation.caller)
             .await
             .map_err(RpcError::InternalError)?;
+        // A receiver that waited for a valid certificate can pull now.
+        self.wake_mailbox_pull();
         Ok(NativeResponse { payload: serde_json::json!({"status": "cert_renewed"}) })
     }
 

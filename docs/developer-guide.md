@@ -415,7 +415,19 @@ mailbox host, which serves it on interface `mailbox`. The record then
 carries the mailbox and a mailbox key derived from the service master, and
 the deploy call carries the private half to the substrate. It needs
 `--visibility public`, and `--master` (or `--identity` together with
-`--instance-certificate`). `auto` is not supported yet. `--cert-expires-hours
+`--instance-certificate`). `auto` is not supported yet. The service receives
+a message that waited at its mailbox only for the methods it lists:
+`--mailbox-method <interface>#<method>` (repeat it for more; it needs
+`--mailbox`). Conversation `deliver` and `group-push` are always accepted. An
+entry may not name a node or platform interface (`orchestrator`, `security`,
+`supervisor`, `mailbox`, or one of the native capabilities such as
+`data-layer`). A method that is not listed gets a signed `not_eligible`
+receipt, so a call that a guest queued to it with `enqueue` is dead-lettered
+as soon as it is deposited, instead of being retried directly for about ten
+hours. When a service is undeployed, or redeployed with another mailbox or
+with none, the substrate removes the old queue on a best-effort basis (a
+mailbox that cannot be reached keeps it until its queue lifetime ends).
+`--cert-expires-hours
 <N>` (1 to 720, default 24) sets the lifetime of the instance certificate
 `--master` issues; use a long one for a substrate that sleeps. It cannot be
 combined with `--instance-certificate`. `roymctl registry register` signs a
@@ -443,7 +455,10 @@ is the lifetime of each instance certificate, from 1 to 720. Both need
 `app deploy --mint-masters` (or the supervisor): nothing else signs the record
 or issues the certificate, so `app deploy` refuses a manifest that sets them
 without it. `app deploy --mailbox <service>=<node-did>` sets or overrides the
-mailbox of one service from the command line.
+mailbox of one service from the command line. `mailbox_methods =
+["<interface>#<method>", ...]` lists the guest methods that accept delivery
+from the mailbox (at most 64, only with a `mailbox`; see `--mailbox-method`
+above).
 
 ##### Declaring an FDAE Policy (Row/Column-Level Security)
 
@@ -1755,6 +1770,12 @@ curl http://localhost:7967/metrics
 
 The router exposes:
 - `substrate.router.refused`: Counter of refused inbound streams labeled by refusal `kind` (`unauthenticated`, `not_hosted_here`, `unknown_interface`).
+
+Every substrate runs a mailbox receiver for its hosted services that have a mailbox (this does not need the mailbox role). It exposes:
+- `substrate.mailbox_receiver.messages`: Counter of messages handled, labeled by `result` (`delivered`, `rejected`, `not_acked`, `not_found`). A message counts as `delivered` or `rejected` only when the mailbox stored its receipt. `not_found` means the mailbox no longer held it.
+- `substrate.mailbox_receiver.blocked`: Counter of warnings that a service is not pulled, labeled by `reason` (`no_certificate`, `instance_refused`, `stale_instance`, `no_key`, `key_unreadable`, `no_record`, `record_and_fact_differ`, `record_expired`, `mailbox_full`, `served_record_differs`, `not_started`). `not_started` means the node restarted and the service is not deployed again yet in this process; its messages wait at the mailbox until the next deploy. The same warning is written to the log at most once an hour for each service.
+
+The node owner can run one pull pass at once with `security.mailbox-pull-now` (through `SyneroymClient::mailbox_pull_now`). The call waits for the pass that is running and then for its own full pass, and it has no time limit: the client's request timeout ends the wait, and the pass still finishes. It answers the counts of the pass (`services`, `blocked`, `registered`, `delivered`, `rejected`, `not_acked`). `blocked` counts the services skipped or stopped in the pass. `registered` counts the services whose queue the mailbox accepted at the last register. A mobile shell calls it when the app returns to the foreground.
 
 When the mailbox role is active, the endpoint exposes these Prometheus metrics:
 - `substrate.mailbox.queues`: Gauge of active destination queues.
