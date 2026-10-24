@@ -31,6 +31,15 @@ pub struct Lease {
     pub limits: Map<String, Value>,
 }
 
+impl Lease {
+    /// The whole-number use limit `key` of the passport, if it has one. A
+    /// fact that is not a number reads as absent.
+    #[must_use]
+    pub fn limit(&self, key: &str) -> Option<u64> {
+        self.limits.get(key).and_then(Value::as_u64)
+    }
+}
+
 /// The lease table and deny list of one service for one use. The store is
 /// bound to the ability of that use when it is opened, and a file made for
 /// another use is refused: a lease of one use must never admit a subject

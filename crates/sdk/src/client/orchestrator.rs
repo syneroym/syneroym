@@ -408,6 +408,24 @@ impl SyneroymClient {
         Ok(serde_json::from_value(res.result)?)
     }
 
+    /// Deny a passport on the substrate's mailbox. Returns how many running
+    /// leases ended. Node owner only.
+    pub async fn mailbox_passport_deny(&self, passport_id: &PassportId) -> Result<u64> {
+        let res = self
+            .request("security", "mailbox-passport-deny", serde_json::to_value((passport_id,))?)
+            .await?;
+        res.result
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("mailbox passport deny failed: {:?}", res.result))
+    }
+
+    /// The running leases of the substrate's mailbox. Node owner only.
+    pub async fn mailbox_passport_leases(&self) -> Result<Vec<LeaseInfo>> {
+        let res =
+            self.request("security", "mailbox-passport-leases", serde_json::json!([])).await?;
+        Ok(serde_json::from_value(res.result)?)
+    }
+
     /// Store a home-relay passport on the substrate and register once. Node
     /// owner only.
     pub async fn home_relay_set(&self, request: &HomeRelaySetRequest) -> Result<HomeRelayStatus> {

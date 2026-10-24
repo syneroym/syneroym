@@ -7,6 +7,7 @@
 mod caller;
 mod error;
 mod limits;
+mod passport;
 mod record;
 mod service;
 mod store;

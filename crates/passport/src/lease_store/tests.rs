@@ -285,3 +285,14 @@ fn a_failed_deny_leaves_memory_unchanged() {
     assert!(!store.is_denied(&id(1)));
     assert!(store.is_admitted(&s, NOW));
 }
+
+#[test]
+fn limit_reads_whole_numbers_only() {
+    let mut granted = lease(1, "did:key:hs", NOW, NOW + 100);
+    granted.limits =
+        limits(&[("max_bytes", json!(5)), ("max_messages", json!("many")), ("x", json!(-1))]);
+    assert_eq!(granted.limit("max_bytes"), Some(5));
+    assert_eq!(granted.limit("max_messages"), None, "a string reads as absent");
+    assert_eq!(granted.limit("x"), None, "a negative number reads as absent");
+    assert_eq!(granted.limit("missing"), None);
+}

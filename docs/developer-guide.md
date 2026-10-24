@@ -434,6 +434,10 @@ as soon as it is deposited, instead of being retried directly for about ten
 hours. When a service is undeployed, or redeployed with another mailbox or
 with none, the substrate removes the old queue on a best-effort basis (a
 mailbox that cannot be reached keeps it until its queue lifetime ends).
+`--mailbox-passport <file>` gives the mailbox host's passport for this
+service's owner (see section 5.6). The child token is signed with `--as`,
+which must be the passport's owner, and it needs `--mailbox`. A deploy without
+the flag removes a child token stored by an earlier deploy.
 `--cert-expires-hours
 <N>` (1 to 720, default 24) sets the lifetime of the instance certificate
 `--master` issues; use a long one for a substrate that sleeps. It cannot be
@@ -1787,7 +1791,7 @@ The router exposes:
 
 Every substrate runs a mailbox receiver for its hosted services that have a mailbox (this does not need the mailbox role). It exposes:
 - `substrate.mailbox_receiver.messages`: Counter of messages handled, labeled by `result` (`delivered`, `rejected`, `not_acked`, `not_found`). A message counts as `delivered` or `rejected` only when the mailbox stored its receipt. `not_found` means the mailbox no longer held it.
-- `substrate.mailbox_receiver.blocked`: Counter of warnings that a service is not pulled, labeled by `reason` (`no_certificate`, `instance_refused`, `stale_instance`, `no_key`, `key_unreadable`, `no_record`, `record_and_fact_differ`, `record_expired`, `mailbox_full`, `served_record_differs`, `not_started`). `not_started` means the node restarted and the service is not deployed again yet in this process; its messages wait at the mailbox until the next deploy. The same warning is written to the log at most once an hour for each service.
+- `substrate.mailbox_receiver.blocked`: Counter of warnings that a service is not pulled, labeled by `reason` (`no_certificate`, `instance_refused`, `stale_instance`, `no_key`, `key_unreadable`, `no_record`, `record_and_fact_differ`, `record_expired`, `mailbox_full`, `served_record_differs`, `not_started`, `passport_refused`). `passport_refused` means the mailbox refused the owner's passport and the queue has the open limits. `not_started` means the node restarted and the service is not deployed again yet in this process; its messages wait at the mailbox until the next deploy. The same warning is written to the log at most once an hour for each service.
 
 The node owner can run one pull pass at once with `security.mailbox-pull-now` (through `SyneroymClient::mailbox_pull_now`). The call waits for the pass that is running and then for its own full pass, and it has no time limit: the client's request timeout ends the wait, and the pass still finishes. It answers the counts of the pass (`services`, `blocked`, `registered`, `delivered`, `rejected`, `not_acked`). `blocked` counts the services skipped or stopped in the pass. `registered` counts the services whose queue the mailbox accepted at the last register. A mobile shell calls it when the app returns to the foreground.
 
@@ -1798,7 +1802,8 @@ When the mailbox role is active, the endpoint exposes these Prometheus metrics:
 - `substrate.mailbox.settled_receipts`: Gauge of receipts kept for messages the mailbox no longer holds (capped by `max_settled_receipts`).
 - `substrate.mailbox.deposits`: Counter of successfully stored deposits.
 - `substrate.mailbox.deposits_refused`: Counter of refused deposits labeled by refusal `kind` (`mailbox_full`, `queue_full`, `rate_limited`, `ttl_too_long`, `too_large`, `duplicate_deposit`).
-- `substrate.mailbox.register_refused`: Counter of refused registrations labeled by refusal `kind` (`rate_limited`).
+- `substrate.mailbox.register_refused`: Counter of refused registrations labeled by refusal `kind` (`rate_limited`, `passport_refused`, `internal`).
+- `substrate.mailbox.passport_granted`: Counter of granted mailbox passport leases.
 - `substrate.mailbox.receiver_refused`: Counter of refused receiver calls (`claim`, `ack`, `unregister`) labeled by refusal `kind` (`rate_limited`).
 - `substrate.mailbox.evictions`: Counter of messages evicted due to queue limits.
 - `substrate.mailbox.expired`: Counter of expired messages swept.
@@ -2006,5 +2011,41 @@ This gauge holds the Unix timestamp when access ends. The value is absent or `0`
 - **Relay TLS certificates:** The coordinator info server can use custom certificates through `--ca-cert`. But the Iroh relay endpoint itself must use plain HTTP or a certificate signed by a public WebPKI certificate authority. Iroh node endpoints do not trust private certificate authorities.
 - **Coordinator role on leased nodes:** A node that uses a restricted relay as its home relay should not run an Iroh coordinator role that shares that same relay as its parent relay. The coordinator role generates a random node key at startup, which is not covered by the node's passport and will be refused by the relay.
 
+### 5.6. Raising Mailbox Limits with a Passport
 
+*Reader: the operator of a mailbox host, and the owner of a service that uses it.*
 
+A mailbox gives every queue the open limits of `[roles.mailbox]`. An operator can give one service owner higher limits. This uses a passport, the same kind of token as in section 5.4, for ability `mailbox/use`.
+
+**Operator: issue, deny and list.**
+
+1. Issue a passport. The host's verified controller signs it (`--from`). A host with no controller uses its node key (`--node-key`). Every limit is optional. A limit below the mailbox's own limit is ignored. `--max-services` is the most distinct services (member masters) of the owner that may hold a queue. `--max-ttl-days` is 1 to 30:
+   ```bash
+   roymctl mailbox passport issue \
+       --from my-controller \
+       --to did:key:h... \
+       --expires-days 30 \
+       --max-services 5 \
+       --max-messages 5000 \
+       --max-bytes 52428800 \
+       --max-ttl-days 30 \
+       --out mailbox-passport.json
+   ```
+   The command prints the passport id. Keep it: you need it to deny the passport. Give the file to the service owner.
+2. Deny a passport or list the running leases through the running substrate (needs `--as <owner>`; an unowned host, with no controller and no `[iam].admin_ucan_root`, refuses both):
+   ```bash
+   roymctl mailbox passport deny <passport-id> --as my-controller
+   roymctl mailbox passport leases --as my-controller
+   ```
+   A denied passport ends its leases at once. Its queues stay, with the open limits. A lease also ends when its passport or child token expires, or 30 days after the last `register`.
+
+**Service owner: deploy with the passport.** Pass the file to the deploy and sign with the owner identity the passport names:
+```bash
+roymctl svc deploy ... --mailbox did:key:h... --mailbox-passport mailbox-passport.json --as my-owner
+roymctl app deploy inst-1 app.toml --mint-masters --mailbox-passport mailbox-passport.json --as my-owner
+```
+`roymctl` signs one child token for each service that uses that mailbox. A new passport arrives by an ordinary deploy. The supervisor does not support passports: a service it deploys keeps the open limits when its lease ends.
+
+**Files.** The leases of a mailbox are in `<storage.db_dir>/mailbox_passports.db`. A queue no longer stores its limits in `mailbox.db`. The product is not released and has no migration, so delete an old `mailbox.db` before you start the new binary.
+
+**Limits of this version.** A sender asks for a message time-to-live of at most 7 days, so a larger `--max-ttl-days` has no effect yet. A leased master is not refused by `max_queues`, but `max_total_bytes` and the node-wide rate limits are shared with open queues.

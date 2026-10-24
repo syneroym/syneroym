@@ -103,6 +103,20 @@ impl MailboxReceiver {
         wasm: Vec<u8>,
         methods: &[&str],
     ) -> String {
+        self.deploy_with_passport(node, mailbox_node_did, interface, wasm, methods, None).await
+    }
+
+    /// [`Self::deploy_with_methods`], with the owner's child token for a
+    /// mailbox passport.
+    pub async fn deploy_with_passport(
+        &self,
+        node: &SubstrateNode,
+        mailbox_node_did: &str,
+        interface: &str,
+        wasm: Vec<u8>,
+        methods: &[&str],
+        child_token: Option<String>,
+    ) -> String {
         let id = self.service_id();
         RegistryClient::new(false, Some(node.registry_url().to_string()))
             .publish_master_anchor(&id, vec![], None, &self.master, true)
@@ -125,6 +139,7 @@ impl MailboxReceiver {
             record: serde_json::from_str(&record).unwrap(),
             mailbox_key: Some(self.mailbox_key.clone()),
             mailbox_methods: methods.iter().map(|m| m.parse().unwrap()).collect(),
+            mailbox_child_token: child_token,
         };
         node.substrate_client
             .deploy_svc_wasm(id.clone(), vec![interface.to_string()], wasm, publication, Some(cert))

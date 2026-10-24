@@ -56,10 +56,10 @@ pub enum SignerBinding {
     SameKey,
     /// The proven key is an instance key, bound to the subject (a member
     /// master DID) by its service-instance certificate (ADR-0016). The
-    /// caller sends the whole certificate in its request, because the
-    /// router keeps only the two DIDs. This check is the only one that
-    /// requires the `service-instance` scope; the transport also accepts
-    /// `routing`.
+    /// certificate comes from the verified caller proof
+    /// (`CallerContext.proof.delegation_json`), never from the request
+    /// body. This check is the only one that requires the
+    /// `service-instance` scope; the transport also accepts `routing`.
     InstanceCertificate(DelegationCertificate),
 }
 

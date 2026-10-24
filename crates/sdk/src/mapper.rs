@@ -390,6 +390,7 @@ fn map_planned_service(
     let mailbox = ctx.members.mailbox_keys.get(&svc.service_id).map(|key| MailboxCredentials {
         secret_key: key.to_z32().to_string(),
         methods: svc.mailbox_methods.iter().map(ToString::to_string).collect(),
+        child_token: ctx.members.mailbox_child_tokens.get(&svc.service_id).cloned(),
     });
     let app_context = Some(map_app_context(svc, ctx));
     Ok(WitPlannedService {

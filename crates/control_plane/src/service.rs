@@ -154,6 +154,8 @@ pub struct ControlPlaneService {
     /// two-phase way as `endpoint_publisher`: the coordinator is built before
     /// this service, and most `init` call sites are tests with no relay.
     pub(crate) relay_passports: OnceLock<LeaseStore>,
+    /// The lease store of this node's mailbox, wired the same way.
+    pub(crate) mailbox_passports: OnceLock<LeaseStore>,
     /// The home-relay passport control of this node, when its home relay is
     /// fixed. Set after construction by the substrate's composition root.
     pub(crate) home_relay: OnceLock<Arc<dyn HomeRelayControl>>,
@@ -274,6 +276,7 @@ impl ControlPlaneService {
             record_signer: OnceLock::new(),
             endpoint_publisher: OnceLock::new(),
             relay_passports: OnceLock::new(),
+            mailbox_passports: OnceLock::new(),
             home_relay: OnceLock::new(),
             mailbox_pull: OnceLock::new(),
             republish_trigger: OnceLock::new(),
@@ -310,6 +313,13 @@ impl ControlPlaneService {
     /// two-phase, no-op-past-first-call wiring as `set_endpoint_publisher`.
     pub fn set_relay_passports(&self, leases: LeaseStore) {
         let _ = self.relay_passports.set(leases);
+    }
+
+    /// Wires in the lease store of this node's mailbox, so the operator's
+    /// `mailbox-passport-*` verbs reach the running mailbox. Same wiring as
+    /// `set_relay_passports`.
+    pub fn set_mailbox_passports(&self, leases: LeaseStore) {
+        let _ = self.mailbox_passports.set(leases);
     }
 
     /// Wires in the home-relay passport control. No-op after the first call.

@@ -8031,6 +8031,7 @@ dependencies = [
  "syneroym-mailbox",
  "syneroym-mailbox-format",
  "syneroym-mqtt-broker",
+ "syneroym-passport",
  "syneroym-rpc",
  "syneroym-sandbox-wasm",
  "syneroym-ucan",

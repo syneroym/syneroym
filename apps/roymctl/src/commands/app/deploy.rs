@@ -29,7 +29,11 @@ use syneroym_sdk::{
 };
 
 use super::{PREFLIGHT_TIMEOUT, resolve_credentials, settings};
-use crate::commands::{self, member_identity};
+use crate::commands::{
+    self,
+    mailbox_passport::{self, OwnerPassports},
+    member_identity,
+};
 
 /// Retries `f` until it succeeds or `budget` elapses, returning the last
 /// error. Used only for the post-apply registry probe, which tolerates a
@@ -493,6 +497,7 @@ async fn build_deploy_plan(
     fallback_client: Option<&Arc<SyneroymClient>>,
     registry_url: Option<&str>,
     mint_masters: bool,
+    passports: Option<&OwnerPassports>,
 ) -> anyhow::Result<(DeploymentPlan, CertifiedMembers)> {
     let (deploy_plan, members) = if mint_masters {
         member_identity::substitute_and_certify_members(
@@ -501,6 +506,7 @@ async fn build_deploy_plan(
             clients,
             fallback_client,
             registry_url,
+            passports,
         )
         .await?
     } else {
@@ -620,6 +626,7 @@ pub(super) async fn handle_deploy(
     registry_url: Option<String>,
     inventory: Option<PathBuf>,
     mailboxes: &[(String, MailboxChoice)],
+    mailbox_passports: &[PathBuf],
     api_url: &str,
     substrate_opt: Option<String>,
     dir: &Path,
@@ -627,6 +634,12 @@ pub(super) async fn handle_deploy(
     ucan_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     let instance_id = AppInstanceId::try_new(instance_id.clone())?;
+    let passports = mailbox_passport::load_passports(
+        dir,
+        mailbox_passports,
+        run_as,
+        syneroym_passport::now_secs(),
+    )?;
 
     let mut manifest = resolve_manifest(&manifest_path)?;
     settings::apply_mailbox_overrides(&mut manifest, mailboxes)?;
@@ -698,6 +711,7 @@ pub(super) async fn handle_deploy(
         fallback_client.as_ref(),
         registry_url.as_deref(),
         mint_masters,
+        passports.as_ref(),
     )
     .await?;
 
