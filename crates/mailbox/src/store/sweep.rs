@@ -7,7 +7,9 @@ use tracing::warn;
 
 use crate::{
     error::MailboxError,
-    store::{MailboxStore, claim::close_over_claimed, from_sql, remove_message, to_sql},
+    store::{
+        MailboxStore, ReceiptPolicy, claim::close_over_claimed, from_sql, remove_message, to_sql,
+    },
 };
 
 /// The summary of removals performed by a sweep pass.
@@ -31,6 +33,7 @@ pub(crate) struct Totals {
     pub queues: u64,
     pub messages: u64,
     pub bytes: u64,
+    pub settled_receipts: u64,
 }
 
 impl MailboxStore {
@@ -40,16 +43,11 @@ impl MailboxStore {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        let expired = sweep_expired_messages(&tx, self.limits.receipt_keep_secs, now)?;
-        let over_claimed = close_over_claimed(&tx, None, self.limits.receipt_keep_secs, now)?;
-        let queues_removed = sweep_dead_queues(
-            &tx,
-            self.limits.queue_lifetime_secs,
-            self.limits.receipt_keep_secs,
-            now,
-        )?;
-        let receipts_removed =
-            tx.execute("DELETE FROM receipts WHERE expires_at <= ?1", [to_sql(now)])? as u32;
+        let policy = self.receipt_policy();
+        let expired = sweep_expired_messages(&tx, policy, now)?;
+        let over_claimed = close_over_claimed(&tx, None, policy, now)?;
+        let queues_removed = sweep_dead_queues(&tx, self.limits.queue_lifetime_secs, policy, now)?;
+        let receipts_removed = remove_expired_receipts(&tx, now)?;
 
         tx.commit()?;
         Ok(SweepReport { expired, over_claimed, queues_removed, receipts_removed })
@@ -108,18 +106,45 @@ impl MailboxStore {
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        Ok(Totals { queues: from_sql(q), messages: from_sql(m), bytes: from_sql(b) })
+        let settled: i64 =
+            conn.query_row("SELECT settled_receipts FROM mailbox_stats WHERE id = 1", [], |r| {
+                r.get(0)
+            })?;
+        Ok(Totals {
+            queues: from_sql(q),
+            messages: from_sql(m),
+            bytes: from_sql(b),
+            settled_receipts: from_sql(settled),
+        })
     }
 }
 
-fn sweep_expired_messages(tx: &Transaction, keep_secs: u64, now: u64) -> Result<u32, MailboxError> {
+/// Deletes receipts whose keep time ended, and keeps the settled count exact.
+fn remove_expired_receipts(tx: &Transaction, now: u64) -> Result<u32, MailboxError> {
+    let settled =
+        tx.execute("DELETE FROM receipts WHERE expires_at <= ?1 AND settled = 1", [to_sql(now)])?;
+    tx.execute(
+        "UPDATE mailbox_stats SET settled_receipts = MAX(0, settled_receipts - ?1) WHERE id = 1",
+        [to_sql(settled as u64)],
+    )?;
+    // A held message expires before its receipt does, so this is normally 0.
+    let held =
+        tx.execute("DELETE FROM receipts WHERE expires_at <= ?1 AND settled = 0", [to_sql(now)])?;
+    Ok((settled + held) as u32)
+}
+
+fn sweep_expired_messages(
+    tx: &Transaction,
+    policy: ReceiptPolicy,
+    now: u64,
+) -> Result<u32, MailboxError> {
     let mut stmt = tx.prepare("SELECT seq FROM messages WHERE expires_at <= ?1 LIMIT 1000")?;
     let seqs: Vec<i64> = stmt.query_map([to_sql(now)], |r| r.get(0))?.collect::<Result<_, _>>()?;
     drop(stmt);
 
     let count = seqs.len() as u32;
     for seq in seqs {
-        remove_message(tx, seq, &Receipt::Expired { at_secs: now }, keep_secs, now)?;
+        remove_message(tx, seq, &Receipt::Expired { at_secs: now }, policy, now)?;
     }
     Ok(count)
 }
@@ -127,7 +152,7 @@ fn sweep_expired_messages(tx: &Transaction, keep_secs: u64, now: u64) -> Result<
 fn sweep_dead_queues(
     tx: &Transaction,
     lifetime_secs: u64,
-    keep_secs: u64,
+    policy: ReceiptPolicy,
     now: u64,
 ) -> Result<u32, MailboxError> {
     let cutoff = now.saturating_sub(lifetime_secs);
@@ -150,7 +175,7 @@ fn sweep_dead_queues(
             drop(stmt);
 
             for seq in &seqs {
-                remove_message(tx, *seq, &Receipt::Expired { at_secs: now }, keep_secs, now)?;
+                remove_message(tx, *seq, &Receipt::Expired { at_secs: now }, policy, now)?;
             }
             message_budget = message_budget.saturating_sub(seqs.len());
         }

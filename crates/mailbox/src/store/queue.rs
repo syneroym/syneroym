@@ -142,7 +142,7 @@ impl MailboxStore {
                 &tx,
                 seq,
                 &Receipt::Expired { at_secs: now },
-                self.limits.receipt_keep_secs,
+                self.receipt_policy(),
                 now,
             )?;
         }

@@ -50,6 +50,13 @@ impl MailboxStore {
         &self.limits
     }
 
+    pub(super) fn receipt_policy(&self) -> ReceiptPolicy {
+        ReceiptPolicy {
+            keep_secs: self.limits.receipt_keep_secs,
+            max_settled: self.limits.max_settled_receipts,
+        }
+    }
+
     pub(super) fn lock(&self) -> MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -97,17 +104,23 @@ fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             ttl_secs     INTEGER NOT NULL,
             receipt_json TEXT NOT NULL,
             expires_at   INTEGER NOT NULL,
+            settled      INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (sender, deposit_id)
         );
         CREATE INDEX IF NOT EXISTS receipts_expiry ON receipts (expires_at);
+        CREATE INDEX IF NOT EXISTS receipts_settled ON receipts (settled, expires_at);
         CREATE TABLE IF NOT EXISTS mailbox_stats (
-            id          INTEGER PRIMARY KEY CHECK (id = 1),
-            total_bytes INTEGER NOT NULL DEFAULT 0
+            id               INTEGER PRIMARY KEY CHECK (id = 1),
+            total_bytes      INTEGER NOT NULL DEFAULT 0,
+            settled_receipts INTEGER NOT NULL DEFAULT 0
         );
-        INSERT OR IGNORE INTO mailbox_stats (id, total_bytes)
-            SELECT 1, COALESCE(SUM(bytes), 0) FROM queues;
-        UPDATE mailbox_stats SET total_bytes = (SELECT COALESCE(SUM(bytes), 0) FROM queues) WHERE \
-         id = 1;",
+        INSERT OR IGNORE INTO mailbox_stats (id, total_bytes, settled_receipts)
+            SELECT 1, COALESCE(SUM(bytes), 0),
+                (SELECT COUNT(*) FROM receipts WHERE settled = 1) FROM queues;
+        UPDATE mailbox_stats SET
+            total_bytes = (SELECT COALESCE(SUM(bytes), 0) FROM queues),
+            settled_receipts = (SELECT COUNT(*) FROM receipts WHERE settled = 1)
+            WHERE id = 1;",
     )
 }
 
@@ -189,11 +202,21 @@ pub(super) fn queue_row(
     }
 }
 
+/// How long settled receipts stay, and how many may stay.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReceiptPolicy {
+    pub(crate) keep_secs: u64,
+    pub(crate) max_settled: u64,
+}
+
+/// Deletes the message at `seq` and settles its receipt: the body is gone, the
+/// receipt stays for the sender. Drops the oldest settled receipts when this
+/// leaves more than `policy.max_settled`.
 pub(super) fn remove_message(
     tx: &Transaction,
     seq: i64,
     receipt: &Receipt,
-    keep_secs: u64,
+    policy: ReceiptPolicy,
     now: u64,
 ) -> Result<(), MailboxError> {
     let mut stmt =
@@ -223,13 +246,42 @@ pub(super) fn remove_message(
     )?;
     let json = serde_json::to_string(receipt)
         .map_err(|e| MailboxError::Internal(format!("failed to serialize receipt: {e}")))?;
-    let expires = to_sql(now.saturating_add(keep_secs));
+    let expires = to_sql(now.saturating_add(policy.keep_secs));
     let updated = tx.execute(
-        "UPDATE receipts SET receipt_json = ?1, expires_at = ?2 WHERE sender = ?3 AND deposit_id \
-         = ?4",
+        "UPDATE receipts SET receipt_json = ?1, expires_at = ?2, settled = 1 WHERE sender = ?3 \
+         AND deposit_id = ?4",
         rusqlite::params![json, expires, sender, deposit_id],
     )?;
     debug_assert_eq!(updated, 1, "receipt row must exist when removing message");
+    if updated == 1 {
+        tx.execute(
+            "UPDATE mailbox_stats SET settled_receipts = settled_receipts + 1 WHERE id = 1",
+            [],
+        )?;
+        drop_settled_over_cap(tx, policy.max_settled)?;
+    }
+    Ok(())
+}
+
+/// Drops the settled receipts that expire first until at most `max` are left.
+/// A sender that asks about a dropped receipt reads `unknown` and goes back to
+/// direct attempts.
+fn drop_settled_over_cap(tx: &Transaction, max: u64) -> Result<(), MailboxError> {
+    let count: i64 =
+        tx.query_row("SELECT settled_receipts FROM mailbox_stats WHERE id = 1", [], |r| r.get(0))?;
+    let count = from_sql(count);
+    if count <= max {
+        return Ok(());
+    }
+    let dropped = tx.execute(
+        "DELETE FROM receipts WHERE rowid IN (SELECT rowid FROM receipts WHERE settled = 1 ORDER \
+         BY expires_at ASC LIMIT ?1)",
+        [to_sql(count - max)],
+    )?;
+    tx.execute(
+        "UPDATE mailbox_stats SET settled_receipts = MAX(0, settled_receipts - ?1) WHERE id = 1",
+        [to_sql(dropped as u64)],
+    )?;
     Ok(())
 }
 

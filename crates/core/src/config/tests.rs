@@ -213,9 +213,11 @@ fn a_mailbox_role_parses_with_its_defaults() {
     let override_toml = r#"
 [roles.mailbox]
 max_queue_messages = 42
+max_settled_receipts = 7
 "#;
     let override_config = toml::from_str::<SubstrateConfig>(override_toml).unwrap();
-    let expected = MailboxRole { max_queue_messages: 42, ..Default::default() };
+    let expected =
+        MailboxRole { max_queue_messages: 42, max_settled_receipts: 7, ..Default::default() };
     assert_eq!(override_config.roles.mailbox, Some(expected));
 }
 

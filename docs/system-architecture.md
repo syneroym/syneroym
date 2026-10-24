@@ -2086,7 +2086,7 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 **Store.** The mailbox stores its state in `<storage.db_dir>/mailbox.db`, an SQLite database in WAL mode. The store is plaintext. It tracks:
 - `queues`: destination DID, limits, queue lifetime deadline, newest instance certificate seen, signed endpoint record, and next republish deadline.
 - `messages`: seq, destination DID, sender DID, deposit id, size, sealed ciphertext body, deposit time, expiry time, visibility timeout, and claim count.
-- `receipts`: sender DID, deposit id, destination DID, content hash, deposit time, TTL, receipt JSON, and expiry time.
+- `receipts`: sender DID, deposit id, destination DID, content hash, deposit time, TTL, receipt JSON, expiry time, and a `settled` flag. A receipt is settled when its message body is gone (delivered, rejected, expired or evicted).
 
 **Limits and defaults.** Open mailbox settings in `[roles.mailbox]`:
 - `db_name`: SQLite file name under `storage.db_dir` (default: `"mailbox.db"`).
@@ -2094,6 +2094,7 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 - `max_queue_messages`: maximum messages per queue (default: 500).
 - `max_ttl_secs`: maximum message time-to-live (default: 604,800 seconds / 7 days).
 - `receipt_keep_secs`: how long receipts are kept after message completion or expiry (default: 1,209,600 seconds / 14 days).
+- `max_settled_receipts`: maximum receipts kept for messages the node no longer holds (default: 100,000). See "Receipts and claims limit".
 - `visibility_secs`: duration a claimed message remains hidden after claim (default: 300 seconds / 5 minutes).
 - `queue_lifetime_secs`: idle time without a registration or claim before a queue and its messages are swept (default: 2,592,000 seconds / 30 days).
 - `max_total_bytes`: total storage cap across all queues on the node (default: 1,073,741,824 bytes / 1 GiB).
@@ -2111,7 +2112,7 @@ A node with the `mailbox` role (`[roles.mailbox]` in `SubstrateConfig`) runs the
 
 **Newest-certificate rule.** The mailbox accepts `claim` and `ack` only from the instance holding the newest valid certificate seen for that queue (highest `issued_at_secs`). If two instances have identical `issued_at_secs`, the one whose `temporary_did` matches the recorded newest certificate is accepted; if neither matches, the first to arrive wins. If an instance certificate is revoked in the master anchor, requests are refused with `not_an_instance` (`-32045`). Positive revocation checks are cached for up to 15 seconds to bound lookup load during claim/ack loops. If a caller presents a certificate older than the newest seen, requests are refused with `stale_instance` (`-32046`).
 
-**Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `Receipt::Rejected` (reason `too_many_claims`) after its 5th visibility window ends.
+**Receipts and claims limit.** When a message is acknowledged as delivered or rejected, the message body is deleted, and the receipt is retained for 14 days, or for less time when the node holds more than `max_settled_receipts` settled receipts. In that case the receipts that expire first are dropped first. A deposit is never refused because of this cap. The receipt of a message the node still holds is not counted: the message limits already bound it. A receipt is at most 4 KiB, so the settled receipts need at most about 450 MB of disk, and a typical row is near 1 KB. This budget is separate from `max_total_bytes`. A sender that asks about a dropped receipt reads `unknown` and goes back to direct attempts. An identical retry with the same deposit id after the drop is stored as a new message, because the idempotency of a deposit lasts as long as its receipt. The gauge `substrate.mailbox.settled_receipts` shows the count. If a message is claimed 5 times without an acknowledgement, the mailbox closes it automatically with an unsigned `Receipt::Rejected` (reason `too_many_claims`) after its 5th visibility window ends.
 
 **Hourly republish.** While a queue is alive, the mailbox background worker republishes the receiver's signed service record to the host node's own community registry once every hour (and to the Mainline DHT when `enable_bep0044_dht` is on). The registry rejects records with older timestamps with HTTP 409 Conflict. On conflict, the mailbox retries republishing at the normal republish interval (a registry conflict skips DHT publish for that attempt until the conflict resolves).
 

@@ -9,6 +9,7 @@ use syneroym_mailbox_format::{MAX_SEALED_BYTES, OPEN_MAX_TTL_SECS};
 pub struct Limits {
     pub queue: QueueLimits,
     pub receipt_keep_secs: u64,
+    pub max_settled_receipts: u64,
     pub visibility_secs: u64,
     pub queue_lifetime_secs: u64,
     pub max_total_bytes: u64,
@@ -35,6 +36,9 @@ impl Limits {
         }
         if role.receipt_keep_secs == 0 {
             bail!("[roles.mailbox] receipt_keep_secs must be greater than 0");
+        }
+        if role.max_settled_receipts == 0 {
+            bail!("[roles.mailbox] max_settled_receipts must be greater than 0");
         }
         if role.visibility_secs == 0 {
             bail!("[roles.mailbox] visibility_secs must be greater than 0");
@@ -109,6 +113,7 @@ impl Limits {
                 max_ttl_secs: role.max_ttl_secs,
             },
             receipt_keep_secs: role.receipt_keep_secs,
+            max_settled_receipts: role.max_settled_receipts,
             visibility_secs: role.visibility_secs,
             queue_lifetime_secs: role.queue_lifetime_secs,
             max_total_bytes: role.max_total_bytes,

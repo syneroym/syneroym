@@ -11,14 +11,14 @@ use tracing::warn;
 use crate::{
     caller::Instance,
     error::MailboxError,
-    store::{MailboxStore, from_sql, queue::admit_instance, remove_message, to_sql},
+    store::{MailboxStore, ReceiptPolicy, from_sql, queue::admit_instance, remove_message, to_sql},
 };
 
 /// Closes messages that were claimed too many times without an acknowledgement.
 pub(super) fn close_over_claimed(
     tx: &Transaction,
     queue: Option<&str>,
-    keep_secs: u64,
+    policy: ReceiptPolicy,
     now: u64,
 ) -> Result<u32, MailboxError> {
     let sql = if queue.is_some() {
@@ -45,7 +45,7 @@ pub(super) fn close_over_claimed(
             tx,
             seq,
             &Receipt::unsigned_rejection(RejectCode::TooManyClaims, now),
-            keep_secs,
+            policy,
             now,
         )?;
     }
@@ -74,7 +74,7 @@ impl MailboxStore {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         let row = admit_instance(&tx, who)?;
-        close_over_claimed(&tx, Some(&row.service_id), self.limits.receipt_keep_secs, now)?;
+        close_over_claimed(&tx, Some(&row.service_id), self.receipt_policy(), now)?;
 
         let limit = max.clamp(1, MAX_CLAIM_BATCH);
         let candidates = select_claim_candidates(&tx, &row.service_id, now, limit)?;
@@ -94,7 +94,7 @@ impl MailboxStore {
                         &tx,
                         candidate.seq,
                         &Receipt::unsigned_rejection(RejectCode::Malformed, now),
-                        self.limits.receipt_keep_secs,
+                        self.receipt_policy(),
                         now,
                     )?;
                     continue;
@@ -183,7 +183,7 @@ impl MailboxStore {
             match seq {
                 None => outcomes.push(AckOutcome::NotFound),
                 Some(s) => {
-                    remove_message(&tx, s, &entry.receipt, self.limits.receipt_keep_secs, now)?;
+                    remove_message(&tx, s, &entry.receipt, self.receipt_policy(), now)?;
                     outcomes.push(AckOutcome::Stored);
                 }
             }

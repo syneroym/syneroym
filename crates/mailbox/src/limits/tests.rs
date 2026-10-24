@@ -119,3 +119,13 @@ fn invalid_db_names_are_refused() {
         assert!(err.contains("db_name"), "expected refusal for '{bad}'");
     }
 }
+
+#[test]
+fn max_settled_receipts_zero_is_refused() {
+    let role = MailboxRole { max_settled_receipts: 0, ..Default::default() };
+    let err = Limits::from_role(&role).unwrap_err().to_string();
+    assert!(err.contains("max_settled_receipts"));
+
+    let limits = Limits::from_role(&MailboxRole::default()).unwrap();
+    assert_eq!(limits.max_settled_receipts, MailboxRole::default().max_settled_receipts);
+}
