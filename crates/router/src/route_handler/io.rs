@@ -3,7 +3,6 @@
 //! Handles bidirectional copy tasks and framing adapters for bridged streams.
 
 use std::{
-    collections::HashSet,
     future::Future,
     pin::Pin,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -11,7 +10,10 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use hyper_util::rt::TokioIo;
-use syneroym_core::local_registry::{EndpointRegistry, HTTP_NATIVE_INTERFACE, SubstrateEndpoint};
+use syneroym_core::{
+    dht_registry,
+    local_registry::{EndpointRegistry, HTTP_NATIVE_INTERFACE, SubstrateEndpoint},
+};
 use syneroym_rpc::{
     Ability, AuthLevel, CallerContext, Capability, CapabilityToken, ChainVerifyOpts, ResourceUri,
     SessionContext, framing,
@@ -64,33 +66,13 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// Faithful generalization of `HandshakeVerifier::verify_preamble`'s
-/// delegation-cert revocation check (`handshake.rs:74-84`) to a UCAN chain:
-/// for each edge in the token tree, resolve the *issuer's* master anchor and
-/// reject if the *audience* DID is in its `revoked_keys`. An unresolvable
-/// anchor is treated as not-revoked, matching the delegation path (which
-/// only hard-fails on *timeout*, not on a missing anchor for a key that
-/// isn't revoked). Identical `(issuer, audience)` edges (a diamond-shaped
-/// chain reusing the same proof, or a chain that simply repeats an issuer)
-/// are resolved at most once -- `verify_chain`'s `MAX_CHAIN_NODES` cap
-/// already bounds the total edge count, but de-duplicating avoids paying for
-/// the same network round trip redundantly within that bound.
+/// Whether no edge of the UCAN chain is revoked (see
+/// [`dht_registry::chain_edges_not_revoked`]).
 pub async fn ucan_chain_not_revoked(
     token: &CapabilityToken,
     resolver: &dyn MasterAnchorResolver,
 ) -> bool {
-    let mut checked = HashSet::new();
-    for edge @ (issuer, audience) in token.chain_edges() {
-        if !checked.insert(edge) {
-            continue;
-        }
-        if let Ok(anchor) = resolver.resolve_master_anchor(issuer).await
-            && anchor.revoked_keys.iter().any(|k| k == audience)
-        {
-            return false;
-        }
-    }
-    true
+    dht_registry::chain_edges_not_revoked(&token.chain_edges(), resolver).await
 }
 
 /// Whether `res`'s named substrate node is

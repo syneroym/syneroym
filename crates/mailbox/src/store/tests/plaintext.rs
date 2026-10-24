@@ -20,7 +20,7 @@ fn the_store_holds_no_message_content_in_clear() {
     let now = receiver.cert.issued_at_secs + 10;
 
     {
-        let store = MailboxStore::open(&db_path, small_limits()).unwrap();
+        let store = MailboxStore::open(&db_path, small_limits(), None).unwrap();
         let rec = record(&receiver, NODE_DID);
         let checked = CheckedRecord::check(&rec, &receiver.instance(), NODE_DID, now).unwrap();
         store.register(&receiver.instance(), &checked, now).unwrap();

@@ -76,6 +76,7 @@ mod publication_split_tests {
             record: sample_record(),
             mailbox_key: None,
             mailbox_methods: Vec::new(),
+            mailbox_child_token: None,
         };
         let parts = public.split().unwrap();
         assert_eq!(parts.visibility, Visibility::Public);
@@ -95,6 +96,7 @@ mod publication_split_tests {
             record: sample_record(),
             mailbox_key: Some(key.clone()),
             mailbox_methods: Vec::new(),
+            mailbox_child_token: None,
         };
         let parts = public.split().unwrap();
         assert!(parts.mailbox.is_some());
@@ -109,6 +111,7 @@ mod publication_split_tests {
             record: sample_record(),
             mailbox_key: Some(key),
             mailbox_methods: methods,
+            mailbox_child_token: None,
         };
         let credentials = public.split().unwrap().mailbox.unwrap();
         assert_eq!(credentials.methods, ["greeter#greet", "api#invoke"]);
@@ -117,6 +120,7 @@ mod publication_split_tests {
             record: sample_record(),
             mailbox_key: None,
             mailbox_methods: vec!["greeter#greet".parse().unwrap()],
+            mailbox_child_token: None,
         };
         assert!(without_key.split().unwrap().mailbox.is_none());
     }
@@ -128,6 +132,7 @@ mod publication_split_tests {
             record: sample_record(),
             mailbox_key: Some(key.clone()),
             mailbox_methods: Vec::new(),
+            mailbox_child_token: None,
         };
         let credentials = public.split().unwrap().mailbox.unwrap();
         assert_eq!(credentials.secret_key, key.to_z32().as_str());

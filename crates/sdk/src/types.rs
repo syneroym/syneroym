@@ -54,6 +54,9 @@ pub enum Publication {
         /// Guest methods that accept delivery from the mailbox. Used only
         /// with `mailbox_key`.
         mailbox_methods: Vec<MailboxMethod>,
+        /// The owner's child token for the mailbox passport. Used only with
+        /// `mailbox_key`.
+        mailbox_child_token: Option<String>,
     },
     /// Registered with the local registry only. The record's own
     /// `is_private` must be `true`.
@@ -90,10 +93,11 @@ impl Publication {
                     mailbox: None,
                 });
             }
-            Self::Public { record, mailbox_key, mailbox_methods } => {
+            Self::Public { record, mailbox_key, mailbox_methods, mailbox_child_token } => {
                 let mailbox = mailbox_key.map(|key| MailboxCredentials {
                     secret_key: key.to_z32().to_string(),
                     methods: mailbox_methods.iter().map(ToString::to_string).collect(),
+                    child_token: mailbox_child_token,
                 });
                 (Visibility::Public, record, mailbox)
             }

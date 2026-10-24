@@ -3,18 +3,27 @@
 use std::{collections::HashMap, sync::Mutex};
 
 use anyhow::anyhow;
+use serde_json::{Map, Value};
 use syneroym_core::{
     dht_registry::{
         EndpointInfo, EndpointMailbox, EndpointType, MasterAnchorPayload, MasterAnchorResolver,
         SignedEndpointInfo,
     },
+    host_identity::HostIdentity,
     mailbox::QueueLimits,
 };
 use syneroym_identity::{
-    DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
+    DelegationCertificate, Identity,
+    delegation::SCOPE_SERVICE_INSTANCE,
+    substrate,
+    substrate::{SubstrateIdentityState, SubstrateIdentityStatus},
 };
 use syneroym_mailbox_format::{
     MailboxPublicKey, MailboxSecretKey, MessageContent, Recipient, Sealed, Sender, seal,
+};
+use syneroym_passport::{
+    CapabilityToken, Lease, LeaseStore, MAILBOX_USE, Proof, Registrar, SignerBinding, child_token,
+    issue_passport,
 };
 use syneroym_rpc::{AuthLevel, CallerContext, CallerProof, SessionContext};
 
@@ -173,4 +182,109 @@ pub(crate) fn small_limits() -> Limits {
 
 pub(crate) fn store_with(limits: Limits) -> crate::store::MailboxStore {
     crate::store::MailboxStore::open_in_memory(limits).unwrap()
+}
+
+/// A mailbox host whose passport root is a key the test holds.
+pub(crate) struct Operator {
+    pub root: Identity,
+    pub host: HostIdentity,
+}
+
+impl Operator {
+    /// A host with no controller: the node key is the passport root.
+    pub(crate) fn unowned() -> Self {
+        let root = Identity::generate().unwrap();
+        let host = HostIdentity::unowned(substrate::derive_did_key(&root.public_key()));
+        Self { root, host }
+    }
+
+    /// A host with a verified controller: the controller is the passport
+    /// root, and the node DID is another key.
+    pub(crate) fn controlled() -> Self {
+        let root = Identity::generate().unwrap();
+        let node = Identity::generate().unwrap();
+        let state = SubstrateIdentityState {
+            did: substrate::derive_did_key(&node.public_key()),
+            status: SubstrateIdentityStatus::Verified,
+            controller: Some(substrate::derive_did_key(&root.public_key())),
+        };
+        Self { root, host: HostIdentity::new(&state) }
+    }
+
+    /// A mailbox passport for `owner`, with the given facts.
+    pub(crate) fn passport(
+        &self,
+        owner: &Identity,
+        facts: &[(&str, u64)],
+        life_secs: u64,
+        now: u64,
+    ) -> CapabilityToken {
+        let limits: Map<String, Value> =
+            facts.iter().map(|&(k, v)| (k.to_string(), Value::from(v))).collect();
+        issue_passport(
+            &self.root,
+            &self.host.node_did,
+            &MAILBOX_USE,
+            &substrate::derive_did_key(&owner.public_key()),
+            limits,
+            life_secs,
+            now,
+        )
+        .unwrap()
+    }
+}
+
+/// The owner's child token for `member`, as JSON.
+pub(crate) fn child_for(
+    owner: &Identity,
+    passport: &CapabilityToken,
+    member: &Member,
+    life_secs: u64,
+    now: u64,
+) -> String {
+    let token = child_token(owner, passport, &member.service_id(), life_secs, now).unwrap();
+    serde_json::to_string(&token).unwrap()
+}
+
+/// Writes leases without the network: the offline checks and the grant of a
+/// `Registrar`, for tests of the store.
+pub(crate) struct LeaseFixture {
+    operator: Operator,
+    owner: Identity,
+    registrar: Registrar,
+}
+
+impl LeaseFixture {
+    pub(crate) fn new() -> Self {
+        let operator = Operator::unowned();
+        let registrar = Registrar::new(
+            MAILBOX_USE,
+            operator.host.node_did.clone(),
+            vec![operator.host.passport_root().to_string()],
+            LeaseStore::open_in_memory(&MAILBOX_USE).unwrap(),
+        )
+        .unwrap();
+        Self { operator, owner: Identity::generate().unwrap(), registrar }
+    }
+
+    pub(crate) fn leases(&self) -> LeaseStore {
+        self.registrar.leases().clone()
+    }
+
+    /// A lease for `member` that lives `life_secs` from `now`.
+    pub(crate) fn grant(
+        &self,
+        member: &Member,
+        facts: &[(&str, u64)],
+        life_secs: u64,
+        now: u64,
+    ) -> Lease {
+        let passport = self.operator.passport(&self.owner, facts, life_secs, now);
+        let token =
+            child_token(&self.owner, &passport, &member.service_id(), life_secs, now).unwrap();
+        let proof = Proof::Transport { verified_did: member.cert.temporary_did.clone() };
+        let binding = SignerBinding::InstanceCertificate(member.cert.clone());
+        let checked = self.registrar.check(&token, &proof, &binding, now).unwrap();
+        self.registrar.grant(checked, now).unwrap()
+    }
 }

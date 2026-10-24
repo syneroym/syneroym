@@ -9,7 +9,8 @@ use std::{
 use blake3::Hasher;
 use rusqlite::{Connection, Transaction};
 use syneroym_core::mailbox::QueueLimits;
-use syneroym_mailbox_format::Receipt;
+use syneroym_mailbox_format::{DEDICATED_MAX_TTL_SECS, Receipt};
+use syneroym_passport::{Lease, LeaseStore, facts};
 use tokio::task;
 
 use crate::{error::MailboxError, limits::Limits};
@@ -26,10 +27,16 @@ mod tests;
 pub(crate) struct MailboxStore {
     conn: Mutex<Connection>,
     limits: Limits,
+    /// The passport leases. Without them every queue has the open limits.
+    leases: Option<LeaseStore>,
 }
 
 impl MailboxStore {
-    pub(crate) fn open(path: &Path, limits: Limits) -> anyhow::Result<Self> {
+    pub(crate) fn open(
+        path: &Path,
+        limits: Limits,
+        leases: Option<LeaseStore>,
+    ) -> anyhow::Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -38,18 +45,54 @@ impl MailboxStore {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         init_schema(&conn)?;
         settled::trim_at_open(&mut conn, limits.max_settled_receipts)?;
-        Ok(Self { conn: Mutex::new(conn), limits })
+        Ok(Self { conn: Mutex::new(conn), limits, leases })
     }
 
     #[cfg(test)]
     pub(crate) fn open_in_memory(limits: Limits) -> anyhow::Result<Self> {
+        Self::open_in_memory_with_leases(limits, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_in_memory_with_leases(
+        limits: Limits,
+        leases: Option<LeaseStore>,
+    ) -> anyhow::Result<Self> {
         let conn = Connection::open_in_memory()?;
         init_schema(&conn)?;
-        Ok(Self { conn: Mutex::new(conn), limits })
+        Ok(Self { conn: Mutex::new(conn), limits, leases })
     }
 
     pub(crate) fn limits(&self) -> &Limits {
         &self.limits
+    }
+
+    /// The limits of `service_id`'s queue now: the open limits, raised by
+    /// the facts of a running lease for that master. A fact below the open
+    /// limit is ignored, so a passport never makes a queue worse than none,
+    /// and `max_ttl_secs` is cut to what a dedicated mailbox may give.
+    pub(crate) fn queue_limits(&self, service_id: &str, now: u64) -> QueueLimits {
+        let open = self.limits.queue;
+        let Some(lease) = self.lease_for(service_id, now) else { return open };
+        let raise = |open: u64, fact: Option<u64>| fact.map_or(open, |f| f.max(open));
+        QueueLimits {
+            max_bytes: raise(open.max_bytes, lease.limit(facts::MAX_BYTES)),
+            max_messages: u32::try_from(raise(
+                u64::from(open.max_messages),
+                lease.limit(facts::MAX_MESSAGES),
+            ))
+            .unwrap_or(u32::MAX),
+            max_ttl_secs: raise(
+                open.max_ttl_secs,
+                lease.limit(facts::MAX_TTL_SECS).map(|t| t.min(DEDICATED_MAX_TTL_SECS)),
+            ),
+        }
+    }
+
+    /// The running lease of `service_id`, from memory. The lease store never
+    /// takes the mailbox lock, so the two locks cannot wait on each other.
+    pub(crate) fn lease_for(&self, service_id: &str, now: u64) -> Option<Lease> {
+        self.leases.as_ref()?.lease_for(service_id, now)
     }
 
     pub(super) fn receipt_policy(&self) -> ReceiptPolicy {
@@ -73,9 +116,6 @@ fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             record_not_after    INTEGER NOT NULL,
             newest_issued_at    INTEGER NOT NULL,
             newest_instance_did TEXT NOT NULL,
-            max_bytes           INTEGER NOT NULL,
-            max_messages        INTEGER NOT NULL,
-            max_ttl_secs        INTEGER NOT NULL,
             bytes               INTEGER NOT NULL DEFAULT 0,
             messages            INTEGER NOT NULL DEFAULT 0,
             last_active_at      INTEGER NOT NULL,
@@ -162,7 +202,6 @@ pub(super) struct QueueRow {
     pub(super) record_signed_at: u64,
     pub(super) newest_issued_at: u64,
     pub(super) newest_instance_did: String,
-    pub(super) limits: QueueLimits,
     pub(super) bytes: u64,
     pub(super) messages: u64,
 }
@@ -172,32 +211,18 @@ pub(super) fn queue_row(
     service_id: &str,
 ) -> Result<Option<QueueRow>, MailboxError> {
     let mut stmt = tx.prepare(
-        "SELECT service_id, record_signed_at, newest_issued_at, newest_instance_did, max_bytes, \
-         max_messages, max_ttl_secs, bytes, messages FROM queues WHERE service_id = ?1",
+        "SELECT service_id, record_signed_at, newest_issued_at, newest_instance_did, bytes, \
+         messages FROM queues WHERE service_id = ?1",
     )?;
     let mut rows = stmt.query([service_id])?;
     if let Some(r) = rows.next()? {
-        let sid: String = r.get(0)?;
-        let record_signed_at: i64 = r.get(1)?;
-        let newest_issued_at: i64 = r.get(2)?;
-        let newest_instance_did: String = r.get(3)?;
-        let max_bytes: i64 = r.get(4)?;
-        let max_messages: i64 = r.get(5)?;
-        let max_ttl_secs: i64 = r.get(6)?;
-        let bytes: i64 = r.get(7)?;
-        let messages: i64 = r.get(8)?;
         Ok(Some(QueueRow {
-            service_id: sid,
-            record_signed_at: from_sql(record_signed_at),
-            newest_issued_at: from_sql(newest_issued_at),
-            newest_instance_did,
-            limits: QueueLimits {
-                max_bytes: from_sql(max_bytes),
-                max_messages: from_sql(max_messages) as u32,
-                max_ttl_secs: from_sql(max_ttl_secs),
-            },
-            bytes: from_sql(bytes),
-            messages: from_sql(messages),
+            service_id: r.get(0)?,
+            record_signed_at: from_sql(r.get(1)?),
+            newest_issued_at: from_sql(r.get(2)?),
+            newest_instance_did: r.get(3)?,
+            bytes: from_sql(r.get(4)?),
+            messages: from_sql(r.get(5)?),
         }))
     } else {
         Ok(None)

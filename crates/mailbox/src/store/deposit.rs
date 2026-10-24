@@ -1,7 +1,7 @@
 //! Storage operations for deposits and receipt status.
 
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior};
-use syneroym_core::mailbox::{MAX_STATUS_BATCH, StatusEntry};
+use syneroym_core::mailbox::{MAX_STATUS_BATCH, QueueLimits, StatusEntry};
 use syneroym_mailbox_format::{Deposit, DepositError, DepositId, Receipt};
 use tracing::warn;
 
@@ -36,7 +36,8 @@ impl MailboxStore {
         let row = queue_row(&tx, &deposit.destination)?
             .ok_or_else(|| MailboxError::UnknownDestination(deposit.destination.clone()))?;
 
-        deposit.check(row.limits.max_ttl_secs).map_err(|e| match e {
+        let limits = self.queue_limits(&deposit.destination, now);
+        deposit.check(limits.max_ttl_secs).map_err(|e| match e {
             DepositError::TooLarge { bytes, max } => MailboxError::TooLarge { bytes, max },
             DepositError::TtlTooLong { ttl_secs, max_secs } => {
                 MailboxError::TtlTooLong { ttl_secs, max_secs }
@@ -72,7 +73,7 @@ impl MailboxStore {
             return Err(MailboxError::DuplicateDeposit(id));
         }
 
-        let evicted = make_room(&tx, &row, sender, size, now, self.receipt_policy())?;
+        let evicted = make_room(&tx, &row, limits, sender, size, now, self.receipt_policy())?;
 
         let total: i64 =
             tx.query_row("SELECT total_bytes FROM mailbox_stats WHERE id = 1", [], |r| r.get(0))?;
@@ -225,6 +226,7 @@ fn check_existing_receipt(
 fn make_room(
     tx: &Transaction,
     row: &QueueRow,
+    limits: QueueLimits,
     depositor: &str,
     size: usize,
     now: u64,
@@ -235,8 +237,8 @@ fn make_room(
     let mut evicted = 0;
     let size_u64 = size as u64;
 
-    while messages.saturating_add(1) > u64::from(row.limits.max_messages)
-        || bytes.saturating_add(size_u64) > row.limits.max_bytes
+    while messages.saturating_add(1) > u64::from(limits.max_messages)
+        || bytes.saturating_add(size_u64) > limits.max_bytes
     {
         let top = select_eviction_candidate(tx, &row.service_id)?;
         match top {

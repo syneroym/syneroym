@@ -24,6 +24,8 @@ pub struct CertifiedMembers {
     pub registry_certificates: BTreeMap<ServiceId, String>,
     /// Only members whose service names a mailbox.
     pub mailbox_keys: BTreeMap<ServiceId, MailboxSecretKey>,
+    /// Only members whose mailbox host has a passport.
+    pub mailbox_child_tokens: BTreeMap<ServiceId, String>,
 }
 
 impl CertifiedMembers {
@@ -33,7 +35,12 @@ impl CertifiedMembers {
         instance_certificates: BTreeMap<ServiceId, String>,
         registry_certificates: BTreeMap<ServiceId, String>,
     ) -> Self {
-        Self { instance_certificates, registry_certificates, mailbox_keys: BTreeMap::new() }
+        Self {
+            instance_certificates,
+            registry_certificates,
+            mailbox_keys: BTreeMap::new(),
+            mailbox_child_tokens: BTreeMap::new(),
+        }
     }
 }
 

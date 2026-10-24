@@ -8,6 +8,7 @@ use serde_json::json;
 use syneroym_core::{
     config::MailboxRole,
     dht_registry::EndpointMailbox,
+    host_identity::HostIdentity,
     mailbox::{
         AckAnswer, AckOutcome, ClaimAnswer, METHOD_ACK, METHOD_CLAIM, METHOD_REGISTER,
         METHOD_STATUS, StatusAnswer,
@@ -83,7 +84,13 @@ async fn build_sender_node(
     let dir = tempfile::tempdir().unwrap();
     let mailbox_did = fresh_did();
     let mailbox_anchors = Arc::new(TestAnchors::default());
-    let service = MailboxService::open(&role, dir.path(), &mailbox_did, mailbox_anchors).unwrap();
+    let service = MailboxService::open(
+        &role,
+        dir.path(),
+        &HostIdentity::unowned(mailbox_did.clone()),
+        mailbox_anchors,
+    )
+    .unwrap();
     let mailbox = Arc::new(CountingMailbox::new(service));
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     native_dispatch.insert(mailbox_did.clone(), mailbox.clone() as Arc<dyn NativeService>);

@@ -21,6 +21,7 @@ pub(super) enum Note {
     MailboxFull,
     ServedRecordDiffers,
     NotStarted,
+    PassportRefused,
 }
 
 impl Note {
@@ -38,6 +39,7 @@ impl Note {
             Self::MailboxFull => "mailbox_full",
             Self::ServedRecordDiffers => "served_record_differs",
             Self::NotStarted => "not_started",
+            Self::PassportRefused => "passport_refused",
         }
     }
 
@@ -73,6 +75,9 @@ impl Note {
             Self::NotStarted => {
                 "the service is not started in this process yet (a restart before its next \
                  deploy); its messages wait at the mailbox"
+            }
+            Self::PassportRefused => {
+                "the mailbox refused the owner's passport; the queue has the open limits"
             }
         }
     }

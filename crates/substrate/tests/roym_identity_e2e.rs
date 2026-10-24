@@ -216,6 +216,7 @@ async fn deploy_roym_app() -> RoymDeployment {
                 instance_certificates: instance_certs,
                 registry_certificates: registry_certs,
                 mailbox_keys: BTreeMap::new(),
+                mailbox_child_tokens: BTreeMap::new(),
             },
             emit_bindings: true,
             generation: 0,

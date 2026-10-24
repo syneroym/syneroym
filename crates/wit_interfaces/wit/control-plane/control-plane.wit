@@ -185,6 +185,11 @@ interface orchestrator {
         /// the mailbox. Conversation `deliver` and `group-push` are always
         /// accepted and are not listed.
         methods: list<string>,
+        /// The owner's child token for this member master (JSON of a
+        /// capability token whose one proof is the mailbox passport). The
+        /// receiver shows it at `register` to get the passport's raised
+        /// limits.
+        child-token: option<string>,
     }
 
     /// A comprehensive manifest for deploying a service on the substrate.
@@ -643,12 +648,14 @@ interface security {
     rotate-kek: func(new-kek-hex: string) -> result<_, string>;
     set-secret: func(service-id: string, key: string, value: list<u8>) -> result<_, string>;
 
-    /// One running lease of this node's passport relay.
-    record relay-lease {
+    /// One running lease of a passport service of this node: the relay or
+    /// the mailbox.
+    record passport-lease {
         /// 64 lowercase hex characters.
         passport-id: string,
         owner-did: string,
-        /// The node DID admitted by this lease.
+        /// The DID admitted by this lease: a node DID for the relay, a
+        /// member master DID for the mailbox.
         subject: string,
         /// Unix seconds.
         lease-ends-at: u64,
@@ -661,7 +668,13 @@ interface security {
     /// owner (`substrate/admin`) only.
     relay-passport-deny: func(passport-id: string) -> result<u64, string>;
     /// The running leases of this node's relay. Node owner only.
-    relay-passport-leases: func() -> result<list<relay-lease>, string>;
+    relay-passport-leases: func() -> result<list<passport-lease>, string>;
+
+    /// Deny a mailbox passport by id: refuse it from now on and end its
+    /// leases. Returns how many running leases ended. Node owner only.
+    mailbox-passport-deny: func(passport-id: string) -> result<u64, string>;
+    /// The running leases of this node's mailbox. Node owner only.
+    mailbox-passport-leases: func() -> result<list<passport-lease>, string>;
 
     /// The params of `home-relay-set`.
     record home-relay-set-request {

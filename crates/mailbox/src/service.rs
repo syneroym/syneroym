@@ -15,6 +15,7 @@ use serde_json::Value;
 use syneroym_core::{
     config::MailboxRole,
     dht_registry::{MasterAnchorResolver, RegistryClient},
+    host_identity::HostIdentity,
     mailbox::{
         AckAnswer, AckParams, ClaimParams, InfoAnswer, MAX_CLAIM_BATCH, MAX_CLAIMS, METHOD_ACK,
         METHOD_CLAIM, METHOD_DEPOSIT, METHOD_INFO, METHOD_REGISTER, METHOD_STATUS,
@@ -25,16 +26,17 @@ use syneroym_core::{
 use syneroym_mailbox_format::{
     Deposit, DepositId, MAX_SEALED_BYTES, SealedBytes, SealedBytesParseError,
 };
-use syneroym_passport::RequestLimiter;
+use syneroym_passport::{LeaseStore, RequestLimiter};
 use syneroym_rpc::{
     CallerContext, NativeInvocation, NativeResponse, NativeService, RpcError, RpcResult,
 };
 use tokio::sync::Notify;
 
 use crate::{
-    caller::{Instance, check_not_revoked, instance_of, sender_of},
+    caller::{Instance, check_not_revoked, instance_certificate, instance_of, sender_of},
     error::MailboxError,
     limits::Limits,
+    passport::MailboxPassports,
     record::CheckedRecord,
     store::{MailboxStore, blocking},
     worker::MailboxWorker,
@@ -48,6 +50,7 @@ pub struct MailboxService {
     node_did: String,
     store: Arc<MailboxStore>,
     anchors: Arc<dyn MasterAnchorResolver>,
+    passports: MailboxPassports,
     per_sender: RequestLimiter<String>,
     total: RequestLimiter<()>,
     per_master_register: RequestLimiter<String>,
@@ -74,12 +77,15 @@ impl MailboxService {
     pub fn open(
         role: &MailboxRole,
         db_dir: &Path,
-        node_did: &str,
+        host: &HostIdentity,
         anchors: Arc<dyn MasterAnchorResolver>,
     ) -> anyhow::Result<Self> {
         let limits = Limits::from_role(role)?;
         let db_path = db_dir.join(&role.db_name);
-        let store = Arc::new(MailboxStore::open(&db_path, limits)?);
+        let passports =
+            MailboxPassports::open(db_dir, host, anchors.clone(), syneroym_passport::now_secs())?;
+        let store =
+            Arc::new(MailboxStore::open(&db_path, limits, Some(passports.leases().clone()))?);
         let per_sender = RequestLimiter::new(role.deposits_per_minute_per_sender, 10_000);
         let total = RequestLimiter::new(role.deposits_per_minute_total, 1);
         let per_master_register = RequestLimiter::new(role.register_per_minute_per_master, 10_000);
@@ -92,9 +98,10 @@ impl MailboxService {
         let republish_every_secs = role.republish_interval_secs;
 
         Ok(Self {
-            node_did: node_did.to_string(),
+            node_did: host.node_did.clone(),
             store,
             anchors,
+            passports,
             per_sender,
             total,
             per_master_register,
@@ -106,6 +113,12 @@ impl MailboxService {
             republish_every_secs,
             revocation_cache: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The passport leases, for the control plane: deny and list.
+    #[must_use]
+    pub fn passport_leases(&self) -> LeaseStore {
+        self.passports.leases().clone()
     }
 
     /// Creates the background worker loop for this mailbox service.
@@ -194,6 +207,17 @@ impl MailboxService {
         self.check_revocation(&who, now).await?;
         let p: RegisterParams = parse(params)?;
         let record = CheckedRecord::check(&p.record, &who, &self.node_did, now)?;
+        // The network lookups come after every offline check. A lease is
+        // written even if the store then refuses the register (for example
+        // `stale_instance`): the lease is keyed on the master, which a newer
+        // instance of the same master also uses.
+        if let Some(token) = &p.child_token {
+            let cert = instance_certificate(caller)?;
+            if let Err(e) = self.passports.admit(&who, cert, token, now).await {
+                counter!("substrate.mailbox.register_refused", "kind" => e.kind()).increment(1);
+                return Err(e);
+            }
+        }
         let r = blocking(&self.store, move |s| s.register(&who, &record, now)).await?;
         if r.publish_now {
             self.wake.notify_one();

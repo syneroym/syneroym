@@ -291,7 +291,12 @@ async fn list_distinguishes_a_private_service_from_a_public_one() {
                 host: "127.0.0.1".to_string(),
                 port: 45006,
             }],
-            Publication::Public { record, mailbox_key: None, mailbox_methods: Vec::new() },
+            Publication::Public {
+                record,
+                mailbox_key: None,
+                mailbox_methods: Vec::new(),
+                mailbox_child_token: None,
+            },
             None,
         )
         .await

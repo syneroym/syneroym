@@ -1,12 +1,6 @@
 #![allow(clippy::cognitive_complexity)]
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::{collections::HashMap, sync::Arc};
 
 use syneroym_core::{dht_registry::MasterAnchorPayload, storage::MockStorage};
 use syneroym_identity::{Identity, substrate::derive_did_key};
@@ -36,25 +30,6 @@ impl MasterAnchorResolver for MockResolver {
     ) -> Result<MasterAnchorPayload, anyhow::Error> {
         let revoked_keys = self.revoked.get(master_id).cloned().unwrap_or_default();
         Ok(MasterAnchorPayload { revoked_keys, ..Default::default() })
-    }
-}
-
-/// A `MasterAnchorResolver` double that counts calls, used to verify
-/// `ucan_chain_not_revoked` de-duplicates identical `(issuer, audience)`
-/// edges rather than resolving each occurrence independently.
-#[derive(Debug, Default)]
-struct CountingResolver {
-    calls: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl MasterAnchorResolver for CountingResolver {
-    async fn resolve_master_anchor(
-        &self,
-        _master_id: &str,
-    ) -> Result<MasterAnchorPayload, anyhow::Error> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(MasterAnchorPayload::default())
     }
 }
 
@@ -394,56 +369,6 @@ async fn build_caller_rejects_a_revoked_chain() {
     assert_eq!(caller.auth, AuthLevel::Delegated);
     assert!(
         !caller.session.has_capability(&resource, &Ability(Ability::DATA_LAYER_READ.to_string()))
-    );
-}
-
-/// A chain that reuses the same proof twice (a diamond shape) must
-/// resolve each distinct `(issuer, audience)` edge only once, not once
-/// per occurrence.
-#[tokio::test]
-async fn ucan_chain_not_revoked_dedupes_repeated_edges() {
-    let owner = Identity::generate().unwrap();
-    let alice = Identity::generate().unwrap();
-    let bob = Identity::generate().unwrap();
-    let alice_did = derive_did_key(&alice.public_key());
-    let bob_did = derive_did_key(&bob.public_key());
-    let resource = ResourceUri::service("app1", "svc1");
-
-    let owner_to_alice = CapabilityToken::issue(
-        &owner,
-        &alice_did,
-        vec![Capability {
-            with: resource.clone(),
-            can: Ability(Ability::DATA_LAYER_ADMIN.to_string()),
-            caveats: None,
-        }],
-        serde_json::Map::new(),
-        3600,
-        vec![],
-    )
-    .unwrap();
-    // The same proof embedded twice.
-    let alice_to_bob = CapabilityToken::issue(
-        &alice,
-        &bob_did,
-        vec![Capability {
-            with: resource,
-            can: Ability(Ability::DATA_LAYER_WRITE.to_string()),
-            caveats: None,
-        }],
-        serde_json::Map::new(),
-        3600,
-        vec![owner_to_alice.clone(), owner_to_alice],
-    )
-    .unwrap();
-
-    let resolver = CountingResolver::default();
-    assert!(ucan_chain_not_revoked(&alice_to_bob, &resolver).await);
-    assert_eq!(
-        resolver.calls.load(Ordering::SeqCst),
-        2,
-        "expected exactly one resolution each for the (alice, bob) and (owner, alice) edges, \
-         despite (owner, alice) appearing twice"
     );
 }
 

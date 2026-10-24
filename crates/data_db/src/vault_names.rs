@@ -7,6 +7,9 @@ pub const RESERVED_PREFIX: &str = "syneroym.";
 /// The member's mailbox secret key (32-byte seed).
 pub const MAILBOX_SECRET: &str = "syneroym.mailbox-secret";
 
+/// The owner's child token for the mailbox passport of this service (JSON).
+pub const MAILBOX_PASSPORT: &str = "syneroym.mailbox-passport";
+
 #[must_use]
 pub fn is_reserved(name: &str) -> bool {
     name.starts_with(RESERVED_PREFIX)
@@ -19,6 +22,11 @@ mod tests {
     #[test]
     fn the_mailbox_secret_name_is_reserved() {
         assert!(is_reserved(MAILBOX_SECRET));
+    }
+
+    #[test]
+    fn the_mailbox_passport_name_is_reserved() {
+        assert!(is_reserved(MAILBOX_PASSPORT));
     }
 
     #[test]

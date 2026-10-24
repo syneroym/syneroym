@@ -112,29 +112,34 @@ pub(super) async fn setup_connection_router(
         );
     }
 
-    setup_router(config, &keys.host.node_did, keys.secret_key, relay_leases).await
+    setup_router(config, &keys.host, keys.secret_key, relay_leases).await
+}
+
+/// The node's own `orchestrator` and `security` interfaces.
+async fn register_node_interfaces(
+    endpoint_registry: &EndpointRegistry,
+    service_id: &str,
+) -> anyhow::Result<()> {
+    debug!("Registering native SubstrateService at {}", service_id);
+    for interface in ["orchestrator", "security"] {
+        let endpoint = SubstrateEndpoint::NativeHostChannel { service_id: service_id.to_string() };
+        endpoint_registry.register(service_id.to_string(), interface.to_string(), endpoint).await?;
+    }
+    Ok(())
 }
 
 async fn setup_router(
     config: &SubstrateConfig,
-    service_id: &str,
+    host: &HostIdentity,
     secret_key: [u8; 32],
     relay_leases: Option<LeaseStore>,
 ) -> anyhow::Result<RouterSetup> {
+    let service_id = host.node_did.as_str();
     let relay_source = HomeRelaySource::from_config(config)?;
     let data_store = registry_store::init_store(config).await?;
     let endpoint_registry = EndpointRegistry::new(data_store).await?;
 
-    debug!("Registering native SubstrateService at {}", service_id);
-    let endpoint = SubstrateEndpoint::NativeHostChannel { service_id: service_id.to_string() };
-    endpoint_registry
-        .register(service_id.to_string(), "orchestrator".to_string(), endpoint)
-        .await?;
-    let security_endpoint =
-        SubstrateEndpoint::NativeHostChannel { service_id: service_id.to_string() };
-    endpoint_registry
-        .register(service_id.to_string(), "security".to_string(), security_endpoint)
-        .await?;
+    register_node_interfaces(&endpoint_registry, service_id).await?;
 
     let (route_handler_deps, shared) =
         build_route_handler_deps(config, service_id, &endpoint_registry, secret_key).await?;
@@ -144,7 +149,11 @@ async fn setup_router(
     }
 
     let supervisor = register_supervisor(config, service_id, &endpoint_registry, &shared).await?;
-    let mailbox = init_mailbox(config, service_id, &shared, &endpoint_registry).await?;
+    let mailbox = init_mailbox(config, host, &shared, &endpoint_registry).await?;
+    #[cfg(feature = "mailbox")]
+    if let (Some(control_plane), Some(parts)) = (&control_plane, &mailbox) {
+        control_plane.set_mailbox_passports(parts.leases.clone());
+    }
 
     #[cfg(feature = "dual_build_fixture")]
     let fixture_factory = init_dual_build_fixture(&shared, &endpoint_registry, service_id).await?;
