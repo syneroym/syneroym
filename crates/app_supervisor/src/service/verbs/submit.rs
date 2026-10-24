@@ -372,7 +372,7 @@ impl SupervisorService {
             } else {
                 ""
             };
-            RpcError::InternalError(format!("{e:#}{hint}; nothing was recorded"))
+            RpcError::InternalError(format!("{e:#}{hint}; the desired state was not stored"))
         })?;
         for pin in pins {
             tracing::info!(

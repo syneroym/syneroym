@@ -148,6 +148,25 @@ impl SignedEndpointInfo {
     /// substrate stores whatever signed blob it was given at deploy and
     /// replays it verbatim; it has no way to re-sign one.
     pub fn verify(&self) -> Result<Timestamp, anyhow::Error> {
+        let timestamp = self.verify_signature()?;
+        let now = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if self.info.not_after < now {
+            return Err(anyhow::anyhow!(
+                "endpoint record expired at {}, now {now}",
+                self.info.not_after
+            ));
+        }
+        Ok(timestamp)
+    }
+
+    /// [`Self::verify`] without the `not_after` check: the packet is signed by
+    /// the key of the `service_id` and holds this exact `EndpointInfo`. For a
+    /// reader that only wants to know what the signer once chose, such as the
+    /// mailbox a deploy keeps.
+    pub fn verify_signature(&self) -> Result<Timestamp, anyhow::Error> {
         let pubkey = substrate::resolve_did_key(&self.info.service_id)
             .map_err(|e| anyhow::anyhow!("Failed to parse public key from service_id: {e}"))?;
         let expected_pkarr_pubkey = PublicKey::try_from(pubkey.as_bytes())
@@ -183,17 +202,6 @@ impl SignedEndpointInfo {
 
         if !found_txt {
             return Err(anyhow::anyhow!("pkarr packet does not contain this exact EndpointInfo"));
-        }
-
-        let now = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        if self.info.not_after < now {
-            return Err(anyhow::anyhow!(
-                "endpoint record expired at {}, now {now}",
-                self.info.not_after
-            ));
         }
 
         Ok(signed_packet.timestamp())

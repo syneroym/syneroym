@@ -7,6 +7,7 @@ use std::{collections::BTreeSet, fmt};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
+use futures::future::join_all;
 use reqwest::{Client, StatusCode};
 use syneroym_app_orchestration::models::{
     DeploymentPlan, LogicalServiceRef, MailboxChoice, ServiceId,
@@ -86,15 +87,18 @@ impl MailboxDirectory for RegistryMailboxDirectory {
     }
 }
 
-/// The mailbox `record` names, if it is a record of `service_id` that
-/// verifies. A wrong or hostile registry must not decide by lying.
+/// The mailbox `record` names, if it is a record of `service_id` with a good
+/// signature. A wrong or hostile registry must not decide by lying. A record
+/// past its `not_after` still counts: the mailbox is the choice of the
+/// signer, and a deploy that keeps the earlier mailbox must not forget it
+/// only because the record was not renewed.
 #[must_use]
 pub fn verified_mailbox<'a>(
     service_id: &str,
     record: Option<&'a SignedEndpointInfo>,
 ) -> Option<&'a EndpointMailbox> {
     record
-        .filter(|r| r.verify().is_ok() && r.info.service_id == service_id)
+        .filter(|r| r.verify_signature().is_ok() && r.info.service_id == service_id)
         .and_then(|r| r.info.mailbox.as_ref())
 }
 
@@ -249,8 +253,14 @@ async fn first_named_mailbox(
 ) -> Result<Option<ServiceId>> {
     let mut members: Vec<_> = plan.services.iter().filter(|s| &s.logical_ref == service).collect();
     members.sort_by_key(|s| s.member_index);
-    for member in members {
-        if let Some(host) = directory.named_mailbox(member.service_id.as_str()).await? {
+    // All members are asked at once, so a service with many members waits
+    // for one lookup and not for the sum of them. The first member in order
+    // that names a mailbox decides.
+    let answers =
+        join_all(members.iter().map(|member| directory.named_mailbox(member.service_id.as_str())))
+            .await;
+    for answer in answers {
+        if let Some(host) = answer? {
             return Ok(Some(host));
         }
     }

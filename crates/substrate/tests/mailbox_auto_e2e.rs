@@ -21,7 +21,7 @@ use crate::common::SubstrateNode;
 
 mod common;
 
-const INSTANCE_ID: &str = "c7-auto";
+const INSTANCE_ID: &str = "auto-pin";
 
 #[tokio::test]
 async fn a_submit_with_auto_pins_a_listed_mailbox_and_its_record_names_it() {
@@ -55,7 +55,7 @@ async fn a_submit_with_auto_pins_a_listed_mailbox_and_its_record_names_it() {
     assert_eq!(list.entries[0].service_id, did);
 
     // One public service with `mailbox = "auto"`, placed on the node itself.
-    let mut manifest = common::one_service_manifest("syneroym:c7-auto-app");
+    let mut manifest = common::one_service_manifest("syneroym:auto-pin-app");
     let backend = manifest.services.get_mut(&LogicalServiceName::new("backend")).unwrap();
     backend.config.visibility = Visibility::Public;
     backend.mailbox = Some(MailboxChoice::Auto);

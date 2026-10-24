@@ -17,6 +17,7 @@ use crate::{error::MailboxError, limits::Limits};
 pub(crate) mod claim;
 pub(crate) mod deposit;
 pub(crate) mod queue;
+pub(crate) mod settled;
 pub(crate) mod sweep;
 
 #[cfg(test)]
@@ -32,10 +33,11 @@ impl MailboxStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         init_schema(&conn)?;
+        settled::trim_at_open(&mut conn, limits.max_settled_receipts)?;
         Ok(Self { conn: Mutex::new(conn), limits })
     }
 
@@ -108,7 +110,7 @@ fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             PRIMARY KEY (sender, deposit_id)
         );
         CREATE INDEX IF NOT EXISTS receipts_expiry ON receipts (expires_at);
-        CREATE INDEX IF NOT EXISTS receipts_settled ON receipts (settled, expires_at);
+        CREATE INDEX IF NOT EXISTS receipts_settled ON receipts (settled, sender, expires_at);
         CREATE TABLE IF NOT EXISTS mailbox_stats (
             id               INTEGER PRIMARY KEY CHECK (id = 1),
             total_bytes      INTEGER NOT NULL DEFAULT 0,
@@ -258,30 +260,8 @@ pub(super) fn remove_message(
             "UPDATE mailbox_stats SET settled_receipts = settled_receipts + 1 WHERE id = 1",
             [],
         )?;
-        drop_settled_over_cap(tx, policy.max_settled)?;
+        settled::drop_settled_over_cap(tx, policy.max_settled)?;
     }
-    Ok(())
-}
-
-/// Drops the settled receipts that expire first until at most `max` are left.
-/// A sender that asks about a dropped receipt reads `unknown` and goes back to
-/// direct attempts.
-fn drop_settled_over_cap(tx: &Transaction, max: u64) -> Result<(), MailboxError> {
-    let count: i64 =
-        tx.query_row("SELECT settled_receipts FROM mailbox_stats WHERE id = 1", [], |r| r.get(0))?;
-    let count = from_sql(count);
-    if count <= max {
-        return Ok(());
-    }
-    let dropped = tx.execute(
-        "DELETE FROM receipts WHERE rowid IN (SELECT rowid FROM receipts WHERE settled = 1 ORDER \
-         BY expires_at ASC LIMIT ?1)",
-        [to_sql(count - max)],
-    )?;
-    tx.execute(
-        "UPDATE mailbox_stats SET settled_receipts = MAX(0, settled_receipts - ?1) WHERE id = 1",
-        [to_sql(dropped as u64)],
-    )?;
     Ok(())
 }
 
@@ -296,14 +276,15 @@ pub(super) struct ReceiptEntry<'a> {
     pub(super) expires_at: u64,
 }
 
+/// Stores the receipt of a new deposit. It is a plain insert: `deposit`
+/// answers from an existing receipt before it gets here, and a receipt that
+/// already exists would otherwise change what the settled count means.
 pub(super) fn put_receipt(tx: &Transaction, entry: ReceiptEntry<'_>) -> Result<(), MailboxError> {
     let json = serde_json::to_string(entry.receipt)
         .map_err(|e| MailboxError::Internal(format!("failed to serialize receipt: {e}")))?;
     tx.execute(
         "INSERT INTO receipts (sender, deposit_id, destination, content_hash, deposited_at, \
-         ttl_secs, receipt_json, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT \
-         (sender, deposit_id) DO UPDATE SET receipt_json = excluded.receipt_json, expires_at = \
-         excluded.expires_at",
+         ttl_secs, receipt_json, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             entry.sender,
             entry.deposit_id,

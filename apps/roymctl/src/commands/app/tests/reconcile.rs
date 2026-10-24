@@ -245,12 +245,12 @@ async fn reconcile_shows_no_change_for_a_pinned_auto() {
     pinned.services[0].mailbox =
         Some("did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe".parse().unwrap());
     journal.append(&pinned, DeploymentState::Active).unwrap();
-    let active = journal.get_last_state(&instance, DeploymentState::Active).unwrap();
     let reconciler = Reconciler::new(&journal);
 
     let mut target = compiled.plans[0].clone();
     assert!(!reconciler.compute_diff(&target).unwrap().actions.is_empty(), "raw auto differs");
-    keep_earlier_mailboxes(&mut target, active.as_ref().map(|record| &record.plan));
+    let earlier = crate::commands::app::settings::earlier_plan(&journal, &instance).unwrap();
+    keep_earlier_mailboxes(&mut target, earlier.as_ref());
 
     assert!(reconciler.compute_diff(&target).unwrap().actions.is_empty());
 }

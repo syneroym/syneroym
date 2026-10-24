@@ -222,7 +222,7 @@ fn auto_with_no_registry_and_no_journal_record_is_refused() {
 }
 
 #[test]
-fn a_new_choice_for_a_host_on_another_registry_is_refused_and_nothing_is_journaled() {
+fn a_new_choice_for_a_host_on_another_registry_is_refused() {
     let journal = DeploymentJournal::open_in_memory().unwrap();
     let list = ListOnly::of(&[DID_A]);
     let mut plan = auto_plan();
@@ -235,5 +235,27 @@ fn a_new_choice_for_a_host_on_another_registry_is_refused_and_nothing_is_journal
     let err = pin(&mut plan, &journal, Some(&list), Some(LIST_REGISTRY), &hosts).unwrap_err();
 
     assert!(err.to_string().contains("other.example.org"), "{err}");
-    assert!(journal.get_latest(&plan.app_instance_id).unwrap().is_none());
+}
+
+/// A scaled service may be placed on several nodes. The one that is on
+/// another registry is found even when the first member is on the right one.
+#[test]
+fn every_host_of_a_scaled_service_is_checked_not_only_the_first() {
+    let journal = DeploymentJournal::open_in_memory().unwrap();
+    let list = ListOnly::of(&[DID_A]);
+    let mut plan = auto_plan();
+    let mut second = plan.services[0].clone();
+    second.member_index = 1;
+    plan.services[0].substrate = Some(SubstrateAlias::new("near"));
+    second.substrate = Some(SubstrateAlias::new("far"));
+    plan.services.push(second);
+    let hosts = BTreeMap::from([
+        (SubstrateAlias::new("near"), (Some(LIST_REGISTRY.to_string()), false)),
+        (SubstrateAlias::new("far"), (Some("http://other.example.org:7961".to_string()), false)),
+    ]);
+
+    let err = pin(&mut plan, &journal, Some(&list), Some(LIST_REGISTRY), &hosts).unwrap_err();
+
+    let text = err.to_string();
+    assert!(text.contains("far") && text.contains("other.example.org"), "{text}");
 }

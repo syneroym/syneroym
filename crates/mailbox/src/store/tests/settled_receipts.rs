@@ -10,25 +10,25 @@ use crate::{
 
 const NODE_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
 
-struct Fixture {
-    store: MailboxStore,
-    sender: Member,
-    receiver: Member,
-    now: u64,
+pub(super) struct Fixture {
+    pub(super) store: MailboxStore,
+    pub(super) sender: Member,
+    pub(super) receiver: Member,
+    pub(super) now: u64,
 }
 
-fn limits_with_cap(max_settled: u64) -> Limits {
+pub(super) fn limits_with_cap(max_settled: u64) -> Limits {
     let mut limits = small_limits();
     limits.queue.max_messages = 10;
     limits.max_settled_receipts = max_settled;
     limits
 }
 
-fn fixture(limits: Limits) -> Fixture {
+pub(super) fn fixture(limits: Limits) -> Fixture {
     fixture_on(store_with(limits))
 }
 
-fn fixture_on(store: MailboxStore) -> Fixture {
+pub(super) fn fixture_on(store: MailboxStore) -> Fixture {
     let sender = Member::new(3600);
     let receiver = Member::new(3600);
     let now = receiver.cert.issued_at_secs + 10;
@@ -39,15 +39,39 @@ fn fixture_on(store: MailboxStore) -> Fixture {
 }
 
 impl Fixture {
-    fn deposit(&self, at: u64) -> Sealed {
-        let sealed = sealed_deposit(&self.sender, &self.receiver, 3600, at);
-        self.store.deposit(&self.sender.service_id(), &sealed.deposit, at).unwrap();
+    pub(super) fn deposit(&self, at: u64) -> Sealed {
+        self.deposit_from(&self.sender, at)
+    }
+
+    pub(super) fn deposit_from(&self, sender: &Member, at: u64) -> Sealed {
+        let sealed = sealed_deposit(sender, &self.receiver, 3600, at);
+        self.store.deposit(&sender.service_id(), &sealed.deposit, at).unwrap();
         sealed
+    }
+
+    /// Settles a message of `sender` like [`Self::settle`].
+    pub(super) fn settle_from(&self, sender: &Member, id: DepositId, at: u64) {
+        let ack = AckEntry {
+            sender: sender.service_id(),
+            deposit_id: id,
+            receipt: Receipt::unsigned_rejection(RejectCode::Malformed, at),
+        };
+        self.store.ack(&self.receiver.instance(), &[ack], at).unwrap();
+    }
+
+    /// The settled receipts that really are in the table.
+    pub(super) fn settled_rows(&self) -> u64 {
+        let rows: i64 = self
+            .store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM receipts WHERE settled = 1", [], |r| r.get(0))
+            .unwrap();
+        u64::try_from(rows).unwrap()
     }
 
     /// Settles the held message with a rejection the receiver acknowledged at
     /// `at`.
-    fn settle(&self, id: DepositId, at: u64) {
+    pub(super) fn settle(&self, id: DepositId, at: u64) {
         let ack = AckEntry {
             sender: self.sender.service_id(),
             deposit_id: id,
@@ -56,11 +80,11 @@ impl Fixture {
         self.store.ack(&self.receiver.instance(), &[ack], at).unwrap();
     }
 
-    fn receipt(&self, id: DepositId, at: u64) -> Receipt {
+    pub(super) fn receipt(&self, id: DepositId, at: u64) -> Receipt {
         self.store.status(&self.sender.service_id(), &[id], at).unwrap().remove(0).receipt
     }
 
-    fn settled(&self) -> u64 {
+    pub(super) fn settled(&self) -> u64 {
         self.store.totals().unwrap().settled_receipts
     }
 }
@@ -173,6 +197,11 @@ fn the_settled_count_is_counted_again_at_open() {
     f.settle(ids[1], f.now + 2);
     assert_eq!(f.settled(), 2);
     drop(f);
+    // The stored count is wrong, as after a crash or a bug.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute("UPDATE mailbox_stats SET settled_receipts = 999 WHERE id = 1", [])
+        .unwrap();
 
     let reopened = MailboxStore::open(&path, limits_with_cap(10)).unwrap();
 

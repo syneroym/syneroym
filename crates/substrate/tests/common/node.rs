@@ -556,7 +556,13 @@ impl SubstrateNode {
     pub async fn stop(mut self) -> StoppedNode {
         let _ = self.substrate_client.shutdown().await;
         let _ = self.shutdown_tx.send(()).await;
-        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle).await;
+        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle)
+            .await
+            .expect("the node must stop within 20 s");
+        // Another test process must not take the ports while this node is
+        // down: the boot would then fail with `AddrInUse`.
+        let ports = self.builder.ports();
+        crate::common::rehold_ports(&[ports.iroh, ports.registry, ports.gateway, ports.quic]);
         StoppedNode {
             builder: self.builder.clone(),
             base_path: self.base_path.clone(),

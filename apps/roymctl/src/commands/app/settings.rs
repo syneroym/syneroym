@@ -1,10 +1,10 @@
 //! The per-service mailbox and certificate lifetime in `app deploy`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Context;
 use syneroym_app_orchestration::{
-    DeploymentJournal, DeploymentPlan, MailboxChoice, SynAppManifest,
+    AppInstanceId, DeploymentJournal, DeploymentPlan, MailboxChoice, SynAppManifest,
     models::{LogicalServiceRef, SubstrateAlias},
 };
 use syneroym_sdk::deploy::{self, MailboxDirectory, PinSource, PinSources};
@@ -82,39 +82,61 @@ pub(crate) async fn pin_auto_mailboxes(
     list_registry: Option<&str>,
     host_registries: &BTreeMap<SubstrateAlias, (Option<String>, bool)>,
 ) -> anyhow::Result<()> {
-    let previous = journal.get_latest(&plan.app_instance_id)?.map(|record| record.plan);
+    let previous = earlier_plan(journal, &plan.app_instance_id)?;
     let sources = PinSources { previous: previous.as_ref(), directory, members_are_masters: false };
     let pins = deploy::pin_auto_mailboxes(plan, sources)
         .await
         .context("app deploy reads the open mailboxes from --registry-url")?;
     for pin in &pins {
         if let (PinSource::List, Some(list_registry)) = (pin.source, list_registry) {
-            let host = host_registry_of(plan, &pin.service, host_registries);
-            let facts = host.as_ref().map(|(url, known)| (url.as_deref(), *known));
-            let registry = match facts {
-                None => HostRegistry::Unknown,
-                Some((None, _)) => HostRegistry::None,
-                Some((Some(url), _)) => HostRegistry::Url(url),
-            };
-            mailbox_auto::check_same_registry(&pin.service.to_string(), list_registry, registry)?;
+            check_every_host(plan, &pin.service, list_registry, host_registries)?;
         }
         println!("mailbox 'auto' for '{}': {} ({})", pin.service, pin.mailbox, pin.source.as_str());
     }
     Ok(())
 }
 
-/// The registry the hosting node of `service` publishes to, when its node
-/// facts were read at preflight. `None` for a service with no alias or an
-/// alias whose facts could not be read.
-fn host_registry_of(
+/// The plan of the latest journal record of the instance, in any state. It is
+/// the one place an earlier mailbox is read from, so `app deploy` and `app
+/// reconcile` keep the same mailbox.
+pub(crate) fn earlier_plan(
+    journal: &DeploymentJournal,
+    instance: &AppInstanceId,
+) -> anyhow::Result<Option<DeploymentPlan>> {
+    Ok(journal.get_latest(instance)?.map(|record| record.plan))
+}
+
+/// Checks the registry of every node that hosts a member of `service`, not
+/// only the first: a member on another registry would lose its record for
+/// the senders there. A member with no alias runs on the node the deploy is
+/// aimed at, whose facts are not read here.
+fn check_every_host(
     plan: &DeploymentPlan,
     service: &LogicalServiceRef,
+    list_registry: &str,
     host_registries: &BTreeMap<SubstrateAlias, (Option<String>, bool)>,
-) -> Option<(Option<String>, bool)> {
-    let alias = plan
-        .services
-        .iter()
-        .filter(|s| &s.logical_ref == service)
-        .find_map(|s| s.substrate.as_ref())?;
-    host_registries.get(alias).cloned()
+) -> anyhow::Result<()> {
+    let members = || plan.services.iter().filter(|s| &s.logical_ref == service);
+    let aliases: BTreeSet<&SubstrateAlias> =
+        members().filter_map(|s| s.substrate.as_ref()).collect();
+    if members().any(|s| s.substrate.is_none()) {
+        mailbox_auto::check_same_registry(
+            &service.to_string(),
+            list_registry,
+            HostRegistry::Unknown,
+        )?;
+    }
+    for alias in aliases {
+        let registry = match host_registries.get(alias) {
+            None => HostRegistry::Unknown,
+            Some((None, _)) => HostRegistry::None,
+            Some((Some(url), _)) => HostRegistry::Url(url),
+        };
+        mailbox_auto::check_same_registry(
+            &format!("{service} on {alias}"),
+            list_registry,
+            registry,
+        )?;
+    }
+    Ok(())
 }

@@ -1741,7 +1741,7 @@ max_queue_messages = 500
 max_ttl_secs = 604800
 # How long receipts are kept after message completion or expiry in seconds (default: 1209600 = 14 days)
 receipt_keep_secs = 1209600
-# Maximum receipts kept for messages this node no longer holds; the oldest go first (default: 100000)
+# Maximum receipts kept for messages this node no longer holds; the senders that hold the most lose their oldest first (default: 100000)
 max_settled_receipts = 100000
 # How long a claimed message is hidden from other claims in seconds (default: 300 = 5 minutes)
 visibility_secs = 300

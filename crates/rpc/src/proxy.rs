@@ -153,6 +153,11 @@ pub const NOT_HOSTED_HERE_RPC_CODE: i32 = -32096;
 /// a missing or wrong signature, a time outside the window, or a bad
 /// certificate.
 pub const STREAM_UNAUTHENTICATED_RPC_CODE: i32 = -32097;
+/// JSON-RPC code a node answers with when it holds no key yet (no KEK has
+/// been injected after a start), so it cannot open the per-service store that
+/// the receiver-side fence needs. It is not a refusal of the call: the node
+/// only needs its operator, so a caller may try the call again later.
+pub const NODE_LOCKED_RPC_CODE: i32 = -32099;
 /// JSON-RPC code a client gives itself when the node that answered the
 /// end-to-end handshake is not the host its record names (ADR-0002 A1).
 /// No router sends it; it is local to the SDK and Universal Proxy.

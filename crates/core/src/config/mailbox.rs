@@ -18,9 +18,11 @@ pub struct MailboxRole {
     /// seconds.
     pub receipt_keep_secs: u64,
     /// Maximum receipts kept for messages this node no longer holds
-    /// (delivered, rejected, expired or evicted). Above it the oldest go
-    /// first, before `receipt_keep_secs` ends. Receipts of held messages are
-    /// not counted: the message limits bound them.
+    /// (delivered, rejected, expired or evicted). Above it, receipts go
+    /// before `receipt_keep_secs` ends: the senders that hold the most lose
+    /// their oldest first, so one sender cannot push out the receipts of
+    /// others. Receipts of held messages are not counted: the message limits
+    /// bound them.
     pub max_settled_receipts: u64,
     /// How long a claimed message is hidden from other claims, in seconds.
     pub visibility_secs: u64,

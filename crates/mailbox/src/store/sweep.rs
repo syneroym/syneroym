@@ -8,7 +8,8 @@ use tracing::warn;
 use crate::{
     error::MailboxError,
     store::{
-        MailboxStore, ReceiptPolicy, claim::close_over_claimed, from_sql, remove_message, to_sql,
+        MailboxStore, ReceiptPolicy, claim::close_over_claimed, from_sql, remove_message, settled,
+        to_sql,
     },
 };
 
@@ -48,6 +49,8 @@ impl MailboxStore {
         let over_claimed = close_over_claimed(&tx, None, policy, now)?;
         let queues_removed = sweep_dead_queues(&tx, self.limits.queue_lifetime_secs, policy, now)?;
         let receipts_removed = remove_expired_receipts(&tx, now)?;
+        // A cap that was lowered is worked off one bounded pass at a time.
+        settled::drop_settled_over_cap(&tx, policy.max_settled)?;
 
         tx.commit()?;
         Ok(SweepReport { expired, over_claimed, queues_removed, receipts_removed })

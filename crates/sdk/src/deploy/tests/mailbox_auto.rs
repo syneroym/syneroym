@@ -250,3 +250,12 @@ fn verified_mailbox_ignores_a_record_that_does_not_verify_or_is_for_another_serv
     }
     assert_eq!(verified_mailbox(&service_id, Some(&tampered)), None);
 }
+
+#[test]
+fn an_unpinned_auto_is_refused_at_certification() {
+    let master = Identity::generate().unwrap();
+
+    let err = crate::deploy::certify::member_mailbox(&auto_service("web"), &master).unwrap_err();
+
+    assert!(err.to_string().contains("still has mailbox 'auto'"), "{err}");
+}

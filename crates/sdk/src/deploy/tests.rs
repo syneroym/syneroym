@@ -758,3 +758,4 @@ async fn a_failed_apply_plan_and_renew_cert_are_never_enqueued() {
 
 mod mailbox;
 mod mailbox_auto;
+mod mailbox_auto_http;

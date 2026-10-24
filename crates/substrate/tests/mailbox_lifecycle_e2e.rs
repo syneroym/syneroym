@@ -103,12 +103,7 @@ async fn a_moved_receiver_opens_messages_sent_before_the_move() {
 
 #[tokio::test]
 async fn a_full_queue_keeps_the_second_call_on_direct_attempts_and_both_land_once() {
-    let mut world = world(Options {
-        max_queue_messages: Some(1),
-        registry_on_mailbox: true,
-        ..Options::standard()
-    })
-    .await;
+    let mut world = world(Options { max_queue_messages: Some(1), ..Options::standard() }).await;
     world.stop_receiver().await;
     world.enqueue("msg-1").await;
     world.enqueue("msg-2").await;
@@ -130,15 +125,12 @@ async fn a_full_queue_keeps_the_second_call_on_direct_attempts_and_both_land_onc
     );
     assert!(one_deposited(world.outbox().await), "the queue still holds one call only");
 
-    // The sender stays away while the receiver boots. A direct attempt in the
-    // first seconds of a boot meets a node that has no key yet, and gets a
-    // final error that has nothing to do with the full queue. The refused
-    // call is tried directly when the sender returns.
-    world.stop_sender().await;
+    // The refused call keeps trying directly while the receiver boots. A node
+    // that has no key yet answers that it is locked, which is not final, so
+    // the call waits and lands once the node is ready.
     let before = wasm_instantiations();
     world.restart_receiver().await;
     world.receiver_pulls().await;
-    world.start_sender().await;
 
     world.wait_outbox_empty().await;
     assert_no_dead_letters(&world).await;
