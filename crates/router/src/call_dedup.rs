@@ -258,12 +258,17 @@ impl CallDedupGuard {
     /// try again later (`NODE_LOCKED_RPC_CODE`); a durable outbox would
     /// otherwise dead-letter the call for good during the first seconds of a
     /// boot. Any other key failure fails closed.
-    fn dek_failure(&self, error: &anyhow::Error) -> ProxyError {
+    ///
+    /// `was_locked` is read before the key is resolved. A KEK that loads
+    /// after the failed attempt must not turn a locked answer into a final
+    /// one, and a KEK cannot be unloaded, so a failure with a key present at
+    /// the start is a real one.
+    fn dek_failure(was_locked: bool, error: &anyhow::Error) -> ProxyError {
         let message = format!("dedup store unavailable: {error}");
-        if self.key_store.kek_is_loaded() {
-            ProxyError::PermissionDenied(message)
-        } else {
+        if was_locked {
             ProxyError::Callee { code: NODE_LOCKED_RPC_CODE, message, data: None }
+        } else {
+            ProxyError::PermissionDenied(message)
         }
     }
 
@@ -296,6 +301,7 @@ impl CallDedupGuard {
             return Err(ProxyError::ServiceNotFound(service_id.to_string()));
         }
 
+        let was_locked = !self.key_store.kek_is_loaded();
         let (dir, dek) = async_db_location(&self.storage_provider, &self.key_store, service_id)
             .await
             .map_err(|e| match e {
@@ -303,7 +309,7 @@ impl CallDedupGuard {
                 // closed by design, per this module's own doc comment --
                 // a keyed call answered without being able to check the
                 // fence is worse than one refused.
-                AsyncDbLocationError::Dek(e) => self.dek_failure(&e),
+                AsyncDbLocationError::Dek(e) => Self::dek_failure(was_locked, &e),
                 // A path/IO problem resolving the directory has no
                 // security meaning and is not a settled answer -- terminal
                 // here would dead-letter a transient failure at the

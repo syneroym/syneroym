@@ -212,8 +212,8 @@ pub(crate) struct ReceiptPolicy {
 }
 
 /// Deletes the message at `seq` and settles its receipt: the body is gone, the
-/// receipt stays for the sender. Drops the oldest settled receipts when this
-/// leaves more than `policy.max_settled`.
+/// receipt stays for the sender. Drops settled receipts, from the senders
+/// that hold the most, when this leaves more than `policy.max_settled`.
 pub(super) fn remove_message(
     tx: &Transaction,
     seq: i64,
