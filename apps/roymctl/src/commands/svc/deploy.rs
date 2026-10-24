@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use syneroym_app_orchestration::{MailboxChoice, MailboxMethod};
+use syneroym_app_orchestration::{MailboxChoice, MailboxMethod, ServiceId};
 use syneroym_core::{
     dht_registry::{
         DEFAULT_ENDPOINT_NOT_AFTER_SECS, EndpointInfo, EndpointMailbox, EndpointType,
@@ -23,7 +23,10 @@ use syneroym_sdk::{
     mapper::DEFAULT_INTERFACE_NAME,
 };
 
-use crate::commands::member_identity;
+use crate::commands::{
+    mailbox_auto::{self, HostRegistry},
+    member_identity,
+};
 
 /// Resolve `--identity`/`--master` into the (at most one relevant) local
 /// keys `svc deploy` may need to sign an endpoint record: `--identity`
@@ -97,16 +100,13 @@ pub(crate) fn check_mailbox_args(
     has_identity: bool,
     has_instance_certificate: bool,
 ) -> anyhow::Result<()> {
-    let Some(mailbox) = mailbox else {
+    if mailbox.is_none() {
         if !methods.is_empty() {
             anyhow::bail!("--mailbox-method needs --mailbox");
         }
         return Ok(());
-    };
-    check_mailbox_methods(methods)?;
-    if *mailbox == MailboxChoice::Auto {
-        anyhow::bail!("--mailbox auto is not supported yet; give the mailbox host's node DID");
     }
+    check_mailbox_methods(methods)?;
     if !(has_master || (has_identity && has_instance_certificate)) {
         anyhow::bail!(
             "--mailbox needs --master, or --identity with --instance-certificate: the mailbox key \
@@ -172,7 +172,7 @@ pub(crate) fn build_publication(
     nickname: Option<&str>,
     not_after: u64,
     record_out: Option<&Path>,
-    mailbox: Option<&MailboxChoice>,
+    mailbox: Option<&ServiceId>,
     mailbox_methods: &[MailboxMethod],
 ) -> anyhow::Result<Publication> {
     match (parsed_visibility, signing_identity) {
@@ -204,13 +204,13 @@ pub(crate) fn build_publication(
         }
         (v, Some(id)) => {
             let (route, mailbox_key) = match mailbox {
-                Some(MailboxChoice::Service(host)) => {
+                Some(host) => {
                     let key = MailboxSecretKey::derive_from_master(id);
                     let route =
                         EndpointMailbox { service_id: host.to_string(), key: key.public_key() };
                     (Some(route), Some(key))
                 }
-                Some(MailboxChoice::Auto) | None => (None, None),
+                None => (None, None),
             };
             let record = signed_export_record(
                 v,
@@ -447,6 +447,10 @@ pub(super) async fn handle_deploy(
         instance_certificate.is_some(),
     )?;
 
+    // Before anything is signed or minted: `auto` reads the registry.
+    let mailbox_host =
+        resolve_mailbox_host(client, mailbox.as_ref(), svc_id, registry_url.as_deref()).await?;
+
     let not_after = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -461,7 +465,7 @@ pub(super) async fn handle_deploy(
         nickname.as_deref(),
         not_after,
         record_out.as_deref(),
-        mailbox.as_ref(),
+        mailbox_host.as_ref(),
         mailbox_methods,
     )?;
 
@@ -508,6 +512,27 @@ pub(super) async fn handle_deploy(
     }
 
     Ok(())
+}
+
+/// The mailbox host this deploy publishes. A named host is used as given; for
+/// `auto` the hosting node's registry is read (when its facts are readable) so
+/// a list from a different registry is refused.
+async fn resolve_mailbox_host(
+    client: &SyneroymClient,
+    mailbox: Option<&MailboxChoice>,
+    svc_id: &str,
+    registry_url: Option<&str>,
+) -> anyhow::Result<Option<ServiceId>> {
+    let facts = match mailbox {
+        Some(MailboxChoice::Auto) => client.node_facts().await.ok().flatten(),
+        _ => None,
+    };
+    let host_registry = match facts.as_ref().map(|f| f.registry_url.as_deref()) {
+        None => HostRegistry::Unknown,
+        Some(None) => HostRegistry::None,
+        Some(Some(url)) => HostRegistry::Url(url),
+    };
+    mailbox_auto::resolve_svc_mailbox(mailbox, svc_id, registry_url, host_registry).await
 }
 
 /// Parses visibility values (e.g. `--visibility`, `--asset-visibility`).

@@ -1,6 +1,7 @@
 #![allow(clippy::cognitive_complexity)]
 
 use clap::{Parser, error::ErrorKind};
+use syneroym_app_orchestration::ServiceId;
 use syneroym_mailbox_format::MailboxSecretKey;
 use syneroym_sdk::{Publication, SyneroymClient};
 
@@ -483,6 +484,10 @@ fn host_choice() -> MailboxChoice {
     MAILBOX_HOST.parse().unwrap()
 }
 
+fn host_id() -> ServiceId {
+    ServiceId::new(MAILBOX_HOST)
+}
+
 /// A mailbox record written with `--record-out` carries the mailbox field,
 /// and the key in it is the one derived from the signer.
 #[test]
@@ -500,7 +505,7 @@ fn a_public_record_out_file_carries_the_mailbox_and_the_derived_key() {
         None,
         9_999_999_999,
         Some(&path),
-        Some(&host_choice()),
+        Some(&host_id()),
         &[],
     )
     .unwrap();
@@ -571,11 +576,13 @@ fn a_mailbox_needs_visibility_public() {
 }
 
 #[test]
-fn an_auto_mailbox_is_refused_for_now() {
+fn an_auto_mailbox_passes_the_argument_checks() {
+    let auto = MailboxChoice::Auto;
+    assert!(check_mailbox_args(Some(&auto), &[], Visibility::Public, true, false, false).is_ok());
+    assert!(check_mailbox_args(Some(&auto), &[], Visibility::Public, false, false, false).is_err());
     let err =
-        check_mailbox_args(Some(&MailboxChoice::Auto), &[], Visibility::Public, true, false, false)
-            .unwrap_err();
-    assert!(err.to_string().contains("not supported yet"), "{err}");
+        check_mailbox_args(Some(&auto), &[], Visibility::Private, true, false, false).unwrap_err();
+    assert!(err.to_string().contains("--visibility public"), "{err}");
 }
 
 /// The command line accepts exactly what the manifest accepts. Clap takes a
@@ -671,7 +678,7 @@ fn mailbox_methods_reach_the_public_publication() {
         None,
         9_999_999_999,
         None,
-        Some(&host_choice()),
+        Some(&host_id()),
         &list,
     )
     .unwrap();

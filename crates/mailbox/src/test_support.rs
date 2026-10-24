@@ -163,6 +163,7 @@ pub(crate) fn small_limits() -> Limits {
     Limits {
         queue: QueueLimits { max_bytes: 200 * 1024, max_messages: 3, max_ttl_secs: 604_800 },
         receipt_keep_secs: 100,
+        max_settled_receipts: 1_000,
         visibility_secs: 10,
         queue_lifetime_secs: 1_000,
         max_total_bytes: 10 * 1024 * 1024,

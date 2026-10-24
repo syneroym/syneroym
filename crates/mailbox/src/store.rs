@@ -17,6 +17,7 @@ use crate::{error::MailboxError, limits::Limits};
 pub(crate) mod claim;
 pub(crate) mod deposit;
 pub(crate) mod queue;
+pub(crate) mod settled;
 pub(crate) mod sweep;
 
 #[cfg(test)]
@@ -32,10 +33,11 @@ impl MailboxStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         init_schema(&conn)?;
+        settled::trim_at_open(&mut conn, limits.max_settled_receipts)?;
         Ok(Self { conn: Mutex::new(conn), limits })
     }
 
@@ -48,6 +50,13 @@ impl MailboxStore {
 
     pub(crate) fn limits(&self) -> &Limits {
         &self.limits
+    }
+
+    pub(super) fn receipt_policy(&self) -> ReceiptPolicy {
+        ReceiptPolicy {
+            keep_secs: self.limits.receipt_keep_secs,
+            max_settled: self.limits.max_settled_receipts,
+        }
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, Connection> {
@@ -97,17 +106,23 @@ fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             ttl_secs     INTEGER NOT NULL,
             receipt_json TEXT NOT NULL,
             expires_at   INTEGER NOT NULL,
+            settled      INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (sender, deposit_id)
         );
         CREATE INDEX IF NOT EXISTS receipts_expiry ON receipts (expires_at);
+        CREATE INDEX IF NOT EXISTS receipts_settled ON receipts (settled, sender, expires_at);
         CREATE TABLE IF NOT EXISTS mailbox_stats (
-            id          INTEGER PRIMARY KEY CHECK (id = 1),
-            total_bytes INTEGER NOT NULL DEFAULT 0
+            id               INTEGER PRIMARY KEY CHECK (id = 1),
+            total_bytes      INTEGER NOT NULL DEFAULT 0,
+            settled_receipts INTEGER NOT NULL DEFAULT 0
         );
-        INSERT OR IGNORE INTO mailbox_stats (id, total_bytes)
-            SELECT 1, COALESCE(SUM(bytes), 0) FROM queues;
-        UPDATE mailbox_stats SET total_bytes = (SELECT COALESCE(SUM(bytes), 0) FROM queues) WHERE \
-         id = 1;",
+        INSERT OR IGNORE INTO mailbox_stats (id, total_bytes, settled_receipts)
+            SELECT 1, COALESCE(SUM(bytes), 0),
+                (SELECT COUNT(*) FROM receipts WHERE settled = 1) FROM queues;
+        UPDATE mailbox_stats SET
+            total_bytes = (SELECT COALESCE(SUM(bytes), 0) FROM queues),
+            settled_receipts = (SELECT COUNT(*) FROM receipts WHERE settled = 1)
+            WHERE id = 1;",
     )
 }
 
@@ -189,11 +204,21 @@ pub(super) fn queue_row(
     }
 }
 
+/// How long settled receipts stay, and how many may stay.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReceiptPolicy {
+    pub(crate) keep_secs: u64,
+    pub(crate) max_settled: u64,
+}
+
+/// Deletes the message at `seq` and settles its receipt: the body is gone, the
+/// receipt stays for the sender. Drops settled receipts, from the senders
+/// that hold the most, when this leaves more than `policy.max_settled`.
 pub(super) fn remove_message(
     tx: &Transaction,
     seq: i64,
     receipt: &Receipt,
-    keep_secs: u64,
+    policy: ReceiptPolicy,
     now: u64,
 ) -> Result<(), MailboxError> {
     let mut stmt =
@@ -223,13 +248,20 @@ pub(super) fn remove_message(
     )?;
     let json = serde_json::to_string(receipt)
         .map_err(|e| MailboxError::Internal(format!("failed to serialize receipt: {e}")))?;
-    let expires = to_sql(now.saturating_add(keep_secs));
+    let expires = to_sql(now.saturating_add(policy.keep_secs));
     let updated = tx.execute(
-        "UPDATE receipts SET receipt_json = ?1, expires_at = ?2 WHERE sender = ?3 AND deposit_id \
-         = ?4",
+        "UPDATE receipts SET receipt_json = ?1, expires_at = ?2, settled = 1 WHERE sender = ?3 \
+         AND deposit_id = ?4",
         rusqlite::params![json, expires, sender, deposit_id],
     )?;
     debug_assert_eq!(updated, 1, "receipt row must exist when removing message");
+    if updated == 1 {
+        tx.execute(
+            "UPDATE mailbox_stats SET settled_receipts = settled_receipts + 1 WHERE id = 1",
+            [],
+        )?;
+        settled::drop_settled_over_cap(tx, policy.max_settled)?;
+    }
     Ok(())
 }
 
@@ -244,14 +276,15 @@ pub(super) struct ReceiptEntry<'a> {
     pub(super) expires_at: u64,
 }
 
+/// Stores the receipt of a new deposit. It is a plain insert: `deposit`
+/// answers from an existing receipt before it gets here, and a receipt that
+/// already exists would otherwise change what the settled count means.
 pub(super) fn put_receipt(tx: &Transaction, entry: ReceiptEntry<'_>) -> Result<(), MailboxError> {
     let json = serde_json::to_string(entry.receipt)
         .map_err(|e| MailboxError::Internal(format!("failed to serialize receipt: {e}")))?;
     tx.execute(
         "INSERT INTO receipts (sender, deposit_id, destination, content_hash, deposited_at, \
-         ttl_secs, receipt_json, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT \
-         (sender, deposit_id) DO UPDATE SET receipt_json = excluded.receipt_json, expires_at = \
-         excluded.expires_at",
+         ttl_secs, receipt_json, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             entry.sender,
             entry.deposit_id,

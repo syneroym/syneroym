@@ -2,7 +2,7 @@
 
 *Reader: developers who build these changes.*
 
-**Status: in progress (2026-10-22).** S0, A1 to A4, C1, B1 to B3, C2 to C4, C4b, C4c, and C5 are done. C6 comes next. Progress is in [status.md](status.md).
+**Status: in progress (2026-10-24).** S0, A1 to A4, C1, B1 to B3, C2 to C4, C4b, C4c, and C5 to C7 are done. C8 comes next. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -180,10 +180,11 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Check revocation after `open` and ack with `OpenedMessage::sign_rejection(Revoked, ..)` (`D-C2-5`). Ack every `open` failure: `RefusedMessage::receipt` for `OpenError::Refused`, `Receipt::unsigned_rejection(e.reject_code(), ..)` for the rest. Pass the queue's own `max_ttl_secs` from `register` in `OpenPolicy`, and size the idempotency memory (`R-7`) from the same value, not from a 7-day constant. A signed `from_future` rejection is decided by the receiver's own clock: log a warning on it, so a receiver whose clock is slow by more than 24 hours is noticed.
 - **Forward note from C4:** Register with the stored deploy record; use `limits.max_ttl_secs` from the answer for `OpenPolicy` and for the idempotency memory (R-7). Ack by `(sender, deposit_id)` from the claim answer, at most 32 per call. Re-register when `claim` answers `-32040` (queue was removed). `-32046` means a newer instance holds the queue: stop pulling for that service and log it. `-32045` at `register` or `claim` means the instance key is revoked: stop pulling and wait for a renewed certificate. `-32047` at `register` for an existing queue means the stored record is past `not_after`: keep claiming, use limits from last successful `register` (or `info`), and log a warning once an hour that owner must deploy again to renew record (mailbox stops republishing at `not_after`). A receiver on the mailbox host must present its instance proof in `CallerContext`. C6 must test that router's `invoke_local` path carries this certificate proof to local native services.
 
-**C7 — Open mailbox list and `auto` (S).** Needs A2, C3, C4b and C4c.
+**C7 — Open mailbox list and `auto` (L).** Needs A2, C3, C4b and C4c. Sized S at first. With the receipt cap, the supervisor wiring, the status field and the end-to-end tests it is L.
 - `[[roles.community_registry.mailboxes]]` and `GET /mailboxes` as the second instance of X2.
 - `--mailbox auto` with X3. `MailboxChoice::Auto` already parses in the manifest, `svc deploy` and `app deploy`. Remove the three refusals (`validate_plan_member_settings`, `check_mailbox_args` in `svc deploy`, `certify_placed_members`). Resolve `auto` **once** and pin the result in the stored plan (roymctl before `apply_plan`; the supervisor at `submit`): a different mailbox later means a new record, and messages waiting at the old mailbox are lost.
 - After C5, C6 and C7: run the full integration list from the mailbox doc and close out its living docs, except the dedicated-mailbox criteria. "Expired certificate" and "duplicate delivery" are already covered by C6 below the end-to-end level (`crates/router/src/mailbox_pull/tests/blocked.rs`, `crates/router/tests/call_dedup_dispatch.rs`): an end-to-end test cannot wait for a certificate of at least one hour to expire, and cannot make a direct answer get lost. C7 runs the rest of the list (offline sender, receiver asleep longer than 2 hours, relocation, over quota, group push, expiry then direct).
+- Done 2026-10-24. Decisions `D-C7-1` to `D-C7-15` are in the [mailbox change doc](../../changes/service-mailbox/change.md). The receipt cap (`max_settled_receipts`) is a separate commit before the list and `auto`. The mailbox change doc stays `approved`: C8 closes it.
 - **Forward note from C4:** Before the registry lists open mailboxes for strangers, the router must check that a caller holds the instance key of its certificate. C4b does this, and the C4-4 risk decision holds only until C4b lands. Also, C4 implemented registration rate limiting (`register_per_minute_per_master: 10`, `register_per_minute_total: 120`) to prevent cheap queue flooding attacks on open mailboxes. Additionally, C7 must cap receipt table storage before listing open mailboxes to strangers (backlog row "Receipt table size is not capped by `max_total_bytes`").
 
 **C8 — Dedicated mailbox (M).** Needs B1, C4 and C7. Last.
@@ -217,7 +218,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 | C4c | C4b | M |
 | C5 | C1, C3, C4, C4b, C4c | L |
 | C6 | C3, C4, C4b, C4c | L |
-| C7 | A2, C3, C4b, C4c | S |
+| C7 | A2, C3, C4b, C4c | L |
 | C8 | B1, C4, C7 | M |
 
 With one developer, the serial order in use (the owner's choice, 2026-10-13) is:

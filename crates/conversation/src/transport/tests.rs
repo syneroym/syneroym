@@ -751,6 +751,14 @@ fn test_classify_retries_not_hosted_and_unauthenticated() {
         Disposition::Retry
     );
     assert_eq!(classify(ProxyError::HostMismatch("host mismatch".into())), Disposition::Retry);
+    assert_eq!(
+        classify(ProxyError::Callee {
+            code: syneroym_rpc::NODE_LOCKED_RPC_CODE,
+            message: "node locked".into(),
+            data: None,
+        }),
+        Disposition::Retry
+    );
     // The same code in a callee's own answer is an ordinary callee error.
     assert_ne!(
         classify(ProxyError::Callee {

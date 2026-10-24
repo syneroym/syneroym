@@ -8,8 +8,8 @@ use tracing::warn;
 use crate::{
     error::MailboxError,
     store::{
-        MailboxStore, QueueRow, ReceiptEntry, compute_content_hash, from_sql, put_receipt,
-        queue_row, remove_message, to_sql,
+        MailboxStore, QueueRow, ReceiptEntry, ReceiptPolicy, compute_content_hash, from_sql,
+        put_receipt, queue_row, remove_message, to_sql,
     },
 };
 
@@ -72,7 +72,7 @@ impl MailboxStore {
             return Err(MailboxError::DuplicateDeposit(id));
         }
 
-        let evicted = make_room(&tx, &row, sender, size, now, self.limits.receipt_keep_secs)?;
+        let evicted = make_room(&tx, &row, sender, size, now, self.receipt_policy())?;
 
         let total: i64 =
             tx.query_row("SELECT total_bytes FROM mailbox_stats WHERE id = 1", [], |r| r.get(0))?;
@@ -228,7 +228,7 @@ fn make_room(
     depositor: &str,
     size: usize,
     now: u64,
-    keep_secs: u64,
+    policy: ReceiptPolicy,
 ) -> Result<u32, MailboxError> {
     let mut bytes = row.bytes;
     let mut messages = row.messages;
@@ -248,7 +248,7 @@ fn make_room(
                 let (seq, vsize) = select_oldest_message_from_sender(tx, &row.service_id, &s, now)?
                     .ok_or_else(|| MailboxError::QueueFull(row.service_id.clone()))?;
 
-                remove_message(tx, seq, &Receipt::Expired { at_secs: now }, keep_secs, now)?;
+                remove_message(tx, seq, &Receipt::Expired { at_secs: now }, policy, now)?;
                 bytes = bytes.saturating_sub(from_sql(vsize));
                 messages = messages.saturating_sub(1);
                 evicted += 1;

@@ -11,9 +11,8 @@ use crate::{
     catalog::ManifestCatalog,
     models::{
         AppBlueprintId, AppDependencySpec, AppInstanceId, DeploymentPlan, LogicalServiceName,
-        LogicalServiceRef, MAX_INSTANCE_CERT_EXPIRES_HOURS, MailboxChoice, PlacementSelector,
-        PlannedService, ServiceId, ServiceSpec, SynAppManifest, TopologyMode, TopologyVisibility,
-        Visibility,
+        LogicalServiceRef, MAX_INSTANCE_CERT_EXPIRES_HOURS, PlacementSelector, PlannedService,
+        ServiceId, ServiceSpec, SynAppManifest, TopologyMode, TopologyVisibility, Visibility,
     },
 };
 
@@ -132,28 +131,20 @@ pub fn validate_plan_visibility(plan: &DeploymentPlan) -> Result<(), Vec<String>
 /// - A mailbox needs visibility `public`. A `private` record is never
 ///   published. An `internal` record must stay in the local registry, but a
 ///   mailbox republishes the record to its own registry.
-/// - `auto` needs the registry's list of open mailboxes, which a deploy cannot
-///   read yet.
+/// - `auto` stays in the plan. A deployer pins it to a node DID before it
+///   stores the plan (`syneroym_sdk::deploy::pin_auto_mailboxes`).
 /// - A certificate lifetime outside `1..=MAX_INSTANCE_CERT_EXPIRES_HOURS` would
 ///   be refused by the substrate at install.
 pub fn validate_plan_member_settings(plan: &DeploymentPlan) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     for service in &plan.services {
         let name = &service.logical_ref.service_name;
-        match &service.mailbox {
-            None => {}
-            Some(MailboxChoice::Auto) => errors.push(format!(
-                "'{name}' sets mailbox 'auto', which is not supported yet; give the mailbox \
-                 host's node DID"
-            )),
-            Some(MailboxChoice::Service(_)) if service.config.visibility != Visibility::Public => {
-                errors.push(format!(
-                    "'{name}' sets a mailbox but declares visibility '{}'; only a 'public' \
-                     service can have a mailbox",
-                    service.config.visibility.as_str()
-                ));
-            }
-            Some(MailboxChoice::Service(_)) => {}
+        if service.mailbox.is_some() && service.config.visibility != Visibility::Public {
+            errors.push(format!(
+                "'{name}' sets a mailbox but declares visibility '{}'; only a 'public' service \
+                 can have a mailbox",
+                service.config.visibility.as_str()
+            ));
         }
         check_mailbox_methods(service, &mut errors);
         if let Some(hours) = service.instance_cert_expires_hours

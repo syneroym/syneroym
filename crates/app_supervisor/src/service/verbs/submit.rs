@@ -223,7 +223,7 @@ impl SupervisorService {
         // refused to record it, making the supervisor immediately
         // superseded by its own write. One read covers both, so both are
         // checked before either has a chance to run.
-        self.validate_submit_preflight(&s, &plan, &inventory).await?;
+        let existing = self.validate_submit_preflight(&s, &plan, &inventory).await?;
 
         // Mint before connecting anywhere -- a locked vault or a bad plan
         // must fail before anything is persisted or a network round trip
@@ -236,6 +236,9 @@ impl SupervisorService {
         let (minted, masters) = keys::mint_and_substitute(&mut plan, &self.vault)
             .await
             .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        // Under the instance lock, like the rest of submit: the stored plan
+        // read above must still be the one the pin keeps.
+        self.pin_auto_mailboxes(&mut plan, existing.as_ref()).await?;
         let plan_json_substituted =
             plan.to_json().map_err(|e| RpcError::InternalError(e.to_string()))?;
 
@@ -306,12 +309,12 @@ impl SupervisorService {
         s: &Submission,
         plan: &DeploymentPlan,
         inventory: &SupervisorInventory,
-    ) -> RpcResult<()> {
-        if let Some(existing) = self
+    ) -> RpcResult<Option<DesiredState>> {
+        let existing = self
             .store
             .get(&s.app_instance_id)
-            .map_err(|e| RpcError::InternalError(e.to_string()))?
-        {
+            .map_err(|e| RpcError::InternalError(e.to_string()))?;
+        if let Some(existing) = &existing {
             if existing.retired {
                 return Err(RpcError::InternalError(format!(
                     "app instance '{}' is retired; run `supervisor adopt` to resume managing it \
@@ -338,6 +341,47 @@ impl SupervisorService {
             .map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
         syneroym_sdk::refuse_reserved_mailbox_methods(plan)
             .map_err(|errs| RpcError::InvalidParams(errs.join("; ")))?;
+        Ok(existing)
+    }
+
+    /// Pins a mailbox `auto` before the desired state is stored, so the loop
+    /// and every later submit see one mailbox. A service keeps the mailbox
+    /// the stored desired state or a member's current record names. A stored
+    /// plan that does not parse refuses the submit: guessing a new mailbox
+    /// could lose the messages that wait at the old one.
+    async fn pin_auto_mailboxes(
+        &self,
+        plan: &mut DeploymentPlan,
+        existing: Option<&DesiredState>,
+    ) -> RpcResult<()> {
+        let previous =
+            existing.map(|d| DeploymentPlan::from_json(&d.plan_json)).transpose().map_err(|e| {
+                RpcError::InternalError(format!(
+                    "the stored plan of this instance does not parse, so its mailbox cannot be \
+                     kept: {e}"
+                ))
+            })?;
+        let sources = deploy::PinSources {
+            previous: previous.as_ref(),
+            directory: self.mailbox_directory.as_deref(),
+            members_are_masters: true,
+        };
+        let pins = deploy::pin_auto_mailboxes(plan, sources).await.map_err(|e| {
+            let hint = if self.mailbox_directory.is_none() {
+                " (this supervisor's node has no substrate.registry_url)"
+            } else {
+                ""
+            };
+            RpcError::InternalError(format!("{e:#}{hint}; the desired state was not stored"))
+        })?;
+        for pin in pins {
+            tracing::info!(
+                service = %pin.service,
+                mailbox = %pin.mailbox,
+                source = pin.source.as_str(),
+                "mailbox 'auto' pinned"
+            );
+        }
         Ok(())
     }
 

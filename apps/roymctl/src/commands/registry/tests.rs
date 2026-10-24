@@ -4,6 +4,15 @@ use syneroym_mailbox_format::MailboxSecretKey;
 use super::*;
 
 fn record_of(master: &Identity, claimed_id: Option<&str>, mailbox: bool) -> SignedEndpointInfo {
+    record_until(master, claimed_id, mailbox, u64::MAX / 2)
+}
+
+fn record_until(
+    master: &Identity,
+    claimed_id: Option<&str>,
+    mailbox: bool,
+    not_after: u64,
+) -> SignedEndpointInfo {
     let own_id = substrate::derive_did_key(&master.public_key());
     EndpointInfo {
         service_id: claimed_id.unwrap_or(&own_id).to_string(),
@@ -13,7 +22,7 @@ fn record_of(master: &Identity, claimed_id: Option<&str>, mailbox: bool) -> Sign
         nickname: None,
         is_private: false,
         ttl: None,
-        not_after: u64::MAX / 2,
+        not_after,
         generation: 0,
         mailbox: mailbox.then(|| EndpointMailbox {
             service_id: own_id.clone(),
@@ -42,6 +51,19 @@ fn a_record_with_a_mailbox_is_refused() {
     let id = substrate::derive_did_key(&master.public_key());
     let err = refuse_if_mailbox(&id, Some(&record_of(&master, None, true))).unwrap_err();
     assert!(err.to_string().contains("has a mailbox"), "{err}");
+}
+
+/// The refusal is about what the record says, not about whether it is still
+/// valid: registering a record without the mailbox would remove the mailbox
+/// from the service even when the old record has run out.
+#[test]
+fn an_expired_record_with_a_mailbox_is_still_refused() {
+    let master = Identity::generate().unwrap();
+    let id = substrate::derive_did_key(&master.public_key());
+    let expired = record_until(&master, None, true, 1);
+    assert!(expired.verify().is_err(), "the record is past its not_after");
+
+    assert!(refuse_if_mailbox(&id, Some(&expired)).is_err());
 }
 
 #[test]

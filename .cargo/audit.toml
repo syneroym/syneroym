@@ -76,4 +76,11 @@ ignore = [
     # clears them. Remove these entries with the ones above.
     "RUSTSEC-2026-0378",
     "RUSTSEC-2026-0379",
+
+    # crypto-bigint 0.5.5 timing variability (published 2026-10-23). It is
+    # pulled in by elliptic-curve 0.13 (p384 / p256), which webrtc 0.17.2 and
+    # dtls 0.17.2 use. The fix is crypto-bigint >= 0.7.6, which elliptic-curve
+    # 0.13 cannot use. Remove this entry when webrtc moves to a newer
+    # RustCrypto curve stack.
+    "RUSTSEC-2026-0387",
 ]

@@ -410,3 +410,5 @@ async fn fetch_gives_up_after_the_time_of_its_hop() {
         assert_eq!(start.elapsed().as_secs(), secs, "hops {hops}");
     }
 }
+
+mod mailbox;

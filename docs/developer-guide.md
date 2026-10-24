@@ -317,6 +317,9 @@ curl http://localhost:7961/lookup/did:key:z6MkhaXn...
 
 # Returns curated coordinators
 curl 'http://localhost:7961/coordinators?transport=iroh-relay'
+
+# Returns the curated open mailboxes (used by `mailbox = "auto"`)
+curl 'http://localhost:7961/mailboxes'
 ```
 
 ### Managing Applications (Orchestrator)
@@ -415,7 +418,11 @@ mailbox host, which serves it on interface `mailbox`. The record then
 carries the mailbox and a mailbox key derived from the service master, and
 the deploy call carries the private half to the substrate. It needs
 `--visibility public`, and `--master` (or `--identity` together with
-`--instance-certificate`). `auto` is not supported yet. The service receives
+`--instance-certificate`). `--mailbox auto` keeps the mailbox that the
+current record of the service names, or else picks one of the open mailboxes
+that `--registry-url` lists (`GET /mailboxes`). That registry must be the one
+this substrate publishes to, and roymctl refuses a known difference. The
+service receives
 a message that waited at its mailbox only for the methods it lists:
 `--mailbox-method <interface>#<method>` (repeat it for more; it needs
 `--mailbox`). Conversation `deliver` and `group-push` are always accepted. An
@@ -449,13 +456,18 @@ registered `visibility` for an outside caller to actually reach any of its
 members.
 
 Two more per-service settings sit next to `visibility` and apply to every
-member of the service. `mailbox` is a node DID (`auto` is parsed, but refused
-for now), and only a `public` service may set it. `instance_cert_expires_hours`
+member of the service. `mailbox` is a node DID or `auto` (one of the open
+mailboxes of `--registry-url`, pinned in the plan at the first deploy and kept
+by every later deploy of the instance), and only a `public` service may set
+it. `instance_cert_expires_hours`
 is the lifetime of each instance certificate, from 1 to 720. Both need
 `app deploy --mint-masters` (or the supervisor): nothing else signs the record
 or issues the certificate, so `app deploy` refuses a manifest that sets them
-without it. `app deploy --mailbox <service>=<node-did>` sets or overrides the
-mailbox of one service from the command line. `mailbox_methods =
+without it. `app deploy --mailbox <service>=<node-did>` (or `<service>=auto`)
+sets or overrides the mailbox of one service from the command line. A
+supervisor pins `auto` itself at `submit`, from its own node's
+`substrate.registry_url`, and `roymctl supervisor status` shows the mailbox of
+each member. `mailbox_methods =
 ["<interface>#<method>", ...]` lists the guest methods that accept delivery
 from the mailbox (at most 64, only with a `mailbox`; see `--mailbox-method`
 above).
@@ -1729,6 +1741,8 @@ max_queue_messages = 500
 max_ttl_secs = 604800
 # How long receipts are kept after message completion or expiry in seconds (default: 1209600 = 14 days)
 receipt_keep_secs = 1209600
+# Maximum receipts kept for messages this node no longer holds; the senders that hold the most lose their oldest first (default: 100000)
+max_settled_receipts = 100000
 # How long a claimed message is hidden from other claims in seconds (default: 300 = 5 minutes)
 visibility_secs = 300
 # Idle time in seconds before an unclaimed queue is swept (default: 2592000 = 30 days)
@@ -1781,6 +1795,7 @@ When the mailbox role is active, the endpoint exposes these Prometheus metrics:
 - `substrate.mailbox.queues`: Gauge of active destination queues.
 - `substrate.mailbox.messages`: Gauge of current stored messages across all queues.
 - `substrate.mailbox.bytes`: Gauge of total message bytes stored across all queues.
+- `substrate.mailbox.settled_receipts`: Gauge of receipts kept for messages the mailbox no longer holds (capped by `max_settled_receipts`).
 - `substrate.mailbox.deposits`: Counter of successfully stored deposits.
 - `substrate.mailbox.deposits_refused`: Counter of refused deposits labeled by refusal `kind` (`mailbox_full`, `queue_full`, `rate_limited`, `ttl_too_long`, `too_large`, `duplicate_deposit`).
 - `substrate.mailbox.register_refused`: Counter of refused registrations labeled by refusal `kind` (`rate_limited`).

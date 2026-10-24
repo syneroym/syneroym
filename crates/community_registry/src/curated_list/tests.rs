@@ -36,6 +36,12 @@ async fn spawn_list_registry(
     if let Some(max_age) = list_max_age_secs {
         role.list_max_age_secs = max_age;
     }
+    spawn_role_registry(role).await
+}
+
+async fn spawn_role_registry(
+    role: ServiceRegistryRole,
+) -> anyhow::Result<(EcosystemRegistry, String)> {
     let config = SubstrateConfig {
         roles: RolesConfig { community_registry: Some(role), ..Default::default() },
         ..Default::default()
@@ -487,3 +493,5 @@ async fn forward_with_no_filter_carries_only_hops_query_param() {
     let received_uri = rx.await.unwrap();
     assert_eq!(received_uri, "/test-entries?hops=1");
 }
+
+mod mailbox;

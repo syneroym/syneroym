@@ -17,6 +17,13 @@ pub struct MailboxRole {
     /// How long receipts are kept after message completion or expiry, in
     /// seconds.
     pub receipt_keep_secs: u64,
+    /// Maximum receipts kept for messages this node no longer holds
+    /// (delivered, rejected, expired or evicted). Above it, receipts go
+    /// before `receipt_keep_secs` ends: the senders that hold the most lose
+    /// their oldest first, so one sender cannot push out the receipts of
+    /// others. Receipts of held messages are not counted: the message limits
+    /// bound them.
+    pub max_settled_receipts: u64,
     /// How long a claimed message is hidden from other claims, in seconds.
     pub visibility_secs: u64,
     /// How long an idle queue is kept without a register or claim, in seconds.
@@ -54,6 +61,7 @@ impl Default for MailboxRole {
             max_queue_messages: 500,
             max_ttl_secs: 7 * 24 * 3600,
             receipt_keep_secs: 14 * 24 * 3600,
+            max_settled_receipts: 100_000,
             visibility_secs: 300,
             queue_lifetime_secs: 30 * 24 * 3600,
             max_total_bytes: 1024 * 1024 * 1024,

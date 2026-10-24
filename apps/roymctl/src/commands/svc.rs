@@ -115,6 +115,8 @@ pub enum SvcCommands {
         /// minted (and its anchor published, if at all) elsewhere. Without
         /// it, a certificate minted here is unusable on the wire until an
         /// anchor exists some other way (`roymctl identity publish-anchor`).
+        /// Also where `--mailbox auto` reads the open mailboxes and the
+        /// current record; `auto` needs it on both certificate paths.
         #[arg(long)]
         registry_url: Option<String>,
         /// Path to a gzip-compressed tar archive of static assets, served
@@ -155,8 +157,10 @@ pub enum SvcCommands {
         /// message when this service cannot be reached. The host serves it
         /// on interface `mailbox`. Needs `--visibility public`, and
         /// `--master` (or `--identity` with `--instance-certificate`): the
-        /// mailbox key is derived from the service's master. `auto` is not
-        /// supported yet.
+        /// mailbox key is derived from the service's master. `auto` keeps the
+        /// mailbox the service's current record names, or picks one of the
+        /// open mailboxes `--registry-url` lists; that registry must be the
+        /// one this substrate publishes to.
         #[arg(long)]
         mailbox: Option<MailboxChoice>,
         /// A guest method that accepts delivery from the mailbox, as

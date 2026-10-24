@@ -88,6 +88,7 @@ impl MailboxWorker {
                 gauge!("substrate.mailbox.queues").set(t.queues as f64);
                 gauge!("substrate.mailbox.messages").set(t.messages as f64);
                 gauge!("substrate.mailbox.bytes").set(t.bytes as f64);
+                gauge!("substrate.mailbox.settled_receipts").set(t.settled_receipts as f64);
             }
         }
     }

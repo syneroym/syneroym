@@ -3,6 +3,7 @@
 use semver::Version;
 
 use super::{visibility::planned_service, *};
+use crate::models::MailboxChoice;
 
 const HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
 
@@ -65,10 +66,24 @@ async fn a_mailbox_on_a_service_that_is_not_public_is_refused() {
 }
 
 #[tokio::test]
-async fn an_auto_mailbox_parses_but_is_refused_for_now() {
-    let manifest_text = "visibility = \"public\"\nmailbox = \"auto\"";
-    let err = compile_service(manifest_text).await.unwrap_err().to_string();
-    assert!(err.contains("not supported yet"), "{err}");
+async fn an_auto_mailbox_compiles_and_stays_auto_in_the_plan() {
+    let compiled =
+        compile_service("visibility = \"public\"\nreplicas = 2\nmailbox = \"auto\"").await.unwrap();
+
+    for member in &compiled.plans[0].services {
+        assert_eq!(member.mailbox, Some(MailboxChoice::Auto));
+    }
+}
+
+#[tokio::test]
+async fn an_auto_mailbox_on_a_service_that_is_not_public_is_refused() {
+    for visibility in ["internal", "private"] {
+        let err = compile_service(&format!("visibility = \"{visibility}\"\nmailbox = \"auto\""))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("only a 'public' service can have a mailbox"), "{err}");
+    }
 }
 
 #[tokio::test]

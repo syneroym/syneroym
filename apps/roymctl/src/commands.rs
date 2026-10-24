@@ -25,6 +25,7 @@ pub mod app;
 pub mod coordinator;
 pub mod identity;
 pub(crate) mod mailbox_arg;
+pub(crate) mod mailbox_auto;
 pub mod member_identity;
 pub mod registry;
 pub mod roym;

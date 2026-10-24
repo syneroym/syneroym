@@ -15,11 +15,13 @@ use serde::{
 use crate::registry_http;
 
 mod coordinator;
+mod mailbox;
 mod rank;
 #[cfg(test)]
 mod tests;
 
 pub use coordinator::{CoordinatorEntry, CoordinatorFilter, CoordinatorTransport};
+pub use mailbox::{MailboxEntry, MailboxFilter};
 pub use rank::{rank, rank_key};
 
 /// The query parameter that counts forwards between registries.
@@ -44,6 +46,8 @@ pub trait ListEntry: Clone + Serialize + DeserializeOwned + Send + Sync + 'stati
     /// The route (`GET /<LIST_KEY>`), the JSON key of the entry array, and the
     /// config key under `[roles.community_registry]`.
     const LIST_KEY: &'static str;
+    /// Whether a registry with an empty list of this kind asks its parent.
+    const FORWARDS_TO_PARENT: bool = true;
     /// The query parameters a client sends to choose entries.
     type Filter: DeserializeOwned + Send + Sync + 'static;
 

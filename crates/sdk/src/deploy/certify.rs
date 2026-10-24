@@ -200,14 +200,18 @@ pub fn member_cert_hours(svc: &PlannedService, default_expires_hours: u64) -> u6
 /// The mailbox key of a member and the record field that names its key, if
 /// the member's service chose a mailbox. The key is derived from the member
 /// master, so every deploy of the member gets the same one.
-fn member_mailbox(
+pub(crate) fn member_mailbox(
     svc: &PlannedService,
     master: &Identity,
 ) -> Result<Option<(MailboxSecretKey, EndpointMailbox)>> {
     match &svc.mailbox {
         None => Ok(None),
         Some(MailboxChoice::Auto) => {
-            anyhow::bail!("service '{}' has an unresolved `auto` mailbox", svc.logical_ref)
+            anyhow::bail!(
+                "service '{}' still has mailbox 'auto'; pin it (pin_auto_mailboxes) before its \
+                 members are certified",
+                svc.logical_ref
+            )
         }
         Some(MailboxChoice::Service(host)) => {
             let key = MailboxSecretKey::derive_from_master(master);

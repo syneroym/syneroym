@@ -3,6 +3,7 @@
 pub(super) mod helpers;
 
 mod bindings;
+mod mailbox_auto;
 mod member_settings;
 mod queue_worker;
 mod renewal;

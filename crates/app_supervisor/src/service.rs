@@ -27,7 +27,8 @@ use syneroym_app_orchestration::{
     TopologyEpoch, TopologyVisibility, has_occurrence_in,
     models::{
         AppDid, AppInstanceId, DeploymentPlan, LogicalServiceName, LogicalServiceRef, MAX_REPLICAS,
-        MemberRef, PlannedService, RotationPolicy, ScheduleSpec, ServiceId, SubstrateAlias,
+        MailboxChoice, MemberRef, PlannedService, RotationPolicy, ScheduleSpec, ServiceId,
+        SubstrateAlias,
     },
     topology_fingerprint, validate_plan_member_settings, validate_plan_visibility,
 };
@@ -46,8 +47,8 @@ use syneroym_rpc::{
 use syneroym_sdk::{
     BindingWrite, BindingWriteOutcome, SyneroymClient,
     deploy::{
-        self, ApplyRequest, CertifiedMembers, DeployTarget, SubstrateActor, WriteBindingsAttempt,
-        WriteBindingsOutbox,
+        self, ApplyRequest, CertifiedMembers, DeployTarget, MailboxDirectory, SubstrateActor,
+        WriteBindingsAttempt, WriteBindingsOutbox,
     },
     health::{self, ExpectedService, HealthTarget, Signal, StatusQuery},
     mapper::map_deployment_plan_to_wit,
@@ -383,6 +384,11 @@ pub struct SupervisorService {
     /// -- a single-node deployment with no registry configured does not
     /// use cross-app discovery, and must not be broken to enable it.
     tier1_writer: Option<Arc<dyn Tier1Writer>>,
+    /// Where `submit` reads the open mailboxes and current records for a
+    /// mailbox `auto`. `None` when this node has no registry configured; a
+    /// plan with an `auto` that no stored plan or record answers is then
+    /// refused.
+    mailbox_directory: Option<Arc<dyn MailboxDirectory>>,
     /// `SupervisorRole.topology_document_not_after_secs` (ADR-0022 §3).
     /// This is the window a caller with a cached document keeps routing
     /// while this supervisor is down -- the availability property the
@@ -547,6 +553,7 @@ impl SupervisorService {
             master_anchor_refresh_interval_secs,
             anchor_writer,
             tier1_writer,
+            mailbox_directory: None,
             topology_document_not_after_secs,
             topology_document_cache_ttl_secs,
             signed_documents: DashMap::new(),
@@ -562,6 +569,13 @@ impl SupervisorService {
             #[cfg(test)]
             _fixture_tempdir: None,
         }
+    }
+
+    /// Gives `submit` a registry to pin a mailbox `auto` from.
+    #[must_use]
+    pub fn with_mailbox_directory(mut self, directory: Arc<dyn MailboxDirectory>) -> Self {
+        self.mailbox_directory = Some(directory);
+        self
     }
 
     pub fn store(&self) -> &SupervisorStore {

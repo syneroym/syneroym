@@ -12,7 +12,7 @@ use std::{
 
 use clap::Subcommand;
 use syneroym_app_orchestration::{
-    AppInstanceId, DeploymentPlan, LocalFilesystemCatalog, SynAppManifest, compile,
+    AppInstanceId, DeploymentPlan, LocalFilesystemCatalog, MailboxChoice, SynAppManifest, compile,
     models::{ServiceType, SubstrateAlias},
     substrate_inventory::{SubstrateInventory, placement_demand},
 };
@@ -320,6 +320,12 @@ async fn handle_submit(
         .await?;
 
     println!("Submitted desired state for app instance '{instance_id}'.");
+    if target_plan.services.iter().any(|s| s.mailbox == Some(MailboxChoice::Auto)) {
+        println!(
+            "mailbox 'auto' is pinned by the supervisor; see `roymctl supervisor status \
+             {instance_id}`"
+        );
+    }
     if let Some(masters) = res.result.get("masters").and_then(|m| m.as_array()) {
         for m in masters {
             let service_name = m.get("service_name").and_then(|v| v.as_str()).unwrap_or("?");

@@ -42,7 +42,7 @@ use syneroym_core::{
 use syneroym_data_db::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_mailbox_format::MAX_CLOCK_SKEW_SECS;
-use syneroym_rpc::ProxyError;
+use syneroym_rpc::{NODE_LOCKED_RPC_CODE, ProxyError};
 use tokio::task;
 use tracing::{info, warn};
 
@@ -253,6 +253,25 @@ impl CallDedupGuard {
         self.stores.lock().expect("dedup store cache poisoned").len()
     }
 
+    /// The error for a service key that cannot be resolved. A node that holds
+    /// no KEK yet is only waiting for its operator, so the caller is told to
+    /// try again later (`NODE_LOCKED_RPC_CODE`); a durable outbox would
+    /// otherwise dead-letter the call for good during the first seconds of a
+    /// boot. Any other key failure fails closed.
+    ///
+    /// `was_locked` is read before the key is resolved. A KEK that loads
+    /// after the failed attempt must not turn a locked answer into a final
+    /// one, and a KEK cannot be unloaded, so a failure with a key present at
+    /// the start is a real one.
+    fn dek_failure(was_locked: bool, error: &anyhow::Error) -> ProxyError {
+        let message = format!("dedup store unavailable: {error}");
+        if was_locked {
+            ProxyError::Callee { code: NODE_LOCKED_RPC_CODE, message, data: None }
+        } else {
+            ProxyError::PermissionDenied(message)
+        }
+    }
+
     /// Opens (once) the dedup store for `service_id`, on that service's own
     /// database with that service's own key.
     async fn store_for(&self, service_id: &str) -> Result<DedupStore, ProxyError> {
@@ -282,6 +301,7 @@ impl CallDedupGuard {
             return Err(ProxyError::ServiceNotFound(service_id.to_string()));
         }
 
+        let was_locked = !self.key_store.kek_is_loaded();
         let (dir, dek) = async_db_location(&self.storage_provider, &self.key_store, service_id)
             .await
             .map_err(|e| match e {
@@ -289,9 +309,7 @@ impl CallDedupGuard {
                 // closed by design, per this module's own doc comment --
                 // a keyed call answered without being able to check the
                 // fence is worse than one refused.
-                AsyncDbLocationError::Dek(e) => {
-                    ProxyError::PermissionDenied(format!("dedup store unavailable: {e}"))
-                }
+                AsyncDbLocationError::Dek(e) => Self::dek_failure(was_locked, &e),
                 // A path/IO problem resolving the directory has no
                 // security meaning and is not a settled answer -- terminal
                 // here would dead-letter a transient failure at the

@@ -631,8 +631,7 @@ fn test_svc_deploy_mailbox_and_cert_lifetime_flags() -> Result<(), Box<dyn Error
         .failure()
         .stderr(contains("mailbox"));
 
-    // `auto` passes the parser and is refused by the deploy's own checks
-    // before any connection is made.
+    // `auto` passes the parser; this fails for the missing `--master`.
     let mut cmd = Command::cargo_bin("roymctl")?;
     cmd.args(base)
         .args(["localhost:1", "--mailbox", "auto", "--visibility", "public"])

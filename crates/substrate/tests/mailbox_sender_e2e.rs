@@ -13,36 +13,24 @@
 //! The sender asks about a deposit once a minute, so a test that needs the
 //! answer waits about that long.
 
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use common::{
     SubstrateNode, mailbox_client,
-    mailbox_receiver::MailboxReceiver,
+    mailbox_world::{ANSWER_WAIT, DEPOSIT_WAIT, KEK, Options, apply_all, world},
     outbox::{
-        DELIVERY_ATTEMPT_BUDGET, artifacts, dead_letter_keys, deploy_guest, guest_enqueue,
-        outbox_keys, publish_endpoint, wait_until,
+        artifacts, dead_letter_keys, deploy_guest, guest_enqueue, publish_endpoint, wait_until,
     },
 };
 use rustls::crypto::ring;
 use serde_json::json;
-use syneroym_core::{
-    config::{MailboxRole, SubstrateConfig},
-    mailbox::codes,
-    test_constants,
-};
+use syneroym_core::{config::MailboxRole, mailbox::codes, test_constants};
 use syneroym_identity::{Identity, substrate};
-use syneroym_sdk::{Publication, SyneroymClient};
-use tempfile::TempDir;
+use syneroym_sdk::Publication;
 use tokio::time;
 
 mod common;
 
-const KEK: [u8; 32] = [0xcd; 32];
-/// Long enough for the sender's worker to deposit, which needs the 5 second
-/// direct attempt first.
-const DEPOSIT_WAIT: Duration = Duration::from_secs(60);
-/// The sender asks about a deposit once a minute.
-const ANSWER_WAIT: Duration = Duration::from_secs(150);
 /// Long enough to see two failed direct attempts when the target has no
 /// mailbox. Each attempt uses the full `DEFAULT_PROXY_CALL_TIMEOUT` (30 s),
 /// so two attempts can take up to 60 s after the outbox starts, plus setup.
@@ -57,266 +45,6 @@ fn mailbox_role(max_ttl_secs: u64) -> MailboxRole {
         sweep_interval_secs: 1,
         republish_interval_secs: 2,
         ..Default::default()
-    }
-}
-
-fn apply_all(config: &mut SubstrateConfig, role: Option<&MailboxRole>) {
-    config.roles.app_sandbox = Some(common::outbox::fast_queue_role(DELIVERY_ATTEMPT_BUDGET));
-    config.retry.max_attempts = 1;
-    if let Some(role) = role {
-        config.roles.mailbox = Some(role.clone());
-    }
-}
-
-struct World {
-    /// Hosts the registry and the sending guest. Also the mailbox when
-    /// `mailbox` is `None`.
-    sender: SubstrateNode,
-    mailbox: Option<SubstrateNode>,
-    receiver_node: Option<SubstrateNode>,
-    /// What a node needs to come back: the same identity and directory. Each
-    /// boot gets a new builder, so it gets new ports. A reused builder would
-    /// dial the old ports again, which another test may hold by then.
-    restart: Restart,
-    receiver: MailboxReceiver,
-    guest_did: String,
-    greeter_wasm: Vec<u8>,
-    opted_in: bool,
-    _dirs: Vec<TempDir>,
-}
-
-struct Restart {
-    owner: Identity,
-    registry_url: String,
-    mailbox_role: MailboxRole,
-    mailbox_dir: Option<PathBuf>,
-    receiver_dir: PathBuf,
-}
-
-impl Restart {
-    fn mailbox_builder(&self) -> common::NodeBuilder {
-        let role = self.mailbox_role.clone();
-        SubstrateNode::builder()
-            .owner(&self.owner)
-            .base_path(self.mailbox_dir.as_ref().expect("a separate mailbox node"))
-            .shared_registry(&self.registry_url)
-            .configure(move |c| c.roles.mailbox = Some(role.clone()))
-            .inject_kek_bytes(KEK)
-    }
-
-    fn receiver_builder(&self) -> common::NodeBuilder {
-        SubstrateNode::builder()
-            .owner(&self.owner)
-            .base_path(&self.receiver_dir)
-            .shared_registry(&self.registry_url)
-            .inject_kek_bytes(KEK)
-    }
-}
-
-struct Options {
-    max_ttl_secs: u64,
-    /// The sending guest lives on the mailbox node.
-    same_node: bool,
-    /// The greeter lists its method for delivery from the mailbox.
-    opted_in: bool,
-}
-
-impl Options {
-    fn standard() -> Self {
-        Self { max_ttl_secs: 7 * 24 * 3600, same_node: false, opted_in: true }
-    }
-}
-
-/// The greeter method the sending guest calls, as a service lists it for
-/// delivery from the mailbox.
-fn greet_entry() -> String {
-    format!("{}#greet", test_constants::GREETER_INTERFACE_NAME)
-}
-
-async fn world(options: Options) -> World {
-    let _ = ring::default_provider().install_default();
-    let (proxy_wasm, greeter_wasm) =
-        artifacts().expect("proxy-test/greeter wasm artifacts not built");
-    let owner = Identity::generate().unwrap();
-    let role = mailbox_role(options.max_ttl_secs);
-
-    let sender_role = options.same_node.then(|| role.clone());
-    let mut sender = SubstrateNode::builder()
-        .owner(&owner)
-        .configure(move |c| apply_all(c, sender_role.as_ref()))
-        .inject_kek_bytes(KEK)
-        .boot()
-        .await;
-    let registry_url = sender.registry_url().to_string();
-
-    let mailbox_dir = (!options.same_node).then(|| tempfile::tempdir().unwrap());
-    let receiver_dir = tempfile::tempdir().unwrap();
-    let restart = Restart {
-        owner,
-        registry_url,
-        mailbox_role: role,
-        mailbox_dir: mailbox_dir.as_ref().map(|dir| dir.path().to_path_buf()),
-        receiver_dir: receiver_dir.path().to_path_buf(),
-    };
-    let mailbox = match options.same_node {
-        true => None,
-        false => Some(restart.mailbox_builder().boot().await),
-    };
-    let receiver_node = restart.receiver_builder().boot().await;
-    let dirs: Vec<TempDir> = mailbox_dir.into_iter().chain([receiver_dir]).collect();
-
-    let caller_master = Identity::generate().unwrap();
-    let guest_did = deploy_guest(&mut sender, &caller_master, proxy_wasm).await;
-
-    let world = World {
-        sender,
-        mailbox,
-        receiver_node: Some(receiver_node),
-        restart,
-        receiver: MailboxReceiver::new(),
-        guest_did,
-        greeter_wasm,
-        opted_in: options.opted_in,
-        _dirs: dirs,
-    };
-    world.deploy_receiver().await;
-    // The receiver's own pass makes the queue the sender deposits into.
-    world.receiver_pulls().await;
-    world
-}
-
-impl World {
-    fn mailbox_node(&self) -> &SubstrateNode {
-        self.mailbox.as_ref().unwrap_or(&self.sender)
-    }
-
-    fn receiver_node(&self) -> &SubstrateNode {
-        self.receiver_node.as_ref().expect("the receiver node is running")
-    }
-
-    fn receiver_id(&self) -> String {
-        self.receiver.service_id()
-    }
-
-    /// The receiver's greeter, public, with a mailbox in its record. It lists
-    /// `greet` for delivery from the mailbox unless the test says not.
-    async fn deploy_receiver(&self) {
-        let entry = greet_entry();
-        let methods: Vec<&str> = if self.opted_in { vec![entry.as_str()] } else { Vec::new() };
-        self.receiver
-            .deploy_with_methods(
-                self.receiver_node(),
-                self.mailbox_node().did(),
-                test_constants::GREETER_INTERFACE_NAME,
-                self.greeter_wasm.clone(),
-                &methods,
-            )
-            .await;
-    }
-
-    /// One pass of the receiver node's mailbox receiver, waited for. The
-    /// receiver's queue is registered at the end of it.
-    async fn receiver_pulls(&self) {
-        let summary = self
-            .receiver_node()
-            .substrate_client
-            .mailbox_pull_now()
-            .await
-            .expect("security.mailbox-pull-now must answer");
-        assert_eq!(summary.blocked, 0, "{summary:?}");
-        assert_eq!(summary.registered, 1, "{summary:?}");
-    }
-
-    async fn mailbox_client(&self) -> SyneroymClient {
-        self.receiver.client(self.mailbox_node()).await
-    }
-
-    /// The double registers the queue itself, for a receiver whose node no
-    /// longer hosts the service.
-    async fn register_receiver_double(&self) {
-        let mut client = self.mailbox_client().await;
-        self.receiver
-            .register(&client, self.receiver_node().did(), self.mailbox_node().did())
-            .await;
-        client.shutdown().await.ok();
-    }
-
-    /// The receiver node goes down. Its record stays in the registry, so a
-    /// sender resolves an address and then fails to connect.
-    async fn stop_receiver(&mut self) {
-        self.receiver_node.take().expect("the receiver node is running").teardown().await;
-        time::sleep(Duration::from_secs(1)).await;
-    }
-
-    /// The receiver node comes back: same identity and directory, new
-    /// ports, and its greeter deployed again.
-    async fn restart_receiver(&mut self) {
-        self.receiver_node = Some(self.restart.receiver_builder().boot().await);
-        self.deploy_receiver().await;
-    }
-
-    async fn enqueue(&self, key: &str) {
-        guest_enqueue(&self.sender, &self.guest_did, &self.receiver_id(), key)
-            .await
-            .expect("the enqueue must be accepted for delivery");
-    }
-
-    /// Whether the guest's outbox holds exactly `key`, and whether it waits
-    /// at a mailbox.
-    async fn outbox(&self) -> Vec<(String, bool)> {
-        self.sender
-            .substrate_client
-            .proxy_outbox(self.guest_did.clone())
-            .await
-            .expect("proxy-outbox failed")
-            .into_iter()
-            .map(|row| (row.idempotency_key, row.deposited))
-            .collect()
-    }
-
-    /// How many attempts the outbox row for `key` has used.
-    async fn attempts_of(&self, key: &str) -> u32 {
-        self.sender
-            .substrate_client
-            .proxy_outbox(self.guest_did.clone())
-            .await
-            .expect("proxy-outbox failed")
-            .into_iter()
-            .find(|row| row.idempotency_key == key)
-            .map_or(0, |row| row.attempts)
-    }
-
-    async fn is_deposited(&self, key: &str) -> bool {
-        self.outbox().await.contains(&(key.to_string(), true))
-    }
-
-    async fn wait_deposited(&self, key: &str) {
-        assert!(
-            wait_until(DEPOSIT_WAIT, || async { self.is_deposited(key).await }).await,
-            "the call must wait at the mailbox; outbox {:?}",
-            self.outbox().await
-        );
-    }
-
-    async fn wait_outbox_empty(&self) {
-        assert!(
-            wait_until(ANSWER_WAIT, || async {
-                outbox_keys(&self.sender, &self.guest_did).await.is_empty()
-            })
-            .await,
-            "the call must leave the outbox; it holds {:?}",
-            self.outbox().await
-        );
-    }
-
-    async fn teardown(mut self) {
-        if let Some(node) = self.receiver_node.take() {
-            node.teardown().await;
-        }
-        if let Some(node) = self.mailbox.take() {
-            node.teardown().await;
-        }
-        self.sender.teardown().await;
     }
 }
 
@@ -335,7 +63,7 @@ async fn an_opted_in_queued_call_runs_once_and_completes_the_row() {
     world.receiver_pulls().await;
 
     world.wait_outbox_empty().await;
-    assert!(dead_letter_keys(&world.sender, &world.guest_did).await.is_empty());
+    assert!(dead_letter_keys(world.sender(), &world.guest_did).await.is_empty());
     time::sleep(Duration::from_secs(3)).await;
     assert_eq!(
         common::outbox::wasm_instantiations() - before,
@@ -357,14 +85,14 @@ async fn a_queued_call_to_a_method_that_did_not_opt_in_is_dead_lettered() {
 
     assert!(
         wait_until(ANSWER_WAIT, || async {
-            dead_letter_keys(&world.sender, &world.guest_did).await == vec!["msg-1".to_string()]
+            dead_letter_keys(world.sender(), &world.guest_did).await == vec!["msg-1".to_string()]
         })
         .await,
         "the signed rejection must dead-letter the call; outbox {:?}",
         world.outbox().await
     );
     let letters =
-        world.sender.substrate_client.proxy_dead_letters(world.guest_did.clone()).await.unwrap();
+        world.sender().substrate_client.proxy_dead_letters(world.guest_did.clone()).await.unwrap();
     assert!(letters[0].last_error.contains("not_eligible"), "{}", letters[0].last_error);
     world.teardown().await;
 }
@@ -386,7 +114,7 @@ async fn an_expired_deposit_goes_back_to_direct_and_lands_once_when_the_receiver
     let before = common::outbox::wasm_instantiations();
 
     world.wait_outbox_empty().await;
-    assert!(dead_letter_keys(&world.sender, &world.guest_did).await.is_empty());
+    assert!(dead_letter_keys(world.sender(), &world.guest_did).await.is_empty());
     time::sleep(Duration::from_secs(3)).await;
     assert_eq!(
         common::outbox::wasm_instantiations() - before,
@@ -487,7 +215,7 @@ async fn a_stopped_mailbox_keeps_the_call_on_direct_attempts() {
         "the call keeps being tried directly"
     );
     assert_eq!(world.outbox().await, vec![("msg-1".to_string(), false)]);
-    assert!(dead_letter_keys(&world.sender, &world.guest_did).await.is_empty());
+    assert!(dead_letter_keys(world.sender(), &world.guest_did).await.is_empty());
 
     // The mailbox returns, and the deposit is made on a later attempt.
     world.mailbox = Some(world.restart.mailbox_builder().boot().await);

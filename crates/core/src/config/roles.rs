@@ -7,7 +7,7 @@ use super::{
     mailbox::MailboxRole,
     sandbox::{AppSandboxRole, PodmanSandboxRole, RoymRole},
 };
-use crate::curated_list::CoordinatorEntry;
+use crate::curated_list::{CoordinatorEntry, MailboxEntry};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -47,6 +47,13 @@ pub struct ServiceRegistryRole {
     /// registry lists. Only list a coordinator whose
     /// `[roles.coordinator] access` is "everyone".
     pub coordinators: Vec<CoordinatorEntry>,
+    /// `[[roles.community_registry.mailboxes]]`: open mailboxes this registry
+    /// lists for `mailbox = "auto"`. Only list a node that runs
+    /// `[roles.mailbox]` with the open limits and whose
+    /// `substrate.registry_url` is this registry: a mailbox keeps a sleeping
+    /// receiver's record alive only in its own node's registry. This list is
+    /// never forwarded to `parent_registry_url`.
+    pub mailboxes: Vec<MailboxEntry>,
     /// How long a client may cache any curated list of this registry.
     pub list_max_age_secs: u64,
 }
@@ -58,6 +65,7 @@ impl Default for ServiceRegistryRole {
             http_bind_address: default_registry_http_bind_address(),
             parent_registry_url: None,
             coordinators: Vec::new(),
+            mailboxes: Vec::new(),
             list_max_age_secs: default_list_max_age_secs(),
         }
     }

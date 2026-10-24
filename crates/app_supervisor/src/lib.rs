@@ -20,5 +20,6 @@ pub use keys::{MasterVault, MintedMaster, VaultError};
 pub use outbox::{QueueKey, SupervisorOutbox};
 pub use service::SupervisorService;
 pub use store::{DesiredState, SupervisorStore};
+pub use syneroym_sdk::deploy::{MailboxDirectory, RegistryMailboxDirectory};
 pub use tier1::{RegistryTier1Writer, Tier1Writer};
 pub use topology::{ServiceTopology, TopologyBuildError, service_topology};

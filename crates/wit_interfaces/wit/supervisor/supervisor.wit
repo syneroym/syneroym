@@ -53,6 +53,8 @@ interface supervisor {
         signal: string,
         detail: string,
         restart-attempts: u32,
+        /// The member's mailbox host (node DID), from the stored plan.
+        mailbox: option<string>,
     }
 
     /// Per dependent, per declared dependency: what the supervisor last

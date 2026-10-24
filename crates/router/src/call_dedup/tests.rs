@@ -138,8 +138,11 @@ async fn a_keyed_call_is_refused_when_the_dedup_store_cannot_be_opened() {
 
     let outcome = guard.begin("svc-a", "greeter", Some("did:key:zC"), Some("k1")).await;
     assert!(
-        matches!(outcome, GuardOutcome::Refuse(ProxyError::PermissionDenied(_))),
-        "an unresolvable DEK must fail closed, got {outcome:?}"
+        matches!(
+            outcome,
+            GuardOutcome::Refuse(ProxyError::Callee { code: NODE_LOCKED_RPC_CODE, .. })
+        ),
+        "a locked node must refuse with a code that says to try again, got {outcome:?}"
     );
 }
 
