@@ -38,29 +38,15 @@ const ACK_MARGIN_SECS: u64 = 30;
 /// Acks are sent after this many handled messages.
 pub(super) const ACK_FLUSH: usize = 8;
 
-/// The identity of an installed certificate, to tell a renewed one apart.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CertId {
-    temporary_did: String,
-    issued_at_secs: u64,
-}
-
-impl CertId {
-    fn of(certificate: &DelegationCertificate) -> Self {
-        Self {
-            temporary_did: certificate.temporary_did.clone(),
-            issued_at_secs: certificate.issued_at_secs,
-        }
-    }
-}
-
 /// What the puller remembers about one service between passes.
 #[derive(Default)]
 pub(super) struct ServiceState {
     registered: Option<Registration>,
     /// The certificate the mailbox refused, and why. The service is skipped
-    /// until the installed certificate differs.
-    blocked_on: Option<(CertId, Note)>,
+    /// until the installed certificate differs in any field. A renewal keeps
+    /// the instance key and may be issued in the same second, so the key and
+    /// the issue time alone do not tell it apart.
+    blocked_on: Option<(DelegationCertificate, Note)>,
     served_checked_at: Option<Instant>,
 }
 
@@ -170,7 +156,7 @@ impl ServicePass<'_> {
     /// Stops pulling for this service until its certificate changes. The
     /// next certificate registers again.
     fn block(&mut self, instance: &ServiceInstance, note: Note) {
-        self.entry.blocked_on = Some((CertId::of(&instance.certificate), note));
+        self.entry.blocked_on = Some((instance.certificate.clone(), note));
         self.entry.registered = None;
         self.stop(note);
     }
@@ -233,9 +219,8 @@ impl MailboxPuller {
             pass.note(Note::NoCertificate, "");
             return None;
         };
-        let cert_id = CertId::of(&instance.certificate);
         match pass.entry.blocked_on.take() {
-            Some((blocked, why)) if blocked == cert_id => {
+            Some((blocked, why)) if blocked == instance.certificate => {
                 pass.entry.blocked_on = Some((blocked, why));
                 pass.note(why, "");
                 return None;

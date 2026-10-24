@@ -77,6 +77,41 @@ async fn a_stale_instance_stops_until_its_certificate_changes() {
     assert_eq!(node.mailbox.count("claim"), claims + 1);
 }
 
+/// The installed certificate and a renewal of it with a longer life, both
+/// issued in the same second.
+fn renewal_in_the_same_second(node: &PullNode) -> (DelegationCertificate, DelegationCertificate) {
+    let instance = node.node_identity.derive_service_identity(OWNER, &node.service_id);
+    let issue = |secs| {
+        DelegationCertificate::issue(
+            &node.svc_master,
+            instance.public_key(),
+            secs,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap()
+    };
+    loop {
+        let (first, renewed) = (issue(3600), issue(7200));
+        if first.issued_at_secs == renewed.issued_at_secs {
+            return (first, renewed);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_renewal_in_the_same_second_unblocks_the_service() {
+    let node = pull_node(&["greeter#greet"]).await;
+    let (first, renewed) = renewal_in_the_same_second(&node);
+    node.registry.set_instance_cert(node.service_id.clone(), first).await.unwrap();
+    node.mailbox.fail_with("register", codes::STALE_INSTANCE);
+    assert_eq!(node.pass().await.blocked, 1);
+    node.mailbox.clear_failures();
+
+    node.registry.set_instance_cert(node.service_id.clone(), renewed).await.unwrap();
+
+    assert_eq!(node.pass().await.registered, 1, "the renewed certificate is a new one");
+}
+
 #[tokio::test]
 async fn a_locked_vault_skips_the_service() {
     let node = pull_node(&["greeter#greet"]).await;
