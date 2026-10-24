@@ -591,7 +591,7 @@ A `RegisterError::Store` is logged at `error!` before it becomes
   if let Some(token) = &p.child_token:
       cert = instance_certificate(caller)?
       if let Err(e) = self.passports.admit(&who, cert, token, now).await:
-          counter!("substrate.mailbox.register_refused", "kind" => "passport_refused").increment(1)
+          counter!("substrate.mailbox.register_refused", "kind" => e.kind()).increment(1)
           return Err(e)
   r = blocking(&self.store, move |s| s.register(&who, &record, now)).await?
   (publish wake and answer unchanged)
@@ -866,9 +866,9 @@ helper both use.
 
   Call chain: `build_deploy_plan` (`app/deploy.rs:488`) calls
   `substitute_and_certify_members` (line 498), `handle_deploy`
-  (`app/deploy.rs:696`) calls `build_deploy_plan`, and `handle_app` in
-  `apps/roymctl/src/commands/app.rs:282` passes the loaded passports from
-  `--mailbox-passport`. Other callers pass `None`.
+  (`app/deploy.rs:696`) calls `build_deploy_plan`, and `handle` in
+  `apps/roymctl/src/commands/app.rs:264` (line 282) passes the loaded
+  passports from `--mailbox-passport`. Other callers pass `None`.
 - `app reconcile` deploys nothing, so it gets no flag.
 
 ### Step 10 — Control plane: check, store and hash the child token (PR 2)
@@ -1118,8 +1118,9 @@ PR 2:
   - `docs/developer-guide.md`: an operator note: issue, deny, list; the
     owner's `--mailbox-passport`; the file `mailbox_passports.db`; delete
     an old `mailbox.db`. In the metrics section (around line 1801):
-    - add `passport_refused` to the `substrate.mailbox.register_refused`
-      kinds list: `kind` (`rate_limited`, `passport_refused`).
+    - add `passport_refused` and `internal` to the
+      `substrate.mailbox.register_refused` kinds list: `kind`
+      (`rate_limited`, `passport_refused`, `internal`).
     - add new counter `substrate.mailbox.passport_granted`: Counter of
       granted mailbox passport leases.
   - `docs/TERMINOLOGY.md`: "passport", "child token", "lease" now name
@@ -1186,7 +1187,7 @@ PR 2:
 | WIT `mailbox-credentials.child-token` | `crates/sdk/src/types.rs:94`, `crates/sdk/src/mapper.rs:390`; test literals in `crates/substrate/tests/mailbox_record_e2e.rs`, `crates/control_plane/.../tests/mailbox.rs`, `.../tests/mailbox_pull.rs` |
 | `Publication::Public.mailbox_child_token` | `apps/roymctl/src/commands/svc/deploy.rs:226`; every test literal |
 | `CertifiedMembers.mailbox_child_tokens` | `crates/sdk/src/deploy/types.rs` (`without_mailboxes`), `crates/sdk/src/deploy/certify.rs` (default), `apps/roymctl/src/commands/member_identity.rs:203`; `crates/substrate/tests/roym_identity_e2e.rs:215`, `crates/substrate/tests/roym_app_e2e.rs:252`, `crates/substrate/tests/common/roym.rs:407` (full `CertifiedMembers { … }` literals) |
-| `substitute_and_certify_members(.., passports)` | `apps/roymctl/src/commands/app/deploy.rs:488` (`build_deploy_plan`), line 696 (`handle_deploy`), and `apps/roymctl/src/commands/app.rs:282` (caller of `handle_deploy`) |
+| `substitute_and_certify_members(.., passports)` | `apps/roymctl/src/commands/app/deploy.rs:488` (`build_deploy_plan`), line 696 (`handle_deploy`), and `apps/roymctl/src/commands/app.rs:264` (`handle`, calling `handle_deploy` at line 282) |
 | `ValidatedMailbox.child_token` | `types.rs` (`validate_mailbox`), `deploy/commit.rs` (`install_mailbox_key`) |
 | `compute_deploy_idempotency_hash` | `crates/control_plane/src/service/orchestration/deploy/manifest.rs:28-36` |
 | `ReceiverVault::mailbox_passport` | `crates/router/src/mailbox_pull.rs:236` (impl), `mailbox_pull/tests/helpers.rs` |
