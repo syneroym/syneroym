@@ -5,8 +5,8 @@ planning conversation. This plan is meant to stand alone.*
 
 **Status: ready, 2026-10-24. The owner accepted the recommendations for
 Q1 to Q10 (section 2.1) and the field name `child_token` (section 2.2
-point 7) on 2026-10-24. You can start Step 1 once C7 has merged (see
-Base).**
+point 7) on 2026-10-24. C7 merged as PR #321. Start on the current
+branch `feat/m06d-c8-implementation`.**
 
 **Size and PRs.** `task.md` sizes C8 as M. With deny and lease listing for
 the mailbox (Q6), the deploy flags in two `roymctl` commands, the receiver
@@ -21,10 +21,7 @@ order:
   in Step 14). The owner's child token travels in the deploy call, the
   substrate stores it, and the puller presents it.
 
-**Base.** C8 builds on C7 (branch `feat/m06d-c7-open-mailbox-list`, not
-merged into `main` when this plan was written). Start the C8 branches from
-`main` after the C7 PR has merged: `feat/m06d-c8-mailbox-passport` for PR 1,
-then `feat/m06d-c8-child-token` for PR 2 after PR 1 merges. File paths and
+**Base.** C8 builds on C7, which merged as PR #321. File paths and
 line numbers below were checked at `83a45870`.
 
 ## 0. Read first, and the rules
@@ -344,7 +341,7 @@ at most 10 s for it (`MAILBOX_CALL_TIMEOUT`,
 
 In the [service-mailbox change doc](../../changes/service-mailbox/change.md)
 `## Deviations`, add `D-C8-1` onwards: the answers to Q1 to Q10 and
-`C8-1` to `C8-8`, and points 2, 3, 7, 8 and 9 of section 2.2. Keep the
+`C8-1` to `C8-8`, and points 2, 3, 7, 8, 9 and 11 of section 2.2. Keep the
 doc `status: approved` until Step 14.
 
 ### Step 2 — `crates/core` and `crates/mailbox_format` (PR 1)
@@ -372,7 +369,7 @@ pub async fn ucan_chain_not_revoked(token: &CapabilityToken, resolver: &dyn Mast
 }
 ```
 
-Move its unit tests (if any) to `revocation/tests.rs`. Callers stay:
+Move its unit test (`crates/router/src/route_handler/io/tests.rs:404`) to `revocation/tests.rs`. Callers stay:
 `crates/coordinator_iroh/src/passport.rs:112` and the router's own use.
 
 **2b. Wire types** in `crates/core/src/mailbox.rs`:
@@ -526,6 +523,7 @@ match timeout(REVOCATION_LOOKUP_TIMEOUT,
     Err(_)    -> warn!("passport revocation lookup timed out; treating as not revoked")
 lease = spawn_blocking(move || registrar.grant(checked, now))     // deny, count, write
 info!(passport_id, subject, lease_ends_at, "mailbox passport lease granted")
+counter!("substrate.mailbox.passport_granted").increment(1)
 Ok(lease)
 ```
 
@@ -592,7 +590,9 @@ A `RegisterError::Store` is logged at `error!` before it becomes
   record = CheckedRecord::check(&p.record, &who, &self.node_did, now)?
   if let Some(token) = &p.child_token:
       cert = instance_certificate(caller)?
-      self.passports.admit(&who, cert, token, now).await?
+      if let Err(e) = self.passports.admit(&who, cert, token, now).await:
+          counter!("substrate.mailbox.register_refused", "kind" => "passport_refused").increment(1)
+          return Err(e)
   r = blocking(&self.store, move |s| s.register(&who, &record, now)).await?
   (publish wake and answer unchanged)
   ```
@@ -714,9 +714,8 @@ A `RegisterError::Store` is logged at `error!` before it becomes
       /// Messages per queue. Same rule.
       #[arg(long)] max_messages: Option<u64>,
       /// Longest message time-to-live, in days, 1 to 30. Same rule.
-      /// This flag accepts values up to 30 days, but the sender currently
-      /// asks for at most 7 days, so raising this limit takes no effect
-      /// until the sender is updated (see Q1 backlog row).
+      /// Accepts up to 30 days. Senders currently request at most 7 days,
+      /// so values above 7 have no practical effect until senders ask for more.
       #[arg(long)] max_ttl_days: Option<u64>,
   }
   ```
@@ -729,11 +728,13 @@ A `RegisterError::Store` is logged at `error!` before it becomes
 - Tests: `mailbox/tests.rs` (issue writes a token with exactly the given
   facts and the `mailbox` selector; `--max-ttl-days 31` refused; no limit
   flags gives empty facts), `cli_args.rs` (parse of the three verbs).
-- **Note on mailbox with no verified controller**: for a mailbox host with
-  no verified controller, the node DID acts as passport root and can issue
-  passports. However, `deny` and `leases` are refused on such a node because
-  `substrate/admin` requires a verified owner (cost noted in `D-B2-6`). The
-  help text for `deny` and `leases` should say this.
+- **Note on unowned mailbox host**: on a mailbox host with no verified
+  controller and no `[iam].admin_ucan_root`, the node DID acts as passport
+  root and can issue passports. However, `deny` and `leases` are refused on
+  such an unowned host because `substrate/admin` fails closed (cost noted in
+  `D-B2-6`). On a host with `admin_ucan_root` and no verified controller
+  (`D-B2-1`), the node key issues passports and the admin root can deny or
+  list them. The help text for `deny` and `leases` should explain this.
 
 **PR 1 ends here.** Run Step 13's PR 1 tests and Step 15.
 
@@ -863,7 +864,11 @@ helper both use.
   }
   ```
 
-  Call site: `app/deploy.rs:498`. Its other callers (if any) pass `None`.
+  Call chain: `build_deploy_plan` (`app/deploy.rs:488`) calls
+  `substitute_and_certify_members` (line 498), `handle_deploy`
+  (`app/deploy.rs:696`) calls `build_deploy_plan`, and `handle_app` in
+  `apps/roymctl/src/commands/app.rs:282` passes the loaded passports from
+  `--mailbox-passport`. Other callers pass `None`.
 - `app reconcile` deploys nothing, so it gets no flag.
 
 ### Step 10 — Control plane: check, store and hash the child token (PR 2)
@@ -946,11 +951,9 @@ in `crates/router/src/mailbox_pull/tests/helpers.rs`.
 new sibling `mailbox_pull/passport.rs` if it grows past ~650):
 
 - `Inputs` gets `child_token: Option<String>`. In `inputs()` (line 230),
-  after the key: `vault.mailbox_passport(id)`; `Err` → `Note::KeyUnreadable`
-  and `None` (the same vault, the same cause). **When the vault returns
-  `Err`, set `child_token = None` in `Inputs` AND stop the pass (return
-  early, the same way the key path does). Do not proceed without the token
-  on a vault error.**
+  after the key: `vault.mailbox_passport(id)`; `Err` → `Note::KeyUnreadable`,
+  and `inputs()` returns `None` (stop the pass, the same way the key path
+  does; do not proceed without the token on a vault error).
 - `Registration` gets `child_token_digest: Option<[u8; 32]>` (SHA-256 of
   the JSON; `sha2` is already a router dependency). It holds the digest of
   the token the service *had* at that register, even when the mailbox
@@ -1092,15 +1095,17 @@ PR 2:
 
 ### Step 14 — Docs, backlog, status (PR 2, plus the PR 1 parts noted)
 
-- Mailbox change doc: `D-1` to `D-3` test columns; tick the last task
+- Mailbox change doc: `D-1` to `D-3` test columns (in the `D-1` column,
+  note that `max_ttl_secs` has no end-to-end effect yet because the sender
+  clamps deposits to 7 days); tick the last task
   **and** the "Resolve the open questions" task; update the two
   partly-decided questions (the first time-to-live, size and rate values;
   who wakes a sleeping phone) with the Q1 answer and a forward reference to
   the still-open items; the rest of `D-C8-*` (what differed from this
   plan); `status: done`; `living-docs-touched` updated. Also add a
-  Deviations entry: a mailbox without a verified controller can issue
-  passports but cannot deny or list them (`substrate/admin` requires a
-  verified owner).
+  Deviations entry: on an unowned mailbox host (no verified controller and
+  no `[iam].admin_ucan_root`), the node key issues passports but deny and
+  leases are refused (`substrate/admin` fails closed, `D-B2-6`).
 - Operator-passport change doc: no status change. Add one line under
   "Deviations" pointing to `D-C8-*` for the mailbox use (it is `done`, so
   only if `cargo xtask check-change-docs` allows it; else leave it).
@@ -1112,10 +1117,11 @@ PR 2:
     passport_refused` row to the mailbox error-code table (lines 2124–2136).
   - `docs/developer-guide.md`: an operator note: issue, deny, list; the
     owner's `--mailbox-passport`; the file `mailbox_passports.db`; delete
-    an old `mailbox.db`. In the metrics section (around line 1801), add
-    `passport_refused` and `passport_granted` to the
-    `substrate.mailbox.register_refused` counter list (or a new
-    `substrate.mailbox.register_passport_*` counter).
+    an old `mailbox.db`. In the metrics section (around line 1801):
+    - add `passport_refused` to the `substrate.mailbox.register_refused`
+      kinds list: `kind` (`rate_limited`, `passport_refused`).
+    - add new counter `substrate.mailbox.passport_granted`: Counter of
+      granted mailbox passport leases.
   - `docs/TERMINOLOGY.md`: "passport", "child token", "lease" now name
     both uses.
   - `docs/planning/traceability-matrix.md:56`: add D-1 to D-3.
@@ -1146,11 +1152,7 @@ PR 2:
       max_queues` assumes at most `max_queues` queues; Q4 breaks this when
       passport queues exceed `max_queues`. Target: TBD.
     - `C8-1` gives no config to admit only passport holders. Target: TBD.
-  - **ID assignment note**: M06C already uses `D-C8-*` IDs (for example
-    `D-C8-1`, `D-C8-17`, `D-C8-19` in `docs/planning/deferred-backlog.md`).
-    Check the current backlog before assigning IDs to new rows, and use IDs
-    that do not conflict with existing `D-C8-*` rows. Each new row must link
-    the service-mailbox change doc.
+  - Each new row must link the service-mailbox change doc.
 - `task.md`: C8 "Done", with the PR numbers; `status.md`: the C8 row with
   evidence, in the same style as C7.
 
@@ -1182,9 +1184,9 @@ PR 2:
 | `relay_passport.rs` → `passport_admin.rs` | `crates/control_plane/src/service/dispatch.rs:6`, `:146-149` |
 | `IssueSigner` extracted | `apps/roymctl/src/commands/coordinator.rs` (`IssueArgs`, `handle_issue`, `load_signer`) |
 | WIT `mailbox-credentials.child-token` | `crates/sdk/src/types.rs:94`, `crates/sdk/src/mapper.rs:390`; test literals in `crates/substrate/tests/mailbox_record_e2e.rs`, `crates/control_plane/.../tests/mailbox.rs`, `.../tests/mailbox_pull.rs` |
-| `Publication::Public.mailbox_child_token` | `apps/roymctl/src/commands/svc/deploy.rs:226`; every test literal; `crates/substrate/tests/roym_identity_e2e.rs:215`, `crates/substrate/tests/roym_app_e2e.rs:252`, `crates/substrate/tests/common/roym.rs:407` (`CertifiedMembers { … }` full literals — adding a field breaks them) |
-| `CertifiedMembers.mailbox_child_tokens` | `crates/sdk/src/deploy/types.rs` (`without_mailboxes`), `crates/sdk/src/deploy/certify.rs` (default), `apps/roymctl/src/commands/member_identity.rs:203` |
-| `substitute_and_certify_members(.., passports)` | `apps/roymctl/src/commands/app/deploy.rs:488` (`build_deploy_plan`), around line 696 (`handle_deploy`, which calls `build_deploy_plan`); line 498 called `substitute_and_certify_members` directly |
+| `Publication::Public.mailbox_child_token` | `apps/roymctl/src/commands/svc/deploy.rs:226`; every test literal |
+| `CertifiedMembers.mailbox_child_tokens` | `crates/sdk/src/deploy/types.rs` (`without_mailboxes`), `crates/sdk/src/deploy/certify.rs` (default), `apps/roymctl/src/commands/member_identity.rs:203`; `crates/substrate/tests/roym_identity_e2e.rs:215`, `crates/substrate/tests/roym_app_e2e.rs:252`, `crates/substrate/tests/common/roym.rs:407` (full `CertifiedMembers { … }` literals) |
+| `substitute_and_certify_members(.., passports)` | `apps/roymctl/src/commands/app/deploy.rs:488` (`build_deploy_plan`), line 696 (`handle_deploy`), and `apps/roymctl/src/commands/app.rs:282` (caller of `handle_deploy`) |
 | `ValidatedMailbox.child_token` | `types.rs` (`validate_mailbox`), `deploy/commit.rs` (`install_mailbox_key`) |
 | `compute_deploy_idempotency_hash` | `crates/control_plane/src/service/orchestration/deploy/manifest.rs:28-36` |
 | `ReceiverVault::mailbox_passport` | `crates/router/src/mailbox_pull.rs:236` (impl), `mailbox_pull/tests/helpers.rs` |
