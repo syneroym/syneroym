@@ -42,7 +42,9 @@ pub(crate) fn router(role: &ServiceRegistryRole) -> anyhow::Result<Router> {
         .timeout(registry_http::HTTP_REQUEST_TIMEOUT)
         .build()
         .context("building the curated-list HTTP client")?;
-    Ok(Router::new().merge(list_route(role.coordinators.clone(), role, client)?))
+    Ok(Router::new()
+        .merge(list_route(role.coordinators.clone(), role, client.clone())?)
+        .merge(list_route(role.mailboxes.clone(), role, client)?))
 }
 
 pub(crate) fn list_route<E: ListEntry>(
@@ -75,7 +77,7 @@ async fn serve_list<E: ListEntry>(
 ) -> Result<Json<CuratedList<E>>, (StatusCode, String)> {
     let entries: Vec<E> = state.entries.iter().filter(|e| e.matches(&filter)).cloned().collect();
     let own = CuratedList { max_age_secs: state.max_age_secs, entries };
-    if !own.entries.is_empty() {
+    if !own.entries.is_empty() || !E::FORWARDS_TO_PARENT {
         return Ok(Json(own));
     }
     let Some(parent) = state.parent_registry_url.as_deref() else {

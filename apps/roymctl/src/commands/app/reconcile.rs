@@ -46,8 +46,14 @@ pub(super) async fn handle_reconcile(
 
                 let compiled = compile(instance_id.clone(), &manifest, &catalog).await?;
 
-                if let Some(target_plan) = compiled.plans.last() {
-                    let diff = reconciler.compute_diff(target_plan)?;
+                if let Some(compiled_plan) = compiled.plans.last() {
+                    // A deploy pinned each `auto`; compare like with like.
+                    let mut target_plan = compiled_plan.clone();
+                    deploy::keep_earlier_mailboxes(
+                        &mut target_plan,
+                        active.as_ref().map(|record| &record.plan),
+                    );
+                    let diff = reconciler.compute_diff(&target_plan)?;
                     println!("Computed diff:");
                     if diff.actions.is_empty() {
                         println!(" (No changes)");

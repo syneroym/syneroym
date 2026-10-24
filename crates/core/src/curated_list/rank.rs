@@ -12,8 +12,9 @@ use crate::curated_list::ListEntry;
 /// `chooser` is part of the result, so every caller must pass the same form:
 /// for the coordinator list, the substrate DID exactly as
 /// `substrate::derive_did_key` returns it (`did:key:h...`), never the Iroh
-/// endpoint id; for the mailbox list, the picking service's `service_id` as
-/// it appears in its endpoint record.
+/// endpoint id; for the mailbox list, the logical service ref text
+/// (`<app_instance_id>/<service_name>`) of a plan service, or the service's
+/// own `service_id` for a single service deployed without a plan.
 pub fn rank_key(chooser: &str, id: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     for part in [chooser, id] {

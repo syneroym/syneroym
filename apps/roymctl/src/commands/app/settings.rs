@@ -1,6 +1,15 @@
 //! The per-service mailbox and certificate lifetime in `app deploy`.
 
-use syneroym_app_orchestration::{DeploymentPlan, MailboxChoice, SynAppManifest};
+use std::collections::BTreeMap;
+
+use anyhow::Context;
+use syneroym_app_orchestration::{
+    DeploymentJournal, DeploymentPlan, MailboxChoice, SynAppManifest,
+    models::{LogicalServiceRef, SubstrateAlias},
+};
+use syneroym_sdk::deploy::{self, MailboxDirectory, PinSource, PinSources};
+
+use crate::commands::mailbox_auto::{self, HostRegistry};
 
 /// Applies `app deploy --mailbox <service>=<mailbox>` to the manifest, before
 /// it is compiled. The command line wins over the manifest. A name that is
@@ -57,4 +66,55 @@ pub(crate) fn refuse_reserved_mailbox_methods(plans: &[DeploymentPlan]) -> anyho
         }
     }
     Ok(())
+}
+
+/// Pins every `auto` mailbox of `plan` before the journal records it, so a
+/// re-run resumes the same record and keeps the same mailbox. A service that
+/// had a mailbox in this instance's latest journal record keeps it. A new
+/// choice must come from the registry its hosting node publishes to.
+///
+/// The plan still holds the compiler's made-up member ids here, so the
+/// current records of the members cannot be read.
+pub(crate) async fn pin_auto_mailboxes(
+    plan: &mut DeploymentPlan,
+    journal: &DeploymentJournal,
+    directory: Option<&dyn MailboxDirectory>,
+    list_registry: Option<&str>,
+    host_registries: &BTreeMap<SubstrateAlias, (Option<String>, bool)>,
+) -> anyhow::Result<()> {
+    let previous = journal.get_latest(&plan.app_instance_id)?.map(|record| record.plan);
+    let sources = PinSources { previous: previous.as_ref(), directory, members_are_masters: false };
+    let pins = deploy::pin_auto_mailboxes(plan, sources)
+        .await
+        .context("app deploy reads the open mailboxes from --registry-url")?;
+    for pin in &pins {
+        if let (PinSource::List, Some(list_registry)) = (pin.source, list_registry) {
+            let host = host_registry_of(plan, &pin.service, host_registries);
+            let facts = host.as_ref().map(|(url, known)| (url.as_deref(), *known));
+            let registry = match facts {
+                None => HostRegistry::Unknown,
+                Some((None, _)) => HostRegistry::None,
+                Some((Some(url), _)) => HostRegistry::Url(url),
+            };
+            mailbox_auto::check_same_registry(&pin.service.to_string(), list_registry, registry)?;
+        }
+        println!("mailbox 'auto' for '{}': {} ({})", pin.service, pin.mailbox, pin.source.as_str());
+    }
+    Ok(())
+}
+
+/// The registry the hosting node of `service` publishes to, when its node
+/// facts were read at preflight. `None` for a service with no alias or an
+/// alias whose facts could not be read.
+fn host_registry_of(
+    plan: &DeploymentPlan,
+    service: &LogicalServiceRef,
+    host_registries: &BTreeMap<SubstrateAlias, (Option<String>, bool)>,
+) -> Option<(Option<String>, bool)> {
+    let alias = plan
+        .services
+        .iter()
+        .filter(|s| &s.logical_ref == service)
+        .find_map(|s| s.substrate.as_ref())?;
+    host_registries.get(alias).cloned()
 }

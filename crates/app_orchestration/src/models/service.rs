@@ -305,7 +305,9 @@ pub const MAX_INSTANCE_CERT_EXPIRES_HOURS: u32 = 720;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
 pub enum MailboxChoice {
-    /// Pick one from the registry's list of open mailboxes.
+    /// Pick one from the registry's list of open mailboxes. A deployer
+    /// replaces it with `Service` before it stores the plan, and a later
+    /// deploy keeps that choice.
     Auto,
     /// This mailbox host.
     Service(ServiceId),

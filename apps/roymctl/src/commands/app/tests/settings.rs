@@ -1,13 +1,17 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use syneroym_app_orchestration::{
-    AppBlueprintId, AppInstanceId, DeploymentPlan, LocalFilesystemCatalog, LogicalServiceName,
-    ServiceSpec, SynAppManifest, compile,
+    AppBlueprintId, AppInstanceId, DeploymentJournal, DeploymentPlan, DeploymentState,
+    LocalFilesystemCatalog, LogicalServiceName, MailboxChoice, ServiceSpec, SynAppManifest,
+    compile, models::SubstrateAlias,
 };
+use syneroym_core::curated_list::MailboxEntry;
+use syneroym_sdk::deploy::MailboxDirectory;
 use tokio::runtime::Builder;
 
 use crate::commands::app::settings::{
-    apply_mailbox_overrides, refuse_reserved_mailbox_methods, refuse_settings_without_masters,
+    apply_mailbox_overrides, pin_auto_mailboxes, refuse_reserved_mailbox_methods,
+    refuse_settings_without_masters,
 };
 
 const HOST: &str = "did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe";
@@ -131,4 +135,105 @@ fn a_manifest_that_lists_a_node_interface_as_a_mailbox_method_is_refused() {
     let err = refuse_reserved_mailbox_methods(&plans_of(&bad, &catalog)).unwrap_err().to_string();
     assert!(err.contains("security#inject-kek"), "{err}");
     assert!(err.contains("node or platform interface"), "{err}");
+}
+
+const DID_A: &str = "did:key:h7wy1f7qpqh89eo5km8ugxk4rptd9m4h5mnqo6zt1mb59ooj4t9hx4sy";
+const DID_B: &str = "did:key:h7wy5y3pq4jr89hu6s1j39so7emhp6wn7wdeqf9t3kiuonw6kdmdyeaa";
+const LIST_REGISTRY: &str = "http://registry.example.org:7961";
+
+#[derive(Debug)]
+struct ListOnly(Vec<MailboxEntry>);
+
+impl ListOnly {
+    fn of(dids: &[&str]) -> Self {
+        Self(
+            dids.iter()
+                .map(|d| MailboxEntry { service_id: (*d).to_string(), operator: "op".to_string() })
+                .collect(),
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl MailboxDirectory for ListOnly {
+    async fn open_mailboxes(&self) -> anyhow::Result<Vec<MailboxEntry>> {
+        Ok(self.0.clone())
+    }
+
+    async fn named_mailbox(
+        &self,
+        _service_id: &str,
+    ) -> anyhow::Result<Option<syneroym_app_orchestration::ServiceId>> {
+        panic!("the plan holds made-up ids here, so no record may be read");
+    }
+}
+
+fn pin(
+    plan: &mut DeploymentPlan,
+    journal: &DeploymentJournal,
+    directory: Option<&dyn MailboxDirectory>,
+    list_registry: Option<&str>,
+    hosts: &BTreeMap<SubstrateAlias, (Option<String>, bool)>,
+) -> anyhow::Result<()> {
+    Builder::new_current_thread().build().unwrap().block_on(pin_auto_mailboxes(
+        plan,
+        journal,
+        directory,
+        list_registry,
+        hosts,
+    ))
+}
+
+fn auto_plan() -> DeploymentPlan {
+    plans(&manifest("mailbox = \"auto\"")).remove(0)
+}
+
+fn mailbox_of(plan: &DeploymentPlan) -> Option<String> {
+    plan.services[0].mailbox.as_ref().map(ToString::to_string)
+}
+
+#[test]
+fn a_rerun_keeps_the_mailbox_auto_chose_first() {
+    let journal = DeploymentJournal::open_in_memory().unwrap();
+    let first_list = ListOnly::of(&[DID_A, DID_B]);
+    let mut first = auto_plan();
+    pin(&mut first, &journal, Some(&first_list), Some(LIST_REGISTRY), &BTreeMap::new()).unwrap();
+    let chosen = mailbox_of(&first).expect("auto was pinned");
+    assert!(chosen == DID_A || chosen == DID_B);
+    journal.append(&first, DeploymentState::Active).unwrap();
+
+    let other = if chosen == DID_A { DID_B } else { DID_A };
+    let changed_list = ListOnly::of(&[other]);
+    let mut second = auto_plan();
+    pin(&mut second, &journal, Some(&changed_list), Some(LIST_REGISTRY), &BTreeMap::new()).unwrap();
+
+    assert_eq!(mailbox_of(&second), Some(chosen));
+}
+
+#[test]
+fn auto_with_no_registry_and_no_journal_record_is_refused() {
+    let journal = DeploymentJournal::open_in_memory().unwrap();
+    let mut plan = auto_plan();
+
+    let err = pin(&mut plan, &journal, None, None, &BTreeMap::new()).unwrap_err();
+
+    assert!(format!("{err:#}").contains("no registry is given"), "{err:#}");
+    assert_eq!(plan.services[0].mailbox, Some(MailboxChoice::Auto));
+}
+
+#[test]
+fn a_new_choice_for_a_host_on_another_registry_is_refused_and_nothing_is_journaled() {
+    let journal = DeploymentJournal::open_in_memory().unwrap();
+    let list = ListOnly::of(&[DID_A]);
+    let mut plan = auto_plan();
+    plan.services[0].substrate = Some(SubstrateAlias::new("edge"));
+    let hosts = BTreeMap::from([(
+        SubstrateAlias::new("edge"),
+        (Some("http://other.example.org:7961".to_string()), false),
+    )]);
+
+    let err = pin(&mut plan, &journal, Some(&list), Some(LIST_REGISTRY), &hosts).unwrap_err();
+
+    assert!(err.to_string().contains("other.example.org"), "{err}");
+    assert!(journal.get_latest(&plan.app_instance_id).unwrap().is_none());
 }

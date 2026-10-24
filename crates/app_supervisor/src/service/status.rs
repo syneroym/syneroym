@@ -92,7 +92,7 @@ impl SupervisorService {
 
         Self::shutdown_clients(clients.into_values()).await;
 
-        let services = self.managed_services_from_report(&app_instance_id, &report);
+        let services = self.managed_services_from_report(&app_instance_id, &plan, &report);
         let overall_state = self.overall_managed_state(
             &instance_id,
             state.retired,
@@ -253,6 +253,7 @@ impl SupervisorService {
     fn managed_services_from_report(
         &self,
         app_instance_id: &str,
+        plan: &DeploymentPlan,
         report: &health::HealthReport,
     ) -> Vec<ManagedService> {
         report
@@ -275,6 +276,12 @@ impl SupervisorService {
                     .ok()
                     .flatten()
                     .map_or(0, |r| r.attempts),
+                mailbox: plan.services.iter().find(|p| p.member_ref() == s.member_ref()).and_then(
+                    |p| match &p.mailbox {
+                        Some(MailboxChoice::Service(host)) => Some(host.to_string()),
+                        _ => None,
+                    },
+                ),
             })
             .collect()
     }

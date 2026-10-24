@@ -28,6 +28,7 @@ dashmap.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
 futures.workspace = true
+reqwest.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

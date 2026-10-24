@@ -4,8 +4,8 @@
 use syneroym_app_orchestration::MailboxChoice;
 
 /// Parses `<service-name>=<mailbox>` for `app deploy --mailbox`. The mailbox
-/// is `auto` or the mailbox host's node DID; `auto` is refused later, where
-/// the plan is checked.
+/// is `auto` or the mailbox host's node DID; `auto` is pinned later, before
+/// the plan is journaled.
 pub(crate) fn parse_service_mailbox(text: &str) -> Result<(String, MailboxChoice), String> {
     let (name, mailbox) = text
         .split_once('=')

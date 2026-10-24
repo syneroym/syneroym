@@ -213,3 +213,44 @@ async fn app_forget_with_nothing_deployed_names_the_service_and_instance() {
     .unwrap_err();
     assert!(err.to_string().contains("nothing to forget"), "{err}");
 }
+
+/// A pinned `auto` must not show as a change when the manifest is diffed
+/// against the active record again.
+#[tokio::test]
+async fn reconcile_shows_no_change_for_a_pinned_auto() {
+    use syneroym_app_orchestration::{
+        DeploymentJournal, DeploymentState, LocalFilesystemCatalog, Reconciler, SynAppManifest,
+        compile, models::AppInstanceId,
+    };
+    use syneroym_sdk::deploy::keep_earlier_mailboxes;
+
+    let manifest = SynAppManifest::from_toml(
+        r#"
+        id = "syneroym:settings-app"
+        version = "1.0.0"
+
+        [services.web]
+        service_type = "wasm"
+        source = "web.wasm"
+        visibility = "public"
+        mailbox = "auto"
+        "#,
+    )
+    .unwrap();
+    let catalog = LocalFilesystemCatalog::new(PathBuf::from("."));
+    let instance = AppInstanceId::new("inst-1");
+    let compiled = compile(instance.clone(), &manifest, &catalog).await.unwrap();
+    let journal = DeploymentJournal::open_in_memory().unwrap();
+    let mut pinned = compiled.plans[0].clone();
+    pinned.services[0].mailbox =
+        Some("did:key:h7wy641jeaawpdosg7mwogqromgksnkk3rh7faa93ga5cntowi1duxwe".parse().unwrap());
+    journal.append(&pinned, DeploymentState::Active).unwrap();
+    let active = journal.get_last_state(&instance, DeploymentState::Active).unwrap();
+    let reconciler = Reconciler::new(&journal);
+
+    let mut target = compiled.plans[0].clone();
+    assert!(!reconciler.compute_diff(&target).unwrap().actions.is_empty(), "raw auto differs");
+    keep_earlier_mailboxes(&mut target, active.as_ref().map(|record| &record.plan));
+
+    assert!(reconciler.compute_diff(&target).unwrap().actions.is_empty());
+}

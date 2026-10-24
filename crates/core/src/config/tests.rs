@@ -180,6 +180,20 @@ operator = "Second Operator"
 }
 
 #[test]
+fn community_registry_mailboxes_list_parses_from_toml() {
+    let toml = r#"
+[[roles.community_registry.mailboxes]]
+service_id = "did:key:h7wy1f7qpqh89eo5km8ugxk4rptd9m4h5mnqo6zt1mb59ooj4t9hx4sy"
+operator = "First Operator"
+"#;
+    let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
+    let reg = config.roles.community_registry.unwrap();
+    assert_eq!(reg.mailboxes.len(), 1);
+    assert_eq!(reg.mailboxes[0].operator, "First Operator");
+    assert!(reg.coordinators.is_empty());
+}
+
+#[test]
 fn community_registry_coordinators_defaults_when_absent() {
     let toml = r#"
 [roles.community_registry]
@@ -188,6 +202,7 @@ fn community_registry_coordinators_defaults_when_absent() {
     let reg = config.roles.community_registry.unwrap();
     assert_eq!(reg.list_max_age_secs, 86_400);
     assert!(reg.coordinators.is_empty());
+    assert!(reg.mailboxes.is_empty());
 }
 
 #[test]

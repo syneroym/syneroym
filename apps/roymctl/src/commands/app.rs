@@ -152,6 +152,7 @@ pub enum AppCommands {
         /// anchor at. Ignored when `--mint-masters` is absent.
         /// Without it, a minted certificate is unusable on the wire until an
         /// anchor exists some other way (`roymctl identity publish-anchor`).
+        /// Also where a mailbox `auto` reads the open mailboxes.
         #[arg(long)]
         registry_url: Option<String>,
         /// Substrate inventory mapping the aliases a manifest's `placement`
@@ -162,8 +163,12 @@ pub enum AppCommands {
         #[arg(long)]
         inventory: Option<PathBuf>,
         /// Mailbox for one service of the manifest, as
-        /// `<service-name>=<mailbox-host-node-did>`. Repeat for more
-        /// services. Overrides the manifest's `mailbox` for that service.
+        /// `<service-name>=<mailbox-host-node-did>` or
+        /// `<service-name>=auto`. `auto` picks one of the open mailboxes
+        /// `--registry-url` lists (it must be the registry the service's
+        /// substrate publishes to), and a later deploy of this instance keeps
+        /// it. Repeat for more services. Overrides the manifest's `mailbox`
+        /// for that service.
         /// Needs `--mint-masters`. A `.wasm` path manifest has one service,
         /// named `main`.
         #[arg(long = "mailbox", value_parser = parse_service_mailbox, requires = "mint_masters")]

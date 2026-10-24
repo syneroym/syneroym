@@ -4,7 +4,7 @@
 
 use reqwest::Client;
 use syneroym_core::curated_list::{
-    CoordinatorEntry, CoordinatorFilter, CoordinatorTransport, fetch,
+    CoordinatorEntry, CoordinatorFilter, CoordinatorTransport, MailboxEntry, MailboxFilter, fetch,
 };
 
 use crate::common::SubstrateNode;
@@ -74,6 +74,53 @@ async fn duplicate_coordinator_urls_stop_substrate_init() {
     let err_msg = format!("{err:#}");
     assert!(
         err_msg.contains("roles.community_registry.coordinators[1]"),
+        "error chain {err_msg:?} must name entry [1]"
+    );
+}
+
+#[tokio::test]
+async fn booted_substrate_serves_curated_mailboxes_list() {
+    let did = "did:key:h7wy1f7qpqh89eo5km8ugxk4rptd9m4h5mnqo6zt1mb59ooj4t9hx4sy";
+    let entry = MailboxEntry { service_id: did.to_string(), operator: "Example Org".to_string() };
+
+    let node = SubstrateNode::builder()
+        .configure({
+            let entry = entry.clone();
+            move |c| {
+                if let Some(reg) = c.roles.community_registry.as_mut() {
+                    reg.mailboxes = vec![entry.clone()];
+                }
+            }
+        })
+        .boot()
+        .await;
+
+    let client = Client::new();
+    let list = fetch::<MailboxEntry>(&client, node.registry_url(), &MailboxFilter {}, 0)
+        .await
+        .expect("fetching the mailbox list from a booted substrate");
+
+    assert_eq!(list.entries, vec![entry]);
+    node.teardown().await;
+}
+
+#[tokio::test]
+async fn duplicate_mailbox_ids_stop_substrate_init() {
+    let did = "did:key:h7wy1f7qpqh89eo5km8ugxk4rptd9m4h5mnqo6zt1mb59ooj4t9hx4sy";
+    let entry = MailboxEntry { service_id: did.to_string(), operator: "First".to_string() };
+
+    let err = SubstrateNode::builder()
+        .configure(move |c| {
+            if let Some(reg) = c.roles.community_registry.as_mut() {
+                reg.mailboxes = vec![entry.clone(), entry.clone()];
+            }
+        })
+        .init_error()
+        .await;
+
+    let err_msg = format!("{err:#}");
+    assert!(
+        err_msg.contains("roles.community_registry.mailboxes[1]"),
         "error chain {err_msg:?} must name entry [1]"
     );
 }

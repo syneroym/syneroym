@@ -22,7 +22,10 @@ use syneroym_app_orchestration::{
 use syneroym_core::dht_registry::RegistryClient;
 use syneroym_sdk::{
     SyneroymClient,
-    deploy::{self, ApplyReport, ApplyRequest, CertifiedMembers, DeployTarget},
+    deploy::{
+        self, ApplyReport, ApplyRequest, CertifiedMembers, DeployTarget, MailboxDirectory,
+        RegistryMailboxDirectory,
+    },
 };
 
 use super::{PREFLIGHT_TIMEOUT, resolve_credentials, settings};
@@ -630,7 +633,7 @@ pub(super) async fn handle_deploy(
     let plans = compile_plans(&instance_id, &manifest, &manifest_path).await?;
     settings::refuse_settings_without_masters(&plans, mint_masters)?;
     settings::refuse_reserved_mailbox_methods(&plans)?;
-    let target_plan = plans.last().cloned().context("Compiled deployment contains no plans")?;
+    let mut target_plan = plans.last().cloned().context("Compiled deployment contains no plans")?;
 
     // `app deploy` has no supervisor behind it, and
     // the supervisor is the scheduler (ADR-0023 §6) -- a schedule
@@ -662,6 +665,20 @@ pub(super) async fn handle_deploy(
         &preflight.demand,
         &preflight.registry_facts,
     )?;
+
+    // --- mailbox `auto` -------------------------------------------
+    // Pinned before the plan is borrowed for placement and before the
+    // journal records it, so a re-run resumes the same record. Placement does
+    // not depend on the mailbox.
+    let directory = registry_url.as_deref().map(RegistryMailboxDirectory::new);
+    settings::pin_auto_mailboxes(
+        &mut target_plan,
+        &journal,
+        directory.as_ref().map(|d| d as &dyn MailboxDirectory),
+        registry_url.as_deref(),
+        &preflight.registry_facts,
+    )
+    .await?;
 
     // --- the fallback target, built lazily ------------------------
     let (fallback_client, fallback_target) =

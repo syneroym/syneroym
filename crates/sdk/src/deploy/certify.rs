@@ -207,7 +207,11 @@ fn member_mailbox(
     match &svc.mailbox {
         None => Ok(None),
         Some(MailboxChoice::Auto) => {
-            anyhow::bail!("service '{}' has an unresolved `auto` mailbox", svc.logical_ref)
+            anyhow::bail!(
+                "service '{}' still has mailbox 'auto'; pin it (pin_auto_mailboxes) before its \
+                 members are certified",
+                svc.logical_ref
+            )
         }
         Some(MailboxChoice::Service(host)) => {
             let key = MailboxSecretKey::derive_from_master(master);

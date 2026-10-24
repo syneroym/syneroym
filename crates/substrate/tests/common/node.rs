@@ -550,6 +550,20 @@ impl SubstrateNode {
         builder.boot_at(base_path, None).await
     }
 
+    /// Shuts the node down and keeps what is needed to boot it again: the
+    /// directory, the identity and the ports. Use it when a test must do
+    /// something while this node is down.
+    pub async fn stop(mut self) -> StoppedNode {
+        let _ = self.substrate_client.shutdown().await;
+        let _ = self.shutdown_tx.send(()).await;
+        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle).await;
+        StoppedNode {
+            builder: self.builder.clone(),
+            base_path: self.base_path.clone(),
+            temp_dir: self.temp_dir.take(),
+        }
+    }
+
     /// Like `restart`, but boots with `change(builder)`. Keeps the directory,
     /// the identity and the ports.
     pub async fn restart_with(
@@ -583,5 +597,21 @@ impl SubstrateNode {
         let _ = time::timeout(Duration::from_secs(20), self.substrate_handle)
             .await
             .map_err(|_| eprintln!("[teardown] substrate handle join timed out"));
+    }
+}
+
+/// A node that was shut down with [`SubstrateNode::stop`].
+pub struct StoppedNode {
+    builder: NodeBuilder,
+    base_path: PathBuf,
+    temp_dir: Option<TempDir>,
+}
+
+impl StoppedNode {
+    /// Boots the node again under the same directory, identity and ports.
+    pub async fn boot(self) -> SubstrateNode {
+        let mut node = self.builder.boot_at(self.base_path, None).await;
+        node.temp_dir = self.temp_dir;
+        node
     }
 }

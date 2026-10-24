@@ -23,6 +23,7 @@ use crate::mapper::map_deployment_plan_to_wit;
 
 pub mod actor;
 pub mod certify;
+pub mod mailbox_auto;
 pub mod types;
 
 #[cfg(test)]
@@ -30,6 +31,7 @@ pub(crate) use std::sync::Arc;
 
 pub use actor::*;
 pub use certify::*;
+pub use mailbox_auto::*;
 #[cfg(test)]
 pub(crate) use syneroym_identity::{Identity, substrate};
 #[cfg(test)]

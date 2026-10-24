@@ -18,6 +18,7 @@ use syneroym_core::{
     util,
 };
 use syneroym_identity::{Identity, substrate};
+use syneroym_sdk::deploy::verified_mailbox;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum RegistryCommands {
@@ -76,12 +77,7 @@ async fn current_record(
 /// ignored: a wrong or hostile registry must not be able to block or allow
 /// this by lying.
 fn refuse_if_mailbox(service_id: &str, current: Option<&SignedEndpointInfo>) -> anyhow::Result<()> {
-    let names_a_mailbox = current.is_some_and(|record| {
-        record.verify().is_ok()
-            && record.info.service_id == service_id
-            && record.info.mailbox.is_some()
-    });
-    if names_a_mailbox {
+    if verified_mailbox(service_id, current).is_some() {
         anyhow::bail!(
             "service {service_id} has a mailbox; its record is published by its deploy (svc \
              deploy, app deploy or the supervisor). Registering here would remove the mailbox for \

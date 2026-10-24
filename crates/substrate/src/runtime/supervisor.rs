@@ -30,8 +30,8 @@ pub(super) async fn init_supervisor(
     shared: &SharedNodeHandles,
 ) -> anyhow::Result<Arc<SupervisorHandle>> {
     use syneroym_app_supervisor::{
-        MasterVault, RegistryAnchorWriter, RegistryTier1Writer, SupervisorService,
-        store::SupervisorStore,
+        MasterVault, RegistryAnchorWriter, RegistryMailboxDirectory, RegistryTier1Writer,
+        SupervisorService, store::SupervisorStore,
     };
     use syneroym_core::dht_registry::RegistryClient;
     use syneroym_rpc::NativeService;
@@ -65,7 +65,7 @@ pub(super) async fn init_supervisor(
                 Some(url.to_string()),
             ))
         });
-    let supervisor = Arc::new(SupervisorService::new(
+    let supervisor = SupervisorService::new(
         service_id.to_string(),
         store,
         vault,
@@ -84,7 +84,16 @@ pub(super) async fn init_supervisor(
         role.queue_tick_secs,
         role.topology_document_not_after_secs,
         role.topology_document_cache_ttl_secs,
-    ));
+    );
+    // Reads the open mailboxes and current records of this node's own
+    // registry for a mailbox `auto`.
+    let supervisor = match config.substrate.registry_url.as_deref() {
+        Some(url) => {
+            supervisor.with_mailbox_directory(Arc::new(RegistryMailboxDirectory::new(url)))
+        }
+        None => supervisor,
+    };
+    let supervisor = Arc::new(supervisor);
     shared
         .native_dispatch()
         .insert(SUPERVISOR_DISPATCH_ID.to_string(), supervisor.clone() as Arc<dyn NativeService>);
