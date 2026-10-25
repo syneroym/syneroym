@@ -715,3 +715,13 @@ fn a_child_token_reaches_the_public_publication() {
         other => panic!("expected a public publication, got {other:?}"),
     }
 }
+
+#[test]
+fn a_passport_needs_a_named_mailbox_not_auto() {
+    let host = host_choice();
+    assert!(check_passport_args(Some(&host), true).is_ok());
+    assert!(check_passport_args(None, false).is_ok());
+    assert!(check_passport_args(Some(&MailboxChoice::Auto), false).is_ok());
+    let err = check_passport_args(Some(&MailboxChoice::Auto), true).unwrap_err();
+    assert!(err.to_string().contains("named by node DID"), "{err}");
+}

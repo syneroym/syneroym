@@ -172,6 +172,22 @@ impl LeaseStore {
         Ok(removed)
     }
 
+    /// End the lease of `subject` under the passport `id`, and no other
+    /// lease. The passport is not denied. Returns whether a lease ended.
+    ///
+    /// A service that learns a passport can no longer admit its subject (a
+    /// revoked key, a changed root) calls this, so the subject does not keep
+    /// the limits of a lease the passport would no longer get.
+    pub fn end_lease(&self, id: &PassportId, subject: &str) -> Result<bool> {
+        let conn = self.conn();
+        let removed = conn.execute(
+            "DELETE FROM passport_leases WHERE passport_id = ?1 AND subject = ?2",
+            params![id.as_str(), subject],
+        )?;
+        let ended = self.write(|c| c.remove(id, subject));
+        Ok(ended || removed > 0)
+    }
+
     /// Write `lease` if the passport is not denied and `limit` allows it.
     pub(crate) fn grant(
         &self,

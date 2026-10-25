@@ -1791,7 +1791,7 @@ The router exposes:
 
 Every substrate runs a mailbox receiver for its hosted services that have a mailbox (this does not need the mailbox role). It exposes:
 - `substrate.mailbox_receiver.messages`: Counter of messages handled, labeled by `result` (`delivered`, `rejected`, `not_acked`, `not_found`). A message counts as `delivered` or `rejected` only when the mailbox stored its receipt. `not_found` means the mailbox no longer held it.
-- `substrate.mailbox_receiver.blocked`: Counter of warnings that a service is not pulled, labeled by `reason` (`no_certificate`, `instance_refused`, `stale_instance`, `no_key`, `key_unreadable`, `no_record`, `record_and_fact_differ`, `record_expired`, `mailbox_full`, `served_record_differs`, `not_started`, `passport_refused`). `passport_refused` means the mailbox refused the owner's passport and the queue has the open limits. `not_started` means the node restarted and the service is not deployed again yet in this process; its messages wait at the mailbox until the next deploy. The same warning is written to the log at most once an hour for each service.
+- `substrate.mailbox_receiver.blocked`: Counter of the warnings of the puller about a service (most mean it is not pulled; `record_expired`, `record_and_fact_differ`, `served_record_differs` and the `passport_*` reasons do not stop the pass), labeled by `reason` (`no_certificate`, `instance_refused`, `stale_instance`, `no_key`, `key_unreadable`, `no_record`, `record_and_fact_differ`, `record_expired`, `mailbox_full`, `served_record_differs`, `not_started`, `passport_refused`, `passport_unavailable`, `passport_unreadable`). `passport_refused` means the mailbox refused the owner's passport, and `passport_unavailable` that it could not check it in time; in both the queue is registered without the passport. `passport_unreadable` means the vault could not be read for the passport. `not_started` means the node restarted and the service is not deployed again yet in this process; its messages wait at the mailbox until the next deploy. The same warning is written to the log at most once an hour for each service.
 
 The node owner can run one pull pass at once with `security.mailbox-pull-now` (through `SyneroymClient::mailbox_pull_now`). The call waits for the pass that is running and then for its own full pass, and it has no time limit: the client's request timeout ends the wait, and the pass still finishes. It answers the counts of the pass (`services`, `blocked`, `registered`, `delivered`, `rejected`, `not_acked`). `blocked` counts the services skipped or stopped in the pass. `registered` counts the services whose queue the mailbox accepted at the last register. A mobile shell calls it when the app returns to the foreground.
 
@@ -1802,7 +1802,7 @@ When the mailbox role is active, the endpoint exposes these Prometheus metrics:
 - `substrate.mailbox.settled_receipts`: Gauge of receipts kept for messages the mailbox no longer holds (capped by `max_settled_receipts`).
 - `substrate.mailbox.deposits`: Counter of successfully stored deposits.
 - `substrate.mailbox.deposits_refused`: Counter of refused deposits labeled by refusal `kind` (`mailbox_full`, `queue_full`, `rate_limited`, `ttl_too_long`, `too_large`, `duplicate_deposit`).
-- `substrate.mailbox.register_refused`: Counter of refused registrations labeled by refusal `kind` (`rate_limited`, `passport_refused`, `internal`).
+- `substrate.mailbox.register_refused`: Counter of refused registrations labeled by refusal `kind` (`rate_limited`, `passport_refused`, `passport_unavailable`, `internal`).
 - `substrate.mailbox.passport_granted`: Counter of granted mailbox passport leases.
 - `substrate.mailbox.receiver_refused`: Counter of refused receiver calls (`claim`, `ack`, `unregister`) labeled by refusal `kind` (`rate_limited`).
 - `substrate.mailbox.evictions`: Counter of messages evicted due to queue limits.
@@ -2019,7 +2019,7 @@ A mailbox gives every queue the open limits of `[roles.mailbox]`. An operator ca
 
 **Operator: issue, deny and list.**
 
-1. Issue a passport. The host's verified controller signs it (`--from`). A host with no controller uses its node key (`--node-key`). Every limit is optional. A limit below the mailbox's own limit is ignored. `--max-services` is the most distinct services (member masters) of the owner that may hold a queue. `--max-ttl-days` is 1 to 30:
+1. Issue a passport. The host's verified controller signs it (`--from`). A host with no controller uses its node key (`--node-key`). Every limit is optional. A limit below the mailbox's own limit is ignored, and a limit of 0 is refused. Without `--max-services` the command warns: the owner may then keep a queue for any number of services, and `max_queues` does not refuse a queue of a passport holder. `--max-services` is the most distinct services (member masters) of the owner that may hold a queue. `--max-ttl-days` is 1 to 30:
    ```bash
    roymctl mailbox passport issue \
        --from my-controller \
@@ -2044,7 +2044,7 @@ A mailbox gives every queue the open limits of `[roles.mailbox]`. An operator ca
 roymctl svc deploy ... --mailbox did:key:h... --mailbox-passport mailbox-passport.json --as my-owner
 roymctl app deploy inst-1 app.toml --mint-masters --mailbox-passport mailbox-passport.json --as my-owner
 ```
-`roymctl` signs one child token for each service that uses that mailbox. A new passport arrives by an ordinary deploy. The supervisor does not support passports: a service it deploys keeps the open limits when its lease ends.
+`roymctl` signs one child token for each service that uses that mailbox. Name the mailbox by node DID: `--mailbox auto` with a passport is refused, because the open list never holds a dedicated mailbox. A new passport arrives by an ordinary deploy. The supervisor does not support passports: a service it deploys keeps the open limits when its lease ends.
 
 **Files.** The leases of a mailbox are in `<storage.db_dir>/mailbox_passports.db`. A queue no longer stores its limits in `mailbox.db`. The product is not released and has no migration, so delete an old `mailbox.db` before you start the new binary.
 

@@ -204,6 +204,32 @@ fn code_of(error: &ProxyError) -> Option<i32> {
     }
 }
 
+/// The note for a failed `register` that carried a child token, when a
+/// register without the token may succeed: the mailbox refused the token, or
+/// could not check it. Any other failure (a refused instance, a full
+/// mailbox, a rate limit) would fail the same way without the token.
+fn passport_fallback(error: &ProxyError) -> Option<Note> {
+    match error {
+        ProxyError::Timeout(_) => Some(Note::PassportUnavailable),
+        ProxyError::Callee { code, .. } if *code == codes::PASSPORT_REFUSED => {
+            Some(Note::PassportRefused)
+        }
+        // Other internal errors (for example the instance revocation lookup)
+        // come before the passport is looked at, and fail the same way
+        // without the token. Only the mailbox says its passport check failed.
+        ProxyError::Callee { data: Some(data), .. }
+            if data.get("kind").and_then(Value::as_str) == Some(PASSPORT_UNAVAILABLE_KIND) =>
+        {
+            Some(Note::PassportUnavailable)
+        }
+        _ => None,
+    }
+}
+
+/// The `data.kind` of an internal error that comes from the passport check
+/// (an unreadable lease file, a failed write task).
+const PASSPORT_UNAVAILABLE_KIND: &str = "passport_unavailable";
+
 /// The passport refusal code (`data.code`) of a refused `register`.
 fn refusal_code(error: &ProxyError) -> String {
     match error {
@@ -267,7 +293,7 @@ impl MailboxPuller {
         let child_token = match self.vault.mailbox_passport(pass.service_id).await {
             Ok(token) => token,
             Err(e) => {
-                pass.note(Note::KeyUnreadable, &e.to_string());
+                pass.note(Note::PassportUnreadable, &e.to_string());
                 return None;
             }
         };
@@ -305,9 +331,11 @@ impl MailboxPuller {
     /// `true` when claiming may go on. Every register of a pass goes
     /// through here, also the one after a `-32040`.
     ///
-    /// When the mailbox refuses the child token, the same pass registers
-    /// again without it, so the queue lives with the open limits. The token
-    /// is tried again at the next register, or when it changes.
+    /// When the mailbox refuses the child token, or cannot check it (an
+    /// internal error, or no answer in time), the same pass registers again
+    /// without it, so the owner's service keeps its queue and the deferred
+    /// delivery that comes with it. The token is tried again at the next
+    /// register, or when it changes.
     async fn register(&self, pass: &mut ServicePass<'_>, inputs: &Inputs) -> bool {
         let Some(mut answer) = self.send_register(pass, inputs, inputs.child_token.clone()).await
         else {
@@ -315,9 +343,9 @@ impl MailboxPuller {
         };
         if inputs.child_token.is_some()
             && let Err(e) = &answer
-            && code_of(e) == Some(codes::PASSPORT_REFUSED)
+            && let Some(note) = passport_fallback(e)
         {
-            pass.note(Note::PassportRefused, &refusal_code(e));
+            pass.note(note, &refusal_code(e));
             let Some(plain) = self.send_register(pass, inputs, None).await else { return false };
             answer = plain;
         }

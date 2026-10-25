@@ -30,6 +30,16 @@ impl PassportDesk {
         }
     }
 
+    /// As [`Self::new`], with `owner` as the service owner, for a test that
+    /// deploys through `roymctl` as that identity.
+    pub fn owned_by(controller: &Identity, owner: &Identity, mailbox_did: &str) -> Self {
+        Self {
+            controller: Identity::from_bytes(&controller.to_bytes()),
+            owner: Identity::from_bytes(&owner.to_bytes()),
+            mailbox_did: mailbox_did.to_string(),
+        }
+    }
+
     /// A passport for the owner, with these use limits.
     pub fn passport(&self, facts: &[(&str, u64)]) -> CapabilityToken {
         let limits: Map<String, Value> =

@@ -112,3 +112,24 @@ async fn deny_refuses_a_malformed_passport_id_offline() {
         handle(&command, "http://127.0.0.1:1", None, dir.path(), None, None).await.unwrap_err();
     assert!(err.to_string().contains("64 lowercase hex"), "{err}");
 }
+
+#[test]
+fn issue_refuses_a_limit_of_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    save_identity(dir.path(), "controller");
+    let owner = Identity::generate().unwrap();
+    let host = did(&Identity::generate().unwrap());
+    let out = dir.path().join("passport.json");
+
+    for set in [
+        |a: &mut MailboxIssueArgs| a.max_services = Some(0),
+        |a: &mut MailboxIssueArgs| a.max_bytes = Some(0),
+        |a: &mut MailboxIssueArgs| a.max_messages = Some(0),
+    ] {
+        let mut a = args(&did(&owner), &out);
+        set(&mut a);
+        let err = handle_issue(&a, Some(host.clone()), dir.path()).unwrap_err();
+        assert!(err.to_string().contains("at least 1"), "{err}");
+        assert!(!out.exists(), "no useless passport is written");
+    }
+}

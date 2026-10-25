@@ -78,9 +78,17 @@ fn a_refused_passport_carries_its_code() {
 }
 
 #[test]
-fn a_lease_store_failure_is_an_internal_error() {
+fn a_lease_store_failure_is_an_internal_error_that_says_the_passport_failed() {
     let err: MailboxError = RegisterError::Store("disk".into()).into();
-    assert_eq!(err, MailboxError::Internal("disk".into()));
+    assert_eq!(err, MailboxError::PassportUnavailable("disk".into()));
     let rpc_err: RpcError = err.into();
     assert_eq!(rpc_err.code(), -32603);
+    assert_eq!(rpc_err.data().unwrap()["kind"], "passport_unavailable");
+}
+
+#[test]
+fn another_internal_error_does_not_say_the_passport_failed() {
+    let rpc_err: RpcError = MailboxError::Internal("anchor".into()).into();
+    assert_eq!(rpc_err.code(), -32603);
+    assert!(rpc_err.data().is_none());
 }

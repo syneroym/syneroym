@@ -126,6 +126,27 @@ mod publication_split_tests {
     }
 
     #[test]
+    fn a_child_token_splits_to_credentials_with_the_key_only() {
+        let key = MailboxSecretKey::generate().unwrap();
+        let public = Publication::Public {
+            record: sample_record(),
+            mailbox_key: Some(key),
+            mailbox_methods: Vec::new(),
+            mailbox_child_token: Some("child-token-json".to_string()),
+        };
+        let credentials = public.split().unwrap().mailbox.unwrap();
+        assert_eq!(credentials.child_token.as_deref(), Some("child-token-json"));
+
+        let without_key = Publication::Public {
+            record: sample_record(),
+            mailbox_key: None,
+            mailbox_methods: Vec::new(),
+            mailbox_child_token: Some("child-token-json".to_string()),
+        };
+        assert!(without_key.split().unwrap().mailbox.is_none());
+    }
+
+    #[test]
     fn a_public_mailbox_key_splits_to_credentials_in_its_text_form() {
         let key = MailboxSecretKey::generate().unwrap();
         let public = Publication::Public {

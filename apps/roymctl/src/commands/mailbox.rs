@@ -105,12 +105,21 @@ pub async fn handle(
     }
 }
 
+/// Said when no `--max-services` is given: each service of the owner adds a
+/// queue that the mailbox's `max_queues` does not refuse.
+const NO_SERVICE_CAP_WARNING: &str = "warning: no --max-services: the owner may keep a queue for \
+                                      any number of services, and the mailbox's max_queues does \
+                                      not refuse a queue of a passport holder";
+
 /// Signs a mailbox passport with the facts the flags name.
 fn handle_issue(
     args: &MailboxIssueArgs,
     substrate_opt: Option<String>,
     dir: &Path,
 ) -> anyhow::Result<PassportId> {
+    if args.max_services.is_none() {
+        eprintln!("{NO_SERVICE_CAP_WARNING}");
+    }
     passport_issue::issue(&args.signer, &MAILBOX_USE, limits_of(args)?, substrate_opt, dir)
 }
 

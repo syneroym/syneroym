@@ -1,5 +1,5 @@
 //! Passport admission at `register`: a dedicated mailbox lets the owner of a
-//! passport raise the limits of the queues of his services (ADR-0015 A10).
+//! passport raise the limits of the queues of their services (ADR-0015 A10).
 
 use std::{fs, path::Path, sync::Arc, time::Duration};
 
@@ -12,7 +12,8 @@ use syneroym_core::{
 };
 use syneroym_identity::DelegationCertificate;
 use syneroym_passport::{
-    CapabilityToken, Lease, LeaseStore, MAILBOX_USE, Proof, RegisterError, Registrar, SignerBinding,
+    CapabilityToken, Lease, LeaseStore, MAILBOX_USE, PassportId, Proof, RegisterError, Registrar,
+    SignerBinding,
 };
 use tokio::{task, time};
 use tracing::{error, info, warn};
@@ -92,7 +93,20 @@ impl MailboxPassports {
             .map_err(|e| RegisterError::Malformed(format!("child token does not parse: {e}")))?;
         let proof = Proof::Transport { verified_did: who.instance_did.clone() };
         let binding = SignerBinding::InstanceCertificate(cert);
-        let checked = self.registrar.check(&token, &proof, &binding, now)?;
+        let checked = match self.registrar.check(&token, &proof, &binding, now) {
+            Ok(checked) => checked,
+            Err(e) => {
+                if let Some(id) = definitive_refusal(&e).then(|| passport_id_of(&token)).flatten() {
+                    self.end_lease(&id, &token.audience_did, &e).await;
+                }
+                return Err(e.into());
+            }
+        };
+        // A denied passport is refused here, ahead of the network lookup.
+        let id = checked.lease().passport_id.clone();
+        if self.leases().is_denied(&id) {
+            return Err(RegisterError::Denied.into());
+        }
         // ADR-0015 §2 and A7: a revoked edge stops the registration. The
         // lookup needs the network, so it runs only after every offline
         // check passed. On timeout or network failure it counts as not
@@ -100,14 +114,19 @@ impl MailboxPassports {
         let edges = checked.token().chain_edges();
         let lookup = dht_registry::chain_edges_not_revoked(&edges, self.resolver.as_ref());
         match time::timeout(REVOCATION_LOOKUP_TIMEOUT, lookup).await {
-            Ok(false) => return Err(RegisterError::Revoked.into()),
+            Ok(false) => {
+                self.end_lease(&id, &token.audience_did, &RegisterError::Revoked).await;
+                return Err(RegisterError::Revoked.into());
+            }
             Ok(true) => {}
             Err(_) => warn!("passport revocation lookup timed out; treating as not revoked"),
         }
         let registrar = Arc::clone(&self.registrar);
         let lease = task::spawn_blocking(move || registrar.grant(checked, now))
             .await
-            .map_err(|e| MailboxError::Internal(format!("the lease write task failed: {e}")))?
+            .map_err(|e| {
+                MailboxError::PassportUnavailable(format!("the lease write task failed: {e}"))
+            })?
             .inspect_err(|e| {
                 if let RegisterError::Store(_) = e {
                     error!(error = %e, "mailbox passport store error");
@@ -118,6 +137,45 @@ impl MailboxPassports {
         counter!("substrate.mailbox.passport_granted").increment(1);
         Ok(lease)
     }
+}
+
+impl MailboxPassports {
+    /// Ends the running lease of `subject` under the passport `id`, after a
+    /// refusal that says the passport can no longer admit this master. The
+    /// refused token must not leave the master with the limits of an older
+    /// lease. A failure is logged and does not change the refusal.
+    async fn end_lease(&self, id: &PassportId, subject: &str, why: &RegisterError) {
+        let leases = self.leases().clone();
+        let (id, subject_owned) = (id.clone(), subject.to_string());
+        let ended = task::spawn_blocking(move || leases.end_lease(&id, &subject_owned)).await;
+        match ended {
+            Ok(Ok(true)) => {
+                info!(subject, code = why.code(), "mailbox passport lease ended by a refusal");
+            }
+            Ok(Ok(false)) => {}
+            Ok(Err(e)) => error!(error = %e, "could not end a mailbox passport lease"),
+            Err(e) => error!(error = %e, "the lease end task failed"),
+        }
+    }
+}
+
+/// Refusals that hold for the passport itself, not for this one request: a
+/// revoked key, a root the host does not accept, a passport for another
+/// use. The others (`expired`, `denied`) already end the lease by their own
+/// rules, and the rest do not show that the presenter is who it says.
+fn definitive_refusal(error: &RegisterError) -> bool {
+    matches!(
+        error,
+        RegisterError::Revoked
+            | RegisterError::UntrustedRoot
+            | RegisterError::WrongCapability { .. }
+    )
+}
+
+/// The id of the passport inside a child token, if it has exactly one proof.
+fn passport_id_of(token: &CapabilityToken) -> Option<PassportId> {
+    let [passport] = token.proofs.as_slice() else { return None };
+    PassportId::of(passport).ok()
 }
 
 #[cfg(test)]

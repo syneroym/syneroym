@@ -1,8 +1,15 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use serde_json::Map;
 use syneroym_core::{
     dht_registry::{MasterAnchorPayload, MasterAnchorResolver},
+    host_identity::HostIdentity,
     mailbox::MAX_CHILD_TOKEN_BYTES,
 };
 use syneroym_identity::{Identity, substrate};
@@ -90,7 +97,7 @@ async fn a_child_token_for_another_master_is_not_bound() {
 
 #[tokio::test]
 async fn a_leaked_child_token_alone_is_not_enough() {
-    // The thief has an instance certificate of his own master, not of the
+    // The thief has an instance certificate of their own master, not of the
     // master the token names.
     let f = Fixture::new(Operator::unowned());
     let (victim, thief) = (Member::new(LIFE), Member::new(LIFE));
@@ -253,4 +260,87 @@ async fn a_lease_ends_with_the_passport() {
     let lease = f.admit(&member, &f.child(&passport, &member)).await.unwrap();
     assert_eq!(lease.lease_ends_at, f.now + LIFE);
     assert!(f.passports.leases().lease_for(&member.service_id(), lease.lease_ends_at).is_none());
+}
+
+#[tokio::test]
+async fn a_revoked_edge_ends_the_running_lease() {
+    let f = Fixture::new(Operator::unowned());
+    let member = Member::new(LIFE);
+    let passport = f.passport(&[(facts::MAX_MESSAGES, 9)]);
+    let token = f.child(&passport, &member);
+    f.admit(&member, &token).await.unwrap();
+    assert!(f.passports.leases().lease_for(&member.service_id(), f.now).is_some());
+
+    f.anchors.revoke(&did(&f.owner), &member.service_id());
+    assert_eq!(code_of(f.admit(&member, &token).await), "revoked");
+
+    assert!(
+        f.passports.leases().lease_for(&member.service_id(), f.now).is_none(),
+        "the refused master must not keep the limits of its old lease"
+    );
+}
+
+#[tokio::test]
+async fn a_changed_root_ends_the_lease_of_the_old_passport() {
+    let f = Fixture::new(Operator::unowned());
+    let member = Member::new(LIFE);
+    let passport = f.passport(&[]);
+    let token = f.child(&passport, &member);
+    f.admit(&member, &token).await.unwrap();
+
+    // The host gains a verified controller: the node-key passport is
+    // untrusted now, but its lease is still in the file.
+    let controller = did(&Identity::generate().unwrap());
+    let host = HostIdentity { verified_controller: Some(controller), ..f.operator.host.clone() };
+    let restarted =
+        MailboxPassports::with_leases(&host, f.anchors.clone(), f.passports.leases().clone())
+            .unwrap();
+    let result = restarted.admit(&member.instance(), member.cert.clone(), &token, f.now).await;
+
+    assert_eq!(code_of(result), "untrusted_root");
+    assert!(restarted.leases().lease_for(&member.service_id(), f.now).is_none());
+}
+
+#[tokio::test]
+async fn a_refusal_that_is_not_definitive_keeps_the_lease() {
+    let f = Fixture::new(Operator::unowned());
+    let (member, thief) = (Member::new(LIFE), Member::new(LIFE));
+    let passport = f.passport(&[]);
+    let token = f.child(&passport, &member);
+    f.admit(&member, &token).await.unwrap();
+
+    // Another master shows the token: not bound, and the lease stays.
+    assert_eq!(code_of(f.admit(&thief, &token).await), "not_bound");
+
+    assert!(f.passports.leases().lease_for(&member.service_id(), f.now).is_some());
+}
+
+#[derive(Debug, Default)]
+struct CountingResolver {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl MasterAnchorResolver for CountingResolver {
+    async fn resolve_master_anchor(&self, _: &str) -> Result<MasterAnchorPayload, anyhow::Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(MasterAnchorPayload::default())
+    }
+}
+
+#[tokio::test]
+async fn a_denied_passport_is_refused_before_the_network_lookup() {
+    let operator = Operator::unowned();
+    let resolver = Arc::new(CountingResolver::default());
+    let passports = MailboxPassports::in_memory(&operator.host, resolver.clone()).unwrap();
+    let (owner, member) = (Identity::generate().unwrap(), Member::new(LIFE));
+    let now = syneroym_passport::now_secs();
+    let passport = operator.passport(&owner, &[], LIFE, now);
+    passports.leases().deny(&PassportId::of(&passport).unwrap(), now).unwrap();
+    let token = child_for(&owner, &passport, &member, LIFE, now);
+
+    let result = passports.admit(&member.instance(), member.cert.clone(), &token, now).await;
+
+    assert_eq!(code_of(result), "denied");
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 0, "no lookup for a denied passport");
 }

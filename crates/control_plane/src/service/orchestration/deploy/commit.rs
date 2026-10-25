@@ -55,16 +55,17 @@ impl ControlPlaneService {
             self.clear_mailbox_key(service_id).await;
             return Ok(());
         };
-        let installed = async {
-            self.store_mailbox_key(service_id, &mailbox.key).await?;
-            self.store_mailbox_passport(service_id, mailbox.child_token.as_deref()).await
-        };
-        installed.await.map_err(|e| {
-            format!(
-                "Mailbox key installation failed: {e}. With storage encryption on, inject the KEK \
-                 before deploying a service with a mailbox."
-            )
-        })
+        const KEK_HINT: &str =
+            "With storage encryption on, inject the KEK before deploying a service with a mailbox.";
+        self.store_mailbox_key(service_id, &mailbox.key)
+            .await
+            .map_err(|e| format!("Mailbox key installation failed: {e}. {KEK_HINT}"))?;
+        // The key is stored already. A failure here leaves the new key with
+        // the passport of an earlier deploy (or none), and the deploy fails
+        // and says so.
+        self.store_mailbox_passport(service_id, mailbox.child_token.as_deref())
+            .await
+            .map_err(|e| format!("Mailbox passport installation failed: {e}. {KEK_HINT}"))
     }
 
     /// Registers this deploy's owner attribution, installs (or clears) its

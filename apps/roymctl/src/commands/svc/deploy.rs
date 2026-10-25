@@ -123,6 +123,21 @@ pub(crate) fn check_mailbox_args(
     Ok(())
 }
 
+/// A dedicated mailbox is never in the open list, so `auto` cannot pick the
+/// mailbox a passport is for. The user names it.
+pub(crate) fn check_passport_args(
+    mailbox: Option<&MailboxChoice>,
+    has_passport: bool,
+) -> anyhow::Result<()> {
+    if has_passport && matches!(mailbox, Some(MailboxChoice::Auto)) {
+        anyhow::bail!(
+            "--mailbox-passport needs the mailbox named by node DID (--mailbox <node-did>): \
+             `auto` picks from the open list, which never holds a dedicated mailbox"
+        );
+    }
+    Ok(())
+}
+
 /// `--mailbox-method` lists a guest's own methods: at most
 /// `MAX_MAILBOX_METHODS`, each once, none on a node or platform interface.
 /// The substrate checks the same rules at deploy; this fails before anything
@@ -450,6 +465,8 @@ pub(super) async fn handle_deploy(
         named_identity.is_some(),
         instance_certificate.is_some(),
     )?;
+
+    check_passport_args(mailbox.as_ref(), mailbox_passport.is_some())?;
 
     // Before anything is signed or minted: `auto` reads the registry.
     let mailbox_host =

@@ -24,7 +24,7 @@ pub(crate) use std::fs;
 
 #[cfg(test)]
 pub(crate) use deploy::{
-    build_publication, check_mailbox_args, parse_container_port_mapping,
+    build_publication, check_mailbox_args, check_passport_args, parse_container_port_mapping,
     parse_container_volume_mapping, parse_interfaces, parse_visibility, signed_export_record,
     validate_container_flags, validate_container_ports,
 };

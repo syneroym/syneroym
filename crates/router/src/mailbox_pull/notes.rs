@@ -22,6 +22,8 @@ pub(super) enum Note {
     ServedRecordDiffers,
     NotStarted,
     PassportRefused,
+    PassportUnavailable,
+    PassportUnreadable,
 }
 
 impl Note {
@@ -40,6 +42,8 @@ impl Note {
             Self::ServedRecordDiffers => "served_record_differs",
             Self::NotStarted => "not_started",
             Self::PassportRefused => "passport_refused",
+            Self::PassportUnavailable => "passport_unavailable",
+            Self::PassportUnreadable => "passport_unreadable",
         }
     }
 
@@ -77,7 +81,14 @@ impl Note {
                  deploy); its messages wait at the mailbox"
             }
             Self::PassportRefused => {
-                "the mailbox refused the owner's passport; the queue has the open limits"
+                "the mailbox refused the owner's passport; the queue is registered without it"
+            }
+            Self::PassportUnavailable => {
+                "the mailbox could not check the owner's passport (an error or no answer in time); \
+                 the queue is registered without it and the passport is tried again later"
+            }
+            Self::PassportUnreadable => {
+                "the owner's mailbox passport cannot be read now (vault locked?)"
             }
         }
     }
