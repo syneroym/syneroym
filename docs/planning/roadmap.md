@@ -62,13 +62,21 @@ slice is `mise run verify` (see `AGENTS.md`).
 
 | Order | ID | Milestone | Status | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | M06D | Reachability and deferred delivery: registry-listed relays, operator passport, service mailbox | planning | Next. [Folder](milestones/M06D-reachability-and-deferred-delivery/). |
-| 2 | M8 | Federation and trust | sketched | [Sketch](meta-implementation-plan.md#milestone-8-federation-and-trust). Moved ahead of M7. |
-| 3 | M9 | AI concierge (M9A agentic foundations, M9B advanced orchestration) | sketched | [Sketch](meta-implementation-plan.md#milestone-9-expansion-track---ai-concierge). Moved ahead of M7. |
-| 4 | M10 | Mobile edge | sketched | [Sketch](meta-implementation-plan.md#milestone-10-expansion-track---mobile-edge). Moved ahead of M7. Builds on the M06D mailbox, which serves sleeping phones. |
+| 1 | M08A | Roym open foundation: participant rename, typed methods, batched outbound call, federated query library, event feed, remote clients | planning | Next. First of Milestone 8, the Roym value exchange. [Overview](milestones/M08-overview.md), [folder](milestones/M08A-open-foundation/). Moved ahead of M7. |
+| 2 | M08B | Language and structure: Hub localisation, taxonomy with attributes, language tags, search in every script, translation hook points | planning | [Folder](milestones/M08B-language-and-structure/). |
+| 3 | M08C | Deal core and extensions: commitments, selective disclosure, barter, event log, Roym extensions (scheduling, one-shot), widgets, message forwarding | planning | Outline. [Folder](milestones/M08C-deal-core-and-extensions/). |
+| 4 | M08D | Intents and shop: one intent record (offer or want), images, attributes, variants, storefront, browse query | planning | Outline. [Folder](milestones/M08D-intents-and-shop/). |
+| 5 | M08E | EEPs between two parties: issue, redemption, decline, set-off, split | planning | Outline. [Folder](milestones/M08E-eeps/). |
+| 6 | M08F | Discovery and matching: membership and exchange split, wants and bids, matching, friend exchanges | planning | Outline. [Folder](milestones/M08F-discovery-and-matching/). Replaces the "federation" part of the old M8 sketch. |
+| 7 | M08G | Reputation: evidence, two-sided opinions, contact queries | planning | Outline. [Folder](milestones/M08G-reputation/). Replaces the "trust" part of the old M8 sketch. |
+| 8 | M08H | EEP transfer: reissue, bundles, swaps, EEPs listed for trade | planning | Outline. [Folder](milestones/M08H-eep-transfer/). After reputation for user value. No legal gate (owner decision, 2026-10-26). |
+| 9 | M9 | AI concierge (M9A agentic foundations, M9B advanced orchestration) | sketched | [Sketch](meta-implementation-plan.md#milestone-9-expansion-track---ai-concierge). Moved ahead of M7. |
+| 10 | M10 | Mobile edge | sketched | [Sketch](meta-implementation-plan.md#milestone-10-expansion-track---mobile-edge). Moved ahead of M7. Builds on the M06D mailbox, which serves sleeping phones. |
 
-The order of M8, M9 and M10 among themselves is decided when the first of them
-is planned.
+M8 was planned first (2026-10-26). M08A to M08H replace the old
+[M8 sketch](meta-implementation-plan.md#milestone-8-federation-and-trust). The
+order of M9 and M10 is decided when the first of them is planned. Analytics and
+insight extensions come after M08H (see [deferred-backlog.md](deferred-backlog.md)).
 
 ### Deferred
 
@@ -97,4 +105,5 @@ is planned.
 | M6A | App platform surface | [M06A](milestones/M06A-app-platform-surface/) |
 | M6B | Roym substrate foundations | [M06B](milestones/M06B-roym-substrate-foundations/) |
 | M6C | Roym product | [M06C](milestones/M06C-roym-product/) |
+| M06D | Reachability and deferred delivery: registry-listed relays, operator passport, service mailbox | [M06D](milestones/M06D-reachability-and-deferred-delivery/) |
 | — | Conversation capability consolidation (interstitial) | [conversation-consolidation-plan.md](conversation-consolidation-plan.md) |

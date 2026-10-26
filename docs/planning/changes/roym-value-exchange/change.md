@@ -4,11 +4,21 @@ living-docs-touched:
 ---
 # Roym Value Exchange
 
-*Reader: developers and the project owner, when they plan Milestone 8 (federation and trust).*
+*Reader: developers and the project owner, when they plan Milestone 8 (the Roym value exchange).*
 
 This is an **overview** change document. It gives the features, the terms, the main design rules and the architecture of the Value Exchange. When Milestone 8 is planned, each module below gets its own change document with exact formats, methods and tests. Those documents must follow the rules here, or record a deviation. Detail that is correct to leave to them is listed in [Notes for the module documents](#notes-for-the-module-documents).
 
 Read first: [roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md) (Roym today), [reputation-design-note.md](../../../reputation-design-note.md) (reputation ideas), and the [service mailbox](../service-mailbox/change.md) change (store-and-forward delivery, which EEPs depend on).
+
+Related Milestone 8 changes, which this document relies on:
+
+- [Roym open foundation](../roym-open-foundation/change.md): the participant rename, the federated query library (fan-out, merge, verification), the event feed, remote clients.
+- [Roym extensions](../roym-extensions/change.md): the split between the deal core and extensions, commitment details, step records, reserve and release hooks.
+- [Roym shop](../roym-shop/change.md): images, attributes, variants, storefront, and the browse query.
+- [Roym intent matching](../roym-intent-matching/change.md): in-return terms, hard filters, ranking, standing wants and match notifications.
+- [Roym message forwarding](../roym-message-forwarding/change.md) and [Roym multilingual foundation](../roym-multilingual/change.md).
+
+**Owner decision (2026-10-26): no legal gate.** Roym builds EEP transfer, bundles and listing EEPs for trade. They come in M08H, after discovery and reputation, for user value only (see [Tasks](#tasks)). Legal and tax questions about EEPs belong to the participants and operators. Roym's job is to keep faithful, complete, signed records with the details a statement needs. Features that present EEPs as investments are still left out, as a product choice (see [EEPs and investment](#eeps-and-investment)).
 
 ## Problem
 
@@ -32,7 +42,7 @@ This change merges them into one design: the **Roym Value Exchange**.
   - **Want-Bid:** publish a **want** (what they need). Others answer with **bids**. The participant compares bids, asks for changes, and accepts or rejects.
   - **List-Search:** publish an **offering** (what they can give). Others find it by search and send an **enquiry**. The two sides change the terms until one accepts or rejects.
 - Both ways end in the same **agreement**. One agreement can hold several resources on each side.
-- A participant can issue an **earnest effort promise (EEP)**: a signed commitment, with a face value, to make an earnest effort to accept it against the issuer's own offerings. Later, after legal review, EEPs can change hands, one at a time or as a bundle. Roym tracks them as first-class records.
+- A participant can issue an **earnest effort promise (EEP)**: a signed commitment, with a face value, to make an earnest effort to accept it against the issuer's own offerings. EEPs can change hands, one at a time or as a bundle. Roym tracks them as first-class records.
 - Before a deal, a participant can judge the other party from **evidence** (signed facts) and **opinions** (signed views). Both parties to a deal can write an opinion of the other.
 - An exchange can forward a search to its **friend exchanges** and return its own and its friends' results together.
 - A participant can export a **statement** of every resource they gave and received, with a declared value. This is the raw data for tax. Roym computes no tax.
@@ -53,7 +63,7 @@ This change merges them into one design: the **Roym Value Exchange**.
 - **Quote author:** the participant who writes the quote. In Want-Bid it is the bidder. In List-Search it is the owner of the offering.
 - **Barter:** a deal in which no currency changes hands. It is not a separate mechanism or record. It is an agreement whose resources are all goods, services or EEPs.
 - **Agreement:** the signed terms both parties accepted. It is made of commitments.
-- **Commitment:** one item inside an agreement: one party gives one resource to the other. Examples: "P delivers the service", "C pays ₹500", "C issues an EEP of ₹300". Each commitment has a **kind**, set by the resource kind, and is settled by its own record.
+- **Commitment:** one item inside an agreement: one party gives one resource to the other. It may carry signed **details** defined by a Roym extension (see [Roym extensions](../roym-extensions/change.md)), such as the chosen slot. Examples: "P delivers the service", "C pays ₹500", "C issues an EEP of ₹300". Each commitment has a **kind**, set by the resource kind, and is settled by its own record.
 - **Economic event:** the signed record that settles a commitment: a fulfilment receipt, a payment acknowledgement, an issued EEP.
 - **Declared value:** the value of a commitment's resource in the unit of account, in minor units. For a resource that is not currency, it is what the giver would charge for it in currency.
 - **Event log:** an append-only log on each participant's node of every agreement and EEP event it took part in. The statement is read from it.
@@ -92,7 +102,7 @@ These hold for every module.
   - Agreements made of commitments with any resource on either side, with declared values, in one currency per agreement.
   - Selective disclosure of quote and agreement fields.
   - EEPs between two parties: issue, redemption, decline, split, set-off, expiry.
-  - EEP transfer and reissue, and bundles, **after the legal review** (see [Tasks](#tasks)).
+  - EEP transfer and reissue, and bundles.
   - Revocations that take effect from a stated time, so honest old records stay valid.
   - Splitting the Directory into a membership authority and an exchange.
   - Friend exchanges: one-hop forwarding of searches, and a simple merge of own and friends' results.
@@ -132,7 +142,7 @@ These are overview criteria. Each module change document refines them into tests
 | VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new EEP. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
 | VX-8 | Each commitment moves only through the states of its kind, and every kind has a failure end (see the table under Design). An agreement closes when every commitment has reached a final state. | |
 | VX-9 | The quote author is the single writer of the agreement. A second, conflicting change gets a named conflict, never a merge. | |
-| VX-10 | A booking claims its slot under the slot owner's single-writer fence, also when the slot owner is not the quote author. If the claim fails, the agreement is not formed. | |
+| VX-10 | A booking reserves its slot under the slot owner's single-writer fence, through the scheduling extension's reserve hook, also when the slot owner is not the quote author. If the reserve fails, the agreement is not formed. | |
 | VX-11 | A party can show a quote or an agreement with chosen fields hidden (for example the price), and the signatures still verify. Neither record carries the hidden terms in plain form. | |
 | VX-12 | Reputation shows which party failed which commitment, not only that a deal failed. | |
 | **EEPs between two parties** | | |
@@ -149,7 +159,7 @@ These are overview criteria. Each module change document refines them into tests
 | VX-23 | After a known restore, a holder's version that the issuer signed after the backup time brings the issuer up to date. A version dated before the backup time is not accepted this way. | |
 | VX-24 | If an issuer reissues from stale state, the two issuer-signed EEPs with the same id and version are proof against the issuer, and both holders keep a valid claim. | |
 | VX-50 | Every EEP shows the standard earnest-effort sentence of its record version. No EEP carries a text of its own that changes the promise. | |
-| **EEP transfer (after legal review)** | | |
+| **EEP transfer** | | |
 | VX-25 | A holder passes an EEP to a new holder. The issuer reissues it to the new holder, also when the issuer was offline and the request waited in its mailbox. | |
 | VX-26 | If one EEP version is passed to two people, the issuer reissues only the first valid request it processes. The other receives a signed refusal plus the two signed endorsements as proof against the double spender. | |
 | VX-27 | The issuer refuses a reissue only for a double spend, an expired EEP, or a version already claimed by a redemption, and every refusal is signed. | |
@@ -196,7 +206,7 @@ Eight modules. They are separate in data and API, and they work closely together
 | **Agreements** | every participant keeps a copy; the quote author is the writer | enquiries, bids, quotes, agreements, commitments and their states; the participant's own opinions | `transaction`, extended |
 | **Event log and statement** | every participant | the append-only event log; the statement export | inside `transaction` (the module document confirms) |
 | **Obligations** | every participant | EEPs it issued (as the single writer), EEPs it holds, endorsements, refusals, demands, declines | new `obligation` service |
-| **Search client** | every participant | the participant's lists of exchanges and trusted authorities; fan-out, merge and verification of results | client library, from the client half of `directory` |
+| **Search client** | every participant | the participant's lists of exchanges and trusted authorities; fan-out, merge and verification of results | the federated query library from [Roym open foundation](../roym-open-foundation/change.md) owns fan-out, merging and duplicate removal; the client half of `directory` keeps only the lists and calls the library |
 | **Reputation** | every participant | the reader's view: gathers evidence and opinions and shows them | client library, new |
 | **Exchange** | a SynOrg that enables it | published intents, search index, forwarded search, published evidence and opinions, aggregates, friend list | new `exchange` service, from the search half of `directory` |
 | **Membership** | a SynOrg that enables it | members, credentials, revocations, member-level moderation | new `membership` service, from the trust half of `directory` |
@@ -282,8 +292,7 @@ An agreement is a set of commitments. Each commitment names who gives, who recei
 
 | Resource | Commitment kind | Settled by | States |
 | --- | --- | --- | --- |
-| Service in a time slot | booking | `fulfilment-receipt` | scheduled → in progress → done; or ended unconfirmed |
-| Goods or a service without a slot | delivery | `fulfilment-receipt` | promised → delivered; or ended unconfirmed |
+| Goods or a service, with or without a slot | fulfilment | `fulfilment-receipt` | promised → fulfilled; or ended unconfirmed |
 | Currency | currency | `payment-acknowledgement` | requested → acknowledged; or ended unconfirmed |
 | New EEP | eep-issue | the issued EEP, version 1 | promised → issued; or ended unconfirmed |
 | EEP the giver holds | eep-transfer | endorsement, then the issuer's reissue | promised → endorsed → reissued; or refused |
@@ -291,16 +300,18 @@ An agreement is a set of commitments. Each commitment names who gives, who recei
 
 The agreement itself has a short life: requested → quoted → agreed → closed, or expired, or cancelled. It closes when every commitment is final.
 
+**Work steps belong to extensions, not to commitment states** (owner decision, 2026-10-26). A booked slot, "started", "documents received" or "driver arrived" is a step record of a Roym extension (see [Roym extensions](../roym-extensions/change.md)). The first two extensions are **scheduling** (a service in a time slot, today's booking) and **one-shot** (pay and deliver, today's order). Both use the same `fulfilment` kind. Reputation reads only whether a commitment settled. An opinion can still point at one step.
+
 Rules:
 
-- **The list of kinds is fixed in code.** Offerings choose a kind (booking or delivery). Strangers can then compare "delivered" across all participants, and reputation and the statement can read every state. A configurable workflow engine is rejected (see [Rejected options](#rejected-options)). A new kind is added in code when a real need appears.
+- **The list of kinds is fixed in code.** An offering names the extension that runs its work steps (for example scheduling or one-shot), not a kind of its own. Strangers can then compare "delivered" across all participants, and reputation and the statement can read every state. A configurable workflow engine is rejected (see [Rejected options](#rejected-options)). A new kind is added in code when a real need appears.
 - **One writer per record.** The quote author's node writes the agreement and the commitment states. Both parties keep a copy. This generalises today's rule that the provider's Transaction service is the single writer. The issuer writes each EEP. One deal can therefore involve two writers, each for its own record.
-- **The slot owner claims its own slot.** Today a slot is claimed under the slot owner's single-writer fence when it files the acceptance (integrated spec, `D-C8-2`). In List-Search the quote author owns the slot, as today. In a bid, or a barter with a booking on each side, the quote author may not own every slot. Then each slot owner claims its own slot as a separate step when the agreement is accepted, and the agreement writer records the result. If a claim fails, the agreement is not formed.
+- **The resource owner reserves its own resource.** Today a slot is claimed under the slot owner's single-writer fence when it files the acceptance (integrated spec, `D-C8-2`). This becomes the generic reserve hook of [Roym extensions](../roym-extensions/change.md) (EX-5, EX-6). In List-Search the quote author owns the slot, as today. In a bid, or a barter with a booking on each side, the quote author may not own every slot. Then each owner reserves its own resource as a separate step when the agreement is accepted, and the agreement writer records the result. If a reserve fails, the agreement is not formed, and the other reserves are released.
 - **How an agreement and an EEP point to each other.** For `eep-issue`, the agreement names the issuer, the currency and the face value. The EEP does not exist yet, so the agreement cannot name it. The EEP's version 1 names the agreement's content hash, and the settlement record names the EEP id. For `eep-transfer` and `eep-return`, the EEP already exists, so the agreement names its id and version. The agreement writer marks an EEP commitment settled when it holds the issuer's signed EEP that names the right holder.
 - **The agreement records its home exchange.** It is the exchange that holds the intent the deal came from: the source exchange named in the search result, not an exchange that relayed it. A deal that began from a direct link has no home unless the two parties name one in the agreement. See [Publishing an opinion](#reputation-evidence-and-opinions).
 - **Cancellation:** only the quote author, and only while no commitment has moved. This generalises today's rule.
 - **Every commitment carries a declared value** in the agreement's unit of account, in minor units. The statement export uses it.
-- **Selective disclosure covers the quote and the agreement.** Today `AgreementReceiptPayload` (`crates/roym_core/src/transaction.rs:192`) carries a plain copy of `terms`, and `quote_record_id`, a hash of the whole quote. Salting only the receipt would hide nothing, because showing the quote shows everything. So: each field of the quote is hashed with its own random salt, and the quote's signature covers the list of hashes. The receipt carries the same list of hashes and no plain terms. To show a deal to a third party, a party reveals the fields it chooses, with their salts. The others stay hidden, and both signatures still verify. This changes the canonical bytes of the quote and of `agreement-receipt`, so it is done in the first phase, before any EEP or evidence record depends on them. The product is not released, so the records change in place, with no migration.
+- **Selective disclosure covers the quote and the agreement**, including each commitment's details block. Today `AgreementReceiptPayload` (`crates/roym_core/src/transaction.rs:192`) carries a plain copy of `terms`, and `quote_record_id`, a hash of the whole quote. Salting only the receipt would hide nothing, because showing the quote shows everything. So: each field of the quote is hashed with its own random salt, and the quote's signature covers the list of hashes. The receipt carries the same list of hashes and no plain terms. To show a deal to a third party, a party reveals the fields it chooses, with their salts. The others stay hidden, and both signatures still verify. This changes the canonical bytes of the quote and of `agreement-receipt`, so it is done in the first phase, before any EEP or evidence record depends on them. The product is not released, so the records change in place, with no migration.
 
 ### Disclosure of deal evidence
 
@@ -368,7 +379,7 @@ The issuer gives a new EEP as a resource. It signs version 1, naming the receive
 
 - **List price is a maximum.** The holder redeems at no more than the issuer's signed list price that is current when the holder asks. The issuer may give a better deal. A refusal to go below the list price is normal and is not evidence against the issuer.
 - **The issuer chooses which offerings to accept EEPs for, at that time.** For example, ten offerings may accept EEPs today and five next week. Fewer offerings is a **decline**, recorded with the issuer's optional reason. The reader decides whether it was good, bad or acceptable.
-- **Who carries the risk.** A redemption is one agreement with a `eep-return` commitment from the holder and a booking or delivery commitment from the issuer. When the agreement is signed, the holder signs the return endorsement, and the issuer records that version as claimed by this redemption. From then on the EEP cannot be spent elsewhere, so the issuer carries no double-spend risk. The issuer closes the EEP only when its own delivery is done. If the delivery ends unconfirmed, the issuer must reissue the EEP to the holder. So the holder carries only the risk that the issuer fails to deliver, and that failure leaves signed evidence: the return endorsement, the agreement, and the unconfirmed delivery.
+- **Who carries the risk.** A redemption is one agreement with a `eep-return` commitment from the holder and a `fulfilment` commitment from the issuer. When the agreement is signed, the holder signs the return endorsement, and the issuer records that version as claimed by this redemption. From then on the EEP cannot be spent elsewhere, so the issuer carries no double-spend risk. The issuer closes the EEP only when its own delivery is done. If the delivery ends unconfirmed, the issuer must reissue the EEP to the holder. So the holder carries only the risk that the issuer fails to deliver, and that failure leaves signed evidence: the return endorsement, the agreement, and the unconfirmed delivery.
 - **No answer.** A demand the issuer never collected from its mailbox, with a delivery window that has ended, is weaker negative evidence than a signed decline. The mailbox's signed `stored` receipt proves that a message was deposited for the issuer at a given time. Proving that this message was the demand needs extra work, because the mailbox signs a hash of ciphertext it cannot read. The obligation change document designs it. The `delivered` receipt, signed by the receiver, proves the issuer's node received the message.
 - **Set-off.** A holder who owes the issuer can return the issuer's EEP in payment. This is a `eep-return` commitment, the same as a redemption.
 - **Split.** The issuer signs every split. A holder asks the issuer to split an EEP. The parts are new EEPs whose face values add up exactly to the original, in integer minor units, and the original version is closed. Only the issuer writes EEPs, so a split by the holder alone is not valid.
@@ -376,7 +387,7 @@ The issuer gives a new EEP as a resource. It signs version 1, naming the receive
 
 #### Transfer and reissue
 
-Transfer is built only after the legal review (see [EEPs and investment](#eeps-and-investment) and [Tasks](#tasks)). It also needs reputation to be safe between strangers.
+Transfer is built in M08H, after discovery (M08F) and reputation (M08G). Before then, strangers cannot find each other, and a receiver has no published evidence to judge a stranger's EEP, so transfer would have little use. The order does not reopen the legal decision.
 
 1. The holder signs an **endorsement**: "EEP N, version v, now held by H2". It is the settlement step of a `eep-transfer` commitment.
 2. H2's node sends a **reissue request** to the issuer's `obligation` service: directly, or through the issuer's mailbox when the issuer is offline.
@@ -434,11 +445,8 @@ A published Merkle commitment that holders check was considered and dropped (see
 
 An EEP is a claim on the issuer's future output. That is true of every EEP, so there is no separate "investment" record and no rule that can tell an investment from a normal EEP. A holder who buys an EEP at a discount and redeems it later at face value has, in effect, invested. Roym does not prevent this.
 
-The legal question is wider than investments. EEPs priced in a currency and passed between strangers may count as payment instruments in some countries. `docs/system-architecture.md` already requires legal review before mutual credit goes live. So:
-
-- **Two-party EEPs** (issue, redeem, set-off, split) can be built first. An EEP that only goes back to its issuer is a commitment between two people, settled between the same two people. It is not prepaid: the issuer received value first and gives back later.
-- **Transfer, bundles and listing EEPs for trade** are gated on the legal review. They are built only after it.
-- **Features that present EEPs as investments** (an expected return or yield, a price history or chart for an EEP, ranking issuers by how much an EEP may gain) are not built, even after transfer. They need their own legal review.
+- **Transfer, bundles and listing EEPs for trade** are built. Legal and tax compliance is the participants' and operators' concern. Roym keeps faithful, signed records and the statement export (owner decision, 2026-10-26).
+- **Features that present EEPs as investments** (an expected return or yield, a price history or chart for an EEP, ranking issuers by how much an EEP may gain) are not built. This is a product choice: they help nobody trade, and they invite speculation.
 
 #### Signatures that outlive keys
 
@@ -577,7 +585,7 @@ Three steps, in order:
 
 ### Mailbox change
 
-EEP redemption demands and reissue requests use the [service mailbox](../service-mailbox/change.md). One addition is needed. Today the mailbox answers `deposit` with `stored`, and the change document does not say that this receipt is signed (unverified against the code). This change asks the mailbox to **sign** its `stored` receipt: deposit id, destination, message hash and time. The mailbox is a third party, so its signature proves that a message was deposited for the destination at that time. It does not prove what the message said, because the message is sealed. The mailbox service task is still open in the current mailbox work, so this addition should go there.
+EEP redemption demands and reissue requests use the [service mailbox](../service-mailbox/change.md). One addition is needed. Today the mailbox answers `deposit` with `stored`, and the change document does not say that this receipt is signed (unverified against the code). This change asks the mailbox to **sign** its `stored` receipt: deposit id, destination, message hash and time. The mailbox is a third party, so its signature proves that a message was deposited for the destination at that time. It does not prove what the message said, because the message is sealed. M06D did not add it. It is built at the start of M08E, before EEPs.
 
 ### Lessons from existing systems
 
@@ -638,7 +646,7 @@ EEP redemption demands and reissue requests use the [service mailbox](../service
 
 ## Open questions
 
-- **Legal review.** Whether transferable EEPs priced in a currency count as payment instruments in the first target countries, and what that requires. In India, also whether a signed, transferable EEP falls under the income tax "virtual digital asset" definition, whatever it is called, because that brings a flat tax and tax deducted at source on transfers. Transfer, bundles and listing EEPs for trade wait for the answer.
+- **Legal review.** Closed by the owner on 2026-10-26: Roym builds transfer and keeps faithful records. Whether EEPs count as payment instruments or as "virtual digital assets" for tax in a country is for participants and operators to judge, not a gate on the build.
 - **How far source 1 goes in v1.** Recommendation: distinct counterparties, time active, and counts labelled "stated by the participant". Signed counts, receipt sequence numbers and random sampling (from the reputation design note) later. The reputation module document decides.
 - **Asking contacts.** How the asker hides which party it is interested in.
 - **A refused EEP in a bundle.** One payment commitment per EEP, which lapses when its EEP is refused, or one payment for the bundle with a rule for refunds. The obligation change document decides.
@@ -674,27 +682,21 @@ These are correct to leave out of the overview. They are listed so the module au
 
 ## Tasks
 
-Milestone 8 is too big for one milestone, so it is split in two. Phases are in build order, by user value. Each phase gets its own change document when it is planned.
+Milestone 8 is split into sub-milestones, in dependency order. Each has a folder under `docs/planning/milestones/` and a row in [roadmap.md](../../roadmap.md). Each module below gets its own change document before its sub-milestone starts.
 
-**Before Milestone 8**
-- [ ] The current mailbox work (M06D) is finished.
-- [ ] The signed `stored` receipt goes into the current mailbox work, where the mailbox service task is still open.
-- [ ] Revocations gain `effective_from` and a reason, with the countersign rule after a key compromise. Built before EEPs.
-
-**M8A: agreements and EEPs between two parties**
-- [ ] **Phase 0, multilingual foundation.** Its own change document (`docs/planning/changes/roym-multilingual/change.md`): a string catalog in the Hub, local formats, a category taxonomy with labels, language tags on signed records with free text, the languages a participant speaks, and the translation host interface with no engine yet. It comes first, so every screen and record that M8 adds is multilingual from the start.
-- [ ] **Phase 1, agreements.** Resource kinds. Commitments with kinds, states (each with a failure end) and declared values, in one currency. Quote author as the single writer, and slot claims by the slot owner. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. Work items: new card types, Hub UI for multi-commitment agreements and the statement, WIT changes.
-- [ ] **Phase 2, two-party EEPs.** The `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths. Issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements. The restore rule. Per-issuer limit. Stated outstanding total on the standing card. Work items: a wallet screen in the Hub, card types for EEPs, demands and declines, WIT changes.
-
-**M8B: discovery, trust and transfer**
-- [ ] **Phase 3, discovery.** Wants and bids (Want-Bid) next to offerings and enquiries (List-Search), as one intent record in `catalog`, with one negotiation flow. Split the directory into `membership` and `exchange`, with the rules in the membership and exchange table. The search client library. Friend exchanges with one-hop forwarding and the v1 merge rule. Work items: wants and bids screens in the Hub.
-- [ ] **Phase 4, reputation, evidence and opinions.** An ADR for the disclosure rule first. Evidence records, responses and withdrawals on the exchange, with credential labels. Opinions from both parties: sealed writing, reveal to each other, resolution window, then publish. Contact queries over Conversation, one level. The three-source view. Work items: the evidence view in the Hub.
-- [ ] **Phase 5, transfer (gated on the legal review).** Endorsement, reissue, refusals, idempotency, bundles, two-party swaps. Listing EEPs for trade. Work items: card types for endorsements, refusals and swaps.
-- [ ] **Phase 6, analytics.** Exchange aggregates with the minimum group size. Suggestions on the participant's node.
+- [ ] **M08A, open foundation.** [Roym open foundation](../roym-open-foundation/change.md): the participant rename, the federated query library, the event feed, remote clients, typed methods.
+- [ ] **M08B, language and structure.** [Roym multilingual foundation](../roym-multilingual/change.md): string catalog, local formats, taxonomy with attributes, language tags, search keys and FTS5, translation hook points.
+- [ ] **M08C, deal core and extensions.** Resource kinds. Commitments with kinds, states (each with a failure end), details and declared values, in one currency. Quote author as the single writer. Reserve and release hooks. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. [Roym extensions](../roym-extensions/change.md), with scheduling and one-shot. [Message forwarding](../roym-message-forwarding/change.md).
+- [ ] **M08D, intents and shop.** Offerings and wants as one intent record in `catalog`, with in-return terms. [Roym shop](../roym-shop/change.md).
+- [ ] **M08E, EEPs between two parties.** First: revocations gain `effective_from` and a reason, with the countersign rule after a key compromise, and the mailbox signs its `stored` receipt. Then the `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths: issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements, the restore rule, the per-issuer limit, the stated outstanding total. Work items: a wallet screen in the Hub and card types for EEP records.
+- [ ] **M08F, discovery and matching.** Wants and bids (Want-Bid) next to offerings and enquiries (List-Search), with one negotiation flow. [Roym intent matching](../roym-intent-matching/change.md). Split the directory into `membership` and `exchange`. Friend exchanges with one-hop forwarding and the v1 merge rule.
+- [ ] **M08G, reputation, evidence and opinions.** An ADR for the disclosure rule first. Evidence records, responses and withdrawals on the exchange, with credential labels. Opinions from both parties: sealed writing, reveal to each other, resolution window, then publish. Feedback that points at an extension step. Contact queries over Conversation, one level. The three-source view.
+- [ ] **M08H, EEP transfer.** Endorsement, reissue, refusals, idempotency, bundles, two-party swaps, listing EEPs for trade. After M08G, so that a receiver can find an issuer's published evidence first.
+- [ ] **Later: analytics and insight extensions.** Exchange aggregates with the minimum group size. Suggestions on the participant's node. Insight extensions (see [Roym extensions](../roym-extensions/change.md)).
 
 **On approval**
 - [ ] Add rows to [deferred-backlog.md](../../deferred-backlog.md) for each non-goal that is postponed: multi-hop forwarding, contact queries beyond one level, index sharding to Milestone 7, the Merkle commitment option, shared EEP pools, investment features for EEPs, policy hooks and the pre-sign hook, reviewer pseudonyms and context keys, more than one currency per agreement, and exchange content rules for opinions.
-- [ ] Replace the Milestone 8 row in [roadmap.md](../../roadmap.md) with M8A and M8B.
+- [x] Replace the Milestone 8 row in [roadmap.md](../../roadmap.md) with M08A to M08H (2026-10-26).
 
 ## Deviations
 
@@ -704,9 +706,9 @@ Before merge, update the living docs so they describe the result, then set `stat
 
 - `docs/system-requirements-spec.md`: replace the native ledger token in `[APP-ESC]` with EEPs; replace the EMA score in `[P2P-REP]` with the three-source evidence view and two-sided opinions; move the leaf shards of `[P2P-DSC]` to Milestone 7; add the participant role, resources, wants, the two ways to start an exchange, commitments, one-hop forwarding and the event log.
 - `docs/roym-integrated-experience-spec.md`: roles, the Records table, the transaction state, search (D1), the "Not in the first release" list, and the rule "Payment evidence is not a public listing field", which this change narrows to amounts and payment details (see [Disclosure of deal evidence](#disclosure-of-deal-evidence) and its ADR).
-- `docs/system-architecture.md`: the new and split services, and the legal review gate for EEP transfer.
+- `docs/system-architecture.md`: the new and split services. Remove the legal review gate for mutual credit, by the owner decision above.
 - `docs/TERMINOLOGY.md`: the terms in this document.
 - `docs/reputation-design-note.md`: align it with the reputation rules here.
-- `docs/planning/roadmap.md`: M8A and M8B.
+- `docs/planning/roadmap.md`: the M08A to M08H rows.
 
 Record anything postponed in [deferred-backlog.md](../../deferred-backlog.md).

@@ -6,7 +6,7 @@ living-docs-touched:
 
 *Reader: developers who plan and build Milestone 8, and the project owner.*
 
-This change lets people use Roym in their own language. It also lets two people who speak different languages trade with each other. It is built as **M8A Phase 0**: the first work in Milestone 8, before the [Value Exchange](../roym-value-exchange/change.md) phases.
+This change lets people use Roym in their own language. It also lets two people who speak different languages trade with each other. People can mix languages and scripts, for example Hindi typed in Latin letters, in chat, in contact names and in search. It is built as **M08B**, right after [Roym open foundation](../roym-open-foundation/change.md) (M08A) and before the [Value Exchange](../roym-value-exchange/change.md) work, so every screen and record that M8 adds is multilingual from the start.
 
 Terms used here:
 
@@ -18,6 +18,10 @@ Terms used here:
 - **Taxonomy:** the shared list of category codes, with a label for each code in each language.
 - **String catalog:** the file of all UI text for one language.
 - **Machine translation (MT):** text translated by software, not by the author.
+- **Script:** a writing system, such as Devanagari, Tamil or Latin. A BCP 47 tag can name it (`hi-Latn` is Hindi in Latin letters).
+- **Transliteration:** writing the same words in another script, by sound (`राम` and `ram`). It is not translation.
+- **Search key:** a form of a text that search compares instead of the text itself: Unicode NFC, lower case, and a Latin transliteration for non-Latin scripts.
+- **Translation hook point:** a place in a Roym flow where the translation interface is called. With no engine, the call does nothing.
 
 ## Problem
 
@@ -58,7 +62,12 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
   - A language tag on every signed record type that has free text today: `profile`, `listing`, `request`, `quote`. And on `opinion` when M8 adds it.
   - Optional translations signed by the author, on the same records.
   - `languages` on the profile: an ordered list of language tags the person speaks. It replaces `locale`.
-  - An optional language tag on chat messages.
+  - Optional language tags on chat messages, up to 3 per message, for messages that mix languages.
+  - Names in any script: contact names, display names and shop names, with search keys so a name typed in one script finds the same name in another.
+  - Search with SQLite FTS5 over search keys, so text search works in every script and across scripts by transliteration.
+  - Attribute definitions in the taxonomy (used by the [shop](../roym-shop/change.md) change).
+  - Widget and extension labels from the string catalog (see [Roym extensions](../roym-extensions/change.md)).
+  - A fixed list of translation hook points (see [Translation hook points](#translation-hook-points)). All of them do nothing in v1.
   - A new substrate host interface for machine translation, with one implementation that always answers "unavailable". The Hub hides the translate action when no engine is available.
   - The agreement records which language each party viewed it in.
 - Not in scope:
@@ -89,7 +98,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | ML-11 | The author can add up to a fixed number of translations of the free-text fields, inside the same signed record. Each translation has its own language tag and is shown as "translated by the author". | |
 | ML-12 | The Hub shows the version of a record's text that best matches the reader's languages: the original, or an author translation. It always shows which one it shows, and the reader can always open the original. | |
 | ML-13 | A profile carries `languages`, an ordered list of language tags. `locale` is removed. | |
-| ML-14 | A chat message may carry a language tag. A message without one is shown as "language not stated". | |
+| ML-14 | A chat message may carry up to 3 language tags, main language first. A message without one is shown as "language not stated". | |
 | **Machine translation** | | |
 | ML-15 | A WIT interface for translation exists. Roym services can call it through the host. | |
 | ML-16 | The v1 host implementation answers "unavailable" to every call. With it, the Hub shows no translate action anywhere. | |
@@ -98,7 +107,19 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | ML-18 | Each party's signed acceptance of an agreement records the language tag of the text it viewed, and whether that text was a machine translation. | |
 | ML-19 | Before a party accepts an agreement whose free text it viewed through machine translation, the Hub shows a warning that the original, in the named language, is what binds. | |
 | **Search** | | |
-| ML-20 | Text search finds a listing by a word of its title in Devanagari, and in Tamil script. (Depends on the open question about search. If the owner moves search out, this row moves with it.) | |
+| ML-20 | Text search finds a listing by a word of its title in Devanagari, and in Tamil script. | |
+| **Mixed languages and scripts** | | |
+| ML-21 | A search for `nal wala` (Latin letters) finds a listing titled `नल वाला`, and a search for `नल वाला` finds a listing tagged `hi-Latn` with the title `nal wala`. | |
+| ML-22 | Common spelling variants in Latin letters match each other (for example `naal waala` and `nalwala` match `nal wala`). The folding rules are a fixed table, tested with real samples. | |
+| ML-23 | A contact, display name or shop name in any script is stored as written. Contact search finds `राम` with `ram`, and `Ram` with `राम`. | |
+| ML-24 | The Hub sorts names with the browser's collation for the UI language. Names in other scripts are grouped by script, not mixed by byte order. | |
+| ML-25 | A message that mixes Hindi and English words keeps its text as written. Its tags list both languages. The Hub sets `lang` from the first tag. | |
+| ML-29 | A query word of 1 or 2 characters (after folding) is matched as a whole word or a word prefix through a second index, not through the trigram index. A query made only of such words still returns results, and never runs a full table scan. | |
+| **Translation hook points** | | |
+| ML-26 | Each hook point in [Translation hook points](#translation-hook-points) calls the translation interface. With the v1 implementation, each call returns `unavailable`, and the flow continues with the original text. A test covers every hook point. | |
+| ML-27 | A translate action appears in the Hub only at a hook point, and only when `supported-targets` is not empty. | |
+| **Extension and taxonomy labels** | | |
+| ML-28 | Taxonomy attribute names and choice values, widget labels and extension step names come from the string catalog and show in the reader's language, with the English label as fallback. | |
 
 ## Design
 
@@ -143,7 +164,9 @@ Rejected: validating categories against the taxonomy inside `validate`. Then eve
 
 **Payment methods.** `PaymentTerms.methods` holds short free strings today (`listing.rs:88`). They become codes (for example `upi`, `cash`, `bank-transfer`) with labels, the same way as units.
 
-**Commitment kinds** (M8). The Value Exchange adds resource kinds and commitment kinds. They must be enum codes with catalog labels, never free text. This change states the rule. M8 Phase 1 follows it.
+**Commitment kinds and extension fields** (M8). The Value Exchange adds resource kinds and commitment kinds. Roym extensions add schema fields, step types and widgets. Each of these is a code with catalog labels, never free text. This change states the rule. The deal core (M08C) and the extensions follow it.
+
+**Attributes.** The taxonomy also defines attributes per category, for the [shop](../roym-shop/change.md) change. A choice attribute's values are codes with labels, like categories.
 
 ### C. Language-tagged free text
 
@@ -179,7 +202,7 @@ languages: Vec<String>   // BCP 47 tags, most preferred first, at most 8 (limit 
 
 The Hub shows it on the profile ("Speaks Hindi, Marathi"). The Hub may use it to rank author translations and, later, to offer MT.
 
-**Chat messages.** A message is not a signed record. The conversation `message` WIT record has a `content-type` (`crates/wit_interfaces/wit/conversation/`). This change adds an optional language tag next to it. The Hub sets it from the UI language, and the sender can change it. Putting the tag inside `content-type` as a parameter was rejected: it is not a standard parameter, and code that compares content types would break.
+**Chat messages.** A message is not a signed record. The conversation `message` WIT record has a `content-type` (`crates/wit_interfaces/wit/conversation/`). This change adds an optional list of up to 3 language tags next to it, main language first. People in India often mix languages in one message, so one tag is not enough. A signed record still has one tag: its main language. The Hub sets it from the UI language, and the sender can change it. Putting the tag inside `content-type` as a parameter was rejected: it is not a standard parameter, and code that compares content types would break.
 
 ### D. Machine translation
 
@@ -255,7 +278,7 @@ viewed_lang: string          // the language tag of the text shown
 viewed_via_mt: bool          // true if it was a machine translation
 ```
 
-Today an `agreement-receipt` is made of halves, one signed by each party (`ReceiptHalf`, `crates/roym_core/src/transaction.rs:205`). The two fields go into the payload each party signs. M8 Phase 1 changes the canonical bytes of the quote and the receipt for selective disclosure (see the [Value Exchange](../roym-value-exchange/change.md) change, "Agreements made of commitments"). Phase 0 adds these fields first. Phase 1 keeps them.
+Today an `agreement-receipt` is made of halves, one signed by each party (`ReceiptHalf`, `crates/roym_core/src/transaction.rs:205`). The two fields go into the payload each party signs. The deal core (M08C) changes the canonical bytes of the quote and the receipt for selective disclosure (see the [Value Exchange](../roym-value-exchange/change.md) change, "Agreements made of commitments"). This change adds these fields first. M08C keeps them.
 
 Before acceptance through MT, the Hub shows: the original binds, it is in the named language, and the shown text is a machine translation (ML-19). An author translation (layer C) is not MT. It is signed by the author, so `viewed_via_mt` is false. The original still binds.
 
@@ -266,9 +289,37 @@ Category search is language-neutral after layer B. Text search is not. Today:
 - The directory index stores an ASCII-folded `text` field. A search builds a `$regex` filter. `data_db` compiles `$regex` to `json_extract(payload, ?) LIKE '%pattern%'` (`crates/data_db/src/filter.rs:286`). There is no SQLite FTS table. So the SQLite FTS tokenizer question does not apply today.
 - `normalize_text` drops every non-ASCII character. So Devanagari and Tamil text is not indexed, and such a query is refused.
 
-To make ML-20 true, `normalize_text` must keep letters, combining marks and digits of every script. It must apply Unicode NFC first. Devanagari vowel signs and the virama are combining marks (Unicode categories `Mn` and `Mc`). If they are dropped, words break. The `LIKE` wildcards `%` and `_` must still be removed, as today. SQLite `LIKE` folds case only for ASCII. That is fine: `normalize_text` already lowercases, and Indic scripts have no case. This is a change to the index shape: stored rows and queries change together. The product is unreleased, so the index is rebuilt in place.
+**Decision (2026-10-26): search moves to SQLite FTS5 over search keys, in this change.**
 
-This makes search work inside one script. It does not match across scripts. A user who types `plumber` or `nal wala` in Latin letters does not find `नल वाला`. See [Open questions](#open-questions).
+- **Search key.** Each indexed text is turned into a search key: Unicode NFC, lower case, then a Latin transliteration for every non-Latin script, then a loose folding of Latin spelling (for example long and short vowels fold together, doubled letters fold to one). Combining marks (Unicode `Mn` and `Mc`, such as Devanagari vowel signs and the virama) are kept until the transliteration step, so words do not break. The index stores both the NFC original and the key.
+- **The query gets the same treatment.** A query in Devanagari and a query in Latin letters both become the same kind of key. So `nal wala`, `naal waala` and `नल वाला` meet (ML-21, ML-22).
+- **FTS5 with the trigram tokenizer.** It works for any script, with no word list per language, and finds a word inside a longer word. It replaces the `$regex` and `LIKE` path for text search. Category, area and attribute filters stay structured.
+- **Short words.** The trigram index cannot match a query term shorter than 3 characters, and short transliterated words are common (`ek`, `do`, `na`). So each text field is also indexed in a second FTS5 table with the `unicode61` word tokenizer and a prefix index for 1 and 2 characters, over the same search keys. Search keys are in Latin letters, so word tokens work for every script. A query term of 1 or 2 characters goes to this index as a whole-word or prefix match. Longer terms go to the trigram index. A query with only short terms never falls back to a scan (ML-29).
+- **The transliteration table** is a fixed table in `roym_core`, one per script, starting with Devanagari and Tamil. It is lossy by design: it only has to make two spellings of the same word meet. ISO 15919 is the starting point. The folding rules are tested with a set of real spellings collected for the test data (`unverified`: whether a pure-Rust crate already does this well enough; the plan checks before writing one).
+- `unverified`: that the SQLite build used by `data_db` (`rusqlite` with `bundled-sqlcipher`) has FTS5 and the trigram tokenizer enabled. SQLite always runs in the host, so this one build serves both the native and the WASM build of Roym. The plan checks this first.
+- **A guest cannot create an FTS5 table today.** Guests reach storage only through `data-layer` collections. `execute-ddl` is unreachable from a service method (deferred-backlog §11). So `data-layer` gains a full-text option on a collection (the fields to index, kept in sync by the host) and a text-match filter operator. This is a substrate change, and it is planned first.
+- The index shape changes. The product is unreleased, so the index is rebuilt in place.
+
+The same search keys serve the conversation search (`conversation.search`) and the contact list.
+
+### Names in any script
+
+A name (contact, display name, shop name) is stored exactly as written, in any script. Next to it, the node stores its search key (see [Search](#search)). Contact search and the contact picker compare keys, so `ram` finds `राम` (ML-23). The Hub sorts names with `Intl.Collator` for the UI language, and groups names by script (ML-24). A name is never translated. The reader's node may show a transliteration next to a name in a script the reader does not read. This is a display choice, not a signed field.
+
+### Translation hook points
+
+The translation interface is called at these points, and at no others. With the v1 engine, every call returns `unavailable`, and the flow uses the original text (ML-26).
+
+| Hook point | What is translated | Where it runs |
+| --- | --- | --- |
+| Search query | the query text, into the languages of the indexed records | the searching participant's node, before the query is sent |
+| Record display | free text of an offering, want, storefront, quote | the reader's node |
+| Chat message | the message text | the reader's node |
+| Widget answer | free-text fields of a widget answer or step record | the reader's node |
+| Opinion | the opinion text | the reader's node |
+| Agreement review | the free text of an agreement before acceptance, with ML-18 and ML-19 | the reader's node |
+
+A translation is always labelled with its engine and is never signed (rule 1 above).
 
 ### Which catalog format
 
@@ -299,8 +350,8 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 
 ## Open questions
 
-- **Search over Indic scripts.** Recommendation: include the `normalize_text` change in this phase (ML-20). Without it, a listing written in Hindi is found only by category, never by its title. The owner decides.
-- **Hinglish and cross-script search.** Many people type Hindi in Latin letters. Options: index a romanised copy of Indic text (a fixed transliteration table, for example ISO 15919, with loss), or ask authors to add a `hi-Latn` translation. No recommendation yet. It needs test data from real users.
+- **Search over Indic scripts, and cross-script search.** Decided 2026-10-26: in scope, with FTS5 and search keys (see [Search](#search)).
+- **Spelling test data.** The folding rules need real samples of Hindi and Tamil typed in Latin letters. Who collects them, and how many are enough (a first value: 200 word pairs per language).
 - **Who maintains the taxonomy and its labels.** Recommendation: the Roym project maintains the base taxonomy in the repository. A group can use its own codes at once (they show as raw codes). A group then proposes a code for the base taxonomy through the normal contribution process. Labels in a new language come with that language's string catalog. The owner decides. A later option: an exchange (M8) publishes labels for its own group codes.
 - **The first taxonomy.** Start from a small hand-made list of local services and goods (for example 50 to 150 codes), or adapt an existing product taxonomy. The licence of any existing taxonomy is `unverified`.
 - **Named area codes.** Is a PIN code the right language-neutral code for `Area::Named.code`? Or a code from India's Local Government Directory? Not decided.
@@ -310,7 +361,7 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 
 ## Tasks
 
-- [ ] Write the Phase 0 implementation plan with exact field names, limits and WIT names.
+- [ ] Write the M08B slice plans with exact field names, limits and WIT names.
 - [ ] Hub: add the i18n module, the Fluent catalogs (`en`, `hi`), and the language setting. Move every visible string into the catalog.
 - [ ] Hub: add a build check that fails on a visible string literal outside the catalog (ML-1).
 - [ ] Hub: format dates, numbers and money with `Intl` and the Hub language. Set `lang` on the page and on user text.
@@ -319,11 +370,16 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 - [ ] Hub: category, unit and payment-method pickers use codes and show labels.
 - [ ] `roym_core`: add `lang` and `translations` to `profile`, `listing`, `request`, `quote`. Validate tags.
 - [ ] `roym_core`: replace `ProfilePayload.locale` with `languages`. Update `profile.set`.
-- [ ] Conversation: add an optional language tag to the `message` WIT record and the stored row.
+- [ ] Conversation: add up to 3 optional language tags to the `message` WIT record and the stored row.
+- [ ] `roym_core`: search keys (NFC, transliteration tables for Devanagari and Tamil, Latin folding) and their tests with real samples.
+- [ ] FTS5 index over search keys for the directory (and later the exchange), conversation search and contacts.
+- [ ] Names in any script: search keys on contacts, collation and grouping in the Hub.
+- [ ] Taxonomy attribute definitions with `en` and `hi` labels.
+- [ ] Call the translation interface at every hook point. A test for each.
 - [ ] Add the `syneroym:translation` WIT package and the host implementation that answers `unavailable`. Link it for native and WASM builds.
 - [ ] Add the local-only Roym method that calls it. The Hub hides translate when `supported-targets` is empty.
 - [ ] Add `viewed_lang` and `viewed_via_mt` to each party's signed acceptance. Add the Hub warning (ML-19).
-- [ ] If the owner agrees: widen `normalize_text` to all scripts, with NFC, and rebuild the directory index shape (ML-20). Close the matching deferred-backlog row.
+- [ ] Replace `normalize_text` and the `LIKE` search with the FTS5 path (ML-20 to ML-22). Close the matching deferred-backlog row.
 - [ ] Integration and Hub tests for each ML row. Playwright e2e: a Hindi Hub user finds and books a listing written in English, by category.
 - [ ] Update `[APP-A11Y]` in the requirements, the integrated spec and the architecture doc at close-out.
 
