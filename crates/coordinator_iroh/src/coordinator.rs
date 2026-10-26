@@ -471,8 +471,13 @@ impl CoordinatorIroh {
         }
         if let Some(router) = self.iroh_router.take() {
             let ep = router.endpoint().clone();
-            let _ = router.shutdown().await;
-            let _ = ep.close().await;
+            // Bounded: the close can wait for a connection with a bad
+            // round-trip estimate, and then finishes in the background.
+            net_iroh::close_within("coordinator", net_iroh::ENDPOINT_CLOSE_LIMIT, async move {
+                let _ = router.shutdown().await;
+                ep.close().await;
+            })
+            .await;
         }
         if let Some(server) = self.relay_server.take() {
             server.shutdown().await.context("failed to cleanly shutdown iroh relay server")?;

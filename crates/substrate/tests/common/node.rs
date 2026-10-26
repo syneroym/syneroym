@@ -428,6 +428,12 @@ pub struct SubstrateNode {
     substrate_handle: JoinHandle<()>,
 }
 
+/// Time given for a substrate node to shut down. The node waits at most
+/// `ENDPOINT_CLOSE_LIMIT` for each Iroh endpoint it closes, so a stop that
+/// takes longer than this is a bug in the shutdown path, not a slow network.
+/// The margin covers a test host that is busy with other nodes.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl SubstrateNode {
     pub fn builder() -> NodeBuilder {
         NodeBuilder::new()
@@ -544,7 +550,7 @@ impl SubstrateNode {
     async fn reboot_inner(&mut self, builder: NodeBuilder) -> SubstrateNode {
         let _ = self.substrate_client.shutdown().await;
         let _ = self.shutdown_tx.send(()).await;
-        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle).await;
+        let _ = time::timeout(SHUTDOWN_TIMEOUT, &mut self.substrate_handle).await;
 
         let base_path = self.base_path.clone();
         builder.boot_at(base_path, None).await
@@ -554,11 +560,13 @@ impl SubstrateNode {
     /// directory, the identity and the ports. Use it when a test must do
     /// something while this node is down.
     pub async fn stop(mut self) -> StoppedNode {
+        let began = time::Instant::now();
         let _ = self.substrate_client.shutdown().await;
         let _ = self.shutdown_tx.send(()).await;
-        let _ = time::timeout(Duration::from_secs(20), &mut self.substrate_handle)
+        let _ = time::timeout(SHUTDOWN_TIMEOUT, &mut self.substrate_handle)
             .await
-            .expect("the node must stop within 20 s");
+            .expect("the node must stop within the shutdown timeout");
+        eprintln!("[stop] node stopped in {:?}", began.elapsed());
         // Another test process must not take the ports while this node is
         // down: the boot would then fail with `AddrInUse`.
         let ports = self.builder.ports();
@@ -600,7 +608,7 @@ impl SubstrateNode {
     pub async fn teardown(mut self) {
         let _ = self.substrate_client.shutdown().await;
         let _ = self.shutdown_tx.send(()).await;
-        let _ = time::timeout(Duration::from_secs(20), self.substrate_handle)
+        let _ = time::timeout(SHUTDOWN_TIMEOUT, self.substrate_handle)
             .await
             .map_err(|_| eprintln!("[teardown] substrate handle join timed out"));
     }

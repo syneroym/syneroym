@@ -174,7 +174,11 @@ impl CoordinatorWebRtc {
 
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Shutting down coordinator webrtc");
-        self.bootstrap_state.iroh.close().await;
+        let endpoint = self.bootstrap_state.iroh.clone();
+        net_iroh::close_within("webrtc bootstrap", net_iroh::ENDPOINT_CLOSE_LIMIT, async move {
+            endpoint.close().await
+        })
+        .await;
         Ok(())
     }
 }

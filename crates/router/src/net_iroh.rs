@@ -33,6 +33,10 @@ use tokio::{
 
 use crate::{peer_records::PeerRecordStore, stop_signal::StopSignal};
 
+mod close;
+
+pub use close::{ENDPOINT_CLOSE_LIMIT, close_within};
+
 pub struct IrohStream {
     send: SendStream,
     recv: RecvStream,

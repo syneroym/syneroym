@@ -291,6 +291,8 @@ A passport relay is a closed-group relay: only leased, listed, or always-admitte
 
 With `[roles.coordinator.tls]` set, the relay uses that certificate and key, and it also runs QUIC address discovery on `quic_bind_address`. Without that setting it does not run QUIC address discovery. The code gives the HTTPS listener of the relay and its plain HTTP probe listener the same `http_bind_address`. The relay library says these need different ports, so a fixed port may fail with address in use. No test covers relay TLS.
 
+**A relay that is down.** A node sends all its relay datagrams through one queue, and one task hands them to the task of each relay. A node that keeps dialing a peer whose relay is down (for example an offline peer that hosts its own relay) can fill the queue of that relay. The task of a down relay does not read its queue while it waits to reconnect. This wait can last about 30 seconds. While that queue is full, `iroh` 0.97 holds back every other relay datagram of the node. Calls on other connections that use a relay path then stall, for up to about a minute, and the round-trip estimates of those paths grow. Connections on a direct path were not affected in our tests. The substrate has no mitigation yet. An operator should not let a node that is often offline be the only relay of its peers. Shutdown does not depend on this: see [Failure and Shutdown](#failure-and-shutdown).
+
 The relay carries QUIC traffic that is already encrypted between the two peers. It does not read it. It still sees which endpoints talk, and the size and timing of the traffic.
 
 A coordinator with `[roles.coordinator.iroh]` always runs the Syneroym endpoint that forwards streams ([Multi-Hop Relay](#multi-hop-relay-federated-coordinator)) and the HTTP `/v1/info` endpoint. The relay server and the Syneroym endpoint are separate parts. The relay server also runs, but only when `enable_relay = true`.
@@ -723,6 +725,8 @@ Shutdown runs in this order:
 3. The client gateway, the coordinator and the community registry shut down.
 4. Observability data is flushed, and the connection router shuts down.
 
+**Closing Iroh endpoints.** The coordinator, the connection router, the WebRTC bootstrap and every SDK client close their Iroh endpoint and wait at most 3 seconds for it (`ENDPOINT_CLOSE_LIMIT` in `crates/router/src/net_iroh/close.rs`). `Endpoint::close` alone returns only when every connection has ended its closing period. That period is three times the largest probe timeout of any path of the connection, and the timeout grows with the round-trip estimate of the path. A path with a bad estimate (the relay path of a busy host, a mobile link) makes the wait tens of seconds. On one host under load the wait was 14 s and 39 s. The peer already knows about the close, so the wait only serves to repeat the close message if it was lost. When the 3 seconds are over, the close goes on in a background task and the shutdown continues. The client gateway and the supervisor close their clients one after the other, so a node with many clients can wait up to 3 seconds for each.
+
 ### Upgrade and Versioning
 
 A deploy of a WASM service calls the guest's `init()` when the service has no database yet. It calls `migrate()` when the service already has one. A hook runs only if the guest exports it, and a hook that fails makes the deploy fail. A deploy that is identical to the installed, running service (same caller) does nothing, so no hook runs. This holds only after the node has run a full deploy of that service since it started. The substrate takes no snapshot and does not roll back after a failed `migrate()`. A connection uses one fixed protocol identifier, the ALPN `syneroym/0.1`. Stored and signed formats carry their own version, and each refuses a version it does not know. These formats are the signed record envelope (`ENVELOPE_VERSION`), the identity backup (`IDENTITY_BACKUP_VERSION`), the Master Anchor payload (`master_anchor_v1`), and the Roym archive. The Envisioned snapshot, rollback and protocol negotiation are in [LFC-VER](#lfc-ver-versioning--migration-flow).
@@ -738,6 +742,7 @@ A deploy of a WASM service calls the guest's `init()` when the service has no da
 | Service-to-service call | 30 seconds | Default of the proxy. A request can set its own time. |
 | Size of a call queued in the durable outbox | 256 KiB | Fixed in the router |
 | One guest call, wall-clock time | 5 seconds | `[roles.app_sandbox] dispatch_epoch_timeout_secs` |
+| Wait for peers to confirm the close of an Iroh endpoint at shutdown | 3 seconds | Fixed in the router (`ENDPOINT_CLOSE_LIMIT`) |
 | One `init()` or `migrate()` hook | 30 seconds | `[roles.app_sandbox] lifecycle_hook_epoch_timeout_secs` |
 | Replicas of one service | 16 | Checked when the manifest is validated |
 | Scheduled services in one manifest | 16 | Checked when the manifest is validated |
