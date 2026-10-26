@@ -29,6 +29,11 @@ fn each_refusal_maps_to_its_own_code_and_kind() {
             codes::TTL_TOO_LONG,
             "ttl_too_long",
         ),
+        (
+            MailboxError::PassportRefused { code: "expired", reason: "old".into() },
+            codes::PASSPORT_REFUSED,
+            "passport_refused",
+        ),
     ];
 
     for (err, expected_code, expected_kind) in cases {
@@ -60,4 +65,30 @@ fn ttl_too_long_carries_max_ttl_secs() {
 fn code_of_returns_standard_codes_for_invalid_params_and_internal() {
     assert_eq!(code_of(&MailboxError::InvalidParams("bad".into())), -32602);
     assert_eq!(code_of(&MailboxError::Internal("fail".into())), -32603);
+}
+
+#[test]
+fn a_refused_passport_carries_its_code() {
+    let err: MailboxError = RegisterError::Denied.into();
+    let rpc_err: RpcError = err.into();
+    assert_eq!(rpc_err.code(), codes::PASSPORT_REFUSED);
+    let data = rpc_err.data().unwrap();
+    assert_eq!(data["kind"], "passport_refused");
+    assert_eq!(data["code"], "denied");
+}
+
+#[test]
+fn a_lease_store_failure_is_an_internal_error_that_says_the_passport_failed() {
+    let err: MailboxError = RegisterError::Store("disk".into()).into();
+    assert_eq!(err, MailboxError::PassportUnavailable("disk".into()));
+    let rpc_err: RpcError = err.into();
+    assert_eq!(rpc_err.code(), -32603);
+    assert_eq!(rpc_err.data().unwrap()["kind"], "passport_unavailable");
+}
+
+#[test]
+fn another_internal_error_does_not_say_the_passport_failed() {
+    let rpc_err: RpcError = MailboxError::Internal("anchor".into()).into();
+    assert_eq!(rpc_err.code(), -32603);
+    assert!(rpc_err.data().is_none());
 }

@@ -8,11 +8,14 @@ use syneroym_control_plane::MAILBOX_RESERVED_SERVICE_ID;
 use syneroym_core::dht_registry::{MasterAnchorResolver, RegistryClient};
 use syneroym_core::{
     config::SubstrateConfig,
+    host_identity::HostIdentity,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     mailbox::MAILBOX_INTERFACE,
 };
 #[cfg(feature = "mailbox")]
 use syneroym_mailbox::MailboxService;
+#[cfg(feature = "mailbox")]
+use syneroym_passport::LeaseStore;
 #[cfg(feature = "mailbox")]
 use syneroym_rpc::NativeService;
 
@@ -24,6 +27,8 @@ mod tests;
 #[cfg(feature = "mailbox")]
 pub(super) struct MailboxParts {
     pub(super) worker: syneroym_mailbox::MailboxWorker,
+    /// The passport leases, for the control-plane deny and list methods.
+    pub(super) leases: LeaseStore,
 }
 #[cfg(not(feature = "mailbox"))]
 pub(super) struct MailboxParts;
@@ -32,10 +37,11 @@ pub(super) struct MailboxParts;
 /// registration left from an earlier boot when the role is off.
 pub(super) async fn init_mailbox(
     config: &SubstrateConfig,
-    node_did: &str,
+    host: &HostIdentity,
     shared: &SharedNodeHandles,
     endpoint_registry: &EndpointRegistry,
 ) -> anyhow::Result<Option<MailboxParts>> {
+    let node_did = host.node_did.as_str();
     #[cfg(feature = "mailbox")]
     {
         let Some(role) = &config.roles.mailbox else {
@@ -52,7 +58,7 @@ pub(super) async fn init_mailbox(
         let service = Arc::new(MailboxService::open(
             role,
             &config.storage.db_dir,
-            node_did,
+            host,
             client.clone() as Arc<dyn MasterAnchorResolver>,
         )?);
         endpoint_registry
@@ -68,7 +74,7 @@ pub(super) async fn init_mailbox(
             MAILBOX_RESERVED_SERVICE_ID.to_string(),
             service.clone() as Arc<dyn NativeService>,
         );
-        Ok(Some(MailboxParts { worker: service.worker(client) }))
+        Ok(Some(MailboxParts { worker: service.worker(client), leases: service.passport_leases() }))
     }
 
     #[cfg(not(feature = "mailbox"))]

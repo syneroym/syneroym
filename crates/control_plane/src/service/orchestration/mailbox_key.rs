@@ -27,9 +27,25 @@ impl ControlPlaneService {
         store.write_secret(vault_names::MAILBOX_SECRET, key.to_seed().as_slice()).await
     }
 
-    /// Removes it. A vault that cannot be opened is only a warning here: a
-    /// key left behind is never used, because a service is pulled for only
-    /// while its record names a mailbox.
+    /// Stores the owner's child token for the mailbox passport, or clears
+    /// the one an earlier deploy stored when this deploy has none.
+    pub(super) async fn store_mailbox_passport(
+        &self,
+        service_id: &str,
+        child_token: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let store = self.storage_provider.open_service_db(service_id, &self.key_store).await?;
+        match child_token {
+            Some(token) => {
+                store.write_secret(vault_names::MAILBOX_PASSPORT, token.as_bytes()).await
+            }
+            None => store.delete_secret(vault_names::MAILBOX_PASSPORT).await,
+        }
+    }
+
+    /// Removes the key and the passport. A vault that cannot be opened is only
+    /// a warning here: a key left behind is never used, because a service
+    /// is pulled for only while its record names a mailbox.
     ///
     /// A service without a database never stored a key, so nothing is opened
     /// or created for it: a deploy of a tcp or container service, or the
@@ -45,7 +61,8 @@ impl ControlPlaneService {
         }
         let result = async {
             let store = self.storage_provider.open_service_db(service_id, &self.key_store).await?;
-            store.delete_secret(vault_names::MAILBOX_SECRET).await
+            store.delete_secret(vault_names::MAILBOX_SECRET).await?;
+            store.delete_secret(vault_names::MAILBOX_PASSPORT).await
         }
         .await;
         if let Err(e) = result {
@@ -110,6 +127,18 @@ impl ControlPlaneService {
         let seed = <[u8; 32]>::try_from(bytes.as_slice())
             .map_err(|_| anyhow::anyhow!("stored mailbox key is not 32 bytes"))?;
         Ok(Some(MailboxSecretKey::from_seed(seed)))
+    }
+
+    /// The owner's child token for this service's mailbox passport, if it
+    /// has one.
+    pub async fn mailbox_passport(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+        let store = self.storage_provider.open_service_db(service_id, &self.key_store).await?;
+        let Some(bytes) = store.reveal_secret(vault_names::MAILBOX_PASSPORT).await? else {
+            return Ok(None);
+        };
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| anyhow::anyhow!("stored mailbox passport is not UTF-8 text"))
     }
 }
 

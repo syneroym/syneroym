@@ -173,6 +173,12 @@ pub enum AppCommands {
         /// named `main`.
         #[arg(long = "mailbox", value_parser = parse_service_mailbox, requires = "mint_masters")]
         mailboxes: Vec<(String, MailboxChoice)>,
+        /// A mailbox host's passport for the owner named by `--as`. The
+        /// owner signs one child token for each service whose mailbox the
+        /// passport is for. Repeat for more mailboxes. Each passport must
+        /// match at least one service. Needs `--mint-masters`.
+        #[arg(long = "mailbox-passport", value_name = "FILE", requires = "mint_masters")]
+        mailbox_passports: Vec<PathBuf>,
     },
     /// Reconcile a deployment to recover or compute updates
     Reconcile {
@@ -278,6 +284,7 @@ pub async fn handle(
             registry_url,
             inventory,
             mailboxes,
+            mailbox_passports,
         } => {
             deploy::handle_deploy(
                 instance_id.clone(),
@@ -287,6 +294,7 @@ pub async fn handle(
                 registry_url.clone(),
                 inventory.clone(),
                 mailboxes,
+                mailbox_passports,
                 api_url,
                 substrate_opt,
                 dir,

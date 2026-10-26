@@ -21,6 +21,7 @@ use syneroym_core::{
         EndpointInfo, EndpointMailbox, EndpointMechanism, EndpointType, RegistryClient,
         SignedEndpointInfo,
     },
+    host_identity::HostIdentity,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     mailbox::{HostedMailbox, PullSummary, StatusAnswer},
     storage::MockStorage,
@@ -32,6 +33,7 @@ use syneroym_mailbox::MailboxService;
 use syneroym_mailbox_format::{
     MailboxSecretKey, MessageContent, Receipt, Recipient, Sealed, Sender, SentDeposit, seal,
 };
+use syneroym_passport::MAILBOX_USE;
 use syneroym_rpc::{
     AuthLevel, CallerContext, CallerProof, NativeDispatchRegistry, NativeInvocation, NativeService,
     ProxyError,
@@ -107,6 +109,8 @@ pub(super) struct FakeVault {
     pub(super) mode: Mutex<VaultMode>,
     pub(super) key: MailboxSecretKey,
     pub(super) record: Mutex<Option<SignedEndpointInfo>>,
+    /// The owner's child token for the mailbox passport, as the vault keeps it.
+    pub(super) passport: Mutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -116,6 +120,13 @@ impl ReceiverVault for FakeVault {
             VaultMode::Open => Ok(Some(self.key.clone())),
             VaultMode::NoKey => Ok(None),
             VaultMode::Locked => Err(anyhow::anyhow!("the vault is locked")),
+        }
+    }
+
+    async fn mailbox_passport(&self, _service_id: &str) -> anyhow::Result<Option<String>> {
+        match *self.mode.lock().unwrap() {
+            VaultMode::Locked => Err(anyhow::anyhow!("the vault is locked")),
+            _ => Ok(self.passport.lock().unwrap().clone()),
         }
     }
 
@@ -224,6 +235,8 @@ pub(super) struct PullNode {
     pub(super) registry: EndpointRegistry,
     pub(super) mailbox: Arc<CountingMailbox>,
     pub(super) mailbox_did: String,
+    /// The key of the mailbox host, which is also its passport root.
+    pub(super) mailbox_root: Identity,
     pub(super) vault: Arc<FakeVault>,
     pub(super) dispatch: Arc<FakeDispatch>,
     /// What the node's proxy reads about a sender's revoked keys.
@@ -293,9 +306,13 @@ pub(super) async fn pull_node_with(setup: Setup) -> PullNode {
     let mailbox_did = substrate::derive_did_key(&mailbox_identity.public_key());
 
     let mailbox_anchors = Arc::new(TestAnchors::default());
-    let service =
-        MailboxService::open(&setup.mailbox_role, dir.path(), &mailbox_did, mailbox_anchors)
-            .unwrap();
+    let service = MailboxService::open(
+        &setup.mailbox_role,
+        dir.path(),
+        &HostIdentity::unowned(mailbox_did.clone()),
+        mailbox_anchors,
+    )
+    .unwrap();
     let mailbox = Arc::new(CountingMailbox::new(service));
     let native_dispatch: NativeDispatchRegistry = Arc::new(DashMap::new());
     native_dispatch.insert(mailbox_did.clone(), mailbox.clone() as Arc<dyn NativeService>);
@@ -320,6 +337,7 @@ pub(super) async fn pull_node_with(setup: Setup) -> PullNode {
         mode: Mutex::new(VaultMode::Open),
         key: mailbox_key,
         record: Mutex::new(Some(record)),
+        passport: Mutex::new(None),
     });
 
     let anchors = Arc::new(TestAnchors::default());
@@ -359,6 +377,7 @@ pub(super) async fn pull_node_with(setup: Setup) -> PullNode {
         registry,
         mailbox,
         mailbox_did,
+        mailbox_root: mailbox_identity,
         vault,
         dispatch,
         anchors,
@@ -434,6 +453,38 @@ pub(super) fn with_key(key: &str) -> MessageContent {
 }
 
 impl PullNode {
+    /// A child token for the hosted service, from a passport the mailbox
+    /// host's key signed for a new owner, with these facts.
+    pub(super) fn child_token(&self, facts: &[(&str, u64)]) -> String {
+        self.child_token_from(&self.mailbox_root, facts)
+    }
+
+    /// The same, with `root` signing the passport: a key the mailbox does
+    /// not accept makes a token the mailbox refuses.
+    pub(super) fn child_token_from(&self, root: &Identity, facts: &[(&str, u64)]) -> String {
+        let owner = Identity::generate().unwrap();
+        let limits = facts.iter().map(|&(k, v)| (k.to_string(), json!(v))).collect();
+        let now = now_secs();
+        let passport = syneroym_passport::issue_passport(
+            root,
+            &self.mailbox_did,
+            &MAILBOX_USE,
+            &substrate::derive_did_key(&owner.public_key()),
+            limits,
+            3600,
+            now,
+        )
+        .unwrap();
+        let token =
+            syneroym_passport::child_token(&owner, &passport, &self.service_id, 3600, now).unwrap();
+        serde_json::to_string(&token).unwrap()
+    }
+
+    /// Sets what the vault holds as the child token.
+    pub(super) fn store_child_token(&self, token: Option<String>) {
+        *self.vault.passport.lock().unwrap() = token;
+    }
+
     /// Runs one pass, which registers the queue when it is new.
     pub(super) async fn pass(&self) -> PullSummary {
         self.puller.pull_once().await

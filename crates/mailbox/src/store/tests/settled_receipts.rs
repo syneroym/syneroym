@@ -191,7 +191,7 @@ fn the_settled_count_follows_settles_drops_and_sweeps() {
 fn the_settled_count_is_counted_again_at_open() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mailbox.db");
-    let f = fixture_on(MailboxStore::open(&path, limits_with_cap(10)).unwrap());
+    let f = fixture_on(MailboxStore::open(&path, limits_with_cap(10), None).unwrap());
     let ids: Vec<_> = (0..2).map(|_| f.deposit(f.now).deposit.deposit_id).collect();
     f.settle(ids[0], f.now + 1);
     f.settle(ids[1], f.now + 2);
@@ -203,7 +203,7 @@ fn the_settled_count_is_counted_again_at_open() {
         .execute("UPDATE mailbox_stats SET settled_receipts = 999 WHERE id = 1", [])
         .unwrap();
 
-    let reopened = MailboxStore::open(&path, limits_with_cap(10)).unwrap();
+    let reopened = MailboxStore::open(&path, limits_with_cap(10), None).unwrap();
 
     assert_eq!(reopened.totals().unwrap().settled_receipts, 2);
 }

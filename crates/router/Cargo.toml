@@ -63,6 +63,7 @@ syneroym-wit-interfaces.workspace = true
 syneroym-fdae.workspace = true
 syneroym-mailbox.workspace = true
 syneroym-mailbox-format = { workspace = true, features = ["test-support"] }
+syneroym-passport.workspace = true
 tracing-subscriber.workspace = true
 criterion.workspace = true
 tempfile.workspace = true

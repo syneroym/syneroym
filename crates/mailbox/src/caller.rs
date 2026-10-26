@@ -19,24 +19,33 @@ pub(crate) struct Instance {
     pub issued_at_secs: u64,
 }
 
+/// The instance certificate the transport verified (ADR-0016): from the
+/// caller proof, never from a request body.
+pub(crate) fn instance_certificate(
+    caller: &CallerContext,
+) -> Result<DelegationCertificate, MailboxError> {
+    if !matches!(caller.auth, AuthLevel::Delegated | AuthLevel::Ucan) {
+        return Err(MailboxError::Unauthenticated);
+    }
+    let delegation_json = caller
+        .proof
+        .as_ref()
+        .and_then(|proof| proof.delegation_json.as_ref())
+        .ok_or_else(|| MailboxError::NotAnInstance("no certificate".to_string()))?;
+    DelegationCertificate::from_json(delegation_json)
+        .map_err(|_| MailboxError::NotAnInstance("unreadable certificate".to_string()))
+}
+
 /// Extracts and verifies the service instance identity from `caller`.
 ///
 /// The router has already made these checks for a wire call; a same-node call
 /// reaches the service with no handshake, so they are made again here.
 pub(crate) fn instance_of(caller: &CallerContext, now_secs: u64) -> Result<Instance, MailboxError> {
-    if !matches!(caller.auth, AuthLevel::Delegated | AuthLevel::Ucan) {
-        return Err(MailboxError::Unauthenticated);
-    }
+    let cert = instance_certificate(caller)?;
     let proof = caller
         .proof
         .as_ref()
         .ok_or_else(|| MailboxError::NotAnInstance("no certificate".to_string()))?;
-    let delegation_json = proof
-        .delegation_json
-        .as_ref()
-        .ok_or_else(|| MailboxError::NotAnInstance("no certificate".to_string()))?;
-    let cert = DelegationCertificate::from_json(delegation_json)
-        .map_err(|_| MailboxError::NotAnInstance("unreadable certificate".to_string()))?;
 
     if cert.scope != SCOPE_SERVICE_INSTANCE {
         return Err(MailboxError::NotAnInstance("not a service-instance certificate".to_string()));

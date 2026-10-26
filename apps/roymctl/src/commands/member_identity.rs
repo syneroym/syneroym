@@ -25,6 +25,8 @@ use syneroym_core::dht_registry::RegistryClient;
 use syneroym_identity::{Identity, substrate};
 use syneroym_sdk::{SyneroymClient, deploy, deploy::CertifiedMembers};
 
+use super::mailbox_passport::OwnerPassports;
+
 /// The attended posture's default certificate lifetime for a plan-deploy-time
 /// certification -- `identity certify-instance` is the dedicated renewal
 /// command for a longer- or shorter-lived one.
@@ -164,6 +166,9 @@ pub async fn substitute_and_certify_members(
     // `None` when every service is placed by alias.
     fallback: Option<&Arc<SyneroymClient>>,
     registry_url: Option<&str>,
+    // The owner and the mailbox passports to sign a child token with, for
+    // each service whose mailbox a passport names.
+    passports: Option<&OwnerPassports>,
 ) -> Result<(DeploymentPlan, CertifiedMembers)> {
     let mut substitution: BTreeMap<ServiceId, ServiceId> = BTreeMap::new();
     let mut masters: BTreeMap<ServiceId, Identity> = BTreeMap::new();
@@ -200,7 +205,7 @@ pub async fn substitute_and_certify_members(
             .collect::<Result<BTreeMap<_, _>>>()?;
     }
 
-    let members = deploy::certify_placed_members(
+    let mut members = deploy::certify_placed_members(
         &new_plan,
         &masters,
         clients,
@@ -208,6 +213,10 @@ pub async fn substitute_and_certify_members(
         DEFAULT_INSTANCE_CERT_EXPIRES_HOURS,
     )
     .await?;
+    if let Some((owner, passports)) = passports {
+        let now = syneroym_passport::now_secs();
+        members.mailbox_child_tokens = deploy::child_tokens_for(&new_plan, owner, passports, now)?;
+    }
 
     // Once per master: `masters` is already deduplicated by master
     // DID, unlike `plan.services`, which can name the same master more than

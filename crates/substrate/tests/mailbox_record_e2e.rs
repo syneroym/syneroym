@@ -121,6 +121,7 @@ async fn a_deploy_with_a_mailbox_publishes_the_derived_key_and_keeps_the_certifi
         record: serde_json::from_str(&record).unwrap(),
         mailbox_key: Some(key.clone()),
         mailbox_methods: Vec::new(),
+        mailbox_child_token: None,
     };
 
     fx.operator
@@ -201,6 +202,7 @@ fn manifest(
         mailbox: Some(MailboxCredentials {
             secret_key: mailbox_key.to_z32().to_string(),
             methods: Vec::new(),
+            child_token: None,
         }),
     }
 }

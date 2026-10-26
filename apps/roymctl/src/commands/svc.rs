@@ -24,7 +24,7 @@ pub(crate) use std::fs;
 
 #[cfg(test)]
 pub(crate) use deploy::{
-    build_publication, check_mailbox_args, parse_container_port_mapping,
+    build_publication, check_mailbox_args, check_passport_args, parse_container_port_mapping,
     parse_container_volume_mapping, parse_interfaces, parse_visibility, signed_export_record,
     validate_container_flags, validate_container_ports,
 };
@@ -168,6 +168,11 @@ pub enum SvcCommands {
         /// Conversation `deliver` and `group-push` are always accepted.
         #[arg(long = "mailbox-method", value_name = "INTERFACE#METHOD")]
         mailbox_methods: Vec<MailboxMethod>,
+        /// The mailbox host's passport for this service's owner. The child
+        /// token is signed with --as, which must be the passport's owner.
+        /// Needs --mailbox, and the passport must be for that mailbox.
+        #[arg(long = "mailbox-passport", value_name = "FILE", requires = "mailbox")]
+        mailbox_passport: Option<PathBuf>,
         /// Lifetime of the instance certificate `--master` issues, in
         /// hours (1 to 720). Needs `--master`: no other flag issues a
         /// certificate. Use a long value for a substrate that sleeps.
@@ -260,6 +265,7 @@ pub async fn handle(
             record_out,
             mailbox,
             mailbox_methods,
+            mailbox_passport,
             cert_expires_hours,
         } => {
             deploy::handle_deploy(
@@ -284,8 +290,10 @@ pub async fn handle(
                 record_out,
                 mailbox,
                 mailbox_methods,
+                mailbox_passport,
                 *cert_expires_hours,
                 dir,
+                run_as,
             )
             .await
         }

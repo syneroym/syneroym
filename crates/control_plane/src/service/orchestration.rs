@@ -30,7 +30,10 @@ use syneroym_core::{
     dht_registry::{EndpointMailbox, SignedEndpointInfo},
     http_routes::HttpRoute,
     local_registry::{NATIVE_CAPABILITY_INTERFACES, SubstrateEndpoint},
-    mailbox::{MAILBOX_INTERFACE, MAX_MAILBOX_METHODS, is_reserved_mailbox_interface},
+    mailbox::{
+        MAILBOX_INTERFACE, MAX_CHILD_TOKEN_BYTES, MAX_MAILBOX_METHODS,
+        is_reserved_mailbox_interface,
+    },
     storage::AppInstanceManagement,
     util,
 };
@@ -39,6 +42,7 @@ use syneroym_identity::{
     DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE, substrate::derive_did_key,
 };
 use syneroym_mailbox_format::MailboxSecretKey;
+use syneroym_passport::{CapabilityToken, MAILBOX_USE, PassportId, inspect_child_token};
 use syneroym_rpc::{
     Ability, CallOrigin, CallerContext, DeadLetterInfo, JsonRpcRequest, NativeService,
     ProxyProtocol, ProxyQueueInspector, ProxyRequest, QueuedCallInfo, ResourceUri, SagaInfo,

@@ -171,7 +171,7 @@ pub enum IdentityCommands {
 }
 
 /// The on-disk path a local identity named `name` is stored at.
-fn identity_key_path(dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn identity_key_path(dir: &Path, name: &str) -> PathBuf {
     dir.join("identities").join(format!("{name}.key"))
 }
 

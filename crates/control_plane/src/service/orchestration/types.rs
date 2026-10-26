@@ -56,6 +56,19 @@ pub(crate) fn stable_registry_certificate_for_hash(json: &str) -> String {
     }
 }
 
+/// The passport id, subject and expiry of a child token. The owner signs a
+/// new child token at every deploy, so its JSON always differs; these three
+/// fields change only when the passport does. Falls back to the raw text,
+/// which can only make the dedup more conservative.
+pub(crate) fn stable_child_token_for_hash(json: &str) -> String {
+    let stable = serde_json::from_str::<CapabilityToken>(json).ok().and_then(|token| {
+        let [passport] = token.proofs.as_slice() else { return None };
+        let id = PassportId::of(passport).ok()?;
+        serde_json::to_string(&(id.as_str(), &token.audience_did, token.expires_at_secs)).ok()
+    });
+    stable.unwrap_or_else(|| json.to_string())
+}
+
 /// Whether `service_id` is safe to join, unescaped, into a filename under
 /// `hosted_apps_dir` -- `deploy_with_context`'s certificate write/delete,
 /// and `undeploy_impl`'s own delete of the same file. Real service ids are
@@ -273,6 +286,8 @@ pub(crate) struct ValidatedMailbox {
     pub(super) mailbox: String,
     /// Checked `<interface>#<method>` texts.
     pub(super) methods: Vec<String>,
+    /// The owner's child token for the mailbox passport, checked offline.
+    pub(super) child_token: Option<String>,
 }
 
 impl fmt::Debug for ValidatedMailbox {
@@ -281,6 +296,7 @@ impl fmt::Debug for ValidatedMailbox {
             .field("key", &"<hidden>")
             .field("mailbox", &self.mailbox)
             .field("methods", &self.methods)
+            .field("child_token", &self.child_token.as_ref().map(|_| "<present>"))
             .finish()
     }
 }
@@ -312,6 +328,32 @@ fn validate_mailbox_methods(service_id: &str, methods: &[String]) -> Result<Vec<
         checked.push(text);
     }
     Ok(checked)
+}
+
+/// The owner's child token: it parses, is for this service, names the
+/// mailbox the record names, and passes the offline chain checks. The
+/// passport root is not checked here: only the mailbox knows its root. The
+/// error never carries the token text.
+fn validate_child_token(
+    service_id: &str,
+    mailbox_host: &str,
+    json: &str,
+) -> Result<String, String> {
+    if json.len() > MAX_CHILD_TOKEN_BYTES {
+        return Err(format!("child token of '{service_id}' is over 16 KiB"));
+    }
+    let token: CapabilityToken = serde_json::from_str(json)
+        .map_err(|_| format!("child token of '{service_id}' does not parse"))?;
+    let presented =
+        inspect_child_token(&token, &MAILBOX_USE, service_id, syneroym_passport::now_secs())
+            .map_err(|e| format!("child token of '{service_id}' is refused: {}", e.code()))?;
+    if presented.host_node_did != mailbox_host {
+        return Err(format!(
+            "child token of '{service_id}' is for mailbox {}, but its record names {mailbox_host}",
+            presented.host_node_did
+        ));
+    }
+    Ok(json.to_string())
 }
 
 /// The mailbox the record names. When either the record names one or a key
@@ -385,7 +427,12 @@ pub(crate) fn validate_mailbox(
                 ));
             }
             let methods = validate_mailbox_methods(service_id, &credentials.methods)?;
-            Ok(Some(ValidatedMailbox { key, mailbox: mailbox.service_id, methods }))
+            let child_token = credentials
+                .child_token
+                .as_deref()
+                .map(|json| validate_child_token(service_id, &mailbox.service_id, json))
+                .transpose()?;
+            Ok(Some(ValidatedMailbox { key, mailbox: mailbox.service_id, methods, child_token }))
         }
     }
 }

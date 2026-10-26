@@ -148,6 +148,7 @@ impl Member {
         manifest.mailbox = route.map(|_| MailboxCredentials {
             secret_key: self.key().to_z32().to_string(),
             methods: methods.iter().map(ToString::to_string).collect(),
+            child_token: None,
         });
         manifest
     }

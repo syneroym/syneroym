@@ -2,6 +2,7 @@
 
 use serde_json::json;
 use syneroym_core::mailbox::codes;
+use syneroym_passport::RegisterError;
 use syneroym_rpc::RpcError;
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -28,6 +29,13 @@ pub enum MailboxError {
     DuplicateDeposit(String),
     #[error("time-to-live {ttl_secs} s is over this queue's {max_secs} s maximum")]
     TtlTooLong { ttl_secs: u64, max_secs: u64 },
+    #[error("the passport is refused ({code}): {reason}")]
+    PassportRefused { code: &'static str, reason: String },
+    /// The passport could not be checked or its lease not written (an
+    /// unreadable lease file, a failed task). The caller may register
+    /// again without the child token.
+    #[error("the passport could not be checked: {0}")]
+    PassportUnavailable(String),
     #[error("invalid parameters: {0}")]
     InvalidParams(String),
     #[error("internal error: {0}")]
@@ -50,6 +58,8 @@ impl MailboxError {
             Self::BadRecord(_) => "bad_record",
             Self::DuplicateDeposit(_) => "duplicate_deposit",
             Self::TtlTooLong { .. } => "ttl_too_long",
+            Self::PassportRefused { .. } => "passport_refused",
+            Self::PassportUnavailable(_) => "passport_unavailable",
             Self::InvalidParams(_) => "invalid_params",
             Self::Internal(_) => "internal",
         }
@@ -69,8 +79,9 @@ fn code_of(e: &MailboxError) -> i32 {
         MailboxError::BadRecord(_) => codes::BAD_RECORD,
         MailboxError::DuplicateDeposit(_) => codes::DUPLICATE_DEPOSIT,
         MailboxError::TtlTooLong { .. } => codes::TTL_TOO_LONG,
+        MailboxError::PassportRefused { .. } => codes::PASSPORT_REFUSED,
         MailboxError::InvalidParams(_) => -32602,
-        MailboxError::Internal(_) => -32603,
+        MailboxError::Internal(_) | MailboxError::PassportUnavailable(_) => -32603,
     }
 }
 
@@ -87,11 +98,29 @@ impl From<MailboxError> for RpcError {
                 });
                 RpcError::Custom(code, e.to_string(), Some(data))
             }
+            MailboxError::PassportRefused { code: refusal, .. } => {
+                let code = code_of(&e);
+                let data = json!({
+                    "kind": e.kind(),
+                    "code": refusal,
+                });
+                RpcError::Custom(code, e.to_string(), Some(data))
+            }
             other => {
                 let code = code_of(&other);
                 let data = json!({ "kind": other.kind() });
                 RpcError::Custom(code, other.to_string(), Some(data))
             }
+        }
+    }
+}
+
+impl From<RegisterError> for MailboxError {
+    /// `RegisterError` is not `Clone`, so the variant keeps its code and text.
+    fn from(e: RegisterError) -> Self {
+        match e {
+            RegisterError::Store(msg) => Self::PassportUnavailable(msg),
+            other => Self::PassportRefused { code: other.code(), reason: other.to_string() },
         }
     }
 }

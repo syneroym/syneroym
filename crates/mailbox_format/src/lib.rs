@@ -36,8 +36,13 @@ pub const RECEIPT_DOMAIN: &str = "syneroym-mailbox-receipt-v1";
 /// Largest sealed message, in raw bytes before base64.
 pub const MAX_SEALED_BYTES: usize = 64 * 1024;
 /// Longest time-to-live of an open mailbox. A dedicated mailbox may allow
-/// more; the receiver then passes its own limit in `OpenPolicy`.
+/// up to [`DEDICATED_MAX_TTL_SECS`]; the receiver then passes its own limit
+/// in `OpenPolicy`.
 pub const OPEN_MAX_TTL_SECS: u64 = 7 * 24 * 3600;
+/// Longest time-to-live a passport may give a queue on a dedicated mailbox.
+/// The same as the queue lifetime and the sender's age limit: a longer one
+/// is never used.
+pub const DEDICATED_MAX_TTL_SECS: u64 = 30 * 24 * 3600;
 /// Clock difference allowed between two nodes, the same as Conversation.
 pub const MAX_CLOCK_SKEW_SECS: u64 = 24 * 3600;
 

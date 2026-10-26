@@ -1,9 +1,12 @@
 use std::fs;
 
+use syneroym_core::config::DEFAULT_SUBSTRATE_KEY_FILE;
+use syneroym_identity::{Identity, substrate};
 use syneroym_passport::{LeaseStore, Proof, Registrar, SignerBinding};
 use syneroym_ucan::CapabilityToken;
 
 use super::*;
+use crate::commands::passport_issue::SECS_PER_DAY;
 
 fn did(identity: &Identity) -> String {
     substrate::derive_did_key(&identity.public_key())
@@ -11,12 +14,14 @@ fn did(identity: &Identity) -> String {
 
 fn args(from: Option<&str>, node_key: bool, to: &str, out: &Path) -> IssueArgs {
     IssueArgs {
-        from: from.map(str::to_string),
-        node_key,
-        to: to.to_string(),
-        expires_days: 30,
+        signer: IssueSigner {
+            from: from.map(str::to_string),
+            node_key,
+            to: to.to_string(),
+            expires_days: 30,
+            out: Some(out.to_path_buf()),
+        },
         max_nodes: Some(2),
-        out: Some(out.to_path_buf()),
     }
 }
 
@@ -119,7 +124,7 @@ fn issue_refuses_zero_expiry_days() {
     let host = did(&Identity::generate().unwrap());
     let out = dir.path().join("passport.json");
     let mut zero = args(Some("controller"), false, &host, &out);
-    zero.expires_days = 0;
+    zero.signer.expires_days = 0;
 
     let err = handle_issue(&zero, Some(host), dir.path()).unwrap_err();
     assert!(err.to_string().contains("--expires-days"), "{err}");

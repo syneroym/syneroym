@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use serde_json::json;
 use syneroym_core::{
     config::MailboxRole,
+    host_identity::HostIdentity,
     mailbox::{
         AckAnswer, AckOutcome, ClaimAnswer, InfoAnswer, METHOD_ACK, METHOD_CLAIM, METHOD_DEPOSIT,
         METHOD_INFO, METHOD_REGISTER, METHOD_STATUS, METHOD_UNREGISTER, PROTOCOL_VERSION,
@@ -14,7 +15,7 @@ use syneroym_identity::{
 };
 use syneroym_mailbox_format::{Receipt, open};
 use syneroym_rpc::{
-    AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeService, RpcError,
+    AuthLevel, CallerContext, CallerProof, NativeInvocation, NativeService, RpcError, RpcResult,
     SessionContext,
 };
 use tempfile::tempdir;
@@ -24,12 +25,16 @@ use crate::{
     test_support::{Anchors, Member, record, sealed_deposit},
 };
 
-const NODE_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+static HOST: LazyLock<HostIdentity> = LazyLock::new(HostIdentity::random_unowned);
+
+fn node_did() -> &'static str {
+    &HOST.node_did
+}
 
 fn test_service(role: MailboxRole) -> (tempfile::TempDir, MailboxService, Arc<Anchors>) {
     let dir = tempdir().unwrap();
     let anchors = Arc::new(Anchors::new());
-    let service = MailboxService::open(&role, dir.path(), NODE_DID, anchors.clone()).unwrap();
+    let service = MailboxService::open(&role, dir.path(), &HOST, anchors.clone()).unwrap();
     (dir, service, anchors)
 }
 
@@ -41,6 +46,8 @@ fn invocation(method: &str, params: serde_json::Value, caller: CallerContext) ->
         caller,
     }
 }
+
+mod passport;
 
 #[tokio::test]
 async fn an_unknown_method_is_method_not_found() {
@@ -74,7 +81,7 @@ async fn a_routing_certificate_cannot_register() {
     )
     .unwrap();
 
-    let rec = record(&member, NODE_DID);
+    let rec = record(&member, node_did());
     let inv = invocation(METHOD_REGISTER, json!({ "record": rec }), member.caller());
     let res = service.dispatch(inv).await;
     match res {
@@ -91,7 +98,7 @@ async fn register_deposit_claim_ack_status_round_trip() {
     anchors.publish(&sender.service_id());
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     let reg_inv = invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller());
     let reg_res = service.dispatch(reg_inv).await.unwrap();
     assert!(reg_res.payload.get("limits").is_some());
@@ -157,7 +164,7 @@ async fn deposits_above_the_sender_rate_are_refused() {
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await
@@ -195,7 +202,7 @@ async fn the_node_rate_limits_every_sender() {
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await
@@ -223,7 +230,7 @@ async fn a_deposit_over_the_size_limit_is_too_large() {
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await
@@ -270,7 +277,7 @@ async fn info_reports_the_limits() {
     let res = service.dispatch(invocation(METHOD_INFO, json!({}), member.caller())).await.unwrap();
     let info: InfoAnswer = serde_json::from_value(res.payload).unwrap();
     assert_eq!(info.version, PROTOCOL_VERSION);
-    assert_eq!(info.mailbox, NODE_DID);
+    assert_eq!(info.mailbox, node_did());
 }
 
 #[tokio::test]
@@ -281,7 +288,7 @@ async fn a_ttl_over_the_limit_reports_the_queue_limit() {
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await
@@ -309,7 +316,7 @@ async fn a_revoked_instance_is_refused() {
     anchors.publish(&receiver.service_id());
     anchors.revoke(&receiver.service_id(), &receiver.cert.temporary_did);
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     let res = service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await;
@@ -345,7 +352,7 @@ async fn an_unreadable_master_anchor_refuses_receiver_calls() {
     let sender = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await
@@ -392,7 +399,7 @@ async fn raw_key_caller_with_no_delegation_is_refused_on_deposit_and_status() {
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await
@@ -452,7 +459,7 @@ async fn register_above_rate_limits_is_refused() {
     anchors.publish(&m2.service_id());
     anchors.publish(&m3.service_id());
 
-    let rec1 = record(&m1, NODE_DID);
+    let rec1 = record(&m1, node_did());
     assert!(
         service
             .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec1 }), m1.caller()))
@@ -473,7 +480,7 @@ async fn register_above_rate_limits_is_refused() {
         other => panic!("expected RATE_LIMITED for m1, got {other:?}"),
     }
 
-    let rec2 = record(&m2, NODE_DID);
+    let rec2 = record(&m2, node_did());
     assert!(
         service
             .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec2 }), m2.caller()))
@@ -481,7 +488,7 @@ async fn register_above_rate_limits_is_refused() {
             .is_ok()
     );
 
-    let rec3 = record(&m3, NODE_DID);
+    let rec3 = record(&m3, node_did());
     let res_m3 =
         service.dispatch(invocation(METHOD_REGISTER, json!({ "record": rec3 }), m3.caller())).await;
     match res_m3 {
@@ -497,7 +504,7 @@ async fn an_expired_record_on_existing_queue_is_refused_while_existing_messages_
     let sender = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     service
         .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
         .await
@@ -509,7 +516,7 @@ async fn an_expired_record_on_existing_queue_is_refused_while_existing_messages_
     service.dispatch(invocation(METHOD_DEPOSIT, json!(dep), sender.caller())).await.unwrap();
 
     // Try to register an expired record for the same queue
-    let mut expired_rec = record(&receiver, NODE_DID);
+    let mut expired_rec = record(&receiver, node_did());
     expired_rec.info.not_after = now.saturating_sub(60);
     let resigned = expired_rec.info.sign(&receiver.master).unwrap();
 
@@ -538,7 +545,7 @@ async fn revocation_cache_admits_calls_within_15_seconds_and_refuses_after() {
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     let t0 = receiver.cert.issued_at_secs + 10;
     assert!(
         service
@@ -574,7 +581,7 @@ async fn claim_and_receiver_calls_are_rate_limited_per_master() {
     let receiver = Member::new(3600);
     anchors.publish(&receiver.service_id());
 
-    let rec = record(&receiver, NODE_DID);
+    let rec = record(&receiver, node_did());
     assert!(
         service
             .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec }), receiver.caller()))
@@ -618,9 +625,9 @@ async fn receiver_calls_are_rate_limited_node_wide() {
     anchors.publish(&r2.service_id());
     anchors.publish(&r3.service_id());
 
-    let rec1 = record(&r1, NODE_DID);
-    let rec2 = record(&r2, NODE_DID);
-    let rec3 = record(&r3, NODE_DID);
+    let rec1 = record(&r1, node_did());
+    let rec2 = record(&r2, node_did());
+    let rec3 = record(&r3, node_did());
     assert!(
         service
             .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec1 }), r1.caller()))
@@ -670,8 +677,8 @@ async fn single_master_over_limit_does_not_consume_node_wide_budget() {
     anchors.publish(&master_a.service_id());
     anchors.publish(&master_b.service_id());
 
-    let rec_a = record(&master_a, NODE_DID);
-    let rec_b = record(&master_b, NODE_DID);
+    let rec_a = record(&master_a, node_did());
+    let rec_b = record(&master_b, node_did());
     assert!(
         service
             .dispatch(invocation(METHOD_REGISTER, json!({ "record": rec_a }), master_a.caller()))

@@ -2,7 +2,7 @@
 
 *Reader: developers who build these changes.*
 
-**Status: in progress (2026-10-24).** S0, A1 to A4, C1, B1 to B3, C2 to C4, C4b, C4c, and C5 to C7 are done. C8 comes next. Progress is in [status.md](status.md).
+**Status: done (2026-10-24).** S0, A1 to A4, C1, B1 to B3, C2 to C4, C4b, C4c, and C5 to C8 are done. The milestone is complete. Progress is in [status.md](status.md).
 This milestone builds three features: registry-listed relays (a substrate finds
 an open home relay through its registry), the operator passport (a signed token
 that admits a user to a private relay or mailbox), and the service mailbox (a
@@ -187,7 +187,7 @@ Sizes are counted in the project's AI-assisted workflow (plan session, implement
 - Done 2026-10-24. Decisions `D-C7-1` to `D-C7-15` are in the [mailbox change doc](../../changes/service-mailbox/change.md). The receipt cap (`max_settled_receipts`) is a separate commit before the list and `auto`. The mailbox change doc stays `approved`: C8 closes it.
 - **Forward note from C4:** Before the registry lists open mailboxes for strangers, the router must check that a caller holds the instance key of its certificate. C4b does this, and the C4-4 risk decision holds only until C4b lands. Also, C4 implemented registration rate limiting (`register_per_minute_per_master: 10`, `register_per_minute_total: 120`) to prevent cheap queue flooding attacks on open mailboxes. Additionally, C7 must cap receipt table storage before listing open mailboxes to strangers (backlog row "Receipt table size is not capped by `max_total_bytes`").
 
-**C8 — Dedicated mailbox (M).** Needs B1, C4 and C7. Last.
+**C8 — Dedicated mailbox (M).** Needs B1, C4 and C7. Last. Done 2026-10-24, [PR 322](https://github.com/syneroym/syneroym/pull/322) on branch `feat/m06d-c8-implementation`. One PR holds the mailbox side and the deployer and receiver side; the plan advised two (`D-C8-25`). Decisions `D-C8-1` to `D-C8-22` are in the [mailbox change doc](../../changes/service-mailbox/change.md), which is now `done`. The sender is not changed, so `max_ttl_secs` of a passport has no effect above 7 days yet (`D-C8-1`).
 - `register` with a passport, proof by transport identity, binding by instance certificate, raised quotas from facts, `max_services` (`D-1` to `D-3`).
 - Owner signs one child token for each member master at deploy. Add `child-token: option<string>` to the WIT record `mailbox-credentials`; the only builders are `map_planned_service` and `Publication::split` in `crates/sdk`. The child token lives as long as the passport; a new one arrives by an ordinary deploy, with the token in the deploy hash. A renewal without a deploy would be a new control-plane call, not a change to `deploy-manifest` or `renew-cert` (`D-C3-2`).
 - `roymctl` mailbox `issue` variant on B1's code.
