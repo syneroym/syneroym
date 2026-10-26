@@ -19,7 +19,7 @@ use syneroym_core::{
 use syneroym_identity::Identity;
 use syneroym_sdk::SyneroymClient;
 use tempfile::TempDir;
-use tokio::time;
+use tokio::{sync::MutexGuard, time};
 
 use super::{
     NodeBuilder, StoppedNode, SubstrateNode,
@@ -81,11 +81,15 @@ pub struct World {
     /// The owner's child token for the receiver's mailbox passport, shown
     /// at every deploy of the receiver.
     child_token: Option<String>,
+    _serial_guard: MutexGuard<'static, ()>,
 }
 
 pub struct Restart {
     pub owner: Identity,
     pub registry_url: String,
+    /// The relay of the node that hosts the registry. The other nodes use it
+    /// as their home relay.
+    pub relay_url: String,
     pub mailbox_role: MailboxRole,
     pub mailbox_dir: Option<PathBuf>,
     pub receiver_dir: PathBuf,
@@ -98,6 +102,7 @@ impl Restart {
             .owner(&self.owner)
             .base_path(self.mailbox_dir.as_ref().expect("a separate mailbox node"))
             .shared_registry(&self.registry_url)
+            .shared_relay(&self.relay_url)
             .configure(move |c| c.roles.mailbox = Some(role.clone()))
             .inject_kek_bytes(KEK)
     }
@@ -107,6 +112,7 @@ impl Restart {
             .owner(&self.owner)
             .base_path(&self.receiver_dir)
             .shared_registry(&self.registry_url)
+            .shared_relay(&self.relay_url)
             .inject_kek_bytes(KEK)
     }
 }
@@ -170,6 +176,7 @@ async fn boot_nodes(
         let sender = SubstrateNode::builder()
             .owner(owner)
             .shared_registry(mailbox.registry_url())
+            .shared_relay(mailbox.relay_url())
             .configure(move |c| apply_all(c, None))
             .inject_kek_bytes(KEK)
             .boot()
@@ -186,6 +193,7 @@ async fn boot_nodes(
 }
 
 pub async fn world(options: Options) -> World {
+    let serial_guard = super::serial_guard().await;
     let _ = ring::default_provider().install_default();
     let (proxy_wasm, greeter_wasm) =
         artifacts().expect("proxy-test/greeter wasm artifacts not built");
@@ -200,9 +208,20 @@ pub async fn world(options: Options) -> World {
 
     let (mut sender, hosting_mailbox) =
         boot_nodes(&options, &owner, &role, mailbox_dir.as_ref()).await;
+    // The registry host also hosts the relay of the world, and no test stops
+    // that node. A node that stops with its own relay leaves the relay
+    // actors of its peers dialing a dead address. While such an actor waits
+    // to reconnect, it does not read its send queue, and iroh then holds
+    // back every other relay datagram of the dialing node: calls on
+    // unrelated connections stall for up to a minute.
+    let relay_url = hosting_mailbox
+        .as_ref()
+        .map_or_else(|| sender.relay_url(), SubstrateNode::relay_url)
+        .to_string();
     let restart = Restart {
         owner,
         registry_url: sender.registry_url().to_string(),
+        relay_url,
         mailbox_role: role,
         mailbox_dir: mailbox_dir.as_ref().map(|dir| dir.path().to_path_buf()),
         receiver_dir: receiver_dir.path().to_path_buf(),
@@ -230,6 +249,7 @@ pub async fn world(options: Options) -> World {
         opted_in: options.opted_in,
         dirs,
         child_token: None,
+        _serial_guard: serial_guard,
     };
     if options.deploy_receiver {
         world.deploy_receiver().await;
