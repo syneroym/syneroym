@@ -33,7 +33,7 @@ The goal of the order: rename and type every method once, before the rest of Mil
 This slice decides the design that A3, A4 and A5 build. It is not optional.
 
 - **Spike: the epoch-deadline callback.** Prove that the host can record the time a guest waits in `call-all` and extend the deadline by that much in Wasmtime's epoch-deadline callback, with the async engine and the host-binding style used today. Write a small test in `sandbox_wasm` that shows a guest waiting longer than its deadline inside one host call and not trapping, while a guest that loops in its own code still traps.
-- **If the spike fails, choose the fallback** described in the change doc (two-step search: `start-search` returns a job id, the host runs the fan-out, a `search.done` event, a second short guest call merges). Record it as a deviation. A3 and A4 then build the fallback. Nothing later in M8 changes.
+- **If the spike fails, choose the fallback** described in the change doc (two-step search: `start-search` returns a job id, the host runs the fan-out, a `search.done` event, a second short guest call merges). Record it as a deviation. A3 and A4 then build the fallback. It changes more than A3: OF-6 becomes three steps (`search.start`, the `search.done` event, `search.results`), so A5 (event feed) must land before A4. It also adds a job id and a second round trip to the participant-to-exchange search in M08F. The change doc lists these.
 - **Decide the event feed's home:** a host-level event bus (recommended) or `web`. Compare them on the change doc's table: write cost per event, where connection state lives, and guest instance reuse.
 - Decide the event kinds of v1, the catch-up window, and whether search keeps a progress form.
 
@@ -65,13 +65,14 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 
 ### A5 — Event feed (M)
 
-- X4, the event store with a bounded window, the WebSocket path, catch-up by cursor, internal subscription for services, in the home S0 chose.
+- X4, the event store with a bounded window, scoped by app instance (one app never sees another app's events), the WebSocket path, catch-up by cursor, internal subscription for services, in the home S0 chose.
 - The Hub shows new messages, cards and delivery states live.
 - Criteria: OF-8 to OF-11.
 
 ### A6 — Remote clients (S)
 
-- Default bind `127.0.0.1`. A remote-access setting that names the bind address. `local` login refuses non-loopback requests and names `delegated-key`. The Hub logs in with `delegated-key` when it is not on the node's machine. The Hub CSP allows the configured auth host.
+- Default bind `127.0.0.1`. A remote-access setting that names the bind address. `local` login checks the TCP socket peer address (never a forwarding header), refuses non-loopback peers with an error that names `delegated-key`, and is off completely when remote access is on. The Hub logs in with `delegated-key` when it is not on the node's machine. The Hub CSP allows the configured auth host.
+- Docker: `deploy/docker-compose.community.yml` maps `7960:7960`, which cannot reach a gateway bound to `127.0.0.1` inside the container. Its config turns remote access on with `0.0.0.0` inside the container, and the host mapping becomes `127.0.0.1:7960:7960`. Update the `Dockerfile` comments and the developer guide's Docker section to match.
 - Close the backlog rows for the bind address, the `local` login and the CSP.
 - Criteria: OF-12, OF-13.
 
@@ -93,7 +94,7 @@ S0 (during A1) ───────▶ A3 ────────────�
 - A1 first, and merged alone. No other M08A PR opens until it is on `main`.
 - S0 runs during A1. Its result decides A3, A4 and A5.
 - A3 (substrate and engine) and A6 (auth, gateway and the Hub's login) touch few Roym service files. They can run beside A2.
-- A4 needs A3 and A2c (the directory's typed methods). A5 needs A2a's types for event payloads.
+- A4 needs A3 and A2c (the directory's typed methods). A5 needs A2a's types for event payloads. If S0 chooses the fallback, A4 also needs A5.
 
 ## 5. Not in this plan
 

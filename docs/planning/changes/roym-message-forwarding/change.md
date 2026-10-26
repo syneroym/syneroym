@@ -45,7 +45,7 @@ Two facts from the code shape the design:
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| FW-1 | With option A or C of the ADR, every message a person sends through Roym has an origin. With option B, only messages in conversations where the author turned origins on have one. An origin is signed with the person's identity: author master DID, send time, content type, language tag, and a hash of the content. | |
+| FW-1 | A message carries a signed origin when the ADR's option says it must: every message (A, C), or only in conversations where the author turned it on (B), or only in groups that allow outside forwarding and one-to-one chats where the author turned it on (D). An origin is signed with the person's identity: author master DID, send time, content type, language tag, and a hash of the content. | |
 | FW-2 | The forward action sends the original content, its origin, and the forward count plus one. | |
 | FW-3 | The receiver's node checks that the origin's signature verifies and that the content hash matches. The Hub then shows "Forwarded. First written by <name> on <date>. Forwarded N times." | |
 | FW-4 | If the check fails, the Hub shows the message as the forwarder's own message, with the note "origin could not be checked". It never shows an unverified author name. | |
@@ -91,22 +91,28 @@ The count is written by each forwarder and is not signed. A modified client can 
 
 The privacy cost is real, not small.
 
-- **Today:** each conversation entry is signed, but with the sender's routing service id, over the ciphertext and the conversation context. The signature means something only inside that conversation, to its members.
-- **With this change:** the origin is signed with the person's master DID, over the plain content hash. Anyone, anywhere, can check it once the content is forwarded. Every message, including group messages, becomes provable to strangers. A person can no longer say "I never wrote that" about a forwarded message.
+- **Today:** each conversation entry is signed, but with the sender's routing service id, over the ciphertext and the conversation context. To prove a message to an outsider, a member would have to hand over the ciphertext, the key material that decrypts it, and the link from the routing service id to the person. That is possible, but hard, and not something a client does. `unverified`: how strong this proof is in practice. The ADR checks it.
+- **With a signed origin:** the origin is signed with the person's master DID, over the plain content hash. Anyone, anywhere, can check it with no key material. A person can no longer say "I never wrote that".
 
-That loss of deniability is the point of the feature: it makes the author answerable for a message that spreads. But it applies to every message, not only harmful ones. So the owner decides, in an ADR, among these options:
+**What decides deniability is whether the signed origin exists, not whether it is shown.** If a message carries a signed origin in its body, every member holds it. A hostile member can copy the record and show it to anyone. Hiding the origin when forwarding only stops honest clients. So any option that signs every message gives up deniability against a hostile member, in every conversation.
 
-| Option | What it means | Deterrence | Privacy |
+That loss is the point of the feature where messages spread: it makes the author answerable. But in a private chat it is a cost with little gain. So the owner decides, in an ADR, among these options:
+
+| Option | What it means | Deterrence | Deniability against a hostile member |
 | --- | --- | --- | --- |
-| A. Sign every message (this document's draft) | Every message has an origin. | Strong: every forward names its author. | Every message can become provable to strangers. |
-| B. The author turns origins on, per conversation | Only messages in conversations where the author turned it on have an origin. A forward of any other message shows "origin not available". | Weak: a person who starts a harmful message leaves it off. | Each person chooses. |
-| C. Sign every message, but origins stay inside the conversation by default | The origin is shown when forwarded inside the same conversation or group. Outside it, the forward shows "forwarded from a private chat", with no author, unless the author or the group allowed it. | Medium: it protects private talk, and a public broadcast still names its author. | Private chats stay deniable outside their members. |
+| A. Sign every message | Every message carries a signed origin. | Strong: every forward names its author. | None, in any conversation. |
+| B. The author turns origins on, per conversation | Only messages in conversations where the author turned it on carry a signed origin. A forward of any other message shows "origin not available". | Weak: a person who starts a harmful message leaves it off. | Kept wherever the author left it off. |
+| C. Sign every message, show the origin only inside the conversation by default | Every message carries a signed origin. A forward outside the conversation hides it unless the group allows it. | Medium for honest clients. | **None.** The signed origin is in every message, so a hostile member can still show it. Hiding it stops only honest clients. |
+| D. A members-only check inside the conversation, a signature only where outside forwarding is allowed | Inside a conversation, each message carries a deniable authenticator: a code made with a key that every member shares, so any member can check it, and any member could have made it. It proves the author to the members and to nobody else. A message carries a signed origin (master DID) only in a group that allows forwarding outside, and in a one-to-one chat only when the author turned it on. | Strong where messages spread (groups that allow outside forwarding, broadcasts). None in private chats, which is the intent. | Kept in every conversation that does not allow outside forwarding. Lost, as stated, in those that do. |
 
-**Recommendation: C**, with the group rule below. It keeps the deterrence where viral messages start (public groups and broadcasts) and keeps private talk private. The ADR may choose otherwise.
+- **Option D's cost:** two mechanisms instead of one, and the author must know at send time whether the group allows outside forwarding, because the signature cannot be added later. A group that turns the setting on applies it only to messages sent after the change. Inside the conversation, the members-only check replaces the origin for display ("written by X, checked by your device").
+- **Option D's open point:** which shared key to use. The group key the conversation capability already manages is the first candidate. A one-to-one chat needs a key both sides hold. The ADR checks both against the conversation design.
+
+**Recommendation: D.** It keeps the deterrence where viral messages start, and it is the only option besides B that keeps private chats deniable against a hostile member. B is simpler, but it lets the author of a harmful message opt out. C is withdrawn as a recommendation: its privacy claim was wrong. The ADR may choose otherwise.
 
 ### Group messages
 
-A group sets one rule: **"members may forward messages outside the group with their origin"**, on or off. The group owner sets it. The default is off for a private group. With it off, a forward outside the group carries no author (FW-11). With it on, members see this rule when they join.
+A group sets one rule: **"members may forward messages outside the group with their origin"**, on or off. The group owner sets it. The default is off for a private group. With it off, a forward outside the group carries no author (FW-11). With it on, members see this rule when they join, and every message they send there is signed. Under option D, the setting also decides whether messages in the group carry a signed origin at all. Under options A and C, it decides only what an honest client shows, so it gives no protection against a hostile member (see [Privacy cost](#privacy-cost)).
 
 ### Why the author signs at send time
 
@@ -130,7 +136,7 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 
 ## Tasks
 
-- [ ] ADR: signed message origins, deniability, and the group rule. Owner decision among options A, B and C.
+- [ ] ADR: signed message origins, deniability, and the group rule. Owner decision among options A to D. For D, choose the shared key for the members-only check.
 - [ ] Write the slice plan (in M08C).
 - [ ] `message-origin` record type, signing at send, verification at receive.
 - [ ] Forward method and Hub action. Display rules FW-3 to FW-5.

@@ -59,19 +59,19 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 | OF-2 | The Hub and the user docs say "participant", or a deal role, everywhere. | |
 | **Batched call and federated query** | | |
 | OF-3 | A guest can send one call to many targets in a single host call. The host runs the calls at the same time, each with its own time limit, and returns one result per target in the input order. | |
-| OF-4 | The time the guest waits inside the batched call does not count against its epoch deadline. The batched call has its own total limit, set by the host. If the spike shows this cannot be done, the fallback in [Batched outbound call](#batched-outbound-call) replaces this criterion, and the change doc records it as a deviation. | |
+| OF-4 | The time the guest waits inside the batched call does not count against its epoch deadline. The batched call has its own total limit, set by the host. If the spike shows this cannot be done, the fallback in [Batched outbound call](#batched-outbound-call) replaces this criterion and changes OF-6, and the change doc records both as deviations. | |
 | OF-5 | The same scenario gives the same result in the native build and in the WASM build. | |
-| OF-6 | A search over three directories, one of them too slow, returns the results of the two others and names the slow one, in one client call. | |
+| OF-6 | A search over three directories, one of them too slow, returns the results of the two others and names the slow one, in one client call. With the fallback: in one `search.start` call, one `search.done` event and one `search.results` call. | |
 | OF-7 | Merging results from many sources and removing duplicates is done only by the federated query library. The Hub and `roymctl` hold no merge logic. Each service still verifies the records it receives, with the same `roym_core` verification functions as today. | |
 | OF-17 | A batched call with more targets than the host maximum is refused before any call is made. The host runs at most a fixed number of outbound calls at once for one guest instance, and queues the rest. | |
 | **Event feed** | | |
 | OF-8 | A client opens the event feed with its login session. When a message, a card, a booking or a delivery state changes on the node, the client gets an event within 1 s. The event names what changed and a cursor. It carries no message content. | |
 | OF-9 | A client that reconnects with its last cursor gets every event after that cursor, or is told the cursor is too old and it must reload. | |
-| OF-10 | A service on the node can subscribe to the same events through an internal subscription, without WebSocket. | |
+| OF-10 | A service on the node can subscribe to the same events through an internal subscription, without WebSocket. A service receives only the events of its own app instance. A client receives only the events of the apps its login session may use. | |
 | OF-11 | The Hub shows a new incoming message on an open screen with no user action. | |
 | **Remote clients** | | |
-| OF-12 | `local` login answers only a request that reaches the gateway from a loopback address. A request from any other address gets an error that names `delegated-key` as the method to use. | |
-| OF-13 | By default the gateway binds `127.0.0.1`, and the spec and the default config say so. A node owner turns on remote access with a config setting that names the bind address. With it on, a client on another machine logs in with `delegated-key` and can use every Roym method. The Hub works from that machine (its Content Security Policy no longer names only `auth.localhost`). | |
+| OF-12 | `local` login answers only a request whose TCP socket peer address is a loopback address. Headers such as `X-Forwarded-For` are never used for this check. When remote access is on, `local` login is turned off completely, because a proxy on the same machine (for example Caddy for TLS) makes every request arrive from loopback. A refused request gets an error that names `delegated-key` as the method to use. | |
+| OF-13 | By default the gateway binds `127.0.0.1`, and the spec and the default config say so. A node owner turns on remote access with a config setting that names the bind address. With it on, a client on another machine logs in with `delegated-key` and can use every Roym method. The Hub works from that machine (its Content Security Policy no longer names only `auth.localhost`). The Docker deploy (`deploy/docker-compose.community.yml`, `Dockerfile`) still works after the default changes. | |
 | **Typed methods** | | |
 | OF-14 | Every Roym method reads its input into a typed struct and returns a typed struct. A wrong field type gets `-32602` with the field name. | |
 | OF-15 | A test lists every Roym method and fails when one has no typed input or output. | |
@@ -110,7 +110,11 @@ The exact names are set in the slice plan. The rules:
 **The epoch deadline is the main risk of this change.** The deadline is set once, at the start of the guest call (`engine.rs:570`). The epoch advances on a wall-clock timer, also while the guest waits in a host call. The deadline is checked only when guest code runs, so the guest traps at its first check after `call-all` returns.
 
 - **Primary approach (to be proved in the M08A spike).** Wasmtime lets the host register an epoch-deadline callback on the store. The callback runs when guest code reaches a passed deadline, and it can extend the deadline. The host records in the store's data how long the guest waited inside `call-all`. The callback extends the deadline by that much, and by no more. `unverified`: that the callback is available with the async engine as configured today, and that the store data is reachable from both the `call-all` host function and the callback in the current host-binding style.
-- **Fallback, if the spike fails: a two-step search with no long host call.** The guest calls `start-search(sources, query)`, which returns a job id at once. The host runs the fan-out natively, outside any guest call, under the same limits. When it ends, the host stores the results and raises a `search.done` event on the event feed. A second guest call reads the results by job id and merges them with the federated query library. Each guest call stays short, so the epoch deadline never applies to the wait. The cost: two guest calls instead of one, and the host gains a small job table. The federated query library and the M08F friend forwarding work the same way with either approach.
+- **Fallback, if the spike fails: a two-step search with no long host call.** The guest calls `start-search(sources, query)`, which returns a job id at once. The host runs the fan-out natively, outside any guest call, under the same limits. When it ends, the host stores the results and raises a `search.done` event on the event feed. A second guest call reads the results by job id and merges them with the federated query library. Each guest call stays short, so the epoch deadline never applies to the wait. The library's merge code is the same with either approach.
+- **What the fallback changes, beyond OF-4:**
+  - **The client API (OF-6).** A search is no longer one client call. The client calls `search.start`, waits for the `search.done` event, then calls `search.results`. `web` cannot chain the two steps inside one call, because it would hit the same deadline while it waits. So every client needs the event feed for search, and A5 (event feed) must land before A4.
+  - **The exchange protocol (M08F).** A friend that receives a forwarded search answers from its own index only and never forwards it on (VX-34), so its side stays one wire call. The problem is the **forwarding** exchange. A participant's node calls it over the wire, and it must fan out to its friends before it can answer. With the fallback it cannot wait for them inside that one wire call. So `exchange.search` returns the exchange's own results at once, plus a job id for its friends' results. The participant's node then fetches the friends' results by job id (a second wire-reachable method, `exchange.search-results`), or the exchange sends them back with a call to the participant's `inbox` service. This adds a method, a job table and a second round trip to the participant-to-exchange protocol in M08F. M08F's plan chooses between the two ways.
+  - The cost: two guest calls instead of one, a small job table in the host, and the client and M08F changes above.
 - The spike result goes into this change doc before A3 starts. Choosing the fallback is a deviation, not a blocker.
 
 Rejected: wait for async guests (WASI 0.3). Its date is not known, and M8 federation needs the loop now. Rejected: a native search service outside the Roym SynApp. It would make the WASM build of Roym incomplete, which the integrated spec forbids (D2).
@@ -145,6 +149,7 @@ One feed per node, for the people and services on it.
 | Who holds the open connections | The host, which lives as long as the node. | `web`'s guest instance. Instances are reused and keep no state today (`crates/roym_web/src/app.rs:293`: "nothing reads connection state"), so the list would need a new storage path. |
 | How clients connect | WebSocket through the client gateway, checked against the login session. | WebSocket to `web`, as M06A allows. |
 | How services subscribe | The host calls the service's export, or the service reads by cursor. | `web` calls each subscribed service. |
+| Who sees which events | **Scoped by app instance.** The host tags each event with the app instance that wrote it, from the caller identity, never from the event body. A service subscribes only to its own app's events. A client session gets only the events of apps it may use. One app can never read another app's events. | Only Roym's own events exist, so there is no cross-app question. |
 | Cost | A new host interface, shared by every SynApp. | Roym-only, but slower, and one more state problem in a guest. |
 
 The recommendation is the host-level bus. It is simpler, it is faster, and it does not need state in a guest. The decision and its reason go into this change doc.
@@ -153,9 +158,10 @@ The recommendation is the host-level bus. It is simpler, it is faster, and it do
 
 - **Remote access is a setting, off by default.** Binding a non-loopback address exposes every route behind the client gateway to the network, not only Roym: every app's hostnames, the auth service and the static assets. So it must be the node owner's explicit choice. The setting names the bind address.
 - **The default stays `127.0.0.1`.** The code changes from `0.0.0.0` to match the spec. This closes the backlog row about the bind address.
-- **`local` login is loopback only.** The node reads the person's key from `person_identities_dir`, so `local` proves nothing about the client. It answers only a request from a loopback address. A request from another address is refused, with an error that names `delegated-key`.
+- **`local` login is loopback only, by the socket.** The node reads the person's key from `person_identities_dir`, so `local` proves nothing about the client. The gateway checks the TCP socket's peer address, never a header such as `X-Forwarded-For`. When remote access is on, `local` login is off completely. Reason: an owner may put a TLS proxy (for example Caddy) on the same machine. Then every request, from anywhere, reaches the gateway from loopback, and a loopback check alone would open `local` login to the whole network.
 - **Remote clients use `delegated-key`.** It already does a challenge and proof (`login_delegated_key`). The Hub uses it when it is not on the node's machine.
 - **The Hub's Content Security Policy** hardcodes `auth.localhost` today (backlog §10). It must allow the node's configured auth host before the Hub can work from another machine.
+- **Docker.** `deploy/docker-compose.community.yml` maps `7960:7960`, and the `Dockerfile` exposes 7960. Inside a container, a gateway bound to `127.0.0.1` cannot be reached through that mapping, because the request arrives on the container's network interface. So the compose file's config turns remote access on, with the bind address `0.0.0.0` inside the container. The host-side mapping becomes `127.0.0.1:7960:7960`, so the host machine still exposes the gateway only on its own loopback unless the owner changes the mapping. With remote access on, `local` login is off, so Docker users log in with `delegated-key`. The compose file, the `Dockerfile` comments and the developer guide's Docker section change in A6.
 
 ### Typed methods
 
@@ -180,8 +186,8 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - [ ] Participant rename across Roym crates, the Hub, `roymctl`, docs.
 - [ ] `call-all` with its limits, the deadline extension (or the fallback), and the native shim.
 - [ ] The federated query library. Move merging and duplicate removal into it. One search method.
-- [ ] The event feed: the bus (or `web`), the WebSocket path, internal subscription, catch-up.
-- [ ] Remote access setting, default bind `127.0.0.1`, `local` login loopback only, `delegated-key` for remote clients, the Hub CSP.
+- [ ] The event feed: the bus (or `web`), scoped by app instance, the WebSocket path, internal subscription, catch-up.
+- [ ] Remote access setting, default bind `127.0.0.1`, `local` login by socket peer address and off when remote access is on, `delegated-key` for remote clients, the Hub CSP, the Docker deploy.
 - [ ] Typed input and output for every Roym method, the unknown-field rule, and the check test.
 - [ ] "Build a Roym client" in the developer guide.
 

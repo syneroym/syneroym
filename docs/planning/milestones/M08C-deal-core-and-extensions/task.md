@@ -33,4 +33,6 @@ One fixed deal core for every deal: agreements made of commitments, with signed 
 
 - Barter declared value: who declares it, and must both sides match (Value Exchange, notes for module docs).
 - Extension manifest format and where installed extensions are recorded.
+- The reservation expiry (EX-20, 15 minutes as a first value). A phone that sleeps after it reserves can let it expire, and the commitment then fails after both parties signed (extensions change, open question).
+- The members-only key for option D of the forwarding ADR, if the ADR chooses D.
 - Size of a `message-origin` record with its certificate (forwarding change, open question).

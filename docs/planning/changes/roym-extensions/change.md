@@ -181,6 +181,7 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 ## Open questions
 
 - **Extension discovery by a counterparty.** How a participant's node learns which extensions an offering uses before a deal. Recommendation: the offering lists its extensions by id and version. A client that lacks one shows the plain field view.
+- **Reservation expiry (EX-20).** 15 minutes is a first value. If the resource owner's node sleeps right after it reserves (common on phones, M10), the reservation can expire before the formed agreement arrives. The commitment then fails after both parties signed, with a named reason. This is accepted, but the M08C plan sets the value, and decides whether the expiry should follow the quote's own expiry or a value per extension.
 - **Third-party extension code.** When, and with what review or signing, a participant may install an extension that does not ship with Roym. Not in M8.
 - **Grant scope for groups.** Whether a deal grant can name a group conversation. Recommendation: not in M8. Deals are between two parties.
 
