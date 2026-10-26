@@ -57,6 +57,8 @@ const MAX_CLAIM_ROUNDS: usize = 8;
 pub trait ReceiverVault: Send + Sync {
     /// The service's mailbox secret key, or `None` when it has none.
     async fn mailbox_key(&self, service_id: &str) -> anyhow::Result<Option<MailboxSecretKey>>;
+    /// The owner's child token for this service's mailbox, or `None`.
+    async fn mailbox_passport(&self, service_id: &str) -> anyhow::Result<Option<String>>;
     /// The record the deployer signed, as stored at deploy.
     async fn deploy_record(&self, service_id: &str) -> anyhow::Result<Option<SignedEndpointInfo>>;
 }
@@ -236,6 +238,10 @@ impl fmt::Debug for MailboxPuller {
 impl ReceiverVault for ControlPlaneService {
     async fn mailbox_key(&self, service_id: &str) -> anyhow::Result<Option<MailboxSecretKey>> {
         ControlPlaneService::mailbox_key(self, service_id).await
+    }
+
+    async fn mailbox_passport(&self, service_id: &str) -> anyhow::Result<Option<String>> {
+        ControlPlaneService::mailbox_passport(self, service_id).await
     }
 
     async fn deploy_record(&self, service_id: &str) -> anyhow::Result<Option<SignedEndpointInfo>> {

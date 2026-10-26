@@ -31,7 +31,7 @@ pub const CHALLENGE_PATH: &str = "/v1/home-relay/challenge";
 pub const REGISTER_PATH: &str = "/v1/home-relay/register";
 
 /// One running lease, as the operator lists it. Mirrors the WIT record
-/// `relay-lease` of the control-plane `security` interface.
+/// `passport-lease` of the control-plane `security` interface.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LeaseInfo {
     pub passport_id: PassportId,

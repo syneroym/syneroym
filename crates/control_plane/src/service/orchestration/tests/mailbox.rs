@@ -11,6 +11,8 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 
 use super::{super::*, helpers::*};
 
+mod passport;
+
 /// A service member for these tests: its master, the service id that master
 /// names, and the node identity of the substrate that will host it.
 struct Member {
@@ -89,7 +91,11 @@ async fn host_of(member: &Member, dir: &std::path::Path) -> ControlPlaneService 
 }
 
 fn credentials_for(key: &MailboxSecretKey) -> MailboxCredentials {
-    MailboxCredentials { secret_key: key.to_z32().to_string(), methods: Vec::new() }
+    MailboxCredentials {
+        secret_key: key.to_z32().to_string(),
+        methods: Vec::new(),
+        child_token: None,
+    }
 }
 
 // -- validate_mailbox ------------------------------------------------------
@@ -169,8 +175,11 @@ fn a_key_that_does_not_parse_is_refused_without_showing_it() {
     let member = Member::new();
     let key = member.mailbox_key();
     let record = member.record(Some(member.mailbox_route(&key)), false);
-    let bad =
-        MailboxCredentials { secret_key: "not-a-key-but-secret".to_string(), methods: Vec::new() };
+    let bad = MailboxCredentials {
+        secret_key: "not-a-key-but-secret".to_string(),
+        methods: Vec::new(),
+        child_token: None,
+    };
     let err = validate_mailbox(
         &member.service_id,
         Some(&bad),

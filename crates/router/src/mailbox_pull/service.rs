@@ -3,6 +3,8 @@
 
 use std::mem;
 
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use syneroym_core::{
     dht_registry::SignedEndpointInfo,
     mailbox::{
@@ -13,7 +15,7 @@ use syneroym_core::{
 };
 use syneroym_identity::DelegationCertificate;
 use syneroym_mailbox_format::{
-    MAX_CLOCK_SKEW_SECS, MailboxSecretKey, OPEN_MAX_TTL_SECS, OpenPolicy,
+    DEDICATED_MAX_TTL_SECS, MAX_CLOCK_SKEW_SECS, MailboxSecretKey, OPEN_MAX_TTL_SECS, OpenPolicy,
 };
 use syneroym_rpc::{DEFAULT_PROXY_CALL_TIMEOUT, ProxyError};
 use tokio::time::{self, Duration, Instant};
@@ -64,6 +66,10 @@ struct Registration {
     /// From the mailbox's `info`, read at register; a default when it
     /// failed.
     visibility_secs: u64,
+    /// The digest of the child token the service had at this register, also
+    /// when the mailbox refused it, so a refused token is not sent on every
+    /// pass.
+    child_token_digest: Option<[u8; 32]>,
 }
 
 impl ServiceState {
@@ -73,6 +79,7 @@ impl ServiceState {
             Some(r) => {
                 r.mailbox != inputs.mailbox
                     || r.record_hex != inputs.record.pkarr_packet_hex
+                    || r.child_token_digest != inputs.child_token_digest()
                     || r.at.elapsed() >= REREGISTER_INTERVAL
             }
         }
@@ -95,6 +102,15 @@ pub(super) struct Inputs {
     pub(super) key: MailboxSecretKey,
     record: SignedEndpointInfo,
     pub(super) mailbox: String,
+    /// The owner's child token for the mailbox passport, if the service has
+    /// one.
+    child_token: Option<String>,
+}
+
+impl Inputs {
+    fn child_token_digest(&self) -> Option<[u8; 32]> {
+        self.child_token.as_ref().map(|token| Sha256::digest(token.as_bytes()).into())
+    }
 }
 
 /// The state of one service during one pass.
@@ -188,6 +204,42 @@ fn code_of(error: &ProxyError) -> Option<i32> {
     }
 }
 
+/// The note for a failed `register` that carried a child token, when a
+/// register without the token may succeed: the mailbox refused the token, or
+/// could not check it. Any other failure (a refused instance, a full
+/// mailbox, a rate limit) would fail the same way without the token.
+fn passport_fallback(error: &ProxyError) -> Option<Note> {
+    match error {
+        ProxyError::Timeout(_) => Some(Note::PassportUnavailable),
+        ProxyError::Callee { code, .. } if *code == codes::PASSPORT_REFUSED => {
+            Some(Note::PassportRefused)
+        }
+        // Other internal errors (for example the instance revocation lookup)
+        // come before the passport is looked at, and fail the same way
+        // without the token. Only the mailbox says its passport check failed.
+        ProxyError::Callee { data: Some(data), .. }
+            if data.get("kind").and_then(Value::as_str) == Some(PASSPORT_UNAVAILABLE_KIND) =>
+        {
+            Some(Note::PassportUnavailable)
+        }
+        _ => None,
+    }
+}
+
+/// The `data.kind` of an internal error that comes from the passport check
+/// (an unreadable lease file, a failed write task).
+const PASSPORT_UNAVAILABLE_KIND: &str = "passport_unavailable";
+
+/// The passport refusal code (`data.code`) of a refused `register`.
+fn refusal_code(error: &ProxyError) -> String {
+    match error {
+        ProxyError::Callee { data: Some(data), .. } => {
+            data.get("code").and_then(Value::as_str).unwrap_or_default().to_string()
+        }
+        _ => String::new(),
+    }
+}
+
 impl MailboxPuller {
     pub(super) async fn pull_service(&self, pass: &mut ServicePass<'_>) {
         let Some(inputs) = self.inputs(pass).await else {
@@ -238,12 +290,19 @@ impl MailboxPuller {
                 return None;
             }
         };
+        let child_token = match self.vault.mailbox_passport(pass.service_id).await {
+            Ok(token) => token,
+            Err(e) => {
+                pass.note(Note::PassportUnreadable, &e.to_string());
+                return None;
+            }
+        };
         let (record, mailbox) = self.stored_record(pass).await?;
         if mailbox != pass.fact.mailbox {
             let detail = format!("record {mailbox}, fact {}", pass.fact.mailbox);
             pass.note(Note::RecordAndFactDiffer, &detail);
         }
-        Some(Inputs { instance, key, record, mailbox })
+        Some(Inputs { instance, key, record, mailbox, child_token })
     }
 
     /// The stored deploy record and the mailbox it names.
@@ -271,35 +330,25 @@ impl MailboxPuller {
 
     /// `true` when claiming may go on. Every register of a pass goes
     /// through here, also the one after a `-32040`.
+    ///
+    /// When the mailbox refuses the child token, or cannot check it (an
+    /// internal error, or no answer in time), the same pass registers again
+    /// without it, so the owner's service keeps its queue and the deferred
+    /// delivery that comes with it. The token is tried again at the next
+    /// register, or when it changes.
     async fn register(&self, pass: &mut ServicePass<'_>, inputs: &Inputs) -> bool {
-        let Ok(params) = serde_json::to_value(RegisterParams { record: inputs.record.clone() })
+        let Some(mut answer) = self.send_register(pass, inputs, inputs.child_token.clone()).await
         else {
             return false;
         };
-        // Under the gate, register only while the fact is the one this pass
-        // started with. The control plane changes the fact before it removes
-        // the queue, so a removed queue is never registered again.
-        let answer = {
-            let gate = self.register_gate(pass.service_id);
-            let mut registered_at = gate.lock().await;
-            let current = self.registry.mailbox_of(pass.service_id).map(|f| f.mailbox);
-            if current.as_deref() != Some(pass.fact.mailbox.as_str()) {
-                debug!(
-                    service_id = pass.service_id,
-                    "the mailbox changed during the pass; not registering"
-                );
-                pass.entry.registered = None;
-                return false;
-            }
-            let answer = self
-                .proxy
-                .call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_REGISTER, params)
-                .await;
-            if answer.is_ok() {
-                *registered_at = Some(inputs.mailbox.clone());
-            }
-            answer
-        };
+        if inputs.child_token.is_some()
+            && let Err(e) = &answer
+            && let Some(note) = passport_fallback(e)
+        {
+            pass.note(note, &refusal_code(e));
+            let Some(plain) = self.send_register(pass, inputs, None).await else { return false };
+            answer = plain;
+        }
         match answer {
             Ok(value) => match serde_json::from_value::<RegisterAnswer>(value) {
                 Ok(answer) => {
@@ -325,6 +374,39 @@ impl MailboxPuller {
         }
     }
 
+    /// One `register` call. Under the gate, it registers only while the fact
+    /// is the one this pass started with. The control plane changes the fact
+    /// before it removes the queue, so a removed queue is never registered
+    /// again. `None` when the fact changed.
+    async fn send_register(
+        &self,
+        pass: &mut ServicePass<'_>,
+        inputs: &Inputs,
+        child_token: Option<String>,
+    ) -> Option<Result<Value, ProxyError>> {
+        let params = RegisterParams { record: inputs.record.clone(), child_token };
+        let params = serde_json::to_value(params).ok()?;
+        let gate = self.register_gate(pass.service_id);
+        let mut registered_at = gate.lock().await;
+        let current = self.registry.mailbox_of(pass.service_id).map(|f| f.mailbox);
+        if current.as_deref() != Some(pass.fact.mailbox.as_str()) {
+            debug!(
+                service_id = pass.service_id,
+                "the mailbox changed during the pass; not registering"
+            );
+            pass.entry.registered = None;
+            return None;
+        }
+        let answer = self
+            .proxy
+            .call_mailbox(&inputs.instance, &inputs.mailbox, METHOD_REGISTER, params)
+            .await;
+        if answer.is_ok() {
+            *registered_at = Some(inputs.mailbox.clone());
+        }
+        Some(answer)
+    }
+
     fn register_failed(pass: &mut ServicePass<'_>, inputs: &Inputs, error: &ProxyError) {
         match code_of(error) {
             Some(codes::NOT_AN_INSTANCE) => pass.block(&inputs.instance, Note::InstanceRefused),
@@ -335,11 +417,15 @@ impl MailboxPuller {
     }
 
     /// Keeps the registration and writes the queue's real time-to-live back
-    /// into the fact. A mailbox may answer any number: above the open limit
-    /// it would turn off the age check of a message and make the receiver
-    /// fence window endless, so it is cut to that limit.
+    /// into the fact. A mailbox may answer any number: above the limit it
+    /// would turn off the age check of a message and make the receiver fence
+    /// window endless, so it is cut. The limit is what a passport may give
+    /// when the owner stored a child token for this service, else the open
+    /// limit: a mailbox the owner chose without a passport cannot widen it.
     async fn learn(&self, pass: &mut ServicePass<'_>, inputs: &Inputs, limits: QueueLimits) {
-        let max_ttl_secs = limits.max_ttl_secs.min(OPEN_MAX_TTL_SECS);
+        let cap =
+            if inputs.child_token.is_some() { DEDICATED_MAX_TTL_SECS } else { OPEN_MAX_TTL_SECS };
+        let max_ttl_secs = limits.max_ttl_secs.min(cap);
         self.keep_registration(pass, inputs, Some(max_ttl_secs)).await;
         self.write_back_ttl(pass.service_id, &inputs.mailbox, max_ttl_secs).await;
     }
@@ -359,6 +445,7 @@ impl MailboxPuller {
             at: Instant::now(),
             max_ttl_secs,
             visibility_secs,
+            child_token_digest: inputs.child_token_digest(),
         });
     }
 

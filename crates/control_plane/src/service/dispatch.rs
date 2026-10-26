@@ -3,7 +3,7 @@ use crate::synsvc_native;
 
 mod home_relay;
 mod mailbox_pull;
-mod relay_passport;
+mod passport_admin;
 
 #[async_trait::async_trait]
 impl NativeService for ControlPlaneService {
@@ -143,10 +143,14 @@ impl ControlPlaneService {
                     .map_err(|e| RpcError::InternalError(e.to_string()))?;
                 Ok(NativeResponse { payload: serde_json::json!({"status": "secret_set"}) })
             }
-            "relay-passport-deny" => {
-                relay_passport::deny(self.relay_passports.get(), invocation.params).await
+            "relay-passport-deny" | "relay-passport-leases" => {
+                let store = self.relay_passports.get();
+                passport_admin::dispatch(passport_admin::RELAY, store, invocation).await
             }
-            "relay-passport-leases" => relay_passport::leases(self.relay_passports.get()),
+            "mailbox-passport-deny" | "mailbox-passport-leases" => {
+                let store = self.mailbox_passports.get();
+                passport_admin::dispatch(passport_admin::MAILBOX, store, invocation).await
+            }
             "home-relay-set" => home_relay::set(self.home_relay.get(), invocation.params).await,
             "home-relay-status" => home_relay::status(self.home_relay.get()),
             "mailbox-pull-now" => {

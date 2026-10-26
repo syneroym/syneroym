@@ -25,7 +25,7 @@ use syneroym_sdk::{
 
 use crate::commands::{
     mailbox_auto::{self, HostRegistry},
-    member_identity,
+    mailbox_passport, member_identity,
 };
 
 /// Resolve `--identity`/`--master` into the (at most one relevant) local
@@ -123,6 +123,21 @@ pub(crate) fn check_mailbox_args(
     Ok(())
 }
 
+/// A dedicated mailbox is never in the open list, so `auto` cannot pick the
+/// mailbox a passport is for. The user names it.
+pub(crate) fn check_passport_args(
+    mailbox: Option<&MailboxChoice>,
+    has_passport: bool,
+) -> anyhow::Result<()> {
+    if has_passport && matches!(mailbox, Some(MailboxChoice::Auto)) {
+        anyhow::bail!(
+            "--mailbox-passport needs the mailbox named by node DID (--mailbox <node-did>): \
+             `auto` picks from the open list, which never holds a dedicated mailbox"
+        );
+    }
+    Ok(())
+}
+
 /// `--mailbox-method` lists a guest's own methods: at most
 /// `MAX_MAILBOX_METHODS`, each once, none on a node or platform interface.
 /// The substrate checks the same rules at deploy; this fails before anything
@@ -174,6 +189,7 @@ pub(crate) fn build_publication(
     record_out: Option<&Path>,
     mailbox: Option<&ServiceId>,
     mailbox_methods: &[MailboxMethod],
+    mailbox_child_token: Option<String>,
 ) -> anyhow::Result<Publication> {
     match (parsed_visibility, signing_identity) {
         (Visibility::Private, Some(id)) if record_out.is_some() => {
@@ -227,6 +243,7 @@ pub(crate) fn build_publication(
                     record,
                     mailbox_key,
                     mailbox_methods: mailbox_methods.to_vec(),
+                    mailbox_child_token,
                 }
             } else {
                 Publication::Internal(record)
@@ -405,8 +422,10 @@ pub(super) async fn handle_deploy(
     record_out: &Option<PathBuf>,
     mailbox: &Option<MailboxChoice>,
     mailbox_methods: &[MailboxMethod],
+    mailbox_passport: &Option<PathBuf>,
     cert_expires_hours: u32,
     dir: &Path,
+    run_as: Option<&str>,
 ) -> anyhow::Result<()> {
     validate_container_flags(image, ports, volumes)?;
     let ifaces: Vec<String> = parse_interfaces(interfaces)?;
@@ -447,9 +466,25 @@ pub(super) async fn handle_deploy(
         instance_certificate.is_some(),
     )?;
 
+    check_passport_args(mailbox.as_ref(), mailbox_passport.is_some())?;
+
     // Before anything is signed or minted: `auto` reads the registry.
     let mailbox_host =
         resolve_mailbox_host(client, mailbox.as_ref(), svc_id, registry_url.as_deref()).await?;
+
+    let now = syneroym_passport::now_secs();
+    let child_token =
+        mailbox_passport::load_passports(dir, mailbox_passport.as_slice(), run_as, now)?
+            .map(|passports| {
+                mailbox_passport::child_token_for_service(
+                    &passports,
+                    mailbox_host.as_ref(),
+                    svc_id,
+                    now,
+                )
+            })
+            .transpose()?
+            .flatten();
 
     let not_after = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -467,6 +502,7 @@ pub(super) async fn handle_deploy(
         record_out.as_deref(),
         mailbox_host.as_ref(),
         mailbox_methods,
+        child_token,
     )?;
 
     let instance_cert = resolve_instance_cert(

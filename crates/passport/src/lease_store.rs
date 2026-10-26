@@ -31,6 +31,15 @@ pub struct Lease {
     pub limits: Map<String, Value>,
 }
 
+impl Lease {
+    /// The whole-number use limit `key` of the passport, if it has one. A
+    /// fact that is not a number reads as absent.
+    #[must_use]
+    pub fn limit(&self, key: &str) -> Option<u64> {
+        self.limits.get(key).and_then(Value::as_u64)
+    }
+}
+
 /// The lease table and deny list of one service for one use. The store is
 /// bound to the ability of that use when it is opened, and a file made for
 /// another use is refused: a lease of one use must never admit a subject
@@ -161,6 +170,22 @@ impl LeaseStore {
             c.remove_passport(id);
         });
         Ok(removed)
+    }
+
+    /// End the lease of `subject` under the passport `id`, and no other
+    /// lease. The passport is not denied. Returns whether a lease ended.
+    ///
+    /// A service that learns a passport can no longer admit its subject (a
+    /// revoked key, a changed root) calls this, so the subject does not keep
+    /// the limits of a lease the passport would no longer get.
+    pub fn end_lease(&self, id: &PassportId, subject: &str) -> Result<bool> {
+        let conn = self.conn();
+        let removed = conn.execute(
+            "DELETE FROM passport_leases WHERE passport_id = ?1 AND subject = ?2",
+            params![id.as_str(), subject],
+        )?;
+        let ended = self.write(|c| c.remove(id, subject));
+        Ok(ended || removed > 0)
     }
 
     /// Write `lease` if the passport is not denied and `limit` allows it.

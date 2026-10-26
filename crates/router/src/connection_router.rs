@@ -256,7 +256,7 @@ impl ConnectionRouter {
 
     pub async fn shutdown(&self) -> Result<()> {
         info!("shutting down connection router");
-        if let Some(router) = self.iroh_router.as_ref() {
+        if let Some(router) = self.iroh_router.clone() {
             let ep = router.endpoint().clone();
             // `Router::shutdown` already closes the endpoint internally on
             // its own success path, so the explicit `ep.close()` below is
@@ -266,8 +266,19 @@ impl ConnectionRouter {
             // `?`, leaving the endpoint to log iroh's own "dropped without
             // calling Endpoint::close" error on drop instead. Same shape
             // `coordinator_iroh::Coordinator::shutdown` already uses.
-            let _ = router.shutdown().await;
-            ep.close().await;
+            //
+            // The close can wait for the closing period of a connection with
+            // a bad round-trip estimate. Shutdown waits only a bounded time;
+            // the close then finishes in the background.
+            net_iroh::close_within(
+                "connection router",
+                net_iroh::ENDPOINT_CLOSE_LIMIT,
+                async move {
+                    let _ = router.shutdown().await;
+                    ep.close().await;
+                },
+            )
+            .await;
         }
         Ok(())
     }

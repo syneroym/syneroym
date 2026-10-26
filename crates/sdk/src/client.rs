@@ -13,7 +13,7 @@ use iroh::{Endpoint, endpoint::Connection};
 use serde_json::Value;
 use syneroym_core::dht_registry::{EndpointMechanism, RegistryClient, SignedEndpointInfo};
 use syneroym_identity::{DelegationCertificate, Identity, substrate};
-use syneroym_router::ReaderWriter;
+use syneroym_router::{ReaderWriter, net_iroh};
 use syneroym_rpc::{
     CapabilityToken, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcResponse,
     MESSAGING_MESSAGE_METHOD, MessagingNotification, framing,
@@ -514,17 +514,31 @@ impl SyneroymClient {
         Err(anyhow::anyhow!("Timed out waiting for {} to become ready", self.service_id))
     }
 
+    /// Closes the connection and waits a bounded time for the peers to
+    /// confirm it (see [`net_iroh::ENDPOINT_CLOSE_LIMIT`]). A close that is
+    /// not done by then finishes in the background.
     pub async fn shutdown(&mut self) -> Result<()> {
-        if let Some(TransportConnection::Iroh { endpoint, .. }) =
-            self.connection.get_mut().unwrap_or_else(PoisonError::into_inner).take()
-        {
-            endpoint.close().await;
-        }
-        let handles: Vec<_> =
+        let endpoint =
+            match self.connection.get_mut().unwrap_or_else(PoisonError::into_inner).take() {
+                Some(TransportConnection::Iroh { endpoint, .. }) => Some(endpoint),
+                _ => None,
+            };
+        let pending: Vec<_> =
             std::mem::take(self.pending_closes.get_mut().unwrap_or_else(PoisonError::into_inner));
-        for handle in handles {
-            let _ = handle.await;
-        }
+        net_iroh::close_within("client", net_iroh::ENDPOINT_CLOSE_LIMIT, async move {
+            let own = async {
+                if let Some(endpoint) = endpoint {
+                    endpoint.close().await;
+                }
+            };
+            let earlier = async {
+                for handle in pending {
+                    let _ = handle.await;
+                }
+            };
+            tokio::join!(own, earlier);
+        })
+        .await;
         Ok(())
     }
 

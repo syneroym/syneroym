@@ -507,6 +507,7 @@ fn a_public_record_out_file_carries_the_mailbox_and_the_derived_key() {
         Some(&path),
         Some(&host_id()),
         &[],
+        None,
     )
     .unwrap();
 
@@ -539,6 +540,7 @@ fn a_deploy_without_a_mailbox_publishes_a_record_without_one() {
         None,
         None,
         &[],
+        None,
     )
     .unwrap();
     match publication {
@@ -680,10 +682,46 @@ fn mailbox_methods_reach_the_public_publication() {
         None,
         Some(&host_id()),
         &list,
+        None,
     )
     .unwrap();
     match publication {
         Publication::Public { mailbox_methods, .. } => assert_eq!(mailbox_methods, list),
         other => panic!("expected a public publication, got {other:?}"),
     }
+}
+
+#[test]
+fn a_child_token_reaches_the_public_publication() {
+    let identity = Identity::generate().unwrap();
+    let svc_id = substrate::derive_did_key(&identity.public_key());
+    let publication = build_publication(
+        Visibility::Public,
+        Some(&identity),
+        &svc_id,
+        "did:key:zSubstrate",
+        None,
+        9_999_999_999,
+        None,
+        Some(&host_id()),
+        &[],
+        Some("child-token-text".to_string()),
+    )
+    .unwrap();
+    match publication {
+        Publication::Public { mailbox_child_token, .. } => {
+            assert_eq!(mailbox_child_token.as_deref(), Some("child-token-text"));
+        }
+        other => panic!("expected a public publication, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_passport_needs_a_named_mailbox_not_auto() {
+    let host = host_choice();
+    assert!(check_passport_args(Some(&host), true).is_ok());
+    assert!(check_passport_args(None, false).is_ok());
+    assert!(check_passport_args(Some(&MailboxChoice::Auto), false).is_ok());
+    let err = check_passport_args(Some(&MailboxChoice::Auto), true).unwrap_err();
+    assert!(err.to_string().contains("named by node DID"), "{err}");
 }

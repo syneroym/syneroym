@@ -19,7 +19,7 @@ use syneroym_core::{
 use syneroym_identity::Identity;
 use syneroym_sdk::SyneroymClient;
 use tempfile::TempDir;
-use tokio::time;
+use tokio::{sync::MutexGuard, time};
 
 use super::{
     NodeBuilder, StoppedNode, SubstrateNode,
@@ -29,6 +29,7 @@ use super::{
         DELIVERY_ATTEMPT_BUDGET, artifacts, deploy_guest, fast_queue_role, guest_enqueue,
         outbox_keys, wait_until,
     },
+    write_claim,
 };
 
 pub const KEK: [u8; 32] = [0xcd; 32];
@@ -77,11 +78,18 @@ pub struct World {
     greeter_wasm: Vec<u8>,
     opted_in: bool,
     dirs: Vec<TempDir>,
+    /// The owner's child token for the receiver's mailbox passport, shown
+    /// at every deploy of the receiver.
+    child_token: Option<String>,
+    _serial_guard: MutexGuard<'static, ()>,
 }
 
 pub struct Restart {
     pub owner: Identity,
     pub registry_url: String,
+    /// The relay of the node that hosts the registry. The other nodes use it
+    /// as their home relay.
+    pub relay_url: String,
     pub mailbox_role: MailboxRole,
     pub mailbox_dir: Option<PathBuf>,
     pub receiver_dir: PathBuf,
@@ -94,6 +102,7 @@ impl Restart {
             .owner(&self.owner)
             .base_path(self.mailbox_dir.as_ref().expect("a separate mailbox node"))
             .shared_registry(&self.registry_url)
+            .shared_relay(&self.relay_url)
             .configure(move |c| c.roles.mailbox = Some(role.clone()))
             .inject_kek_bytes(KEK)
     }
@@ -103,6 +112,7 @@ impl Restart {
             .owner(&self.owner)
             .base_path(&self.receiver_dir)
             .shared_registry(&self.registry_url)
+            .shared_relay(&self.relay_url)
             .inject_kek_bytes(KEK)
     }
 }
@@ -121,6 +131,10 @@ pub struct Options {
     pub deploy_receiver: bool,
     /// The most messages one queue holds at the mailbox.
     pub max_queue_messages: Option<u32>,
+    /// The mailbox node is claimed by the world's owner, so the owner is its
+    /// verified controller: the owner signs its passports, and the owner
+    /// can deny them. Needs a separate mailbox node.
+    pub mailbox_controller: bool,
 }
 
 impl Options {
@@ -132,6 +146,7 @@ impl Options {
             registry_on_mailbox: false,
             deploy_receiver: true,
             max_queue_messages: None,
+            mailbox_controller: false,
         }
     }
 }
@@ -161,6 +176,7 @@ async fn boot_nodes(
         let sender = SubstrateNode::builder()
             .owner(owner)
             .shared_registry(mailbox.registry_url())
+            .shared_relay(mailbox.relay_url())
             .configure(move |c| apply_all(c, None))
             .inject_kek_bytes(KEK)
             .boot()
@@ -177,19 +193,35 @@ async fn boot_nodes(
 }
 
 pub async fn world(options: Options) -> World {
+    let serial_guard = super::serial_guard().await;
     let _ = ring::default_provider().install_default();
     let (proxy_wasm, greeter_wasm) =
         artifacts().expect("proxy-test/greeter wasm artifacts not built");
     let owner = Identity::generate().unwrap();
     let role = mailbox_role(&options);
     let mailbox_dir = (!options.same_node).then(|| tempfile::tempdir().unwrap());
+    if options.mailbox_controller {
+        let dir = mailbox_dir.as_ref().expect("a controlled mailbox is a separate node");
+        write_claim(dir.path(), &owner);
+    }
     let receiver_dir = tempfile::tempdir().unwrap();
 
     let (mut sender, hosting_mailbox) =
         boot_nodes(&options, &owner, &role, mailbox_dir.as_ref()).await;
+    // The registry host also hosts the relay of the world, and no test stops
+    // that node. A node that stops with its own relay leaves the relay
+    // actors of its peers dialing a dead address. While such an actor waits
+    // to reconnect, it does not read its send queue, and iroh then holds
+    // back every other relay datagram of the dialing node: calls on
+    // unrelated connections stall for up to a minute.
+    let relay_url = hosting_mailbox
+        .as_ref()
+        .map_or_else(|| sender.relay_url(), SubstrateNode::relay_url)
+        .to_string();
     let restart = Restart {
         owner,
         registry_url: sender.registry_url().to_string(),
+        relay_url,
         mailbox_role: role,
         mailbox_dir: mailbox_dir.as_ref().map(|dir| dir.path().to_path_buf()),
         receiver_dir: receiver_dir.path().to_path_buf(),
@@ -216,6 +248,8 @@ pub async fn world(options: Options) -> World {
         greeter_wasm,
         opted_in: options.opted_in,
         dirs,
+        child_token: None,
+        _serial_guard: serial_guard,
     };
     if options.deploy_receiver {
         world.deploy_receiver().await;
@@ -242,18 +276,40 @@ impl World {
         self.receiver.service_id()
     }
 
+    /// The receiver's greeter is deployed with this child token from now on.
+    pub fn set_child_token(&mut self, child_token: Option<String>) {
+        self.child_token = child_token;
+    }
+
+    /// Another receiver member on the receiver node, with the same greeter
+    /// and the same mailbox, deployed with `child_token`.
+    pub async fn deploy_other_receiver(&self, other: &MailboxReceiver, child_token: String) {
+        let entry = greet_entry();
+        other
+            .deploy_with_passport(
+                self.receiver_node(),
+                self.mailbox_node().did(),
+                test_constants::GREETER_INTERFACE_NAME,
+                self.greeter_wasm.clone(),
+                &[entry.as_str()],
+                Some(child_token),
+            )
+            .await;
+    }
+
     /// The receiver's greeter, public, with a mailbox in its record. It lists
     /// `greet` for delivery from the mailbox unless the test says not.
     pub async fn deploy_receiver(&self) {
         let entry = greet_entry();
         let methods: Vec<&str> = if self.opted_in { vec![entry.as_str()] } else { Vec::new() };
         self.receiver
-            .deploy_with_methods(
+            .deploy_with_passport(
                 self.receiver_node(),
                 self.mailbox_node().did(),
                 test_constants::GREETER_INTERFACE_NAME,
                 self.greeter_wasm.clone(),
                 &methods,
+                self.child_token.clone(),
             )
             .await;
     }
@@ -341,9 +397,21 @@ impl World {
     }
 
     pub async fn enqueue(&self, key: &str) {
-        guest_enqueue(self.sender(), &self.guest_did, &self.receiver_id(), key)
+        self.enqueue_for(&self.receiver_id(), key).await;
+    }
+
+    /// A queued call from the sending guest to `receiver_id`.
+    pub async fn enqueue_for(&self, receiver_id: &str, key: &str) {
+        guest_enqueue(self.sender(), &self.guest_did, receiver_id, key)
             .await
             .expect("the enqueue must be accepted for delivery");
+    }
+
+    /// The mailbox node restarts with its directory, identity and ports.
+    pub async fn restart_mailbox(&mut self) {
+        let node = self.mailbox.as_mut().expect("a separate mailbox node");
+        node.restart_in_place().await;
+        time::sleep(Duration::from_secs(1)).await;
     }
 
     /// The keys in the guest's outbox, and whether each waits at a mailbox.

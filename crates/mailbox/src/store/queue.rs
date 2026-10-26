@@ -61,17 +61,20 @@ impl MailboxStore {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
-        let (publish_now, queue_limits) = match queue_row(&tx, &who.master_did)? {
+        let publish_now = match queue_row(&tx, &who.master_did)? {
             None => {
                 let count: i64 = tx.query_row("SELECT COUNT(*) FROM queues", [], |r| r.get(0))?;
-                if from_sql(count) >= u64::from(self.limits.max_queues) {
+                // A master with a running lease is not refused by the queue
+                // count: strangers could fill it and lock out paying users.
+                if from_sql(count) >= u64::from(self.limits.max_queues)
+                    && self.lease_for(&who.master_did, now).is_none()
+                {
                     return Err(MailboxError::MailboxFull);
                 }
                 tx.execute(
                     "INSERT INTO queues (service_id, record_json, record_signed_at, \
-                     record_not_after, newest_issued_at, newest_instance_did, max_bytes, \
-                     max_messages, max_ttl_secs, last_active_at, next_publish_at) VALUES (?1, ?2, \
-                     ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     record_not_after, newest_issued_at, newest_instance_did, last_active_at, \
+                     next_publish_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     rusqlite::params![
                         who.master_did,
                         record.json,
@@ -79,17 +82,14 @@ impl MailboxStore {
                         to_sql(record.not_after),
                         to_sql(who.issued_at_secs),
                         who.instance_did,
-                        to_sql(self.limits.queue.max_bytes),
-                        to_sql(u64::from(self.limits.queue.max_messages)),
-                        to_sql(self.limits.queue.max_ttl_secs),
                         to_sql(now),
                         to_sql(now),
                     ],
                 )?;
-                (true, self.limits.queue)
+                true
             }
             Some(existing) => {
-                let row = admit_instance(&tx, who)?;
+                admit_instance(&tx, who)?;
                 let publish = record.signed_at > existing.record_signed_at;
                 if publish {
                     tx.execute(
@@ -108,14 +108,14 @@ impl MailboxStore {
                     "UPDATE queues SET last_active_at = ?1 WHERE service_id = ?2",
                     rusqlite::params![to_sql(now), who.master_did],
                 )?;
-                (publish, row.limits)
+                publish
             }
         };
 
         tx.commit()?;
         Ok(Registered {
             answer: RegisterAnswer {
-                limits: queue_limits,
+                limits: self.queue_limits(&who.master_did, now),
                 queue_ends_at_secs: now.saturating_add(self.limits.queue_lifetime_secs),
             },
             publish_now,

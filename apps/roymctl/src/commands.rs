@@ -24,9 +24,12 @@ use syneroym_ucan::CapabilityToken;
 pub mod app;
 pub mod coordinator;
 pub mod identity;
+pub mod mailbox;
 pub(crate) mod mailbox_arg;
 pub(crate) mod mailbox_auto;
+pub(crate) mod mailbox_passport;
 pub mod member_identity;
+pub(crate) mod passport_issue;
 pub mod registry;
 pub mod roym;
 pub mod security;
@@ -107,6 +110,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: coordinator::CoordinatorCommands,
     },
+    /// Operate a mailbox you run
+    Mailbox {
+        #[command(subcommand)]
+        command: mailbox::MailboxCommands,
+    },
     /// Manage the Key Encryption Key (KEK)
     Kek {
         #[command(subcommand)]
@@ -185,7 +193,7 @@ pub(crate) fn client_for(
     let client = match run_as {
         None => SyneroymClient::new(substrate_did, api_url.to_string()),
         Some(name) => {
-            let path = dir.join("identities").join(format!("{name}.key"));
+            let path = identity::identity_key_path(dir, name);
             let id = Identity::load_from_path(&path)
                 .with_context(|| format!("no local identity '{name}' at {}", path.display()))?;
             SyneroymClient::new_with_identity(substrate_did, api_url.to_string(), id)
@@ -343,6 +351,17 @@ async fn dispatch_coordinator(
     coordinator::handle(&command, api_url, substrate_opt, dir, run_as, ucan_path).await
 }
 
+async fn dispatch_mailbox(
+    command: mailbox::MailboxCommands,
+    api_url: &str,
+    substrate_opt: Option<String>,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    mailbox::handle(&command, api_url, substrate_opt, dir, run_as, ucan_path).await
+}
+
 async fn dispatch_supervisor(
     command: supervisor::SupervisorCommands,
     api_url: &str,
@@ -406,6 +425,9 @@ pub async fn run(
         Commands::Registry { command } => registry::handle(&command, &api_url, &dir).await?,
         Commands::Coordinator { command } => {
             dispatch_coordinator(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
+        }
+        Commands::Mailbox { command } => {
+            dispatch_mailbox(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;
         }
         Commands::Kek { command } => {
             dispatch_kek(command, &api_url, substrate_opt, &dir, run_as, ucan).await?;

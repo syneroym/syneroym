@@ -55,7 +55,7 @@ fn the_cuts_come_from_the_senders_that_hold_the_most() {
 fn lowering_the_cap_trims_the_receipts_at_open() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mailbox.db");
-    let f = fixture_on(MailboxStore::open(&path, limits_with_cap(10)).unwrap());
+    let f = fixture_on(MailboxStore::open(&path, limits_with_cap(10), None).unwrap());
     for i in 0..6 {
         let id = f.deposit(f.now).deposit.deposit_id;
         f.settle(id, f.now + 1 + i);
@@ -63,7 +63,7 @@ fn lowering_the_cap_trims_the_receipts_at_open() {
     assert_eq!(f.settled(), 6);
     drop(f);
 
-    let reopened = MailboxStore::open(&path, limits_with_cap(3)).unwrap();
+    let reopened = MailboxStore::open(&path, limits_with_cap(3), None).unwrap();
 
     assert_eq!(reopened.totals().unwrap().settled_receipts, 3);
     let rows: i64 = reopened

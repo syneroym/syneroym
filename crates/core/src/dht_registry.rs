@@ -5,6 +5,7 @@
 
 pub mod client;
 pub mod master_anchor;
+pub mod revocation;
 pub mod types;
 
 #[cfg(test)]
@@ -27,6 +28,7 @@ pub(crate) use pkarr::{
         rdata::{RData, TXT},
     },
 };
+pub use revocation::chain_edges_not_revoked;
 #[cfg(test)]
 pub(crate) use syneroym_identity::substrate;
 pub use types::*;

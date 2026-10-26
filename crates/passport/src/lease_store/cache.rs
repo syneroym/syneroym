@@ -35,6 +35,21 @@ impl Cache {
         leases.len()
     }
 
+    /// Remove the lease of `subject` under `id`. `true` when there was one.
+    pub(super) fn remove(&mut self, id: &PassportId, subject: &str) -> bool {
+        let Some(leases) = self.by_passport.get_mut(id) else {
+            return false;
+        };
+        let removed = leases.remove(subject).is_some();
+        if leases.is_empty() {
+            self.by_passport.remove(id);
+        }
+        if removed {
+            self.unlink(subject, id);
+        }
+        removed
+    }
+
     /// Remove every lease that has ended at `now_secs`.
     pub(super) fn prune(&mut self, now_secs: u64) {
         let mut ended = Vec::new();

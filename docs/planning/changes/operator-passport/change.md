@@ -273,6 +273,7 @@ Differences from the slice plan:
 - `restart_in_place` shared test helper in `tests/common/node.rs` reboots a test node in place, preserving its allocated ports and directory state.
 - Atomic write temporary file naming convention `<file>.tmp` in `write_file_atomic` (`crates/substrate/src/runtime/home_relay.rs`).
 - CA certificate PEM validation test build in `from_request` (`reqwest::Certificate::from_pem`).
+- `D-C8-*` in the [service-mailbox change](../service-mailbox/change.md): the mailbox use of the passport (`mailbox/use`), including the 4 s revocation limit, `mailbox-passport-deny` and `-leases`, and `roymctl mailbox passport`.
 
 ## Close-out
 

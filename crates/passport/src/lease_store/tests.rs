@@ -285,3 +285,42 @@ fn a_failed_deny_leaves_memory_unchanged() {
     assert!(!store.is_denied(&id(1)));
     assert!(store.is_admitted(&s, NOW));
 }
+
+#[test]
+fn limit_reads_whole_numbers_only() {
+    let mut granted = lease(1, "did:key:hs", NOW, NOW + 100);
+    granted.limits =
+        limits(&[("max_bytes", json!(5)), ("max_messages", json!("many")), ("x", json!(-1))]);
+    assert_eq!(granted.limit("max_bytes"), Some(5));
+    assert_eq!(granted.limit("max_messages"), None, "a string reads as absent");
+    assert_eq!(granted.limit("x"), None, "a negative number reads as absent");
+    assert_eq!(granted.limit("missing"), None);
+}
+
+#[test]
+fn end_lease_ends_one_subject_under_one_passport_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LeaseStore::open(dir.path(), DB, &MAILBOX_USE, NOW).unwrap();
+    let (a, b) = (new_did(), new_did());
+    store.grant(lease(1, &a, NOW, NOW + 100), None, NOW).unwrap();
+    store.grant(lease(1, &b, NOW, NOW + 100), None, NOW).unwrap();
+    store.grant(lease(2, &a, NOW + 1, NOW + 100), None, NOW + 1).unwrap();
+
+    assert!(store.end_lease(&id(2), &a).unwrap());
+    assert_eq!(
+        store.lease_for(&a, NOW + 2).unwrap().passport_id,
+        id(1),
+        "the other passport stays"
+    );
+    assert!(store.is_admitted(&b, NOW + 2));
+    assert!(!store.end_lease(&id(2), &a).unwrap(), "nothing left to end");
+    assert!(!store.is_denied(&id(2)), "the passport is not denied");
+
+    // The end is stored: it holds after a restart.
+    drop(store);
+    let store = LeaseStore::open(dir.path(), DB, &MAILBOX_USE, NOW + 3).unwrap();
+    assert_eq!(store.lease_for(&a, NOW + 3).unwrap().passport_id, id(1));
+    assert!(store.end_lease(&id(1), &a).unwrap());
+    assert!(store.lease_for(&a, NOW + 3).is_none());
+    assert!(store.is_admitted(&b, NOW + 3));
+}

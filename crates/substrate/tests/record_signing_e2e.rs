@@ -45,6 +45,7 @@ async fn record_signing_e2e_service_and_delegated_flow() {
                 record,
                 mailbox_key: None,
                 mailbox_methods: Vec::new(),
+                mailbox_child_token: None,
             },
             None,
         )

@@ -70,6 +70,10 @@ pub(crate) struct CountingMailbox {
     register_ttl: Mutex<Option<u64>>,
     /// Replaces the results of every ack answer.
     ack_results: Mutex<Option<Vec<AckOutcome>>>,
+    /// For each `register`, whether it carried a child token.
+    register_tokens: Mutex<Vec<bool>>,
+    /// A `register` that carries a child token fails with this code.
+    fail_token_register: Mutex<Option<(i32, Option<Value>)>>,
 }
 
 /// The two ends of a held call.
@@ -91,6 +95,8 @@ impl CountingMailbox {
             claim_clock_shift_secs: Mutex::new(0),
             register_ttl: Mutex::new(None),
             ack_results: Mutex::new(None),
+            register_tokens: Mutex::new(Vec::new()),
+            fail_token_register: Mutex::new(None),
         }
     }
 
@@ -121,6 +127,16 @@ impl CountingMailbox {
     /// Every register answer says the queue's lifetime is `secs`.
     pub(crate) fn answer_register_ttl(&self, secs: u64) {
         *self.register_ttl.lock().unwrap() = Some(secs);
+    }
+
+    /// Every `register` that carries a child token fails with `code`.
+    pub(crate) fn fail_registers_with_token(&self, code: i32, data: Option<Value>) {
+        *self.fail_token_register.lock().unwrap() = Some((code, data));
+    }
+
+    /// For each `register` so far, whether it carried a child token.
+    pub(crate) fn register_tokens(&self) -> Vec<bool> {
+        self.register_tokens.lock().unwrap().clone()
     }
 
     /// Every ack answer says `results`, whatever the mailbox did.
@@ -166,6 +182,14 @@ impl CountingMailbox {
 impl NativeService for CountingMailbox {
     async fn dispatch(&self, invocation: NativeInvocation) -> RpcResult<NativeResponse> {
         self.methods.lock().unwrap().push(invocation.method.clone());
+        if invocation.method == "register" {
+            let carried = invocation.params.get("child_token").is_some_and(|t| !t.is_null());
+            self.register_tokens.lock().unwrap().push(carried);
+            if carried && let Some((code, data)) = self.fail_token_register.lock().unwrap().clone()
+            {
+                return Err(RpcError::Custom(code, "refused".to_string(), data));
+            }
+        }
         let held = {
             let mut hold = self.hold.lock().unwrap();
             if hold.as_ref().is_some_and(|h| h.method == invocation.method) {

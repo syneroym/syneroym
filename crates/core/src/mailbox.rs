@@ -6,7 +6,7 @@
 //! different versions.
 
 use serde::{Deserialize, Serialize};
-use syneroym_mailbox_format::{DepositId, Receipt, SealedBytes};
+use syneroym_mailbox_format::{DEDICATED_MAX_TTL_SECS, DepositId, Receipt, SealedBytes};
 
 use crate::{
     dht_registry::SignedEndpointInfo,
@@ -29,6 +29,11 @@ pub const METHOD_STATUS: &str = "status";
 /// direct and by deposit. The receiver fence for such a service lasts at
 /// least this long, plus the clock skew allowance.
 pub const MAILBOX_SENDER_MAX_AGE_SECS: u64 = 30 * 24 * 3600;
+// The receiver fence window must not grow with a passport.
+const _: () = assert!(DEDICATED_MAX_TTL_SECS <= MAILBOX_SENDER_MAX_AGE_SECS);
+
+/// Largest accepted child token, the same bound as a relay registration.
+pub const MAX_CHILD_TOKEN_BYTES: usize = 16 * 1024;
 
 /// A message claimed this many times without an ack is closed.
 pub const MAX_CLAIMS: u32 = 5;
@@ -123,6 +128,9 @@ pub mod codes {
     pub const UNAUTHENTICATED: i32 = -32049;
     /// Also carries `data.max_ttl_secs`, the limit of the queue.
     pub const TTL_TOO_LONG: i32 = -32050;
+    /// The child token of `register` was refused. `data.code` is the
+    /// passport refusal code (`expired`, `denied`, `limit_reached`, ...).
+    pub const PASSPORT_REFUSED: i32 = -32051;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +156,11 @@ pub struct InfoAnswer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterParams {
     pub record: SignedEndpointInfo,
+    /// The owner's child token for this member master (JSON of a capability
+    /// token whose one proof is the mailbox passport). Raises the queue's
+    /// limits by the passport's facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -533,3 +533,38 @@ fn a_members_mailbox_methods_are_mapped_with_its_key() {
     assert_eq!(credentials.methods, ["greeter#greet", "api#invoke"]);
     assert!(wit_plan.services[1].manifest.mailbox.is_none());
 }
+
+/// The child token travels with the key of the member that has one, and
+/// only there.
+#[test]
+fn a_members_child_token_is_mapped_with_its_key() {
+    let plan = plan_with_a_dependency();
+    let mut members = CertifiedMembers::default();
+    for svc in &plan.services {
+        members.mailbox_keys.insert(svc.service_id.clone(), MailboxSecretKey::generate().unwrap());
+    }
+    members
+        .mailbox_child_tokens
+        .insert(plan.services[0].service_id.clone(), "child-token-json".to_string());
+
+    let wit_plan = map_all(&plan, &members, true).unwrap();
+
+    let credentials = |i: usize| wit_plan.services[i].manifest.mailbox.clone().unwrap();
+    assert_eq!(credentials(0).child_token.as_deref(), Some("child-token-json"));
+    assert_eq!(credentials(1).child_token, None);
+}
+
+/// A child token with no key is not sent: the key decides whether the
+/// member has a mailbox at all.
+#[test]
+fn a_child_token_without_a_key_is_not_mapped() {
+    let plan = plan_with_a_dependency();
+    let mut members = CertifiedMembers::default();
+    members
+        .mailbox_child_tokens
+        .insert(plan.services[0].service_id.clone(), "child-token-json".to_string());
+
+    let wit_plan = map_all(&plan, &members, true).unwrap();
+
+    assert!(wit_plan.services[0].manifest.mailbox.is_none());
+}
