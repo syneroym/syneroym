@@ -19,14 +19,14 @@ One fixed deal core for every deal: agreements made of commitments, with signed 
 
 | Slice | Content | Needs |
 | --- | --- | --- |
-| C0 | Agreements module change doc. ADR for deal grants (counterparty access to an extension service). ADR for signed message origins (deniability and the group rule, an owner decision). | — |
+| C0 | Agreements module change doc. ADR for deal grants (counterparty access to an extension service). ADR for signed message origins and the sender's forward mode: `signed` or `not-forwardable` (deniability, the default mode and the group rule). | — |
 | C1 | Commitment model: resource kinds, commitment kinds, states with failure ends, declared values, one currency, `details` block, quote author as single writer. Replaces today's quote and receipt shapes. | C0 |
 | C2 | Selective disclosure on the quote and the receipt (salted field hashes). | C1 |
 | C3 | Reserve, confirm and release hooks, with reservation expiry and owner-side cleanup. Move slots, seat claims and the booking track into the scheduling extension. One-shot extension. | C1 |
 | C4 | Step records and the `step` card. Widget definitions (inline up to a size limit), the `widget` and `widget-answer` cards, the generic renderer, the poll renderer. | C1, M08B labels |
 | C5 | Extension services: event subscription (M08A feed), deal grants. | C0, C4 |
 | C6 | Barter. Event log. Statement export. Hub screens for multi-commitment agreements and the statement. | C1, C2 |
-| C7 | Message forwarding with a signed origin, as the ADR decides. | C0's origin ADR, M08B language tags |
+| C7 | Message forwarding: the sender picks `signed` or `not-forwardable` per message, with a default setting, as the ADR records. | C0's origin ADR, M08B language tags |
 | C8 | Close-out: living docs, change docs `done`. | all |
 
 ## Open before planning
