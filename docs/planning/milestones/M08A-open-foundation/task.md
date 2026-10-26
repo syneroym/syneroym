@@ -72,7 +72,7 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 ### A6 — Remote clients (S)
 
 - Default bind `127.0.0.1`. A remote-access setting that names the bind address. `local` login checks the TCP socket peer address (never a forwarding header), refuses non-loopback peers with an error that names `delegated-key`, and is off completely when remote access is on. The Hub logs in with `delegated-key` when it is not on the node's machine. The Hub CSP allows the configured auth host.
-- Docker: `deploy/docker-compose.community.yml` maps `7960:7960`, which cannot reach a gateway bound to `127.0.0.1` inside the container. Its config turns remote access on with `0.0.0.0` inside the container, and the host mapping becomes `127.0.0.1:7960:7960`. Update the `Dockerfile` comments and the developer guide's Docker section to match.
+- Docker: `deploy/docker-compose.community.yml` deploys a public community node (all ports published, `/etc/letsencrypt` mounted). A gateway bound to `127.0.0.1` inside the container is unreachable through any mapping. Its config turns remote access on with `0.0.0.0` inside the container, and the mapping stays `7960:7960`; a comment shows `127.0.0.1:7960:7960` for a private node. First confirm with the owner that the community node's gateway must be public. Update the `Dockerfile` comments and the developer guide's Docker section to match.
 - Close the backlog rows for the bind address, the `local` login and the CSP.
 - Criteria: OF-12, OF-13.
 

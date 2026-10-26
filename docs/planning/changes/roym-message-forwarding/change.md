@@ -103,12 +103,13 @@ That loss is the point of the feature where messages spread: it makes the author
 | A. Sign every message | Every message carries a signed origin. | Strong: every forward names its author. | None, in any conversation. |
 | B. The author turns origins on, per conversation | Only messages in conversations where the author turned it on carry a signed origin. A forward of any other message shows "origin not available". | Weak: a person who starts a harmful message leaves it off. | Kept wherever the author left it off. |
 | C. Sign every message, show the origin only inside the conversation by default | Every message carries a signed origin. A forward outside the conversation hides it unless the group allows it. | Medium for honest clients. | **None.** The signed origin is in every message, so a hostile member can still show it. Hiding it stops only honest clients. |
-| D. A members-only check inside the conversation, a signature only where outside forwarding is allowed | Inside a conversation, each message carries a deniable authenticator: a code made with a key that every member shares, so any member can check it, and any member could have made it. It proves the author to the members and to nobody else. A message carries a signed origin (master DID) only in a group that allows forwarding outside, and in a one-to-one chat only when the author turned it on. | Strong where messages spread (groups that allow outside forwarding, broadcasts). None in private chats, which is the intent. | Kept in every conversation that does not allow outside forwarding. Lost, as stated, in those that do. |
+| D. No master-DID origin unless the group allows outside forwarding | Inside a conversation, members see the author from today's per-sender conversation entry signature, as now. Nothing new is added for them. A message carries a signed origin (master DID) only in a group that allows forwarding outside, and in a one-to-one chat only when the author turned it on. | Strong where messages spread (groups that allow outside forwarding, broadcasts). None in private chats, which is the intent. | Unchanged from today in every conversation that does not allow outside forwarding. Lost, as stated, in those that do. |
 
-- **Option D's cost:** two mechanisms instead of one, and the author must know at send time whether the group allows outside forwarding, because the signature cannot be added later. A group that turns the setting on applies it only to messages sent after the change. Inside the conversation, the members-only check replaces the origin for display ("written by X, checked by your device").
-- **Option D's open point:** which shared key to use. The group key the conversation capability already manages is the first candidate. A one-to-one chat needs a key both sides hold. The ADR checks both against the conversation design.
+- **Why not a shared-key code inside the conversation.** An earlier draft of D used a code made with one key that all members share. In a group of three or more, any member could then make a message that checks as "written by A" for the others, so it would prove less than today's per-sender entry signature. A separate key for each pair of members would fix that, but costs much more. D therefore keeps today's entry signature for authorship inside the conversation.
+- **Option D's cost:** the author must know at send time whether the group allows outside forwarding, because the signature cannot be added later. A group that turns the setting on applies it only to messages sent after the change. In those groups every message carries a signed origin, and members are told so when they join.
+- **What D keeps and what it does not.** D adds no new proof in private conversations. It does not make them more deniable than today either: today's entry signature already lets a hostile member try to prove a message, as described above.
 
-**Recommendation: D.** It keeps the deterrence where viral messages start, and it is the only option besides B that keeps private chats deniable against a hostile member. B is simpler, but it lets the author of a harmful message opt out. C is withdrawn as a recommendation: its privacy claim was wrong. The ADR may choose otherwise.
+**Recommendation: D.** It keeps the deterrence where viral messages start, and it is the only option besides B that adds no new proof to private chats. B is simpler, but it lets the author of a harmful message opt out. C is withdrawn as a recommendation: its privacy claim was wrong. The ADR may choose otherwise.
 
 ### Group messages
 
@@ -136,7 +137,7 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 
 ## Tasks
 
-- [ ] ADR: signed message origins, deniability, and the group rule. Owner decision among options A to D. For D, choose the shared key for the members-only check.
+- [ ] ADR: signed message origins, deniability, and the group rule. Owner decision among options A to D.
 - [ ] Write the slice plan (in M08C).
 - [ ] `message-origin` record type, signing at send, verification at receive.
 - [ ] Forward method and Hub action. Display rules FW-3 to FW-5.
