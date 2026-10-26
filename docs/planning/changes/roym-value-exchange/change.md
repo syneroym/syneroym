@@ -18,7 +18,7 @@ Related Milestone 8 changes, which this document relies on:
 - [Roym intent matching](../roym-intent-matching/change.md): in-return terms, hard filters, ranking, standing wants and match notifications.
 - [Roym message forwarding](../roym-message-forwarding/change.md) and [Roym multilingual foundation](../roym-multilingual/change.md).
 
-**Owner decision (2026-10-26): no legal gate.** Roym builds EEP transfer, bundles and listing EEPs for trade with the rest of the EEP work. Legal and tax questions about EEPs belong to the participants and operators. Roym's job is to keep faithful, complete, signed records with the details a statement needs. Features that present EEPs as investments are still left out, as a product choice (see [EEPs and investment](#eeps-and-investment)).
+**Owner decision (2026-10-26): no legal gate.** Roym builds EEP transfer, bundles and listing EEPs for trade. They come in M08H, after discovery and reputation, for user value only (see [Tasks](#tasks)). Legal and tax questions about EEPs belong to the participants and operators. Roym's job is to keep faithful, complete, signed records with the details a statement needs. Features that present EEPs as investments are still left out, as a product choice (see [EEPs and investment](#eeps-and-investment)).
 
 ## Problem
 
@@ -206,7 +206,7 @@ Eight modules. They are separate in data and API, and they work closely together
 | **Agreements** | every participant keeps a copy; the quote author is the writer | enquiries, bids, quotes, agreements, commitments and their states; the participant's own opinions | `transaction`, extended |
 | **Event log and statement** | every participant | the append-only event log; the statement export | inside `transaction` (the module document confirms) |
 | **Obligations** | every participant | EEPs it issued (as the single writer), EEPs it holds, endorsements, refusals, demands, declines | new `obligation` service |
-| **Search client** | every participant | the participant's lists of exchanges and trusted authorities; fan-out, merge and verification of results | the federated query library from [Roym open foundation](../roym-open-foundation/change.md), with the client half of `directory` |
+| **Search client** | every participant | the participant's lists of exchanges and trusted authorities; fan-out, merge and verification of results | the federated query library from [Roym open foundation](../roym-open-foundation/change.md) owns fan-out, merging and duplicate removal; the client half of `directory` keeps only the lists and calls the library |
 | **Reputation** | every participant | the reader's view: gathers evidence and opinions and shows them | client library, new |
 | **Exchange** | a SynOrg that enables it | published intents, search index, forwarded search, published evidence and opinions, aggregates, friend list | new `exchange` service, from the search half of `directory` |
 | **Membership** | a SynOrg that enables it | members, credentials, revocations, member-level moderation | new `membership` service, from the trust half of `directory` |
@@ -387,7 +387,7 @@ The issuer gives a new EEP as a resource. It signs version 1, naming the receive
 
 #### Transfer and reissue
 
-Transfer is built with the rest of the EEP work (M08E), before reputation (M08G). Until reputation exists, a receiver has only the evidence it holds itself and its contacts' word. The Hub says so when a stranger's EEP is offered.
+Transfer is built in M08H, after discovery (M08F) and reputation (M08G). Before then, strangers cannot find each other, and a receiver has no published evidence to judge a stranger's EEP, so transfer would have little use. The order does not reopen the legal decision.
 
 1. The holder signs an **endorsement**: "EEP N, version v, now held by H2". It is the settlement step of a `eep-transfer` commitment.
 2. H2's node sends a **reissue request** to the issuer's `obligation` service: directly, or through the issuer's mailbox when the issuer is offline.
@@ -688,14 +688,15 @@ Milestone 8 is split into sub-milestones, in dependency order. Each has a folder
 - [ ] **M08B, language and structure.** [Roym multilingual foundation](../roym-multilingual/change.md): string catalog, local formats, taxonomy with attributes, language tags, search keys and FTS5, translation hook points.
 - [ ] **M08C, deal core and extensions.** Resource kinds. Commitments with kinds, states (each with a failure end), details and declared values, in one currency. Quote author as the single writer. Reserve and release hooks. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. [Roym extensions](../roym-extensions/change.md), with scheduling and one-shot. [Message forwarding](../roym-message-forwarding/change.md).
 - [ ] **M08D, intents and shop.** Offerings and wants as one intent record in `catalog`, with in-return terms. [Roym shop](../roym-shop/change.md).
-- [ ] **M08E, EEPs.** First: revocations gain `effective_from` and a reason, with the countersign rule after a key compromise, and the mailbox signs its `stored` receipt. Then the `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths: issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements, the restore rule, the per-issuer limit, the stated outstanding total. Then transfer: endorsement, reissue, refusals, idempotency, bundles, two-party swaps, listing EEPs for trade. Work items: a wallet screen in the Hub and card types for EEP records.
+- [ ] **M08E, EEPs between two parties.** First: revocations gain `effective_from` and a reason, with the countersign rule after a key compromise, and the mailbox signs its `stored` receipt. Then the `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths: issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements, the restore rule, the per-issuer limit, the stated outstanding total. Work items: a wallet screen in the Hub and card types for EEP records.
 - [ ] **M08F, discovery and matching.** Wants and bids (Want-Bid) next to offerings and enquiries (List-Search), with one negotiation flow. [Roym intent matching](../roym-intent-matching/change.md). Split the directory into `membership` and `exchange`. Friend exchanges with one-hop forwarding and the v1 merge rule.
 - [ ] **M08G, reputation, evidence and opinions.** An ADR for the disclosure rule first. Evidence records, responses and withdrawals on the exchange, with credential labels. Opinions from both parties: sealed writing, reveal to each other, resolution window, then publish. Feedback that points at an extension step. Contact queries over Conversation, one level. The three-source view.
+- [ ] **M08H, EEP transfer.** Endorsement, reissue, refusals, idempotency, bundles, two-party swaps, listing EEPs for trade. After M08G, so that a receiver can find an issuer's published evidence first.
 - [ ] **Later: analytics and insight extensions.** Exchange aggregates with the minimum group size. Suggestions on the participant's node. Insight extensions (see [Roym extensions](../roym-extensions/change.md)).
 
 **On approval**
 - [ ] Add rows to [deferred-backlog.md](../../deferred-backlog.md) for each non-goal that is postponed: multi-hop forwarding, contact queries beyond one level, index sharding to Milestone 7, the Merkle commitment option, shared EEP pools, investment features for EEPs, policy hooks and the pre-sign hook, reviewer pseudonyms and context keys, more than one currency per agreement, and exchange content rules for opinions.
-- [x] Replace the Milestone 8 row in [roadmap.md](../../roadmap.md) with M08A to M08G (2026-10-26).
+- [x] Replace the Milestone 8 row in [roadmap.md](../../roadmap.md) with M08A to M08H (2026-10-26).
 
 ## Deviations
 
@@ -708,6 +709,6 @@ Before merge, update the living docs so they describe the result, then set `stat
 - `docs/system-architecture.md`: the new and split services. Remove the legal review gate for mutual credit, by the owner decision above.
 - `docs/TERMINOLOGY.md`: the terms in this document.
 - `docs/reputation-design-note.md`: align it with the reputation rules here.
-- `docs/planning/roadmap.md`: the M08A to M08G rows.
+- `docs/planning/roadmap.md`: the M08A to M08H rows.
 
 Record anything postponed in [deferred-backlog.md](../../deferred-backlog.md).

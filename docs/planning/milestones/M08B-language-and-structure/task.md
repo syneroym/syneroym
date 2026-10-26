@@ -56,7 +56,8 @@ It starts after M08A's rename (A1) and typed methods (A2), because it adds field
 ### B4 — Search in every script (L)
 
 - Y5 first (a substrate change in `data_db` and the `data-layer` WIT), then Y4, then the directory switch from `LIKE` to FTS5 over search keys. Conversation search and contact search use the same keys. Names in any script, collation and grouping in the Hub.
-- Criteria: ML-20 to ML-24.
+- Each text field gets two FTS5 indexes over its search keys: trigram for terms of 3 or more characters, and `unicode61` with a 1 and 2 character prefix index for shorter terms.
+- Criteria: ML-20 to ML-24, ML-29.
 
 ### B5 — Translation interface, hook points, agreements (M)
 

@@ -18,6 +18,7 @@ Terms used here:
 - **Relevance score:** an exchange's own number for how well a pair fits. It is never a trust score.
 - **Standing want:** a want that stays open at an exchange until its close time, so that new offerings are matched against it.
 - **Match notification:** a message from an exchange to a participant's node that names a new match.
+- **`inbox`:** a small Roym service on every participant node that receives match notifications from exchanges. It is the only part of matching that other nodes can call on a participant's node.
 
 ## Problem
 
@@ -54,7 +55,8 @@ Today's directory search keeps an ASCII-folded `text` field and filters with SQL
 | IM-1 | An offering carries in-return terms (`accepts`): currency with payment method codes, EEPs (yes or no), and goods or services by category code. A want carries `gives` with the same shape, and an optional budget in one currency. | |
 | IM-2 | A want carries a category, optional required attribute values, an approximate area, a time window and a close time. | |
 | **Hard filters** | | |
-| IM-3 | A want W and an offering O match only when all of these hold: O's category is W's category or under it; O, or one of its variants, has every attribute value W requires; O's service area overlaps W's area, or O is remote; O is active; O's price is within W's budget when both are stated in the same currency, or O is quote-only; and W's `gives` and O's `accepts` share at least one resource kind. | |
+| IM-3 | A want W and an offering O match only when all of these hold: O's category is W's category or under it; O, or one of its variants, has every attribute value W requires; O's service area overlaps W's area, or O is remote; O is active and not withdrawn or expired before W's time window starts; O's price is within W's budget when both are stated in the same currency, or O is quote-only; and W's `gives` and O's `accepts` share at least one resource kind. | |
+| IM-21 | The time filter checks only what the exchange holds: the offering's status and validity dates against the want's window. Whether a slot is free in that window is checked by the offerer's node when it writes a bid or a quote (the scheduling extension). The exchange never claims a slot is free. | |
 | IM-4 | For goods and services in return, the kinds are shared when a category in W's `gives` is the same as, or under, a category in O's `accepts`. | |
 | IM-5 | A pair that fails a hard filter is never returned, whatever its text score. | |
 | **Ranking** | | |
@@ -68,7 +70,7 @@ Today's directory search keeps an ASCII-folded `text` field and filters with SQL
 | IM-12 | An exchange forwards a want once to its friend exchanges. A friend keeps it as a standing want until its close time, and sends matches back to the forwarding exchange, which notifies the wanter. A friend never forwards it on. | |
 | IM-13 | Closing a want, or its close time passing, ends all matching for it at every exchange that holds it. | |
 | **Notifications** | | |
-| IM-14 | A match notification is a call to a wire-reachable `notify` method on the receiver's intent service. It carries the matched intent's signed record and an idempotency key (want id, offering id, offering version). A repeated notification has no new effect. | |
+| IM-14 | A match notification is a call to a wire-reachable `notify` method on the receiver's `inbox` service, a small Roym service that does nothing else. It carries the matched intent's signed record and an idempotency key (want id, offering id, offering version). A repeated notification has no new effect. | |
 | IM-15 | When the receiver is offline, the notification waits in the receiver's mailbox and is delivered when it wakes. Its time-to-live is the shorter of the want's remaining time and the mailbox's maximum. | |
 | IM-16 | The receiver accepts a notification only from an exchange on its own list. Others are refused. | |
 | IM-17 | Each exchange is rate-limited per receiver. A receiver can turn off offerer notifications for each offering. | |
@@ -91,7 +93,7 @@ Today's directory search keeps an ASCII-folded `text` field and filters with SQL
 ```
 
 1. **Hard filters** reuse the shop change's browse query, plus the in-return check. They run in SQL at the exchange.
-2. **Relevance** uses SQLite FTS5 (the multilingual change replaces today's `LIKE` search), plus distance and freshness. Each exchange tunes its own score.
+2. **Relevance** uses SQLite FTS5 (the multilingual change replaces today's `LIKE` search), plus distance and freshness. Each exchange tunes its own score. Query words shorter than 3 characters follow the multilingual change's short-word rule (ML-29), because the trigram index cannot match them.
 3. **Personal ranking** runs on the participant's node, after the federated merge (see the Value Exchange change, principle "the exchange finds, it never decides trust", and VX-48).
 
 ### In-return check
@@ -120,7 +122,9 @@ The cost is bounded: an offering change is matched against the standing wants in
 
 ### Notification delivery
 
-- The receiving method is `notify` on the service that holds intents (today `catalog`). It is wire-reachable, mailbox-eligible (listed in the service's `mailbox_methods`) and returns no data. The service is deployed `public`, because only a public service has a mailbox (mailbox change, `D-C3-4`).
+- The receiving method is `notify` on a new, small Roym service, **`inbox`**. It is wire-reachable, mailbox-eligible (listed in the service's `mailbox_methods`) and returns no data. `inbox` is deployed `public`, because only a public service has a mailbox (mailbox change, `D-C3-4`).
+- **Why not `catalog`.** `catalog` is local-only today (`roym_core::admit::require_internal`). Making it `public` would put its mailbox and a wire path on the network next to the participant's own offering data. `inbox` holds only received notifications. Its one wire method checks the caller and stores the notification. It reads nothing else.
+- **Security notes.** `inbox` adds one network-facing service to every participant node. Its exposure is bounded by: the caller allow-list (the participant's own exchanges, IM-16), a rate limit per exchange (IM-17), the mailbox's own quotas, and a size cap per notification. It holds no keys and calls no other service except to raise the `match` event.
 - The caller's DID comes from the transport, as for every wire call. The receiver checks it against its own list of exchanges.
 - The notification carries the matched intent's signed record, so the receiver can verify it and show it even if the exchange is offline later.
 
@@ -149,7 +153,8 @@ The cost is bounded: an offering change is matched against the standing wants in
 - [ ] In-return terms on offerings and wants (built in M08D with the intent record).
 - [ ] Hard filters and FTS5 relevance at the exchange.
 - [ ] Standing wants, both match directions, forwarding to friends.
-- [ ] `notify` method, mailbox path, exchange allow-list, rate limits, `match` events.
+- [ ] The `inbox` service with its `notify` method, mailbox path, exchange allow-list, rate limits, size cap, `match` events.
+- [ ] The time filter (IM-3, IM-21).
 - [ ] Personal ranking on the participant's node.
 - [ ] Hooks for semantic score and query translation.
 

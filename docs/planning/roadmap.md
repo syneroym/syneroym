@@ -66,16 +66,17 @@ slice is `mise run verify` (see `AGENTS.md`).
 | 2 | M08B | Language and structure: Hub localisation, taxonomy with attributes, language tags, search in every script, translation hook points | planning | [Folder](milestones/M08B-language-and-structure/). |
 | 3 | M08C | Deal core and extensions: commitments, selective disclosure, barter, event log, Roym extensions (scheduling, one-shot), widgets, message forwarding | planning | Outline. [Folder](milestones/M08C-deal-core-and-extensions/). |
 | 4 | M08D | Intents and shop: one intent record (offer or want), images, attributes, variants, storefront, browse query | planning | Outline. [Folder](milestones/M08D-intents-and-shop/). |
-| 5 | M08E | EEPs: issue, redemption, transfer, bundles | planning | Outline. [Folder](milestones/M08E-eeps/). No legal gate (owner decision, 2026-10-26). |
+| 5 | M08E | EEPs between two parties: issue, redemption, decline, set-off, split | planning | Outline. [Folder](milestones/M08E-eeps/). |
 | 6 | M08F | Discovery and matching: membership and exchange split, wants and bids, matching, friend exchanges | planning | Outline. [Folder](milestones/M08F-discovery-and-matching/). Replaces the "federation" part of the old M8 sketch. |
 | 7 | M08G | Reputation: evidence, two-sided opinions, contact queries | planning | Outline. [Folder](milestones/M08G-reputation/). Replaces the "trust" part of the old M8 sketch. |
-| 8 | M9 | AI concierge (M9A agentic foundations, M9B advanced orchestration) | sketched | [Sketch](meta-implementation-plan.md#milestone-9-expansion-track---ai-concierge). Moved ahead of M7. |
-| 9 | M10 | Mobile edge | sketched | [Sketch](meta-implementation-plan.md#milestone-10-expansion-track---mobile-edge). Moved ahead of M7. Builds on the M06D mailbox, which serves sleeping phones. |
+| 8 | M08H | EEP transfer: reissue, bundles, swaps, EEPs listed for trade | planning | Outline. [Folder](milestones/M08H-eep-transfer/). After reputation for user value. No legal gate (owner decision, 2026-10-26). |
+| 9 | M9 | AI concierge (M9A agentic foundations, M9B advanced orchestration) | sketched | [Sketch](meta-implementation-plan.md#milestone-9-expansion-track---ai-concierge). Moved ahead of M7. |
+| 10 | M10 | Mobile edge | sketched | [Sketch](meta-implementation-plan.md#milestone-10-expansion-track---mobile-edge). Moved ahead of M7. Builds on the M06D mailbox, which serves sleeping phones. |
 
-M8 was planned first (2026-10-26). M08A to M08G replace the old
+M8 was planned first (2026-10-26). M08A to M08H replace the old
 [M8 sketch](meta-implementation-plan.md#milestone-8-federation-and-trust). The
 order of M9 and M10 is decided when the first of them is planned. Analytics and
-insight extensions come after M08G (see [deferred-backlog.md](deferred-backlog.md)).
+insight extensions come after M08H (see [deferred-backlog.md](deferred-backlog.md)).
 
 ### Deferred
 

@@ -15,7 +15,9 @@ Terms used here:
 - **Commitment:** one item in an agreement: one party gives one resource to the other. See the Value Exchange change.
 - **Commitment details:** a signed block inside a commitment that holds data defined by an extension (for example the chosen slot).
 - **Widget:** a small interactive item in a chat, such as a poll, a form or a checklist. It is data, never code.
-- **Step record:** a signed record of one work step done through an extension (for example "documents uploaded", "driver arrived").
+- **Step record:** a signed record of one work step done through an extension inside a deal (for example "documents uploaded", "driver arrived"). It always names an agreement.
+- **Widget answer:** a signed record of one person's answer to a widget (for example a vote in a poll). It names the conversation and the widget card. It does not need an agreement, because a widget can be used in any chat.
+- **Reservation:** a hold on a resource (for example a seat in a slot) that the resource owner's node takes while an agreement is being formed. It ends on its own after a short time unless the agreement forms.
 - **Hub:** the Roym web UI. **Client:** any program that uses Roym's methods (see [Roym open foundation](../roym-open-foundation/change.md)).
 
 ## Problem
@@ -29,8 +31,8 @@ The chat has the same limit. The Hub has seven fixed card templates (`crates/roy
 - In scope:
   - The rule that splits the deal core from extensions.
   - Commitment details: a signed, schema-named block in each commitment.
-  - Step records: a generic signed record for extension work steps.
-  - Declarative widgets with semantic metadata, and one generic card type that carries them.
+  - Step records: a generic signed record for extension work steps inside a deal.
+  - Declarative widgets with semantic metadata, one generic card type that carries them, and a separate widget-answer record for answers in any chat.
   - Extension services: an optional service part, which acts on events, and which the counterparty of a deal can call with access scoped to that deal.
   - Reserve and release hooks, so that the deal core can ask an extension to hold a resource (a slot) before an agreement forms.
   - Two first extensions: **scheduling** (today's slots, moved out of the core) and **one-shot** (pay and deliver, with no slot).
@@ -54,20 +56,23 @@ The chat has the same limit. The Hub has seven fixed card templates (`crates/roy
 | --- | --- | --- |
 | **Deal core and details** | | |
 | EX-1 | A commitment carries an optional `details` block: an extension id, a schema id with a version, and data. The block is inside the signed commitment. | |
-| EX-2 | The deal core checks `details` against its schema when the extension is installed on that node. Without the extension, the commitment still verifies and shows its details as labelled plain fields. | |
+| EX-2 | Each party's node checks `details` against its schema before it signs, when it has the extension. A party without the extension sees the details as labelled plain fields marked "not checked on this device", and may still sign. Once the agreement forms, the agreement writer's check is the binding one. A later node that disagrees shows a warning. It never treats the signatures as invalid. | |
 | EX-3 | `details` may also carry free extra fields (label and value text), so a party can add terms that no schema has. | |
 | EX-4 | The deal core's states are the same for every extension. A test runs one agreement with scheduling and one with one-shot and checks that both pass through the same states. | |
 | **Reserve and release** | | |
 | EX-5 | When an agreement is accepted, the deal core calls the reserve hook of each extension named in a commitment. If one reserve fails, the agreement does not form, and every reserve that succeeded is released. | |
 | EX-6 | A reserve is claimed under the resource owner's single-writer fence, also when the owner is not the quote author. This is today's slot rule (`D-C8-2` in the integrated spec), made generic. | |
+| EX-20 | A reservation has an expiry set by the resource owner's node (a first value: 15 minutes). If the owner has not received the formed agreement by then, its node releases the reservation on its own. No other node is needed for this. | |
+| EX-21 | Reserve and release are idempotent, keyed by (agreement id, commitment id). A repeated reserve returns the same reservation. A release of an unknown or already released reservation succeeds and changes nothing. | |
+| EX-22 | A reservation becomes firm only when the resource owner's node receives the formed agreement and confirms it. A confirm after the expiry is refused if the resource was given to someone else, and the agreement writer then marks that commitment failed with a named reason. | |
 | **Step records** | | |
 | EX-7 | An extension step is a signed `step` record. It names the agreement, the commitment, the extension, the step type and its data. Either party can verify it. | |
 | EX-8 | A step record shows in the deal's conversation as one generic card type. A client that does not know the extension shows the step's fields as labelled text. | |
 | EX-9 | An opinion can point at one step record. | |
 | **Widgets** | | |
 | EX-10 | A widget is a declarative definition: a widget type, a semantic tag (for example `poll`, `form`, `checklist`, `location-share`, `document-request`), typed fields, and message ids for its labels. It carries no markup and no script. | |
-| EX-11 | A widget card carries its definition or its content hash. A receiver that does not have the definition gets it from the sender's node by hash, and renders it from field types alone. | |
-| EX-12 | An answer to a widget is a signed step record. A poll shows the count of answers per option to the people in the conversation. | |
+| EX-11 | A widget card carries its definition inline when the definition is up to a size limit (a first value: 8 KB). Only a larger definition travels as a content hash. The receiver then fetches it from the sender's node and keeps it. If the sender is offline and the definition is not cached, the card shows "widget not available yet" and tries again later. The receiver renders a definition from field types alone. | |
+| EX-12 | An answer to a widget is a signed `widget-answer` record. It names the conversation and the widget card, not an agreement. A poll shows the count of answers per option to the people in the conversation. | |
 | EX-13 | Widget labels come from the string catalog (see the [multilingual](../roym-multilingual/change.md) change), so a widget shows in the reader's language. | |
 | **Extension services** | | |
 | EX-14 | An extension may include a service. It ships in the Roym SynApp and is deployed with it. Users see it as part of the extension. | |
@@ -110,6 +115,8 @@ The exact format is set in the M08C plan. Schemas use a small field-type set: te
 
 ### Commitment details
 
+**Which check binds.** A commitment is checked against its schema only where the extension is installed. Two nodes can therefore disagree about one signed record. The rule (EX-2): each party checks before it signs, if it can. After the agreement forms, the agreement writer's check binds the deal. Another node's disagreement is shown as a warning, never as a broken signature.
+
 ```text
 details: {
   extension: "scheduling",
@@ -123,11 +130,15 @@ The block is part of the commitment's signed bytes. Selective disclosure (Value 
 
 ### Step records
 
-A new record type `step`, signed by its author, with: agreement id, commitment id, extension id, step type, data, and an optional pointer to an earlier step. Steps travel as one new generic card type (`step`). This raises the fixed card table from seven types to eight, plus `widget`. It does not create one card type per extension.
+A new record type `step`, signed by its author, with: agreement id, commitment id, extension id, step type, data, and an optional pointer to an earlier step. A step always belongs to a deal.
+
+A second new record type, `widget-answer`, holds an answer to a widget: conversation id, widget card id, the answer data, signed by the person who answers. It needs no deal. A poll in a family chat uses it.
+
+These travel as three new generic card types: `step`, `widget` and `widget-answer`. The fixed card table grows from seven types to ten. It does not grow with each extension.
 
 ### Widgets
 
-A widget card carries a declarative definition. The Hub has one generic widget renderer. It may have a richer renderer for a known semantic tag. For example, it can show a `poll` as bars. Every client can fall back to the plain field view.
+A widget card carries a declarative definition, inline when it is small (EX-11). The sender may be offline when the receiver reads the card, so a fetch by hash is only for large definitions. The Hub has one generic widget renderer. It may have a richer renderer for a known semantic tag. For example, it can show a `poll` as bars. Every client can fall back to the plain field view.
 
 Rejected: an iframe or other sandbox that runs extension UI. It is a large attack surface, and it breaks "any client can render it".
 
@@ -139,7 +150,16 @@ Example: a doctor's `documents` extension. The patient's node uploads reports to
 
 ### Reserve and release hooks
 
-When a party accepts, the agreement writer calls `reserve` on each extension named in a commitment. The resource owner's node runs the claim under its own fence. If any reserve fails, the agreement does not form, and the writer calls `release` on the ones that succeeded. This is the generic form of today's slot claim (VX-10 in the Value Exchange change).
+Today a slot claim is one write under one fence, on one node. With extensions, a reserve can run on several nodes (a barter with a booking on each side), and maybe in a separate extension service. So a crash between "reserved" and "agreement formed" must not leak holds.
+
+1. **Reserve.** When a party accepts, the agreement writer calls `reserve` on each extension named in a commitment, on the resource owner's node. The owner's node takes a **reservation** under its own fence, with an expiry (EX-20). The call is idempotent, keyed by (agreement id, commitment id) (EX-21).
+2. **Form.** When every reserve succeeded, the writer forms the agreement and sends it to each resource owner.
+3. **Confirm.** The owner's node confirms the reservation when it receives the formed agreement. Only then is the resource given for good (EX-22).
+4. **Release.** If any reserve fails, the writer calls `release` on the ones that succeeded. Release is idempotent.
+
+**Who cleans up.** Each resource owner's node cleans up its own reservations. If the writer crashes, or a release is lost, the reservation simply expires. No node depends on another node to free its resources. A confirm that arrives after the expiry succeeds if the resource is still free. Otherwise it is refused, and the writer marks that commitment failed with the reason.
+
+This is the generic form of today's slot claim (VX-10 in the Value Exchange change).
 
 ### Scheduling and one-shot
 
@@ -171,8 +191,8 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - [ ] Manifest format and the extension registry inside Roym.
 - [ ] Commitment `details` in the deal core, and schema checks.
 - [ ] `step` record and card, the generic step view in the Hub.
-- [ ] Widget definition, `widget` card, the generic renderer, the poll renderer.
-- [ ] Reserve and release hooks.
+- [ ] Widget definition (inline up to the size limit), `widget` and `widget-answer` records and cards, the generic renderer, the poll renderer.
+- [ ] Reserve, confirm and release hooks, with expiry, idempotency and owner-side cleanup.
 - [ ] Extension services: event subscription, deal grants.
 - [ ] Move scheduling out of `catalog` and `transaction`. Add one-shot.
 - [ ] The `insight` kind in the manifest only.

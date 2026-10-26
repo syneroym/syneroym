@@ -21,8 +21,8 @@ The directory splits into a membership authority and an exchange. Participants p
 | F0 | Exchange and membership module change doc. | — |
 | F1 | Split `directory` into `membership` and `exchange`. Publishing policy. Standing by remote call with a cache. Client list of trusted authorities. | F0 |
 | F2 | Wants and bids: publish a want, bid, compare bids, revise, accept. Hub screens. | M08D intents, M08C agreements |
-| F3 | Hard filters (browse query plus in-return check) and FTS5 relevance at the exchange. Personal ranking on the node. | F1, M08D browse |
-| F4 | Standing wants, matching in both directions, `notify` with the mailbox, the exchange allow-list, rate limits, `match` events. | F3, M08A feed |
+| F3 | Hard filters (browse query, time window, in-return check) and FTS5 relevance at the exchange. Personal ranking on the node. | F1, M08D browse |
+| F4 | Standing wants, matching in both directions, the `inbox` service (`public`, one wire method `notify`) with the mailbox, the exchange allow-list, rate limits, `match` events. | F3, M08A feed |
 | F5 | Friend exchanges: one-hop forwarding of searches and wants with the federated query library, the v1 merge rule, timeouts. Close-out. | F4, M08A `call-all` |
 
 ## Open before planning

@@ -6,11 +6,12 @@ living-docs-touched:
 
 *Reader: developers who plan and build Milestone 8, and the project owner.*
 
-This change gives every participant a **shop**: a browsable set of their offerings with images, attributes, variants, sections and links. A buyer can browse one shop, or filter offerings from many shops through an exchange, with the same query. Every answer is JSON with stable record links. The Hub renders it as pages. Any other client can render it in its own way.
+This change gives every participant a **shop**: a browsable set of their offerings with images, attributes, variants, sections and links. A buyer can browse one shop, or filter offerings from many shops through a directory (an exchange after M08F), with the same query. Every answer is JSON with stable record links. The Hub renders it as pages. Any other client can render it in its own way.
 
 Terms used here:
 
 - **Participant, offering, want, intent, exchange:** see the [Value Exchange](../roym-value-exchange/change.md) change. An **offering** is today's `listing`. An **intent** is an offering or a want.
+- **Directory:** today's SynOrg search service (`roym_directory`). This change is built in M08D at the directory. In M08F the directory's search half becomes the **exchange**, and everything this document says about the directory moves with it.
 - **Taxonomy:** the shared list of category codes with labels per language (see the [multilingual](../roym-multilingual/change.md) change). This change adds attribute definitions to it.
 - **Attribute:** a typed property of an offering, defined per category. Examples: `fabric = cotton` for clothes, `veg = true` for food, `seats = 4` for a taxi.
 - **Facet:** a count of matching offerings per attribute value, returned with a browse answer so a client can show filters ("Cotton (12)").
@@ -39,8 +40,8 @@ Directory search filters only by category, area, free text, `open_to` and bookin
   - Variants with their own attribute values and price.
   - Collections and featured offerings, in a signed storefront record.
   - Links between offerings (own and other participants').
-  - One **browse query** shape, used on a participant's own node (to browse one shop) and at an exchange (to browse many). It returns results, facets and a cursor.
-  - Wire-reachable, read-only shop methods on a participant's node, so another node can browse a shop with no exchange.
+  - One **browse query** shape, used on a participant's own node (to browse one shop) and at a directory (to browse many). It returns results, facets and a cursor.
+  - Wire-reachable, read-only shop methods on a participant's node, so another node can browse a shop with no directory.
   - Hub pages: shop page, offering page with images, filter side panel.
 - Not in scope:
   - Stock counts, carts, delivery tracking. These are work steps, so they belong in [Roym extensions](../roym-extensions/change.md).
@@ -56,7 +57,7 @@ Directory search filters only by category, area, free text, `open_to` and bookin
 | SH-1 | An owner adds up to a fixed number of images to an offering and to the storefront. Each image is stored in the owner's blob store. The signed record holds its content hash, media type, width, height, and alt text with a language tag. | |
 | SH-2 | The owner's node makes one thumbnail per image, up to a size cap. The thumbnail's hash is in the signed record too. | |
 | SH-3 | A client gets a full image from the owner's node by hash. A changed image byte fails the hash check and is not shown. | |
-| SH-4 | An exchange stores the thumbnails of the offerings published to it, so search results show images when the owner's node is offline. | |
+| SH-4 | A directory stores the thumbnails of the offerings published to it, so search results show images when the owner's node is offline. | |
 | **Attributes and variants** | | |
 | SH-5 | The taxonomy defines attributes per category: a code, a type (choice, number with unit, yes or no, text), allowed value codes for a choice, and labels per language. A child category has its parent's attributes too. | |
 | SH-6 | An offering carries attribute values. A value of a defined attribute is checked against its type. A value of an unknown attribute is allowed, and shown as raw code and text. | |
@@ -68,7 +69,7 @@ Directory search filters only by category, area, free text, `open_to` and bookin
 | **Browse** | | |
 | SH-11 | One browse query shape: category code (with sub-categories), attribute filters, price range in one currency, area, text, intent kind, sort, page size and cursor. | |
 | SH-12 | A participant's node answers the browse query over its own offerings, through a wire-reachable read-only method. It returns only active offerings that the owner has published. | |
-| SH-13 | An exchange answers the same query over the offerings published to it, and returns facets: counts per attribute value and per sub-category for the current filters. | |
+| SH-13 | A directory answers the same query over the offerings published to it, and returns facets: counts per attribute value and per sub-category for the current filters. | |
 | SH-14 | Each result is the signed offering itself (or a projection that names the record and its hash), plus its thumbnail hash and source. The client verifies it as it does today. | |
 | SH-15 | A browse answer is JSON only. The Hub renders it as a shop page and a filtered list. A test drives the same answer through `roymctl` to prove no Hub logic is needed. | |
 
@@ -91,7 +92,7 @@ The multilingual change adds a taxonomy of category codes. This change adds attr
 
 ### Record links
 
-Text form: `roym:<owner-did>/<record-type>/<record-id>`. The exact grammar is set in the plan. A client resolves a link by asking the owner's node (read method), or an exchange that holds the record. The link carries no host or address. Resolution uses the normal discovery path.
+Text form: `roym:<owner-did>/<record-type>/<record-id>`. The exact grammar is set in the plan. A client resolves a link by asking the owner's node (read method), or a directory that holds the record. The link carries no host or address. Resolution uses the normal discovery path.
 
 ### Browse query
 
@@ -109,15 +110,15 @@ page:        { size, cursor }
 The same shape serves:
 
 1. **One shop**, on the owner's node. No facets are needed for a small shop, but the same code returns them.
-2. **Many shops**, at an exchange. The exchange's index adds attribute and price columns to today's projection.
-3. **Many exchanges**, through the federated query library (see [Roym open foundation](../roym-open-foundation/change.md)).
+2. **Many shops**, at a directory. The directory's index adds attribute and price columns to today's projection.
+3. **Many directories**, through the federated query library (see [Roym open foundation](../roym-open-foundation/change.md)).
 
 The [intent matching](../roym-intent-matching/change.md) change uses this query shape as the "hard filter" step.
 
 ## Open questions
 
 - **Price filter across currencies.** Recommendation: a price filter names one currency and skips offerings in other currencies. No conversion.
-- **Exchange storage per offering.** Thumbnails add bytes per offering at each exchange. Set a per-member cap at the exchange.
+- **Directory storage per offering.** Thumbnails add bytes per offering at each directory. Set a per-member cap at the directory.
 - **Who adds attributes to the taxonomy.** The same process as category codes (multilingual change, open question).
 
 ## Tasks
@@ -126,7 +127,7 @@ The [intent matching](../roym-intent-matching/change.md) change uses this query 
 - [ ] `blob-store` for Roym services. Image upload, thumbnail, serve by hash.
 - [ ] Attribute definitions in the taxonomy. Attribute values and variants on offerings.
 - [ ] `storefront` record. Collections, featured, links. Record link grammar.
-- [ ] Browse query on the owner's node (wire-reachable, read-only) and at the directory or exchange, with facets.
+- [ ] Browse query on the owner's node (wire-reachable, read-only) and at the directory, with facets.
 - [ ] Hub: shop page, offering page, filter panel. `roymctl` browse.
 
 ## Deviations
