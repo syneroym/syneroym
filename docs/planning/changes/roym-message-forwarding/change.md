@@ -25,7 +25,7 @@ Terms used here:
 
 This is a Roym feature. The substrate conversation capability does not change.
 
-**This change needs an ADR before it is built.** A signed origin makes a message provable to strangers. That is a real loss of deniability (see [Privacy cost](#privacy-cost)). The owner chose the direction: the sender picks the forward mode, so only messages the sender chose to sign lose deniability. The ADR records this choice, the default mode, and what happens to group messages.
+**This change needs an ADR before it is built.** A signed origin makes a message provable to strangers. That is a real loss of deniability (see [Privacy cost](#privacy-cost)). The owner chose the direction: the sender picks the forward mode, so only messages the sender chose to sign lose deniability. The ADR records this choice and the default mode. The choice is the same in a group as in a one-to-one chat.
 
 ## Problem
 
@@ -64,7 +64,7 @@ Two facts from the code shape the design:
 | FW-8 | Attachments are covered: the content hash includes the hash of each attached blob. | |
 | FW-9 | Forward works the same in a one-to-one chat and in a group, inside the same group. | |
 | FW-10 | Hub settings, and the first message a person sends, say plainly that a `signed` message can be forwarded with the author's name and checked by others, and that a `not-forwardable` message cannot. The first message asks the person to choose the default mode. | |
-| FW-11 | In a group that does not allow outside forwarding, a member can send only `not-forwardable` messages, and the composer says so. Such a message has no signed origin. In a group that allows it, the sender's mode applies to each message. | |
+| FW-11 | In a group, every member chooses the forward mode for each message they send, as in a one-to-one chat. The group owner cannot force or forbid a mode. The composer in a group says that a `signed` message can be shown by any member, to anyone, and forwarded with the author's name. | |
 | FW-12 | A person has a default forward mode in settings. The composer shows the mode that applies to the message and lets the sender change it for that one message. Changing one message does not change the default. | |
 | FW-13 | On a message marked `not-forwardable`, the Hub shows no forward action and says why. If a modified client forwards it anyway, the forward has no origin, and the receiver shows it as the forwarder's own message (as in FW-4). | |
 | FW-14 | The mode is part of the message body, so the sender's conversation entry signature covers it. A forwarder cannot change a `not-forwardable` message to `signed`, or the reverse, without the change being visible as a different message. | |
@@ -135,23 +135,23 @@ That loss is the point of the feature where messages spread: it makes the author
 | B. The author turns origins on, per conversation | Only messages in conversations where the author turned it on carry a signed origin. A forward of any other message shows "origin not available". | Weak: a person who starts a harmful message leaves it off. | Kept wherever the author left it off. |
 | C. Sign every message, show the origin only inside the conversation by default | Every message carries a signed origin. A forward outside the conversation hides it unless the group allows it. | Medium for honest clients. | **None.** The signed origin is in every message, so a hostile member can still show it. Hiding it stops only honest clients. |
 | D. No master-DID origin unless the group allows outside forwarding | Inside a conversation, members see the author from today's per-sender conversation entry signature, as now. Nothing new is added for them. A message carries a signed origin (master DID) only in a group that allows forwarding outside, and in a one-to-one chat only when the author turned it on. | Strong where messages spread (groups that allow outside forwarding, broadcasts). None in private chats, which is the intent. | Unchanged from today in every conversation that does not allow outside forwarding. Lost, as stated, in those that do. |
-| E. The sender picks per message: `signed` or `not-forwardable`, with a default setting | A `signed` message carries a signed origin. A `not-forwardable` message carries none, and honest clients cannot forward it. In a group that does not allow outside forwarding, only `not-forwardable` can be sent. | Strong where it counts: the forward action spreads only messages whose author signed them. A harmful message that is not signed cannot be passed on with the forward action. | Kept for every `not-forwardable` message. Lost for a `signed` one. |
+| E. The sender picks per message: `signed` or `not-forwardable`, with a default setting | A `signed` message carries a signed origin. A `not-forwardable` message carries none, and honest clients cannot forward it. The same in a one-to-one chat and in a group. | Strong where it counts: the forward action spreads only messages whose author signed them. A harmful message that is not signed cannot be passed on with the forward action. | Kept for every `not-forwardable` message. Lost for a `signed` one. |
 
 - **Why not a shared-key code inside the conversation.** An earlier draft of D used a code made with one key that all members share. In a group of three or more, any member could then make a message that checks as "written by A" for the others, so it would prove less than today's per-sender entry signature. A separate key for each pair of members would fix that, but costs much more. D therefore keeps today's entry signature for authorship inside the conversation.
 - **Option D's cost:** the author must know at send time whether the group allows outside forwarding, because the signature cannot be added later. A group that turns the setting on applies it only to messages sent after the change. In those groups every message carries a signed origin, and members are told so when they join.
 - **What D keeps and what it does not.** D adds no new proof in private conversations. It does not make them more deniable than today either: today's entry signature already lets a hostile member try to prove a message, as described above.
 
-**Direction: E**, chosen by the owner. It fixes the weak point of option B: with B, a person who starts a harmful message leaves the origin off and the message still spreads. With E, leaving it off means the forward action is not available. It also takes from D the rule that a group which does not allow outside forwarding never carries a signed origin, so the group rule protects against a hostile member too (see [Group messages](#group-messages)). The difference from D is that the author chooses for each message where outside forwarding is allowed, and in one-to-one chats. The ADR records E, the default mode (see [Open questions](#open-questions)), and the group rule. C is not recommended: its privacy claim was wrong. The ADR may choose otherwise.
+**Direction: E**, chosen by the owner. It fixes the weak point of option B: with B, a person who starts a harmful message leaves the origin off and the message still spreads. With E, leaving it off means the forward action is not available. It also needs no group rule: the author decides for each message, in a group too (see [Group messages](#group-messages)). The difference from D is that D lets the group owner decide whether messages carry an origin, and E lets each author decide. The ADR records E and the default mode (see [Open questions](#open-questions)). C is not recommended: its privacy claim was wrong. The ADR may choose otherwise.
 
 
 ### Group messages
 
-A group sets one rule: **"members may forward messages outside the group with their origin"**, on or off. The group owner sets it. The default is off for a private group.
+A group has no rule about forwarding. Every member chooses the forward mode for each message they send, with their own default, as in a one-to-one chat (FW-11). A group owner cannot force a member to sign, and cannot stop a member from signing.
 
-- **Off:** members can send only `not-forwardable` messages in the group, and the composer says so. No signed origin exists in those messages, so a hostile member has none to show. This is what protects the group (FW-11).
-- **On:** members see the rule when they join, and the sender's mode applies to each message: the person's default, or the choice made for that message. A `signed` message can then be forwarded outside the group with its origin.
-- **A change applies only to later messages.** The author must know at send time whether the group allows it, because a signature cannot be added later.
-- **Why the rule must stop signing, not only hide the origin.** A signed origin in the body is held by every member. Hiding it on forward stops only honest clients (see [Privacy cost](#privacy-cost)).
+- **A forward inside the group** works as in a one-to-one chat (FW-9).
+- **A forward outside the group** carries the origin of a `signed` message. The author chose that, so the group does not limit it.
+- **What the sender must know.** A `signed` message in a group is held, with its signed origin, by every member. Any member can show it to anyone, even if the member's client does not offer forward. So the composer in a group says this next to the mode (FW-11). A person who wants no proof of a message sends it as `not-forwardable`.
+- **Members and the default.** A person's default mode applies in every group and chat. Per-group defaults are an open question.
 
 ### Why the author signs at send time
 
@@ -173,19 +173,19 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 
 - **The shipped default mode.** Recommendation: `not-forwardable`. It keeps today's deniability for every message the person does not think about, and choosing `signed` is a clear act of the author. The first message asks the person to choose (FW-10), so the shipped default matters only for people who skip the question. The owner confirms in the ADR.
 - **A default per conversation.** One default for the person is the first version. A default per conversation or per group may be wanted later. It is not planned now.
-- **Group rule off and a one-to-one chat.** In a group with the rule off, members can only send `not-forwardable` messages. A one-to-one chat has no such rule, so the sender's mode is free there. The ADR confirms that a person may sign in a one-to-one chat.
+- **A group owner's limit.** There is none now: members choose in every group. A group owner may want to forbid `signed` messages in a private group, as in option D. That would be a later addition, and it needs its own decision.
 - **Size.** An origin record with its delegation certificate may be 1 KB or more. Measure it. If it is too large, carry the certificate once per conversation and a reference in each origin.
 - **Display name.** Show the author's name from the reader's contacts, from the author's signed profile if the forward carries it, or the DID only. Recommendation: contact name if known, otherwise a short DID with "not in your contacts".
 
 ## Tasks
 
-- [ ] ADR: signed message origins and the sender's forward mode (option E), the default mode, deniability, and the group rule.
+- [ ] ADR: signed message origins and the sender's forward mode (option E), the default mode and deniability.
 - [ ] Write the slice plan (in M08C).
 - [ ] `forward_mode` field in the message body, the default-mode setting, and the composer control.
 - [ ] `message-origin` record type, signing at send for `signed` messages, verification at receive.
 - [ ] Forward method and Hub action, refusing `not-forwardable` messages. Display rules FW-3 to FW-5, FW-13.
 - [ ] Forward of signed records as themselves.
-- [ ] The group setting and FW-11. Settings and first-message text (FW-10). Update the integrated spec's privacy section at close-out.
+- [ ] The group composer notice (FW-11). Settings and first-message text (FW-10). Update the integrated spec's privacy section at close-out.
 
 ## Deviations
 
