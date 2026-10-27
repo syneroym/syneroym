@@ -393,8 +393,8 @@ echo "--- S2 services";      rc2 svc list
 echo "--- clock";            date -u
 ```
 
-**Expect:** registry answers, S1 health says healthy, both `svc list` calls return an
-empty list, and the Mac clock is correct (certificates and sessions use it).
+**Expect:** registry answers, S1 health says healthy, both `svc list` calls list only the
+built-in services (`auth` and the two node services, all type `native`), and the Mac clock is correct (certificates and sessions use it).
 
 Then:
 
@@ -412,13 +412,14 @@ identity. No public IP, no port forwarding, no hosting account.*
 
 Time: 12 minutes. Needs: [Preparation](#1-preparation) done.
 
-### 2.1 Show the empty nodes
+### 2.1 Show the nodes with nothing deployed
 
 ```bash
 rc1 svc list
 rc2 svc list
 ```
 
+**Expect:** each list shows only the built-in `native` services: no `wasm` service yet.
 **Say:** "Two nodes on this laptop. One public coordinator on the cloud. Nothing deployed yet."
 
 ### 2.2 Deploy a small service on S1
@@ -528,7 +529,7 @@ link. It is a good toggle if the audience asks what the relay does.
 Optional, for the cross-node point: open `http://<WEB_HOST>:$S2_GW/` (Path B host
 name, S2's port) in window B instead. The app still runs on S1.
 
-> **Rehearse:** WebSocket and SSE through the S2 gateway to a service on S1.
+> **Rehearse:** SSE through the S2 gateway to a service on S1. (The page and the WebSocket were checked on one machine, over loopback.)
 
 **Main story done.** Next: any feature story, or [Roym](#4-roym).
 

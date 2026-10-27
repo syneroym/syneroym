@@ -195,10 +195,10 @@ Phase 0 results (warm build cache, Apple silicon laptop):
 
 | Question | Result |
 | --- | --- |
-| Does S2 need its own registry role? | No. S2 booted with S1's registry and coordinator and its record appeared in S1's registry. The call through S2 is checked in Phase 1. |
+| Does S2 need its own registry role? | No. S2 booted with S1's registry and coordinator, and the JSON-RPC call to the greeter through S2 returns a result. |
 | Do the two Hubs keep separate sessions? | Yes. One tab went Alice's Hub, Bob's Hub, Alice's Hub, Bob's Hub, with a reload each time. Each Hub still showed its own signed-in DID, and the two DIDs differ. |
 | Does the demo run in `npm test`? | Yes, for now. `demo:up` takes 23 s (build steps, claim, two node starts, KEK). Roym deploy on both nodes takes 6 s. A full run is expected well under three minutes. Re-measure when Phase 2 is done and revert to a separate CI step if the demo adds more than three minutes. |
-| Optional: web app through S2's gateway in a browser? | Not tried yet. Phase 1. |
+| Optional: web app through S2's gateway in a browser? | Yes. The page loads through both gateways (S1 and S2) and its WebSocket connects. SSE was not checked. |
 
 ## Tasks
 
@@ -210,10 +210,10 @@ Phase 0 results (warm build cache, Apple silicon laptop):
   - [x] Check each decision above. Use the fallback where a check fails.
   - [x] Measure the boot time. Record whether the demo joins `npm test`.
 - [ ] Phase 1, pilot 1: substrate main story
-  - [ ] `demo/lib.sh` and the shell-story runner spec. Add `greeter` to the build step.
-  - [ ] Scripts for the main story (runbook section 2). Fix the runbook where it was wrong.
-  - [ ] Browser step: open the web app and show a live update in a second session.
-  - [ ] `mise` tasks `demo`, `demo:up`, `demo:down`.
+  - [x] `demo/lib.sh` and the shell-story runner spec. Add `greeter` to the build step.
+  - [x] Scripts for the main story (runbook section 2). Fix the runbook where it was wrong.
+  - [x] Browser step: open the web app and show a live update in a second session.
+  - [x] `mise` tasks `demo`, `demo:up`, `demo:down`.
 - [ ] Phase 2, pilot 2: Roym chat story
   - [ ] Roym deploy, session keys and conversation addresses as a shell step.
   - [ ] `caption` and `step` helpers. Add the file parameter to `loginWithDelegatedKey`. Add the shared Hub steps to `hub-helpers.ts`.
@@ -231,6 +231,9 @@ Phase 0 results (warm build cache, Apple silicon laptop):
 - `demo:up` and `demo:down` run as TypeScript through `tsx`, a new dev dependency of the e2e package. The plan did not say how the detached nodes would be started from outside Playwright.
 - Added `demo/00-harness-check.spec.ts`, a small spec that proves both nodes answer. `mise run demo` needs at least one spec until the first story exists.
 - The main suite now writes `ports.json` after the node starts, not before the builds, because the library allocates the node's ports. Nothing reads it earlier.
+- `demo/steps.ts` (with `caption` and `step`) was built in Phase 1, not Phase 2, because the main story's browser part needs captions too. It also has `newSession`, because Playwright records video only for the built-in `page`, and a second browser context must ask for it.
+- The main story spec runs the shell script as its own test, then the browser steps as a second test, in serial mode.
+- `demo/00-harness-check.spec.ts` is removed. The first story replaces it.
 - The multihop setup waits for the coordinators' bootstrap pages instead of a fixed 4 s sleep after starting `c` and `cp`.
 
 ## Close-out
