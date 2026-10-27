@@ -191,6 +191,15 @@ These choices are made now so that Phase 0 can start. Phase 0 checks each one. I
 | Does the demo run in `npm test`? | Decided by the measured boot time. | See "Does a demo run in `mise run verify`?". |
 | Optional: can the browser open the web app through S2's gateway? | Not needed for the pilot. | Keep the JSON-RPC call through S2. |
 
+Phase 0 results (warm build cache, Apple silicon laptop):
+
+| Question | Result |
+| --- | --- |
+| Does S2 need its own registry role? | No. S2 booted with S1's registry and coordinator and its record appeared in S1's registry. The call through S2 is checked in Phase 1. |
+| Do the two Hubs keep separate sessions? | Yes. One tab went Alice's Hub, Bob's Hub, Alice's Hub, Bob's Hub, with a reload each time. Each Hub still showed its own signed-in DID, and the two DIDs differ. |
+| Does the demo run in `npm test`? | Yes, for now. `demo:up` takes 23 s (build steps, claim, two node starts, KEK). Roym deploy on both nodes takes 6 s. A full run is expected well under three minutes. Re-measure when Phase 2 is done and revert to a separate CI step if the demo adds more than three minutes. |
+| Optional: web app through S2's gateway in a browser? | Not tried yet. Phase 1. |
+
 ## Tasks
 
 - [ ] Phase 0, shared boot library and harness
@@ -198,8 +207,8 @@ These choices are made now so that Phase 0 can start. Phase 0 checks each one. I
   - [x] `playwright-demo.config.ts`, demo setup and teardown, env file, git-ignored `demo-output/`, `demo:up` and `demo:down`.
   - [x] Convert `global-setup-multihop.ts` to the library, or record a deviation and add a deferred-backlog row.
   - [x] Attach mode (`DEMO_ATTACH=1`) in the demo setup and teardown.
-  - [ ] Check each decision above. Use the fallback where a check fails.
-  - [ ] Measure the boot time. Record whether the demo joins `npm test`.
+  - [x] Check each decision above. Use the fallback where a check fails.
+  - [x] Measure the boot time. Record whether the demo joins `npm test`.
 - [ ] Phase 1, pilot 1: substrate main story
   - [ ] `demo/lib.sh` and the shell-story runner spec. Add `greeter` to the build step.
   - [ ] Scripts for the main story (runbook section 2). Fix the runbook where it was wrong.
@@ -219,7 +228,10 @@ These choices are made now so that Phase 0 can start. Phase 0 checks each one. I
 
 ## Deviations
 
-None yet.
+- `demo:up` and `demo:down` run as TypeScript through `tsx`, a new dev dependency of the e2e package. The plan did not say how the detached nodes would be started from outside Playwright.
+- Added `demo/00-harness-check.spec.ts`, a small spec that proves both nodes answer. `mise run demo` needs at least one spec until the first story exists.
+- The main suite now writes `ports.json` after the node starts, not before the builds, because the library allocates the node's ports. Nothing reads it earlier.
+- The multihop setup waits for the coordinators' bootstrap pages instead of a fixed 4 s sleep after starting `c` and `cp`.
 
 ## Close-out
 
