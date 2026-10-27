@@ -23,7 +23,7 @@
 //! | `f32`/`f64` | number (non-finite ⇒ **hard error**, never `null`) |
 //! | `char` | one-scalar string |
 //! | `string` | string |
-//! | `list<T>` / `tuple<…>` | array |
+//! | `list<T>` / `list<T, N>` / `tuple<…>` | array (`list<T, N>` must have exactly `N` elements) |
 //! | `record` | object keyed by WIT field name (kebab-case, verbatim) |
 //! | `variant` | `{"tag": name[, "val": payload]}` |
 //! | `enum` | string (case name) |
@@ -70,6 +70,10 @@
 //! parameter binding (`json_to_wasm_params`) and any WIT `record` both treat
 //! a JSON object as exactly that.
 //!
+//! The fixed-length `list<T, N>` is in the same position: it needs the
+//! unstable `wasm_component_model_fixed_length_lists` engine feature, which is
+//! not enabled, so its arms are complete but not reachable today.
+//!
 //! `resource`/`future`/`stream`/`error-context` values never actually reach
 //! this converter. WIT `resource` is used in this codebase (the guest-side
 //! streaming protocol in `syneroym:messaging/stream-types`, ADR-0014), but
@@ -87,7 +91,10 @@ use anyhow::Result;
 use serde_json::{Map, Number, Value};
 use wasmtime::component::{
     Val,
-    types::{self, Enum, Flags, List, OptionType, Record, ResultType, Tuple, Type, Variant},
+    types::{
+        self, Enum, FixedLengthList, Flags, List, OptionType, Record, ResultType, Tuple, Type,
+        Variant,
+    },
 };
 
 /// Convert a wasmtime component [`Val`] to a JSON [`Value`].
@@ -110,7 +117,7 @@ pub fn val_to_json(val: &Val) -> Result<Value> {
         Val::Float64(f) => float_to_json(*f, "float64")?,
         Val::Char(c) => Value::String(c.to_string()),
         Val::String(s) => Value::String(s.clone()),
-        Val::List(items) | Val::Tuple(items) => {
+        Val::List(items) | Val::FixedLengthList(items) | Val::Tuple(items) => {
             Value::Array(items.iter().map(val_to_json).collect::<Result<_>>()?)
         }
         Val::Record(fields) => {
@@ -178,6 +185,7 @@ pub fn json_to_val(json: &Value, ty: &Type) -> Result<Val> {
             Val::String(json.as_str().ok_or_else(|| type_error("string", json))?.to_string())
         }
         Type::List(list) => decode_list(json, list)?,
+        Type::FixedLengthList(list) => decode_fixed_length_list(json, list)?,
         Type::Tuple(tuple) => decode_tuple(json, tuple)?,
         Type::Record(record) => decode_record(json, record)?,
         Type::Variant(variant) => decode_variant(json, variant)?,
@@ -229,6 +237,19 @@ fn decode_list(json: &Value, list: &List) -> Result<Val> {
     let arr = json.as_array().ok_or_else(|| type_error("list", json))?;
     let elem_ty = list.ty();
     Ok(Val::List(arr.iter().map(|v| json_to_val(v, &elem_ty)).collect::<Result<_>>()?))
+}
+
+fn decode_fixed_length_list(json: &Value, list: &FixedLengthList) -> Result<Val> {
+    let arr = json.as_array().ok_or_else(|| type_error("fixed-length list", json))?;
+    let expected = list.len() as usize;
+    if arr.len() != expected {
+        return Err(anyhow::anyhow!(
+            "fixed-length list expects {expected} elements, got {}",
+            arr.len()
+        ));
+    }
+    let elem_ty = list.ty();
+    Ok(Val::FixedLengthList(arr.iter().map(|v| json_to_val(v, &elem_ty)).collect::<Result<_>>()?))
 }
 
 fn decode_tuple(json: &Value, tuple: &Tuple) -> Result<Val> {

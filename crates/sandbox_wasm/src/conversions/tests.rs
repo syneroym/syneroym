@@ -117,6 +117,12 @@ fn val_to_json_map_object_vs_pairs() {
     assert_eq!(val_to_json(&int_keyed).unwrap(), json!([[1, "a"]]));
 }
 
+#[test]
+fn val_to_json_fixed_length_list_is_array() {
+    let list = Val::FixedLengthList(vec![Val::U8(1), Val::U8(2), Val::U8(3)]);
+    assert_eq!(val_to_json(&list).unwrap(), json!([1, 2, 3]));
+}
+
 // ------------------------------------------------------------------
 // json_to_val round-trip for flat (memory-free) types, via a hand-written
 // component-model WAT fixture. `Type` values can only come from a real
