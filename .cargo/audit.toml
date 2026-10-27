@@ -1,95 +1,66 @@
+# Reader: developer. Every entry here hides an advisory from `cargo audit`.
+# Each group names the crate that pulls the vulnerable code in, why it cannot
+# move yet, and the condition for deleting the entries. When that condition
+# is met, delete the entries; do not move them. Check this list against a
+# run that ignores nothing:
+#   cargo audit -f Cargo.lock   (run from a directory with no .cargo/audit.toml)
+
 [advisories]
 ignore = [
-    # atomic-polyfill is unmaintained, but deeply integrated in iroh-relay 0.97.0
-    # Can be removed once iroh-relay drops or replaces the dependency.
+    # --- iroh 0.97 (a pre-1.0 release line, no longer supported upstream) ---
+    # All of these leave with the iroh 1.x upgrade; re-check each one then.
+    #
+    # atomic-polyfill 1.0.3 is unmaintained. It comes from heapless 0.7, which
+    # postcard's `heapless-cas` feature pulls in; iroh-relay and iroh-metrics
+    # enable that feature.
     "RUSTSEC-2023-0089",
-    # paste - no longer maintained, but deeply integrated in iroh-relay 0.97.0
+    # paste 1.0.15 is unmaintained. It is a proc-macro used by
+    # netlink-packet-core, through netdev and netwatch, which iroh uses.
     "RUSTSEC-2024-0436",
-    # hickory-proto - used by iroh 0.97.0. No fixed upgrade is available yet
+    # hickory-proto 0.25.2: unbounded loop in NSEC3 validation (0118) and
+    # O(n^2) name compression when encoding (0119). Through hickory-resolver,
+    # which iroh 0.97 uses for DNS address lookup.
     "RUSTSEC-2026-0118",
     "RUSTSEC-2026-0119",
-    # bincode is unmaintained, but 1.3.3 is a complete version that does not need any updates
-    "RUSTSEC-2025-0141",
-
-    # New vulnerability in quinn-proto on June 22. No fix yet
-    "RUSTSEC-2026-0185",
-
-    # quick-xml (used by plist). Used by iroh 0.97.0. No fixed version of plist is available on crates yet.
+    # lru 0.16.4: use-after-free if a panic happens inside
+    # `LruCache::pop`-family calls. Through iroh-relay 0.97.
+    "RUSTSEC-2026-0253",
+    # quick-xml 0.39.4: quadratic duplicate-attribute check (0194) and
+    # unbounded namespace allocation (0195). Only through object_store 0.13's
+    # `aws` feature, which syneroym-data-blob leaves off by default (it is on
+    # only under `--all-features`). object_store is held at 0.13 because 0.14
+    # needs stable digest 0.11, which conflicts with iroh 0.97's pre-release
+    # crypto pins (see the root Cargo.toml).
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 
-    # lru panic-safety issue, fixed in 0.18.2. Pulled in transitively via
-    # pkarr 6.0.1 / mainline 6.2.0 / iroh-relay 0.97.0, all of which need a
-    # major-version bump to pick up the fix. Revisit with the iroh upgrade.
-    "RUSTSEC-2026-0253",
-
-    # wasmtime / wasmtime-wasi 46.0.3 (advisories published 2026-09-29): a guest
-    # component can allocate past the hostcall fuel limit (0316) or panic the
-    # host through a filesystem datetime overflow (0314). Fixed only in
-    # wasmtime 48.0.3 / 49.0.1, so clearing them is a three-major-version
-    # upgrade of the sandbox engine, too large to fold into unrelated work.
-    # Revisit with a dedicated wasmtime upgrade; remove both entries then.
-    "RUSTSEC-2026-0316",
-    "RUSTSEC-2026-0314",
-
-    # Five more wasmtime / wasmtime-wasi 46.0.3 advisories (published
-    # 2026-10-02): an async-lifted callback result count that is not checked
-    # (0327), uninitialised padding copied by fd_readdir (0323), host memory
-    # use for guests without stdio (0322), poll_oneoff skipping fuel (0321),
-    # and a host panic from a pre-epoch timestamp on wasip3 (0324). Fixed in
-    # wasmtime 48.0.4 / 49.0.2, so the same dedicated wasmtime upgrade
-    # clears them. Remove these entries with the two above.
-    "RUSTSEC-2026-0327",
-    "RUSTSEC-2026-0323",
-    "RUSTSEC-2026-0322",
-    "RUSTSEC-2026-0321",
-    "RUSTSEC-2026-0324",
-
-    # Eleven more wasmtime / wasmtime-wasi 46.0.3 advisories (published
-    # 2026-10-14). Host panics from component-model edge cases: erroneous
-    # call-to-host from guest realloc (0356), async-lifted call (0353),
-    # zero-length stream writes (0357), start function yield (0358),
-    # recursive type drop (0359), cancelled call_async (0354), stream or
-    # future viewed as the wrong type (0355), calls run after a trap (0361),
-    # and the async-entrypoint requirement (0362). Also handle tables that
-    # are not charged to any limit (0363) and a filesystem sandbox escape
-    # when renaming symlinks with a trailing slash (0352, wasmtime-wasi).
-    # Fixed in wasmtime 48.0.6 / 49.0.3, so the same dedicated wasmtime
-    # upgrade clears them. Remove these entries with the ones above.
-    "RUSTSEC-2026-0352",
-    "RUSTSEC-2026-0353",
-    "RUSTSEC-2026-0354",
-    "RUSTSEC-2026-0355",
-    "RUSTSEC-2026-0356",
-    "RUSTSEC-2026-0357",
-    "RUSTSEC-2026-0358",
-    "RUSTSEC-2026-0359",
-    "RUSTSEC-2026-0361",
-    "RUSTSEC-2026-0362",
-    "RUSTSEC-2026-0363",
-
-    # Two more wasmtime / wasmtime-wasi 46.0.3 advisories (published
-    # 2026-10-19): panic lowering host-created component model stream into
-    # guest expecting different payload type (0378), and Cranelift backend
-    # aarch64 jump to incorrect target on large Wasm br_table (0379). Fixed
-    # in wasmtime 48.0.7 / 49.0.4, so the same dedicated wasmtime upgrade
-    # clears them. Remove these entries with the ones above.
-    "RUSTSEC-2026-0378",
-    "RUSTSEC-2026-0379",
-
-    # crypto-bigint 0.5.5 timing variability (published 2026-10-23). It is
-    # pulled in by elliptic-curve 0.13 (p384 / p256), which webrtc 0.17.2 and
-    # dtls 0.17.2 use. The fix is crypto-bigint >= 0.7.6, which elliptic-curve
-    # 0.13 cannot use. Remove this entry when webrtc moves to a newer
-    # RustCrypto curve stack.
+    # --- webrtc 0.17 ---
+    # crypto-bigint 0.5.5: timing variability in operations meant to be
+    # constant-time. Through elliptic-curve 0.13 (p256, p384), which dtls
+    # 0.17.2 uses. The fix is crypto-bigint 0.7.6+, which elliptic-curve 0.13
+    # cannot use. Delete when webrtc/dtls move to a newer RustCrypto curve
+    # stack.
     "RUSTSEC-2026-0387",
 
-    # zstd 0.13.3 and zstd-safe 7.3.0 advisories (published 2026-10-26).
-    # Pulled in transitively by wasmtime-internal-cache 46.0.3 (part of
-    # wasmtime 46.0.3). The fixes require zstd >= 0.14.3 and zstd-safe >= 8.2.0.
-    # wasmtime-internal-cache 46.0.3 requires zstd 0.13 and zstd-safe 7,
-    # so these cannot update without upgrading wasmtime.
-    # Revisit with the dedicated wasmtime upgrade; remove these entries then.
+    # --- wasmtime's on-disk compile cache (wasmtime-internal-cache) ---
+    # zstd 0.13.3 / zstd-safe 7.3.0. Every wasmtime line up to 50.0.0 still
+    # requires zstd ^0.13; the fixes are in zstd 0.14.3 / zstd-safe 8.2.0.
+    # We keep the cache because without it every substrate restart and every
+    # test pays a full Cranelift compile per component.
+    #
+    # None of these code paths is reachable in our build. The cache only calls
+    # the one-shot `zstd::encode_all` / `zstd::decode_all`, each on a new
+    # context, and zstd-safe is built with only its `std` feature. So:
+    # - 0391 (data leaks on a reused context): no context is reused.
+    # - 0398, 0396 (`Seekable`): the `seekable` feature is off.
+    # - 0403 (legacy frame decode): the `legacy` feature is off.
+    # - 0401 (`train_from_buffer`): the `zdict_builder` feature is off.
+    # - 0402, 0406 (multithreaded contexts): the `zstdmt` feature is off.
+    # - 0395 (`CParameter::StableInBuffer`): the `experimental` feature is off.
+    # - 0399, 0400 (dictionaries), 0404 (`DCtx::try_clone`), 0397
+    #   (`OutBuffer::around_pos`), 0405 (out-of-range `InBuffer::pos`): the
+    #   cache never calls these APIs and passes no hand-built buffers.
+    # Delete when wasmtime-internal-cache moves to zstd 0.14.
     "RUSTSEC-2026-0391",
     "RUSTSEC-2026-0395",
     "RUSTSEC-2026-0396",
