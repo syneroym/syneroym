@@ -194,7 +194,7 @@ These choices are made now so that Phase 0 can start. Phase 0 checks each one. I
 ## Tasks
 
 - [ ] Phase 0, shared boot library and harness
-  - [ ] `node-boot.ts` with `buildArtifacts` and `bootNode`. Convert the main suite. It stays green.
+  - [x] `node-boot.ts` with `buildArtifacts` and `bootNode`. Convert the main suite. It stays green.
   - [ ] `playwright-demo.config.ts`, demo setup and teardown, env file, git-ignored `demo-output/`, `demo:up` and `demo:down`.
   - [ ] Convert `global-setup-multihop.ts` to the library, or record a deviation and add a deferred-backlog row.
   - [ ] Attach mode (`DEMO_ATTACH=1`) in the demo setup and teardown.
