@@ -10,8 +10,8 @@ use anyhow::{Context, Result, ensure};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, TransportAddr,
 };
-use iroh_relay::server::{AccessConfig, RelayConfig as ServerRelayConfig, Server, ServerConfig};
-use syneroym_router::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
+use iroh_relay::server::{RelayConfig as ServerRelayConfig, Server, ServerConfig};
+use syneroym_router::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError, net_iroh};
 use tokio::{net::TcpListener, task::JoinHandle, time};
 
 const ALPN: &[u8] = b"syneroym-test/relay-map/0";
@@ -22,15 +22,10 @@ const WAIT: Duration = Duration::from_secs(10);
 /// Keeps the relay server instance alive and returns its HTTP relay URL.
 async fn spawn_relay() -> Result<(Server, RelayUrl)> {
     let http_bind_addr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let relay_config = ServerRelayConfig {
-        http_bind_addr,
-        tls: None,
-        limits: Default::default(),
-        key_cache_capacity: Some(1024),
-        access: AccessConfig::Everyone,
-    };
-    let server_config =
-        ServerConfig::<(), ()> { relay: Some(relay_config), quic: None, ..Default::default() };
+    let mut relay_config = ServerRelayConfig::new(http_bind_addr);
+    relay_config.key_cache_capacity = Some(1024);
+    let mut server_config = ServerConfig::default();
+    server_config.relay = Some(relay_config);
     let server = Server::spawn(server_config).await.context("failed to spawn relay server")?;
     let http_addr = server.http_addr().context("relay server has no HTTP address")?;
     let url: RelayUrl =
@@ -41,7 +36,7 @@ async fn spawn_relay() -> Result<(Server, RelayUrl)> {
 /// Binds an endpoint with an empty relay map and local loopback binding.
 async fn bind_empty() -> Result<Endpoint> {
     time::timeout(WAIT, async {
-        let ep = Endpoint::empty_builder()
+        let ep = net_iroh::empty_endpoint_builder()
             .clear_ip_transports()
             .bind_addr(SocketAddr::from(([127, 0, 0, 1], 0)))
             .context("failed to bind loopback address")?
@@ -129,7 +124,7 @@ async fn relay_inserted_after_bind_becomes_home_relay() -> Result<()> {
     let a = bind_empty().await?;
 
     let insert_start = time::Instant::now();
-    a.insert_relay(r1.clone(), Arc::new(RelayConfig { url: r1.clone(), quic: None })).await;
+    a.insert_relay(r1.clone(), Arc::new(RelayConfig::new(r1.clone(), None))).await;
 
     let observed = wait_for_relays(&a, |r| r == [r1.clone()]).await;
     let elapsed = insert_start.elapsed();
@@ -155,12 +150,12 @@ async fn removing_home_relay_and_inserting_another_moves_home_relay() -> Result<
     let (_relay_server_2, r2) = spawn_relay().await?;
     let a = bind_empty().await?;
 
-    a.insert_relay(r1.clone(), Arc::new(RelayConfig { url: r1.clone(), quic: None })).await;
+    a.insert_relay(r1.clone(), Arc::new(RelayConfig::new(r1.clone(), None))).await;
     let observed = wait_for_relays(&a, |r| r == [r1.clone()]).await;
     assert_eq!(observed, vec![r1.clone()]);
 
     a.remove_relay(&r1).await;
-    a.insert_relay(r2.clone(), Arc::new(RelayConfig { url: r2.clone(), quic: None })).await;
+    a.insert_relay(r2.clone(), Arc::new(RelayConfig::new(r2.clone(), None))).await;
     let observed_r2 = wait_for_relays(&a, |r| r == [r2.clone()]).await;
     eprintln!("Relay list after inserting second relay: {observed_r2:?}");
     assert_eq!(observed_r2, vec![r2.clone()]);
@@ -180,7 +175,7 @@ async fn endpoint_without_home_relay_dials_peer_through_peer_relay() -> Result<(
     let (_relay_server, r1) = spawn_relay().await?;
     let a = bind_empty().await?;
 
-    a.insert_relay(r1.clone(), Arc::new(RelayConfig { url: r1.clone(), quic: None })).await;
+    a.insert_relay(r1.clone(), Arc::new(RelayConfig::new(r1.clone(), None))).await;
     let observed = wait_for_relays(&a, |r| r == [r1.clone()]).await;
     assert_eq!(observed, vec![r1.clone()]);
 
@@ -200,11 +195,11 @@ async fn two_relays_in_map_home_relay_list() -> Result<()> {
     let (_relay_server_2, r2) = spawn_relay().await?;
     let a = bind_empty().await?;
 
-    a.insert_relay(r1.clone(), Arc::new(RelayConfig { url: r1.clone(), quic: None })).await;
+    a.insert_relay(r1.clone(), Arc::new(RelayConfig::new(r1.clone(), None))).await;
     let observed_r1 = wait_for_relays(&a, |r| r == [r1.clone()]).await;
     assert_eq!(observed_r1, vec![r1.clone()]);
 
-    a.insert_relay(r2.clone(), Arc::new(RelayConfig { url: r2.clone(), quic: None })).await;
+    a.insert_relay(r2.clone(), Arc::new(RelayConfig::new(r2.clone(), None))).await;
 
     // Allow time for the network report and address watcher to settle.
     time::sleep(Duration::from_millis(500)).await;
@@ -235,11 +230,11 @@ async fn inserting_new_relay_then_removing_old_moves_home_relay() -> Result<()> 
     let (_relay_server_2, r2) = spawn_relay().await?;
     let a = bind_empty().await?;
 
-    a.insert_relay(r1.clone(), Arc::new(RelayConfig { url: r1.clone(), quic: None })).await;
+    a.insert_relay(r1.clone(), Arc::new(RelayConfig::new(r1.clone(), None))).await;
     let observed_r1 = wait_for_relays(&a, |r| r == [r1.clone()]).await;
     assert_eq!(observed_r1, vec![r1.clone()]);
 
-    a.insert_relay(r2.clone(), Arc::new(RelayConfig { url: r2.clone(), quic: None })).await;
+    a.insert_relay(r2.clone(), Arc::new(RelayConfig::new(r2.clone(), None))).await;
     a.remove_relay(&r1).await;
 
     let observed_r2 = wait_for_relays(&a, |r| r == [r2.clone()]).await;

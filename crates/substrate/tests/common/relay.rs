@@ -21,7 +21,7 @@ use axum::{
     routing::{get, post},
 };
 use iroh::RelayUrl;
-use iroh_relay::server::{AccessConfig, RelayConfig as ServerRelayConfig, Server, ServerConfig};
+use iroh_relay::server::{RelayConfig as ServerRelayConfig, Server, ServerConfig};
 use syneroym_core::{
     coordinator_info::{CoordinatorInfo, CoordinatorStatus, INFO_PATH, RelayInfo},
     curated_list::{CoordinatorEntry, CoordinatorTransport, CuratedList},
@@ -32,15 +32,10 @@ use tokio::{net::TcpListener, task::JoinHandle, time};
 /// Spawns a plain-HTTP relay server on a dynamic local port.
 pub async fn spawn_relay() -> Result<(Server, RelayUrl)> {
     let http_bind_addr = SocketAddr::from(([127, 0, 0, 1], 0));
-    let relay_config = ServerRelayConfig {
-        http_bind_addr,
-        tls: None,
-        limits: Default::default(),
-        key_cache_capacity: Some(1024),
-        access: AccessConfig::Everyone,
-    };
-    let server_config =
-        ServerConfig::<(), ()> { relay: Some(relay_config), quic: None, ..Default::default() };
+    let mut relay_config = ServerRelayConfig::new(http_bind_addr);
+    relay_config.key_cache_capacity = Some(1024);
+    let mut server_config = ServerConfig::default();
+    server_config.relay = Some(relay_config);
     let server = Server::spawn(server_config).await.context("failed to spawn relay server")?;
     let http_addr = server.http_addr().context("relay server has no HTTP address")?;
     let url: RelayUrl =

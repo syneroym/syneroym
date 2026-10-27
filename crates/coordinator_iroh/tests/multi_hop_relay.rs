@@ -22,7 +22,7 @@ use syneroym_data_db::registry_store;
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_router::{
     AdaptationStage, EncryptionStage, RouteHandler, RoutePipeline, RoutePreamble, RouteProtocol,
-    RouteTransport, SYNEROYM_ALPN, ServiceStage, TransportStage,
+    RouteTransport, SYNEROYM_ALPN, ServiceStage, TransportStage, net_iroh,
 };
 use syneroym_sdk::SyneroymClient;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
@@ -117,7 +117,7 @@ async fn spawn_x_target_substrate(
 
     // Bind Sx to Iroh so C can connect to it (Sx uses C's relay url). Built
     // *before* `RouteHandler::init` -- see the matching comment on Sz above.
-    let mut ep_x_bldr = Endpoint::empty_builder();
+    let mut ep_x_bldr = net_iroh::empty_endpoint_builder();
     ep_x_bldr = ep_x_bldr
         .relay_mode(RelayMode::Custom(RelayMap::from(c_relay_url.parse::<RelayUrl>().unwrap())));
     let secret_key_x = SecretKey::from_bytes(&secret_x_bytes);
@@ -186,8 +186,8 @@ async fn test_registry_propagation() -> Result<()> {
     // 3. Register info on Rp
     let identity = Identity::generate()?;
     let did = derive_did_key(&identity.public_key());
-    let dummy_secret = SecretKey::generate(&mut rand::rng());
-    let dummy_ep = Endpoint::empty_builder().secret_key(dummy_secret).bind().await?;
+    let dummy_secret = SecretKey::generate();
+    let dummy_ep = net_iroh::empty_endpoint_builder().secret_key(dummy_secret).bind().await?;
     let dummy_addr = dummy_ep.addr();
 
     let signed_info = create_signed_info(&identity, &did, &dummy_addr, None);
@@ -428,8 +428,10 @@ async fn spawn_greeter_node(
     // (direct addresses only, same machine), so `.online()` would wait
     // indefinitely for the relay half of that condition. `wait_for_local_addr`
     // polls `.addr()` until it has at least one direct address instead.
-    let ep_z =
-        Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_z_bytes)).bind().await?;
+    let ep_z = net_iroh::empty_endpoint_builder()
+        .secret_key(SecretKey::from_bytes(&secret_z_bytes))
+        .bind()
+        .await?;
     let ep_z_addr = wait_for_local_addr(&ep_z).await;
 
     let deps_z = build_test_route_handler_deps(&config_z, &did_z, &endpoint_registry_z).await?;
@@ -497,8 +499,10 @@ async fn spawn_proxy_caller_node(
     let data_store_x = registry_store::init_store(&config_x).await?;
     let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
 
-    let ep_x =
-        Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_x_bytes)).bind().await?;
+    let ep_x = net_iroh::empty_endpoint_builder()
+        .secret_key(SecretKey::from_bytes(&secret_x_bytes))
+        .bind()
+        .await?;
 
     let deps_x = build_test_route_handler_deps(&config_x, &did_x, &endpoint_registry_x).await?;
     let app_sandbox_engine_x = deps_x.app_sandbox_engine.clone();

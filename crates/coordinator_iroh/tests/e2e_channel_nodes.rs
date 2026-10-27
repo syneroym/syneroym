@@ -8,14 +8,14 @@ use std::{
 };
 
 use anyhow::Result;
-use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl};
+use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl};
 use reqwest::Client;
 use syneroym_app_orchestration::Visibility;
 use syneroym_core::{
     config::RetryPolicy, dht_registry::EndpointMechanism, local_registry::SubstrateEndpoint,
 };
 use syneroym_identity::{Identity, substrate};
-use syneroym_router::{IrohHop, OutboundIdentity, RemoteHop, RemotePeer, RoutePreamble};
+use syneroym_router::{IrohHop, OutboundIdentity, RemoteHop, RemotePeer, RoutePreamble, net_iroh};
 use syneroym_rpc::JsonRpcRequest;
 use syneroym_sdk::{SyneroymClient, client::PassthroughOutcome, deploy::certify};
 use tokio::{
@@ -37,7 +37,7 @@ async fn iroh_hop_through_forwarder() -> Result<()> {
     let info_client = Client::new();
     let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
 
-    let mut ep_bldr = Endpoint::empty_builder();
+    let mut ep_bldr = net_iroh::empty_endpoint_builder();
     if let Some(relay_url) = topo.c_info.relay_url.as_ref() {
         let url: RelayUrl = relay_url.parse()?;
         ep_bldr = ep_bldr.relay_mode(RelayMode::Custom(RelayMap::from(url)));

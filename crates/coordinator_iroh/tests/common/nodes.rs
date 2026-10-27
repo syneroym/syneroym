@@ -32,6 +32,7 @@ use syneroym_identity::{DelegationCertificate, Identity, substrate::derive_did_k
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_router::{
     RouteHandler, RouteHandlerDeps, RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN,
+    net_iroh,
 };
 use syneroym_rpc::{
     AuthLevel, CallOrigin, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
@@ -328,7 +329,7 @@ pub async fn spawn_z_target_substrate(
     let endpoint_z = SubstrateEndpoint::NativeHostChannel { service_id: did_z.clone() };
     endpoint_registry_z.register(did_z.clone(), "orchestrator".to_string(), endpoint_z).await?;
 
-    let mut ep_z_bldr = Endpoint::empty_builder();
+    let mut ep_z_bldr = net_iroh::empty_endpoint_builder();
     if let Some(relay_url) = cp_relay_url.as_ref().and_then(|r| r.parse::<RelayUrl>().ok()) {
         ep_z_bldr = ep_z_bldr.relay_mode(RelayMode::Custom(RelayMap::from(relay_url)));
     }
@@ -416,8 +417,10 @@ pub async fn spawn_native_capability_callee_node(
     let data_store_z = registry_store::init_store(&config_z).await?;
     let endpoint_registry_z = EndpointRegistry::new(data_store_z).await?;
 
-    let ep_z =
-        Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_z_bytes)).bind().await?;
+    let ep_z = net_iroh::empty_endpoint_builder()
+        .secret_key(SecretKey::from_bytes(&secret_z_bytes))
+        .bind()
+        .await?;
     let ep_z_addr = wait_for_local_addr(&ep_z).await;
 
     let deps_z = build_test_route_handler_deps(&config_z, &did_z, &endpoint_registry_z).await?;
@@ -480,8 +483,10 @@ pub async fn spawn_native_capability_caller_node(
     let data_store_x = registry_store::init_store(&config_x).await?;
     let endpoint_registry_x = EndpointRegistry::new(data_store_x).await?;
 
-    let ep_x =
-        Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_x_bytes)).bind().await?;
+    let ep_x = net_iroh::empty_endpoint_builder()
+        .secret_key(SecretKey::from_bytes(&secret_x_bytes))
+        .bind()
+        .await?;
 
     let deps_x = build_test_route_handler_deps(&config_x, &did_x, &endpoint_registry_x).await?;
     let app_sandbox_engine_x = deps_x.app_sandbox_engine.clone();

@@ -127,7 +127,7 @@ async fn open_relay_refuses_registration() -> anyhow::Result<()> {
 
     // 2. List access
     let temp_dir2 = tempfile::tempdir()?;
-    let allowed_id = SecretKey::generate(&mut rand::rng()).public().to_string();
+    let allowed_id = SecretKey::generate().public().to_string();
     let (mut coord_list, client_list) =
         passport_coordinator(temp_dir2.path(), CoordinatorAccess::List(vec![allowed_id]), &host)
             .await?;

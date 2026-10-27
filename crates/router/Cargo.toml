@@ -42,6 +42,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 iroh.workspace = true
+rustls.workspace = true
 webrtc.workspace = true
 tokio-tungstenite.workspace = true
 futures.workspace = true

@@ -2,12 +2,12 @@
 //!
 //! Structs and validation for signaling/relay address bindings and keypaths.
 
-use std::{io, net::SocketAddr, path::Path, sync::Arc};
+use std::{net::SocketAddr, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
 use iroh_base::EndpointId;
 use iroh_relay::server::{self as relay, QuicConfig, ServerConfig};
-use relay::{Access, AccessConfig, CertConfig, RelayConfig, TlsConfig};
+use relay::{Access, AccessControl, AllowAll, CertConfig, ClientRequest, RelayConfig, TlsConfig};
 use rustls::{ServerConfig as RustlsServerConfig, crypto::ring};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use syneroym_core::config::{CoordinatorAccess, CoordinatorIrohConfig, CoordinatorRole};
@@ -67,6 +67,39 @@ fn parse_endpoint_ids(ids: &[String]) -> Result<Vec<EndpointId>> {
         .collect()
 }
 
+/// Which endpoints may use the relay, from `[roles.coordinator] access`.
+#[derive(Debug)]
+pub enum RelayAccess {
+    Everyone,
+    /// The listed endpoints, plus any endpoint holding a lease in `leases`.
+    Restricted {
+        admitted: Vec<EndpointId>,
+        leases: Option<LeaseStore>,
+    },
+}
+
+impl RelayAccess {
+    #[must_use]
+    pub fn admits(&self, id: &EndpointId) -> bool {
+        match self {
+            Self::Everyone => true,
+            Self::Restricted { admitted, leases } => {
+                admitted.contains(id) || leases.as_ref().is_some_and(|l| passport::is_leased(l, id))
+            }
+        }
+    }
+}
+
+impl AccessControl for RelayAccess {
+    async fn on_connect(&self, request: &ClientRequest) -> Access {
+        if self.admits(&request.endpoint_id()) {
+            Access::Allow
+        } else {
+            Access::Deny { reason: None }
+        }
+    }
+}
+
 /// Builds the relay access check from `[roles.coordinator] access`.
 /// `always`: endpoints every restricted form admits (the coordinator's own
 /// endpoint and the host node). `leases`: the lease store; it must be
@@ -79,9 +112,9 @@ pub fn relay_access(
     access: &CoordinatorAccess,
     always: &[EndpointId],
     leases: Option<LeaseStore>,
-) -> Result<AccessConfig> {
+) -> Result<RelayAccess> {
     if *access == CoordinatorAccess::Everyone {
-        return Ok(AccessConfig::Everyone);
+        return Ok(RelayAccess::Everyone);
     }
     ensure!(
         access.accepts_passports() == leases.is_some(),
@@ -89,12 +122,7 @@ pub fn relay_access(
     );
     let mut admitted = parse_endpoint_ids(access.list())?;
     admitted.extend_from_slice(always);
-    let admitted = Arc::new(admitted);
-    Ok(AccessConfig::Restricted(Box::new(move |id| {
-        let allow =
-            admitted.contains(&id) || leases.as_ref().is_some_and(|l| passport::is_leased(l, &id));
-        Box::pin(async move { if allow { Access::Allow } else { Access::Deny } })
-    })))
+    Ok(RelayAccess::Restricted { admitted, leases })
 }
 
 /// Checks `[roles.coordinator.iroh] max_relay_clients`.
@@ -124,7 +152,7 @@ pub async fn build_relay_config(
     role: &CoordinatorRole,
     always: &[EndpointId],
     leases: Option<LeaseStore>,
-) -> Result<ServerConfig<io::Error>> {
+) -> Result<ServerConfig> {
     let iroh_cfg = role.iroh.clone().unwrap_or_default();
 
     let http_bind_addr: SocketAddr =
@@ -133,7 +161,7 @@ pub async fn build_relay_config(
     let quic_bind_addr: SocketAddr =
         iroh_cfg.quic_bind_address.parse().context("invalid iroh quic_bind_address")?;
 
-    let relay_tls = if let Some(tls) = &role.tls {
+    let tls_server_config = if let Some(tls) = &role.tls {
         let cert_path = tls.cert_path.clone();
         let key_path = tls.key_path.clone();
 
@@ -150,43 +178,35 @@ pub async fn build_relay_config(
                 .with_safe_default_protocol_versions()
                 .map_err(|e| anyhow::anyhow!("protocols supported by ring: {e}"))?
                 .with_no_client_auth()
-                .with_single_cert(certs.clone(), private_key)
+                .with_single_cert(certs, private_key)
                 .context("failed to create rustls ServerConfig")?;
 
-        Some(TlsConfig {
-            https_bind_addr: http_bind_addr,
-            cert: CertConfig::Manual { certs },
-            server_config,
-            quic_bind_addr,
-        })
+        Some(server_config)
     } else {
         None
     };
 
-    let mut quic_config = None;
-    if relay_tls.is_some()
-        && let Some(ref tls) = relay_tls
-    {
-        quic_config = Some(QuicConfig {
-            server_config: tls.server_config.clone(),
-            bind_addr: tls.quic_bind_addr,
+    // QUIC address discovery runs only with TLS, even when the relay is off.
+    let mut config = ServerConfig::default();
+    config.quic = tls_server_config.clone().map(|server_config| {
+        let mut quic = QuicConfig::new(quic_bind_addr);
+        quic.server_config = Some(server_config);
+        quic
+    });
+
+    if iroh_cfg.enable_relay {
+        let mut relay_config = RelayConfig::new(http_bind_addr);
+        relay_config.tls = tls_server_config.map(|server_config| {
+            TlsConfig::new(http_bind_addr, CertConfig::Manual { server_config })
         });
+        relay_config.access = match relay_access(&role.access, always, leases)? {
+            RelayAccess::Everyone => Arc::new(AllowAll),
+            restricted => Arc::new(restricted),
+        };
+        config.relay = Some(relay_config);
     }
 
-    let relay_config = if iroh_cfg.enable_relay {
-        let access_config = relay_access(&role.access, always, leases)?;
-        Some(RelayConfig {
-            http_bind_addr,
-            tls: relay_tls,
-            limits: Default::default(),
-            key_cache_capacity: None,
-            access: access_config,
-        })
-    } else {
-        None
-    };
-
-    Ok(ServerConfig { relay: relay_config, quic: quic_config, metrics_addr: None })
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -247,63 +267,59 @@ mod tests {
     #[test]
     fn everyone_admits_any_endpoint() -> Result<()> {
         let access = relay_access(&CoordinatorAccess::Everyone, &[], None)?;
-        assert!(matches!(access, AccessConfig::Everyone));
+        assert!(matches!(access, RelayAccess::Everyone));
         Ok(())
     }
 
     #[test]
     fn everyone_ignores_always_list() -> Result<()> {
-        let key = SecretKey::generate(&mut rand::rng());
+        let key = SecretKey::generate();
         let access = relay_access(&CoordinatorAccess::Everyone, &[key.public()], None)?;
-        assert!(matches!(access, AccessConfig::Everyone));
+        assert!(matches!(access, RelayAccess::Everyone));
         Ok(())
     }
 
-    #[tokio::test]
-    async fn list_admits_listed_and_always_admitted_endpoints() -> Result<()> {
-        let key1 = SecretKey::generate(&mut rand::rng());
-        let key2 = SecretKey::generate(&mut rand::rng());
-        let always_key = SecretKey::generate(&mut rand::rng());
+    #[test]
+    fn list_admits_listed_and_always_admitted_endpoints() -> Result<()> {
+        let key1 = SecretKey::generate();
+        let key2 = SecretKey::generate();
+        let always_key = SecretKey::generate();
         let id1 = key1.public();
         let id2 = key2.public();
         let always_id = always_key.public();
 
         let access =
             relay_access(&CoordinatorAccess::List(vec![id1.to_string()]), &[always_id], None)?;
-        let AccessConfig::Restricted(check) = access else {
-            panic!("expected Restricted access config");
-        };
+        assert!(matches!(access, RelayAccess::Restricted { .. }));
 
-        assert_eq!(check(id1).await, Access::Allow);
-        assert_eq!(check(always_id).await, Access::Allow);
-        assert_eq!(check(id2).await, Access::Deny);
+        assert!(access.admits(&id1));
+        assert!(access.admits(&always_id));
+        assert!(!access.admits(&id2));
         Ok(())
     }
 
-    #[tokio::test]
-    async fn passport_access_admits_leased_and_always_admitted_endpoints() -> Result<()> {
+    #[test]
+    fn passport_access_admits_leased_and_always_admitted_endpoints() -> Result<()> {
         let store = LeaseStore::open_in_memory(&RELAY_HOME)?;
-        let always_key = SecretKey::generate(&mut rand::rng());
+        let always_key = SecretKey::generate();
         let always_id = always_key.public();
-        let random_key = SecretKey::generate(&mut rand::rng());
+        let random_key = SecretKey::generate();
         let random_id = random_key.public();
 
         let access = relay_access(&CoordinatorAccess::Passport, &[always_id], Some(store))?;
-        let AccessConfig::Restricted(check) = access else {
-            panic!("expected Restricted access config");
-        };
+        assert!(matches!(access, RelayAccess::Restricted { .. }));
 
-        assert_eq!(check(always_id).await, Access::Allow);
-        assert_eq!(check(random_id).await, Access::Deny);
+        assert!(access.admits(&always_id));
+        assert!(!access.admits(&random_id));
         Ok(())
     }
 
-    #[tokio::test]
-    async fn table_form_admits_listed_or_leased() -> Result<()> {
+    #[test]
+    fn table_form_admits_listed_or_leased() -> Result<()> {
         let store = LeaseStore::open_in_memory(&RELAY_HOME)?;
-        let listed_key = SecretKey::generate(&mut rand::rng());
+        let listed_key = SecretKey::generate();
         let listed_id = listed_key.public();
-        let random_key = SecretKey::generate(&mut rand::rng());
+        let random_key = SecretKey::generate();
         let random_id = random_key.public();
 
         let access = relay_access(
@@ -311,12 +327,10 @@ mod tests {
             &[],
             Some(store),
         )?;
-        let AccessConfig::Restricted(check) = access else {
-            panic!("expected Restricted access config");
-        };
+        assert!(matches!(access, RelayAccess::Restricted { .. }));
 
-        assert_eq!(check(listed_id).await, Access::Allow);
-        assert_eq!(check(random_id).await, Access::Deny);
+        assert!(access.admits(&listed_id));
+        assert!(!access.admits(&random_id));
         Ok(())
     }
 

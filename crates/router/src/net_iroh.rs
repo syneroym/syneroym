@@ -8,6 +8,7 @@ use std::{
     future::Future,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
@@ -16,8 +17,9 @@ use anyhow::Context;
 use ed25519_dalek::VerifyingKey;
 use iroh::{
     Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey,
-    endpoint::{Connection, QuicTransportConfig, RecvStream, SendStream},
+    endpoint::{Builder, Connection, QuicTransportConfig, RecvStream, SendStream},
 };
+use rustls::crypto::ring;
 use syneroym_core::{
     config::{IrohParentConfig, RetryPolicy},
     dht_registry::{
@@ -138,12 +140,21 @@ fn relay_mode(relay_url: Option<RelayUrl>) -> RelayMode {
     RelayMode::Custom(relay_url.map_or_else(RelayMap::empty, RelayMap::from))
 }
 
+/// An endpoint builder with no relay and no address lookup. It sets only the
+/// TLS crypto provider (ring, iroh's own default), which iroh requires. Every
+/// endpoint starts here: the n0 presets add n0's public relays and DNS
+/// lookup, which would show metadata to a third party.
+#[must_use]
+pub fn empty_endpoint_builder() -> Builder {
+    Builder::empty().crypto_provider(Arc::new(ring::default_provider()))
+}
+
 pub async fn build_iroh_endpoint(
     relay_url: Option<RelayUrl>,
     secret_key: Option<SecretKey>,
     idle_timeout_secs: Option<u64>,
 ) -> anyhow::Result<Endpoint> {
-    let mut builder = Endpoint::empty_builder().relay_mode(relay_mode(relay_url));
+    let mut builder = empty_endpoint_builder().relay_mode(relay_mode(relay_url));
     if let Some(sk) = secret_key {
         builder = builder.secret_key(sk);
     }

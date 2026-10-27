@@ -28,6 +28,7 @@ use syneroym_passport::{
     CapabilityToken, Challenge, RELAY_HOME,
     wire::{ChallengeResponse, ErrorBody, RegisterRequest, RegisterResponse},
 };
+use syneroym_router::net_iroh;
 use tokio::time;
 
 pub const TEST_ALPN: &[u8] = b"syneroym-test/passport-echo";
@@ -164,7 +165,7 @@ pub async fn register(
 /// It accepts no connections.
 pub async fn node_endpoint(node: &Identity, relay: RelayUrl) -> Result<Endpoint> {
     let secret_key = SecretKey::from_bytes(&node.to_bytes());
-    let endpoint = Endpoint::empty_builder()
+    let endpoint = net_iroh::empty_endpoint_builder()
         .clear_ip_transports()
         .secret_key(secret_key)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay)))
@@ -184,7 +185,7 @@ pub async fn goes_online(ep: &Endpoint, wait: Duration) -> bool {
 /// accept; `router.endpoint()` is the endpoint.
 pub async fn accepting_node(node: &Identity, relay: RelayUrl) -> Result<Router> {
     let secret_key = SecretKey::from_bytes(&node.to_bytes());
-    let endpoint = Endpoint::empty_builder()
+    let endpoint = net_iroh::empty_endpoint_builder()
         .clear_ip_transports()
         .secret_key(secret_key)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay)))

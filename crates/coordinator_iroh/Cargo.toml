@@ -24,7 +24,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 axum-server.workspace = true
 reqwest.workspace = true
-rand.workspace = true
 x509-parser.workspace = true
 chrono.workspace = true
 syneroym-passport.workspace = true

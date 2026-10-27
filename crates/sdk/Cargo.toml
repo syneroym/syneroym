@@ -31,6 +31,5 @@ futures.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
-rand.workspace = true
 semver.workspace = true
 tempfile.workspace = true

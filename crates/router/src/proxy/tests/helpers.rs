@@ -68,7 +68,7 @@ pub(super) fn base_request(target_service: &str, interface: &str) -> ProxyReques
 }
 
 pub(super) fn synthetic_peer() -> RemotePeer {
-    let node_id = SecretKey::generate(&mut rand::rng()).public();
+    let node_id = SecretKey::generate().public();
     let host_key = VerifyingKey::from_bytes(node_id.as_bytes()).unwrap();
     RemotePeer { addr: EndpointAddr::new(node_id), host_key: Some(host_key) }
 }

@@ -20,7 +20,6 @@ getrandom.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 hpke.workspace = true
-rand.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

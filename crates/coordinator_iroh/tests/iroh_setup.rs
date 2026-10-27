@@ -19,6 +19,7 @@
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, protocol::Router};
 use n0_error::{Result, StdResultExt};
 use syneroym_core::config::{LogTarget, SubstrateConfig};
+use syneroym_router::net_iroh;
 use tracing_subscriber::fmt;
 
 mod common;
@@ -101,7 +102,7 @@ async fn test_echo() -> anyhow::Result<()> {
 }
 
 async fn connect_side(addr: EndpointAddr) -> Result<()> {
-    let ep_bldr = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
+    let ep_bldr = net_iroh::empty_endpoint_builder().relay_mode(RelayMode::Custom(RelayMap::from(
         IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
     )));
 
@@ -143,7 +144,7 @@ async fn connect_side(addr: EndpointAddr) -> Result<()> {
 }
 
 async fn start_accept_side() -> Result<Router> {
-    let ep_bldr = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
+    let ep_bldr = net_iroh::empty_endpoint_builder().relay_mode(RelayMode::Custom(RelayMap::from(
         IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
     )));
 

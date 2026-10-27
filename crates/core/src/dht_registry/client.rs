@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use pkarr::{Client, PublicKey, SignedPacket, dns::rdata::RData};
+use pkarr::{Client, PublicKey, ResolvePolicy, SignedPacket, dns::rdata::RData};
 use reqwest::Client as ReqwestClient;
 use syneroym_identity::{Identity, substrate};
 
@@ -20,7 +20,7 @@ pub struct RegistryClient {
 }
 
 async fn do_publish(dht: Client, signed_packet: SignedPacket, context: &'static str) {
-    if let Err(e) = dht.publish(&signed_packet, None).await {
+    if let Err(e) = dht.publish(&signed_packet).await {
         tracing::warn!("Failed to publish {} to DHT: {}", context, e);
     } else {
         tracing::debug!("Successfully published {} to Mainline DHT", context);
@@ -264,7 +264,9 @@ impl RegistryClient {
             if let Ok(pubkey) = substrate::resolve_did_key(id) {
                 if let Ok(pkarr_pubkey) = PublicKey::try_from(pubkey.as_bytes()) {
                     tracing::debug!("Falling back to DHT lookup for {}", id);
-                    if let Some(signed_packet) = dht.resolve(&pkarr_pubkey).await {
+                    if let Ok(signed_packet) =
+                        dht.resolve(&pkarr_pubkey, ResolvePolicy::CacheFirst).await
+                    {
                         if let Some(candidate) =
                             extract_verified_endpoint_from_packet(id, &signed_packet)
                         {
@@ -355,7 +357,7 @@ impl RegistryClient {
             && let Ok(pkarr_pubkey) = PublicKey::try_from(pubkey.as_bytes())
         {
             tracing::debug!("Falling back to DHT lookup for Master Anchor {}", master_id);
-            if let Some(signed_packet) = dht.resolve(&pkarr_pubkey).await {
+            if let Ok(signed_packet) = dht.resolve(&pkarr_pubkey, ResolvePolicy::CacheFirst).await {
                 for answer in signed_packet.resource_records(PKARR_DNS_NAME) {
                     if let RData::TXT(txt) = &answer.rdata
                         && let Ok(full_string) = String::try_from(txt.clone())
