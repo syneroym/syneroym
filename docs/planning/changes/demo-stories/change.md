@@ -214,10 +214,10 @@ Phase 0 results (warm build cache, Apple silicon laptop):
   - [x] Scripts for the main story (runbook section 2). Fix the runbook where it was wrong.
   - [x] Browser step: open the web app and show a live update in a second session.
   - [x] `mise` tasks `demo`, `demo:up`, `demo:down`.
-- [ ] Phase 2, pilot 2: Roym chat story
-  - [ ] Roym deploy, session keys and conversation addresses as a shell step.
-  - [ ] `caption` and `step` helpers. Add the file parameter to `loginWithDelegatedKey`. Add the shared Hub steps to `hub-helpers.ts`.
-  - [ ] `demo/20-roym-chat.spec.ts`.
+- [x] Phase 2, pilot 2: Roym chat story
+  - [x] Roym deploy, session keys and conversation addresses as a shell step.
+  - [x] `caption` and `step` helpers. Add the file parameter to `loginWithDelegatedKey`. Add the shared Hub steps to `hub-helpers.ts`.
+  - [x] `demo/20-roym-chat.spec.ts`.
 - [ ] Phase 3, rules and docs
   - [ ] Add the `demo:` list to the change-doc template, check it in `xtask` (including that a listed path exists), and fill the four existing done docs.
   - [ ] Add the "Mandatory Demo Close-out" bullet to `AGENTS.md` in the same change as the xtask check.
@@ -235,6 +235,10 @@ Phase 0 results (warm build cache, Apple silicon laptop):
 - The main story spec runs the shell script as its own test, then the browser steps as a second test, in serial mode.
 - `demo/00-harness-check.spec.ts` is removed. The first story replaces it.
 - The multihop setup waits for the coordinators' bootstrap pages instead of a fixed 4 s sleep after starting `c` and `cp`.
+- `loginWithDelegatedKey(page, keyFile?)` takes the key file as an optional second argument. It defaults to `ROYM_SESSION_KEY_FILE`, so the 30 existing calls in the main suite did not need a rename fix.
+- The Roym story is two serial tests (the setup script, then the browser steps), like the main story. Alice's message state is checked as `delivered` at the end only. The sent message is not checked as `pending` first, because the one-second outbox tick can change it before the check.
+
+Phase 2 results (warm build cache): `mise run test:demo` takes 73 s in total, with both stories. The Roym setup script takes 6 s and the Roym browser steps take 4 s. The demo stays in `npm test`.
 
 ## Close-out
 
