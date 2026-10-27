@@ -1,9 +1,8 @@
 use std::{fmt, io, time::Duration};
 
-use aes_gcm::aead::OsRng;
 use anyhow::Result;
 use ed25519_dalek::{Signature, VerifyingKey};
-use p256::{EncodedPoint, PublicKey, ecdh::EphemeralSecret};
+use p256::{PublicKey, Sec1Point, ecdh::EphemeralSecret, elliptic_curve::Generate};
 use syneroym_identity::substrate;
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
@@ -105,8 +104,8 @@ where
         Path::Indirect(host) => host,
     };
     let identity = preamble.take_identity();
-    let secret = EphemeralSecret::random(&mut OsRng);
-    let client_epk = EncodedPoint::from(secret.public_key());
+    let secret = EphemeralSecret::generate();
+    let client_epk = Sec1Point::from(secret.public_key());
     preamble.enc = Some(ENC_ECDH_P256.to_string());
     preamble.epk = Some(hex::encode(client_epk.as_bytes()));
     writer.write_all(preamble.to_preamble_line().as_bytes()).await?;
@@ -133,7 +132,7 @@ where
 
 struct HandshakeParams<'a> {
     secret: EphemeralSecret,
-    client_epk: EncodedPoint,
+    client_epk: Sec1Point,
     server_pk: [u8; 65],
     sig: [u8; 64],
     host: &'a VerifyingKey,

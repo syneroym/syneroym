@@ -3,9 +3,8 @@
 //! Encapsulates the destination side of the ECDH-P256 handshake, signing
 //! the server ephemeral key and deriving channel keys via HKDF.
 
-use aes_gcm::aead::OsRng;
 use anyhow::{Result, anyhow};
-use p256::{EncodedPoint, PublicKey, ecdh::EphemeralSecret};
+use p256::{PublicKey, Sec1Point, ecdh::EphemeralSecret, elliptic_curve::Generate};
 use syneroym_identity::Identity;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
@@ -46,8 +45,8 @@ where
             }
             let client_point = PublicKey::from_sec1_bytes(&client_epk)
                 .map_err(|e| anyhow!("Invalid epk point: {e}"))?;
-            let secret = EphemeralSecret::random(&mut OsRng);
-            let server_pk = EncodedPoint::from(secret.public_key());
+            let secret = EphemeralSecret::generate();
+            let server_pk = Sec1Point::from(secret.public_key());
             let shared = secret.diffie_hellman(&client_point);
             let keys = derive_kdf(shared.raw_secret_bytes(), &client_epk, server_pk.as_bytes())?;
             let signed = e2e_channel::handshake_signed_bytes(server_pk.as_bytes(), &client_epk);

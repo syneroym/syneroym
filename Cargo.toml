@@ -111,7 +111,9 @@ axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-service = "0.3"
 tower-http = { version = "0.6", features = ["full"] }
-webrtc = "0.17" # Using a slightly older stable version as v0.17 might have breaking changes for this specific codebase
+webrtc = "0.21"
+# Only for `MulticastDnsMode`, which webrtc does not re-export.
+rtc = { version = "0.21", default-features = false }
 # No `config` feature: it parses `askama.toml` with the unmaintained `basic-toml`,
 # and this workspace has no `askama.toml`.
 askama = { version = "0.16", default-features = false, features = ["derive", "std", "serde_json", "urlencode"] }
@@ -148,7 +150,7 @@ hex = { version = "0.4", features = ["serde"] }
 base64 = "0.23"
 hpke = { version = "0.15", default-features = false, features = ["alloc", "x25519", "aes", "getrandom"] }
 chrono = "0.4"
-croner = "3.0.1"
+croner = "3.0"
 pkarr = "8.1"
 dirs = "6.0"
 rusqlite = { version = "0.38", features = ["bundled-sqlcipher", "hooks"] }
@@ -156,11 +158,11 @@ sha2 = "0.10"
 getrandom = "0.4"
 rustls-pki-types = "1.10"
 rustls = { version = "0.23", features = ["ring"] }
-axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 n0-error = "1.0"
 thiserror = "2.0"
 aes-gcm = "0.10"
-p256 = { version = "0.13", features = ["ecdh", "pkcs8", "arithmetic", "ecdsa"] }
+p256 = { version = "0.14", features = ["ecdh", "pkcs8", "arithmetic", "ecdsa", "getrandom"] }
 rand = "0.9"
 # X3DH + Double Ratchet for `syneroym:conversation`.
 # Apache-2.0, matrix-org's Rust reimplementation of libolm -- license and
@@ -176,9 +178,9 @@ hmac = "0.12"
 aead = "0.5"
 # Used for asset-bundle unpacking (control-plane) and, pre-existing, the
 # WebRTC signaling coordinator's own gzip use.
-tar = "0.4.46"
-flate2 = "1.1.9"
-mime_guess = "2.0.5"
+tar = "0.4"
+flate2 = "1.1"
+mime_guess = "2.0"
 object_store = "0.14"
 
 # Iroh dependencies
@@ -187,8 +189,9 @@ iroh = "1.4"
 iroh-relay = { version = "1.4", features = ["server"] }
 
 # WASM
+# patch-pin: 48.0.0 to 48.0.6 have the aarch64 `br_table` flaw (RUSTSEC-2026-0379).
 wasmtime = { version = "48.0.7", features = ["component-model", "cache"] }
-wasmtime-wasi = "48.0.7"
+wasmtime-wasi = "48.0.7" # patch-pin: same release as wasmtime.
 wit-bindgen = "0.57"
 wit-parser = "0.251"
 

@@ -4,45 +4,21 @@
 //! WebRTC), extracts protocol preambles, and forwards traffic to local
 //! endpoints or sandbox instances.
 
-use std::{
-    future, str,
-    sync::{Arc, Mutex},
-};
+use std::{future, str, sync::Arc};
 
 use anyhow::Result;
-use futures::{SinkExt, StreamExt, stream::SplitSink};
 use iroh::{
     Endpoint, EndpointAddr, SecretKey,
     protocol::{Router, Router as IrohRouter},
 };
 use syneroym_control_plane::MailboxPullControl;
-use syneroym_core::{
-    config::{SubstrateConfig, WebRtcParentConfig},
-    local_registry::EndpointRegistry,
-};
-use tokio::net::TcpStream;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
-use tracing::{debug, error, info};
-use webrtc::{
-    api::{
-        API, APIBuilder, interceptor_registry::register_default_interceptors,
-        media_engine::MediaEngine, setting_engine::SettingEngine,
-    },
-    data_channel::RTCDataChannel,
-    ice::mdns::MulticastDnsMode,
-    ice_transport::ice_server::RTCIceServer,
-    interceptor::registry::Registry,
-    peer_connection::{
-        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
-        sdp::session_description::RTCSessionDescription,
-    },
-};
+use syneroym_core::{config::SubstrateConfig, local_registry::EndpointRegistry};
+use tracing::{debug, info};
 
 use crate::{
     home_relay::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay},
     mailbox_pull::MailboxPuller,
-    net_iroh,
-    net_webrtc::WebRTCStream,
+    net_iroh, net_webrtc,
     proxy::ProxyRouter,
     route_handler::{RouteHandler, RouteHandlerDeps},
 };
@@ -137,9 +113,11 @@ impl ConnectionRouter {
                 "webrtc" => {
                     if let Some(webrtc_config) = config.parent_coordinator.webrtc.as_ref() {
                         info!("Initializing WebRTC interface for Router...");
-                        router
-                            .init_webrtc(webrtc_config, service_id.clone(), route_handler.clone())
-                            .await?;
+                        net_webrtc::spawn_signaling(
+                            service_id.clone(),
+                            webrtc_config,
+                            route_handler.clone(),
+                        );
                     }
                 }
                 _ => {
@@ -190,54 +168,6 @@ impl ConnectionRouter {
         Ok(iroh_router)
     }
 
-    async fn init_webrtc(
-        &self,
-        webrtc_config: &WebRtcParentConfig,
-        service_id: String,
-        route_handler: RouteHandler,
-    ) -> Result<()> {
-        let signaling_url = webrtc_config.signaling_url.clone();
-
-        // Initialize WebRTC API
-        let mut m = MediaEngine::default();
-        m.register_default_codecs()?;
-
-        let mut registry = Registry::new();
-        registry = register_default_interceptors(registry, &mut m)?;
-
-        let mut s = SettingEngine::default();
-        s.detach_data_channels();
-        s.set_ice_multicast_dns_mode(MulticastDnsMode::Disabled);
-
-        let api = APIBuilder::new()
-            .with_media_engine(m)
-            .with_interceptor_registry(registry)
-            .with_setting_engine(s)
-            .build();
-
-        let rtc_config = RTCConfiguration {
-            ice_servers: webrtc_config
-                .stun_servers
-                .iter()
-                .map(|url: &String| RTCIceServer { urls: vec![url.clone()], ..Default::default() })
-                .collect(),
-            ..Default::default()
-        };
-
-        // Connect to Signaling Server and handle incoming connections
-        let api = Arc::new(api);
-
-        tokio::spawn(async move {
-            if let Err(e) =
-                connect_signaling(service_id, &signaling_url, api, rtc_config, route_handler).await
-            {
-                error!("WebRTC Signaling client error connectiong to {}: {:?}", signaling_url, e);
-            }
-        });
-
-        Ok(())
-    }
-
     pub async fn run(&self) -> Result<()> {
         info!("running connection router");
         let endpoint = self.iroh_router.as_ref().map(Router::endpoint);
@@ -282,185 +212,4 @@ impl ConnectionRouter {
         }
         Ok(())
     }
-}
-
-/// The signaling WebSocket's write half, as returned by
-/// `tokio_tungstenite::connect_async` for a plain (non-TLS-wrapped) client
-/// request -- named here so the offer handler below can take it as a
-/// parameter without repeating the full generic type.
-type SignalingSink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
-
-async fn connect_signaling(
-    peer_id: String,
-    url: &String,
-    api: Arc<API>,
-    config: RTCConfiguration,
-    route_handler: RouteHandler,
-) -> Result<()> {
-    info!("Connecting to signaling server at {}", url);
-    let (ws_stream, _) = tokio_tungstenite::connect_async(url).await?;
-    let (mut write, mut read) = ws_stream.split();
-
-    // Register
-    let register_msg = serde_json::json!({
-        "type": "register",
-        "id": peer_id
-    });
-    write.send(Message::Text(register_msg.to_string().into())).await?;
-    info!("Registered with signaling server as {}", peer_id);
-
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
-                error!("WebSocket error: {:?}", e);
-                break;
-            }
-        };
-
-        if let Message::Text(text) = msg {
-            let v: serde_json::Value = match serde_json::from_str(&text) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let type_str = match v["type"].as_str() {
-                Some(s) => s,
-                None => continue,
-            };
-
-            match type_str {
-                "offer" => {
-                    handle_offer_message(&v, &peer_id, &api, &config, &route_handler, &mut write)
-                        .await?;
-                }
-                _ => {
-                    debug!("Unhandled signaling message: {}", type_str);
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Handles one `"offer"` signaling message: builds the `RTCPeerConnection`,
-/// wires its data-channel and connection-state callbacks, answers the
-/// offer, and sends the answer back over `write`. A missing `sdp` field or
-/// an exhausted connection-slot cap is not an error -- both just skip this
-/// message, the same as the `continue` they replaced in the caller's
-/// message loop (there is nothing left in that loop iteration after this
-/// call either way, so returning `Ok(())` early here is equivalent). Any
-/// other error still propagates via `?`, ending the signaling connection
-/// exactly as it did when this code lived inline.
-async fn handle_offer_message(
-    v: &serde_json::Value,
-    peer_id: &str,
-    api: &Arc<API>,
-    config: &RTCConfiguration,
-    route_handler: &RouteHandler,
-    write: &mut SignalingSink,
-) -> Result<()> {
-    debug!("Received Offer from {:?}", v["sender"]);
-    let Some(sdp) = v["sdp"].as_str() else {
-        return Ok(());
-    };
-
-    let sender_id = v["sender"].as_str().unwrap_or("unknown").to_string();
-    let peer_id = peer_id.to_string();
-    let route_handler = route_handler.clone();
-
-    // Check connection limit
-    let Some(slot) = route_handler.acquire_connection_slot() else {
-        tracing::warn!("[WebRTC] Rejecting connection from {} due to connection cap", sender_id);
-        return Ok(());
-    };
-    let slot_holder = Arc::new(Mutex::new(Some(slot)));
-
-    // Create new PeerConnection
-    let pc = Arc::new(api.new_peer_connection(config.clone()).await?);
-
-    // Set Data Channel handler
-    let rh = route_handler.clone();
-    pc.on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
-        let rh = rh.clone();
-        Box::pin(async move {
-            handle_data_channel(d, rh).await;
-        })
-    }));
-
-    let pc_clone = pc.clone();
-    let slot_holder_clone = slot_holder.clone();
-    pc.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-        info!("WebRTC Peer Connection State has changed: {}", s);
-        if s == RTCPeerConnectionState::Failed
-            || s == RTCPeerConnectionState::Disconnected
-            || s == RTCPeerConnectionState::Closed
-        {
-            // Explicitly release the connection slot
-            if let Ok(mut guard) = slot_holder_clone.lock() {
-                guard.take();
-            }
-            let pc = pc_clone.clone();
-            Box::pin(async move {
-                if let Err(e) = pc.close().await {
-                    error!("Failed to close PeerConnection: {}", e);
-                }
-            })
-        } else {
-            Box::pin(async {})
-        }
-    }));
-
-    // Set Remote Description
-    let desc = RTCSessionDescription::offer(sdp.to_string())?;
-    pc.set_remote_description(desc).await?;
-
-    // Create Answer
-    let answer = pc.create_answer(None).await?;
-    pc.set_local_description(answer.clone()).await?;
-
-    // Send Answer back
-    let answer_msg = serde_json::json!({
-        "type": "answer",
-        "target": sender_id,
-        "sender": peer_id,
-        "sdp": answer.sdp
-    });
-    write.send(Message::Text(answer_msg.to_string().into())).await?;
-    info!("Sent Answer to {}", sender_id);
-    Ok(())
-}
-
-async fn handle_data_channel(d: Arc<RTCDataChannel>, route_handler: RouteHandler) {
-    let d_label = d.label().to_owned();
-    if d_label == "_init" {
-        debug!("dummy WebRTC DataChannel '_init'");
-        return;
-    }
-    info!("New DataChannel {}", d_label);
-
-    let d2 = d.clone();
-    d.on_open(Box::new(move || {
-        let d = d2.clone();
-        let d_label = d_label.clone();
-        let rh = route_handler;
-        Box::pin(async move {
-            info!("DataChannel '{}' open", d_label);
-
-            match d.detach().await {
-                Ok(rtc_detached) => {
-                    debug!("DataChannel '{}' detached successfully", d_label);
-                    let rtc_stream = WebRTCStream::new(rtc_detached);
-
-                    if let Err(e) = rh.handle_stream(rtc_stream).await {
-                        error!("Error handling WebRTC stream on '{}': {}", d_label, e);
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to detach DataChannel '{}': {}", d_label, e);
-                }
-            }
-        })
-    }));
 }

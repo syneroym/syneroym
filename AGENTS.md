@@ -69,6 +69,9 @@ cargo deny check licenses
 # Module layout check (enforce sibling-file convention under src/)
 cargo xtask check-module-layout
 
+# Dependency version check (major.minor only, unless a `# patch-pin:` comment)
+cargo xtask check-dep-versions
+
 # Change doc check (front matter and close-out of docs/planning/changes/*)
 cargo xtask check-change-docs
 
@@ -157,6 +160,14 @@ how the drift happened, so do not add one here without an enforcement path.**
   leave out why it was split. This covers every coding guideline in this file,
   not only size. *Checked by:* review.
 - **Keep dependencies used.** *Checked by:* `cargo shear`.
+- **Dependency versions name `major.minor`.** Write `flate2 = "1.1"` or
+  `p256 = "0.14"`, not `"1.1.9"`. `Cargo.lock` holds the exact version, so a
+  patch part only raises the lowest version Cargo may pick. Keep a patch part
+  only when older patches are broken or vulnerable for us, and give the reason
+  in a `# patch-pin: <reason>` comment on the same line or the line above.
+  Pre-release requirements (`"0.11.0-rc.2"`) are allowed. Do not use the major
+  alone (`"1"`): it says any `1.x` works, and we often use APIs added in a
+  later minor release. *Checked by:* `cargo xtask check-dep-versions`.
 
 ## Functionality, Architecture Documents
 - The [vision doc](docs/VISION.md) contains the vision for Syneroym

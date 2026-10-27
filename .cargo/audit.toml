@@ -11,17 +11,10 @@ ignore = [
     # paste 1.0.15 is unmaintained. It is a build-time proc-macro, not code
     # that runs in the substrate. It comes from netlink-packet-core 0.8,
     # which netwatch 0.19 (iroh 1.4's network-interface crate) uses directly
-    # and through netdev 0.45. netlink-packet-core 0.9 no longer needs paste.
-    # Delete when netwatch moves to it.
+    # and through netdev 0.45. netlink-packet-core 0.9 no longer needs paste,
+    # and netwatch 0.20 uses it, but iroh 1.4.1 requires netwatch ^0.19.3.
+    # Delete when iroh moves to netwatch 0.20.
     "RUSTSEC-2024-0436",
-
-    # --- webrtc 0.17 ---
-    # crypto-bigint 0.5.5: timing variability in operations meant to be
-    # constant-time. Through elliptic-curve 0.13 (p256, p384), which dtls
-    # 0.17.2 uses. The fix is crypto-bigint 0.7.6+, which elliptic-curve 0.13
-    # cannot use. Delete when webrtc/dtls move to a newer RustCrypto curve
-    # stack.
-    "RUSTSEC-2026-0387",
 
     # --- wasmtime's on-disk compile cache (wasmtime-internal-cache) ---
     # zstd 0.13.3 / zstd-safe 7.3.0. Every wasmtime line up to 50.0.0 still

@@ -1,26 +1,23 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
-use aes_gcm::{
-    Aes256Gcm, Key, KeyInit, Nonce,
-    aead::{Aead, OsRng},
-};
+use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce, aead::Aead};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use p256::{EncodedPoint, PublicKey, ecdh::EphemeralSecret};
+use p256::{PublicKey, Sec1Point, ecdh::EphemeralSecret, elliptic_curve::Generate};
 use syneroym_identity::Identity;
 
 fn bench_ecdh_handshake(c: &mut Criterion) {
     let identity = Identity::generate().unwrap();
 
     // Simulate pre-computed client public key
-    let client_secret = EphemeralSecret::random(&mut OsRng);
-    let client_pub = EncodedPoint::from(client_secret.public_key());
+    let client_secret = EphemeralSecret::generate();
+    let client_pub = Sec1Point::from(client_secret.public_key());
     let client_pub_bytes = client_pub.as_bytes().to_vec();
 
     c.bench_function("ecdh_p256_server_handshake", |b| {
         b.iter(|| {
             // Server side handshake actions
             let public_key = PublicKey::from_sec1_bytes(black_box(&client_pub_bytes)).unwrap();
-            let secret = EphemeralSecret::random(&mut OsRng);
-            let server_pub_key = EncodedPoint::from(secret.public_key());
+            let secret = EphemeralSecret::generate();
+            let server_pub_key = Sec1Point::from(secret.public_key());
 
             let shared = secret.diffie_hellman(&public_key);
             let shared_bytes = shared.raw_secret_bytes();

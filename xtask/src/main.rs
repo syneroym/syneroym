@@ -13,6 +13,7 @@ use sysinfo::System;
 use walkdir::WalkDir;
 
 mod change_docs;
+mod dep_versions;
 mod duplication;
 mod file_lengths;
 mod lint_suppressions;
@@ -424,6 +425,7 @@ fn main() -> Result<()> {
         Some("check-module-layout") => module_layout::check_module_layout(),
         Some("check-change-docs") => change_docs::check_change_docs(),
         Some("check-duplication") => duplication::check_duplication(),
+        Some("check-dep-versions") => dep_versions::check_dep_versions(),
         Some("verify") => verify::run(args),
         Some("perf-summary") | None => perf_summary(),
         Some(other) => bail!("Unknown xtask command: {other}"),
