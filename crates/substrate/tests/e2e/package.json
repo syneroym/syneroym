@@ -4,11 +4,14 @@
   "description": "Playwright end-to-end tests for Syneroym WebRTC Substrate",
   "scripts": {
     "test": "playwright test && playwright test -c playwright-multihop.config.ts",
-    "test:debug": "playwright test --debug"
+    "test:debug": "playwright test --debug",
+    "demo:up": "tsx demo-up.ts",
+    "demo:down": "tsx demo-down.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",
     "@types/node": "20.19.41",
+    "tsx": "4.23.15",
     "typescript": "5.9.3"
   }
 }

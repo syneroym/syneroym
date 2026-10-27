@@ -195,9 +195,9 @@ These choices are made now so that Phase 0 can start. Phase 0 checks each one. I
 
 - [ ] Phase 0, shared boot library and harness
   - [x] `node-boot.ts` with `buildArtifacts` and `bootNode`. Convert the main suite. It stays green.
-  - [ ] `playwright-demo.config.ts`, demo setup and teardown, env file, git-ignored `demo-output/`, `demo:up` and `demo:down`.
+  - [x] `playwright-demo.config.ts`, demo setup and teardown, env file, git-ignored `demo-output/`, `demo:up` and `demo:down`.
   - [ ] Convert `global-setup-multihop.ts` to the library, or record a deviation and add a deferred-backlog row.
-  - [ ] Attach mode (`DEMO_ATTACH=1`) in the demo setup and teardown.
+  - [x] Attach mode (`DEMO_ATTACH=1`) in the demo setup and teardown.
   - [ ] Check each decision above. Use the fallback where a check fails.
   - [ ] Measure the boot time. Record whether the demo joins `npm test`.
 - [ ] Phase 1, pilot 1: substrate main story
