@@ -5,7 +5,6 @@ use hpke::{
     Deserializable, Kem as KemTrait, OpModeR, OpModeS, Serializable, aead::AesGcm256,
     kdf::HkdfSha256, kem::X25519HkdfSha256,
 };
-use rand::{rand_core::UnwrapErr, rngs::OsRng};
 
 use crate::HPKE_INFO;
 
@@ -41,16 +40,15 @@ pub(crate) fn public_key_from_seed(seed: &[u8; 32]) -> [u8; 32] {
 pub(crate) fn seal_to(public_key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let public = <MailboxKem as KemTrait>::PublicKey::from_bytes(public_key)
         .map_err(|_| CryptoError::BadPublicKey)?;
-    // This panics only if the OS random source fails. The node's own key
-    // generation needs the same source, so it cannot run without it anyway.
-    let mut rng = UnwrapErr(OsRng);
-    let (enc, ciphertext) = hpke::single_shot_seal::<Aead, Kdf, MailboxKem, _>(
+    // `single_shot_seal` takes its ephemeral key from the OS random source
+    // and panics only if that source fails. The node's own key generation
+    // needs the same source, so it cannot run without it anyway.
+    let (enc, ciphertext) = hpke::single_shot_seal::<Aead, Kdf, MailboxKem>(
         &OpModeS::Base,
         &public,
         HPKE_INFO,
         plaintext,
         b"",
-        &mut rng,
     )
     .map_err(|e| CryptoError::Seal(e.to_string()))?;
     let mut sealed = enc.to_bytes().to_vec();

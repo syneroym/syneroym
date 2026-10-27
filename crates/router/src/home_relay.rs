@@ -3,7 +3,7 @@
 //! The endpoint starts with an empty relay map. `HomeRelay::set` puts one
 //! relay in the map, waits until iroh confirms it as the home relay, and only
 //! then shows the URL to subscribers. The URL is never read back from iroh:
-//! after the last relay is removed, iroh 0.97 still lists it in
+//! after the last relay is removed, iroh (0.97 and 1.4) still lists it in
 //! `Endpoint::addr`.
 //!
 //! "Confirmed" means iroh chose the relay after a net-report probe reached

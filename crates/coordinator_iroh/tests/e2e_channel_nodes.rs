@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl};
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::presets};
 use reqwest::Client;
 use syneroym_app_orchestration::Visibility;
 use syneroym_core::{
@@ -37,7 +37,7 @@ async fn iroh_hop_through_forwarder() -> Result<()> {
     let info_client = Client::new();
     let topo = InboundRelayTopology::spawn(temp_dir.path(), &info_client).await?;
 
-    let mut ep_bldr = Endpoint::empty_builder();
+    let mut ep_bldr = Endpoint::builder(presets::Minimal);
     if let Some(relay_url) = topo.c_info.relay_url.as_ref() {
         let url: RelayUrl = relay_url.parse()?;
         ep_bldr = ep_bldr.relay_mode(RelayMode::Custom(RelayMap::from(url)));

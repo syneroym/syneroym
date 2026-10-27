@@ -146,23 +146,18 @@ blake3 = "1.8"
 ed25519-dalek = { version = "2.2", features = ["zeroize"] }
 hex = { version = "0.4", features = ["serde"] }
 base64 = "0.23"
-# 0.14 needs stable sha2 0.11, which conflicts with iroh's exact
-# pre-release pin; move up when iroh moves to the stable crypto line.
-hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
+hpke = { version = "0.15", default-features = false, features = ["alloc", "x25519", "aes", "getrandom"] }
 chrono = "0.4"
 croner = "3.0.1"
-pkarr = "6.0"
+pkarr = "8.1"
 dirs = "6.0"
 rusqlite = { version = "0.38", features = ["bundled-sqlcipher", "hooks"] }
-# TODO: Upgrade sha2 to v0.11 once iroh updates its crates. 
-# iroh-base v0.97.0 strictly pins sha2 = "=0.11.0-rc.2", causing resolution 
-# conflicts if we attempt to use the stable 0.11 release here.
 sha2 = "0.10"
 getrandom = "0.4"
 rustls-pki-types = "1.10"
 rustls = { version = "0.23", features = ["ring"] }
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
-n0-error = "0.1"
+n0-error = "1.0"
 thiserror = "2.0"
 aes-gcm = "0.10"
 p256 = { version = "0.13", features = ["ecdh", "pkcs8", "arithmetic", "ecdsa"] }
@@ -184,26 +179,12 @@ aead = "0.5"
 tar = "0.4.46"
 flate2 = "1.1.9"
 mime_guess = "2.0.5"
-# object_store 0.14 bumps its md-5 dependency to require digest ^0.11.0
-# (stable), which conflicts with the digest 0.11.0-rc.10 pin below required
-# by iroh-base's pre-release ed25519-dalek/pkcs8 chain. 0.13.x is the newest
-# line that still resolves; a plain "0.13.1" (not "=0.13.1") stays capped
-# below 0.14.0 under Cargo's 0.x caret semantics without needing an exact
-# pin. Revisit alongside the iroh pins below once iroh ships a stable
-# ed25519-dalek v3 release.
-object_store = "0.13.1"
+object_store = "0.14"
 
 # Iroh dependencies
-# NOTE: iroh v0.97 pulls in ed25519-dalek v3.0.0-pre.1, which in turn requires
-# ed25519 ^3.0.0-rc.0 and pkcs8 ^0.11.0-rc.10 (all pre-release). A plain
-# `cargo update` will bump these to their stable releases, which have breaking
-# API changes that break the pre-release dalek build. After any `cargo update`,
-# run `mise run deps:update` (or the two pinning commands it contains) to
-# restore compatible versions. Remove these pins once iroh ships a release
-# that depends on stable ed25519-dalek v3.
-iroh-base = "0.97"
-iroh = "0.97"
-iroh-relay = { version = "0.97", features = ["server"] }
+iroh-base = "1.4"
+iroh = "1.4"
+iroh-relay = { version = "1.4", features = ["server"] }
 
 # WASM
 wasmtime = { version = "48.0.7", features = ["component-model", "cache"] }
@@ -224,9 +205,9 @@ futures = "0.3"
 tokio-util = "0.7"
 # Embedded MQTT broker for syneroym:messaging (ADR-0010).
 # 0.20 is the latest published release as of this pin (2026-07-09); no known
-# conflicts with other workspace deps yet, pinned per the iroh/sha2/object_store
-# convention above so a future `cargo update` doesn't silently drift the
-# in-process router API this crate depends on (see crates/mqtt_broker).
+# conflicts with other workspace deps yet, pinned so a future `cargo update`
+# doesn't silently drift the in-process router API this crate depends on (see
+# crates/mqtt_broker).
 # Default features pull in rustls-webpki/rustls-pemfile (vulnerable/unmaintained,
 # RUSTSEC-2026-0104/0098/0099/0049, RUSTSEC-2025-0134) and a websocket stack for
 # the v4/v5/ws TCP listeners; `MqttBroker` never binds any of those (see

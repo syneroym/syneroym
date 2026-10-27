@@ -28,4 +28,3 @@ serde_json.workspace = true
 reqwest.workspace = true
 clap = { workspace = true, features = ["derive"] }
 iroh.workspace = true
-rand.workspace = true

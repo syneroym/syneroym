@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axum::{Router, http::StatusCode, routing};
-use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets};
 use reqwest::Client;
 use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
@@ -85,7 +85,7 @@ async fn relay_count_follows_connections_and_capacity() -> Result<()> {
 
     // Step 3: Connect a client endpoint to the coordinator's relay.
     let relay_url: RelayUrl = info.relay_url.context("missing relay_url")?.parse()?;
-    let client = Endpoint::empty_builder()
+    let client = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
         .bind()
         .await?;
@@ -249,7 +249,7 @@ async fn probes_do_not_call_the_registry() -> Result<()> {
 #[tokio::test]
 async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
-    let allowed_secret = SecretKey::generate(&mut rand::rng());
+    let allowed_secret = SecretKey::generate();
     let allowed_id = allowed_secret.public().to_string();
 
     let mut config = SubstrateConfig {
@@ -283,7 +283,7 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     let relay_url: RelayUrl = info.relay_url.context("missing relay_url")?.parse()?;
 
     // Connect the allowed control client and wait until the relay counts it.
-    let allowed_client = Endpoint::empty_builder()
+    let allowed_client = Endpoint::builder(presets::Minimal)
         .secret_key(allowed_secret)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url.clone())))
         .bind()
@@ -296,7 +296,7 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     .await?;
 
     // Connect an excluded client and verify the relay client count stays at 2.
-    let excluded_client = Endpoint::empty_builder()
+    let excluded_client = Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
         .bind()
         .await?;

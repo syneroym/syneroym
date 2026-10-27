@@ -5,7 +5,6 @@ use std::sync::{
 
 use dashmap::DashMap;
 use ed25519_dalek::VerifyingKey;
-use iroh::Endpoint;
 use p256::{
     ecdh::EphemeralSecret,
     elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
@@ -18,7 +17,7 @@ use syneroym_core::{
     util::short_hash,
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
-use syneroym_router::{RoutePreamble, SYNEROYM_ALPN};
+use syneroym_router::{RoutePreamble, SYNEROYM_ALPN, net_iroh};
 use syneroym_sdk::topology::{
     AppHostResolver, CredentialWarning, Tier1Lookup, Tier2Fetch, credential_warning,
 };
@@ -157,8 +156,11 @@ async fn forward_to_service_returns_bad_gateway_on_failed_connect() {
 #[tokio::test]
 async fn forward_to_service_retries_on_not_hosted_here() {
     let state = test_state(None);
-    let server_ep =
-        Endpoint::empty_builder().alpns(vec![SYNEROYM_ALPN.to_vec()]).bind().await.unwrap();
+    let server_ep = net_iroh::empty_endpoint_builder()
+        .alpns(vec![SYNEROYM_ALPN.to_vec()])
+        .bind()
+        .await
+        .unwrap();
     let server_addr = server_ep.addr();
 
     let mechanisms = vec![EndpointMechanism::Iroh {
@@ -230,8 +232,11 @@ async fn forward_to_service_retries_on_not_hosted_here() {
 #[tokio::test]
 async fn forward_to_service_returns_bad_gateway_when_retry_also_refused() {
     let state = test_state(None);
-    let server_ep =
-        Endpoint::empty_builder().alpns(vec![SYNEROYM_ALPN.to_vec()]).bind().await.unwrap();
+    let server_ep = net_iroh::empty_endpoint_builder()
+        .alpns(vec![SYNEROYM_ALPN.to_vec()])
+        .bind()
+        .await
+        .unwrap();
     let server_addr = server_ep.addr();
 
     let mechanisms = vec![EndpointMechanism::Iroh {
@@ -296,8 +301,11 @@ async fn forward_to_service_returns_bad_gateway_when_retry_also_refused() {
 #[tokio::test]
 async fn forward_to_service_rehomes_and_replays_on_host_mismatch() {
     let state = test_state(None);
-    let server_ep =
-        Endpoint::empty_builder().alpns(vec![SYNEROYM_ALPN.to_vec()]).bind().await.unwrap();
+    let server_ep = net_iroh::empty_endpoint_builder()
+        .alpns(vec![SYNEROYM_ALPN.to_vec()])
+        .bind()
+        .await
+        .unwrap();
     let server_addr = server_ep.addr();
 
     let expected_host_id = Identity::generate().unwrap();

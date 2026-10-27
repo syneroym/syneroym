@@ -2,9 +2,7 @@ use std::{env, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use iroh::{
-    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets::N0,
-};
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets};
 use reqwest::Client;
 use serde_json::{Number, Value};
 use syneroym_community_registry::EcosystemRegistry;
@@ -225,17 +223,17 @@ async fn test_retry_mechanism(info: &CoordinatorInfo) -> Result<()> {
         max_backoff_ms: 1000,
     };
 
-    let mut builder = Endpoint::builder(N0);
+    let mut builder = Endpoint::builder(presets::N0);
     if let Some(ref relay_url_str) = info.relay_url
         && let Ok(parsed) = relay_url_str.parse::<RelayUrl>()
     {
-        builder = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(parsed)));
+        builder = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(RelayMap::from(parsed)));
     }
     let test_endpoint = builder.bind().await.context("Failed to bind test endpoint")?;
     let good_addr: EndpointAddr = serde_json::from_slice(&info.endpoint_addr_bytes)?;
 
-    let mut rng = rand::rng();
-    let bad_secret_key = SecretKey::generate(&mut rng);
+    let bad_secret_key = SecretKey::generate();
     let bad_node_id = bad_secret_key.public();
     let bad_addr = EndpointAddr::new(bad_node_id);
 

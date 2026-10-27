@@ -25,7 +25,7 @@ fn unreachable_mechanism() -> (EndpointMechanism, UdpSocket) {
     let black_hole = UdpSocket::bind("127.0.0.1:0").expect("bind black-hole socket");
     let black_hole_addr = black_hole.local_addr().expect("local_addr");
 
-    let bogus_node_id = SecretKey::generate(&mut rand::rng()).public();
+    let bogus_node_id = SecretKey::generate().public();
     let endpoint_addr = EndpointAddr::new(bogus_node_id).with_ip_addr(black_hole_addr);
     let mechanism = EndpointMechanism::Iroh {
         endpoint_addr_bytes: serde_json::to_vec(&endpoint_addr).expect("serialize EndpointAddr"),

@@ -29,7 +29,7 @@ fn test_config() -> SubstrateConfig {
 
 #[tokio::test]
 async fn passport_access_needs_tls() {
-    let valid_id = SecretKey::generate(&mut rand::rng()).public().to_string();
+    let valid_id = SecretKey::generate().public().to_string();
     let variants =
         vec![CoordinatorAccess::Passport, CoordinatorAccess::ListOrPassport(vec![valid_id])];
 

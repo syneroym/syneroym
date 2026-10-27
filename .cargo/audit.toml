@@ -7,32 +7,13 @@
 
 [advisories]
 ignore = [
-    # --- iroh 0.97 (a pre-1.0 release line, no longer supported upstream) ---
-    # All of these leave with the iroh 1.x upgrade; re-check each one then.
-    #
-    # atomic-polyfill 1.0.3 is unmaintained. It comes from heapless 0.7, which
-    # postcard's `heapless-cas` feature pulls in; iroh-relay and iroh-metrics
-    # enable that feature.
-    "RUSTSEC-2023-0089",
-    # paste 1.0.15 is unmaintained. It is a proc-macro used by
-    # netlink-packet-core, through netdev and netwatch, which iroh uses.
+    # --- iroh 1.4 (netwatch's network-interface code) ---
+    # paste 1.0.15 is unmaintained. It is a build-time proc-macro, not code
+    # that runs in the substrate. It comes from netlink-packet-core 0.8,
+    # which netwatch 0.19 (iroh 1.4's network-interface crate) uses directly
+    # and through netdev 0.45. netlink-packet-core 0.9 no longer needs paste.
+    # Delete when netwatch moves to it.
     "RUSTSEC-2024-0436",
-    # hickory-proto 0.25.2: unbounded loop in NSEC3 validation (0118) and
-    # O(n^2) name compression when encoding (0119). Through hickory-resolver,
-    # which iroh 0.97 uses for DNS address lookup.
-    "RUSTSEC-2026-0118",
-    "RUSTSEC-2026-0119",
-    # lru 0.16.4: use-after-free if a panic happens inside
-    # `LruCache::pop`-family calls. Through iroh-relay 0.97.
-    "RUSTSEC-2026-0253",
-    # quick-xml 0.39.4: quadratic duplicate-attribute check (0194) and
-    # unbounded namespace allocation (0195). Only through object_store 0.13's
-    # `aws` feature, which syneroym-data-blob leaves off by default (it is on
-    # only under `--all-features`). object_store is held at 0.13 because 0.14
-    # needs stable digest 0.11, which conflicts with iroh 0.97's pre-release
-    # crypto pins (see the root Cargo.toml).
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
 
     # --- webrtc 0.17 ---
     # crypto-bigint 0.5.5: timing variability in operations meant to be

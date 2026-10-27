@@ -4,6 +4,7 @@ use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl};
 use tokio::{net::TcpListener, time};
 
 use super::{HomeRelay, HomeRelayError};
+use crate::net_iroh;
 
 /// An `http://127.0.0.1:<port>` URL whose listener accepts TCP but never
 /// answers, so iroh can never confirm it. Keep the listener alive for the
@@ -16,7 +17,7 @@ async fn dead_relay() -> (TcpListener, RelayUrl) {
 }
 
 async fn bind_empty() -> Endpoint {
-    Endpoint::empty_builder()
+    net_iroh::empty_endpoint_builder()
         .clear_ip_transports()
         .bind_addr(SocketAddr::from(([127, 0, 0, 1], 0)))
         .unwrap()

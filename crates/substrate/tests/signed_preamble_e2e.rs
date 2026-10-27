@@ -10,7 +10,7 @@ use std::{
 use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use futures::future::join_all;
-use iroh::{Endpoint, EndpointAddr, TransportAddr};
+use iroh::{Endpoint, EndpointAddr, TransportAddr, endpoint::presets};
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::{
@@ -310,7 +310,7 @@ async fn mailbox_refuses_forged_preamble_signatures_at_handshake() -> anyhow::Re
     )?;
 
     let attacker = Identity::generate()?;
-    let client_ep = Endpoint::empty_builder().bind().await?;
+    let client_ep = Endpoint::builder(presets::Minimal).bind().await?;
     let node_addr = wait_for_node_addr(&node).await;
 
     for method in methods {

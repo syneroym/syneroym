@@ -14,6 +14,7 @@ use iroh::{
 use tokio::net::UdpSocket;
 
 use super::*;
+use crate::net_iroh;
 
 const ALPN: &[u8] = b"syneroym-test/close/0";
 
@@ -58,7 +59,7 @@ async fn a_close_that_panics_does_not_stop_the_caller() {
 }
 
 async fn bind() -> Endpoint {
-    Endpoint::empty_builder()
+    net_iroh::empty_endpoint_builder()
         .clear_ip_transports()
         .bind_addr(SocketAddr::from(([127, 0, 0, 1], 0)))
         .unwrap()
@@ -105,7 +106,7 @@ async fn a_real_endpoint_with_a_live_peer_closes_within_the_limit() {
 async fn an_endpoint_whose_close_takes_far_longer_than_the_limit_does_not_hold_up_the_caller() {
     let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let silent_addr = silent.local_addr().unwrap();
-    let a = Endpoint::empty_builder()
+    let a = net_iroh::empty_endpoint_builder()
         .clear_ip_transports()
         .bind_addr(SocketAddr::from(([127, 0, 0, 1], 0)))
         .unwrap()
@@ -117,7 +118,7 @@ async fn an_endpoint_whose_close_takes_far_longer_than_the_limit_does_not_hold_u
         .bind()
         .await
         .unwrap();
-    let nobody = SecretKey::generate(&mut rand::rng()).public();
+    let nobody = SecretKey::generate().public();
     let target = EndpointAddr::from_parts(nobody, [TransportAddr::Ip(silent_addr)]);
     let dialing = a.clone();
     tokio::spawn(async move { dialing.connect(target, ALPN).await });

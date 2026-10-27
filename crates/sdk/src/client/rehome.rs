@@ -1,9 +1,9 @@
 use std::sync::{PoisonError, atomic::Ordering};
 
 use anyhow::Result;
-use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl};
+use iroh::{EndpointAddr, RelayMap, RelayMode, RelayUrl};
 use syneroym_core::dht_registry::EndpointMechanism;
-use syneroym_router::{E2eError, SYNEROYM_ALPN};
+use syneroym_router::{E2eError, SYNEROYM_ALPN, net_iroh};
 use syneroym_rpc::{JsonRpcError, NOT_HOSTED_HERE_RPC_CODE};
 use tokio::time;
 
@@ -26,7 +26,7 @@ impl SyneroymClient {
                     let mut endpoint_addr: EndpointAddr =
                         serde_json::from_slice(&endpoint_addr_bytes)?;
 
-                    let mut ep_bldr = Endpoint::empty_builder();
+                    let mut ep_bldr = net_iroh::empty_endpoint_builder();
                     if let Some(relay) = relay_url
                         && let Ok(url) = relay.parse::<RelayUrl>()
                     {

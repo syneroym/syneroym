@@ -393,7 +393,7 @@ pub(super) async fn pull_node_with(setup: Setup) -> PullNode {
 /// to a mailbox that is not on this node reaches the recording hop.
 async fn mailbox_registry_url(mailbox_identity: &Identity) -> String {
     let did = substrate::derive_did_key(&mailbox_identity.public_key());
-    let addr = EndpointAddr::new(SecretKey::generate(&mut rand::rng()).public());
+    let addr = EndpointAddr::new(SecretKey::generate().public());
     let record = EndpointInfo {
         service_id: did.clone(),
         substrate_id: did,

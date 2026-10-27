@@ -16,7 +16,9 @@
 //!
 //!     cargo run --example echo --features=examples
 
-use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, protocol::Router};
+use iroh::{
+    Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, endpoint::presets, protocol::Router,
+};
 use n0_error::{Result, StdResultExt};
 use syneroym_core::config::{LogTarget, SubstrateConfig};
 use tracing_subscriber::fmt;
@@ -101,9 +103,9 @@ async fn test_echo() -> anyhow::Result<()> {
 }
 
 async fn connect_side(addr: EndpointAddr) -> Result<()> {
-    let ep_bldr = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
-        IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
-    )));
+    let ep_bldr = Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Custom(
+        RelayMap::from(IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap()),
+    ));
 
     let endpoint = ep_bldr.bind().await.expect("Failed to bind iroh endpoint");
     // let endpoint = Endpoint::bind(presets::N0).await?;
@@ -143,9 +145,9 @@ async fn connect_side(addr: EndpointAddr) -> Result<()> {
 }
 
 async fn start_accept_side() -> Result<Router> {
-    let ep_bldr = Endpoint::empty_builder().relay_mode(RelayMode::Custom(RelayMap::from(
-        IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap(),
-    )));
+    let ep_bldr = Endpoint::builder(presets::Minimal).relay_mode(RelayMode::Custom(
+        RelayMap::from(IROH_RELAY_URL.to_string().parse::<RelayUrl>().unwrap()),
+    ));
 
     let endpoint: Endpoint = ep_bldr.bind().await.expect("Failed to bind iroh endpoint");
 

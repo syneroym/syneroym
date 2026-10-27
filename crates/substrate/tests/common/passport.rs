@@ -8,6 +8,7 @@ use std::{
 
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
+    endpoint::presets,
 };
 use reqwest::Certificate;
 use serde_json::Map;
@@ -212,7 +213,7 @@ impl PassportRelay {
 
         let relay_url: RelayUrl = self.relay_url().parse().expect("parse relay url");
         let secret_key = SecretKey::from_bytes(&peer_key.to_bytes());
-        Endpoint::empty_builder()
+        Endpoint::builder(presets::Minimal)
             .clear_ip_transports()
             .secret_key(secret_key)
             .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))

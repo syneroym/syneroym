@@ -661,8 +661,7 @@ fn build_blob_provider(config: &SubstrateConfig) -> anyhow::Result<Arc<dyn BlobP
             {
                 Err(anyhow::anyhow!(
                     "storage.blob_store.backend = \"s3\" requires building syneroym-substrate \
-                     with the `aws` feature (off by default -- see the object_store/digest \
-                     version-pin comment in the root Cargo.toml)"
+                     with the `aws` feature (off by default)"
                 ))
             }
         }

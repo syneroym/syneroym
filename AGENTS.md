@@ -104,9 +104,6 @@ cargo xtask perf-summary   # runs all of the above and appends to PERF_SUMMARY.m
 cargo run --bin roymctl -- --help
 cargo run --bin syneroym-substrate -- run --config <path>
 
-# After `cargo update`, iroh's pre-release crypto chain needs re-pinning:
-mise run deps:update
-
 # Prune stale target/ artifacts (untouched 14+ days) instead of `cargo clean`
 mise run clean:sweep
 ```

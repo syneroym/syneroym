@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Result;
 use async_trait::async_trait;
-use iroh::{Endpoint, SecretKey, protocol::Router};
+use iroh::{Endpoint, SecretKey, endpoint::presets, protocol::Router};
 use reqwest::Client;
 use serde_json::json;
 use syneroym_core::{
@@ -118,8 +118,10 @@ async fn spawn_intermediate_node(
     let endpoint_registry_b =
         syneroym_core::local_registry::EndpointRegistry::new(data_store_b).await?;
 
-    let ep_b =
-        Endpoint::empty_builder().secret_key(SecretKey::from_bytes(&secret_b_bytes)).bind().await?;
+    let ep_b = Endpoint::builder(presets::Minimal)
+        .secret_key(SecretKey::from_bytes(&secret_b_bytes))
+        .bind()
+        .await?;
     let ep_b_addr = wait_for_local_addr(&ep_b).await;
 
     let deps_b = build_test_route_handler_deps(&config_b, &did_b, &endpoint_registry_b).await?;
@@ -385,7 +387,7 @@ async fn forwarding_log_redaction() -> Result<()> {
     let target = spawn_native_capability_callee_node(base_path, &r_url).await?;
 
     let coord_addr = coord.endpoint_addr().unwrap();
-    let client_ep = Endpoint::empty_builder().bind().await?;
+    let client_ep = Endpoint::builder(presets::Minimal).bind().await?;
 
     let master = Identity::generate()?;
     let master_did = derive_did_key(&master.public_key());

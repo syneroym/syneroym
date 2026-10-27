@@ -162,7 +162,7 @@ impl CoordinatorIroh {
 
         // Made before the relay server, so the relay can always admit the
         // coordinator's own endpoint.
-        let secret_key = SecretKey::generate(&mut rand::rng());
+        let secret_key = SecretKey::generate();
         let relay_passports = if relay_on && role.access.accepts_passports() {
             let resolver: Arc<dyn MasterAnchorResolver> = Arc::new(RegistryClient::new(
                 config.substrate.enable_bep0044_dht,
@@ -418,7 +418,7 @@ impl CoordinatorIroh {
 
         let mut relay_fut = pin::pin!(async {
             if let Some(server) = &mut self.relay_server {
-                server.task_handle().await.context("iroh relay server task panicked")??;
+                server.join().await.context("iroh relay server task panicked")??;
                 Ok(())
             } else {
                 future::pending::<Result<()>>().await

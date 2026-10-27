@@ -69,7 +69,7 @@ async fn second_registration_is_accepted_by_registry() -> Result<()> {
     let r_url = registry_r.bind().await?;
     registry_r.spawn().await?;
 
-    let secret_key = SecretKey::generate(&mut rand::rng());
+    let secret_key = SecretKey::generate();
     let reg = Registration::new(
         r_url.clone(),
         secret_key.clone(),

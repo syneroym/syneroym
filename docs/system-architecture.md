@@ -273,7 +273,7 @@ flowchart TD
     R <-->|"3c. Relay (first contact, and while no direct path exists)"| B
 ```
 
-**Technology:** `iroh` 0.97 (Rust crate) provides QUIC transport, NAT hole punching and relay. Peer discovery is the community registry and the `pkarr` records on the BEP 0044 DHT, not the address lookup of Iroh. See [Discovery](#discovery) and [Registry first, DHT second](#registry-first-dht-second). `webrtc-rs` serves browser clients through WebRTC data channels. See [Browser Path](#browser-path-webrtc-and-websocket-tunnel).
+**Technology:** `iroh` 1.4 (Rust crate) provides QUIC transport, NAT hole punching and relay. Peer discovery is the community registry and the `pkarr` records on the BEP 0044 DHT, not the address lookup of Iroh. See [Discovery](#discovery) and [Registry first, DHT second](#registry-first-dht-second). `webrtc-rs` serves browser clients through WebRTC data channels. See [Browser Path](#browser-path-webrtc-and-websocket-tunnel).
 
 ### Relay Node Architecture
 
@@ -291,7 +291,7 @@ A passport relay is a closed-group relay: only leased, listed, or always-admitte
 
 With `[roles.coordinator.tls]` set, the relay uses that certificate and key, and it also runs QUIC address discovery on `quic_bind_address`. Without that setting it does not run QUIC address discovery. The code gives the HTTPS listener of the relay and its plain HTTP probe listener the same `http_bind_address`. The relay library says these need different ports, so a fixed port may fail with address in use. No test covers relay TLS.
 
-**A relay that is down.** A node sends all its relay datagrams through one queue, and one task hands them to the task of each relay. A node that keeps dialing a peer whose relay is down (for example an offline peer that hosts its own relay) can fill the queue of that relay. The task of a down relay does not read its queue while it waits to reconnect. This wait can last about 30 seconds. While that queue is full, `iroh` 0.97 holds back every other relay datagram of the node. Calls on other connections that use a relay path then stall, for up to about a minute, and the round-trip estimates of those paths grow. Connections on a direct path were not affected in our tests. The substrate has no mitigation yet. An operator should not let a node that is often offline be the only relay of its peers. Shutdown does not depend on this: see [Failure and Shutdown](#failure-and-shutdown).
+**A relay that is down.** A node sends all its relay datagrams through one queue, and one task hands them to the task of each relay. A node that keeps dialing a peer whose relay is down (for example an offline peer that hosts its own relay) can fill the queue of that relay. The task of a down relay does not read its queue while it waits to reconnect. This wait can last about 30 seconds. While that queue is full, `iroh` holds back every other relay datagram of the node (seen in 0.97; the same code is in 1.4). Calls on other connections that use a relay path then stall, for up to about a minute, and the round-trip estimates of those paths grow. Connections on a direct path were not affected in our tests. The substrate has no mitigation yet. An operator should not let a node that is often offline be the only relay of its peers. Shutdown does not depend on this: see [Failure and Shutdown](#failure-and-shutdown).
 
 The relay carries QUIC traffic that is already encrypted between the two peers. It does not read it. It still sees which endpoints talk, and the size and timing of the traffic.
 
@@ -416,7 +416,7 @@ Both endpoints share a rate limiter of 10 requests per minute per IP address (`r
 
 To pick a new relay, the task ranks the entries with the substrate DID. It skips an entry whose `/v1/info` does not answer, has no online relay, or reports `at_capacity` or an unknown status. It uses the first relay that Iroh confirms. If a fresh list gives no working relay, the task asks the registry anyway. An empty list is saved but is never used.
 
-The list and the choice are saved in `coordinators.json` in `storage.db_dir`, with the registry URL they came from. A file from another registry is ignored. The task keeps its choice while it works, also when a new list ranks another entry first. It probes `/v1/info` of the chosen coordinator every 60 seconds. The probe does not follow redirects and reads at most 64 KiB. When a new list has other details for the same relay (for example a new `info_url`), the task uses the new details. It picks again after 3 failed probes within 5 minutes, or when a refreshed list no longer has the relay. Iroh 0.97 gives no signal for a failed relay connection, so the health of the relay is read from `/v1/info`. A listed relay that refuses this node (an `access` other than `"everyone"`) is confirmed and answers probes, so the node never leaves it. Operators must list only relays with `access = "everyone"`.
+The list and the choice are saved in `coordinators.json` in `storage.db_dir`, with the registry URL they came from. A file from another registry is ignored. The task keeps its choice while it works, also when a new list ranks another entry first. It probes `/v1/info` of the chosen coordinator every 60 seconds. The probe does not follow redirects and reads at most 64 KiB. When a new list has other details for the same relay (for example a new `info_url`), the task uses the new details. It picks again after 3 failed probes within 5 minutes, or when a refreshed list no longer has the relay. The health of the relay is read from `/v1/info`. Iroh 1.4 reports the state of the relay connection (`Endpoint::home_relay_status`), but the task does not use it yet. A listed relay that refuses this node (an `access` other than `"everyone"`) is confirmed and answers probes, so the node never leaves it. Operators must list only relays with `access = "everyone"`.
 
 When no other relay works, the node stays on the relay it has and tries again after 5 seconds, with a delay that doubles up to 10 minutes. It does not make a new connection to a relay that its registry does not list, and it does not try a relay that failed to confirm again for one hour while the current relay works. With no relay at all, the node is in degraded mode: the relay map is empty, the log has a warning (at most one every 5 minutes), and the task asks again with the same growing delay. A list refresh is at least 10 seconds after the last one, also when a registry sends `max_age_secs = 0`.
 
@@ -1878,7 +1878,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 |---|---|---|
 | Substrate language | **Rust** (2024 edition, stable) | Memory safety; WASM compilation target; strong async ecosystem |
 | Async runtime | **Tokio** 1.x | Industry standard; required by Iroh |
-| P2P / relay | **Iroh** 0.97 (`iroh`, `iroh-base`, `iroh-relay`) | QUIC, NAT hole punching, Iroh relay |
+| P2P / relay | **Iroh** 1.4 (`iroh`, `iroh-base`, `iroh-relay`) | QUIC, NAT hole punching, Iroh relay |
 | WebRTC (browser) | **webrtc-rs** (`webrtc` 0.17) | Browser-to-service via Data Channels |
 | WASM runtime | **Wasmtime** 46.x (WASI 0.2) | Bytecode Alliance; component model support |
 | Container runtime | **Podman** (the host's `podman` command) | No daemon; Docker-compatible CLI. Rootless use is operator advice: the engine checks neither the Podman version nor the rootless mode |
@@ -1886,7 +1886,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 | External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams | Types come from WIT. Method dispatch is written by hand. WebSocket is an optional route for one app |
 | Inter-component calls | **JSON-RPC 2.0** through the Universal Proxy | Local, or over Iroh QUIC to another node |
 | Local storage | **SQLite** (`rusqlite` + `sqlcipher`) | Single writer per service; see Storage & Write Arbitration |
-| DHT / registry | **pkarr** 6.0 + BEP 0044 DHT | Community registry first, DHT second. The bootstrap server is Envisioned: see Layer 1 |
+| DHT / registry | **pkarr** 8.1 + BEP 0044 DHT | Community registry first, DHT second. The bootstrap server is Envisioned: see Layer 1 |
 | Observability | **`tracing`** (logs), **`metrics`** (in-process `MemoryRecorder`) | The recorder is served as a JSON snapshot on a configured endpoint |
 | Configuration | **TOML** (`toml` 1.0) | Parsed into typed Rust structs and checked at startup |
 

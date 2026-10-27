@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
-    protocol::Router,
+    endpoint::presets, protocol::Router,
 };
 use reqwest::{Client, StatusCode};
 use serde_json::{Map, Value};
@@ -164,7 +164,7 @@ pub async fn register(
 /// It accepts no connections.
 pub async fn node_endpoint(node: &Identity, relay: RelayUrl) -> Result<Endpoint> {
     let secret_key = SecretKey::from_bytes(&node.to_bytes());
-    let endpoint = Endpoint::empty_builder()
+    let endpoint = Endpoint::builder(presets::Minimal)
         .clear_ip_transports()
         .secret_key(secret_key)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay)))
@@ -184,7 +184,7 @@ pub async fn goes_online(ep: &Endpoint, wait: Duration) -> bool {
 /// accept; `router.endpoint()` is the endpoint.
 pub async fn accepting_node(node: &Identity, relay: RelayUrl) -> Result<Router> {
     let secret_key = SecretKey::from_bytes(&node.to_bytes());
-    let endpoint = Endpoint::empty_builder()
+    let endpoint = Endpoint::builder(presets::Minimal)
         .clear_ip_transports()
         .secret_key(secret_key)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay)))

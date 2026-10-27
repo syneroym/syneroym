@@ -80,8 +80,8 @@ coordinator_all = [
     "syneroym-coordinator/iroh",
     "syneroym-coordinator/webrtc",
 ]
-# Forwards to syneroym-data-blob's own `aws` feature (off by default --
-# see the object_store/digest version-pin comment in the root Cargo.toml).
+# Forwards to syneroym-data-blob's own `aws` feature (off by default; see
+# crates/data_blob/Cargo.toml).
 aws = ["syneroym-data-blob/aws"]
 # Links the dual-build-shim fixture's native build in as a
 # `NativeService`, proving the shim builds both ways from one source tree,
