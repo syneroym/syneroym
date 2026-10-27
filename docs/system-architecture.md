@@ -1879,8 +1879,8 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 | Substrate language | **Rust** (2024 edition, stable) | Memory safety; WASM compilation target; strong async ecosystem |
 | Async runtime | **Tokio** 1.x | Industry standard; required by Iroh |
 | P2P / relay | **Iroh** 1.4 (`iroh`, `iroh-base`, `iroh-relay`) | QUIC, NAT hole punching, Iroh relay |
-| WebRTC (browser) | **webrtc-rs** (`webrtc` 0.17) | Browser-to-service via Data Channels |
-| WASM runtime | **Wasmtime** 46.x (WASI 0.2) | Bytecode Alliance; component model support |
+| WebRTC (browser) | **webrtc-rs** (`webrtc` 0.21) | Browser-to-service via Data Channels |
+| WASM runtime | **Wasmtime** 48.x LTS (WASI 0.2) | Bytecode Alliance; component model support |
 | Container runtime | **Podman** (the host's `podman` command) | No daemon; Docker-compatible CLI. Rootless use is operator advice: the engine checks neither the Podman version nor the rootless mode |
 | API IDL | **WIT** (Component Model, WASI 0.2) | Single source for the host and guest component interfaces. The wire surface is separate: the route preamble and the Roym JSON envelope |
 | External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams | Types come from WIT. Method dispatch is written by hand. WebSocket is an optional route for one app |

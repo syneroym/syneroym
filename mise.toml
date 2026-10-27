@@ -82,6 +82,10 @@ run = "cargo xtask check-module-layout"
 description = "Ensure change docs under docs/planning/changes have valid front matter and name the living docs they updated"
 run = "cargo xtask check-change-docs"
 
+[tasks."check:dep-versions"]
+description = "Ensure dependency versions name major.minor, with a patch part only behind a patch-pin comment"
+run = "cargo xtask check-dep-versions"
+
 [tasks."check:duplication"]
 description = "Ensure exact-duplicate code stays under the ratchet ceiling"
 run = "cargo xtask check-duplication"
@@ -94,7 +98,7 @@ run = """
 
 [tasks."test:rust"]
 description = "Run all Rust unit and integration tests"
-depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "check:lint-suppressions", "check:module-layout", "check:change-docs", "check:duplication", "test:roym-ui"]
+depends = ["build:test-components", "build:roym", "check:roym-deps", "check:file-lengths", "check:lint-suppressions", "check:module-layout", "check:change-docs", "check:dep-versions", "check:duplication", "test:roym-ui"]
 # nextest runs every test binary in one parallel pool (see .config/nextest.toml);
 # it does not run doctests, so those follow in a second `cargo test --doc` pass.
 run = [

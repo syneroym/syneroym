@@ -328,10 +328,12 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
         .rpc_ok("group.remove-member", json!({ "group": &gid, "person_did": trio.y.owner_did() }))
         .await;
 
+    // Both samples below must fall inside the 60s age window with room to
+    // spare. A slow CI runner can take more than 30s to get this far.
     let start_now = clock::now_ms();
     assert!(
-        start_now <= m_ts + 30_000,
-        "removal step overran the 30s observation window (start_now={start_now}, m_ts={m_ts})"
+        start_now <= m_ts + 40_000,
+        "removal step overran the 40s observation window (start_now={start_now}, m_ts={m_ts})"
     );
     let target_20 = m_ts + 20_000;
     if target_20 > start_now {
@@ -341,14 +343,14 @@ async fn a_message_to_a_member_removed_while_pending_settles_failed_after_the_ag
     let row_20 = hz_20["messages"].as_array().unwrap().iter().find(|m| m["id"] == m_id).unwrap();
     assert_eq!(row_20["state"], "pending");
 
-    let now_30 = clock::now_ms();
-    let target_30 = m_ts + 30_000;
-    if target_30 > now_30 {
-        time::sleep(Duration::from_millis((target_30 - now_30) as u64)).await;
+    let now_40 = clock::now_ms();
+    let target_40 = m_ts + 40_000;
+    if target_40 > now_40 {
+        time::sleep(Duration::from_millis((target_40 - now_40) as u64)).await;
     }
-    let hz_30 = trio.z.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
-    let row_30 = hz_30["messages"].as_array().unwrap().iter().find(|m| m["id"] == m_id).unwrap();
-    assert_eq!(row_30["state"], "pending");
+    let hz_40 = trio.z.rpc_ok("conversation.history", json!({ "conversation": &gid })).await;
+    let row_40 = hz_40["messages"].as_array().unwrap().iter().find(|m| m["id"] == m_id).unwrap();
+    assert_eq!(row_40["state"], "pending");
 
     let iz = trio.z.rpc_ok("group.info", json!({ "conversation": &gid })).await;
     let members = iz["members"].as_array().unwrap();

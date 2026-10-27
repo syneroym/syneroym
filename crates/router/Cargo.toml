@@ -44,6 +44,7 @@ uuid.workspace = true
 iroh.workspace = true
 rustls.workspace = true
 webrtc.workspace = true
+rtc.workspace = true
 tokio-tungstenite.workspace = true
 futures.workspace = true
 aes-gcm.workspace = true

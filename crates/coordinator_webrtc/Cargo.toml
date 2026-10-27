@@ -38,7 +38,7 @@ tower.workspace = true
 http-body-util.workspace = true
 
 [build-dependencies]
-swc_core = { version = "76.0.0", features = [
+swc_core = { version = "76.0", features = [
     "common",
     "ecma_parser",
     "ecma_codegen",

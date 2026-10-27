@@ -1,8 +1,11 @@
 use std::{io::Cursor, mem, time::Duration};
 
-use aes_gcm::aead::OsRng;
 use ed25519_dalek::VerifyingKey;
-use p256::{EncodedPoint, ecdh::EphemeralSecret};
+use p256::{
+    PublicKey, Sec1Point, SecretKey,
+    ecdh::{EphemeralSecret, diffie_hellman},
+    elliptic_curve::Generate,
+};
 use syneroym_identity::Identity;
 use syneroym_rpc::{NOT_HOSTED_HERE_RPC_CODE, framing};
 use tokio::io::{
@@ -37,6 +40,29 @@ fn kdf_known_answer() {
     // peer-proxy.js
     assert_eq!(c2s_hex, "d2f3bfc8d7382442a0d68fadfa725144e589164a57a1cd7de9f4fd37723bfc86");
     assert_eq!(s2c_hex, "edf347eb9a7ea22d897d206517cf4ff7055d9eab2759cbc4cdd6e2ff197790c9");
+}
+
+/// The RFC 5903 test vector for the 256-bit random ECP group. Pins the two
+/// things the browser peer depends on: a public key encodes as a 65-byte
+/// uncompressed SEC1 point, and the shared secret is the raw x-coordinate.
+#[test]
+fn ecdh_p256_rfc5903_known_answer() {
+    let initiator_secret = "c88f01f510d9ac3f70a292daa2316de544e9aab8afe84049c62a9c57862d1433";
+    let initiator_public = "04dad0b65394221cf9b051e1feca5787d098dfe637fc90b9ef945d0c3772581180\
+                            5271a0461cdb8252d61f1c456fa3e59ab1f45b33accf5f58389e0577b8990bb3";
+    let responder_public = "04d12dfb5289c8d4f81208b70270398c342296970a0bccb74c736fc7554494bf63\
+                            56fbf3ca366cc23e8157854c13c58d6aac23f046ada30f8353e74f33039872ab";
+    let shared_x = "d6840f6b42f6edafd13116e0e12565202fef8e9ece7dce03812464d04b9442de";
+
+    let secret =
+        SecretKey::from_slice(&hex::decode(initiator_secret).expect("hex")).expect("secret");
+    let encoded = Sec1Point::from(secret.public_key());
+    assert_eq!(hex::encode(encoded.as_bytes()), initiator_public);
+
+    let peer =
+        PublicKey::from_sec1_bytes(&hex::decode(responder_public).expect("hex")).expect("point");
+    let shared = diffie_hellman(secret.to_nonzero_scalar(), peer.as_affine());
+    assert_eq!(hex::encode(shared.raw_secret_bytes()), shared_x);
 }
 
 #[test]
@@ -224,8 +250,8 @@ async fn assert_reply_refused(signer: Identity, expected: &Identity, tagged: boo
     let server_task = tokio::spawn(async move {
         let mut reader = BufReader::new(sr);
         let preamble = read_preamble(&mut reader).await.expect("preamble");
-        let server_secret = EphemeralSecret::random(&mut OsRng);
-        let server_pk = EncodedPoint::from(server_secret.public_key());
+        let server_secret = EphemeralSecret::generate();
+        let server_pk = Sec1Point::from(server_secret.public_key());
         let client_epk = hex::decode(preamble.epk.expect("epk")).expect("decode");
         let signed = if tagged {
             super::handshake_signed_bytes(server_pk.as_bytes(), &client_epk)

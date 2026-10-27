@@ -5,11 +5,7 @@ use std::{
 
 use aes_gcm::{AeadInPlace, Aes256Gcm, KeyInit, Nonce};
 use hkdf::Hkdf;
-use p256::{
-    EncodedPoint, PublicKey,
-    ecdh::EphemeralSecret,
-    elliptic_curve::rand_core::{OsRng, RngCore},
-};
+use p256::{PublicKey, Sec1Point, ecdh::EphemeralSecret, elliptic_curve::Generate};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use syneroym_identity::{Identity, substrate};
@@ -157,8 +153,7 @@ fn derive_test_channel_keys(
 
 fn encrypt_channel_chunk(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
     let cipher = Aes256Gcm::new(key.into());
-    let mut nonce_bytes = [0u8; 12];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce_bytes: [u8; 12] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
     let mut in_out = plaintext.to_vec();
     cipher.encrypt_in_place(nonce, b"", &mut in_out).unwrap();
@@ -407,8 +402,8 @@ async fn swapped_epk_fails_bad_host_signature_and_sends_nothing_more() {
     let (client_stream, spy_client_side) = duplex(4096);
     let (spy_router_side, router_stream) = duplex(4096);
 
-    let fake_secret = EphemeralSecret::random(&mut OsRng);
-    let fake_epk_hex = hex::encode(EncodedPoint::from(fake_secret.public_key()).as_bytes());
+    let fake_secret = EphemeralSecret::generate();
+    let fake_epk_hex = hex::encode(Sec1Point::from(fake_secret.public_key()).as_bytes());
 
     let recorded_bytes = Arc::new(Mutex::new(Vec::new()));
     tokio::spawn(run_spy_forwarder(
@@ -440,8 +435,8 @@ async fn plain_identity_fields_on_encrypted_stream_refused_before_handshake() {
 
     let caller = Identity::generate().unwrap();
     let caller_hex = hex::encode(caller.public_key().as_bytes());
-    let fake_secret = EphemeralSecret::random(&mut OsRng);
-    let epk_hex = hex::encode(EncodedPoint::from(fake_secret.public_key()).as_bytes());
+    let fake_secret = EphemeralSecret::generate();
+    let epk_hex = hex::encode(Sec1Point::from(fake_secret.public_key()).as_bytes());
 
     let mut preamble =
         RoutePreamble::new(RouteTransport::Binary, RouteProtocol::JsonRpc, service_id, "default");
@@ -474,8 +469,8 @@ async fn route_key_in_identity_line_gives_encrypted_refusal() {
     let service = Arc::new(CapturingNativeService::default());
     register_test_channel(&route_handler, service_id, service).await;
 
-    let client_secret = EphemeralSecret::random(&mut OsRng);
-    let client_point = EncodedPoint::from(client_secret.public_key());
+    let client_secret = EphemeralSecret::generate();
+    let client_point = Sec1Point::from(client_secret.public_key());
     let epk_hex = hex::encode(client_point.as_bytes());
 
     let mut preamble =
@@ -518,8 +513,8 @@ async fn no_identity_line_within_timeout_gives_encrypted_refusal() {
     let service = Arc::new(CapturingNativeService::default());
     register_test_channel(&route_handler, service_id, service).await;
 
-    let client_secret = EphemeralSecret::random(&mut OsRng);
-    let client_point = EncodedPoint::from(client_secret.public_key());
+    let client_secret = EphemeralSecret::generate();
+    let client_point = Sec1Point::from(client_secret.public_key());
     let epk_hex = hex::encode(client_point.as_bytes());
 
     let mut preamble =
@@ -691,8 +686,8 @@ async fn directional_reflection_fails_decryption() {
     let service = Arc::new(CapturingNativeService::default());
     register_test_channel(&route_handler, service_id, service).await;
 
-    let client_secret = EphemeralSecret::random(&mut OsRng);
-    let client_point = EncodedPoint::from(client_secret.public_key());
+    let client_secret = EphemeralSecret::generate();
+    let client_point = Sec1Point::from(client_secret.public_key());
     let epk_hex = hex::encode(client_point.as_bytes());
 
     let mut preamble =

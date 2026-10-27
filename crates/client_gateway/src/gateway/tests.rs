@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use ed25519_dalek::VerifyingKey;
 use p256::{
     ecdh::EphemeralSecret,
-    elliptic_curve::{rand_core::OsRng, sec1::ToEncodedPoint},
+    elliptic_curve::{Generate, sec1::ToSec1Point},
 };
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
@@ -345,8 +345,8 @@ async fn forward_to_service_rehomes_and_replays_on_host_mismatch() {
                 let client_epk_bytes = hex::decode(preamble.epk.expect("epk present")).unwrap();
                 assert_eq!(client_epk_bytes.len(), 65);
 
-                let server_secret = EphemeralSecret::random(&mut OsRng);
-                let server_point = server_secret.public_key().to_encoded_point(false);
+                let server_secret = EphemeralSecret::generate();
+                let server_point = server_secret.public_key().to_sec1_point(false);
                 assert_eq!(server_point.as_bytes().len(), 65);
                 let wrong_identity = Identity::generate().unwrap();
                 let mut sign_bytes = Vec::new();

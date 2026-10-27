@@ -1,5 +1,8 @@
-use aes_gcm::aead::OsRng;
-use p256::{EncodedPoint, ecdh::EphemeralSecret, elliptic_curve::sec1::ToEncodedPoint};
+use p256::{
+    Sec1Point,
+    ecdh::EphemeralSecret,
+    elliptic_curve::{Generate, sec1::ToSec1Point},
+};
 use syneroym_identity::Identity;
 use tokio::io::{AsyncReadExt, duplex, split};
 
@@ -37,8 +40,8 @@ async fn test_encryption_handshake_missing_epk_fails() {
 async fn test_encryption_handshake_with_epk_succeeds() {
     let identity = Identity::generate().unwrap();
     let expected_pubkey = identity.public_key();
-    let client_secret = EphemeralSecret::random(&mut OsRng);
-    let client_pub = EncodedPoint::from(client_secret.public_key());
+    let client_secret = EphemeralSecret::generate();
+    let client_pub = Sec1Point::from(client_secret.public_key());
     let client_pub_bytes = client_pub.as_bytes();
 
     let mut preamble = RoutePreamble::binary_json_rpc("svc", "api");
@@ -82,8 +85,8 @@ async fn test_encryption_handshake_with_epk_succeeds() {
 #[tokio::test]
 async fn epk_compressed_point_is_refused() {
     let identity = Identity::generate().unwrap();
-    let client_secret = EphemeralSecret::random(&mut OsRng);
-    let compressed_point = client_secret.public_key().to_encoded_point(true);
+    let client_secret = EphemeralSecret::generate();
+    let compressed_point = client_secret.public_key().to_sec1_point(true);
     assert_eq!(compressed_point.as_bytes().len(), 33);
 
     let mut preamble = RoutePreamble::binary_json_rpc("svc", "api");

@@ -68,6 +68,8 @@ jobs:
         run: cargo xtask check-module-layout
       - name: Check Change Docs
         run: cargo xtask check-change-docs
+      - name: Check Dependency Versions
+        run: cargo xtask check-dep-versions
       - name: Install cargo-dupes
         run: cargo install cargo-dupes --version 0.2.1 --locked
       - name: Check Duplication

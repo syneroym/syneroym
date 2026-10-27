@@ -72,6 +72,11 @@ const GATES: &[Gate] = &[
         commands: &[&["cargo", "xtask", "check-duplication"]],
     },
     Gate {
+        name: "dep-versions",
+        skip_on_docs_only: false,
+        commands: &[&["cargo", "xtask", "check-dep-versions"]],
+    },
+    Gate {
         name: "roym-deps",
         skip_on_docs_only: false,
         commands: &[&["cargo", "xtask", "check-roym-deps"]],
