@@ -24,7 +24,7 @@ use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_router::SYNEROYM_ALPN;
+use syneroym_router::{SYNEROYM_ALPN, net_iroh};
 use syneroym_rpc::JsonRpcRequest;
 use syneroym_sandbox_wasm::{AppSandboxEngine, WasmResourceQuota};
 use tokio::{io::AsyncWriteExt, sync::oneshot, time};
@@ -227,7 +227,7 @@ async fn test_retry_mechanism(info: &CoordinatorInfo) -> Result<()> {
     if let Some(ref relay_url_str) = info.relay_url
         && let Ok(parsed) = relay_url_str.parse::<RelayUrl>()
     {
-        builder = Endpoint::builder(presets::Minimal)
+        builder = net_iroh::empty_endpoint_builder()
             .relay_mode(RelayMode::Custom(RelayMap::from(parsed)));
     }
     let test_endpoint = builder.bind().await.context("Failed to bind test endpoint")?;

@@ -10,7 +10,7 @@ use std::{
 use common::SubstrateNode;
 use ed25519_dalek::VerifyingKey;
 use futures::future::join_all;
-use iroh::{Endpoint, EndpointAddr, TransportAddr, endpoint::presets};
+use iroh::{EndpointAddr, TransportAddr};
 use rustls::crypto::ring;
 use serde_json::{Value, json};
 use syneroym_core::{
@@ -27,7 +27,7 @@ use syneroym_core::{
 use syneroym_identity::{
     DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE, substrate,
 };
-use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN};
+use syneroym_router::{RoutePreamble, RouteProtocol, RouteTransport, SYNEROYM_ALPN, net_iroh};
 use syneroym_rpc::{JsonRpcError, STREAM_UNAUTHENTICATED_RPC_CODE, framing};
 use syneroym_sdk::{
     DeployManifest, NetworkEndpoint, PassthroughOutcome, ServiceConfig, ServiceType,
@@ -310,7 +310,7 @@ async fn mailbox_refuses_forged_preamble_signatures_at_handshake() -> anyhow::Re
     )?;
 
     let attacker = Identity::generate()?;
-    let client_ep = Endpoint::builder(presets::Minimal).bind().await?;
+    let client_ep = net_iroh::empty_endpoint_builder().bind().await?;
     let node_addr = wait_for_node_addr(&node).await;
 
     for method in methods {

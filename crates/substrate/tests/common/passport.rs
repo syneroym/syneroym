@@ -8,7 +8,6 @@ use std::{
 
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
-    endpoint::presets,
 };
 use reqwest::Certificate;
 use serde_json::Map;
@@ -18,7 +17,7 @@ use syneroym_passport::{
     CapabilityToken, Challenge, PassportId, RELAY_HOME,
     wire::{CHALLENGE_PATH, ChallengeResponse, REGISTER_PATH, RegisterRequest, RegisterResponse},
 };
-use syneroym_router::SYNEROYM_ALPN;
+use syneroym_router::{SYNEROYM_ALPN, net_iroh};
 use tempfile::TempDir;
 use tokio::time;
 
@@ -213,7 +212,7 @@ impl PassportRelay {
 
         let relay_url: RelayUrl = self.relay_url().parse().expect("parse relay url");
         let secret_key = SecretKey::from_bytes(&peer_key.to_bytes());
-        Endpoint::builder(presets::Minimal)
+        net_iroh::empty_endpoint_builder()
             .clear_ip_transports()
             .secret_key(secret_key)
             .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))

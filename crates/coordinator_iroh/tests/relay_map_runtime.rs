@@ -9,10 +9,9 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result, ensure};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, TransportAddr,
-    endpoint::presets,
 };
 use iroh_relay::server::{RelayConfig as ServerRelayConfig, Server, ServerConfig};
-use syneroym_router::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError};
+use syneroym_router::{HOME_RELAY_CONFIRM_TIMEOUT, HomeRelay, HomeRelayError, net_iroh};
 use tokio::{net::TcpListener, task::JoinHandle, time};
 
 const ALPN: &[u8] = b"syneroym-test/relay-map/0";
@@ -37,7 +36,7 @@ async fn spawn_relay() -> Result<(Server, RelayUrl)> {
 /// Binds an endpoint with an empty relay map and local loopback binding.
 async fn bind_empty() -> Result<Endpoint> {
     time::timeout(WAIT, async {
-        let ep = Endpoint::builder(presets::Minimal)
+        let ep = net_iroh::empty_endpoint_builder()
             .clear_ip_transports()
             .bind_addr(SocketAddr::from(([127, 0, 0, 1], 0)))
             .context("failed to bind loopback address")?

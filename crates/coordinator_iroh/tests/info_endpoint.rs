@@ -14,7 +14,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axum::{Router, http::StatusCode, routing};
-use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets};
+use iroh::{RelayMap, RelayMode, RelayUrl, SecretKey};
 use reqwest::Client;
 use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::{
@@ -22,6 +22,7 @@ use syneroym_core::{
     coordinator_info::{CoordinatorInfo, CoordinatorStatus, INFO_PATH},
     dht_registry::RegistryClient,
 };
+use syneroym_router::net_iroh;
 use tokio::{net::TcpListener, time};
 
 async fn fetch_info(coord: &CoordinatorIroh) -> Result<CoordinatorInfo> {
@@ -85,7 +86,7 @@ async fn relay_count_follows_connections_and_capacity() -> Result<()> {
 
     // Step 3: Connect a client endpoint to the coordinator's relay.
     let relay_url: RelayUrl = info.relay_url.context("missing relay_url")?.parse()?;
-    let client = Endpoint::builder(presets::Minimal)
+    let client = net_iroh::empty_endpoint_builder()
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
         .bind()
         .await?;
@@ -283,7 +284,7 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     let relay_url: RelayUrl = info.relay_url.context("missing relay_url")?.parse()?;
 
     // Connect the allowed control client and wait until the relay counts it.
-    let allowed_client = Endpoint::builder(presets::Minimal)
+    let allowed_client = net_iroh::empty_endpoint_builder()
         .secret_key(allowed_secret)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url.clone())))
         .bind()
@@ -296,7 +297,7 @@ async fn restricted_access_does_not_count_excluded_endpoints() -> Result<()> {
     .await?;
 
     // Connect an excluded client and verify the relay client count stays at 2.
-    let excluded_client = Endpoint::builder(presets::Minimal)
+    let excluded_client = net_iroh::empty_endpoint_builder()
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url)))
         .bind()
         .await?;
