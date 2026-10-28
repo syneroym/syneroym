@@ -26,7 +26,7 @@ use wasmtime::{
 const TICK: Duration = Duration::from_millis(100);
 const WAIT: Duration = Duration::from_millis(2000);
 const BUDGET_TICKS: u64 = 5;
-const BUDGET: Duration = Duration::from_millis(BUDGET_TICKS * 100);
+const BUDGET: Duration = Duration::from_millis(BUDGET_TICKS * TICK.as_millis() as u64);
 const MARGIN: Duration = Duration::from_millis(1000);
 
 wasmtime::component::bindgen!({
@@ -184,7 +184,6 @@ enum DeadlineSetup {
 async fn run_guest(
     export_name: &str,
     wait_ms: Option<u32>,
-    budget_ticks: u64,
     setup: DeadlineSetup,
 ) -> (Result<(), WasmtimeError>, Duration, usize) {
     let engine = build_test_engine();
@@ -195,8 +194,7 @@ async fn run_guest(
         .expect("add host waiter to linker");
 
     let component = Component::new(&engine, GUEST_WAT).expect("compile wat component");
-    let budget = Duration::from_millis(budget_ticks * 100);
-    let mut store = Store::new(&engine, TestState::new(budget));
+    let mut store = Store::new(&engine, TestState::new(BUDGET));
     store.set_fuel(100_000_000_000).expect("set fuel");
 
     match setup {
@@ -220,7 +218,7 @@ async fn run_guest(
 
     // Set the epoch deadline and the wall-clock start time together immediately
     // before entering guest code so both start from the same baseline.
-    store.set_epoch_deadline(budget_ticks);
+    store.set_epoch_deadline(BUDGET_TICKS);
     store.data_mut().started = Instant::now();
     let call_start = Instant::now();
     let res = func.call_async(&mut store, &params, &mut results).await;
@@ -287,13 +285,9 @@ fn callback_arithmetic_calculates_deadline_credit() {
 /// budget traps with `Trap::Interrupt` on return to guest code.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_host_wait_stops_the_guest_today() {
-    let (res, _elapsed, _calls) = run_guest(
-        "wait-then-work",
-        Some(WAIT.as_millis() as u32),
-        BUDGET_TICKS,
-        DeadlineSetup::TrapAtDeadline,
-    )
-    .await;
+    let (res, _elapsed, _calls) =
+        run_guest("wait-then-work", Some(WAIT.as_millis() as u32), DeadlineSetup::TrapAtDeadline)
+            .await;
     let err = res.expect_err("guest should be stopped by deadline trap");
     assert!(
         matches!(err.downcast_ref::<Trap>(), Some(Trap::Interrupt)),
@@ -308,7 +302,6 @@ async fn a_credited_wait_does_not_stop_the_guest() {
     let (res, elapsed, callback_calls) = run_guest(
         "credited-wait-then-work",
         Some(WAIT.as_millis() as u32),
-        BUDGET_TICKS,
         DeadlineSetup::CreditCallback,
     )
     .await;
@@ -321,8 +314,7 @@ async fn a_credited_wait_does_not_stop_the_guest() {
 /// even when the extension callback is installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_guest_loop_is_still_stopped_at_its_budget() {
-    let (res, elapsed, _calls) =
-        run_guest("spin", None, BUDGET_TICKS, DeadlineSetup::CreditCallback).await;
+    let (res, elapsed, _calls) = run_guest("spin", None, DeadlineSetup::CreditCallback).await;
     let err = res.expect_err("spinning guest should be stopped");
     assert!(
         matches!(err.downcast_ref::<Trap>(), Some(Trap::Interrupt)),
@@ -344,7 +336,6 @@ async fn credit_buys_back_the_wait_and_no_more() {
     let (res, elapsed, _calls) = run_guest(
         "credited-wait-then-spin",
         Some(WAIT.as_millis() as u32),
-        BUDGET_TICKS,
         DeadlineSetup::CreditCallback,
     )
     .await;
@@ -365,13 +356,9 @@ async fn credit_buys_back_the_wait_and_no_more() {
 /// still traps when the wait exceeds the budget.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wait_without_credit_still_counts() {
-    let (res, _elapsed, _calls) = run_guest(
-        "wait-then-work",
-        Some(WAIT.as_millis() as u32),
-        BUDGET_TICKS,
-        DeadlineSetup::CreditCallback,
-    )
-    .await;
+    let (res, _elapsed, _calls) =
+        run_guest("wait-then-work", Some(WAIT.as_millis() as u32), DeadlineSetup::CreditCallback)
+            .await;
     let err = res.expect_err("uncredited wait should stop the guest");
     assert!(
         matches!(err.downcast_ref::<Trap>(), Some(Trap::Interrupt)),
