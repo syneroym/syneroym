@@ -8,6 +8,8 @@ This sub-milestone lets people use Roym in their own language and script, and gi
 
 It starts after M08A's rename (A1) and typed methods (A2), because it adds fields to the same records and methods.
 
+**Demo:** TBD at planning. The Hub text and language choice are visible, but the Roym chat story does not depend on Hub text. Decide whether a story that shows the Hub in a second language is worth adding.
+
 ## 1. Shared parts
 
 | # | Shared part | Used by | Built in |

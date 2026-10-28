@@ -8,6 +8,8 @@
 
 One fixed deal core for every deal: agreements made of commitments, with signed details, one writer, selective disclosure, barter, an event log and a statement. Business work steps move into Roym extensions. Scheduling (today's slots) and one-shot (today's orders) are the first two. Chat gets widgets and forwarding with a signed origin.
 
+**Demo:** New story for request, quote and agreement (a new file under `crates/substrate/tests/e2e/demo/`). A viewer sees one person ask for a quote, the other send it, and the first accept it, which ends in an agreement.
+
 ## Change docs
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): agreements, commitments, selective disclosure, barter, event log, statement (`VX-1`, `VX-2`, `VX-6` to `VX-12`, `VX-45`, `VX-46`).
