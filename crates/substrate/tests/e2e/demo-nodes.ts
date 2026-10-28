@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -46,7 +47,10 @@ function writeEnvFile(s1: NodeHandle, s2: NodeHandle): void {
     S2_PID: s2.process.pid!,
   };
   const lines = Object.entries(vars).map(([k, v]) => `export ${k}=${quote(String(v))}`);
-  fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n');
+  // Write a whole file and rename it, so a reader never sees half of it.
+  const tmp = `${ENV_FILE}.tmp`;
+  fs.writeFileSync(tmp, lines.join('\n') + '\n');
+  fs.renameSync(tmp, ENV_FILE);
 }
 
 /** Read the env file. Story scripts append to it, so read it again when you need a fresh value. */
@@ -68,6 +72,7 @@ export function readDemoEnv(): Record<string, string> {
  * With `detached` the nodes keep running after this process exits.
  */
 export async function bootDemoNodes(detached: boolean): Promise<{ s1: NodeHandle; s2: NodeHandle }> {
+  refuseIfNodesRunning();
   if (fs.existsSync(DEMO_DIR)) fs.rmSync(DEMO_DIR, { recursive: true, force: true });
   fs.mkdirSync(DEMO_DIR, { recursive: true });
 
@@ -100,8 +105,9 @@ export async function bootDemoNodes(detached: boolean): Promise<{ s1: NodeHandle
   });
 
   const s2Dir = path.join(DEMO_DIR, 's2');
+  let s2: NodeHandle | undefined;
   try {
-    const s2 = await bootNode('S2', {
+    s2 = await bootNode('S2', {
       ...common,
       dir: s2Dir,
       logPath: path.join(s2Dir, 'substrate.log'),
@@ -114,7 +120,32 @@ export async function bootDemoNodes(detached: boolean): Promise<{ s1: NodeHandle
     return { s1, s2 };
   } catch (err) {
     s1.process.kill('SIGKILL');
+    s2?.process.kill('SIGKILL');
     throw err;
+  }
+}
+
+/** True if the process is a demo node: our substrate binary, run on a config under the demo directory. */
+function isDemoNode(pid: number): boolean {
+  try {
+    const command = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    return command.includes(path.basename(SUBSTRATE_BIN)) && command.includes(DEMO_DIR);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Deleting the demo directory under nodes that are still running would leave
+ * them as orphans that "demo:down" can no longer find, so stop early instead.
+ */
+function refuseIfNodesRunning(): void {
+  if (!fs.existsSync(ENV_FILE)) return;
+  const env = readDemoEnv();
+  const running = [env.S1_PID, env.S2_PID].filter(pid => pid && isDemoNode(Number(pid)));
+  if (running.length > 0) {
+    throw new Error(
+      `Demo nodes are already running (pid ${running.join(', ')}). Run "mise run demo:down" first.`);
   }
 }
 
@@ -130,6 +161,11 @@ async function answers(url: string): Promise<boolean> {
 /** Check that the nodes `demo:up` started still answer, and return the env file. */
 export async function attachToDemoNodes(): Promise<Record<string, string>> {
   const env = readDemoEnv();
+  for (const pid of [env.S1_PID, env.S2_PID]) {
+    if (!pid || !isDemoNode(Number(pid))) {
+      throw new Error(`Demo node (pid ${pid}) is not running. Run "mise run demo:up" first.`);
+    }
+  }
   const checks: Array<[string, string]> = [
     ['S1 registry', env.REGISTRY],
     ['S1 gateway', `http://127.0.0.1:${env.S1_GW}/`],
@@ -154,6 +190,11 @@ function isAlive(pid: number): boolean {
 
 async function stopProcess(pid: number): Promise<void> {
   if (!isAlive(pid)) return;
+  // The pid may belong to another program now, for example after a reboot.
+  if (!isDemoNode(pid)) {
+    console.warn(`pid ${pid} is not a demo node any more; leaving it alone.`);
+    return;
+  }
   process.kill(pid, 'SIGTERM');
   const deadline = Date.now() + 5000;
   while (isAlive(pid) && Date.now() < deadline) {

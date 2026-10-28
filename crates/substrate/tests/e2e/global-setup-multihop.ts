@@ -39,10 +39,6 @@ export default async function globalSetup() {
 
   buildArtifacts({ miniappClient: true, binaries: ['roymctl', 'substrate', 'miniapp'] });
 
-  // Only `sz` and `sx` ever receive a deploy, so only they are claimed. `c`
-  // and `cp` are coordinator/relay only and stay unowned, which is cheaper:
-  // nothing deploys to them, so nothing needs `orchestrator` or `security`
-  // access there.
   const miniappPortRes = await reserveTcpPort();
 
   console.log('Starting Coordinator C...');
@@ -73,6 +69,9 @@ export default async function globalSetup() {
   (global as any).__CP_PROCESS__ = cp.process;
   await waitForHttp(`http://127.0.0.1:${cp.ports.webrtcBootstrap}/`, 20_000);
 
+  // Only `sz` and `sx` ever receive a deploy, so only they are claimed. `c`
+  // and `cp` are coordinator/relay only and stay unowned: nothing deploys to
+  // them, so nothing needs `orchestrator` or `security` access there.
   // Sz reaches the network through Cp for WebRTC; Sx goes straight to C.
   const viaC = parentOf(c.ports);
   const viaCp = parentOf(cp.ports);

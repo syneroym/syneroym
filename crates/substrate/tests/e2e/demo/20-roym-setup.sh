@@ -38,7 +38,13 @@ roym_node() {
   local answer
   answer=$("${ctl[@]}" roym address)
   printf '%s\n' "$answer"
-  demo_set "${upper}_ADDR" "$(printf '%s\n' "$answer" | sed -n 's/^conversation service id: //p')"
+  local addr
+  addr=$(printf '%s\n' "$answer" | sed -n 's/^conversation service id: //p')
+  if [ -z "$addr" ]; then
+    echo "roymctl roym address printed no conversation service id for $name" >&2
+    return 1
+  fi
+  demo_set "${upper}_ADDR" "$addr"
 }
 
 roym_node Alice "$S1_DIR" "$S1_DID" "$S1_GW"

@@ -245,6 +245,11 @@ Phase 2 results (warm build cache): `mise run demo` takes 73 s in total, with bo
 
 - The AGENTS.md rule and the code name `mise run demo`, not `mise run test:demo`. There is no `test:demo` mise task, and none is added: one mise name is enough. The npm script `test:demo` is the one place that holds the command. `mise run demo` and `npm test` both call it. Earlier text in this doc used the wrong name.
 - In `docs/demo/demo.md`, section 2 and the Roym sections R0, R1 and R3 start with the "Automated" line. R3 was wrong for the Hub as it is today: it did not say that the contact needs the DID and the address, and that the Hub shows a new message only when the screen is opened again. It is fixed to match the script.
+- Review round: the Hub steps select some buttons by role and name (`getByRole('button', { name: 'Profile' })`), like the main suite, not by class. The Hub has no class or test id on those buttons, and M08B changes the strings anyway. The steps now live only in `hub-helpers.ts`, and `roym-hub.spec.ts` calls them, so a Hub change needs one fix. The comment, the developer guide and the M08B `Demo` line say this now.
+- Review round: the multihop setup writes `ports.json` after the deploys, not before. Its node configs are now at `<node>/syneroym.toml`, not `TEST_DIR/<node>.toml`. `c` and `cp` wait only for the WebRTC bootstrap page; nothing waits for their Iroh relay.
+- Review round: `demo:up` and every demo run now refuse to start while nodes from an earlier `demo:up` still run, and say to run `demo:down`. `demo:down` and the teardown stop a pid only if `ps` shows our substrate binary on a config under the demo folder. The Roym story gives each message a run tag, so it can run again in attach mode.
+- Review round: the `demo:` check requires a `.spec.ts` or `.sh` file under `crates/substrate/tests/e2e/demo/`, with no `..`.
+- Review round, not done: `webrtc.spec.ts` keeps its own inline comment steps. They are two-line calls, not a helper, and the plan says the main suite does not change.
 - Four M08 sub-milestones (B, E, G, H) have the `Demo` line `TBD at planning`, not `no demo: internal`: they change what a viewer sees, but the "What the first stories cover" table does not place them. A backlog row, "More demo stories", records this together with the unconverted runbook stories.
 
 ## Close-out

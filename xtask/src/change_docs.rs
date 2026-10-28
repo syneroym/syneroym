@@ -32,6 +32,8 @@ use anyhow::{Result, bail};
 const CHANGES_DIR: &str = "docs/planning/changes";
 const CHANGE_FILE: &str = "change.md";
 const DEVIATIONS_HEADING: &str = "## Deviations";
+/// Where demo stories live. A `demo:` path must point into this folder.
+const DEMO_DIR: &str = "crates/substrate/tests/e2e/demo/";
 const STATUSES: &[&str] = &["draft", "approved", "in-progress", "done", "abandoned"];
 
 /// One item of a front-matter list: a repo-relative path, or `none: <reason>`.
@@ -124,8 +126,23 @@ fn validate(text: &str, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
             &fm.demo,
             exists,
         ));
+        problems.extend(fm.demo.iter().filter_map(demo_path_problem));
     }
     problems
+}
+
+/// A `demo:` path must be a story file inside the demo folder, not any file
+/// that happens to exist.
+fn demo_path_problem(entry: &Entry) -> Option<String> {
+    let Entry::Path(p) = entry else { return None };
+    let is_story = p.ends_with(".spec.ts") || p.ends_with(".sh");
+    let stays_inside = !p.split('/').any(|part| part == "..");
+    if p.starts_with(DEMO_DIR) && is_story && stays_inside {
+        return None;
+    }
+    Some(format!(
+        "demo names `{p}`, which is not a story: use a `.spec.ts` or `.sh` file under `{DEMO_DIR}`"
+    ))
 }
 
 /// Checks one close-out list of a `done` doc: it must not be empty, every path
@@ -283,15 +300,42 @@ mod tests {
 
     #[test]
     fn done_with_existing_demo_path_passes() {
-        let front = format!("status: done\n{TOUCHED_NONE}\ndemo:\n  - demo/10-a.spec.ts");
+        let front = format!(
+            "status: done\n{TOUCHED_NONE}\ndemo:\n  - crates/substrate/tests/e2e/demo/10-a.spec.ts"
+        );
         assert!(validate(&doc(&front), &always).is_empty());
     }
 
     #[test]
     fn done_with_missing_demo_path_is_reported() {
-        let front = format!("status: done\n{TOUCHED_NONE}\ndemo:\n  - demo/10-a.spec.ts");
+        let front = format!(
+            "status: done\n{TOUCHED_NONE}\ndemo:\n  - crates/substrate/tests/e2e/demo/10-a.spec.ts"
+        );
         let problems = validate(&doc(&front), &never);
         assert!(problems[0].contains("demo names"), "{problems:?}");
+    }
+
+    #[test]
+    fn demo_path_must_be_a_story_inside_the_demo_folder() {
+        let bad = [
+            "AGENTS.md",
+            "/etc/passwd",
+            "crates/substrate/tests/e2e/demo/../global-setup.ts",
+            "crates/substrate/tests/e2e/demo/lib.ts",
+            "crates/substrate/tests/e2e/tests/webrtc.spec.ts",
+        ];
+        for path in bad {
+            let front = format!("status: done\n{TOUCHED_NONE}\ndemo:\n  - {path}");
+            let problems = validate(&doc(&front), &always);
+            assert!(problems.iter().any(|p| p.contains("not a story")), "{path}: {problems:?}");
+        }
+    }
+
+    #[test]
+    fn demo_shell_script_is_a_story() {
+        let path = "crates/substrate/tests/e2e/demo/10-a.sh";
+        let front = format!("status: done\n{TOUCHED_NONE}\ndemo:\n  - {path}");
+        assert!(validate(&doc(&front), &always).is_empty());
     }
 
     #[test]

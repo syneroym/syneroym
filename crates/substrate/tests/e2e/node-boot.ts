@@ -322,8 +322,12 @@ registry_url = "${registryUrl}"
 
 // The node prints its DID once its identity is ready; poll its log for it.
 async function waitForDid(child: ChildProcess, name: string, logPath: string): Promise<string> {
+  // A missing binary is reported on the child, not thrown by spawn.
+  let spawnError: Error | undefined;
+  child.once('error', err => { spawnError = err; });
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
+    if (spawnError) throw new Error(`${name} could not start: ${spawnError.message}`);
     if (child.exitCode !== null) {
       throw new Error(`${name} exited with code ${child.exitCode}; see ${logPath}`);
     }

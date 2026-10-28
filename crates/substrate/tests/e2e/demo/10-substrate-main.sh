@@ -27,7 +27,7 @@ rpc "$S2_GW" "$GREETER_HOST" greet '["from the other node"]'
 
 caption "Deploy a full web app on S1"
 ASSETS="$DEMO_HOME/miniapp-assets.tar.gz"
-COPYFILE_DISABLE=1 run tar -czf "$ASSETS" -C "$MINIAPP_DIR/static" .
+run env COPYFILE_DISABLE=1 tar -czf "$ASSETS" -C "$MINIAPP_DIR/static" .
 run roymctl --dir "$S1_DIR" identity create --name webapp
 WEB_DID=$(did_of "$S1_DIR" webapp)
 echo "service identity: $WEB_DID"

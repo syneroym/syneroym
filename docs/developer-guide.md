@@ -160,7 +160,7 @@ Two local nodes run every story. S1 also runs the registry and the coordinator. 
   | `DEMO_ATTACH=1` | Uses the nodes that `demo:up` started and leaves them running. The story specs do not run their shell scripts, because you ran those by hand. If a node does not answer, the run stops and names `mise run demo:up`. |
   | `DEMO_STEP=1` | A shell script waits for Enter after each caption. It needs a terminal, so run the script directly, not through Playwright. |
 
-  Live talk, in short: `mise run demo:up`, run the scripts with `DEMO_STEP=1`, then run the browser parts with `DEMO_MODE=present DEMO_ATTACH=1 npm run test:demo`, then `mise run demo:down`.
+  Live talk, in short: `mise run demo:up`, run the scripts with `DEMO_STEP=1`, then run the browser parts with `DEMO_MODE=present DEMO_ATTACH=1 npm run test:demo` (run it in `crates/substrate/tests/e2e`), then `mise run demo:down`.
 
 **Write a new story.** A story shows the working path only. Failure cases belong in the normal tests.
 
@@ -171,7 +171,7 @@ Two local nodes run every story. S1 also runs the registry and the coordinator. 
    * The spec runs its own script first, as its own test, in serial mode. `runScript` skips the script when `DEMO_ATTACH=1`.
    * Wrap each step in `step(page, 'title', ...)`. The title is shown as a caption and in the report. In a Roym story, say whose screen it is.
    * Use `newSession` for a second browser session. Playwright records video only for the built-in `page`.
-   * Use the shared Hub steps in `hub-helpers.ts`. Select by class, not by visible text.
+   * Use the shared Hub steps in `hub-helpers.ts`, and add new Hub steps there. They are the one place that knows the Hub's button names and class names, and the main suite uses them too. Prefer a class name to visible text when the Hub has one.
 5. Do not hard-code ports. Read them from the env file.
 6. Run `mise run demo`. Then list the story file in the `demo:` list of the change doc (see the change-doc template).
 

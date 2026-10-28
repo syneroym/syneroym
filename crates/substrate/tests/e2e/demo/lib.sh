@@ -38,7 +38,10 @@ run() {
 
 # Remember a value for later scripts and for the Playwright specs.
 demo_set() {
-  printf 'export %s="%s"\n' "$1" "$2" >> "$DEMO_ENV_FILE"
+  # Escape the characters that are special inside double quotes; readDemoEnv undoes this.
+  local escaped
+  escaped=$(printf '%s' "$2" | sed 's/[\\"$`]/\\&/g')
+  printf 'export %s="%s"\n' "$1" "$escaped" >> "$DEMO_ENV_FILE"
   export "$1=$2"
 }
 
@@ -55,6 +58,8 @@ host_of() { roymctl alias "$@" | tail -1; }
 # JSON-RPC call through a gateway. Prints the answer and fails if it is not a result.
 #   usage: rpc <gateway-port> <host> <method> '<json params>'
 rpc() {
+  printf '$ curl -X POST http://127.0.0.1:%s/ -H "Host: %s" -d '"'"'{"method":"%s","params":%s}'"'"'\n' \
+    "$1" "$2" "$3" "${4:-[]}"
   local answer
   answer=$(curl -sS -X POST "http://127.0.0.1:$1/" -H "Host: $2" -H 'Content-Type: application/json' \
     -d "{\"jsonrpc\":\"2.0\",\"method\":\"$3\",\"params\":${4:-[]},\"id\":1}")

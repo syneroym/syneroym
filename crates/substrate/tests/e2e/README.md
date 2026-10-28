@@ -89,3 +89,7 @@ npx playwright test --headed
 # Run tests in Playwright Inspector (step-by-step debug mode)
 npm run test:debug
 ```
+
+## Demo stories
+
+The same folder also holds the demo stories (`demo/`, with `playwright-demo.config.ts`). They boot their own two nodes and run in `npm test`. See the "Demo Stories" part of [docs/developer-guide.md](../../../../docs/developer-guide.md) for how to run and write them.

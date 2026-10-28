@@ -36,8 +36,9 @@ export async function rpcCall(page: Page, method: string, params: unknown) {
   );
 }
 
-// The Hub steps below use class selectors, not visible text, so a wording
-// change does not break a story.
+// The Hub steps below are the one place that knows the Hub's button names and
+// class names. The main suite and the demo story both call them, so a change
+// in the Hub needs one fix here.
 
 /** Save the signed-in person's profile with a display name and conversation address. */
 export async function saveProfile(page: Page, displayName: string, conversationAddress: string) {
@@ -69,7 +70,11 @@ export async function openMessages(page: Page) {
 export async function openConversation(page: Page, conversationAddress: string) {
   await page.locator('.open-conversation-input').fill(conversationAddress);
   await page.getByRole('button', { name: 'Open conversation' }).click();
-  await expect(page.locator('.conversation-thread h3')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
+  // The Hub draws the first conversation by itself when the screen opens, and then draws the
+  // opened one again. The selected row shows that the second drawing has replaced the first,
+  // so a message typed now is not lost with the old thread.
+  await expect(page.locator('.conversation-item.selected')).toBeVisible({ timeout: 15_000 });
 }
 
 /** Send a message in the open thread. The box clears only when the send succeeds. */
