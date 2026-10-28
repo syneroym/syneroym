@@ -7,6 +7,8 @@ living-docs-touched:
   - docs/TERMINOLOGY.md
   - docs/planning/traceability-matrix.md
   - docs/roym-integrated-experience-spec.md
+demo:
+  - none: before demo stories
 ---
 # Service mailbox
 

@@ -7,6 +7,8 @@ living-docs-touched:
   - docs/TERMINOLOGY.md
   - docs/planning/traceability-matrix.md
   - docs/demo/demo.md
+demo:
+  - none: before demo stories
 ---
 # Registry-listed coordinators
 

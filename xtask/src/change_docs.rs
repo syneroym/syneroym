@@ -4,7 +4,9 @@
 //! the list of places where the code differed from the plan. When the work is
 //! done, its result moves into the living docs. This check makes that move
 //! visible: a `done` change doc must name the living docs it updated (or say
-//! why none needed an update), and every named file must exist.
+//! why none needed an update), and every named file must exist. The same holds
+//! for `demo:`, which names the demo stories the change adds or extends (or
+//! says why it has none).
 //!
 //! Front matter format (a subset of YAML, parsed by hand to avoid a new
 //! dependency):
@@ -15,6 +17,8 @@
 //! living-docs-touched:
 //!   - docs/architecture/router.md
 //!   - none: <reason>
+//! demo:
+//!   - crates/substrate/tests/e2e/demo/10-substrate-main.spec.ts
 //! ---
 //! ```
 
@@ -30,8 +34,9 @@ const CHANGE_FILE: &str = "change.md";
 const DEVIATIONS_HEADING: &str = "## Deviations";
 const STATUSES: &[&str] = &["draft", "approved", "in-progress", "done", "abandoned"];
 
+/// One item of a front-matter list: a repo-relative path, or `none: <reason>`.
 #[derive(Debug, PartialEq, Eq)]
-enum Touched {
+enum Entry {
     Path(String),
     None(String),
 }
@@ -39,7 +44,8 @@ enum Touched {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct FrontMatter {
     status: Option<String>,
-    touched: Vec<Touched>,
+    touched: Vec<Entry>,
+    demo: Vec<Entry>,
 }
 
 /// Splits `text` into the front-matter lines and the remaining body.
@@ -50,21 +56,37 @@ fn split_front_matter(text: &str) -> Option<(Vec<&str>, &str)> {
     Some((rest[..end].lines().collect(), body_start))
 }
 
+fn parse_entry(item: &str) -> Entry {
+    let item = item.trim();
+    match item.strip_prefix("none:") {
+        Some(reason) => Entry::None(reason.trim().to_string()),
+        None => Entry::Path(item.to_string()),
+    }
+}
+
 fn parse_front_matter(lines: &[&str]) -> FrontMatter {
+    #[derive(Clone, Copy, PartialEq)]
+    enum List {
+        Touched,
+        Demo,
+    }
     let mut fm = FrontMatter::default();
-    let mut in_touched = false;
+    let mut current: Option<List> = None;
     for line in lines {
-        if let Some(item) = line.trim_start().strip_prefix("- ").filter(|_| in_touched) {
-            let item = item.trim();
-            fm.touched.push(match item.strip_prefix("none:") {
-                Some(reason) => Touched::None(reason.trim().to_string()),
-                None => Touched::Path(item.to_string()),
-            });
-        } else if let Some(value) = line.strip_prefix("status:") {
-            fm.status = Some(value.trim().to_string());
-            in_touched = false;
-        } else {
-            in_touched = line.trim_end() == "living-docs-touched:";
+        let item = line.trim_start().strip_prefix("- ");
+        match (item, current) {
+            (Some(item), Some(List::Touched)) => fm.touched.push(parse_entry(item)),
+            (Some(item), Some(List::Demo)) => fm.demo.push(parse_entry(item)),
+            _ => {
+                if let Some(value) = line.strip_prefix("status:") {
+                    fm.status = Some(value.trim().to_string());
+                }
+                current = match line.trim_end() {
+                    "living-docs-touched:" => Some(List::Touched),
+                    "demo:" => Some(List::Demo),
+                    _ => None,
+                };
+            }
         }
     }
     fm
@@ -90,27 +112,43 @@ fn validate(text: &str, exists: &dyn Fn(&str) -> bool) -> Vec<String> {
         problems.push(format!("missing `{DEVIATIONS_HEADING}` section"));
     }
     if fm.status.as_deref() == Some("done") {
-        problems.extend(validate_close_out(&fm.touched, exists));
+        problems.extend(validate_list(
+            "living-docs-touched",
+            "the living docs you updated",
+            &fm.touched,
+            exists,
+        ));
+        problems.extend(validate_list(
+            "demo",
+            "the demo stories you added or extended",
+            &fm.demo,
+            exists,
+        ));
     }
     problems
 }
 
-fn validate_close_out(touched: &[Touched], exists: &dyn Fn(&str) -> bool) -> Vec<String> {
-    if touched.is_empty() {
-        return vec![
-            "status is `done` but `living-docs-touched` is empty; list the living docs you \
-             updated, or write `- none: <reason>`"
-                .to_string(),
-        ];
+/// Checks one close-out list of a `done` doc: it must not be empty, every path
+/// must exist, and every `none:` must give a reason.
+fn validate_list(
+    field: &str,
+    what: &str,
+    entries: &[Entry],
+    exists: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
+    if entries.is_empty() {
+        return vec![format!(
+            "status is `done` but `{field}` is empty; list {what}, or write `- none: <reason>`"
+        )];
     }
-    touched
+    entries
         .iter()
-        .filter_map(|t| match t {
-            Touched::Path(p) if !exists(p) => {
-                Some(format!("living-docs-touched names `{p}`, which does not exist"))
+        .filter_map(|e| match e {
+            Entry::Path(p) if !exists(p) => {
+                Some(format!("{field} names `{p}`, which does not exist"))
             }
-            Touched::None(reason) if reason.is_empty() => {
-                Some("`- none:` needs a reason after the colon".to_string())
+            Entry::None(reason) if reason.is_empty() => {
+                Some(format!("`- none:` in `{field}` needs a reason after the colon"))
             }
             _ => None,
         })
@@ -197,34 +235,81 @@ mod tests {
         assert!(validate(text, &always)[0].contains("Deviations"));
     }
 
+    const DEMO_NONE: &str = "demo:\n  - none: internal";
+
     #[test]
     fn done_without_living_docs_is_reported() {
-        let problems = validate(&doc("status: done"), &always);
+        let front = format!("status: done\n{DEMO_NONE}");
+        let problems = validate(&doc(&front), &always);
         assert!(problems[0].contains("living-docs-touched"), "{problems:?}");
     }
 
     #[test]
     fn done_with_existing_path_passes() {
-        let front = "status: done\nliving-docs-touched:\n  - docs/a.md";
+        let front = format!("status: done\nliving-docs-touched:\n  - docs/a.md\n{DEMO_NONE}");
+        let front = front.as_str();
         assert!(validate(&doc(front), &always).is_empty());
     }
 
     #[test]
     fn done_with_missing_path_is_reported() {
-        let front = "status: done\nliving-docs-touched:\n  - docs/a.md";
-        let problems = validate(&doc(front), &never);
+        let front = format!("status: done\nliving-docs-touched:\n  - docs/a.md\n{DEMO_NONE}");
+        let problems = validate(&doc(&front), &never);
         assert!(problems[0].contains("does not exist"), "{problems:?}");
     }
 
     #[test]
     fn done_with_none_and_reason_passes() {
-        let front = "status: done\nliving-docs-touched:\n  - none: internal refactor";
-        assert!(validate(&doc(front), &never).is_empty());
+        let front =
+            format!("status: done\nliving-docs-touched:\n  - none: internal refactor\n{DEMO_NONE}");
+        assert!(validate(&doc(&front), &never).is_empty());
     }
 
     #[test]
     fn none_without_reason_is_reported() {
-        let front = "status: done\nliving-docs-touched:\n  - none:";
-        assert!(validate(&doc(front), &never)[0].contains("reason"));
+        let front = format!("status: done\nliving-docs-touched:\n  - none:\n{DEMO_NONE}");
+        assert!(validate(&doc(&front), &never)[0].contains("reason"));
+    }
+
+    const TOUCHED_NONE: &str = "living-docs-touched:\n  - none: internal";
+
+    #[test]
+    fn done_without_demo_is_reported() {
+        let front = format!("status: done\n{TOUCHED_NONE}");
+        let problems = validate(&doc(&front), &always);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("`demo` is empty"), "{problems:?}");
+    }
+
+    #[test]
+    fn done_with_existing_demo_path_passes() {
+        let front = format!("status: done\n{TOUCHED_NONE}\ndemo:\n  - demo/10-a.spec.ts");
+        assert!(validate(&doc(&front), &always).is_empty());
+    }
+
+    #[test]
+    fn done_with_missing_demo_path_is_reported() {
+        let front = format!("status: done\n{TOUCHED_NONE}\ndemo:\n  - demo/10-a.spec.ts");
+        let problems = validate(&doc(&front), &never);
+        assert!(problems[0].contains("demo names"), "{problems:?}");
+    }
+
+    #[test]
+    fn demo_none_without_reason_is_reported() {
+        let front = format!("status: done\n{TOUCHED_NONE}\ndemo:\n  - none:");
+        assert!(validate(&doc(&front), &never)[0].contains("`demo`"));
+    }
+
+    #[test]
+    fn list_items_go_to_the_list_that_precedes_them() {
+        let lines = ["status: done", "demo:", "  - a", "living-docs-touched:", "  - b"];
+        let fm = parse_front_matter(&lines);
+        assert_eq!(fm.demo, vec![Entry::Path("a".into())]);
+        assert_eq!(fm.touched, vec![Entry::Path("b".into())]);
+    }
+
+    #[test]
+    fn draft_doc_may_leave_demo_empty() {
+        assert!(validate(&doc("status: draft\ndemo:"), &never).is_empty());
     }
 }
