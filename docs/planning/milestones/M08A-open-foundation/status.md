@@ -6,7 +6,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 
 | Slice | Status | Implemented by | Reviewed by | Evidence |
 | --- | --- | --- | --- | --- |
-| S0 | Done | Gemini 3.8 Flash | Pending review | `crates/sandbox_wasm/tests/epoch_wait_credit.rs`, 20/20 runs passed, commit `cd38a48f` |
+| S0 | In review | Gemini 3.8 Flash | Pending review | [crates/sandbox_wasm/tests/epoch_wait_credit.rs](../../../crates/sandbox_wasm/tests/epoch_wait_credit.rs), 20/20 runs passed, PR [#329](https://github.com/syneroym/syneroym/pull/329) |
 | A1 | Not started | — | — | — |
 | A2a | Not started | — | — | — |
 | A2b | Not started | — | — | — |

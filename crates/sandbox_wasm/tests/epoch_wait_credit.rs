@@ -5,15 +5,29 @@
 //! These tests verify that host calls can be credited against the guest epoch
 //! deadline, so a guest waiting on slow outbound calls is not interrupted,
 //! while a guest looping in its own code is still interrupted on time.
+//!
+//! Multi-thread runtime note: with `#[tokio::test(flavor = "multi_thread")]`,
+//! the guest execution runs on the test's `block_on` thread, not a worker.
+//! The epoch ticker runs on a separate worker thread so that a spinning guest
+//! does not starve the clock.
 
 use std::time::{Duration, Instant};
 
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use tokio::time::{self, MissedTickBehavior};
+use tokio::{
+    task::JoinHandle,
+    time::{self, MissedTickBehavior},
+};
 use wasmtime::{
-    Engine, Store, Trap, UpdateDeadline,
+    Engine, Error as WasmtimeError, Store, Trap, UpdateDeadline,
     component::{Component, HasSelf, Linker, Val},
 };
+
+const TICK: Duration = Duration::from_millis(100);
+const WAIT: Duration = Duration::from_millis(2000);
+const BUDGET_TICKS: u64 = 5;
+const BUDGET: Duration = Duration::from_millis(BUDGET_TICKS * 100);
+const MARGIN: Duration = Duration::from_millis(1000);
 
 wasmtime::component::bindgen!({
     inline: r#"
@@ -31,6 +45,15 @@ wasmtime::component::bindgen!({
     imports: { default: async },
 });
 
+use test::waiter::host_waiter;
+
+/// The guest WAT component imports the host waiter interface and exports test
+/// functions.
+///
+/// The short loop in `wait_then_work` and `credited_wait_then_work` is
+/// essential: Wasmtime checks the epoch deadline only in guest code (at
+/// function entry and loop back-edges). A guest returning immediately after a
+/// host call without executing any guest code would never be interrupted.
 const GUEST_WAT: &str = r#"
 (component
   (import "test:waiter/host-waiter" (instance $waiter
@@ -96,23 +119,24 @@ struct TestState {
     started: Instant,
     budget: Duration,
     credited: Duration,
+    callback_calls: usize,
 }
 
 impl TestState {
     fn new(budget: Duration) -> Self {
-        Self { started: Instant::now(), budget, credited: Duration::ZERO }
+        Self { started: Instant::now(), budget, credited: Duration::ZERO, callback_calls: 0 }
     }
 }
 
-impl test::waiter::host_waiter::Host for TestState {
+impl host_waiter::Host for TestState {
     async fn wait(&mut self, ms: u32) {
         time::sleep(Duration::from_millis(u64::from(ms))).await;
     }
 
     async fn wait_credited(&mut self, ms: u32) {
-        let duration = Duration::from_millis(u64::from(ms));
-        time::sleep(duration).await;
-        self.credited += duration;
+        let sleep_start = Instant::now();
+        time::sleep(Duration::from_millis(u64::from(ms))).await;
+        self.credited += sleep_start.elapsed();
     }
 }
 
@@ -130,8 +154,9 @@ fn on_deadline_at(state: &TestState, now: Instant, tick_duration: Duration) -> U
     }
 }
 
-fn on_deadline(state: &TestState) -> UpdateDeadline {
-    on_deadline_at(state, Instant::now(), Duration::from_millis(100))
+fn on_deadline(state: &mut TestState) -> UpdateDeadline {
+    state.callback_calls += 1;
+    on_deadline_at(state, Instant::now(), TICK)
 }
 
 fn build_test_engine() -> Engine {
@@ -139,9 +164,9 @@ fn build_test_engine() -> Engine {
         .expect("engine build")
 }
 
-fn spawn_ticker(engine: Engine) -> tokio::task::JoinHandle<()> {
+fn spawn_ticker(engine: Engine) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_millis(100));
+        let mut interval = time::interval(TICK);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         interval.tick().await;
         loop {
@@ -152,8 +177,8 @@ fn spawn_ticker(engine: Engine) -> tokio::task::JoinHandle<()> {
 }
 
 enum DeadlineSetup {
-    Trap,
-    Callback,
+    TrapAtDeadline,
+    CreditCallback,
 }
 
 async fn run_guest(
@@ -161,12 +186,12 @@ async fn run_guest(
     wait_ms: Option<u32>,
     budget_ticks: u64,
     setup: DeadlineSetup,
-) -> (Result<(), wasmtime::Error>, Duration) {
+) -> (Result<(), WasmtimeError>, Duration, usize) {
     let engine = build_test_engine();
     let ticker = spawn_ticker(engine.clone());
 
     let mut linker = Linker::new(&engine);
-    test::waiter::host_waiter::add_to_linker::<_, HasSelf<TestState>>(&mut linker, |s| s)
+    host_waiter::add_to_linker::<_, HasSelf<TestState>>(&mut linker, |s| s)
         .expect("add host waiter to linker");
 
     let component = Component::new(&engine, GUEST_WAT).expect("compile wat component");
@@ -175,13 +200,11 @@ async fn run_guest(
     store.set_fuel(100_000_000_000).expect("set fuel");
 
     match setup {
-        DeadlineSetup::Trap => {
+        DeadlineSetup::TrapAtDeadline => {
             store.epoch_deadline_trap();
-            store.set_epoch_deadline(budget_ticks);
         }
-        DeadlineSetup::Callback => {
-            store.epoch_deadline_callback(|ctx| Ok(on_deadline(ctx.data())));
-            store.set_epoch_deadline(budget_ticks);
+        DeadlineSetup::CreditCallback => {
+            store.epoch_deadline_callback(|mut ctx| Ok(on_deadline(ctx.data_mut())));
         }
     }
 
@@ -195,55 +218,82 @@ async fn run_guest(
     };
     let mut results = [];
 
+    // Set the epoch deadline and the wall-clock start time together immediately
+    // before entering guest code so both start from the same baseline.
+    store.set_epoch_deadline(budget_ticks);
     store.data_mut().started = Instant::now();
     let call_start = Instant::now();
     let res = func.call_async(&mut store, &params, &mut results).await;
     let elapsed = call_start.elapsed();
+    let callback_calls = store.data().callback_calls;
 
     ticker.abort();
-    (res, elapsed)
+    (res, elapsed, callback_calls)
 }
 
 #[test]
 fn callback_arithmetic_calculates_deadline_credit() {
     let started = Instant::now();
-    let tick = Duration::from_millis(100);
-    let budget = Duration::from_millis(500);
+    let state = TestState { started, budget: BUDGET, credited: Duration::ZERO, callback_calls: 0 };
 
-    let state = TestState { started, budget, credited: Duration::ZERO };
-
-    assert!(matches!(on_deadline_at(&state, started, tick), UpdateDeadline::Continue(5)));
+    assert!(matches!(on_deadline_at(&state, started, TICK), UpdateDeadline::Continue(5)));
     assert!(matches!(
-        on_deadline_at(&state, started + Duration::from_millis(250), tick),
+        on_deadline_at(&state, started + Duration::from_millis(250), TICK),
         UpdateDeadline::Continue(3)
     ));
     assert!(matches!(
-        on_deadline_at(&state, started + Duration::from_millis(499), tick),
+        on_deadline_at(&state, started + Duration::from_millis(499), TICK),
         UpdateDeadline::Continue(1)
     ));
     assert!(matches!(
-        on_deadline_at(&state, started + Duration::from_millis(500), tick),
+        on_deadline_at(&state, started + Duration::from_millis(500), TICK),
         UpdateDeadline::Interrupt
     ));
     assert!(matches!(
-        on_deadline_at(&state, started + Duration::from_millis(600), tick),
+        on_deadline_at(&state, started + Duration::from_millis(600), TICK),
         UpdateDeadline::Interrupt
     ));
 
-    let credited_state = TestState { started, budget, credited: Duration::from_millis(1000) };
+    let credited_state = TestState {
+        started,
+        budget: BUDGET,
+        credited: Duration::from_millis(1000),
+        callback_calls: 0,
+    };
     assert!(matches!(
-        on_deadline_at(&credited_state, started + Duration::from_millis(1200), tick),
+        on_deadline_at(&credited_state, started + Duration::from_millis(1200), TICK),
         UpdateDeadline::Continue(3)
     ));
     assert!(matches!(
-        on_deadline_at(&credited_state, started + Duration::from_millis(1500), tick),
+        on_deadline_at(&credited_state, started + Duration::from_millis(1500), TICK),
         UpdateDeadline::Interrupt
+    ));
+
+    // When credit is greater than elapsed time, own time saturates to zero,
+    // granting the full budget.
+    let overcredited_state = TestState {
+        started,
+        budget: BUDGET,
+        credited: Duration::from_millis(800),
+        callback_calls: 0,
+    };
+    assert!(matches!(
+        on_deadline_at(&overcredited_state, started + Duration::from_millis(500), TICK),
+        UpdateDeadline::Continue(5)
     ));
 }
 
+/// Proves control behaviour: today an uncredited host call exceeding the epoch
+/// budget traps with `Trap::Interrupt` on return to guest code.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_long_host_wait_stops_the_guest_today() {
-    let (res, _elapsed) = run_guest("wait-then-work", Some(2000), 5, DeadlineSetup::Trap).await;
+    let (res, _elapsed, _calls) = run_guest(
+        "wait-then-work",
+        Some(WAIT.as_millis() as u32),
+        BUDGET_TICKS,
+        DeadlineSetup::TrapAtDeadline,
+    )
+    .await;
     let err = res.expect_err("guest should be stopped by deadline trap");
     assert!(
         matches!(err.downcast_ref::<Trap>(), Some(Trap::Interrupt)),
@@ -251,49 +301,77 @@ async fn a_long_host_wait_stops_the_guest_today() {
     );
 }
 
+/// Proves that crediting the wait time prevents the guest from trapping on
+/// return, and confirms that the extension callback was indeed invoked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_credited_wait_does_not_stop_the_guest() {
-    let (res, _elapsed) =
-        run_guest("credited-wait-then-work", Some(2000), 5, DeadlineSetup::Callback).await;
+    let (res, elapsed, callback_calls) = run_guest(
+        "credited-wait-then-work",
+        Some(WAIT.as_millis() as u32),
+        BUDGET_TICKS,
+        DeadlineSetup::CreditCallback,
+    )
+    .await;
     res.expect("credited wait should not stop the guest");
+    assert!(callback_calls >= 1, "callback should have run at least once, got {callback_calls}");
+    assert!(elapsed >= WAIT, "elapsed {elapsed:?} must be at least wait duration {WAIT:?}");
 }
 
+/// Proves that a guest spinning in its own loop is still stopped at its budget
+/// even when the extension callback is installed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_guest_loop_is_still_stopped_at_its_budget() {
-    let (res, elapsed) = run_guest("spin", None, 5, DeadlineSetup::Callback).await;
+    let (res, elapsed, _calls) =
+        run_guest("spin", None, BUDGET_TICKS, DeadlineSetup::CreditCallback).await;
     let err = res.expect_err("spinning guest should be stopped");
     assert!(
         matches!(err.downcast_ref::<Trap>(), Some(Trap::Interrupt)),
         "expected Trap::Interrupt, got {err:?}"
     );
-    let min_time = Duration::from_millis(400);
-    let max_time = Duration::from_millis(1250);
+    let min_time = BUDGET - TICK;
+    let max_time = BUDGET + MARGIN;
     assert!(
         elapsed >= min_time && elapsed <= max_time,
         "elapsed {elapsed:?} outside expected range [{min_time:?}, {max_time:?}]"
     );
 }
 
+/// Proves that wait credit only buys back the time waited, not extra guest
+/// time. A guest spinning after a credited wait is interrupted when its budget
+/// expires.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn credit_buys_back_the_wait_and_no_more() {
-    let (res, elapsed) =
-        run_guest("credited-wait-then-spin", Some(2000), 5, DeadlineSetup::Callback).await;
+    let (res, elapsed, _calls) = run_guest(
+        "credited-wait-then-spin",
+        Some(WAIT.as_millis() as u32),
+        BUDGET_TICKS,
+        DeadlineSetup::CreditCallback,
+    )
+    .await;
     let err = res.expect_err("guest should be stopped after budget expires");
     assert!(
         matches!(err.downcast_ref::<Trap>(), Some(Trap::Interrupt)),
         "expected Trap::Interrupt, got {err:?}"
     );
-    let min_time = Duration::from_millis(2400);
-    let max_time = Duration::from_millis(3250);
+    let min_time = WAIT + BUDGET - TICK;
+    let max_time = WAIT + BUDGET + MARGIN;
     assert!(
         elapsed >= min_time && elapsed <= max_time,
         "elapsed {elapsed:?} outside expected range [{min_time:?}, {max_time:?}]"
     );
 }
 
+/// Proves that calling an uncredited host function with the callback installed
+/// still traps when the wait exceeds the budget.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wait_without_credit_still_counts() {
-    let (res, _elapsed) = run_guest("wait-then-work", Some(2000), 5, DeadlineSetup::Callback).await;
+    let (res, _elapsed, _calls) = run_guest(
+        "wait-then-work",
+        Some(WAIT.as_millis() as u32),
+        BUDGET_TICKS,
+        DeadlineSetup::CreditCallback,
+    )
+    .await;
     let err = res.expect_err("uncredited wait should stop the guest");
     assert!(
         matches!(err.downcast_ref::<Trap>(), Some(Trap::Interrupt)),

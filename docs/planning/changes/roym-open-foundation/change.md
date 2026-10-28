@@ -92,13 +92,13 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 Today a guest calls one target at a time through `syneroym:proxy`. The new call, roughly:
 
 ```wit
-record call-target { target: call-target-ref, method: string, params: string }
-record call-outcome { target-index: u32, result: result<string, call-error> }
+record call-request { target: call-target, method: string, params: string }
+record call-outcome { target-index: u32, result: result<string, proxy-error> }
 
 /// Runs the calls at the same time, up to the host's concurrency cap.
 /// Each call has `per-call-timeout-ms`. Returns when all have answered or
 /// timed out, or when the host's total limit ends.
-call-all: func(calls: list<call-target>, per-call-timeout-ms: u32) -> list<call-outcome>;
+call-all: func(calls: list<call-request>, per-call-timeout-ms: u32) -> list<call-outcome>;
 ```
 
 The exact names are set in the slice plan. The rules:
@@ -109,7 +109,7 @@ The exact names are set in the slice plan. The rules:
 
 **The epoch deadline is the main risk of this change.** The deadline is set once, at the start of the guest call (`engine.rs:570`). The epoch advances on a wall-clock timer, also while the guest waits in a host call. The deadline is checked only when guest code runs, so the guest traps at its first check after `call-all` returns.
 
-- **Primary approach (proved in the M08A spike).** Proved by `crates/sandbox_wasm/tests/epoch_wait_credit.rs` (D-OF-1). Wasmtime lets the host register an epoch-deadline callback on the store (`Store::epoch_deadline_callback`). The callback computes own time (wall-clock elapsed time minus credited wait time). If own time is at or past the budget, it returns `UpdateDeadline::Interrupt`. Otherwise it extends the deadline by returning `UpdateDeadline::Continue(ticks)` with the remaining budget rounded up to whole ticks (at least 1). Wait credit is capped at one `call-all` total limit per guest call. Returning budget minus own time (rather than the wait time) is required because `Continue(n)` in Wasmtime sets the new deadline to `current_epoch + n`, not `old_deadline + n`.
+- **Primary approach (proved in the M08A spike).** Proved by [crates/sandbox_wasm/tests/epoch_wait_credit.rs](../../../crates/sandbox_wasm/tests/epoch_wait_credit.rs) (D-OF-1). Wasmtime lets the host register an epoch-deadline callback on the store (`Store::epoch_deadline_callback`). The callback computes own time (wall-clock elapsed time minus credited wait time). If own time is at or past the budget, it returns `UpdateDeadline::Interrupt`. Otherwise it extends the deadline by returning `UpdateDeadline::Continue(ticks)` with the remaining budget rounded up to whole ticks (at least 1). Wait credit is capped at one `call-all` total limit per guest call. Credit and start time reset at every `set_epoch_deadline` (`engine.rs:570` for stores, `stream.rs:188` for stream chunks). Credit is also added when `call-all` ends with an error or a timeout. No other host call gives credit. Own time uses the wall clock (`Instant`) because `Engine::current_epoch` is `pub(crate)`. No `Config` change and no `Yield`. Returning budget minus own time (rather than the wait time) is required because `Continue(n)` in Wasmtime sets the new deadline to `current_epoch + n`, not `old_deadline + n`.
 - **Fallback (rejected alternative): a two-step search with no long host call.** The guest calls `start-search(sources, query)`, which returns a job id at once. The host runs the fan-out natively, outside any guest call, under the same limits. When it ends, the host stores the results and raises a `search.done` event on the event feed. A second guest call reads the results by job id and merges them with the federated query library. Each guest call stays short, so the epoch deadline never applies to the wait. The library's merge code is the same with either approach.
 - **What the fallback would change, beyond OF-4:**
   - **The client API (OF-6).** A search is no longer one client call. The client calls `search.start`, waits for the `search.done` event, then calls `search.results`. `web` cannot chain the two steps inside one call, because it would hit the same deadline while it waits. So every client needs the event feed for search, and A5 (event feed) must land before A4.
@@ -138,7 +138,7 @@ Two users:
 
 One feed per node, for the people and services on it.
 
-- **Events are small.** Each one names a kind (`message`, `card`, `delivery-state`, `booking`, `match`, …), an id and a cursor. Content is fetched with the normal methods. So the feed leaks nothing new, and needs no new access rules beyond "the caller is the owner".
+- **Events are small.** Each one names a kind (`conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking`; `match` comes in M08F), an id and a cursor. Content is fetched with the normal methods. So the feed leaks nothing new, and needs no new access rules beyond "the caller is the owner".
 - **Catch-up.** Each event has a cursor. A client that was away asks for events after its last cursor. The node keeps a bounded window of events. Past the window, it answers "reload".
 
 Where the feed lives was decided in the M08A spike (D-OF-3): the host-level event bus.
@@ -196,8 +196,21 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 
 ## Decisions
 
-- **D-OF-1. Epoch deadline extension for `call-all`.** Proved by `crates/sandbox_wasm/tests/epoch_wait_credit.rs` (commit `cd38a48f`, 20/20 runs passed). The host uses `Store::epoch_deadline_callback` returning `budget - own_time` rounded up to whole ticks (at least 1), or `UpdateDeadline::Interrupt` when own time >= budget. Wait credit is capped at one `call-all` total limit per guest call. T3 confirmed that Wasmtime's deadline trap is `Trap::Interrupt` with root cause `"wasm trap: interrupt"`.
+- **D-OF-1. Epoch deadline extension for `call-all`.** Proved by [crates/sandbox_wasm/tests/epoch_wait_credit.rs](../../../crates/sandbox_wasm/tests/epoch_wait_credit.rs) (PR [#329](https://github.com/syneroym/syneroym/pull/329), 20/20 runs passed).
+  - The store's data holds the wait-credit state: when the guest call started, its budget, and the credited wait time so far.
+  - Credit and start time are reset at every `set_epoch_deadline`: `engine.rs:570` for each store, and `stream.rs:188` for each stream chunk.
+  - The budget is the budget of that call kind: dispatch, lifecycle hook or ABAC.
+  - `call-all` adds the time it waited to the credit, also when it ends with an error or a timeout, up to the cap (at most one `call-all` total limit of credit per guest call).
+  - **No other host call gives credit.** A single `proxy.call` can wait up to 30 s without credit; this keeps one guest call's wall time bounded.
+  - The store uses `epoch_deadline_callback` in place of `epoch_deadline_trap`. The callback computes own time (wall-clock elapsed time minus credited wait time). If own time is at or past the budget, it returns `UpdateDeadline::Interrupt`. This produces `Trap::Interrupt`, identical to `epoch_deadline_trap` today. Otherwise it returns `UpdateDeadline::Continue(ticks)` with the remaining budget rounded up to whole ticks (at least 1).
+  - Own time uses the wall clock (`Instant`), because `Engine::current_epoch` is `pub(crate)` in Wasmtime (`wasmtime-48.0.7/src/engine.rs:827`).
+  - No `Config` change (`async_support` is a no-op in Wasmtime 48) and no `Yield`.
+  - T3 confirmed that Wasmtime's deadline trap is `Trap::Interrupt` with root cause `"wasm trap: interrupt"` (no "epoch" or "deadline" substring).
+- **D-OF-2. Rejected fallback (two-step search).** A two-step search (`search.start` + `search.done` event + `search.results`) was rejected because the primary approach (D-OF-1) passed the spike. The fallback would require client-visible changes (OF-6), mandatory event feed usage for search, and a two-round-trip exchange protocol in M08F.
 - **D-OF-3. Event feed lives in a host-level event bus.** Simpler, faster, zero guest instances on write, and avoids forcing ephemeral connection state into database storage.
+  - The host tags each event with the writer's app instance from `app_context_of` (`engine.rs:535`), never from the event body.
+  - A service outside any app instance cannot write events in v1 (recommended).
+  - A5 decides how services subscribe (OF-10).
 - **D-OF-4. Event kinds and in-memory catch-up window.** In-memory ring buffer per app instance (newest 10,000 events or 24 hours). Lost on restart (answers "reload"). Four v1 event kinds: `conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking`.
 - **D-OF-5. Search has no live-progress form in v1.** Search is one client call returning a merged page. Bounded by `call-all` total limit. Option (c) (host-emitted progress events) recorded in deferred backlog as a future option.
 - **D-OF-6. `call-all` in `syneroym:proxy`.** Placed beside `proxy.call`, reusing target, options, and error types, with JSON text params.
