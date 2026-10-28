@@ -910,12 +910,8 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Messages' }).click();
-    const peerDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000026';
-    await page.locator('.open-conversation input').fill(peerDid);
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-
-    await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000026');
 
     await page.locator('.toggle-request-form').click();
     await expect(page.locator('.request-form')).toBeVisible();
@@ -969,11 +965,8 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Messages' }).click();
-    await page.locator('.open-conversation input').fill('did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000029');
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-
-    await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000029');
 
     await page.locator('.toggle-request-form').click();
     await expect(page.locator('.request-form')).toBeVisible();
