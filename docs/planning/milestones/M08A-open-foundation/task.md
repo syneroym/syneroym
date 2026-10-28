@@ -8,6 +8,8 @@ This sub-milestone makes Roym usable by any client, not only the Hub. It builds 
 
 The goal of the order: rename and type every method once, before the rest of Milestone 8 adds fields to them. Then build the parts that later sub-milestones depend on: the batched call (for federation) and the event feed (for extensions and match notifications).
 
+**Demo:** Extends the Roym chat story (`demo/20-roym-chat.spec.ts`). A viewer sees Bob's reply and the `delivered` state on Alice's message appear on their own, with no reopen or refresh step.
+
 ## 1. Shared parts
 
 | # | Shared part | Used by | Built in |

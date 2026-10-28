@@ -1,5 +1,7 @@
 import { test, expect, type Page } from '../fixtures';
-import { loginWithDelegatedKey, rpcCall } from '../hub-helpers';
+import {
+  addContact, loginWithDelegatedKey, openConversation, openMessages, rpcCall, saveProfile, sendMessage,
+} from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
 let HUB_URL: string;
@@ -157,14 +159,7 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Profile', exact: true }).click();
-    // Fill display name (first text input) and conversation address (second text input)
-    const textInputs = page.locator('.profile-screen input[type="text"]');
-    await textInputs.nth(0).fill('Alice In E2E');
-    await textInputs.nth(1).fill('iroh://alice-e2e-test-address');
-    await page.locator('.profile-screen button[type="submit"]').click();
-
-    await expect(page.locator('.profile-screen p')).toContainText('Saved record rec_', { timeout: 15_000 });
+    await saveProfile(page, 'Alice In E2E', 'iroh://alice-e2e-test-address');
   });
 
   test('6. contacts tab: adding a contact displays it in contacts list', async ({ page }) => {
@@ -172,15 +167,7 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Contacts' }).click();
-    const bobDid = 'did:key:h7wybobtestdid123456789012345678901234567890';
-    // The contacts screen has: DID input (first), conversation address input (second)
-    const contactInputs = page.locator('.contacts-screen input');
-    await contactInputs.nth(0).fill(bobDid);
-    await contactInputs.nth(1).fill('iroh://bob-e2e-test-address');
-    await page.getByRole('button', { name: 'Upsert Contact' }).click();
-
-    await expect(page.locator('.contacts-screen')).toContainText(bobDid, { timeout: 15_000 });
+    await addContact(page, 'did:key:h7wybobtestdid123456789012345678901234567890', 'iroh://bob-e2e-test-address');
   });
 
   test('7. safety tab: blocking a DID displays it in block list', async ({ page }) => {
@@ -270,15 +257,9 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Messages' }).click();
-    await page.locator('.open-conversation input').fill('did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000000');
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-
-    await expect(page.locator('.conversation-thread h3')).toBeVisible({ timeout: 15_000 });
-    await page.locator('.compose-input').fill('hello nobody');
-    await page.getByRole('button', { name: 'Send', exact: true }).click();
-    // The compose box clears only when the send succeeds.
-    await expect(page.locator('.compose-input')).toHaveValue('', { timeout: 15_000 });
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000000');
+    await sendMessage(page, 'hello nobody');
 
     const state = page.locator('.thread-messages .message .message-state').first();
     await expect(state).toHaveText('pending', { timeout: 15_000 });
@@ -929,12 +910,8 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Messages' }).click();
-    const peerDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000026';
-    await page.locator('.open-conversation input').fill(peerDid);
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-
-    await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000026');
 
     await page.locator('.toggle-request-form').click();
     await expect(page.locator('.request-form')).toBeVisible();
@@ -988,11 +965,8 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Messages' }).click();
-    await page.locator('.open-conversation input').fill('did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000029');
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-
-    await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000029');
 
     await page.locator('.toggle-request-form').click();
     await expect(page.locator('.request-form')).toBeVisible();
@@ -1193,19 +1167,16 @@ test.describe('Roym Hub', () => {
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    await page.getByRole('button', { name: 'Messages' }).click();
+    await openMessages(page);
     const peerDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000040';
-    await page.locator('.open-conversation input').fill(peerDid);
-    await page.getByRole('button', { name: 'Open conversation' }).click();
+    await openConversation(page, peerDid);
     const heading = page.locator('.conversation-thread h3').first();
     await expect(heading).toHaveText(peerDid, { timeout: 15_000 });
 
     // The node is shared across scenarios (and retries), so the searched
     // word is unique to this run: exactly one message can hold it.
     const word = `searchable${Date.now()}`;
-    await page.locator('.compose-input').fill(`please trim the ${word} hedge`);
-    await page.getByRole('button', { name: 'Send', exact: true }).click();
-    await expect(page.locator('.compose-input')).toHaveValue('', { timeout: 15_000 });
+    await sendMessage(page, `please trim the ${word} hedge`);
 
     // Switch the thread away, so the click below has something to change.
     const otherDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers0000000000040b';

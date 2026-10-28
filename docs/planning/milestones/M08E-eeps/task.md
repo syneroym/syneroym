@@ -8,6 +8,8 @@
 
 Earnest effort promises (EEPs) between an issuer and one holder: issue, redemption, decline, set-off, split and expiry. An EEP is a signed promise by its issuer to make an earnest effort to accept it against the issuer's own offerings, at a face value (see the Value Exchange change). Transfer to a third person comes later, in [M08H](../M08H-eep-transfer/task.md), after discovery and reputation. There is no legal gate (owner decision, 2026-10-26). Features that present EEPs as investments stay out.
 
+**Demo:** TBD at planning. A wallet screen and issue and redeem steps are visible, but the plan for the first stories does not cover them yet.
+
 ## Change docs
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): EEPs between two parties (`VX-13` to `VX-24`, `VX-49`, `VX-50`).

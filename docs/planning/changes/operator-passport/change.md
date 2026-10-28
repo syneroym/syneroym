@@ -7,6 +7,8 @@ living-docs-touched:
   - docs/planning/traceability-matrix.md
   - docs/TERMINOLOGY.md
   - docs/planning/deferred-backlog.md
+demo:
+  - none: before demo stories
 ---
 # Operator passport
 

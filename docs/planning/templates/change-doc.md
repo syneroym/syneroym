@@ -1,6 +1,7 @@
 ---
 status: draft
 living-docs-touched:
+demo:
 ---
 # <Feature name>
 
@@ -11,6 +12,11 @@ When status becomes `done`, list the living docs you updated under
 `living-docs-touched`, one path per line, for example:
   - docs/system-architecture.md
 Or write a single line `  - none: <reason>` if no living doc needed a change.
+Also list under `demo` the demo stories this change adds or extends, one path
+per line, for example:
+  - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
+Or write `  - none: <reason>` if a viewer can see nothing new. Always use the list
+form: a one-line `demo: none: x` is not valid YAML.
 Delete these comments when you copy the file.
 -->
 

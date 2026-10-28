@@ -7,6 +7,8 @@ living-docs-touched:
   - docs/developer-guide.md
   - docs/planning/traceability-matrix.md
   - docs/planning/deferred-backlog.md
+demo:
+  - none: before demo stories
 ---
 # Signed route preamble
 

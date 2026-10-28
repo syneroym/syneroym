@@ -116,6 +116,21 @@ description = "Run Playwright E2E browser tests in UI Mode (headed/interactive)"
 run = "npm install && npx playwright test --ui"
 dir = "crates/substrate/tests/e2e"
 
+[tasks."demo"]
+description = "Boot two local nodes, run every demo story in order, then stop the nodes (DEMO_VIDEO=1 records, DEMO_MODE=present is headed and slow)"
+run = "npm install && npm run test:demo"
+dir = "crates/substrate/tests/e2e"
+
+[tasks."demo:up"]
+description = "Boot the two demo nodes (S1, S2), write the env file, and leave them running"
+run = "npm install && npm run demo:up"
+dir = "crates/substrate/tests/e2e"
+
+[tasks."demo:down"]
+description = "Stop the demo nodes that demo:up started"
+run = "npm install && npm run demo:down"
+dir = "crates/substrate/tests/e2e"
+
 [tasks."test:all"]
 description = "Run both Rust and browser E2E test suites"
 depends = ["test:rust", "test:e2e"]

@@ -19,6 +19,7 @@
     },
     "include": [
         "tests/**/*.ts",
+        "demo/**/*.ts",
         "*.ts"
     ]
 }

@@ -8,6 +8,8 @@
 
 The directory splits into a membership authority and an exchange. Participants publish wants and receive bids. Exchanges match wants and offerings in both directions as they change, keep standing wants until their close time, notify the parties through the mailbox, and forward searches and wants one hop to friend exchanges.
 
+**Demo:** New story for the directory. A viewer sees a participant publish to an exchange and another participant find the listing by search.
+
 ## Change docs
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): Want-Bid, membership and exchange, federation (`VX-3` to `VX-5`, `VX-30` to `VX-36`).

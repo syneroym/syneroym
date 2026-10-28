@@ -8,6 +8,8 @@
 
 A participant can judge another party before a deal, from evidence (signed facts) and opinions (signed views), shown side by side and never merged into one number. Both parties to a deal can write an opinion. Opinions of one deal are sealed, revealed to each other, given a resolution window, then published at the deal's home exchange. Feedback can point at one extension step.
 
+**Demo:** TBD at planning. The three-source view in the Hub is visible, but the plan for the first stories does not cover it yet.
+
 ## Change docs
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): reputation, evidence and opinions (`VX-37` to `VX-44`, `VX-51` to `VX-53`).

@@ -10,6 +10,8 @@ Offerings and wants become one intent record, with in-return terms (what an offe
 
 Both parts reshape `listing`, so they are built together, once.
 
+**Demo:** New story for offerings and the shop. A viewer sees one person publish an offering with images and attributes, and another person browse that shop.
+
 ## Change docs
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): intents, offerings and wants (`VX-1`, `VX-4`).

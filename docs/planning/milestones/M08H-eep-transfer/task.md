@@ -8,6 +8,8 @@
 
 A holder can pass an EEP to someone else, and the issuer reissues it to the new holder. A participant can give several EEPs in one agreement (a bundle), swap EEPs with another participant, and list EEPs for trade. This comes after discovery (M08F) and reputation (M08G), so that strangers can find each other and a receiver can judge an issuer from published evidence before taking its EEPs. The order is about user value only. There is no legal gate (owner decision, 2026-10-26).
 
+**Demo:** TBD at planning. Passing an EEP to another person is visible, but the plan for the first stories does not cover it yet.
+
 ## Change docs
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): transfer and reissue, bundles, netting (`VX-25` to `VX-29`).
