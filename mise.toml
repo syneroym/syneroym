@@ -118,7 +118,7 @@ dir = "crates/substrate/tests/e2e"
 
 [tasks."demo"]
 description = "Boot two local nodes, run every demo story in order, then stop the nodes (DEMO_VIDEO=1 records, DEMO_MODE=present is headed and slow)"
-run = "npm install && npx playwright test -c playwright-demo.config.ts"
+run = "npm install && npm run test:demo"
 dir = "crates/substrate/tests/e2e"
 
 [tasks."demo:up"]

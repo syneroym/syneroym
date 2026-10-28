@@ -243,7 +243,7 @@ Phase 0 results (warm build cache, Apple silicon laptop):
 
 Phase 2 results (warm build cache): `mise run demo` takes 73 s in total, with both stories. The Roym setup script takes 6 s and the Roym browser steps take 4 s. The demo stays in `npm test`.
 
-- The AGENTS.md rule and the code name `mise run demo`, not `mise run test:demo`. There is no `test:demo` mise task. The only `test:demo` is the npm script, which the CI job does not use. Earlier text in this doc used the wrong name.
+- The AGENTS.md rule and the code name `mise run demo`, not `mise run test:demo`. There is no `test:demo` mise task, and none is added: one mise name is enough. The npm script `test:demo` is the one place that holds the command. `mise run demo` and `npm test` both call it. Earlier text in this doc used the wrong name.
 - In `docs/demo/demo.md`, section 2 and the Roym sections R0, R1 and R3 start with the "Automated" line. R3 was wrong for the Hub as it is today: it did not say that the contact needs the DID and the address, and that the Hub shows a new message only when the screen is opened again. It is fixed to match the script.
 - Four M08 sub-milestones (B, E, G, H) have the `Demo` line `TBD at planning`, not `no demo: internal`: they change what a viewer sees, but the "What the first stories cover" table does not place them. A backlog row, "More demo stories", records this together with the unconverted runbook stories.
 

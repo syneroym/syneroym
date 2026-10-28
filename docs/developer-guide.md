@@ -142,7 +142,7 @@ A demo story is a short test that shows one working path with captions. It uses 
 
 Two local nodes run every story. S1 also runs the registry and the coordinator. S2 uses them. The names follow [docs/demo/demo.md](demo/demo.md): `rc1` and `rc2` run `roymctl` against S1 and S2. In the Roym story, Alice is the person on S1 and Bob is the person on S2. Ports are allocated at run time.
 
-* **Run all stories** (boots both nodes, runs the stories in file-name order, stops the nodes):
+* **Run all stories** (boots both nodes, runs the stories in file-name order, stops the nodes). It runs `npm run test:demo` in `crates/substrate/tests/e2e`:
   ```bash
   mise run demo
   ```
@@ -160,7 +160,7 @@ Two local nodes run every story. S1 also runs the registry and the coordinator. 
   | `DEMO_ATTACH=1` | Uses the nodes that `demo:up` started and leaves them running. The story specs do not run their shell scripts, because you ran those by hand. If a node does not answer, the run stops and names `mise run demo:up`. |
   | `DEMO_STEP=1` | A shell script waits for Enter after each caption. It needs a terminal, so run the script directly, not through Playwright. |
 
-  Live talk, in short: `mise run demo:up`, run the scripts with `DEMO_STEP=1`, then run the browser parts with `DEMO_MODE=present DEMO_ATTACH=1 npx playwright test -c playwright-demo.config.ts`, then `mise run demo:down`.
+  Live talk, in short: `mise run demo:up`, run the scripts with `DEMO_STEP=1`, then run the browser parts with `DEMO_MODE=present DEMO_ATTACH=1 npm run test:demo`, then `mise run demo:down`.
 
 **Write a new story.** A story shows the working path only. Failure cases belong in the normal tests.
 
