@@ -6,7 +6,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 
 | Slice | Status | Implemented by | Reviewed by | Evidence |
 | --- | --- | --- | --- | --- |
-| S0 | Not started | — | — | — |
+| S0 | Done | Gemini 3.8 Flash | Pending review | `crates/sandbox_wasm/tests/epoch_wait_credit.rs`, 20/20 runs passed, commit `cd38a48f` |
 | A1 | Not started | — | — | — |
 | A2a | Not started | — | — | — |
 | A2b | Not started | — | — | — |
