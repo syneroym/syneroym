@@ -1,6 +1,9 @@
 ---
-status: draft
+status: done
 living-docs-touched:
+  - AGENTS.md
+  - docs/developer-guide.md
+  - docs/demo/demo.md
 demo:
   - crates/substrate/tests/e2e/demo/10-substrate-main.spec.ts
   - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
@@ -202,14 +205,14 @@ Phase 0 results (warm build cache, Apple silicon laptop):
 
 ## Tasks
 
-- [ ] Phase 0, shared boot library and harness
+- [x] Phase 0, shared boot library and harness
   - [x] `node-boot.ts` with `buildArtifacts` and `bootNode`. Convert the main suite. It stays green.
   - [x] `playwright-demo.config.ts`, demo setup and teardown, env file, git-ignored `demo-output/`, `demo:up` and `demo:down`.
   - [x] Convert `global-setup-multihop.ts` to the library, or record a deviation and add a deferred-backlog row.
   - [x] Attach mode (`DEMO_ATTACH=1`) in the demo setup and teardown.
   - [x] Check each decision above. Use the fallback where a check fails.
   - [x] Measure the boot time. Record whether the demo joins `npm test`.
-- [ ] Phase 1, pilot 1: substrate main story
+- [x] Phase 1, pilot 1: substrate main story
   - [x] `demo/lib.sh` and the shell-story runner spec. Add `greeter` to the build step.
   - [x] Scripts for the main story (runbook section 2). Fix the runbook where it was wrong.
   - [x] Browser step: open the web app and show a live update in a second session.
@@ -218,12 +221,12 @@ Phase 0 results (warm build cache, Apple silicon laptop):
   - [x] Roym deploy, session keys and conversation addresses as a shell step.
   - [x] `caption` and `step` helpers. Add the file parameter to `loginWithDelegatedKey`. Add the shared Hub steps to `hub-helpers.ts`.
   - [x] `demo/20-roym-chat.spec.ts`.
-- [ ] Phase 3, rules and docs
-  - [ ] Add the `demo:` list to the change-doc template, check it in `xtask` (including that a listed path exists), and fill the four existing done docs.
-  - [ ] Add the "Mandatory Demo Close-out" bullet to `AGENTS.md` in the same change as the xtask check.
-  - [ ] Add a `Demo` line to each M08 `task.md`.
-  - [ ] Add the "Automated" line to each converted section of `docs/demo/demo.md`.
-  - [ ] `docs/developer-guide.md`: how to run and write a demo.
+- [x] Phase 3, rules and docs
+  - [x] Add the `demo:` list to the change-doc template, check it in `xtask` (including that a listed path exists), and fill the four existing done docs.
+  - [x] Add the "Mandatory Demo Close-out" bullet to `AGENTS.md` in the same change as the xtask check.
+  - [x] Add a `Demo` line to each M08 `task.md`.
+  - [x] Add the "Automated" line to each converted section of `docs/demo/demo.md`.
+  - [x] `docs/developer-guide.md`: how to run and write a demo.
 - [ ] Later: more substrate stories one at a time, and a story for each M8 slice that has something to show.
 
 ## Deviations
@@ -238,7 +241,11 @@ Phase 0 results (warm build cache, Apple silicon laptop):
 - `loginWithDelegatedKey(page, keyFile?)` takes the key file as an optional second argument. It defaults to `ROYM_SESSION_KEY_FILE`, so the 30 existing calls in the main suite did not need a rename fix.
 - The Roym story is two serial tests (the setup script, then the browser steps), like the main story. Alice's message state is checked as `delivered` at the end only. The sent message is not checked as `pending` first, because the one-second outbox tick can change it before the check.
 
-Phase 2 results (warm build cache): `mise run test:demo` takes 73 s in total, with both stories. The Roym setup script takes 6 s and the Roym browser steps take 4 s. The demo stays in `npm test`.
+Phase 2 results (warm build cache): `mise run demo` takes 73 s in total, with both stories. The Roym setup script takes 6 s and the Roym browser steps take 4 s. The demo stays in `npm test`.
+
+- The AGENTS.md rule and the code name `mise run demo`, not `mise run test:demo`. There is no `test:demo` mise task. The only `test:demo` is the npm script, which the CI job does not use. Earlier text in this doc used the wrong name.
+- In `docs/demo/demo.md`, section 2 and the Roym sections R0, R1 and R3 start with the "Automated" line. R3 was wrong for the Hub as it is today: it did not say that the contact needs the DID and the address, and that the Hub shows a new message only when the screen is opened again. It is fixed to match the script.
+- Four M08 sub-milestones (B, E, G, H) have the `Demo` line `TBD at planning`, not `no demo: internal`: they change what a viewer sees, but the "What the first stories cover" table does not place them. A backlog row, "More demo stories", records this together with the unconverted runbook stories.
 
 ## Close-out
 

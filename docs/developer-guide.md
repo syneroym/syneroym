@@ -135,6 +135,48 @@ To execute all Rust and E2E suites sequentially:
 mise run test:all
 ```
 
+### Demo Stories
+*Reader: a developer who runs a demo or writes a new story.*
+
+A demo story is a short test that shows one working path with captions. It uses the real `syneroym-substrate` and `roymctl` binaries and, for Roym, the real Hub. The stories live in `crates/substrate/tests/e2e/demo/`. They run in `npm test`, so `mise run verify` and the CI job "Playwright E2E" fail when a story breaks.
+
+Two local nodes run every story. S1 also runs the registry and the coordinator. S2 uses them. The names follow [docs/demo/demo.md](demo/demo.md): `rc1` and `rc2` run `roymctl` against S1 and S2. In the Roym story, Alice is the person on S1 and Bob is the person on S2. Ports are allocated at run time.
+
+* **Run all stories** (boots both nodes, runs the stories in file-name order, stops the nodes):
+  ```bash
+  mise run demo
+  ```
+* **Leave the nodes running** (for a live talk, or to run one script by hand). This writes `crates/substrate/tests/e2e/.e2e-data-demo/demo.env`. Load it with `source`. Stop the nodes with `demo:down`:
+  ```bash
+  mise run demo:up
+  mise run demo:down
+  ```
+* **Switches** (environment variables):
+
+  | Variable | Effect |
+  | --- | --- |
+  | `DEMO_MODE=present` | Headed browser, slow motion and a pause after each step. `DEMO_PACE_MS` sets the pause (default 600 ms). |
+  | `DEMO_VIDEO=1` | Records every browser page, and a trace, to `crates/substrate/tests/e2e/demo-output/`. The folder is git-ignored. A step with two sessions gives two videos. Shell steps are not recorded. |
+  | `DEMO_ATTACH=1` | Uses the nodes that `demo:up` started and leaves them running. The story specs do not run their shell scripts, because you ran those by hand. If a node does not answer, the run stops and names `mise run demo:up`. |
+  | `DEMO_STEP=1` | A shell script waits for Enter after each caption. It needs a terminal, so run the script directly, not through Playwright. |
+
+  Live talk, in short: `mise run demo:up`, run the scripts with `DEMO_STEP=1`, then run the browser parts with `DEMO_MODE=present DEMO_ATTACH=1 npx playwright test -c playwright-demo.config.ts`, then `mise run demo:down`.
+
+**Write a new story.** A story shows the working path only. Failure cases belong in the normal tests.
+
+1. Pick a number prefix. Files run in name order, and stories are cumulative: the Roym story starts after the main story has run. `demo:up` gives two empty nodes.
+2. For terminal work, write `demo/NN-name.sh`. Start it with `source "$(dirname "$0")/lib.sh"`. `lib.sh` loads the env file and gives you `caption` (print a step title), `run` (print a command, then run it), `rpc` (a JSON-RPC call through a gateway, which fails if there is no result), `rc1`, `rc2`, `did_of` and `host_of`.
+3. When a script learns a value that a later step needs, store it with `demo_set KEY value`. It appends to the env file. The specs read the same file.
+4. For browser work, write `demo/NN-name.spec.ts`. Import `runScript`, `requireEnv`, `caption`, `step` and `newSession` from `demo/steps.ts`. Use `readDemoEnv()` from `demo-nodes.ts` to read the env file.
+   * The spec runs its own script first, as its own test, in serial mode. `runScript` skips the script when `DEMO_ATTACH=1`.
+   * Wrap each step in `step(page, 'title', ...)`. The title is shown as a caption and in the report. In a Roym story, say whose screen it is.
+   * Use `newSession` for a second browser session. Playwright records video only for the built-in `page`.
+   * Use the shared Hub steps in `hub-helpers.ts`. Select by class, not by visible text.
+5. Do not hard-code ports. Read them from the env file.
+6. Run `mise run demo`. Then list the story file in the `demo:` list of the change doc (see the change-doc template).
+
+The code that boots nodes is shared with the other Playwright suites in `node-boot.ts`: `buildArtifacts` builds the UI bundles, the WASM components and the binaries, and `bootNode` starts one node. Add an option there instead of copying boot code.
+
 ### Suite 3: Criterion Micro-Benchmarks
 These capture performance baselines for hotpaths under CPU stress in isolation, including preamble parsing, crypto (ECDH and AES-GCM), length-prefixed framing, and WASM sandbox store creation and instantiation.
 
