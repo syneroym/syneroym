@@ -407,6 +407,8 @@ Then:
 
 ## 2. Main story
 
+Automated: `mise run demo`. The script is the source of truth. This text may lag.
+
 **Message:** *I run an app on my own machine. Anyone, anywhere, can reach it by its
 identity. No public IP, no port forwarding, no hosting account.*
 
@@ -1151,6 +1153,8 @@ the cloud registry and relay.
 
 ### R0 Deploy Roym on both nodes
 
+Automated: `mise run demo`. The script is the source of truth. This text may lag.
+
 ```bash
 cd "$REPO"
 for n in 1 2; do
@@ -1208,6 +1212,8 @@ roymctl --dir "$S1_DIR" --as owner roym signing-status --gateway-url "http://127
 
 ### R1 Sign in and profile
 
+Automated: `mise run demo`. The script is the source of truth. This text may lag.
+
 1. Window A: open `http://$ROYM1_HOST:$S1_GW`. Window B: `http://$ROYM2_HOST:$S2_GW`.
 2. On each, choose **Sign in**, and select the matching `session-key.json` file
    (`$S1_DIR/alice-session-key.json`, `$S2_DIR/bob-session-key.json`).
@@ -1224,6 +1230,8 @@ category and a service area). Save.
 
 ### R3 Messages between two installations
 
+Automated: `mise run demo`. The script is the source of truth. This text may lag.
+
 Each person must know the other's conversation address.
 
 ```bash
@@ -1231,14 +1239,22 @@ roymctl --dir "$S1_DIR" roym address       # prints alice's conversation service
 roymctl --dir "$S2_DIR" roym address       # prints bob's
 ```
 
-In each Hub, **Profile** tab: put that value in **conversation address** and save. Then
-in **Contacts**, add the other person. In **Messages**, send a message from alice to bob.
+In each Hub, **Profile** tab: put that person's own value in **conversation address**
+and save. Then in alice's Hub, **Contacts** tab: enter bob's DID **and** bob's
+conversation address, and press **Upsert Contact**. Then in **Messages**, enter bob's
+address in the open-conversation box, press **Open conversation**, and send a message.
 
-**Expect:** the message shows "pending" and then arrives in bob's Hub.
+The Hub does not update live. Alice's message shows "pending". It is sent on the
+sender's next outbox tick (5 seconds by default; the automated demo sets 1 second).
+After that:
+
+1. In bob's Hub, open **Messages** again. **Expect:** the message is there. Reply to it.
+2. In alice's Hub, open **Messages** again. **Expect:** bob's reply is there, and
+   alice's own message now shows "delivered".
+
 **Say:** "Direct, signed messages. No central chat server."
 
-**Rehearse:** exact tab labels and where the other person's DID or address is entered.
-The Hub tests (`crates/substrate/tests/e2e/tests/roym-hub.spec.ts`, tests 5, 6, 10) are the
+The script is `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`. It is the
 reference for the clicks.
 
 ### R4 Request → quote → agreement
