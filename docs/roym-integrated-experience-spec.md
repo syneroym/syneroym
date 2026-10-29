@@ -35,21 +35,25 @@ with friends, buy something, offer a service, or help run a local group.
 
 ## People who use Roym
 
-- **Consumer:** Finds people or shops, asks questions, agrees on work or a
+- **Searcher:** Finds people or shops, asks questions, agrees on work or a
   purchase, and keeps the conversation and record in one place.
-- **Provider:** A service business or seller. Shows what they offer, speaks
-  with customers, manages bookings or orders, and keeps their customer
-  relationships.
+- **Listing owner:** A service business or seller. Shows what they offer, speaks
+  with the people who ask them for work, manages bookings or orders, and keeps
+  those relationships.
 - **SynOrg Owner:** Runs a local group (guild, union, cooperative). Approves
-  member providers, runs a directory, sets group rules, and handles complaints
-  inside the group.
+  member listing owners, runs a directory, sets group rules, and handles
+  complaints inside the group.
+
+Every person is a participant. Roym has no fixed seller and buyer roles. The
+two parties of one deal are the **quote author** (who writes and signs the
+quote) and the **counterparty** (the other party).
 
 **Terminology:** This document uses both "local group" (plain English) and
 "SynOrg" (Syneroym Organization). They mean the same thing: an independent
 administrative domain.
 
-One person can hold more than one role. A SynOrg owner may also be a provider.
-A consumer may later become a provider. The journey below orders roles by
+One person can hold more than one role. A SynOrg owner may also be a listing
+owner. A searcher may later become a listing owner. The journey below orders roles by
 what depends on what, not by who people are.
 
 ---
@@ -70,8 +74,8 @@ overturned an ADR is kept at the end, under
 | D5 | **Group chat uses an owner-distributed group key over a Gossip DAG, ordered by raw sender timestamps.** The group owner generates one symmetric key per epoch and sends it to each member over the existing 1:1 channel, then generates a new one on every join, every removal, and on a schedule. Not MLS. | **Revised 2026-08-13**, amending [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §6. MLS assumes a Delivery Service that gives every member the same order of Commits. We have no server, and a DAG sort does not supply that: a member can apply the only Commit it has seen, advance its epoch, then receive one that sorts earlier — and MLS epochs are forward-only. The ordering rule from §5 is unchanged and still correct. See [O1](#resolved-o1--group-key-management) for the full reasoning. |
 | D6 | **Clients talk to Roym as JSON-RPC through the client gateway.** The HTML UI is one such client, served by a thin Web entrypoint service that is also the single API origin. The API is the product boundary, not the UI. | Any other client — a different UI, a script, a CLI — can be written against the same API. **Revised 2026-08-18:** the entrypoint originally existed for two reasons, and only one survives. Five services would still mean five browser origins, so a single API origin is still worth a service. But "a WASM component cannot serve HTTP" stopped being true when [M06A](planning/milestones/M06A-app-platform-surface/task.md) completed (2026-08-17), so **the entrypoint is now an ordinary WASM component and is no longer exempt from D2 and D3** (M06B `D-06B-1`). See [Client contract](#client-contract). |
 | D7 | **The substrate signs on the person's behalf under delegation.** The user's Master DID delegates to the Substrate Node DID; Roym signs with the delegated key. Private user keys do not go into browser storage. | [ADR-0013](decisions/0013-p2p-messaging-architecture.md) §1 already defines this delegation. It also means the gateway must learn which person is asking — see [gap G3](#substrate-work-required). |
-| D8 | **Every participant installs a substrate, including consumers.** There is no browser-only consumer path in the first release. | The client gateway binds `127.0.0.1` and authenticates no client. A hosted gateway serving browser consumers needs remote binding plus client authentication — see [gap G3](#substrate-work-required). The lightweight device identity from the requirements still applies; the person just runs it on their own machine. **How the browser proves who it is** — a login against a node auth service, not a gateway-owned session — is settled by [ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md) and built in M06C slice C1.1. That ADR keeps this decision's assumption unchanged: the browser and the gateway are on the same machine, and untrusted-network browser access stays out of scope. |
-| D9 | **The Transaction service runs on the provider's substrate.** | It makes the provider the single writer for a transaction, which the requirements demand. Putting it on the SynOrg would make the group a required intermediary and would break providers who belong to no group. |
+| D8 | **Every participant installs a substrate, including searchers.** There is no browser-only searcher path in the first release. | The client gateway binds `127.0.0.1` and authenticates no client. A hosted gateway serving browser searchers needs remote binding plus client authentication — see [gap G3](#substrate-work-required). The lightweight device identity from the requirements still applies; the person just runs it on their own machine. **How the browser proves who it is** — a login against a node auth service, not a gateway-owned session — is settled by [ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md) and built in M06C slice C1.1. That ADR keeps this decision's assumption unchanged: the browser and the gateway are on the same machine, and untrusted-network browser access stays out of scope. |
+| D9 | **The Transaction service runs on the quote author's substrate.** | It makes the quote author the single writer for a transaction, which the requirements demand. Putting it on the SynOrg would make the group a required intermediary and would break quote authors who belong to no group. |
 | D10 | **Group chat is core, not a stretch.** Attachments and multi-device sync are not. | Group chat is a flagship demonstration and shares the Gossip DAG with nothing else in the release, so it cannot be added cheaply later. Attachments and multi-device sync are separate systems that no other core goal depends on. |
 
 > **Note on the plan text.** The meta plan's M6 item 3 says "relative-clock
@@ -93,22 +97,22 @@ through shared database access.
 | **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
 | **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, message bodies, and the search index over them | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
-| **Catalog** | Provider's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
-| **Transaction** | Provider's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
-| **Directory** | SynOrg's substrate, on every installation (deployed everywhere the SynApp is; the column names where the server half *matters*, not where the component lives) — and, on a consumer's own node, that person's list of directories | Member list, published listings, search index, membership credentials, revocations | Server half: `directory.search`, `directory.info`, `directory.publish`, `directory.unpublish`, `member.*`, `credential.*`, `revocation.*`. Client half (local-only, one node's own list of directories and search runs): `directory.add-source`/`remove-source`/`sources`, `directory.start-run`/`query-source`/`merge`/`run-envelope` |
+| **Catalog** | Listing owner's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
+| **Transaction** | Quote author's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
+| **Directory** | SynOrg's substrate, on every installation (deployed everywhere the SynApp is; the column names where the server half *matters*, not where the component lives) — and, on a searcher's own node, that person's list of directories | Member list, published listings, search index, membership credentials, revocations | Server half: `directory.search`, `directory.info`, `directory.publish`, `directory.unpublish`, `member.*`, `credential.*`, `revocation.*`. Client half (local-only, one node's own list of directories and search runs): `directory.add-source`/`remove-source`/`sources`, `directory.start-run`/`query-source`/`merge`/`run-envelope` |
 
 Four rules follow from this split:
 
 1. **The Transaction service is the single writer for a transaction.** It lives
-   on the provider's substrate, because the provider owns the offer. The
-   consumer's actions reach it as requests, not as direct writes. This is what
+   on the quote author's substrate, because the quote author owns the offer. The
+   counterparty's actions reach it as requests, not as direct writes. This is what
    the requirements mean by "a single writer per service resolves this".
-2. **The Directory is optional.** A consumer can reach a provider by direct
-   link or referral with no directory involved. A provider can be live and
+2. **The Directory is optional.** A searcher can reach a listing owner by direct
+   link or referral with no directory involved. A listing owner can be live and
    sell without joining any SynOrg. The Directory adds reach and trust
    evidence; it is not a required step in any protocol.
-3. **The Conversation service is symmetric.** Consumer, provider, and SynOrg
-   owner all run the same one. There is no "customer support" variant.
+3. **The Conversation service is symmetric.** Every participant, including a SynOrg
+   owner, runs the same one. There is no "customer support" variant.
 4. **The Web entrypoint holds no business logic.** It serves files and forwards
    calls. Anything it decided would exist only in the native build, which would
    make the WASM build quietly incomplete and break D2. See
@@ -232,30 +236,30 @@ tests before the next begins.
 
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
-| A person can be a consumer without running a full install of their own | Device-bound consumer key with encrypted backup and import (`[FND-IDT]` Lightweight Consumer Identity) | A consumer sets up, backs up, then restores on a clean machine | Recovery by an operator; social recovery | **Passed (C4, C5).** Restore on a clean node reproduces identity and history; no operator can impersonate |
-| A provider can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, and service-record dimensions | Provider publishes a listing and edits it | Media galleries; stock counting | **Passed (C5).** Listing round-trips through export/import with schema version preserved |
-| Two people can talk | 1:1 text with X3DH + Double Ratchet; durable outbox with `pending`/`delivered`/`failed` visible to the user | Consumer messages an offline provider; provider comes online and sees it | Attachments; voice; video; group chat | **Passed (C5).** Message survives a process restart on both sides and is never shown as delivered while pending |
-| A need becomes an offer | Versioned request → quote → agreement records, each signed | Consumer describes a need, provider quotes, consumer accepts | Negotiation history rendering; templates | **Passed (C7).** Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
-| A person can find a provider through a group | Directory `search` by category, area, and filters, returning source and freshness | Consumer searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | **Passed (C6).** Results state their source and age; missing evidence shows as unknown, never as positive |
-| People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Consumer blocks a provider and reports a listing | Automated moderation; appeals workflow | **Passed (C4, C5).** A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
+| A person can be a participant without running a full install of their own | Device-bound participant key with encrypted backup and import (`[FND-IDT]` Lightweight Participant Identity) | A participant sets up, backs up, then restores on a clean machine | Recovery by an operator; social recovery | **Passed (C4, C5).** Restore on a clean node reproduces identity and history; no operator can impersonate |
+| A listing owner can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, and service-record dimensions | Listing owner publishes a listing and edits it | Media galleries; stock counting | **Passed (C5).** Listing round-trips through export/import with schema version preserved |
+| Two people can talk | 1:1 text with X3DH + Double Ratchet; durable outbox with `pending`/`delivered`/`failed` visible to the user | Searcher messages an offline listing owner; listing owner comes online and sees it | Attachments; voice; video; group chat | **Passed (C5).** Message survives a process restart on both sides and is never shown as delivered while pending |
+| A need becomes an offer | Versioned request → quote → agreement records, each signed | Counterparty describes a need, quote author quotes, counterparty accepts | Negotiation history rendering; templates | **Passed (C7).** Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
+| A person can find a listing owner through a group | Directory `search` by category, area, and filters, returning source and freshness | Searcher searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | **Passed (C6).** Results state their source and age; missing evidence shows as unknown, never as positive |
+| People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Searcher blocks a listing owner and reports a listing | Automated moderation; appeals workflow | **Passed (C4, C5).** A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
 
 ### R2 — The transaction vertical (**Passed 2026-09-24**)
 
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
-| An agreement becomes scheduled work | Transaction state machine with named writer, permitted transitions, expiry, idempotency key, conflict rule | Consumer books a slot; a second consumer tries the same slot | Recurring bookings; multi-part jobs | **Passed (C8).** Two concurrent bookings of one slot produce one confirmation and one named conflict, never two confirmations |
-| Payment can be recorded honestly | `payment-acknowledgement` record, separate from settlement; payment instruction bound into the signed agreement | Provider requests payment, consumer pays outside Roym, both acknowledge | Provider-verified settlement; escrow; refunds | **Passed (C8).** The UI never labels an acknowledgement as verified payment; the payee shown matches the agreement |
+| An agreement becomes scheduled work | Transaction state machine with named writer, permitted transitions, expiry, idempotency key, conflict rule | Counterparty books a slot; a second counterparty tries the same slot | Recurring bookings; multi-part jobs | **Passed (C8).** Two concurrent bookings of one slot produce one confirmation and one named conflict, never two confirmations |
+| Payment can be recorded honestly | `payment-acknowledgement` record, separate from settlement; payment instruction bound into the signed agreement | Quote author requests payment, counterparty pays outside Roym, both acknowledge | Settlement verified by a payment provider; escrow; refunds | **Passed (C8).** The UI never labels an acknowledgement as verified payment; the payee shown matches the agreement |
 | Completion is recorded | Mutually signed `fulfilment-receipt` | Both sides sign off completed work | Ratings; feedback scores | **Passed (C8).** Neither party can alter a signed receipt; corrections appear as separate records |
-| A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Consumer exports everything, imports on a new install | Selective export; redaction | **Passed (C8).** A same-version export/import round-trip passes; import reproduces verification status. **Reworded 2026-08-24** (M06C `D-06C-2`): this read *"Cross-version fixture test passes"*, which G5 going out of scope makes unmeetable — see [G5](#g5--public-contract-versioning). R1's listing row is unaffected and stands as written, since a same-version round-trip that preserves the version field is not cross-version work |
-| A person can recover from device loss | Encrypted backup with a tested restore path | Provider loses their machine and restores | Automatic cloud backup | **Passed (C8).** Restore on a clean node passes the durability suite with no acknowledged transaction lost |
+| A person can leave with their data | Versioned, integrity-checked export of conversations, agreements, and receipts | Searcher exports everything, imports on a new install | Selective export; redaction | **Passed (C8).** A same-version export/import round-trip passes; import reproduces verification status. **Reworded 2026-08-24** (M06C `D-06C-2`): this read *"Cross-version fixture test passes"*, which G5 going out of scope makes unmeetable — see [G5](#g5--public-contract-versioning). R1's listing row is unaffected and stands as written, since a same-version round-trip that preserves the version field is not cross-version work |
+| A person can recover from device loss | Encrypted backup with a tested restore path | Participant loses their machine and restores | Automatic cloud backup | **Passed (C8).** Restore on a clean node passes the durability suite with no acknowledged transaction lost |
 
 ### R3 — Cross-installation trust (**Passed 2026-09-29**)
 
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
-| A consumer can transact with a provider on a different install | Endpoint resolution through the discovery overlay ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)) | Consumer on install X hires a provider on install Z | Automatic discovery between SynOrgs | Full R1+R2 flow passes end to end with the three parties on three separate installs. **Passed (C9).** One test walks X from Z's directory address alone, through the registry, to a finished signed booking with Y on a third installation |
-| Group membership means something checkable | Signed membership credential with issuer, scope, and expiry; signed revocation list | Consumer checks a provider's guild membership | Trade licences; third-party credentials | The consumer's own node verifies signature, issuer, scope, and expiry — never the directory that served the result. **Passed (C9).** The verdict is computed on the consumer's node from the group's signed evidence. A directory serving a forged, expired, out-of-scope or wrong-group credential does not win, and a directory's claimed issuer is pinned when it is added and never re-pinned by a later reply |
-| A group can enforce its rules | Signed, scoped moderation decision with source and timestamp | SynOrg suspends a member | Cross-group propagation; global blocklists | A suspended member vanishes from that directory's results; already-cached copies show the revocation on next check, and the document does not claim instant removal. **Passed (C9).** A suspended member's listings leave that directory's search at once; a held copy reads as it did until the consumer checks again, and the Hub says so in the same words on the Memberships screen and beside the group owner's suspend and revoke controls |
+| A searcher can transact with a listing owner on a different install | Endpoint resolution through the discovery overlay ([ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)) | Searcher on install X hires a listing owner on install Z | Automatic discovery between SynOrgs | Full R1+R2 flow passes end to end with the three parties on three separate installs. **Passed (C9).** One test walks X from Z's directory address alone, through the registry, to a finished signed booking with Y on a third installation |
+| Group membership means something checkable | Signed membership credential with issuer, scope, and expiry; signed revocation list | Searcher checks a listing owner's guild membership | Trade licences; third-party credentials | The searcher's own node verifies signature, issuer, scope, and expiry — never the directory that served the result. **Passed (C9).** The verdict is computed on the searcher's node from the group's signed evidence. A directory serving a forged, expired, out-of-scope or wrong-group credential does not win, and a directory's claimed issuer is pinned when it is added and never re-pinned by a later reply |
+| A group can enforce its rules | Signed, scoped moderation decision with source and timestamp | SynOrg suspends a member | Cross-group propagation; global blocklists | A suspended member vanishes from that directory's results; already-cached copies show the revocation on next check, and the document does not claim instant removal. **Passed (C9).** A suspended member's listings leave that directory's search at once; a held copy reads as it did until the searcher checks again, and the Hub says so in the same words on the Memberships screen and beside the group owner's suspend and revoke controls |
 
 ### R4 — Private group chat (**Passed 2026-09-30**)
 
@@ -287,7 +291,7 @@ Real systems in their own right, sequenced after the core set:
   category, area, and filters — not free-text intent parsing.
 - No automatic discovery between independently run SynOrgs. Groups can record
   peer relationships now; the protocol comes later.
-- No automated dispute workflow. A consumer can forward complaint details to a
+- No automated dispute workflow. A participant can forward complaint details to a
   SynOrg owner by hand.
 - No distributed shard index (D1).
 
@@ -298,17 +302,17 @@ Real systems in their own right, sequenced after the core set:
 This traces who does what, and when. Services and protocols are black boxes
 here.
 
-### Phase 1 — Provider sets up
+### Phase 1 — Listing owner sets up
 
 ```
-P1.  Provider installs a Syneroym substrate with the Roym SynApp
-P2.  Provider creates their profile
-P3.  Provider creates a catalog of services or products
+P1.  Listing owner installs a Syneroym substrate with the Roym SynApp
+P2.  Listing owner creates their profile
+P3.  Listing owner creates a catalog of services or products
        — the listing is signed, which proves who published it
        — signing does not prove the listing is honest; trust evidence
          comes separately, from membership credentials and receipts
-P4.  Provider sets availability (appointment slots or supply schedule)
-P5.  Provider is live and can be reached by direct link or referral
+P4.  Listing owner sets availability (appointment slots or supply schedule)
+P5.  Listing owner is live and can be reached by direct link or referral
        — being listed in a SynOrg directory is optional and comes next
 ```
 
@@ -319,13 +323,13 @@ S1.  SynOrg Owner installs a Syneroym substrate with the Roym SynApp
 S2.  SynOrg Owner creates the SynOrg: name, rules, area, categories,
        support contact, dispute path, directory policy, retention policy
 S3.  SynOrg Owner runs the Directory service on their own node
-S4.  Provider applies to join
-S5.  SynOrg Owner reviews the provider against group rules
+S4.  Listing owner applies to join
+S5.  SynOrg Owner reviews the listing owner against group rules
 S6.  SynOrg Owner approves and issues a signed membership credential
        — scoped, with an expiry date
-S7.  Provider chooses to publish listings to that directory
-       — publishing is the provider's action, not the SynOrg's
-S8.  Provider receives SynOrg announcements and updates
+S7.  Listing owner chooses to publish listings to that directory
+       — publishing is the listing owner's action, not the SynOrg's
+S8.  Listing owner receives SynOrg announcements and updates
 ```
 
 Everyday work for the SynOrg owner:
@@ -344,52 +348,52 @@ S13.  Removes a repeat offender: revokes the membership credential and
           they are next checked; nobody can promise instant removal
 ```
 
-### Phase 3 — Consumer arrives
+### Phase 3 — Searcher arrives
 
 ```
-C1.  Consumer installs Roym and creates a device-bound identity
-C2.  Consumer is prompted to back it up, after seeing some value first
-C3.  Consumer creates a profile
-C4.  Consumer adds one or more SynOrg directories to search
+C1.  Searcher installs Roym and creates a device-bound identity
+C2.  Searcher is prompted to back it up, after seeing some value first
+C3.  Searcher creates a profile
+C4.  Searcher adds one or more SynOrg directories to search
 ```
 
-> **How does a consumer find a SynOrg?** Out of band: word of mouth, a shared
+> **How does a searcher find a SynOrg?** Out of band: word of mouth, a shared
 > link, a referral, or a well-known list. Which SynOrg to trust is the
-> consumer's own decision.
+> searcher's own decision.
 
-Finding a provider:
+Finding a listing owner:
 
 ```
-C5.  Consumer searches by category, area, and filters
-C6.  The search goes to each directory the consumer has added
-       — directly, from the consumer's node
+C5.  Searcher searches by category, area, and filters
+C6.  The search goes to each directory the searcher has added
+       — directly, from the searcher's node
        — a directory is a query target, not a required hub
 C7.  Each directory returns matching listings with their source and age
-C8.  Consumer's own node combines and verifies results
+C8.  Searcher's own node combines and verifies results
        — checks each listing signature
        — checks each membership credential: signature, issuer, scope,
          expiry, revocation
        — missing evidence shows as unknown, never as a positive default
-C9.  Consumer sees results, and can see why each one appeared
+C9.  Searcher sees results, and can see why each one appeared
 ```
 
-Engaging a provider — the provider may be on any installation; the flow is the
+Engaging a listing owner — the listing owner may be on any installation; the flow is the
 same:
 
 ```
-C10.  Consumer starts a conversation from a listing
-        — subject to the provider's contact rate limits
-C11.  Provider replies in the same conversation
+C10.  Searcher starts a conversation from a listing
+        — subject to the listing owner's contact rate limits
+C11.  Listing owner replies in the same conversation
         — if either side is offline, the message waits in the sender's
           own outbox, or at the receiver's mailbox, and shows as `pending`
           or `deposited` until it is delivered (D4)
-C12.  Consumer sends a structured request: category, description,
+C12.  Counterparty sends a structured request: category, description,
         approximate area, preferred window, attachments, data-use notice
         — the exact address is disclosed only when it is needed
-C13.  Provider sends a versioned quote card: scope, price, taxes and
+C13.  Quote author sends a versioned quote card: scope, price, taxes and
         fees, schedule, location, payment method and payee,
         cancellation and refund terms, expiry, dispute path
-C14.  Consumer accepts, rejects, or asks for changes
+C14.  Counterparty accepts, rejects, or asks for changes
         — acceptance by both sides produces a signed agreement receipt
         — a material change produces a new version, not an edit
 ```
@@ -397,22 +401,22 @@ C14.  Consumer accepts, rejects, or asks for changes
 Booking, payment, completion:
 
 ```
-C15.  Consumer books a slot, or places an order
-        — the provider's Transaction service is the single writer and
+C15.  Counterparty books a slot, or places an order
+        — the quote author's Transaction service is the single writer and
           decides; a losing concurrent booking gets a named conflict
 C16.  Both sides see the same progress card, driven by the transaction
         state machine
-C17.  Provider requests payment; the payment instruction was already
+C17.  Quote author requests payment; the payment instruction was already
         fixed in the signed agreement, so the payee cannot be swapped
         in a later chat message
-C18.  Consumer pays through the external service
+C18.  Counterparty pays through the external service
 C19.  Each side records a payment acknowledgement with whatever proof
         they have
         — this proves both sides said the same thing
         — it does not prove the money moved; the UI must say so
-C20.  Provider marks the work complete; both sides sign a fulfilment
+C20.  Quote author marks the work complete; both sides sign a fulfilment
         receipt
-C21.  Consumer may recommend the provider to a contact, in a private
+C21.  Searcher may recommend the listing owner to a contact, in a private
         conversation
 ```
 
@@ -427,9 +431,9 @@ sequenced with the Matching Fabric in M8.
 
 ```
   ┌──────────────────┐   membership credential,   ┌──────────────────┐
-  │      SynOrg      │   announcements            │     Provider     │
+  │      SynOrg      │   announcements            │  Listing owner   │
   │                  │◀──────────────────────────▶│                  │
-  │  • members       │   provider publishes       │  • catalog       │
+  │  • members       │   owner publishes          │  • catalog       │
   │  • directory     │   listings by choice       │  • availability  │
   │  • rules         │                            │  • transactions  │
   │  • revocations   │                            │                  │
@@ -440,7 +444,7 @@ sequenced with the Matching Fabric in M8.
            │                                               │ payment, receipt
            │                                               │ (direct, E2E)
            │              ┌──────────────────┐             │
-           └─────────────▶│     Consumer     │◀────────────┘
+           └─────────────▶│     Searcher     │◀────────────┘
                           │                  │
                           │  • verifies all  │
                           │    evidence      │
@@ -448,8 +452,8 @@ sequenced with the Matching Fabric in M8.
                           └──────────────────┘
 ```
 
-The consumer queries directories directly and verifies every result on its own
-node. A directory can be skipped entirely when the consumer already has a link
+The searcher queries directories directly and verifies every result on its own
+node. A directory can be skipped entirely when the searcher already has a link
 or a referral.
 
 ---
@@ -463,11 +467,11 @@ one.
 | Record | Signed by | Proves | Does **not** prove |
 |---|---|---|---|
 | `profile` | The person | Who published this person's card, and the Conversation address they claim | That the person is who they say they are outside this network |
-| `listing` | Provider | Who published this offer, and when | That the offer is honest or the provider is competent; a listing's stated payee is not agreed terms until an `agreement-receipt` binds it |
-| `membership-credential` | SynOrg | This SynOrg approved this provider, within a scope, until an expiry date | That the SynOrg vetted them well, or that any other group agrees |
-| `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time. A revocation is permanent; a suspension is a `moderation-decision`, and the consumer's check shows either | That every cached copy is gone |
-| `request` | Consumer | What the consumer asked for | — |
-| `quote` | Provider | The exact terms offered, at a version | — |
+| `listing` | Listing owner | Who published this offer, and when | That the offer is honest or the listing owner is competent; a listing's stated payee is not agreed terms until an `agreement-receipt` binds it |
+| `membership-credential` | SynOrg | This SynOrg approved this listing owner, within a scope, until an expiry date | That the SynOrg vetted them well, or that any other group agrees |
+| `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time. A revocation is permanent; a suspension is a `moderation-decision`, and the searcher's check shows either | That every cached copy is gone |
+| `request` | Counterparty | What the counterparty asked for | — |
+| `quote` | Quote author | The exact terms offered, at a version | — |
 | `agreement-receipt` | Both | Both parties accepted these exact terms, including payee, expiry, cancellation and refund terms, and dispute path | That either side will perform |
 | `payment-acknowledgement` | Each side, separately | Each party stated what they observed about a payment | **That money moved.** Only a supported payment provider's own attestation could show that, and none is integrated |
 | `fulfilment-receipt` | Both | Both parties agreed the work was done | Quality, or that no dispute follows |
@@ -484,15 +488,15 @@ inside their validity windows.
 
 For `payment-acknowledgement` and `fulfilment-receipt` the first release also
 treats the half made **against its own issuer's interest** — the payee
-confirming receipt, the consumer confirming completion — as enough to finish
+confirming receipt, the counterparty confirming completion — as enough to finish
 that step on its own, because the matching self-serving half adds nothing a
 reader should weigh. The missing half is never invented: this list always
 says only what was actually signed.
 
 Two types in the [card table](#cards) carry a *Signed by* column but are not
-in the list above. `payment-request` belongs in it, as a provider attestation.
+in the list above. `payment-request` belongs in it, as a quote author attestation.
 `booking-progress` deliberately does not — it is state written by the
-provider's Transaction service, not a statement by a party, and it is never
+quote author's Transaction service, not a statement by a party, and it is never
 evidence of anything.
 
 Two rules that follow:
@@ -519,7 +523,7 @@ Two rules that follow:
 ## Transaction state
 
 Every transaction is an entity with one named writer: the **Transaction
-service on the provider's substrate**. The consumer's client sends requests;
+service on the quote author's substrate**. The counterparty's client sends requests;
 the Transaction service decides.
 
 ```
@@ -529,11 +533,11 @@ the Transaction service decides.
               expired    cancelled    conflict    ended-unconfirmed
 ```
 
-- **Writer:** the provider's Transaction service, always. There is no
+- **Writer:** the quote author's Transaction service, always. There is no
   multi-master merge for transactions.
-- **A quote that names a provider's availability slot is booked by its own
-  acceptance** (M06C `D-C8-2`): the provider's Transaction service decides the
-  booking the moment it files the consumer's signed acceptance, claiming the
+- **A quote that names an availability slot of the listing is booked by its own
+  acceptance** (M06C `D-C8-2`): the quote author's Transaction service decides the
+  booking the moment it files the counterparty's signed acceptance, claiming the
   slot under the same single-writer fence a concurrent booking needs. There is
   no separate wire-reachable "book" step; a quote with no slot is `scheduled`
   on countersign, exactly as before.
@@ -545,12 +549,12 @@ the Transaction service decides.
   made, never a duplicate.
 - **Expiry:** a quote has an explicit expiry. An unaccepted quote expires
   rather than sitting open forever.
-- **Conflicts:** two consumers booking the same slot produce one `scheduled`
+- **Conflicts:** two counterparties booking the same slot produce one `scheduled`
   and one named `conflict` returned to the loser. Last-write-wins is not
   acceptable here.
 - **Cancellation:** permitted states and actors are explicit and are part of
-  the agreed terms. Only the provider cancels, and only while neither the
-  payment nor fulfilment track has moved (M06C `D-C8-14`); a consumer asks in
+  the agreed terms. Only the quote author cancels, and only while neither the
+  payment nor fulfilment track has moved (M06C `D-C8-14`); a counterparty asks in
   the conversation. The UI shows when cancellation is no longer guaranteed.
 - **Tracks end:** payment and fulfilment each end at their own named terminal
   30 days after the booking's schedule (or 30 days after scheduling, for a
@@ -577,15 +581,15 @@ person's own device state and chat metadata, and nothing else in Roym.
 | A removed group member | No, from the next epoch onward | Sees nothing new |
 | Relay / coordinator node | **No** | Sees that two endpoints exchanged traffic, sizes, and timing |
 | Directory service | **No** — it never carries conversations | Sees search queries and which listings were returned |
-| The host operator of a provider's substrate | **Yes**, if the provider does not run their own machine. A compromised host can read plaintext in use | Everything on that node |
+| The host operator of a listing owner's substrate | **Yes**, if the listing owner does not run their own machine. A compromised host can read plaintext in use | Everything on that node |
 | Backup destination | No, if backups are encrypted before they leave | Sizes and timing |
 | The device itself | Yes | Yes |
 
 Three consequences to state plainly in the product:
 
-1. **A managed-guild provider trusts its host.** If a SynOrg hosts a provider's
-   substrate, that operator can read that provider's conversations. This must be
-   disclosed before the provider chooses the managed path.
+1. **A managed-guild listing owner trusts its host.** If a SynOrg hosts a listing owner's
+   substrate, that operator can read that listing owner's conversations. This must be
+   disclosed before the listing owner chooses the managed path.
 2. **Transport encryption is not end-to-end privacy.** Relay and coordinator
    links are encrypted, but that is a separate, weaker thing, and the UI must
    never present it as message privacy.
@@ -619,9 +623,9 @@ These are requirements, not polish, and they are in R1.
   An unverified allegation is never published as fact.
 - **Contact rate limits:** unsolicited first contact is rate-limited per
   sender and controllable by the recipient.
-- **Publication limits:** a provider cannot flood a directory with listings.
+- **Publication limits:** a listing owner cannot flood a directory with listings.
 - **Policy disclosure:** a SynOrg's rules, retention policy, dispute path, and
-  support contact are visible before a provider joins or a consumer searches
+  support contact are visible before a listing owner joins or a searcher searches
   through it.
 - **Retention and deletion:** every durable record has a stated owner, retention
   policy, and deletion or tombstone behaviour. Export and account deletion are
@@ -635,7 +639,7 @@ These are requirements, not polish, and they are in R1.
   release a Roym installation belongs to exactly one person: the DID that
   deployed it. The substrate derives each service's signing key under that
   DID, so only its master key can authorise records to be signed as the
-  person. A hosted arrangement where a SynOrg runs a provider's substrate is
+  person. A hosted arrangement where a SynOrg runs a listing owner's substrate is
   therefore out of scope for the first release.
 
 ---
@@ -731,18 +735,18 @@ version to render a quote, booking, or progress view. A client that meets an
 unknown card type renders it safely and never executes sender-supplied code.
 
 **Settled 2026-08-24** (M06C `D-06C-3`), because the producer (the Transaction
-service) and the consumer (the Hub) are built in different slices, and a rule
+service) and the participant (the Hub) are built in different slices, and a rule
 decided inside either one gets decided twice, differently.
 
 The first release has **seven card types**, and no others:
 
 | Type | Signed by | Appears at |
 |---|---|---|
-| `request` | Consumer | C12 — the consumer describes a need |
-| `quote` | Provider | C13 — the provider's exact terms |
+| `request` | Counterparty | C12 — the counterparty describes a need |
+| `quote` | Quote author | C13 — the quote author's exact terms |
 | `agreement-receipt` | Both | C14 — both sides accepted those terms |
-| `booking-progress` | Provider's Transaction service | C16 — the shared progress view, driven by the state machine |
-| `payment-request` | Provider | C17 — payee comes from the signed agreement, never from a later message |
+| `booking-progress` | Quote author's Transaction service | C16 — the shared progress view, driven by the state machine |
+| `payment-request` | Quote author | C17 — payee comes from the signed agreement, never from a later message |
 | `payment-acknowledgement` | Each side, separately | C19 — what each party observed |
 | `fulfilment-receipt` | Both | C20 — both agreed the work was done |
 
@@ -766,17 +770,17 @@ For the first release (D1):
 
 - The Directory service holds the listings its members published to it, and
   answers queries by category, area, and filters.
-- A consumer's node queries each directory it has been given, in parallel,
+- A searcher's node queries each directory it has been given, in parallel,
   and merges the answers.
-- Results carry their source and their age. The consumer's node verifies every
+- Results carry their source and their age. The searcher's node verifies every
   signature, credential, expiry, and revocation before showing anything as
   trusted evidence.
 - **Finding is separate from trusting.** The directory helps find candidates.
-  It never declares them trustworthy, and the consumer's node never takes the
+  It never declares them trustworthy, and the searcher's node never takes the
   directory's word for a verification result.
 - **Which group a directory speaks for is pinned, not proven.** When a
-  consumer adds a directory, its own statement of which group it serves is
-  recorded (or the consumer names one explicitly), and a later reply never
+  searcher adds a directory, its own statement of which group it serves is
+  recorded (or the searcher names one explicitly), and a later reply never
   changes it. Membership evidence is judged against that pin. Nothing yet
   ties the pin to the directory's own key, so a first statement is trusted
   as a first statement (a backlog row).
@@ -870,8 +874,8 @@ installations. The client gateway warns at startup that without a
 pre-installed `resolve_ucan` token, app-scoped hostnames "will be refused by any
 supervisor they reach"; with only the same-node gate they resolve "only for apps
 supervised by this node"
-([gateway.rs](../crates/client_gateway/src/gateway.rs#L128)). So a consumer
-reaching a provider's Roym app, or querying a SynOrg's Directory on another
+([gateway.rs](../crates/client_gateway/src/gateway.rs#L128)). So a searcher
+reaching a listing owner's Roym app, or querying a SynOrg's Directory on another
 node, is cleanly refused unless an operator installed a token in advance. The
 fix is [ADR-0022](decisions/0022-two-tier-logical-service-discovery.md) §5's
 per-logical-service "open to all" declaration. **Rescheduled 2026-08-18** from
@@ -883,7 +887,7 @@ and all of R3.**
 **Accepted 2026-08-18**. It records that publication is a side effect of whether
 a certificate flag was passed, so "deployed but deliberately private" and
 "undiscoverable by accident" are the same state from outside. Roym needs this
-for a provider being live but unlisted (P5) and for publishing to a chosen
+for a listing owner being live but unlisted (P5) and for publishing to a chosen
 directory (S7). Its three-valued `visibility` enum already exists on both sides
 of the WIT boundary — M06A slice A1 defined it for asset readability, a
 different question — so **B2 owes the `service-config` field and the
@@ -1014,7 +1018,7 @@ At a high level, both systems solve the same core problem: **executing a query a
 
 ```mermaid
 flowchart TD
-    subgraph Orchestrator / Consumer Node
+    subgraph Orchestrator / Searcher Node
         Q[User Query / Search Request] --> P[Query Planner / Shard Locator]
         P --> S1[Plan Fragment 1 / Filter 1]
         P --> S2[Plan Fragment 2 / Filter 2]
@@ -1046,10 +1050,10 @@ The two subsystems share a unified four-stage execution pipeline:
 
 | Pipeline Stage | Federated Query Orchestrator (`[PLT-DAP-02]`) | Universal Search / Matching Node (`[P2P-DSC]`) | Common Abstraction |
 |---|---|---|---|
-| **1. Planning & Placement** | DataFusion generates a logical plan, identifies physical partitions across DIDs, and splits the query into Substrait plan fragments. | Consumer node resolves search tags (category, spatial geohash) against known directories or rendezvous-hashed shard holders. | **Scatter Planner:** Maps a logical intent to a set of physical node targets and builds per-node query payloads. |
+| **1. Planning & Placement** | DataFusion generates a logical plan, identifies physical partitions across DIDs, and splits the query into Substrait plan fragments. | Searcher node resolves search tags (category, spatial geohash) against known directories or rendezvous-hashed shard holders. | **Scatter Planner:** Maps a logical intent to a set of physical node targets and builds per-node query payloads. |
 | **2. Edge Pushdown (ELT)** | Edge node executes `syneroym:data/transform` inside a sandboxed WASM guest directly against local SQLite storage. | Directory/index node runs structured query filtering over local member listings and published intents. | **Edge Evaluation:** Pushes filtering logic to where data lives instead of pulling raw databases over the wire. |
 | **3. Streamed Exchange** | Edge nodes stream Arrow record batches back over multiplexed Iroh QUIC streams (`syneroym:data/stream`) with backpressure. | Target nodes stream matching listing records over multiplexed QUIC streams with response paging. | **Framed Data Stream:** Point-to-point, backpressured transport of typed record batches over QUIC. |
-| **4. Ingestion & Merging** | Orchestrator merges streams, executes remaining non-pushable operations (cross-node joins, global sorting, top-$k$). | Consumer node merges parallel results, ranks listings by trust/relevance, and presents them to the UI. | **Gather & Reduction:** Merging, ranking, and deduplication of parallel result streams. |
+| **4. Ingestion & Merging** | Orchestrator merges streams, executes remaining non-pushable operations (cross-node joins, global sorting, top-$k$). | Searcher node merges parallel results, ranks listings by trust/relevance, and presents them to the UI. | **Gather & Reduction:** Merging, ranking, and deduplication of parallel result streams. |
 
 ---
 

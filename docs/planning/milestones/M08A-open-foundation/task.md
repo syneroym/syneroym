@@ -49,6 +49,7 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 - No behaviour change. The parity harness (`crates/roym_web/tests/dual_build_parity.rs`) must pass unchanged in shape.
 - **A1 is merged before any other M08A slice opens a PR.** It touches almost every Roym file. Work that starts beside it will hit constant conflicts. S0 can run during A1, because it is docs and a spike in `sandbox_wasm`.
 - Criteria: OF-1, OF-2.
+- Result: `DealRole { QuoteAuthor, Counterparty }` replaces `Role`. Fields are `counterparty_did` and `quote_author_did`. Place values are `at-giver` and `at-receiver`, and the audience value is `past-counterparties`. Giver and receiver are words in the docs and the UI only. The code names the two parties of a deal (see the Deviations of the [change doc](../../changes/roym-open-foundation/change.md)). The parity harness keeps its 222 scenarios and passes.
 
 ### A2 — Typed methods (L, split per service)
 
