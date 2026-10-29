@@ -21,9 +21,9 @@ pub const MAX_REFERENCE_LEN: usize = 512;
 pub enum PaymentError {
     #[error("agreement '{0}' must start with 'rec_'")]
     InvalidAgreement(String),
-    #[error("consumer_did '{0}' is not a valid did:key")]
+    #[error("counterparty_did '{0}' is not a valid did:key")]
     InvalidCounterpartyDid(String),
-    #[error("provider_did '{0}' is not a valid did:key")]
+    #[error("quote_author_did '{0}' is not a valid did:key")]
     InvalidQuoteAuthorDid(String),
     #[error("consumer and provider cannot be the same DID")]
     SamePartyDid,
@@ -49,9 +49,7 @@ pub enum PaymentError {
 pub struct PaymentRequestPayload {
     pub agreement: String,
     pub conversation: String,
-    #[serde(rename = "consumer_did")]
     pub counterparty_did: String,
-    #[serde(rename = "provider_did")]
     pub quote_author_did: String,
     pub currency: String,
     pub amount_minor: i64,
@@ -96,9 +94,7 @@ impl PaymentRequestPayload {
 pub struct PaymentAcknowledgementPayload {
     pub agreement: String,
     pub conversation: String,
-    #[serde(rename = "consumer_did")]
     pub counterparty_did: String,
-    #[serde(rename = "provider_did")]
     pub quote_author_did: String,
     pub role: DealRole,
     pub currency: String,
@@ -230,7 +226,7 @@ pub fn verify_payment_request(
         return RecordVerdict::refused("a payment request cannot be corrected");
     }
     if verified.issuer != payload.quote_author_did {
-        return RecordVerdict::refused("payment request issuer does not match provider_did");
+        return RecordVerdict::refused("payment request issuer does not match quote_author_did");
     }
     RecordVerdict {
         verified: true,

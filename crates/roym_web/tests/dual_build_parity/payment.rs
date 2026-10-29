@@ -113,7 +113,7 @@ async fn scenario_159_payment_track_states_parity() {
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         curr,
         amount_minor,
         1_002_000,
@@ -150,8 +150,8 @@ async fn scenario_159_payment_track_states_parity() {
         }),
     )
     .await;
-    assert_eq!(ack_w["result"]["role"], "provider");
-    assert_eq!(ack_n["result"]["role"], "provider");
+    assert_eq!(ack_w["result"]["role"], "quote-author");
+    assert_eq!(ack_n["result"]["role"], "quote-author");
 
     let (p2w, p2n) = both_rpc(&h, "payment.get", json!({ "agreement": agr_rec })).await;
     assert_eq!(p2w["result"]["track"], "acknowledged");
@@ -181,7 +181,7 @@ async fn scenario_160_payment_wrong_amount_or_method_refused_parity() {
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         "XYZ",
         amount_minor,
         1_002_000,
@@ -260,8 +260,8 @@ async fn scenario_161_payment_correction_round_trip_parity() {
         }),
     )
     .await;
-    assert_eq!(a2w["result"]["role"], "provider", "a2w: {a2w}");
-    assert_eq!(a2n["result"]["role"], "provider", "a2n: {a2n}");
+    assert_eq!(a2w["result"]["role"], "quote-author", "a2w: {a2w}");
+    assert_eq!(a2n["result"]["role"], "quote-author", "a2n: {a2n}");
     let rec2 = a2w["result"]["record_id"]
         .as_str()
         .unwrap_or_else(|| panic!("missing record_id in a2w: {a2w}"))
@@ -281,7 +281,7 @@ async fn scenario_161_payment_correction_round_trip_parity() {
     // Both versions kept in payment.get
     let (gw, gn) = both_rpc(&h, "payment.get", json!({ "agreement": agr_rec })).await;
     assert_eq!(gw, gn);
-    let prov_acks = gw["result"]["provider"].as_array().unwrap();
+    let prov_acks = gw["result"]["quote_author"].as_array().unwrap();
     assert_eq!(prov_acks.len(), 2);
     assert_eq!(prov_acks[0]["record_id"], rec1);
     assert_eq!(prov_acks[1]["record_id"], rec2);
@@ -303,8 +303,8 @@ async fn scenario_162_payment_acknowledge_duplicate_already_recorded_parity() {
         json!({ "agreement": agr_rec, "method": "cash", "reference": "tx-1" }),
     )
     .await;
-    assert_eq!(a1w["result"]["role"], "provider", "a1w: {a1w}");
-    assert_eq!(a1n["result"]["role"], "provider", "a1n: {a1n}");
+    assert_eq!(a1w["result"]["role"], "quote-author", "a1w: {a1w}");
+    assert_eq!(a1n["result"]["role"], "quote-author", "a1n: {a1n}");
 
     // Second acknowledge with no supersedes -> already-recorded
     let (a2w, a2n) = both_rpc(
@@ -352,7 +352,7 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
         &quote_rec_id,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         curr,
         amount_minor,
         recent,

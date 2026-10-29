@@ -460,8 +460,13 @@ async fn file_quote_card<H: AppHost>(
     };
     let req_v = transaction::verify_request(&req_str, now);
     if !req_v.verified || req_v.issuer.as_deref() != Some(payload.counterparty_did.as_str()) {
-        return refuse_card(host, msg_id, row, "quote consumer_did does not match request issuer")
-            .await;
+        return refuse_card(
+            host,
+            msg_id,
+            row,
+            "quote counterparty_did does not match request issuer",
+        )
+        .await;
     }
     let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {
         Ok(vc) => vc,

@@ -386,7 +386,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     assert!(!verdict.verified);
     assert_eq!(
         verdict.reason.as_deref(),
-        Some("consumer receipt issuer does not match consumer_did")
+        Some("consumer receipt issuer does not match counterparty_did")
     );
 
     // Subject mismatch
@@ -434,7 +434,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     assert!(!verdict_prov_bad.verified);
     assert_eq!(
         verdict_prov_bad.reason.as_deref(),
-        Some("provider receipt issuer does not match provider_did")
+        Some("provider receipt issuer does not match quote_author_did")
     );
 
     // Valid quote author half signed by quote_author_key
@@ -453,8 +453,8 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
 
 #[test]
 fn halves_agree_table_test() {
-    let counterparty_did = "did:key:zConsumer".to_string();
-    let quote_author_did = "did:key:zProvider".to_string();
+    let counterparty_did = "did:key:zCounterparty".to_string();
+    let quote_author_did = "did:key:zQuoteAuthor".to_string();
     let terms = sample_terms();
 
     let base_counterparty = AgreementReceiptPayload {
@@ -664,7 +664,7 @@ fn verify_quote_refuses_same_counterparty_and_quote_author_did() {
     );
     let verdict = verify_quote(&env, 1000);
     assert!(!verdict.verified);
-    assert_eq!(verdict.reason.as_deref(), Some("consumer_did cannot be the quote issuer"));
+    assert_eq!(verdict.reason.as_deref(), Some("counterparty_did cannot be the quote issuer"));
 }
 
 #[test]
@@ -720,7 +720,7 @@ fn verify_agreement_receipt_refuses_expiry() {
     let receipt = AgreementReceiptPayload {
         quote_record_id: "rec_quote123".to_string(),
         counterparty_did: issuer.clone(),
-        quote_author_did: "did:key:provider123".to_string(),
+        quote_author_did: "did:key:quoteauthor123".to_string(),
         role: DealRole::Counterparty,
         terms: sample_terms(),
     };
@@ -742,7 +742,7 @@ fn verify_agreement_receipt_refuses_expiry() {
 fn verify_quote_refuses_lifetime_outside_bounds() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let mut quote = sample_quote(&issuer, "did:key:consumer123");
+    let mut quote = sample_quote(&issuer, "did:key:counterparty123");
 
     // Lifetime too short (< MIN_QUOTE_LIFETIME_SECS = 300)
     quote.terms.quote_expires_at_secs = 1100; // 1100 - 1000 = 100s

@@ -40,7 +40,7 @@ export interface QuoteData {
   sequence?: number;
   request_record_id?: string;
   listing_id?: string;
-  consumer_did?: string;
+  counterparty_did?: string;
   terms?: AgreedTermsData;
   scope?: string;
   currency?: string;

@@ -381,7 +381,7 @@ pub(crate) async fn quote_get<H: AppHost>(host: &H, req: &Request) -> Response {
             "updated_at_secs": p.updated_at_secs,
             "version_count": p.version_count,
             "request_record_id": p.request_record_id,
-            "consumer_did": p.counterparty_did,
+            "counterparty_did": p.counterparty_did,
             "declined_at_secs": p.declined_at_secs,
             "decline_note": p.decline_note,
         })),
@@ -418,7 +418,7 @@ pub(crate) async fn quote_list<H: AppHost>(host: &H, req: &Request) -> Response 
                 "updated_at_secs": p.updated_at_secs,
                 "version_count": p.version_count,
                 "request_record_id": p.request_record_id,
-                "consumer_did": p.counterparty_did,
+                "counterparty_did": p.counterparty_did,
             })
         })
         .collect();

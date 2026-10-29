@@ -75,7 +75,7 @@ export interface CardRow {
     request_id?: string;
     request_record_id?: string;
     sequence?: number;
-    consumer_did?: string;
+    counterparty_did?: string;
     terms?: {
       quote_expires_at_secs?: number;
     };
@@ -547,7 +547,7 @@ export function renderCardActions(
 
   // Accept / Decline: on verified quote for me, not expired, not declined
   if (card.card_type === "quote" && card.verified) {
-    const forMe = !!myDid && card.data?.consumer_did === myDid;
+    const forMe = !!myDid && card.data?.counterparty_did === myDid;
     const nowSecs = Math.floor(Date.now() / 1000);
     const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
     const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);

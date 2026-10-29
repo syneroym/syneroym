@@ -83,9 +83,7 @@ pub enum PaymentTiming {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DealRole {
-    #[serde(rename = "provider")]
     QuoteAuthor,
-    #[serde(rename = "consumer")]
     Counterparty,
 }
 
@@ -95,8 +93,8 @@ impl DealRole {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::QuoteAuthor => "provider",
-            Self::Counterparty => "consumer",
+            Self::QuoteAuthor => "quote-author",
+            Self::Counterparty => "counterparty",
         }
     }
 }
@@ -198,7 +196,6 @@ pub struct QuotePayload {
     pub slot_id: Option<String>,
     /// The request's own issuer. This is what names the second party, and
     /// it is what makes the agreement pair checkable.
-    #[serde(rename = "consumer_did")]
     pub counterparty_did: String,
     pub terms: AgreedTerms,
 }
@@ -208,9 +205,7 @@ pub struct AgreementReceiptPayload {
     /// The quote's own `record_id`. A content hash of the whole quote
     /// envelope, so it pins the terms exactly.
     pub quote_record_id: String,
-    #[serde(rename = "consumer_did")]
     pub counterparty_did: String,
-    #[serde(rename = "provider_did")]
     pub quote_author_did: String,
     /// The only field the two halves of a complete pair differ in.
     pub role: DealRole,
@@ -686,7 +681,7 @@ pub fn verify_quote(envelope: &str, now_secs: u64) -> RecordVerdict<QuotePayload
         return RecordVerdict::refused("quote lifetime outside permitted bounds");
     }
     if payload.counterparty_did == verified.issuer {
-        return RecordVerdict::refused("consumer_did cannot be the quote issuer");
+        return RecordVerdict::refused("counterparty_did cannot be the quote issuer");
     }
     let expected_id =
         match derive_quote_id(&payload.conversation, &verified.issuer, payload.sequence) {
@@ -743,14 +738,14 @@ pub fn verify_agreement_receipt(
         DealRole::Counterparty => {
             if verified.issuer != payload.counterparty_did {
                 return RecordVerdict::refused(
-                    "consumer receipt issuer does not match consumer_did",
+                    "consumer receipt issuer does not match counterparty_did",
                 );
             }
         }
         DealRole::QuoteAuthor => {
             if verified.issuer != payload.quote_author_did {
                 return RecordVerdict::refused(
-                    "provider receipt issuer does not match provider_did",
+                    "provider receipt issuer does not match quote_author_did",
                 );
             }
         }

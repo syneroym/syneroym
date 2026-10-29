@@ -213,8 +213,8 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
 
     let (gw, gn) = both_rpc(&h, "quote.get", json!({ "quote_id": q_id })).await;
     assert_eq!(gw["result"]["quote_id"], gn["result"]["quote_id"]);
-    assert_eq!(gw["result"]["consumer_did"], peer_did());
-    assert_eq!(gn["result"]["consumer_did"], peer_did());
+    assert_eq!(gw["result"]["counterparty_did"], peer_did());
+    assert_eq!(gn["result"]["counterparty_did"], peer_did());
     let env_w = Envelope::from_json(gw["result"]["envelope"].as_str().unwrap()).unwrap();
     let env_n = Envelope::from_json(gn["result"]["envelope"].as_str().unwrap()).unwrap();
     assert!(env_w.expires_at_secs.is_some());
@@ -290,17 +290,17 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         res.remove("quote_record_id");
     }
     assert_eq!(stripped(&aw), stripped(&an));
-    assert_eq!(aw["result"]["role"], "provider");
+    assert_eq!(aw["result"]["role"], "quote-author");
     assert_eq!(aw["result"]["pair"]["state"], "half");
 
     let gw = one_rpc(&h, true, "agreement.get", json!({ "quote_record_id": q_rec_id_w })).await;
     let gn = one_rpc(&h, false, "agreement.get", json!({ "quote_record_id": q_rec_id_n })).await;
     assert_eq!(gw["result"]["pair"]["state"], "half");
     assert_eq!(gn["result"]["pair"]["state"], "half");
-    assert!(gw["result"]["provider"].is_object());
-    assert!(gn["result"]["provider"].is_object());
-    assert!(gw["result"]["consumer"].is_null());
-    assert!(gn["result"]["consumer"].is_null());
+    assert!(gw["result"]["quote_author"].is_object());
+    assert!(gn["result"]["quote_author"].is_object());
+    assert!(gw["result"]["counterparty"].is_null());
+    assert!(gn["result"]["counterparty"].is_null());
 
     // Part B: Counterparty accepts peer-issued quote
     let (my_req_w, _) = both_rpc(
@@ -341,7 +341,7 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         res.remove("record_id");
     }
     assert_eq!(stripped(&cw), stripped(&cn));
-    assert_eq!(cw["result"]["role"], "consumer");
+    assert_eq!(cw["result"]["role"], "counterparty");
     assert_eq!(cw["result"]["pair"]["state"], "half");
 
     // Not a full-struct comparison: pair.consumer is a ReceiptHalf whose
@@ -351,10 +351,10 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         both_rpc(&h, "agreement.get", json!({ "quote_record_id": peer_q_rec_id })).await;
     assert_eq!(cgw["result"]["pair"]["state"], "half");
     assert_eq!(cgn["result"]["pair"]["state"], "half");
-    assert!(cgw["result"]["consumer"].is_object());
-    assert!(cgn["result"]["consumer"].is_object());
-    assert!(cgw["result"]["provider"].is_null());
-    assert!(cgn["result"]["provider"].is_null());
+    assert!(cgw["result"]["counterparty"].is_object());
+    assert!(cgn["result"]["counterparty"].is_object());
+    assert!(cgw["result"]["quote_author"].is_null());
+    assert!(cgn["result"]["quote_author"].is_null());
 }
 
 #[tokio::test]
@@ -416,8 +416,8 @@ async fn scenario_130_full_agreement_pair_countersigns_parity() {
         // Agreement is complete!
         let g = one_rpc(&h, wasm, "agreement.get", json!({ "quote_record_id": q_rec_id })).await;
         assert_eq!(g["result"]["pair"]["state"], "complete");
-        let c_half = &g["result"]["consumer"];
-        let p_half = &g["result"]["provider"];
+        let c_half = &g["result"]["counterparty"];
+        let p_half = &g["result"]["quote_author"];
         assert!(c_half.is_object());
         assert!(p_half.is_object());
 
@@ -426,8 +426,8 @@ async fn scenario_130_full_agreement_pair_countersigns_parity() {
         let p_env = Envelope::from_json(p_half["envelope"].as_str().unwrap()).unwrap();
         let mut c_payload = c_env.payload.clone();
         let mut p_payload = p_env.payload.clone();
-        assert_eq!(c_payload["role"], "consumer");
-        assert_eq!(p_payload["role"], "provider");
+        assert_eq!(c_payload["role"], "counterparty");
+        assert_eq!(p_payload["role"], "quote-author");
         c_payload["role"] = json!("same");
         p_payload["role"] = json!("same");
         assert_eq!(c_payload, p_payload);

@@ -349,13 +349,13 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     let payment_after =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id })).await;
     assert_eq!(payment_after["track"], before.payment["track"]);
-    assert_eq!(payment_after["provider"], before.payment["provider"]);
-    assert_eq!(payment_after["consumer"], before.payment["consumer"]);
+    assert_eq!(payment_after["quote_author"], before.payment["quote_author"]);
+    assert_eq!(payment_after["counterparty"], before.payment["counterparty"]);
 
     let fulfilment_after =
         node_y2.rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id })).await;
     assert_eq!(fulfilment_after["track"], before.fulfilment["track"]);
-    assert_eq!(fulfilment_after["provider"], before.fulfilment["provider"]);
+    assert_eq!(fulfilment_after["quote_author"], before.fulfilment["quote_author"]);
 
     let request_history_after =
         node_y2.rpc_ok("request.history", json!({ "request_id": tx.req_id })).await;
@@ -395,7 +395,10 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     let agreement_after =
         node_y2.rpc_ok("agreement.get", json!({ "quote_record_id": tx.quote_record_id })).await;
     let agreement_verify = node_y2
-        .rpc_ok("agreement.verify", json!({ "envelope": agreement_after["provider"]["envelope"] }))
+        .rpc_ok(
+            "agreement.verify",
+            json!({ "envelope": agreement_after["quote_author"]["envelope"] }),
+        )
         .await;
     assert_eq!(agreement_verify["verified"], true);
 }
@@ -420,7 +423,7 @@ async fn assert_post_restore_operations(
 
     let payment_after =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx_active.quote_record_id })).await;
-    let latest_quote_author_ack = payment_after["provider"].as_array().unwrap().last().unwrap();
+    let latest_quote_author_ack = payment_after["quote_author"].as_array().unwrap().last().unwrap();
     let post_restore_correction = node_y2
         .rpc_ok(
             "payment.acknowledge",
@@ -530,13 +533,13 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
     let payment_after_reimport =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx_active.quote_record_id })).await;
     assert_eq!(
-        payment_after_reimport["provider"].as_array().unwrap().len(),
-        before.payment["provider"].as_array().unwrap().len(),
+        payment_after_reimport["quote_author"].as_array().unwrap().len(),
+        before.payment["quote_author"].as_array().unwrap().len(),
         "a repeated import must not duplicate provider payment halves"
     );
     assert_eq!(
-        payment_after_reimport["consumer"].as_array().unwrap().len(),
-        before.payment["consumer"].as_array().unwrap().len(),
+        payment_after_reimport["counterparty"].as_array().unwrap().len(),
+        before.payment["counterparty"].as_array().unwrap().len(),
         "a repeated import must not duplicate consumer payment halves"
     );
 
@@ -591,6 +594,6 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
 
 async fn post_restore_correction_envelope(node: &Node, agreement: &str) -> String {
     let payment = node.rpc_ok("payment.get", json!({ "agreement": agreement })).await;
-    let last = payment["provider"].as_array().unwrap().last().unwrap();
+    let last = payment["quote_author"].as_array().unwrap().last().unwrap();
     last["envelope"].as_str().unwrap().to_string()
 }

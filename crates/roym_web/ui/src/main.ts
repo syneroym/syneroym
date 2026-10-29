@@ -341,9 +341,9 @@ async function renderHome(container: HTMLElement, did: string) {
       version: 1,
       data: {
         quote_record_id: "rec_quote12345",
-        consumer_did: "did:key:z6MkhaXgBZDvotDkL5257faiz4898Xnp213as98z",
-        provider_did: "did:key:z6MkmFaqYQ36Xk559C351gJ1jF8d7s86s511as88",
-        role: "consumer",
+        counterparty_did: "did:key:z6MkhaXgBZDvotDkL5257faiz4898Xnp213as98z",
+        quote_author_did: "did:key:z6MkmFaqYQ36Xk559C351gJ1jF8d7s86s511as88",
+        role: "counterparty",
         pair: { state: "complete" },
         terms: {
           scope: "Replace brake cable and adjust pads",

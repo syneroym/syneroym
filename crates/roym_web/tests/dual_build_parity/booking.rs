@@ -59,9 +59,9 @@ fn peer_counterparty_receipt_with_identity(
     let _ = conv;
     let payload = json!({
         "quote_record_id": quote_record_id,
-        "consumer_did": counterparty_did,
-        "provider_did": quote_author_did,
-        "role": "consumer",
+        "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did,
+        "role": "counterparty",
         "terms": terms,
     });
     let draft = RecordDraft {

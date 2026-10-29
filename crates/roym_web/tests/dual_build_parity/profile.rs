@@ -182,7 +182,7 @@ async fn scenario_8_status_on_all_six_services() {
         // profile, catalog, conversation, transaction and directory carry real state.
         let expected_schema_version = match svc.name {
             "directory" | "conversation" => 4,
-            "transaction" => 3,
+            "transaction" => 4,
             "profile" | "catalog" => 2,
             _ => 1,
         };

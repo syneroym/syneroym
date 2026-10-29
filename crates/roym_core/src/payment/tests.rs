@@ -30,8 +30,8 @@ fn sample_request() -> PaymentRequestPayload {
     PaymentRequestPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
-        counterparty_did: "did:key:zConsumer".to_string(),
-        quote_author_did: "did:key:zProvider".to_string(),
+        counterparty_did: "did:key:zCounterparty".to_string(),
+        quote_author_did: "did:key:zQuoteAuthor".to_string(),
         currency: "USD".to_string(),
         amount_minor: 10_000,
         note: Some("Initial payment".to_string()),
@@ -42,8 +42,8 @@ fn sample_ack(role: DealRole) -> PaymentAcknowledgementPayload {
     PaymentAcknowledgementPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
-        counterparty_did: "did:key:zConsumer".to_string(),
-        quote_author_did: "did:key:zProvider".to_string(),
+        counterparty_did: "did:key:zCounterparty".to_string(),
+        quote_author_did: "did:key:zQuoteAuthor".to_string(),
         role,
         currency: "USD".to_string(),
         amount_minor: 10_000,
@@ -64,11 +64,11 @@ fn payment_request_validation() {
 
     req.counterparty_did = "bad_did".to_string();
     assert!(matches!(req.validate(), Err(PaymentError::InvalidCounterpartyDid(_))));
-    req.counterparty_did = "did:key:zConsumer".to_string();
+    req.counterparty_did = "did:key:zCounterparty".to_string();
 
     req.quote_author_did = req.counterparty_did.clone();
     assert!(matches!(req.validate(), Err(PaymentError::SamePartyDid)));
-    req.quote_author_did = "did:key:zProvider".to_string();
+    req.quote_author_did = "did:key:zQuoteAuthor".to_string();
 
     req.currency = "INVALID".to_string();
     assert!(matches!(req.validate(), Err(PaymentError::UnknownCurrency(_))));

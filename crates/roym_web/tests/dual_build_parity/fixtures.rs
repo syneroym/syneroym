@@ -295,7 +295,7 @@ pub(crate) fn peer_signed_quote(
         "conversation": conv,
         "sequence": seq,
         "request_record_id": req_record_id,
-        "consumer_did": counterparty_did,
+        "counterparty_did": counterparty_did,
         "terms": terms,
     });
     let env_json = sign_as_peer(
@@ -322,9 +322,9 @@ pub(crate) fn peer_counterparty_receipt(
     let _ = conv;
     let payload = json!({
         "quote_record_id": quote_record_id,
-        "consumer_did": counterparty_did,
-        "provider_did": quote_author_did,
-        "role": "consumer",
+        "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did,
+        "role": "counterparty",
         "terms": terms,
     });
     let env_json = sign_as_peer(
@@ -392,7 +392,7 @@ pub(crate) fn peer_signed_quote_with(
         "conversation": conv,
         "sequence": seq,
         "request_record_id": req_record_id,
-        "consumer_did": counterparty_did,
+        "counterparty_did": counterparty_did,
         "terms": terms,
     });
     let peer = peer_identity();
@@ -425,9 +425,9 @@ pub(crate) fn peer_counterparty_receipt_with_expiry(
     let _ = conv;
     let payload = json!({
         "quote_record_id": quote_record_id,
-        "consumer_did": counterparty_did,
-        "provider_did": quote_author_did,
-        "role": "consumer",
+        "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did,
+        "role": "counterparty",
         "terms": terms,
     });
     let peer = peer_identity();
@@ -660,8 +660,8 @@ pub(crate) fn peer_signed_payment_ack(
     issued_at: u64,
 ) -> (String, String) {
     let payload = json!({
-        "agreement": agreement, "conversation": conv, "consumer_did": counterparty_did,
-        "provider_did": quote_author_did, "role": role, "currency": currency,
+        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did, "role": role, "currency": currency,
         "amount_minor": amount_minor, "observed_at_secs": observed_at_secs,
         "method": method, "reference": reference,
     });
@@ -689,8 +689,8 @@ pub(crate) fn peer_signed_fulfilment(
     issued_at: u64,
 ) -> (String, String) {
     let payload = json!({
-        "agreement": agreement, "conversation": conv, "consumer_did": counterparty_did,
-        "provider_did": quote_author_did, "role": role, "terms": terms,
+        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did, "role": role, "terms": terms,
     });
     let draft = RecordDraft {
         version: syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
@@ -721,8 +721,8 @@ pub(crate) fn peer_signed_progress(
     issued_at: u64,
 ) -> (String, String) {
     let mut payload = json!({
-        "agreement": agreement, "conversation": conv, "consumer_did": counterparty_did,
-        "provider_did": quote_author_did, "seq": seq, "state": state,
+        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did, "seq": seq, "state": state,
         "payment": payment, "fulfilment": fulfilment, "track_window_ends_at_secs": window_ends,
     });
     if let Some(c) = conflict {

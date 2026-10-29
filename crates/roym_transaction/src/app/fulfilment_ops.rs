@@ -241,8 +241,8 @@ pub(crate) async fn fulfilment_get<H: AppHost>(host: &H, req: &Request) -> Respo
     };
 
     Response::ok(json!({
-        "consumer": fulfilments.counterparty,
-        "provider": fulfilments.quote_author,
+        "counterparty": fulfilments.counterparty,
+        "quote_author": fulfilments.quote_author,
         "track": track,
     }))
 }

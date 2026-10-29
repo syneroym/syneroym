@@ -92,9 +92,7 @@ pub enum BookingEvent {
 pub struct BookingProgressPayload {
     pub agreement: String,
     pub conversation: String,
-    #[serde(rename = "consumer_did")]
     pub counterparty_did: String,
-    #[serde(rename = "provider_did")]
     pub quote_author_did: String,
     pub seq: u32,
     pub state: BookingState,
@@ -125,9 +123,9 @@ pub enum TransitionError {
 pub enum BookingPayloadError {
     #[error("agreement '{0}' must start with 'rec_'")]
     InvalidAgreement(String),
-    #[error("consumer_did '{0}' is not a valid did:key")]
+    #[error("counterparty_did '{0}' is not a valid did:key")]
     InvalidCounterpartyDid(String),
-    #[error("provider_did '{0}' is not a valid did:key")]
+    #[error("quote_author_did '{0}' is not a valid did:key")]
     InvalidQuoteAuthorDid(String),
     #[error("consumer and provider cannot be the same DID")]
     SamePartyDid,
@@ -373,7 +371,6 @@ pub fn verify_booking_progress(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NextStep {
-    #[serde(rename = "wait-for-provider")]
     WaitForQuoteAuthor,
     RequestPayment,
     PayOutsideRoym,

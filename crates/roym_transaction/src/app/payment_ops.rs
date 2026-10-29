@@ -459,8 +459,8 @@ pub(crate) async fn payment_get<H: AppHost>(host: &H, req: &Request) -> Response
 
     Response::ok(json!({
         "request": payments.request,
-        "consumer": payments.counterparty,
-        "provider": payments.quote_author,
+        "counterparty": payments.counterparty,
+        "quote_author": payments.quote_author,
         "track": track,
     }))
 }

@@ -30,8 +30,8 @@ fn sample_receipt(role: DealRole) -> FulfilmentReceiptPayload {
     FulfilmentReceiptPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
-        counterparty_did: "did:key:zConsumer".to_string(),
-        quote_author_did: "did:key:zProvider".to_string(),
+        counterparty_did: "did:key:zCounterparty".to_string(),
+        quote_author_did: "did:key:zQuoteAuthor".to_string(),
         role,
         terms: sample_terms(),
     }
@@ -48,11 +48,11 @@ fn fulfilment_receipt_validation() {
 
     receipt.counterparty_did = "bad_did".to_string();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::InvalidCounterpartyDid(_))));
-    receipt.counterparty_did = "did:key:zConsumer".to_string();
+    receipt.counterparty_did = "did:key:zCounterparty".to_string();
 
     receipt.quote_author_did = receipt.counterparty_did.clone();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::SamePartyDid)));
-    receipt.quote_author_did = "did:key:zProvider".to_string();
+    receipt.quote_author_did = "did:key:zQuoteAuthor".to_string();
 
     receipt.conversation = String::new();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::ConversationEmpty)));

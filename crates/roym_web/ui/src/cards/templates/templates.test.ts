@@ -122,9 +122,9 @@ describe("Card templates", () => {
   describe("renderAgreementReceipt", () => {
     it("renders every field it is given and never says verified", () => {
       const data = {
-        role: "consumer" as const,
-        consumer_did: "did:key:zConsumer123",
-        provider_did: "did:key:zProvider456",
+        role: "counterparty" as const,
+        counterparty_did: "did:key:zCounterparty123",
+        quote_author_did: "did:key:zQuoteAuthor456",
         quote_record_id: "rec-quote-789",
         pair_state: "complete" as const,
         scope: "Plumbing repair",
@@ -142,8 +142,8 @@ describe("Card templates", () => {
 
       expect(el.classList.contains("card-agreement-receipt")).toBe(true);
       expect(el.textContent).toContain("Both parties have signed these terms.");
-      expect(el.textContent).toContain("did:key:zConsumer123");
-      expect(el.textContent).toContain("did:key:zProvider456");
+      expect(el.textContent).toContain("did:key:zCounterparty123");
+      expect(el.textContent).toContain("did:key:zQuoteAuthor456");
       expect(el.textContent).toContain("rec-quote-789");
       expect(el.textContent).toContain("Plumbing repair");
       expect(el.textContent).toContain("250.00 EUR");
@@ -158,8 +158,8 @@ describe("Card templates", () => {
     it("renders malicious payload as plain text with no img elements", () => {
       const xss = "<img src=x onerror=alert(1)>";
       const data = {
-        consumer_did: xss,
-        provider_did: xss,
+        counterparty_did: xss,
+        quote_author_did: xss,
         quote_record_id: xss,
         scope: xss,
         currency: "USD",
@@ -193,14 +193,14 @@ describe("Card templates", () => {
       const data = {
         currency: "USD",
         amount_minor: 5000,
-        agreement_payee: "did:key:zProvider123",
+        agreement_payee: "did:key:zQuoteAuthor123",
         note: "Initial deposit",
       };
       const el = renderPaymentRequest(data);
 
       expect(el.classList.contains("card-payment-request")).toBe(true);
       expect(el.textContent).toContain("50.00 USD");
-      expect(el.textContent).toContain("did:key:zProvider123");
+      expect(el.textContent).toContain("did:key:zQuoteAuthor123");
       expect(el.textContent).toContain("Initial deposit");
       expect(el.textContent?.toLowerCase()).not.toContain("verif");
     });
@@ -235,7 +235,7 @@ describe("Card templates", () => {
   describe("renderPaymentAcknowledgement", () => {
     it("renders fields and never says verified", () => {
       const data = {
-        role: "provider" as const,
+        role: "quote-author" as const,
         currency: "EUR",
         amount_minor: 12500,
         observed_at_secs: 1700000000,
@@ -255,7 +255,7 @@ describe("Card templates", () => {
     it("renders malicious payload as plain text with no img elements", () => {
       const xss = "<img src=x onerror=alert(1)>";
       const data = {
-        role: "consumer" as const,
+        role: "counterparty" as const,
         currency: "USD",
         amount_minor: 1000,
         method: xss,
@@ -280,7 +280,7 @@ describe("Card templates", () => {
   describe("renderFulfilmentReceipt", () => {
     it("renders fields and never says verified", () => {
       const data = {
-        role: "provider" as const,
+        role: "quote-author" as const,
         terms: {
           scope: "Replaced faulty electrical panel",
         },
@@ -295,7 +295,7 @@ describe("Card templates", () => {
     it("renders malicious payload as plain text with no img elements", () => {
       const xss = "<img src=x onerror=alert(1)>";
       const data = {
-        role: "consumer" as const,
+        role: "counterparty" as const,
         terms: {
           scope: xss,
         },

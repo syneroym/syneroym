@@ -518,7 +518,10 @@ async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
     let q_card = cards.iter().find(|c| c["message_id"] == "m-quote-149").unwrap();
     assert_eq!(q_card["verified"], false);
     assert!(
-        q_card["reason"].as_str().unwrap().contains("consumer_did does not match request issuer")
+        q_card["reason"]
+            .as_str()
+            .unwrap()
+            .contains("counterparty_did does not match request issuer")
     );
 
     strip_volatile(&mut tw);

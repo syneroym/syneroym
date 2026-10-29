@@ -17,9 +17,9 @@ pub const FULFILMENT_RECEIPT_VERSION: u32 = 1;
 pub enum FulfilmentError {
     #[error("agreement '{0}' must start with 'rec_'")]
     InvalidAgreement(String),
-    #[error("consumer_did '{0}' is not a valid did:key")]
+    #[error("counterparty_did '{0}' is not a valid did:key")]
     InvalidCounterpartyDid(String),
-    #[error("provider_did '{0}' is not a valid did:key")]
+    #[error("quote_author_did '{0}' is not a valid did:key")]
     InvalidQuoteAuthorDid(String),
     #[error("consumer and provider cannot be the same DID")]
     SamePartyDid,
@@ -35,9 +35,7 @@ pub enum FulfilmentError {
 pub struct FulfilmentReceiptPayload {
     pub agreement: String,
     pub conversation: String,
-    #[serde(rename = "consumer_did")]
     pub counterparty_did: String,
-    #[serde(rename = "provider_did")]
     pub quote_author_did: String,
     pub role: DealRole,
     pub terms: AgreedTerms,

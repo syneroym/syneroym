@@ -75,8 +75,8 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
 
     // Quote author fulfilment half -> claimed
     let (fw, fn_) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
-    assert_eq!(fw["result"]["role"], "provider");
-    assert_eq!(fn_["result"]["role"], "provider");
+    assert_eq!(fw["result"]["role"], "quote-author");
+    assert_eq!(fn_["result"]["role"], "quote-author");
 
     let (fg_w, fg_n) = both_rpc(&h, "fulfilment.get", json!({ "agreement": agr_rec })).await;
     assert_eq!(fg_w["result"]["track"], "claimed");
@@ -88,7 +88,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         terms.clone(),
         1_002_000,
     );
@@ -114,7 +114,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         curr,
         amount_minor,
         1_003_000,
@@ -167,7 +167,7 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
         &agr_rec,
         "did:key:zWrong",
         &owner_did(),
-        "consumer",
+        "counterparty",
         terms,
         1_002_000,
     );
@@ -262,7 +262,7 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
         &quote_rec_id,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         q_payload["terms"].clone(),
         20_000_000,
     );

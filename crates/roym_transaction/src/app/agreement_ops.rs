@@ -308,10 +308,10 @@ pub(crate) async fn agreement_get<H: AppHost>(host: &H, req: &Request) -> Respon
             Response::ok(json!({
                 "quote_record_id": r.quote_record_id,
                 "conversation": r.conversation,
-                "consumer_did": r.counterparty_did,
-                "provider_did": r.quote_author_did,
-                "consumer": r.counterparty,
-                "provider": r.quote_author,
+                "counterparty_did": r.counterparty_did,
+                "quote_author_did": r.quote_author_did,
+                "counterparty": r.counterparty,
+                "quote_author": r.quote_author,
                 "pair": pair,
                 "terms": r.terms,
             }))
@@ -354,10 +354,10 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
             json!({
                 "quote_record_id": r.quote_record_id,
                 "conversation": r.conversation,
-                "consumer_did": r.counterparty_did,
-                "provider_did": r.quote_author_did,
-                "consumer": r.counterparty,
-                "provider": r.quote_author,
+                "counterparty_did": r.counterparty_did,
+                "quote_author_did": r.quote_author_did,
+                "counterparty": r.counterparty,
+                "quote_author": r.quote_author,
                 "pair": pair,
                 "terms": r.terms,
             })

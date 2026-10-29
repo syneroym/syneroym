@@ -36,8 +36,10 @@ use syneroym_roym_core::{
     transaction::{self, AgreedTerms, DealRole, ReceiptHalf},
 };
 
-// Schema version 3: booking vertical, payments, fulfilments, and ledger.
-pub const SCHEMA_VERSION: u32 = 3;
+// Schema version 4 names the deal roles by action (counterparty, quote
+// author). Version 3 added the booking vertical, payments, fulfilments and
+// the ledger.
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub(crate) const REQUESTS: &str = "requests";
 pub(crate) const REQUEST_HISTORY: &str = "request_history";
@@ -68,7 +70,6 @@ pub(crate) struct RecordPointerRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) request_record_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "consumer_did")]
     pub(crate) counterparty_did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) declined_at_secs: Option<u64>,
@@ -80,16 +81,12 @@ pub(crate) struct RecordPointerRow {
 pub(crate) struct AgreementRow {
     pub(crate) quote_record_id: String,
     pub(crate) conversation: String,
-    #[serde(rename = "consumer_did")]
     pub(crate) counterparty_did: String,
-    #[serde(rename = "provider_did")]
     pub(crate) quote_author_did: String,
     pub(crate) terms: AgreedTerms,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "consumer")]
     pub(crate) counterparty: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "provider")]
     pub(crate) quote_author: Option<ReceiptHalf>,
     pub(crate) updated_at_secs: u64,
 }
@@ -181,10 +178,8 @@ pub(crate) struct PaymentsRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) request: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[serde(rename = "consumer")]
     pub(crate) counterparty: Vec<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[serde(rename = "provider")]
     pub(crate) quote_author: Vec<ReceiptHalf>,
     pub(crate) updated_at_secs: u64,
 }
@@ -194,10 +189,8 @@ pub(crate) struct FulfilmentsRow {
     pub(crate) agreement: String,
     pub(crate) conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "consumer")]
     pub(crate) counterparty: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "provider")]
     pub(crate) quote_author: Option<ReceiptHalf>,
     pub(crate) updated_at_secs: u64,
 }

@@ -1076,7 +1076,7 @@ test.describe('Roym Hub', () => {
         record_id: 'rec_quote_active',
         stored_at_secs: 1000,
         data: {
-          consumer_did: 'did:key:testme',
+          counterparty_did: 'did:key:testme',
           terms: {
             scope: 'Tree trimming',
             currency: 'USD',
@@ -1120,7 +1120,7 @@ test.describe('Roym Hub', () => {
         record_id: 'rec_quote_declined',
         stored_at_secs: 1000,
         data: {
-          consumer_did: 'did:key:testme',
+          counterparty_did: 'did:key:testme',
         },
       };
       win.RoymMessages.renderCardActions(host, declinedQuoteCard, 'conv_test', 'did:key:testme', async () => {});

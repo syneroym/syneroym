@@ -8,8 +8,8 @@ fn sample_booking() -> BookingProgressPayload {
     open(
         "rec_quote123".to_string(),
         "conv_123".to_string(),
-        "did:key:zConsumer".to_string(),
-        "did:key:zProvider".to_string(),
+        "did:key:zCounterparty".to_string(),
+        "did:key:zQuoteAuthor".to_string(),
         None,
         100_000,
     )
@@ -167,11 +167,11 @@ fn validate_refuses_invalid_snapshots() {
 
     b.counterparty_did = "invalid_did".to_string();
     assert!(matches!(b.validate(), Err(BookingPayloadError::InvalidCounterpartyDid(_))));
-    b.counterparty_did = "did:key:zConsumer".to_string();
+    b.counterparty_did = "did:key:zCounterparty".to_string();
 
     b.quote_author_did = b.counterparty_did.clone();
     assert!(matches!(b.validate(), Err(BookingPayloadError::SamePartyDid)));
-    b.quote_author_did = "did:key:zProvider".to_string();
+    b.quote_author_did = "did:key:zQuoteAuthor".to_string();
 
     b.conversation = String::new();
     assert!(matches!(b.validate(), Err(BookingPayloadError::ConversationEmpty)));
@@ -321,14 +321,15 @@ fn the_ui_wording_matches_this_crate() {
 
 #[test]
 fn the_wire_values_of_roles_and_next_steps_are_pinned() {
-    for (role, wire) in [(DealRole::QuoteAuthor, "provider"), (DealRole::Counterparty, "consumer")]
+    for (role, wire) in
+        [(DealRole::QuoteAuthor, "quote-author"), (DealRole::Counterparty, "counterparty")]
     {
         assert_eq!(serde_json::to_value(role).unwrap(), wire);
         assert_eq!(role.as_str(), wire);
         assert_eq!(serde_json::from_value::<DealRole>(serde_json::json!(wire)).unwrap(), role);
     }
     for (step, wire) in [
-        (NextStep::WaitForQuoteAuthor, "wait-for-provider"),
+        (NextStep::WaitForQuoteAuthor, "wait-for-quote-author"),
         (NextStep::RequestPayment, "request-payment"),
         (NextStep::PayOutsideRoym, "pay-outside-roym"),
         (NextStep::MarkWorkComplete, "mark-work-complete"),

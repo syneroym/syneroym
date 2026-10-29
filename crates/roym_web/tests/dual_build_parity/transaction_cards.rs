@@ -341,10 +341,10 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle must pass integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["requests"].schema_version, 3);
-        assert_eq!(sections["quotes"].schema_version, 3);
-        assert_eq!(sections["agreements"].schema_version, 3);
-        assert_eq!(sections["cards"].schema_version, 3);
+        assert_eq!(sections["requests"].schema_version, 4);
+        assert_eq!(sections["quotes"].schema_version, 4);
+        assert_eq!(sections["agreements"].schema_version, 4);
+        assert_eq!(sections["cards"].schema_version, 4);
     }
 
     let bundle_val = exp_w["result"].clone();
@@ -377,10 +377,10 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     let mut tampered_bundle_agr: Bundle = serde_json::from_value(bundle_val.clone()).unwrap();
     let agr_rows = tampered_bundle_agr.sections.get_mut("agreements").unwrap();
     let mut agr_payload = agr_rows[0].get("payload").unwrap().clone();
-    let counterparty_env_str = agr_payload["consumer"]["envelope"].as_str().unwrap();
+    let counterparty_env_str = agr_payload["counterparty"]["envelope"].as_str().unwrap();
     let mut c_env: Value = serde_json::from_str(counterparty_env_str).unwrap();
     c_env["payload"]["terms"]["scope"] = json!("Tampered agreement scope");
-    agr_payload["consumer"]["envelope"] = json!(c_env.to_string());
+    agr_payload["counterparty"]["envelope"] = json!(c_env.to_string());
     agr_rows[0]["payload"] = agr_payload;
     let new_agr_digest = Bundle::digest(transaction_app::SCHEMA_VERSION, agr_rows).unwrap();
     tampered_bundle_agr.manifest.sections.insert("agreements".to_string(), new_agr_digest);
@@ -435,10 +435,10 @@ async fn assert_tampered_core_records(h: &Harness, bundle_val: &Value, now: u64)
     let mut b_agr: Bundle = serde_json::from_value(bundle_val.clone()).unwrap();
     let agr_rows = b_agr.sections.get_mut("agreements").unwrap();
     let mut agr_payload = agr_rows[0].get("payload").unwrap().clone();
-    let c_str = agr_payload["consumer"]["envelope"].as_str().unwrap();
+    let c_str = agr_payload["counterparty"]["envelope"].as_str().unwrap();
     let mut c_env: Value = serde_json::from_str(c_str).unwrap();
     c_env["payload"]["terms"]["scope"] = json!("Tampered agreement scope");
-    agr_payload["consumer"]["envelope"] = json!(c_env.to_string());
+    agr_payload["counterparty"]["envelope"] = json!(c_env.to_string());
     agr_rows[0]["payload"] = agr_payload;
     let new_agr_digest = Bundle::digest(transaction_app::SCHEMA_VERSION, agr_rows).unwrap();
     b_agr.manifest.sections.insert("agreements".to_string(), new_agr_digest);
@@ -467,8 +467,8 @@ async fn assert_tampered_ledger_record(h: &Harness, bundle_val: &Value, now: u64
                 "snapshot": {
                     "agreement": "rec-quote-142",
                     "conversation": "conv-142",
-                    "consumer_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "provider_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "counterparty_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "quote_author_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                     "seq": 1,
                     "state": "scheduled",
                     "payment": "none",
@@ -512,8 +512,8 @@ async fn assert_tampered_progress_record(h: &Harness, bundle_val: &Value, now: u
             "snapshot": {
                 "agreement": "rec-quote-142",
                 "conversation": "conv-142",
-                "consumer_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                "provider_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                "counterparty_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                "quote_author_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                 "seq": 1,
                 "state": "scheduled",
                 "payment": "none",
@@ -558,7 +558,7 @@ async fn assert_tampered_payment_record(h: &Harness, bundle_val: &Value, now: u6
             "conversation": "conv-142",
             "updated_at_secs": now,
             "request": null,
-            "consumer": [
+            "counterparty": [
                 {
                     "record_id": "rec_bad_1",
                     "issuer": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
@@ -566,7 +566,7 @@ async fn assert_tampered_payment_record(h: &Harness, bundle_val: &Value, now: u6
                     "envelope": "{\"tampered\": true}"
                 }
             ],
-            "provider": []
+            "quote_author": []
         }
     });
     b_pay.sections.insert("payments".to_string(), vec![bad_pay_row]);

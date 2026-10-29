@@ -14,9 +14,9 @@ import { type AgreedTermsData } from "./quote";
 
 export interface AgreementReceiptData {
   quote_record_id?: string;
-  consumer_did?: string;
-  provider_did?: string;
-  role?: "consumer" | "provider";
+  counterparty_did?: string;
+  quote_author_did?: string;
+  role?: "counterparty" | "quote-author";
   pair_state?: "none" | "half" | "complete" | { state: string; role?: string };
   pair?: "none" | "half" | "complete" | { state: string; role?: string };
   terms?: AgreedTermsData;
@@ -59,9 +59,9 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   let pairText = "Only the consumer has signed so far.";
   if (pairState === "complete") {
     pairText = "Both parties have signed these terms.";
-  } else if (pairState === "half" && pairRole === "provider") {
+  } else if (pairState === "half" && pairRole === "quote-author") {
     pairText = "Only the provider has signed so far.";
-  } else if (pairRole === "provider") {
+  } else if (pairRole === "quote-author") {
     pairText = "Only the provider has signed so far.";
   } else {
     pairText = "Only the consumer has signed so far.";
@@ -79,17 +79,17 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     card.appendChild(roleP);
   }
 
-  if (data?.consumer_did) {
+  if (data?.counterparty_did) {
     const conP = document.createElement("p");
     conP.className = "receipt-consumer";
-    conP.textContent = `Consumer: ${data.consumer_did}`;
+    conP.textContent = `Consumer: ${data.counterparty_did}`;
     card.appendChild(conP);
   }
 
-  if (data?.provider_did) {
+  if (data?.quote_author_did) {
     const proP = document.createElement("p");
     proP.className = "receipt-provider";
-    proP.textContent = `Provider: ${data.provider_did}`;
+    proP.textContent = `Provider: ${data.quote_author_did}`;
     card.appendChild(proP);
   }
 
