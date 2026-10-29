@@ -46,7 +46,7 @@ export async function renderMemberships(container: HTMLElement) {
   box.appendChild(
     text(
       "p",
-      "Each line is a provider's membership in a group, as this node worked it out from the " +
+      "Each line is a listing owner's membership in a group, as this node worked it out from the " +
         "group's own signed statements. It is the copy you hold, not a live answer.",
       "memberships-intro",
     ),
@@ -71,7 +71,7 @@ export async function renderMemberships(container: HTMLElement) {
       text(
         "p",
         "No memberships checked yet. One appears here after a search returns a result from a " +
-          "group the provider belongs to.",
+          "group the listing owner belongs to.",
         "memberships-empty",
       ),
     );
@@ -86,7 +86,7 @@ function buildRow(row: HeldMembership, label: string): HTMLElement {
   line.className = "membership-row";
   line.dataset.state = row.verdict.state;
   line.appendChild(text("div", `Group directory: ${label}`, "membership-source"));
-  line.appendChild(text("div", `Provider: ${row.member_did}`, "membership-member"));
+  line.appendChild(text("div", `Listing owner: ${row.member_did}`, "membership-member"));
   const words = text("div", membershipWords(row.verdict, label), "membership-words");
   const checked = text("div", checkedWords(row.as_of_secs), "membership-checked");
   line.append(words, checked);

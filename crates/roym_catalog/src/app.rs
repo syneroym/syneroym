@@ -1,6 +1,6 @@
 //! Catalog service application logic, target-independent.
 //!
-//! The provider's offer: a signed `listing` record with a stable
+//! The listing owner's offer: a signed `listing` record with a stable
 //! content-derived id, edited only by producing a new version that
 //! `supersedes` the last, plus unsigned availability state and the
 //! catalog-side publication limiter.

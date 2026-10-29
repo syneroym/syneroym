@@ -13,7 +13,7 @@
 //! from the host's own answer and never optimistically `delivered`; Roym's
 //! own copy on each side is the same message; a blocked sender's message
 //! reaches no conversation, no search result and no count, and the sender
-//! is never told; a listing carries the provider's conversation address
+//! is never told; a listing carries the listing owner's conversation address
 //! under their own signature so a stranger can engage them with no
 //! directory anywhere; every service's own copy round-trips through
 //! export/import; deleting a message removes the local copy, keeps a

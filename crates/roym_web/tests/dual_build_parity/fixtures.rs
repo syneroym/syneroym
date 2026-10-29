@@ -91,7 +91,7 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
         "title": title,
         "summary": "Neat hedges, fortnightly.",
         "categories": ["gardening", "outdoor"],
-        "conversation_address": "did:key:zProviderConv",
+        "conversation_address": "did:key:zListingOwnerConv",
         "booking": {
             "mode": "slots",
             "lead_time_secs": 3600,

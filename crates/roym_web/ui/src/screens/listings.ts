@@ -193,8 +193,8 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
   return wrap;
 }
 
-/// Journey step S7: the provider chooses a directory and publishes this
-/// listing to it. Publishing is always the provider's own action -- a
+/// Journey step S7: the listing owner chooses a directory and publishes this
+/// listing to it. Publishing is always the listing owner's own action -- a
 /// directory never pulls. A refusal (over the limit, or a draft) is shown
 /// with its reason.
 function publishToDirectory(listingId: string): HTMLElement {

@@ -203,7 +203,7 @@ async fn scenario_46_listing_verify_good_envelope_parity() {
     let (w, n) = both_rpc(&h, "listing.verify", json!({ "envelope": env })).await;
     assert_eq!(w, n);
     assert_eq!(w["result"]["verified"], true, "verify refused the envelope: {w}");
-    assert_eq!(w["result"]["conversation_address"], "did:key:zProviderConv");
+    assert_eq!(w["result"]["conversation_address"], "did:key:zListingOwnerConv");
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@ export type AddressDisclosure = "on-agreement" | "public";
 export type OpenTo = "anyone" | "members" | "referral" | "past-counterparties";
 export type ListingStatus = "draft" | "active" | "withdrawn";
 
-/// One editor block, plus the checkbox that says whether the provider filled it in.
+/// One editor block, plus the checkbox that says whether the listing owner filled it in.
 export interface BlockToggle<T> {
   enabled: boolean;
   value: T;

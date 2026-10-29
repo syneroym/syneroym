@@ -11,12 +11,12 @@
 //! owner identity, over real transports and one shared registry.
 //!
 //! Three nodes:
-//!   * **Z** runs the SynOrg (the directory a provider publishes to and a
-//!     consumer queries).
-//!   * **Y** is the provider: it signs a listing and publishes it to Z.
-//!   * **X** is the consumer: it adds Z as a source, runs the client fan-out
+//!   * **Z** runs the SynOrg (the directory a listing owner publishes to and a
+//!     searcher queries).
+//!   * **Y** is the listing owner: it signs a listing and publishes it to Z.
+//!   * **X** is the searcher: it adds Z as a source, runs the client fan-out
 //!     loop (`start-run` -> `query-source` -> `merge`), verifies every returned
-//!     envelope on its own node, and engages the provider from the search
+//!     envelope on its own node, and engages the listing owner from the search
 //!     result's own conversation address.
 //!
 //! It proves the non-visual half of the directory acceptance test: a
@@ -26,18 +26,18 @@
 //! has); results carry source and freshness, and the freshness a person
 //! sees is computed on their own clock; missing evidence renders as
 //! `unknown`, never as a positive default; the directory verifies nothing
-//! on the consumer's behalf; a publication past the SynOrg's limit is
-//! refused visibly to the provider; a stranger dialling in from a
+//! on the searcher's behalf; a publication past the SynOrg's limit is
+//! refused visibly to the listing owner; a stranger dialling in from a
 //! self-minted identity reaches `directory.search` and is refused
 //! `member.list`, and -- because a generated key is still a verified
 //! connection -- is admitted to `VerifiedOnly` `directory.publish` (the
 //! truly key-less anonymous arm lives in the parity suite); a stale or
 //! absent certificate on
-//! the provider's own node is indistinguishable, at the provider, from
-//! "this directory does not want you"; two directories disagreeing about a
+//! the listing owner's own node is indistinguishable, at the listing owner,
+//! from "this directory does not want you"; two directories disagreeing about a
 //! version surface the disagreement rather than resolve it silently; and
 //! `directory.unpublish` removes a listing from future search without
-//! touching a copy a consumer already holds.
+//! touching a copy a searcher already holds.
 //!
 //! Each node's substrate comes from `common::SubstrateNode` (with the Roym
 //! config layered on through `.configure`); the domain `Node` here keeps the
@@ -74,7 +74,7 @@ fn listing_params(title: &str, summary: &str) -> Value {
         "categories": ["cycling"],
         "payment": {
             "currency": "EUR", "model": "per-hour", "amount_minor": 4000,
-            "tax_included": true, "payee": "provider"
+            "tax_included": true, "payee": "listing owner"
         }
     })
 }
@@ -176,7 +176,7 @@ async fn roym_directory_search_half_across_three_substrates() {
     // --- Step 5: Z adds Y to the roster and issues a membership
     //     credential -- a publish now needs one. -----------------------
     let member = node_z
-        .rpc_ok("member.add", json!({ "did": owner_y_did, "note": "verified provider" }))
+        .rpc_ok("member.add", json!({ "did": owner_y_did, "note": "verified listing owner" }))
         .await;
     assert_eq!(member["did"], owner_y_did);
     let z_info_after = node_x.rpc_ok("directory.probe-info", json!({ "did": z_dir_did })).await;
@@ -335,7 +335,7 @@ async fn roym_directory_search_half_across_three_substrates() {
     let held_still_valid = node_x.rpc_ok("listing.verify", json!({ "envelope": y_envelope })).await;
     assert_eq!(
         held_still_valid["verified"], true,
-        "unpublish never touches a copy the consumer already holds"
+        "unpublish never touches a copy the searcher already holds"
     );
 
     // --- Step 12: the no-directory regression. X removes Z as a source
@@ -395,7 +395,7 @@ async fn roym_directory_search_half_across_three_substrates() {
                 "categories": ["cycling"],
                 "payment": {
                     "currency": "EUR", "model": "per-hour", "amount_minor": 4500,
-                    "tax_included": true, "payee": "provider"
+                    "tax_included": true, "payee": "listing owner"
                 }
             }),
         )
@@ -459,7 +459,7 @@ async fn roym_directory_search_half_across_three_substrates() {
     );
 
     // --- Step 7b: the certificate dependency, over a real transport.
-    //     A fresh provider whose directory service holds no instance
+    //     A fresh listing owner whose directory service holds no instance
     //     certificate at all: publish-to-source fails with -32013,
     //     indistinguishable from "not yours to call". X stays up so the
     //     shared registry keeps resolving Z's directory for the newcomer.

@@ -13,15 +13,15 @@
 //! Three people, three installations:
 //!   * **Z** runs a SynOrg -- a directory whose owner issues signed membership
 //!     credentials, and hosts the registry.
-//!   * **Y** is a provider: a member of Z's SynOrg.
-//!   * **X** is a consumer, who knows nothing but Z's directory address.
+//!   * **Y** is a listing owner: a member of Z's SynOrg.
+//!   * **X** is a searcher, who knows nothing but Z's directory address.
 //!
-//! The one test walks a consumer from a stranger's directory to a finished,
-//! signed booking with a provider on a third installation, then watches the
-//! SynOrg withdraw that provider: the verdict on the consumer's node is the
-//! consumer's own, computed there from signed evidence, and a withdrawal
-//! reaches a copy the consumer already holds only when they check again. It
-//! ends by carrying the consumer's data, trust records included, onto a
+//! The one test walks a searcher from a stranger's directory to a finished,
+//! signed booking with a listing owner on a third installation, then watches
+//! the SynOrg withdraw that listing owner: the verdict on the searcher's node
+//! is the searcher's own, computed there from signed evidence, and a withdrawal
+//! reaches a copy the searcher already holds only when they check again. It
+//! ends by carrying the searcher's data, trust records included, onto a
 //! clean installation.
 //!
 //! Skips when the Roym wasm artifacts or the UI bundle are absent
@@ -113,7 +113,7 @@ fn now_secs() -> u64 {
 
 /// Steps 1-2: Z declares its SynOrg; Y has a profile, a `cycling` listing
 /// and one bookable slot. Returns `(listing_id, slot_id)`.
-async fn set_up_synorg_and_provider(t: &Trio) -> (String, String) {
+async fn set_up_synorg_and_listing_owner(t: &Trio) -> (String, String) {
     t.z.rpc_ok(
         "directory.set-settings",
         json!({
@@ -158,7 +158,7 @@ async fn set_up_synorg_and_provider(t: &Trio) -> (String, String) {
 /// Steps 3-5: a non-member's publish is refused with the reason; after Z
 /// issues Y a credential, the same publish is accepted. Returns the
 /// credential's record id and the expiry Z set.
-async fn admit_the_provider(t: &Trio, listing_id: &str) -> (String, u64) {
+async fn admit_the_listing_owner(t: &Trio, listing_id: &str) -> (String, u64) {
     let z_dir = &t.z.dids["directory"];
     t.y.rpc_ok("directory.add-source", json!({ "did": z_dir, "label": "Cycling Guild" })).await;
     let publish = json!({ "source": z_dir, "listing_id": listing_id });
@@ -186,7 +186,7 @@ async fn admit_the_provider(t: &Trio, listing_id: &str) -> (String, u64) {
 /// Step 6: X adds Z knowing nothing but Z's directory address, and every
 /// service X will later dial (Y's catalog and conversation, Z's directory)
 /// has a registry record it can resolve. Returns Z's issuer as X pinned it.
-async fn consumer_adds_the_directory(t: &Trio) -> String {
+async fn searcher_adds_the_directory(t: &Trio) -> String {
     let z_dir = &t.z.dids["directory"];
     let added = t.x.rpc_ok("directory.add-source", json!({ "did": z_dir })).await;
     assert!(added["source"]["last_error"].is_null(), "X's probe of Z succeeded: {added}");
@@ -238,7 +238,7 @@ async fn a_stranger_resolves_only_what_is_published(t: &Trio) {
 
 /// Step 7: X searches; the one hit's membership verdict was computed on X's
 /// node from Z's signed evidence.
-async fn consumer_searches(t: &Trio, listing_id: &str, expires_at_secs: u64) -> Value {
+async fn searcher_searches(t: &Trio, listing_id: &str, expires_at_secs: u64) -> Value {
     let (_run, merged) = run_client_loop(&t.x, json!({ "categories": ["cycling"] })).await;
     let found = hits(&merged);
     assert_eq!(found.len(), 1, "one hit from Z: {merged}");
@@ -255,7 +255,7 @@ async fn consumer_searches(t: &Trio, listing_id: &str, expires_at_secs: u64) -> 
 /// Step 8: X hires Y from the hit's own conversation address, through to
 /// both sides' signed fulfilment. Nothing about Y but what the hit carried.
 /// Returns the agreement's quote record id.
-async fn hire_the_provider(t: &Trio, hit: &Value, listing_id: &str, slot_id: &str) -> String {
+async fn hire_the_listing_owner(t: &Trio, hit: &Value, listing_id: &str, slot_id: &str) -> String {
     let address = hit["conversation_address"].as_str().unwrap();
     t.x.rpc_ok(
         "profile.set",
@@ -285,7 +285,7 @@ async fn held_verdict(t: &Trio) -> (String, u64) {
 /// Steps 9-11: Z suspends Y. The result vanishes from X's next search; X's
 /// held copy still says `valid` and keeps its old date -- the product does
 /// not claim an instant removal -- until X checks again.
-async fn suspension_reaches_the_consumer_only_on_check(t: &Trio) {
+async fn suspension_reaches_the_searcher_only_on_check(t: &Trio) {
     let (state_before, as_of_before) = held_verdict(t).await;
     assert_eq!(state_before, "valid");
 
@@ -313,7 +313,7 @@ async fn suspension_reaches_the_consumer_only_on_check(t: &Trio) {
 }
 
 /// Step 12: Z revokes the credential; X's next check says so.
-async fn revocation_reaches_the_consumer_on_check(t: &Trio, credential_id: &str) {
+async fn revocation_reaches_the_searcher_on_check(t: &Trio, credential_id: &str) {
     t.z.rpc_ok(
         "revocation.issue",
         json!({ "credential_record_id": credential_id, "reason": "left the guild" }),
@@ -334,7 +334,7 @@ const DATA_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transact
 /// identity. The held membership for Y still evaluates `revoked` there --
 /// re-evaluated from the stored evidence, not a stored verdict -- and the
 /// finished agreement is intact.
-async fn consumer_leaves_with_their_data(t: &Trio, dir: &Path, quote_record_id: &str) {
+async fn searcher_leaves_with_their_data(t: &Trio, dir: &Path, quote_record_id: &str) {
     let mut bundles = Map::new();
     for svc in DATA_SERVICES {
         bundles.insert((*svc).to_string(), t.x.rpc_ok(&format!("{svc}.export"), json!({})).await);
@@ -367,7 +367,7 @@ async fn consumer_leaves_with_their_data(t: &Trio, dir: &Path, quote_record_id: 
 }
 
 #[tokio::test]
-async fn a_consumer_hires_a_member_found_through_a_synorg_on_a_third_installation() {
+async fn a_searcher_hires_a_member_found_through_a_synorg_on_a_third_installation() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {
@@ -380,15 +380,15 @@ async fn a_consumer_hires_a_member_found_through_a_synorg_on_a_third_installatio
     let x2_dir = tempfile::tempdir().unwrap();
 
     let t = boot_trio(&[dirs[0].path(), dirs[1].path(), dirs[2].path()]).await;
-    let (listing_id, slot_id) = set_up_synorg_and_provider(&t).await;
-    let (credential_id, expires_at_secs) = admit_the_provider(&t, &listing_id).await;
-    consumer_adds_the_directory(&t).await;
+    let (listing_id, slot_id) = set_up_synorg_and_listing_owner(&t).await;
+    let (credential_id, expires_at_secs) = admit_the_listing_owner(&t, &listing_id).await;
+    searcher_adds_the_directory(&t).await;
     a_stranger_resolves_only_what_is_published(&t).await;
-    let hit = consumer_searches(&t, &listing_id, expires_at_secs).await;
-    let quote = hire_the_provider(&t, &hit, &listing_id, &slot_id).await;
-    suspension_reaches_the_consumer_only_on_check(&t).await;
-    revocation_reaches_the_consumer_on_check(&t, &credential_id).await;
-    consumer_leaves_with_their_data(&t, x2_dir.path(), &quote).await;
+    let hit = searcher_searches(&t, &listing_id, expires_at_secs).await;
+    let quote = hire_the_listing_owner(&t, &hit, &listing_id, &slot_id).await;
+    suspension_reaches_the_searcher_only_on_check(&t).await;
+    revocation_reaches_the_searcher_on_check(&t, &credential_id).await;
+    searcher_leaves_with_their_data(&t, x2_dir.path(), &quote).await;
 
     eprintln!("roym_trust_e2e wall time: {:?}", started.elapsed());
     t.x.teardown().await;

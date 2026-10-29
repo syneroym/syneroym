@@ -90,7 +90,7 @@ source = "target/wasm32-wasip2/release/syneroym_roym_directory.wasm"
 interfaces = ["syneroym-roym:directory/api@0.1.0"]
 visibility = "public"
 topology_visibility = "open"
-# The provider publishes their own listing to a directory they chose, so
+# The listing owner publishes their own listing to a directory they chose, so
 # the directory service reads the signed envelope from the service that
 # holds it.
 depends_on = ["catalog"]

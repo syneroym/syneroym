@@ -421,7 +421,7 @@ async fn scenario_155_slot_removed_before_acceptance_conflict_parity() {
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let q_payload = &quote_env.payload;
 
-    // Remove the slot from the provider's catalog. `availability.set` only
+    // Remove the slot from the listing owner's catalog. `availability.set` only
     // adds/replaces the slots it is given; an empty list is a no-op, so
     // the slot must be deleted with its own verb.
     both_rpc(&h, "availability.remove", json!({ "slot_id": slot_id })).await;

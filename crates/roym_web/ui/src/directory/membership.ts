@@ -111,7 +111,7 @@ export function membershipWords(
 }
 
 /// Why a publish was refused, from the refusal's own `data.membership`.
-/// The person publishing is asking a different question from a consumer
+/// The person publishing is asking a different question from a searcher
 /// reading a result: not "who shows a membership" but "does this group
 /// admit me".
 export function refusalWords(v: MembershipVerdict | null | undefined): string {

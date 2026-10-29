@@ -882,7 +882,7 @@ async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_t
 // round trip with a verified caller, to this node's own directory;
 // `did:key:hForeignWire2` routes the same way to a second directory
 // instance holding its own store. `did:key:hForge1` / `hForge2` are canned
-// hostile sources that serve forgeries the consumer's own verification
+// hostile sources that serve forgeries the searcher's own verification
 // rejects. Without this a merge scenario can only drive one directory
 // against itself, which never disagrees with itself about a version and
 // never crowds its own page.

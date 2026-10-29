@@ -1,5 +1,5 @@
 //! Server half: one member's derived standing -- the evidence bytes a
-//! consumer would receive for them, rebuilt whenever one of their signed
+//! searcher would receive for them, rebuilt whenever one of their signed
 //! records changes -- and the two ways the directory judges it itself
 //! (`directory.standing`'s answer, and its own membership verdict on a
 //! publish or search).

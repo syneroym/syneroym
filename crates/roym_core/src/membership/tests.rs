@@ -305,7 +305,7 @@ fn revocations_past_the_credential_cap_are_never_checked() {
     // one in the array: `find_revocation` takes only the same number of
     // entries the credentials themselves are bounded to (one revocation
     // per surviving credential is ever meaningful), so a source cannot
-    // make a consumer pay for an unbounded number of signature checks per
+    // make a searcher pay for an unbounded number of signature checks per
     // reply.
     let mut revocations: Vec<String> = (0..MAX_EVIDENCE_CREDENTIALS)
         .map(|i| {

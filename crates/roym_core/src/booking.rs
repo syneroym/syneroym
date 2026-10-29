@@ -66,7 +66,8 @@ pub enum TrackState {
 pub enum ConflictReason {
     /// Every seat of the slot the quote named is held by another booking.
     SlotTaken,
-    /// The slot the quote named no longer exists in the provider's catalog.
+    /// The slot the quote named no longer exists in the listing owner's
+    /// catalog.
     SlotUnavailable,
 }
 

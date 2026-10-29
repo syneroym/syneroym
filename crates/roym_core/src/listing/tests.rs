@@ -83,7 +83,7 @@ fn core() -> ListingPayload {
         title: "Hedge trimming".to_string(),
         summary: "Neat hedges, fortnightly.".to_string(),
         categories: vec!["gardening".to_string(), "outdoor".to_string()],
-        conversation_address: "did:key:zProviderConv".to_string(),
+        conversation_address: "did:key:zListingOwnerConv".to_string(),
         status: ListingStatus::Active,
         booking: None,
         payment: Some(PaymentTerms {

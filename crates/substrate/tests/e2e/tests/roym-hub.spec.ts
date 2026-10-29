@@ -601,7 +601,7 @@ test.describe('Roym Hub', () => {
     await expect(row2.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
   });
 
-  test('21. Listings tab: a provider chooses a directory and publishes a listing to it, and a draft is refused with a reason', async ({ page }) => {
+  test('21. Listings tab: a listing owner chooses a directory and publishes a listing to it, and a draft is refused with a reason', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);

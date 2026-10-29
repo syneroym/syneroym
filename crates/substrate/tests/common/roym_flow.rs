@@ -1,5 +1,5 @@
 //! Multi-node Roym flows shared by the directory, booking and trust e2e
-//! tests: the consumer's client loop, a stranger's wire call, and the
+//! tests: the searcher's client loop, a stranger's wire call, and the
 //! request -> quote -> accept -> booking -> payment -> fulfilment steps.
 //! Each is a step a test reads as one line, parameterised only by what
 //! differs between the tests that use it.
@@ -50,7 +50,7 @@ pub fn hits(result: &Value) -> Vec<Value> {
     result["hits"].as_array().cloned().unwrap_or_default()
 }
 
-/// Drive the consumer client loop the way `roymctl roym directory find` and
+/// Drive the searcher client loop the way `roymctl roym directory find` and
 /// the Hub do: `start-run`, one `query-source` per source (respecting
 /// `max_concurrency`), then `merge`. Returns `(run_id, merge_result)`.
 pub async fn run_client_loop(node: &Node, query: Value) -> (String, Value) {
@@ -103,7 +103,7 @@ pub async fn deliver_one_message(from: &Node, to_label: &str, address: &str, bod
     assert!(delivered, "{} -> {to_label} message must deliver: {body}", from.label);
 }
 
-/// Opens a conversation to the provider at `peer_address` and files one
+/// Opens a conversation to the listing owner at `peer_address` and files one
 /// request in it, delivered. Returns `(conversation id, request record id)`.
 pub async fn open_request_conv(
     node: &Node,

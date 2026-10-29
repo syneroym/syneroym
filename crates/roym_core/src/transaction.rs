@@ -109,7 +109,7 @@ pub struct TimeWindow {
 
 /// Where the work happens, as a quote states it. `address` is the one
 /// field the spec's disclosure rule is about: it is present only when the
-/// work is at the customer, it is part of a signed record both parties
+/// work is at the receiver's place, it is part of a signed record both parties
 /// keep, and the product says so before it is filled in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteLocation {
@@ -188,8 +188,8 @@ pub struct QuotePayload {
     pub request_record_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listing_id: Option<String>,
-    /// The provider's availability slot this quote offers, when it offers one.
-    /// Re-derivable: `listing::derive_slot_id(listing_id,
+    /// The listing owner's availability slot this quote offers, when it offers
+    /// one. Re-derivable: `listing::derive_slot_id(listing_id,
     /// schedule.earliest_secs, schedule.latest_secs)`. Accepting a quote
     /// that names one books it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

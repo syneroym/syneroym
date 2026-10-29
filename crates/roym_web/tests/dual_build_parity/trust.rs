@@ -1,7 +1,7 @@
 //! Cross-installation trust: the directory's own signed credential,
 //! revocation and moderation-decision verbs, and the search filter they
 //! drive. This file covers the credential lifecycle, the publish gate, the
-//! search filter, and the consumer's own held-copy re-evaluation on the
+//! search filter, and the searcher's own held-copy re-evaluation on the
 //! single directory the harness gives every other scenario. Scenarios that
 //! need a second SynOrg, or a canned source serving defective evidence, are
 //! in `trust_sources.rs`; the member-standing decision cap has its own

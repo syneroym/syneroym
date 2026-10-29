@@ -280,7 +280,7 @@ async fn persist_listing_records<H: AppHost>(
 /// The shared body of `listing.set` and `listing.withdraw`. `withdraw`
 /// forces `status = withdrawn` and skips the publication limiter
 /// entirely: the limiter counts versions that put an offer *out*, and a
-/// provider is never rate-limited out of taking an offer down.
+/// listing owner is never rate-limited out of taking an offer down.
 async fn write_version<H: AppHost>(
     host: &H,
     payload: ListingPayload,
@@ -504,7 +504,7 @@ pub(crate) async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Resp
     }
     // The history rows are keyed by record_id, so this gathers every
     // envelope whose payload names this listing_id, oldest first. The
-    // `supersedes` chain in each payload is the exact order if a consumer
+    // `supersedes` chain in each payload is the exact order if a searcher
     // needs to separate two versions minted in the same second.
     let history =
         match paging::envelope_history(host, LISTING_HISTORY, "listing_id", &listing_id).await {
