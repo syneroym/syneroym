@@ -42,7 +42,7 @@ const STATE_WORDS: Record<string, string> = {
 
 const CONFLICT_SENTENCES: Record<string, string> = {
   "slot-taken": "Another booking took this slot first.",
-  "slot-unavailable": "The provider removed this slot.",
+  "slot-unavailable": "The listing owner removed this slot.",
 };
 
 function trackSentence(track: string | undefined, claimed: string, acknowledged: string): string | undefined {

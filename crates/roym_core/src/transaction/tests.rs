@@ -386,7 +386,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     assert!(!verdict.verified);
     assert_eq!(
         verdict.reason.as_deref(),
-        Some("consumer receipt issuer does not match counterparty_did")
+        Some("counterparty receipt issuer does not match counterparty_did")
     );
 
     // Subject mismatch
@@ -434,7 +434,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     assert!(!verdict_prov_bad.verified);
     assert_eq!(
         verdict_prov_bad.reason.as_deref(),
-        Some("provider receipt issuer does not match quote_author_did")
+        Some("quote author receipt issuer does not match quote_author_did")
     );
 
     // Valid quote author half signed by quote_author_key

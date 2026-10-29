@@ -32,10 +32,10 @@ pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 /// the request then carries under their own signature. One constant, so
 /// the Hub, `roymctl` and the record cannot drift apart, and so the
 /// notice is never an empty string nobody noticed.
-pub const DEFAULT_DATA_USE_NOTICE: &str = "This request is signed by you and sent to the provider \
-                                           you chose. They keep a copy. It carries the area you \
-                                           gave, not your exact address; an address is disclosed \
-                                           only inside a quote you accept.";
+pub const DEFAULT_DATA_USE_NOTICE: &str = "This request is signed by you and sent to the person \
+                                           or business you chose. They keep a copy. It carries \
+                                           the area you gave, not your exact address; an address \
+                                           is disclosed only inside a quote you accept.";
 
 /// Shown above the address field whenever a quote states one, and pinned
 /// character-for-character by the browser suite -- the same discipline
@@ -336,7 +336,7 @@ pub enum TransactionError {
     #[error("did '{0}' is not a valid did:key")]
     InvalidDid(String),
 
-    #[error("consumer and provider cannot be the same DID")]
+    #[error("counterparty and quote author cannot be the same DID")]
     SamePartyDid,
 
     #[error("request_id is empty")]
@@ -738,14 +738,14 @@ pub fn verify_agreement_receipt(
         DealRole::Counterparty => {
             if verified.issuer != payload.counterparty_did {
                 return RecordVerdict::refused(
-                    "consumer receipt issuer does not match counterparty_did",
+                    "counterparty receipt issuer does not match counterparty_did",
                 );
             }
         }
         DealRole::QuoteAuthor => {
             if verified.issuer != payload.quote_author_did {
                 return RecordVerdict::refused(
-                    "provider receipt issuer does not match quote_author_did",
+                    "quote author receipt issuer does not match quote_author_did",
                 );
             }
         }

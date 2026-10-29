@@ -5,12 +5,12 @@
     clippy::panic,
     dead_code
 )]
-//! The Roym product's booking arbitration: two consumers race for the one
-//! seat a provider's slot holds, across three independent
+//! The Roym product's booking arbitration: two counterparties race for the
+//! one seat a quote author's slot holds, across three independent
 //! `syneroym-substrate` instances, each running the full Roym SynApp.
 //!
 //! Proves the single-writer fence actually arbitrates a
-//! real concurrent booking: exactly one consumer schedules, the other gets
+//! real concurrent booking: exactly one counterparty schedules, the other gets
 //! a named conflict, and the winner's booking runs to completion through
 //! both tracks. No directory is deployed anywhere.
 
@@ -220,7 +220,7 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
 
     // Y runs transaction.sync on both conversations concurrently -- both
     // counterparty accept halves complete their pair and trigger the booking
-    // decision on the same provider-held slot at the same time.
+    // decision on the same quote-author-held slot at the same time.
     let (sync_x_res, sync_w_res) = tokio::join!(
         node_y.rpc_ok("transaction.sync", json!({ "conversation": quotes.y_conv_for_x })),
         node_y.rpc_ok("transaction.sync", json!({ "conversation": quotes.y_conv_for_w })),

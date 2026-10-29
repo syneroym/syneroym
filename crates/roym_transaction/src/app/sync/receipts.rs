@@ -66,7 +66,7 @@ pub(crate) async fn file_progress_card<H: AppHost>(
             host,
             msg_id,
             row,
-            "progress for an agreement this node is not the customer of",
+            "progress for an agreement this node is not the counterparty of",
         )
         .await;
     }

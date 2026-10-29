@@ -29,7 +29,7 @@ pub(crate) async fn decide_booking<H: AppHost>(
 ) -> Result<BookingRow, String> {
     let owner = signing::owner_did(host).await.map_err(|e| e.to_string())?;
     if owner != agreement.quote_author_did {
-        return Err("provider-only".to_string());
+        return Err("quote-author-only".to_string());
     }
 
     if let Some(row) = load_booking(host, &agreement.quote_record_id).await? {
@@ -330,7 +330,7 @@ pub(crate) async fn booking_start<H: AppHost>(host: &H, req: &Request) -> Respon
         Err(e) => return Response::internal_error(e.to_string()),
     };
     if owner != agr.quote_author_did {
-        return Response::invalid_params("provider-only");
+        return Response::invalid_params("quote-author-only");
     }
 
     let now = clock::now_secs();
@@ -372,7 +372,7 @@ pub(crate) async fn booking_cancel<H: AppHost>(host: &H, req: &Request) -> Respo
         Err(e) => return Response::internal_error(e.to_string()),
     };
     if owner != agr.quote_author_did {
-        return Response::invalid_params("provider-only");
+        return Response::invalid_params("quote-author-only");
     }
 
     let now = clock::now_secs();

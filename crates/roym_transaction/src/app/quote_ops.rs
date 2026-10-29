@@ -496,7 +496,7 @@ pub(crate) async fn quote_decline<H: AppHost>(host: &H, req: &Request) -> Respon
     };
 
     if owner != quote_payload.counterparty_did {
-        return Response::invalid_params("only the consumer can decline this quote");
+        return Response::invalid_params("only the counterparty can decline this quote");
     }
 
     if let Ok(Some(agr)) =

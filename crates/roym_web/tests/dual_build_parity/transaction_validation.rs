@@ -486,14 +486,15 @@ async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
         "request.set",
         json!({
             "conversation": conv,
-            "description": "Wrong consumer DID test",
+            "description": "Wrong counterparty DID test",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
     .await;
     let req_rec_id = rw["result"]["record_id"].as_str().unwrap();
 
-    // Peer creates quote for req_rec_id, but sets consumer_did to a stranger DID
+    // Peer creates quote for req_rec_id, but sets counterparty_did to a stranger
+    // DID
     let stranger_did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
     let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, stranger_did, None, 1_000);
     let card_msg = inbound_card(

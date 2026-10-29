@@ -547,7 +547,7 @@ async fn verify_imported_agreements<H: AppHost>(
         }
         if row.counterparty.is_none() && row.quote_author.is_none() {
             return Err(Response::invalid_params(format!(
-                "agreement '{id}' has neither consumer nor provider receipt"
+                "agreement '{id}' has neither counterparty nor quote author receipt"
             )));
         }
 
@@ -561,10 +561,10 @@ async fn verify_imported_agreements<H: AppHost>(
         };
 
         if let Some(ref mut c) = row.counterparty {
-            verify_receipt_half(c, id, "consumer", DealRole::Counterparty, &quote_ctx, now)?;
+            verify_receipt_half(c, id, "counterparty", DealRole::Counterparty, &quote_ctx, now)?;
         }
         if let Some(ref mut p) = row.quote_author {
-            verify_receipt_half(p, id, "provider", DealRole::QuoteAuthor, &quote_ctx, now)?;
+            verify_receipt_half(p, id, "quote_author", DealRole::QuoteAuthor, &quote_ctx, now)?;
         }
 
         row.counterparty_did = quote_payload.counterparty_did.clone();

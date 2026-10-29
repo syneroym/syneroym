@@ -332,7 +332,7 @@ fn validate_payment_request_preconditions(
         return Err(Response::invalid_params("agreement-incomplete"));
     }
     if owner != agr.quote_author_did {
-        return Err(Response::invalid_params("provider-only"));
+        return Err(Response::invalid_params("quote-author-only"));
     }
     match booking.state {
         BookingState::Scheduled | BookingState::InProgress => {}

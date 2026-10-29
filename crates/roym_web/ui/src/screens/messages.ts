@@ -19,7 +19,7 @@ const DELETE_NOTE_RECEIVED =
   "message you received; the other side's copy is theirs.";
 
 export const DEFAULT_DATA_USE_NOTICE =
-  "This request is signed by you and sent to the provider you chose. They " +
+  "This request is signed by you and sent to the person or business you chose. They " +
   "keep a copy. It carries the area you gave, not your exact address; an " +
   "address is disclosed only inside a quote you accept.";
 

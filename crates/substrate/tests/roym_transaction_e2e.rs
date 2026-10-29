@@ -11,8 +11,9 @@
 //! identity.
 //!
 //! Proves an offer is agreed across two installations:
-//! consumer finds provider by signed listing without a directory, sends a
-//! signed request, receives a signed quote, and accepts it. Provider
+//! the counterparty finds the quote author by signed listing without a
+//! directory, sends a signed request, receives a signed quote, and accepts
+//! it. The quote author
 //! countersigns and both parties reach a completed agreement pair with
 //! identical terms. Also proves tampered cards are refused and never verified.
 
@@ -194,7 +195,7 @@ async fn an_offer_is_agreed_across_two_installations() {
     assert!(quote_delivered, "quote card was delivered to X");
 
     // Step 7: X transaction.sync -> files the quote; thread shows it verified with
-    // X as consumer_did.
+    // X as counterparty_did.
     let x_sync = node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
     assert_eq!(x_sync["filed"], 1);
 
@@ -205,7 +206,8 @@ async fn an_offer_is_agreed_across_two_installations() {
     assert_eq!(quote_card["verified"], true);
     assert_eq!(quote_card["data"]["counterparty_did"], owner_x_did);
 
-    // Step 8: X agreement.accept { quote_record_id } -> role: consumer, pair: half.
+    // Step 8: X agreement.accept { quote_record_id } -> role: counterparty, pair:
+    // half.
     let accept_res =
         node_x.rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id })).await;
     assert_eq!(accept_res["role"], "counterparty");
@@ -232,7 +234,7 @@ async fn an_offer_is_agreed_across_two_installations() {
     let y_prov_card = y_cards2
         .iter()
         .find(|c| c["card_type"] == "agreement-receipt" && c["issuer"] == owner_y_did)
-        .expect("provider card in Y thread");
+        .expect("quote author card in Y thread");
     let prov_msg_id = y_prov_card["message_id"].as_str().unwrap();
     let prov_delivered = wait_delivered(&node_y, prov_msg_id).await;
     assert!(prov_delivered, "countersigned receipt delivered to X");

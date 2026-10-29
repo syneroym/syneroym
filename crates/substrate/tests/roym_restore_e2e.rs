@@ -5,7 +5,7 @@
     clippy::panic,
     dead_code
 )]
-//! The durability suite: a provider's transaction in flight is
+//! The durability suite: a quote author's transaction in flight is
 //! carried across an encrypted backup and a restore onto a clean
 //! installation, without shelling out to `roymctl` -- the same
 //! `syneroym_identity::backup` calls and the same five `*.export`/`*.import`
@@ -267,7 +267,7 @@ async fn advance_transaction(node_x: &Node, node_y: &Node, tx: &ActiveTransactio
     let x_ack =
         node_x.rpc_ok("payment.acknowledge", json!({ "agreement": tx.quote_record_id })).await;
     let x_ack_msg = x_ack["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_x, &x_ack_msg).await, "consumer payment ack delivered");
+    assert!(wait_delivered(node_x, &x_ack_msg).await, "counterparty payment ack delivered");
     node_y.rpc_ok("transaction.sync", json!({ "conversation": tx.y_conv_id })).await;
 
     let y_ack1 = node_y
@@ -535,12 +535,12 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
     assert_eq!(
         payment_after_reimport["quote_author"].as_array().unwrap().len(),
         before.payment["quote_author"].as_array().unwrap().len(),
-        "a repeated import must not duplicate provider payment halves"
+        "a repeated import must not duplicate quote author payment halves"
     );
     assert_eq!(
         payment_after_reimport["counterparty"].as_array().unwrap().len(),
         before.payment["counterparty"].as_array().unwrap().len(),
-        "a repeated import must not duplicate consumer payment halves"
+        "a repeated import must not duplicate counterparty payment halves"
     );
 
     // Step 4: the durability suite.

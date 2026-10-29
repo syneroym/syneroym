@@ -972,7 +972,7 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.request-form')).toBeVisible();
     const reqNotice = await page.locator('.request-form .data-use-notice').innerText();
     expect(reqNotice).toBe(
-      'This request is signed by you and sent to the provider you chose. They ' +
+      'This request is signed by you and sent to the person or business you chose. They ' +
         'keep a copy. It carries the area you gave, not your exact address; an ' +
         'address is disclosed only inside a quote you accept.',
     );

@@ -161,7 +161,7 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
     assert!(is_err(&bad_w, -32602));
     assert!(is_err(&bad_n, -32602));
 
-    // Peer fulfilment with wrong consumer_did
+    // Peer fulfilment with wrong counterparty_did
     let (bad_cf_id, bad_cf_env) = peer_signed_fulfilment(
         &conv,
         &agr_rec,
@@ -198,7 +198,7 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
     // return -- so the refusal is found by its outcome, not its id.
     let cards = tw["result"]["cards"].as_array().unwrap();
     let unverified: Vec<_> = cards.iter().filter(|c| c["verified"] == false).collect();
-    assert_eq!(unverified.len(), 1, "only the wrong-consumer card must be unverified");
+    assert_eq!(unverified.len(), 1, "only the wrong-counterparty card must be unverified");
 }
 
 #[tokio::test]

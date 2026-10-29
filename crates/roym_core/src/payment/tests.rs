@@ -21,7 +21,7 @@ fn sample_terms() -> AgreedTerms {
         location: QuoteLocation { where_: ServiceLocation::Remote, area: None, address: None },
         cancellation_terms: "Standard cancellation".to_string(),
         refund_terms: "Standard refund".to_string(),
-        dispute_path: "Contact provider".to_string(),
+        dispute_path: "Contact the quote author".to_string(),
         quote_expires_at_secs: 2000,
     }
 }

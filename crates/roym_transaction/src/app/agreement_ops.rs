@@ -375,7 +375,7 @@ async fn prepare_author_booking<H: AppHost>(
 ) -> Result<Value, Response> {
     if quote_payload.slot_id.is_some() && row.counterparty.is_none() {
         return Err(Response::invalid_params(
-            "provider cannot accept a slot quote before the consumer accepts",
+            "the quote author cannot accept a slot quote before the counterparty accepts",
         ));
     }
     if row.counterparty.is_some() {

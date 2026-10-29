@@ -447,7 +447,9 @@ async fn assert_tampered_core_records(h: &Harness, bundle_val: &Value, now: u64)
     let (aw, an) = both_rpc(h, "transaction.import", json!({ "bundle": b_agr })).await;
     assert_eq!(aw, an);
     assert_eq!(aw["error"]["code"], -32602);
-    assert!(aw["error"]["message"].as_str().unwrap().contains("consumer receipt does not verify"));
+    assert!(
+        aw["error"]["message"].as_str().unwrap().contains("counterparty receipt does not verify")
+    );
 }
 
 async fn assert_tampered_ledger_record(h: &Harness, bundle_val: &Value, now: u64) {

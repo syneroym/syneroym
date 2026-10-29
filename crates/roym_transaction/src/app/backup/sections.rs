@@ -202,20 +202,20 @@ fn validate_fulfilments(
             let v = fulfilment::verify_fulfilment_receipt(&c.envelope, now);
             if !v.verified {
                 return Err(Response::invalid_params(format!(
-                    "fulfilments '{id}' consumer receipt does not verify"
+                    "fulfilments '{id}' counterparty receipt does not verify"
                 )));
             }
             let p = match v.payload.as_ref() {
                 Some(p) => p,
                 None => {
                     return Err(Response::invalid_params(format!(
-                        "fulfilments '{id}' consumer receipt missing payload"
+                        "fulfilments '{id}' counterparty receipt missing payload"
                     )));
                 }
             };
             if p.terms != agr.terms || p.role != DealRole::Counterparty {
                 return Err(Response::invalid_params(format!(
-                    "fulfilments '{id}' consumer receipt mismatch"
+                    "fulfilments '{id}' counterparty receipt mismatch"
                 )));
             }
             history.push((
@@ -229,20 +229,20 @@ fn validate_fulfilments(
             let v = fulfilment::verify_fulfilment_receipt(&p_half.envelope, now);
             if !v.verified {
                 return Err(Response::invalid_params(format!(
-                    "fulfilments '{id}' provider receipt does not verify"
+                    "fulfilments '{id}' quote author receipt does not verify"
                 )));
             }
             let p = match v.payload.as_ref() {
                 Some(p) => p,
                 None => {
                     return Err(Response::invalid_params(format!(
-                        "fulfilments '{id}' provider receipt missing payload"
+                        "fulfilments '{id}' quote author receipt missing payload"
                     )));
                 }
             };
             if p.terms != agr.terms || p.role != DealRole::QuoteAuthor {
                 return Err(Response::invalid_params(format!(
-                    "fulfilments '{id}' provider receipt mismatch"
+                    "fulfilments '{id}' quote author receipt mismatch"
                 )));
             }
             history.push((
@@ -369,7 +369,7 @@ fn validate_progress(
         }
         if owner != row.snapshot.counterparty_did {
             return Err(Response::invalid_params(format!(
-                "progress '{id}' owner did not match consumer did"
+                "progress '{id}' owner did not match counterparty did"
             )));
         }
         if !quotes_by_record_id.contains_key(&row.agreement) {

@@ -344,7 +344,7 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     assert_eq!(cw["result"]["role"], "counterparty");
     assert_eq!(cw["result"]["pair"]["state"], "half");
 
-    // Not a full-struct comparison: pair.consumer is a ReceiptHalf whose
+    // Not a full-struct comparison: pair.counterparty is a ReceiptHalf whose
     // own record_id/envelope/issued_at_secs are each build's own
     // clock::now_secs()-derived values, same as above.
     let (cgw, cgn) =

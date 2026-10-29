@@ -25,12 +25,12 @@ pub const MAX_DEFER_SECS: u64 = 7 * 24 * 3600;
 
 pub const PAYMENT_NOTICE: &str = "This records what each side says about the payment. Roym does \
                                   not see the money move and cannot confirm that it did.";
-pub const PROGRESS_NOTICE: &str =
-    "This status comes from the provider's system. It is not a signed statement by either person.";
-pub const PAYMENT_CLAIMED: &str = "The customer says they paid.";
-pub const PAYMENT_ACKNOWLEDGED: &str = "The provider confirms they received the payment.";
-pub const FULFILMENT_CLAIMED: &str = "The provider says the work is done.";
-pub const FULFILMENT_ACKNOWLEDGED: &str = "The customer confirms the work is done.";
+pub const PROGRESS_NOTICE: &str = "This status comes from the system of the person who wrote the \
+                                   quote. It is not a signed statement by either person.";
+pub const PAYMENT_CLAIMED: &str = "The payer says they paid.";
+pub const PAYMENT_ACKNOWLEDGED: &str = "The payee confirms they received the payment.";
+pub const FULFILMENT_CLAIMED: &str = "The person doing the work says it is done.";
+pub const FULFILMENT_ACKNOWLEDGED: &str = "The person receiving the work confirms it is done.";
 pub const TRACK_UNCONFIRMED: &str = "No confirmation was recorded before the window closed.";
 pub const ONE_PAYMENT_NOTICE: &str =
     "This quote is paid in one payment. Deposits and part payments are not supported.";
@@ -127,7 +127,7 @@ pub enum BookingPayloadError {
     InvalidCounterpartyDid(String),
     #[error("quote_author_did '{0}' is not a valid did:key")]
     InvalidQuoteAuthorDid(String),
-    #[error("consumer and provider cannot be the same DID")]
+    #[error("counterparty and quote author cannot be the same DID")]
     SamePartyDid,
     #[error("conversation is empty")]
     ConversationEmpty,

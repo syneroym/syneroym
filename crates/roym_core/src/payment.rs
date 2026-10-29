@@ -25,7 +25,7 @@ pub enum PaymentError {
     InvalidCounterpartyDid(String),
     #[error("quote_author_did '{0}' is not a valid did:key")]
     InvalidQuoteAuthorDid(String),
-    #[error("consumer and provider cannot be the same DID")]
+    #[error("counterparty and quote author cannot be the same DID")]
     SamePartyDid,
     #[error("conversation is empty")]
     ConversationEmpty,

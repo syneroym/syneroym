@@ -51,20 +51,20 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   card.appendChild(title);
 
   // Pair state in words:
-  // "Both parties have signed these terms." / "Only the consumer has signed so far." / "Only the provider has signed so far."
+  // "Both parties have signed these terms." / "Only the person the quote was sent to has signed so far." / "Only the person who wrote the quote has signed so far."
   const rawPair = data?.pair_state ?? data?.pair;
   const pairState = typeof rawPair === "object" && rawPair !== null ? rawPair.state : rawPair;
   const pairRole = typeof rawPair === "object" && rawPair !== null ? rawPair.role : data?.role;
 
-  let pairText = "Only the consumer has signed so far.";
+  let pairText = "Only the person the quote was sent to has signed so far.";
   if (pairState === "complete") {
     pairText = "Both parties have signed these terms.";
   } else if (pairState === "half" && pairRole === "quote-author") {
-    pairText = "Only the provider has signed so far.";
+    pairText = "Only the person who wrote the quote has signed so far.";
   } else if (pairRole === "quote-author") {
-    pairText = "Only the provider has signed so far.";
+    pairText = "Only the person who wrote the quote has signed so far.";
   } else {
-    pairText = "Only the consumer has signed so far.";
+    pairText = "Only the person the quote was sent to has signed so far.";
   }
 
   const pairP = document.createElement("p");
@@ -75,21 +75,24 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (data?.role) {
     const roleP = document.createElement("p");
     roleP.className = "receipt-role";
-    roleP.textContent = `Role: ${data.role}`;
+    roleP.textContent =
+      data.role === "quote-author"
+        ? "Signed by: the person who wrote the quote"
+        : "Signed by: the person the quote was sent to";
     card.appendChild(roleP);
   }
 
   if (data?.counterparty_did) {
     const conP = document.createElement("p");
-    conP.className = "receipt-consumer";
-    conP.textContent = `Consumer: ${data.counterparty_did}`;
+    conP.className = "receipt-counterparty";
+    conP.textContent = `Quote to: ${data.counterparty_did}`;
     card.appendChild(conP);
   }
 
   if (data?.quote_author_did) {
     const proP = document.createElement("p");
-    proP.className = "receipt-provider";
-    proP.textContent = `Provider: ${data.quote_author_did}`;
+    proP.className = "receipt-author";
+    proP.textContent = `Quote by: ${data.quote_author_did}`;
     card.appendChild(proP);
   }
 
