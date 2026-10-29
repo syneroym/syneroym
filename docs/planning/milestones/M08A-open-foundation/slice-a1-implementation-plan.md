@@ -3,12 +3,14 @@
 *Reader: the developer (or AI) who implements slice A1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: waiting for the owner's answers to Q1 to Q7 (section 2.1),
-2026-10-29.** Do not start Step 2 before section 3 matches the answers.
+**Status: ready, 2026-10-29. The owner accepted the recommendations for
+Q1 to Q7 (section 2.1) on 2026-10-29.** Section 3 matches the answers.
 
 **Size and PR.** M. One PR on `feat/m08a-a1-implementation`, with the
 commits of section 4 in that order. The branch starts from `main` at
-`43dd44d4` (after S0 merged, PR #329) plus one backlog commit.
+`43dd44d4` (after S0 merged, PR #329). Its first commit, `8df963fc`, adds
+the A3 backlog row "Slow `call-all` waits can hold every guest instance
+slot". It is not part of A1's work, but it ships in A1's PR.
 
 **Merged alone.** A1 touches almost every Roym file. No other M08A slice
 opens a PR until A1 is on `main` (task.md section 4). S0 is already merged,
@@ -105,7 +107,7 @@ A7 adds it at close-out with M08A's chat story; A1 adds nothing to it.
 
 ## 2. Points for the owner
 
-### 2.1 Questions
+### 2.1 Questions (all recommendations accepted by the owner, 2026-10-29)
 
 **Q1. One deal role everywhere, or a giver/receiver role on the track
 records?** Today one `Role` enum is used in three ways:
@@ -138,7 +140,8 @@ the track sides.
   [fulfilment.rs:108-111](../../../../crates/roym_core/src/fulfilment.rs#L108)).
   `apply_half` becomes "`role == Receiver`".
 
-*Recommendation:* (a). A1 must not change behaviour, and (a) is a pure
+*Recommendation:* (a). It is uniform: one enum and one pair of DID
+fields in every record. A1 must not change behaviour, and (a) is a pure
 rename. (b) adds a table that encodes today's fixed deal shape (the author
 always gives the work and receives the money). Commitments replace that
 shape in the value-exchange change, and the table would then be deleted.
@@ -286,11 +289,6 @@ checks drifts.
 words) and needs no allow list. Free text that a person types (for
 example a listing description) is not checked.
 
-**Not a design question, but blocking:** the patch file
-`backlog-a3-slots.patch` (a deferred-backlog row for A3, to be committed as
-`docs(planning): record call-all slot limit for A3`) was not found in the
-repository or the usual folders. Its commit is not made yet.
-
 ### 2.2 Stale or unclear points in task.md and the change doc
 
 - task.md section 2 says "provider" is in about 234 lines and "consumer"
@@ -394,8 +392,8 @@ These use the same words for something else:
 
 ## 3. Decisions this plan makes
 
-These follow the recommendations. Update them with the owner's answers
-before Step 2.
+These are the owner's answers (2026-10-29): every recommendation of
+section 2.1 was accepted.
 
 - **D-A1-1 (Q1).** `pub enum DealRole { QuoteAuthor, Counterparty }` in
   `roym_core::transaction`, kebab-case on the wire (`"quote-author"`,
@@ -452,10 +450,9 @@ change".
 ### Step 1 — Commit this plan
 
 - Commit only this file: `docs(planning): plan M08A A1 participant rename`.
-- Wait for the owner's answers to section 2.1. Update section 3, the
-  end-user section and the table in Q6 with them.
-- Separate commit, when the patch file is supplied:
-  `docs(planning): record call-all slot limit for A3`.
+  Done: `193ccaf5`.
+- The owner answered section 2.1 on 2026-10-29 and accepted every
+  recommendation. Section 3 records it.
 
 ### Step 2 — Rust names only, the wire unchanged
 
@@ -585,7 +582,7 @@ stays one idea.
 
 **Commit:** `refactor(roym): say listing owner, not provider`.
 
-Only if Q4 is (a). Hub text (`screens/directory.ts:96,298,400`,
+Hub text (`screens/directory.ts:96,298,400`,
 `memberships.ts:49,74,89`, `synorg.ts:24,147`,
 `synorg_members.ts:106-107`), `roymctl` (`find.rs:343`, `trust.rs:2`),
 `roym.toml:93`, comments in `roym_core` (`listing.rs:1,172,189,389,502`,
@@ -724,7 +721,7 @@ suite rebuilds the WASM components by itself or needs the build step that
 - §9, "Public contract versioning (`[G5]`)": add "A record or backup made
   before the deal-role rename is not read after it; there is no
   migration, because the product was not released".
-- §12, new row (only with Q1 (a)): "The payment and fulfilment records
+- §12, new row: "The payment and fulfilment records
   name the deal parties, not the giver and receiver of the resource".
   Reason: a pure rename could not move to giver/receiver without changing
   the type of a signed field. Target: M08C (commitments). Source: this
@@ -732,8 +729,6 @@ suite rebuilds the WASM components by itself or needs the build step that
 - §10, new row: "`docs/reputation-design-note.md` still uses provider and
   consumer" (41 lines). It is a design note, not a living doc. Target:
   M08G (reputation), which rewrites it.
-- If Q4 is (b): a §10 row for the identifiers and comments left in the
-  listing-owner and searcher senses.
 
 ## 7. Exit criteria
 
