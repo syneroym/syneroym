@@ -5,6 +5,8 @@ planning conversation. This plan is meant to stand alone.*
 
 **Status: ready, 2026-10-29. The owner accepted the recommendations for
 Q1 to Q7 (section 2.1) on 2026-10-29.** Section 3 matches the answers.
+Review of Step 2 found one more value with "customer" in it (Q8). Q8 is
+open: the owner must choose its new name before Step 5.
 
 **Size and PR.** M. One PR on `feat/m08a-a1-implementation`, with the
 commits of section 4 in that order. The branch starts from `main` at
@@ -289,6 +291,23 @@ checks drifts.
 words) and needs no allow list. Free text that a person types (for
 example a listing description) is not checked.
 
+**Q8 (open, found in review). The audience value `existing-customers`.**
+`OpenTo { Anyone, Members, Referral, ExistingCustomers }` is a signed
+listing value. It means "this listing is open only to people who already
+dealt with the listing owner". It goes to directories and into search
+filters, and the Hub shows it (`screens/listings.ts:316,404`,
+`listings/editor.ts:14`). It is not a deal role, but Q5 put "customer" in
+the rename, and the Step 7 guard test would fail on it.
+
+- (a) Rename to `past-counterparties` (`PastCounterparties`). The Hub label
+  becomes "People I have worked with before".
+- (b) Keep the value. Record an exception to OF-1 in the change doc.
+
+*Recommendation:* (a). It follows Q5 and keeps the guard test free of an
+allow list. The owner chooses the final word. Step 5 carries the change, and
+the directory error text (`search_ops.rs`) and the parity test
+(`dual_build_parity/directory.rs:751`) follow it.
+
 ### 2.2 Stale or unclear points in task.md and the change doc
 
 - task.md section 2 says "provider" is in about 234 lines and "consumer"
@@ -344,7 +363,11 @@ and no JSON-RPC method name contains them
 ([app.rs:228-271](../../../../crates/roym_transaction/src/app.rs#L228)).
 No WIT file and no `.json` or `.toml` fixture uses them as a deal role.
 Directory listings, membership credentials, revocations and profiles have
-no role field; the only listing hit is the location value (Q3).
+no role field. Two listing values have an old word: the location value (Q3)
+and the audience value `OpenTo::ExistingCustomers`, signed as
+`"existing-customers"` ([listing.rs:156](../../../../crates/roym_core/src/listing.rs#L156);
+Q8). The directory indexes it and `directory.search` filters on it
+([search_ops.rs:293-304](../../../../crates/roym_directory/src/app/search_ops.rs#L293)).
 
 `unverified`: whether any tool outside this repository parses `roymctl`
 JSON output with these keys. The product is not released, so none is
@@ -504,8 +527,15 @@ git diff HEAD~1 -- '*.rs' | grep -E '^[+-]' | grep -E '"[^"]*(consumer|provider|
 - Fence ids now use `quote-author` / `counterparty`
   ([fence.rs:142](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L142),
   [fulfilment_ops.rs:326](../../../../crates/roym_transaction/src/app/fulfilment_ops.rs#L326)).
-  They come from the enum's serde value; check that `role_str` is built
-  from it and not from a literal (`unverified`).
+  Both build `role_str` with `DealRole::as_str()`, which holds the one
+  literal for each role. Step 3 changes that function and the serde values
+  together. The pin test `the_wire_values_of_roles_and_next_steps_are_pinned`
+  (`roym_core`, `booking/tests.rs`) checks that `as_str()` equals the serde
+  value, and Step 3 updates its expected values.
+- The backup import message "receipt has role …"
+  (`backup.rs`, `verify_receipt_half`) prints `DealRole::as_str()`. Step 2
+  changed its text from the Rust name (`Consumer`) to the wire value
+  (`consumer`), the one text change of Step 2.
 - RPC answer keys in `agreement_ops.rs` (:116, :216, :311-314, :357-360),
   `quote_ops.rs` (:384, :421), `payment_ops.rs` (:289, :390, :462-463),
   `fence.rs` (:234, :255), `fulfilment_ops.rs` (:140, :176, :243-244,
@@ -515,7 +545,14 @@ git diff HEAD~1 -- '*.rs' | grep -E '^[+-]' | grep -E '"[^"]*(consumer|provider|
   `payment.rs:229`, `sync.rs:463` (asserted at
   `dual_build_parity/transaction_validation.rs:521`).
 - Rust tests: every JSON literal by the mapping table below. Fixture DIDs
-  by D-A1-7.
+  by D-A1-7. The pin tests added in Step 2 (`booking/tests.rs`,
+  `listing/tests.rs`) and the `next` assertion in parity scenario 152 change
+  their expected values here.
+- Comments that name a JSON key or wire value of the old words (for
+  example `// X as consumer_did`, `pair.consumer`, `role: consumer` in
+  `roym_transaction_e2e.rs`, `transaction_validation.rs:496`,
+  `dual_build_parity/fulfilment.rs:164`, `transaction.rs:347`) change with
+  the literal they describe.
 - Hub (`crates/roym_web/ui/src`):
   - Types: `consumer_did?` / `provider_did?` / `role?` / `cancelled_by?`
     in `cards/templates/{agreement_receipt,payment_acknowledgement,fulfilment_receipt,booking_progress,payment_request,quote}.ts`
@@ -561,7 +598,10 @@ stays one idea.
   `backup/sections.rs:205-245,372`), and the `Display` strings of the
   error variants. The parity and e2e tests that assert them.
 - `roymctl` help (`commands/roym/booking.rs:44,53,77`).
-- Comments in the files above that use the deal-role sense.
+- Comments in the files above that use the deal-role sense. Step 2 already
+  changed the deal-role comments in the test files and the `roym_core` and
+  `roym_transaction` files it touched. Step 4 sweeps what is left, in every
+  Rust file that Step 2 renamed, not only in the files above.
 
 ### Step 5 — The location values
 
@@ -569,6 +609,21 @@ stays one idea.
 
 - `ServiceLocation { AtGiver, AtReceiver, Remote }`; remove its Step 2
   `serde(rename)`.
+- `OpenTo::ExistingCustomers` takes the name the owner chooses in Q8. Update
+  `search_ops.rs:293-304` (filter and error text), the Hub
+  (`screens/listings.ts:316,404`, `listings/editor.ts:14`) and
+  `dual_build_parity/directory.rs:751`.
+- Schema versions. Step 5 changes values inside signed listings, which the
+  catalog and the directory store and write into their backups. Bump
+  `roym_catalog` `SCHEMA_VERSION` 2 → 3
+  ([app.rs:35](../../../../crates/roym_catalog/src/app.rs#L35)) and
+  `DIRECTORY_SCHEMA_VERSION` 4 → 5
+  ([directory.rs:17](../../../../crates/roym_core/src/directory.rs#L17)).
+  Without the bump, `listing.withdraw` on an old listing answers "stored
+  listing envelope is unreadable"
+  ([listing_ops.rs:427-432](../../../../crates/roym_catalog/src/app/listing_ops.rs#L427))
+  and an old backup fails with a parse error, not a clear refusal. Same
+  rule as Q2 (a): old dev data is not read.
 - Hub: `listings/editor.ts:12` (`ServiceLocationKind`), the listing editor
   options with labels (`screens/listings.ts:305,396`; the `select()`
   helper at `:48` today shows the value as the label), the quote form
@@ -603,9 +658,12 @@ the `zProviderConv` fixtures, the Playwright test title
   `record/tests.rs` first, as the module-layout rule requires, and add
   `mod wire_words;` there. Not in `transaction/tests.rs`: it is at its
   ratchet cap of 834 lines (`xtask/oversized-test-files.txt:20`).
-- One sample of each of the seven payload types plus a listing. Serialize
-  with `serde_json::to_value`. Walk keys and string values. Fail on
-  `provider`, `consumer` or `customer`, and name the path.
+- One sample of each of the seven payload types plus a listing. Fill every
+  `Option` field (for example `cancelled_by`, `address`), and serialize
+  every variant of each wire enum (`DealRole`, `ServiceLocation`, `OpenTo`,
+  `NextStep`), so no value hides behind a sample that does not use it.
+  Serialize with `serde_json::to_value`. Walk keys and string values. Fail
+  on `provider`, `consumer` or `customer`, and name the path.
 - Hub: one vitest in `cards/wording.test.ts` (new) over the exports of
   `wording.ts` and the rendered text of the card fixtures already in
   `templates.test.ts`.
@@ -693,7 +751,9 @@ suite rebuilds the WASM components by itself or needs the build step that
    31 still shows Accept for the counterparty), and both demo stories
    pass in `mise run verify`.
 6. **OF-1 holds and stays held.** The guard tests of Step 7.
-7. **OF-2.** A grep over the Hub source and the living docs for
+7. **OF-2.** A grep over the Hub source, the living docs and the Roym Rust
+   sources (comments included: `roym_core`, `roym_transaction`, `roym_web/tests`,
+   `substrate/tests/roym_*` and `common/roym_flow.rs`, `apps/roymctl`) for
    `provider|consumer|customer` returns only the exclusions of section 2.4.
 
 ### 5.3 Not tested
