@@ -20,8 +20,8 @@ use crate::{
     },
     payment::{PaymentAcknowledgementPayload, PaymentRequestPayload},
     transaction::{
-        AgreedTerms, AgreementReceiptPayload, DealRole, PaymentTiming, QuoteLocation, QuotePayload,
-        RequestPayload, TimeWindow,
+        AgreedTerms, AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, PaymentTiming,
+        QuoteLocation, QuotePayload, RequestPayload, TimeWindow,
     },
 };
 
@@ -141,7 +141,7 @@ fn request() -> RequestPayload {
         description: "Trim the hedge".to_string(),
         area: Some(Area::Circle { lat_e6: 1, lon_e6: 2, radius_m: 3 }),
         window: Some(TimeWindow { earliest_secs: 1_000, latest_secs: 2_000 }),
-        data_use_notice: crate::transaction::DEFAULT_DATA_USE_NOTICE.to_string(),
+        data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
     }
 }
 
