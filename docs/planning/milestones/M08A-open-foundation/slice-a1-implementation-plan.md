@@ -5,8 +5,8 @@ planning conversation. This plan is meant to stand alone.*
 
 **Status: ready, 2026-10-29. The owner accepted the recommendations for
 Q1 to Q7 (section 2.1) on 2026-10-29.** Section 3 matches the answers.
-Review of Step 2 found one more value with "customer" in it (Q8). Q8 is
-open: the owner must choose its new name before Step 5.
+Review of Step 2 found one more value with "customer" in it (Q8). The
+owner accepted the recommendation of Q8 on 2026-10-29 (D-A1-8).
 
 **Size and PR.** M. One PR on `feat/m08a-a1-implementation`, with the
 commits of section 4 in that order. The branch starts from `main` at
@@ -291,7 +291,7 @@ checks drifts.
 words) and needs no allow list. Free text that a person types (for
 example a listing description) is not checked.
 
-**Q8 (open, found in review). The audience value `existing-customers`.**
+**Q8 (found in review; the owner accepted (a), 2026-10-29). The audience value `existing-customers`.**
 `OpenTo { Anyone, Members, Referral, ExistingCustomers }` is a signed
 listing value. It means "this listing is open only to people who already
 dealt with the listing owner". It goes to directories and into search
@@ -306,7 +306,8 @@ the rename, and the Step 7 guard test would fail on it.
 *Recommendation:* (a). It follows Q5 and keeps the guard test free of an
 allow list. The owner chooses the final word. Step 5 carries the change, and
 the directory error text (`search_ops.rs`) and the parity test
-(`dual_build_parity/directory.rs:751`) follow it.
+(`dual_build_parity/directory.rs:751`) follow it. Decided: the value is
+`past-counterparties`.
 
 ### 2.2 Stale or unclear points in task.md and the change doc
 
@@ -433,6 +434,9 @@ section 2.1 was accepted.
   Roym code too. "Customer" is part of the rename.
 - **D-A1-5 (Q6).** The UI and error strings of Q6's right-hand column.
 - **D-A1-6 (Q7).** The guard tests of Q7 (a).
+- **D-A1-8 (Q8).** `OpenTo::ExistingCustomers` becomes
+  `OpenTo::PastCounterparties`, signed as `"past-counterparties"`. The Hub
+  label is "People I have worked with before". Step 5 does it.
 - **D-A1-7.** Other names (all local-only):
   - `NextStep::WaitForProvider` → `WaitForQuoteAuthor`.
   - `pair_state(consumer, provider)` → `pair_state(counterparty, quote_author)`.
@@ -462,6 +466,7 @@ Where each decision is written down (Step 8 does it):
 | D-A1-3 | `## Decisions` | — | integrated spec, architecture | — |
 | D-A1-4, D-A1-5 | `## Decisions` | — | SRS, architecture, integrated spec, developer guide, traceability | — |
 | D-A1-6 | `## Decisions` | — | — | — |
+| D-A1-8 | `## Decisions` | — | integrated spec, SRS (listing audience) | — |
 
 ## 4. Step-by-step changes
 
@@ -609,7 +614,8 @@ stays one idea.
 
 - `ServiceLocation { AtGiver, AtReceiver, Remote }`; remove its Step 2
   `serde(rename)`.
-- `OpenTo::ExistingCustomers` takes the name the owner chooses in Q8. Update
+- `OpenTo::ExistingCustomers` → `OpenTo::PastCounterparties`
+  (`"past-counterparties"`, D-A1-8). Update
   `search_ops.rs:293-304` (filter and error text), the Hub
   (`screens/listings.ts:316,404`, `listings/editor.ts:14`) and
   `dual_build_parity/directory.rs:751`.
