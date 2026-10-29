@@ -1,5 +1,5 @@
-//! The booking a provider's transaction service writes, and the two
-//! tracks that finish it. Written on the provider's node only; every
+//! The booking a quote author's transaction service writes, and the two
+//! tracks that finish it. Written on the quote author's node only; every
 //! other node reads the writer's signed snapshots. Pure: no host calls.
 
 use serde::{Deserialize, Serialize};

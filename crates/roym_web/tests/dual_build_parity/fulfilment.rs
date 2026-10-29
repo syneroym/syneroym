@@ -70,10 +70,10 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     let amount_minor = terms["amount_minor"].as_i64().unwrap();
     let curr = terms["currency"].as_str().unwrap();
 
-    // Provider starts booking
+    // Quote author starts booking
     both_rpc(&h, "booking.start", json!({ "agreement": agr_rec })).await;
 
-    // Provider fulfilment half -> claimed
+    // Quote author fulfilment half -> claimed
     let (fw, fn_) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
     assert_eq!(fw["result"]["role"], "provider");
     assert_eq!(fn_["result"]["role"], "provider");
@@ -82,7 +82,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     assert_eq!(fg_w["result"]["track"], "claimed");
     assert_eq!(fg_n["result"]["track"], "claimed");
 
-    // Consumer fulfilment half -> acknowledged
+    // Counterparty fulfilment half -> acknowledged
     let (cf_id, cf_env) = peer_signed_fulfilment(
         &conv,
         &agr_rec,

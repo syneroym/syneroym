@@ -1,5 +1,5 @@
-//! Fulfilment receipt records: attestations by provider or consumer that work
-//! was done.
+//! Fulfilment receipt records: attestations by quote author or counterparty
+//! that work was done.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

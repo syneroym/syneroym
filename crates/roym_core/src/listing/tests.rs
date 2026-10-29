@@ -325,3 +325,22 @@ fn derive_slot_id_is_stable_and_scoped() {
     let s3 = derive_slot_id("lst_other", 1000, 2000).unwrap();
     assert_ne!(s1, s3);
 }
+
+#[test]
+fn the_wire_values_of_locations_and_audiences_are_pinned() {
+    for (location, wire) in [
+        (ServiceLocation::AtGiver, "at-provider"),
+        (ServiceLocation::AtReceiver, "at-customer"),
+        (ServiceLocation::Remote, "remote"),
+    ] {
+        assert_eq!(serde_json::to_value(location).unwrap(), wire);
+    }
+    for (open_to, wire) in [
+        (OpenTo::Anyone, "anyone"),
+        (OpenTo::Members, "members"),
+        (OpenTo::Referral, "referral"),
+        (OpenTo::ExistingCustomers, "existing-customers"),
+    ] {
+        assert_eq!(serde_json::to_value(open_to).unwrap(), wire);
+    }
+}

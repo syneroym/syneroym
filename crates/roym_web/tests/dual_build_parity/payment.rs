@@ -67,7 +67,7 @@ async fn scenario_158_payment_request_carries_no_payee_parity() {
 
     let (agr_rec, _terms) = setup_active_agreement(&h, &conv).await;
 
-    // Provider requests payment
+    // Quote author requests payment
     let (pr_w, pr_n) = both_rpc(
         &h,
         "payment.request",
@@ -107,7 +107,7 @@ async fn scenario_159_payment_track_states_parity() {
     let amount_minor = terms["amount_minor"].as_i64().unwrap();
     let curr = terms["currency"].as_str().unwrap();
 
-    // Consumer's half alone -> track claimed
+    // Counterparty's half alone -> track claimed
     let (c_ack_id, c_ack_env) = peer_signed_payment_ack(
         &conv,
         &agr_rec,
@@ -138,7 +138,7 @@ async fn scenario_159_payment_track_states_parity() {
     assert_eq!(pw["result"]["track"], "claimed");
     assert_eq!(pn["result"]["track"], "claimed");
 
-    // Provider also acknowledges -> track acknowledged
+    // Quote author also acknowledges -> track acknowledged
     let (ack_w, ack_n) = both_rpc(
         &h,
         "payment.acknowledge",
@@ -229,7 +229,7 @@ async fn scenario_161_payment_correction_round_trip_parity() {
 
     let (agr_rec, _terms) = setup_active_agreement(&h, &conv).await;
 
-    // Provider first acknowledgement. `observed_at_secs` is given
+    // Quote author first acknowledgement. `observed_at_secs` is given
     // explicitly so both builds sign an identical payload and each can use
     // its own (identical) record id as the next call's `supersedes`.
     let (a1w, a1n) = both_rpc(
@@ -247,7 +247,7 @@ async fn scenario_161_payment_correction_round_trip_parity() {
         .unwrap_or_else(|| panic!("missing record_id in a1w: {a1w}"))
         .to_string();
 
-    // Provider correction superseding rec1
+    // Quote author correction superseding rec1
     let (a2w, a2n) = both_rpc(
         &h,
         "payment.acknowledge",
@@ -362,7 +362,7 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
         recent,
     );
 
-    // Deliver payment ack BEFORE consumer agreement receipt
+    // Deliver payment ack BEFORE counterparty agreement receipt
     let card_pay = inbound_card(
         &format!("m-defer-pay-{c_ack_id}"),
         &conv,

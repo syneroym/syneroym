@@ -219,7 +219,7 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
     node_y.restart(None, None).await;
 
     // Y runs transaction.sync on both conversations concurrently -- both
-    // consumer accept halves complete their pair and trigger the booking
+    // counterparty accept halves complete their pair and trigger the booking
     // decision on the same provider-held slot at the same time.
     let (sync_x_res, sync_w_res) = tokio::join!(
         node_y.rpc_ok("transaction.sync", json!({ "conversation": quotes.y_conv_for_x })),
@@ -229,7 +229,7 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
     assert_eq!(sync_w_res["filed"], 1);
 
     // Exactly one scheduled and one conflict; the loser's pair stays
-    // half (the provider does not countersign a conflicting booking).
+    // half (the quote author does not countersign a conflicting booking).
     let x_booking =
         node_y.rpc_ok("booking.get", json!({ "agreement": quotes.x_quote_record_id })).await;
     let w_booking =

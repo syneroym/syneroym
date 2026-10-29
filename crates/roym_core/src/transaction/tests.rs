@@ -365,7 +365,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     let quote_author_key = Identity::generate().unwrap();
     let quote_author_did = substrate::derive_did_key(&quote_author_key.public_key());
 
-    // A receipt saying role is Consumer, but signed by provider_key!
+    // A receipt saying role is Counterparty, but signed by quote_author_key!
     let payload = AgreementReceiptPayload {
         quote_record_id: "rec_quote123".to_string(),
         counterparty_did: counterparty_did.clone(),
@@ -406,7 +406,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
         Some("envelope subject does not match quote_record_id")
     );
 
-    // Valid consumer half
+    // Valid counterparty half
     let env_valid = sign_envelope(
         &counterparty_key,
         RECORD_AGREEMENT_RECEIPT,
@@ -419,7 +419,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     let verdict_ok = verify_agreement_receipt(&env_valid, 1000);
     assert!(verdict_ok.verified);
 
-    // A receipt saying role is Provider, but signed by consumer_key!
+    // A receipt saying role is QuoteAuthor, but signed by counterparty_key!
     let payload_quote_author = AgreementReceiptPayload { role: DealRole::QuoteAuthor, ..payload };
     let counterparty_signs_author_half = sign_envelope(
         &counterparty_key,
@@ -437,7 +437,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
         Some("provider receipt issuer does not match provider_did")
     );
 
-    // Valid provider half signed by provider_key
+    // Valid quote author half signed by quote_author_key
     let env_quote_author_valid = sign_envelope(
         &quote_author_key,
         RECORD_AGREEMENT_RECEIPT,
@@ -485,12 +485,12 @@ fn halves_agree_table_test() {
     diff_quote.quote_record_id = "rec_diff".to_string();
     assert!(!halves_agree(&base_counterparty, &diff_quote));
 
-    // Differ in consumer_did -> false
+    // Differ in counterparty_did -> false
     let mut diff_cdid = base_quote_author.clone();
     diff_cdid.counterparty_did = "did:key:zOther".to_string();
     assert!(!halves_agree(&base_counterparty, &diff_cdid));
 
-    // Differ in provider_did -> false
+    // Differ in quote_author_did -> false
     let mut diff_pdid = base_quote_author.clone();
     diff_pdid.quote_author_did = "did:key:zOther".to_string();
     assert!(!halves_agree(&base_counterparty, &diff_pdid));
@@ -651,7 +651,7 @@ fn verify_quote_refuses_same_counterparty_and_quote_author_did() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
 
-    // consumer_did is the provider issuer itself
+    // counterparty_did is the quote author issuer itself
     let quote = sample_quote(&issuer, &issuer);
     let env = sign_envelope(
         &key,

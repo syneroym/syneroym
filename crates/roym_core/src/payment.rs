@@ -1,4 +1,4 @@
-//! Payment records: payment requests from providers, and payment
+//! Payment records: payment requests from quote authors, and payment
 //! acknowledgements from either party.
 
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,7 @@ pub enum PaymentError {
     NoteTooLong,
 }
 
-/// The provider asking to be paid. No payee: the payee is the one the
+/// The quote author asking to be paid. No payee: the payee is the one the
 /// signed agreement binds, and nothing else may name one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequestPayload {
@@ -89,8 +89,8 @@ impl PaymentRequestPayload {
     }
 }
 
-/// One party's statement about a payment. The provider's half is the
-/// payee confirming receipt; the consumer's half is the payer saying
+/// One party's statement about a payment. The quote author's half is the
+/// payee confirming receipt; the counterparty's half is the payer saying
 /// they paid. Neither proves money moved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentAcknowledgementPayload {

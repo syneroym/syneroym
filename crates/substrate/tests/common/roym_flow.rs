@@ -129,8 +129,8 @@ pub async fn open_request_conv(
     (conv_id, req["record_id"].as_str().unwrap().to_string())
 }
 
-/// The provider's own conversation id for the consumer at `peer_address`,
-/// once the consumer's first message has arrived.
+/// The quote author's own conversation id for the counterparty at
+/// `peer_address`, once the counterparty's first message has arrived.
 pub async fn quote_author_conv_for(y: &Node, peer_address: &str) -> String {
     let found = wait_until(Duration::from_secs(20), || async {
         let list = y.rpc_ok("conversation.list", json!({})).await;
@@ -153,7 +153,7 @@ pub async fn quote_author_conv_for(y: &Node, peer_address: &str) -> String {
         .to_string()
 }
 
-/// Files the request that arrived in `provider_conv` and returns its record
+/// Files the request that arrived in `quote_author_conv` and returns its record
 /// id -- what `quote.set` names.
 pub async fn request_record_on_quote_author(
     quote_author: &Node,
@@ -193,7 +193,7 @@ pub fn quote_terms(payee: &str, amount_minor: u64) -> Value {
     })
 }
 
-/// The provider quotes `request_record_id` against `slot_id`, delivered.
+/// The quote author quotes `request_record_id` against `slot_id`, delivered.
 /// Returns the quote's record id.
 pub async fn send_quote(
     quote_author: &Node,
@@ -219,7 +219,7 @@ pub async fn send_quote(
     quote["record_id"].as_str().unwrap().to_string()
 }
 
-/// The consumer syncs the quote in and accepts it; the accept is delivered
+/// The counterparty syncs the quote in and accepts it; the accept is delivered
 /// and the pair is one half.
 pub async fn accept_quote(counterparty: &Node, conversation: &str, quote_record_id: &str) {
     counterparty.rpc_ok("transaction.sync", json!({ "conversation": conversation })).await;
@@ -239,7 +239,7 @@ pub async fn assert_no_directory(nodes: &[&Node]) {
     }
 }
 
-/// The provider's countersigned receipt reaches the winner, whose booking
+/// The quote author's countersigned receipt reaches the winner, whose booking
 /// then reads `scheduled`.
 pub async fn wait_and_verify_winner_scheduled(
     node_y: &Node,

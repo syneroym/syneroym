@@ -27,7 +27,7 @@ fn a_repeated_event_is_no_change() {
 #[test]
 fn a_self_serving_half_never_acknowledges() {
     let b = sample_booking();
-    // Consumer claiming payment
+    // Counterparty claiming payment
     let b1 = apply(
         &b,
         &BookingEvent::Half { track: Track::Payment, role: DealRole::Counterparty },
@@ -37,7 +37,7 @@ fn a_self_serving_half_never_acknowledges() {
     .unwrap();
     assert_eq!(b1.payment, TrackState::Claimed);
 
-    // Another claim by consumer stays claimed
+    // Another claim by counterparty stays claimed
     let b2 = apply(
         &b1,
         &BookingEvent::Half { track: Track::Payment, role: DealRole::Counterparty },
@@ -46,7 +46,7 @@ fn a_self_serving_half_never_acknowledges() {
     .unwrap();
     assert!(b2.is_none());
 
-    // Provider claiming fulfilment
+    // Quote author claiming fulfilment
     let b3 = apply(
         &b,
         &BookingEvent::Half { track: Track::Fulfilment, role: DealRole::QuoteAuthor },
@@ -209,7 +209,8 @@ fn validate_refuses_invalid_snapshots() {
 fn next_step_branches() {
     let mut b = sample_booking();
 
-    // Before-work: provider sees RequestPayment, consumer sees PayOutsideRoym
+    // Before-work: quote author sees RequestPayment, counterparty sees
+    // PayOutsideRoym
     assert_eq!(
         next_step(&b, PaymentTiming::BeforeWork, DealRole::QuoteAuthor),
         NextStep::RequestPayment
@@ -219,7 +220,8 @@ fn next_step_branches() {
         NextStep::PayOutsideRoym
     );
 
-    // After-work: provider sees MarkWorkComplete, consumer sees WaitForProvider
+    // After-work: quote author sees MarkWorkComplete, counterparty sees
+    // WaitForQuoteAuthor
     assert_eq!(
         next_step(&b, PaymentTiming::AfterWork, DealRole::QuoteAuthor),
         NextStep::MarkWorkComplete
@@ -229,14 +231,14 @@ fn next_step_branches() {
         NextStep::WaitForQuoteAuthor
     );
 
-    // Consumer claimed payment
+    // Counterparty claimed payment
     b.payment = TrackState::Claimed;
     assert_eq!(
         next_step(&b, PaymentTiming::BeforeWork, DealRole::QuoteAuthor),
         NextStep::ConfirmPaymentReceived
     );
 
-    // Provider claimed fulfilment
+    // Quote author claimed fulfilment
     b.fulfilment = TrackState::Claimed;
     assert_eq!(
         next_step(&b, PaymentTiming::BeforeWork, DealRole::Counterparty),
@@ -314,5 +316,26 @@ fn the_ui_wording_matches_this_crate() {
             content.contains(value),
             "wording.ts is missing the {name} sentence verbatim: {value:?}"
         );
+    }
+}
+
+#[test]
+fn the_wire_values_of_roles_and_next_steps_are_pinned() {
+    for (role, wire) in [(DealRole::QuoteAuthor, "provider"), (DealRole::Counterparty, "consumer")]
+    {
+        assert_eq!(serde_json::to_value(role).unwrap(), wire);
+        assert_eq!(role.as_str(), wire);
+        assert_eq!(serde_json::from_value::<DealRole>(serde_json::json!(wire)).unwrap(), role);
+    }
+    for (step, wire) in [
+        (NextStep::WaitForQuoteAuthor, "wait-for-provider"),
+        (NextStep::RequestPayment, "request-payment"),
+        (NextStep::PayOutsideRoym, "pay-outside-roym"),
+        (NextStep::MarkWorkComplete, "mark-work-complete"),
+        (NextStep::ConfirmPaymentReceived, "confirm-payment-received"),
+        (NextStep::ConfirmWorkComplete, "confirm-work-complete"),
+        (NextStep::Nothing, "nothing"),
+    ] {
+        assert_eq!(serde_json::to_value(step).unwrap(), wire);
     }
 }

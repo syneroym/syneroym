@@ -320,10 +320,7 @@ async fn claim_fulfilment_fence<H: AppHost>(
     now: u64,
 ) -> Result<(), Response> {
     let FulfilmentFenceClaim { agreement, conversation, role, owner, quote_author_did } = claim;
-    let role_str = match role {
-        DealRole::Counterparty => "consumer",
-        DealRole::QuoteAuthor => "provider",
-    };
+    let role_str = role.as_str();
     let fence_key = format!("fulfil:{agreement}:{role_str}");
     let fence_row = LedgerRow {
         kind: LedgerKind::Fence,

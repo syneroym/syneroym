@@ -136,10 +136,7 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
     let AckFenceClaim { agreement, conversation, role, supersedes, owner, quote_author_did } =
         claim;
     let ver_tag = supersedes.unwrap_or("first");
-    let role_str = match role {
-        DealRole::Counterparty => "consumer",
-        DealRole::QuoteAuthor => "provider",
-    };
+    let role_str = role.as_str();
     let ack_fence_key = format!("ack:{agreement}:{role_str}:{ver_tag}");
     let ack_fence_row = LedgerRow {
         kind: LedgerKind::Fence,

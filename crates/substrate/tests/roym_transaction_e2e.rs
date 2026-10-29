@@ -226,7 +226,7 @@ async fn an_offer_is_agreed_across_two_installations() {
     assert!(y_agr["consumer"].is_object());
     assert!(y_agr["provider"].is_object());
 
-    // Wait until X receives the provider's countersigned card
+    // Wait until X receives the quote author's countersigned card
     let y_thread2 = node_y.rpc_ok("transaction.thread", json!({ "conversation": y_conv_id })).await;
     let y_cards2 = y_thread2["cards"].as_array().unwrap();
     let y_prov_card = y_cards2

@@ -126,7 +126,8 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
 }
 
 /// Fetches and verifies the quote a caller wants to accept, and works out
-/// which side of it (consumer or provider) this installation's owner is.
+/// which side of it (counterparty or quote author) this installation's owner
+/// is.
 async fn load_verified_quote_and_role<H: AppHost>(
     host: &H,
     quote_record_id: &str,
@@ -398,9 +399,9 @@ async fn prepare_author_booking<H: AppHost>(
     Ok(Value::Null)
 }
 
-/// Attempts to countersign an agreement on the provider's node when the
-/// consumer has accepted. Refused, and left to the person, when the slot the
-/// quote names is already full.
+/// Attempts to countersign an agreement on the quote author's node when the
+/// counterparty has accepted. Refused, and left to the person, when the slot
+/// the quote names is already full.
 pub(crate) async fn maybe_countersign<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,

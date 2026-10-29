@@ -1,5 +1,5 @@
-//! The three signed records of an offer: what the consumer asked for,
-//! the exact terms the provider offered, and each party's attestation
+//! The three signed records of an offer: what the counterparty asked for,
+//! the exact terms the quote author offered, and each party's attestation
 //! that they accepted those terms.
 //!
 //! Every number here is an integer, for the reason `listing` states:
@@ -28,7 +28,7 @@ pub const REQUEST_VERSION: u32 = 1;
 pub const QUOTE_VERSION: u32 = 1;
 pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 
-/// The notice a consumer is shown before a request is signed, and which
+/// The notice a counterparty is shown before a request is signed, and which
 /// the request then carries under their own signature. One constant, so
 /// the Hub, `roymctl` and the record cannot drift apart, and so the
 /// notice is never an empty string nobody noticed.
@@ -79,7 +79,7 @@ pub enum PaymentTiming {
     AfterWork,
 }
 
-/// Which of the two parties a receipt half is from.
+/// One of the two parties of a deal: the quote author or the counterparty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DealRole {
@@ -87,6 +87,18 @@ pub enum DealRole {
     QuoteAuthor,
     #[serde(rename = "consumer")]
     Counterparty,
+}
+
+impl DealRole {
+    /// The role's name on the wire, the same text serde writes. Ids that
+    /// are built from a role use this, so they cannot drift from the wire.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QuoteAuthor => "provider",
+            Self::Counterparty => "consumer",
+        }
+    }
 }
 
 /// A window in unix seconds. `latest_secs` is inclusive and must not be
@@ -120,7 +132,7 @@ pub struct AgreedTerms {
     pub scope: String,
     /// ISO-4217, and a code `money::currency_minor_exponent` knows.
     pub currency: String,
-    /// The total the consumer owes, inclusive, in minor units.
+    /// The total the counterparty owes, inclusive, in minor units.
     pub amount_minor: i64,
     /// Informational breakdowns of `amount_minor`, never additions to it.
     pub tax_minor: i64,
@@ -163,7 +175,7 @@ pub struct RequestPayload {
     pub area: Option<Area>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<TimeWindow>,
-    /// What the consumer was told about how this data is used, recorded
+    /// What the counterparty was told about how this data is used, recorded
     /// under their own signature so the notice is part of the record.
     pub data_use_notice: String,
 }

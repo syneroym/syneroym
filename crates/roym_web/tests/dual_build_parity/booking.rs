@@ -229,6 +229,8 @@ async fn scenario_152_counterparty_half_slot_quote_schedules_and_countersigns_pa
     assert_eq!(bn["result"]["seq"], 1);
     assert_eq!(bw["result"]["pair"]["state"], "complete");
     assert_eq!(bn["result"]["pair"]["state"], "complete");
+    assert_eq!(bw["result"]["next"], "mark-work-complete");
+    assert_eq!(bn["result"]["next"], "mark-work-complete");
 }
 
 #[tokio::test]
@@ -424,7 +426,7 @@ async fn scenario_155_slot_removed_before_acceptance_conflict_parity() {
     // the slot must be deleted with its own verb.
     both_rpc(&h, "availability.remove", json!({ "slot_id": slot_id })).await;
 
-    // Consumer acceptance arrives after slot is removed
+    // Counterparty acceptance arrives after slot is removed
     let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
@@ -492,12 +494,12 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
-    // Provider starts work
+    // Quote author starts work
     let (sw, sn) = both_rpc(&h, "booking.start", json!({ "agreement": quote_rec_id })).await;
     assert_eq!(sw["result"]["state"], "in-progress");
     assert_eq!(sn["result"]["state"], "in-progress");
 
-    // Provider cancels booking when tracks are still none
+    // Quote author cancels booking when tracks are still none
     let (cw, cn) = both_rpc(
         &h,
         "booking.cancel",
@@ -509,7 +511,7 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
     assert_eq!(cw["result"]["cancel_reason"], "Weather delay");
     assert_eq!(cn["result"]["cancel_reason"], "Weather delay");
 
-    // Seat is freed; a second consumer now schedules on that same slot
+    // Seat is freed; a second counterparty now schedules on that same slot
     let peer3 = peer_identity_2();
     let peer3_did_str = syneroym_identity::substrate::derive_did_key(&peer3.public_key());
     let conv3 = open_conv(&h, &peer3_did_str).await;
@@ -635,16 +637,16 @@ async fn assert_progress_thread_cards(h: &Harness, conv: &str, verified_ids: &[&
 
 #[tokio::test]
 async fn scenario_157_progress_card_wrong_key_or_lower_seq_refused_parity() {
-    // A booking-progress card only means something to the consumer's node
-    // (the provider writes its own booking state directly); the harness
-    // plays the consumer here, and the peer's fixed key plays the provider.
+    // A booking-progress card only means something to the counterparty's node
+    // (the quote author writes its own booking state directly); the harness
+    // plays the counterparty here, and the peer's fixed key plays the quote author.
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
     let q_rec_id = setup_accepted_counterparty_quote(&h, &conv).await;
 
-    // A legitimate seq-1 snapshot, signed by the provider's own key.
+    // A legitimate seq-1 snapshot, signed by the quote author's own key.
     let (prog1_id, prog1_env) = peer_signed_progress(
         &conv,
         &q_rec_id,

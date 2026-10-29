@@ -244,7 +244,7 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    // Part A: Provider accepts its own quote
+    // Part A: Quote author accepts its own quote
     let (req_rec_id, req_env) = peer_signed_request(&conv, 1, 1_000);
     let card_msg = inbound_card(
         "m-peer-req-129",
@@ -302,7 +302,7 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     assert!(gw["result"]["consumer"].is_null());
     assert!(gn["result"]["consumer"].is_null());
 
-    // Part B: Consumer accepts peer-issued quote
+    // Part B: Counterparty accepts peer-issued quote
     let (my_req_w, _) = both_rpc(
         &h,
         "request.set",
@@ -394,7 +394,7 @@ async fn scenario_130_full_agreement_pair_countersigns_parity() {
         let env = Envelope::from_json(qg["result"]["envelope"].as_str().unwrap()).unwrap();
         let terms = env.payload["terms"].clone();
 
-        // Peer signs consumer receipt half
+        // Peer signs counterparty receipt half
         let (_, peer_receipt_env) =
             peer_counterparty_receipt(&conv, &q_rec_id, &peer_did(), &owner_did(), terms, 1_100);
         let receipt_card = inbound_card(

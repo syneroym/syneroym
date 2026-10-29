@@ -443,7 +443,7 @@ struct QuoteContext<'a> {
     quote_author_did: &'a str,
 }
 
-/// Verifies one half (consumer or provider) of an imported agreement
+/// Verifies one half (counterparty or quote author) of an imported agreement
 /// receipt against the quote it attests, and refreshes its issuer/timestamp.
 fn verify_receipt_half(
     half: &mut ReceiptHalf,
@@ -470,8 +470,8 @@ fn verify_receipt_half(
     };
     if receipt_payload.role != expected_role {
         return Err(Response::invalid_params(format!(
-            "agreement '{id}' {label} receipt has role {:?}",
-            receipt_payload.role
+            "agreement '{id}' {label} receipt has role {}",
+            receipt_payload.role.as_str()
         )));
     }
     if receipt_payload.quote_record_id != quote.row_quote_record_id {
@@ -519,7 +519,8 @@ fn verify_receipt_half(
 }
 
 /// Verifies each bundled agreement row: its own shape, the quote it
-/// answers, and whichever of the consumer/provider receipt halves it holds.
+/// answers, and whichever of the counterparty/quote author receipt halves it
+/// holds.
 async fn verify_imported_agreements<H: AppHost>(
     host: &H,
     agr_rows: Vec<Value>,

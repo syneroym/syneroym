@@ -431,7 +431,7 @@ async fn assert_tampered_core_records(h: &Harness, bundle_val: &Value, now: u64)
     assert_eq!(qw["error"]["code"], -32602);
     assert!(qw["error"]["message"].as_str().unwrap().contains("envelope does not verify"));
 
-    // 2. Tampered agreement with re-signed manifest: inner consumer half fails.
+    // 2. Tampered agreement with re-signed manifest: inner counterparty half fails.
     let mut b_agr: Bundle = serde_json::from_value(bundle_val.clone()).unwrap();
     let agr_rows = b_agr.sections.get_mut("agreements").unwrap();
     let mut agr_payload = agr_rows[0].get("payload").unwrap().clone();
