@@ -33,6 +33,7 @@ The communication style above also applies to everything written into the reposi
 - **Define a project term the first time it appears in a doc**, or link [docs/TERMINOLOGY.md](docs/TERMINOLOGY.md).
 - **Never make a statement less precise to make it shorter or friendlier.** Simplify the sentences, not the facts. Test: could a new team member act correctly after reading it once?
 - **Do not rewrite an ADR to change its language.** ADRs are permanent records.
+- **Every slice implementation plan has a section "How this is shown to an end user"**, right after the goal. It has 3 to 6 bullets in very simple words, for a reader who is not technical: what the person does and what they see, step by step. If an end user can see nothing new from the slice, say so in one plain sentence. Then give 2 to 3 bullets on how a developer can see it work (the command and what it shows). Do not invent a user story the slice does not have. If a later slice finishes the visible story, name that slice.
 
 *Checked by:* review only. No tool can check this well.
 

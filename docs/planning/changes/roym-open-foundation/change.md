@@ -89,16 +89,16 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 
 ### Batched outbound call
 
-Today a guest calls one target at a time through `syneroym:invocation`. The new call, roughly:
+Today a guest calls one target at a time through `syneroym:proxy`. The new call, roughly:
 
 ```wit
-record call-target { target: call-target-ref, method: string, params: list<u8> }
-record call-outcome { target-index: u32, result: result<list<u8>, call-error> }
+record call-request { target: call-target, method: string, params: string }
+record call-outcome { target-index: u32, result: result<string, proxy-error> }
 
 /// Runs the calls at the same time, up to the host's concurrency cap.
 /// Each call has `per-call-timeout-ms`. Returns when all have answered or
 /// timed out, or when the host's total limit ends.
-call-all: func(calls: list<call-target>, per-call-timeout-ms: u32) -> list<call-outcome>;
+call-all: func(calls: list<call-request>, per-call-timeout-ms: u32) -> list<call-outcome>;
 ```
 
 The exact names are set in the slice plan. The rules:
@@ -109,13 +109,13 @@ The exact names are set in the slice plan. The rules:
 
 **The epoch deadline is the main risk of this change.** The deadline is set once, at the start of the guest call (`engine.rs:570`). The epoch advances on a wall-clock timer, also while the guest waits in a host call. The deadline is checked only when guest code runs, so the guest traps at its first check after `call-all` returns.
 
-- **Primary approach (to be proved in the M08A spike).** Wasmtime lets the host register an epoch-deadline callback on the store. The callback runs when guest code reaches a passed deadline, and it can extend the deadline. The host records in the store's data how long the guest waited inside `call-all`. The callback extends the deadline by that much, and by no more. `unverified`: that the callback is available with the async engine as configured today, and that the store data is reachable from both the `call-all` host function and the callback in the current host-binding style.
-- **Fallback, if the spike fails: a two-step search with no long host call.** The guest calls `start-search(sources, query)`, which returns a job id at once. The host runs the fan-out natively, outside any guest call, under the same limits. When it ends, the host stores the results and raises a `search.done` event on the event feed. A second guest call reads the results by job id and merges them with the federated query library. Each guest call stays short, so the epoch deadline never applies to the wait. The library's merge code is the same with either approach.
-- **What the fallback changes, beyond OF-4:**
+- **Primary approach (proved in the M08A spike).** Proved by [crates/sandbox_wasm/tests/epoch_wait_credit.rs](../../../crates/sandbox_wasm/tests/epoch_wait_credit.rs) (D-OF-1). Wasmtime lets the host register an epoch-deadline callback on the store (`Store::epoch_deadline_callback`). The callback computes own time (wall-clock elapsed time minus credited wait time). If own time is at or past the budget, it returns `UpdateDeadline::Interrupt`. Otherwise it extends the deadline by returning `UpdateDeadline::Continue(ticks)` with the remaining budget rounded up to whole ticks (at least 1). Wait credit is capped at one `call-all` total limit per guest call. Credit and start time reset at every `set_epoch_deadline` (`engine.rs:570` for stores, `stream.rs:188` for stream chunks). Credit is also added when `call-all` ends with an error or a timeout. No other host call gives credit. Own time uses the wall clock (`Instant`) because `Engine::current_epoch` is `pub(crate)`. No `Config` change and no `Yield`. Returning budget minus own time (rather than the wait time) is required because `Continue(n)` in Wasmtime sets the new deadline to `current_epoch + n`, not `old_deadline + n`.
+- **Fallback (rejected alternative): a two-step search with no long host call.** The guest calls `start-search(sources, query)`, which returns a job id at once. The host runs the fan-out natively, outside any guest call, under the same limits. When it ends, the host stores the results and raises a `search.done` event on the event feed. A second guest call reads the results by job id and merges them with the federated query library. Each guest call stays short, so the epoch deadline never applies to the wait. The library's merge code is the same with either approach.
+- **What the fallback would change, beyond OF-4:**
   - **The client API (OF-6).** A search is no longer one client call. The client calls `search.start`, waits for the `search.done` event, then calls `search.results`. `web` cannot chain the two steps inside one call, because it would hit the same deadline while it waits. So every client needs the event feed for search, and A5 (event feed) must land before A4.
   - **The exchange protocol (M08F).** A friend that receives a forwarded search answers from its own index only and never forwards it on (VX-34), so its side stays one wire call. The problem is the **forwarding** exchange. A participant's node calls it over the wire, and it must fan out to its friends before it can answer. With the fallback it cannot wait for them inside that one wire call. So `exchange.search` returns the exchange's own results at once, plus a job id for its friends' results. The participant's node then fetches the friends' results by job id (a second wire-reachable method, `exchange.search-results`), or the exchange sends them back with a call to the participant's `inbox` service. This adds a method, a job table and a second round trip to the participant-to-exchange protocol in M08F. M08F's plan chooses between the two ways.
   - The cost: two guest calls instead of one, a small job table in the host, and the client and M08F changes above.
-- The spike result goes into this change doc before A3 starts. Choosing the fallback is a deviation, not a blocker.
+- The spike proved the primary approach, so the fallback was not needed.
 
 Rejected: wait for async guests (WASI 0.3). Its date is not known, and M8 federation needs the loop now. Rejected: a native search service outside the Roym SynApp. It would make the WASM build of Roym incomplete, which the integrated spec forbids (D2).
 
@@ -138,21 +138,26 @@ Two users:
 
 One feed per node, for the people and services on it.
 
-- **Events are small.** Each one names a kind (`message`, `card`, `delivery-state`, `booking`, `match`, …), an id and a cursor. Content is fetched with the normal methods. So the feed leaks nothing new, and needs no new access rules beyond "the caller is the owner".
+- **Events are small.** Each one names a kind (`conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking`; `match` comes in M08F), an id and a cursor. Content is fetched with the normal methods. So the feed leaks nothing new, and needs no new access rules beyond "the caller is the owner".
 - **Catch-up.** Each event has a cursor. A client that was away asks for events after its last cursor. The node keeps a bounded window of events. Past the window, it answers "reload".
 
-**Where the feed lives is decided in the M08A spike, between two options:**
+Where the feed lives was decided in the M08A spike (D-OF-3): the host-level event bus.
 
-| | A host-level event bus (recommended) | The `web` service (a WASM guest) |
+| | A host-level event bus (decided) | The `web` service (a WASM guest) |
 | --- | --- | --- |
 | How a service writes an event | One host call to the bus. It returns at once. | A synchronous internal call to `web` on every write. |
-| Who holds the open connections | The host, which lives as long as the node. | `web`'s guest instance. Instances are reused and keep no state today (`crates/roym_web/src/app.rs:293`: "nothing reads connection state"), so the list would need a new storage path. |
+| Who holds the open connections | The host, which lives as long as the node. | `web`'s guest instance. Each ordinary call and each WebSocket event creates a new store and instance (`crates/roym_web/src/app.rs:295`: "nothing reads connection state"), so `web` cannot keep connection state in memory and would need a new storage path. |
 | How clients connect | WebSocket through the client gateway, checked against the login session. | WebSocket to `web`, as M06A allows. |
 | How services subscribe | The host calls the service's export, or the service reads by cursor. | `web` calls each subscribed service. |
 | Who sees which events | **Scoped by app instance.** The host tags each event with the app instance that wrote it, from the caller identity, never from the event body. A service subscribes only to its own app's events. A client session gets only the events of apps it may use. One app can never read another app's events. | Only Roym's own events exist, so there is no cross-app question. |
 | Cost | A new host interface, shared by every SynApp. | Roym-only, but slower, and one more state problem in a guest. |
 
-The recommendation is the host-level bus. It is simpler, it is faster, and it does not need state in a guest. The decision and its reason go into this change doc.
+The host-level bus is simpler, faster, and does not need state in a guest (D-OF-3).
+
+**Catch-up window and kinds (D-OF-4):**
+- In-memory window per app instance: newest 10,000 events or 24 hours, whichever is smaller.
+- Events carry a run id (node session) and sequence number. After a restart, or for cursors past the window, the node responds with "reload".
+- Four v1 event kinds: `conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking` (owned and written by Roym services).
 
 ### Remote clients
 
@@ -175,13 +180,11 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 
 ## Open questions
 
-- **Live progress for search.** The Hub shows each directory's answer as it arrives. With one call, the client waits for all of them. Options: one call that streams through the event feed, or keep the three-call form for clients that want progress. Recommendation: one call, plus `search.progress` events in the feed.
-- **Event window size.** How many events, or how long, the node keeps for catch-up. A first value to tune: 24 hours or 10,000 events.
 - **Typed-method check.** OF-15 needs a list of all methods. `roym_core::router` lists method prefixes, not methods. The plan decides whether each service exports its method table.
 
 ## Tasks
 
-- [ ] M08A spike: the epoch-deadline callback for `call-all`, and the event feed's home. Write both results here.
+- [x] M08A spike: the epoch-deadline callback for `call-all`, and the event feed's home. Write both results here.
 - [ ] Write the M08A slice plans.
 - [ ] Participant rename across Roym crates, the Hub, `roymctl`, docs.
 - [ ] `call-all` with its limits, the deadline extension (or the fallback), and the native shim.
@@ -191,7 +194,32 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - [ ] Typed input and output for every Roym method, the unknown-field rule, and the check test.
 - [ ] "Build a Roym client" in the developer guide.
 
+## Decisions
+
+- **D-OF-1. Epoch deadline extension for `call-all`.** Proved by [crates/sandbox_wasm/tests/epoch_wait_credit.rs](../../../crates/sandbox_wasm/tests/epoch_wait_credit.rs) (PR [#329](https://github.com/syneroym/syneroym/pull/329), 20/20 runs passed).
+  - The store's data holds the wait-credit state: when the guest call started, its budget, and the credited wait time so far.
+  - Credit and start time are reset at every `set_epoch_deadline`: `engine.rs:570` for each store, and `stream.rs:188` for each stream chunk.
+  - The budget is the budget of that call kind: dispatch, lifecycle hook or ABAC.
+  - `call-all` adds the time it waited to the credit, also when it ends with an error or a timeout, up to the cap (at most one `call-all` total limit of credit per guest call).
+  - **No other host call gives credit.** Giving credit only to `call-all` keeps one guest call's wall time bounded. A single `proxy.call` can still wait up to 30 s with no credit (backlog row).
+  - The store uses `epoch_deadline_callback` in place of `epoch_deadline_trap`. The callback computes own time (wall-clock elapsed time minus credited wait time). If own time is at or past the budget, it returns `UpdateDeadline::Interrupt`. This produces `Trap::Interrupt`, identical to `epoch_deadline_trap` today. Otherwise it returns `UpdateDeadline::Continue(ticks)` with the remaining budget rounded up to whole ticks (at least 1).
+  - Own time uses the wall clock (`Instant`), because `Engine::current_epoch` is `pub(crate)` in Wasmtime (`wasmtime-48.0.7/src/engine.rs:827`).
+  - No `Config` change (`async_support` is a no-op in Wasmtime 48) and no `Yield`.
+  - T3 confirmed that Wasmtime's deadline trap is `Trap::Interrupt` with root cause `"wasm trap: interrupt"` (no "epoch" or "deadline" substring).
+- **D-OF-2. Rejected fallback (two-step search).** A two-step search (`search.start` + `search.done` event + `search.results`) was rejected because the primary approach (D-OF-1) passed the spike. The fallback would require client-visible changes (OF-6), mandatory event feed usage for search, and a two-round-trip exchange protocol in M08F.
+- **D-OF-3. Event feed lives in a host-level event bus.** Simpler, faster, zero guest instances on write, and avoids forcing ephemeral connection state into database storage.
+  - The host tags each event with the writer's app instance from `app_context_of` (`engine.rs:535`), never from the event body.
+  - A service outside any app instance cannot write events in v1 (recommended).
+  - A5 decides how services subscribe (OF-10).
+- **D-OF-4. Event kinds and in-memory catch-up window.** In-memory ring buffer per app instance (newest 10,000 events or 24 hours). Lost on restart (answers "reload"). Four v1 event kinds: `conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking`.
+- **D-OF-5. Search has no live-progress form in v1.** Search is one client call returning a merged page. Bounded by `call-all` total limit. Option (c) (host-emitted progress events) recorded in deferred backlog as a future option.
+- **D-OF-6. `call-all` in `syneroym:proxy`.** Placed beside `proxy.call`, reusing target, options, and error types, with JSON text params.
+
 ## Deviations
+
+- **`call-all` interface:** task.md and change doc originally named `syneroym:invocation`. Corrected to `syneroym:proxy` beside `call` (Q1 / D-OF-6).
+- **`call-all` params type:** sketch originally used `params: list<u8>`. Corrected to `params: string` (JSON text) matching `proxy.call` (Q1 / D-OF-6).
+- **`web` instance reuse:** change doc table previously stated `web` instances are reused and keep no state. In fact each ordinary call and WebSocket event creates a new store and instance (`engine.rs:469`, `guest_stream.rs:294`, `app.rs:295`) (Q5 / D-OF-3).
 
 ## Close-out
 

@@ -16,12 +16,12 @@ The goal of the order: rename and type every method once, before the rest of Mil
 | --- | --- | --- | --- |
 | X1 | **Participant vocabulary** in `roym_core`: deal roles named by action (`quote_author`, `counterparty`, `giver`, `receiver`). `Role { Consumer, Provider }` is removed. | Every Roym service, the Hub, `roymctl`, all of M8 | A1 |
 | X2 | **Typed method inputs and outputs**, the unknown-field rule (refused on local-only methods, ignored on wire-reachable ones), and the method table each service exports for the check test. | OF-14, OF-15, OF-18; every later method | A2 |
-| X3 | **`call-all`** in `syneroym:invocation`, with its target and concurrency limits, the epoch-deadline extension (or the two-step fallback), and the native shim. | The federated query library (A4); the exchange's friend forwarding (M08F) | A3 |
+| X3 | **`call-all`** in `syneroym:proxy`, with its target and concurrency limits, the epoch-deadline extension (D-OF-1), and the native shim. | The federated query library (A4); the exchange's friend forwarding (M08F) | A3 |
 | X4 | **Event writer API**: one call each service makes to record an event. | The event feed (A5); extension services (M08C); match events (M08F) | A5 |
 
 ## 2. Facts checked in the code for this plan
 
-- The search loop lives in the client on purpose: M06C decision `D-C6-9`. The epoch deadline is set once per guest call (`Store::set_epoch_deadline`, `crates/sandbox_wasm/src/engine.rs:570`), 5 s by default. The epoch advances on a wall-clock timer, so the time burns while the guest waits in a host call. Backlog rows "A guest dispatch cannot loop over more than one network call" and "The Hub and `roymctl` each own their own copy of the client-side search loop" (§11) track this. A3 and A4 close both.
+- The search loop lives in the client on purpose: M06C decision `D-C6-9`. The epoch deadline is set once per guest call (`Store::set_epoch_deadline`, `crates/sandbox_wasm/src/engine.rs:570`), 5 s by default. The epoch advances on a wall-clock timer, so the time burns while the guest waits in a host call. Backlog rows "A guest dispatch cannot loop over more than one network call" and "The Hub and `roymctl` each own their own copy of the client-side search loop" (§11) track this. A3 and A4 close both. Proved in S0 (`crates/sandbox_wasm/tests/epoch_wait_credit.rs`): the host can extend the deadline via `Store::epoch_deadline_callback` by budget minus own time.
 - `Role { Consumer, Provider }` is at `crates/roym_core/src/transaction.rs:85`. "provider" appears in about 234 lines and "consumer" in about 200 lines across Roym `.rs` and `.ts` files.
 - About 124 places in Roym services read `req.params.get(...)`. 11 files parse a typed struct. The backlog row "Roym's sibling boundary is untyped JSON" (§10) is related. A2 narrows it. It does not add a WIT contract between services.
 - `conversation.changes` (changes after `after_seq`, for one conversation) exists. The Hub does not call it.
@@ -30,14 +30,18 @@ The goal of the order: rename and type every method once, before the rest of Mil
 
 ## 3. Slices
 
-### S0 — Spike and decisions (docs only, M)
+### S0 — Spike and decisions (docs and one test, M)
 
 This slice decides the design that A3, A4 and A5 build. It is not optional.
 
 - **Spike: the epoch-deadline callback.** Prove that the host can record the time a guest waits in `call-all` and extend the deadline by that much in Wasmtime's epoch-deadline callback, with the async engine and the host-binding style used today. Write a small test in `sandbox_wasm` that shows a guest waiting longer than its deadline inside one host call and not trapping, while a guest that loops in its own code still traps.
+  Result: proved by `crates/sandbox_wasm/tests/epoch_wait_credit.rs` (20/20 runs passed).
 - **If the spike fails, choose the fallback** described in the change doc (two-step search: `start-search` returns a job id, the host runs the fan-out, a `search.done` event, a second short guest call merges). Record it as a deviation. A3 and A4 then build the fallback. It changes more than A3: OF-6 becomes three steps (`search.start`, the `search.done` event, `search.results`), so A5 (event feed) must land before A4. It also adds a job id and a second round trip to the participant-to-exchange search in M08F. The change doc lists these.
+  Result: primary approach proved; fallback not needed.
 - **Decide the event feed's home:** a host-level event bus (recommended) or `web`. Compare them on the change doc's table: write cost per event, where connection state lives, and guest instance reuse.
+  Result: host-level event bus chosen (D-OF-3).
 - Decide the event kinds of v1, the catch-up window, and whether search keeps a progress form.
+  Result: four v1 kinds, 24h / 10,000 events in-memory window, no search progress in v1 (D-OF-4, D-OF-5).
 
 ### A1 — Participant rename (M, merged alone)
 
