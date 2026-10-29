@@ -122,9 +122,7 @@ pub struct ServiceDetail {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServiceLocation {
-    #[serde(rename = "at-provider")]
     AtGiver,
-    #[serde(rename = "at-customer")]
     AtReceiver,
     Remote,
 }
@@ -153,7 +151,7 @@ pub enum OpenTo {
     Anyone,
     Members,
     Referral,
-    ExistingCustomers,
+    PastCounterparties,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

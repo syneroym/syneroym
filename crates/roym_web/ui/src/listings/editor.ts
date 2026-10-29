@@ -9,9 +9,9 @@
 export type BookingMode = "slots" | "order" | "enquiry";
 export type PaymentModel = "fixed" | "per-hour" | "per-unit" | "quote-only";
 export type ProductCondition = "new" | "used" | "refurbished";
-export type ServiceLocationKind = "at-provider" | "at-customer" | "remote";
+export type ServiceLocationKind = "at-giver" | "at-receiver" | "remote";
 export type AddressDisclosure = "on-agreement" | "public";
-export type OpenTo = "anyone" | "members" | "referral" | "existing-customers";
+export type OpenTo = "anyone" | "members" | "referral" | "past-counterparties";
 export type ListingStatus = "draft" | "active" | "withdrawn";
 
 /// One editor block, plus the checkbox that says whether the provider filled it in.

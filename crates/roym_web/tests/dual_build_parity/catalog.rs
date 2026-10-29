@@ -274,7 +274,7 @@ async fn scenario_49_catalog_export_integrity_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["listings"].schema_version, 2);
+        assert_eq!(sections["listings"].schema_version, 3);
         assert!(sections.contains_key("availability"));
     }
 

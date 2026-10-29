@@ -31,8 +31,9 @@ use syneroym_roym_core::{
     signing::{self, CertificateError},
 };
 
-/// Bumped in this slice: the service gains its first state.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Version 2 gave the service its first state. Version 3 renames the
+/// service-location values inside signed listings.
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub const LISTINGS: &str = "listings";
 pub const LISTING_HISTORY: &str = "listing_history";

@@ -186,7 +186,7 @@ pub fn quote_terms(payee: &str, amount_minor: u64) -> Value {
         "payment_methods": ["cash"],
         "payee": payee,
         "payment_timing": "after-work",
-        "location": { "where": "at-customer", "address": "1 Garden Lane" },
+        "location": { "where": "at-receiver", "address": "1 Garden Lane" },
         "cancellation_terms": "24 hours notice required",
         "refund_terms": "Full refund if work not completed",
         "dispute_path": "Informal mediation",

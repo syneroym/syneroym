@@ -169,8 +169,8 @@ pub(in crate::app) async fn issuer_did<H: AppHost>(host: &H) -> Option<String> {
     signing::owner_did(host).await.ok()
 }
 
-/// A value's own serde wire spelling (e.g. `existing-customers`, not
-/// `Debug`'s `ExistingCustomers`) -- the shape every enum here declares
+/// A value's own serde wire spelling (e.g. `past-counterparties`, not
+/// `Debug`'s `PastCounterparties`) -- the shape every enum here declares
 /// with `#[serde(rename_all = "kebab-case")]`, and the shape a caller
 /// filters on. `{:?}` and `.to_lowercase()` agree only for single-word
 /// variants; a multi-word one indexes under a string nothing else in the

@@ -326,7 +326,7 @@ async function renderHome(container: HTMLElement, did: string) {
             latest_secs: 1800003600,
           },
           location: {
-            where: "at-customer",
+            where: "at-receiver",
             address: "123 High Street",
           },
           cancellation_terms: "24 hours notice required for full refund",
@@ -358,7 +358,7 @@ async function renderHome(container: HTMLElement, did: string) {
             latest_secs: 1800003600,
           },
           location: {
-            where: "at-customer",
+            where: "at-receiver",
             address: "123 High Street",
           },
           cancellation_terms: "24 hours notice required for full refund",

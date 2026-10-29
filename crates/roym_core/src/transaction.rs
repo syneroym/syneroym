@@ -256,7 +256,7 @@ pub enum TransactionError {
     #[error("latest_secs ({latest_secs}) is before earliest_secs ({earliest_secs})")]
     InvalidTimeWindow { earliest_secs: u64, latest_secs: u64 },
 
-    #[error("address is only applicable when location is at-customer")]
+    #[error("address is only applicable when location is at-receiver")]
     AddressNotApplicable,
 
     #[error("address is over {MAX_ADDRESS_LEN} characters")]

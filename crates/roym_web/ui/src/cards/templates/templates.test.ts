@@ -63,7 +63,7 @@ describe("Card templates", () => {
           latest_secs: 1700086400,
         },
         location: {
-          where: "at-customer" as const,
+          where: "at-receiver" as const,
           address: "123 Main Street, Town",
         },
         cancellation_terms: "Full refund up to 24 hours prior",
@@ -96,7 +96,7 @@ describe("Card templates", () => {
         refund_terms: xss,
         dispute_path: xss,
         location: {
-          where: "at-customer" as const,
+          where: "at-receiver" as const,
           address: xss,
         },
       };

@@ -8,6 +8,8 @@
 ///   and never as a guess.
 /// - Never says "verified".
 
+import type { ServiceLocationKind } from "../../listings/editor";
+import { serviceLocationCardLabel } from "../../listings/labels";
 import { formatMinor } from "../../money";
 import { renderLink } from "../link";
 import { type AgreedTermsData } from "./quote";
@@ -32,7 +34,7 @@ export interface AgreementReceiptData {
     latest_secs: number;
   };
   location?: {
-    where: "at-customer" | "at-provider" | "remote";
+    where: ServiceLocationKind;
     address?: string;
   };
   cancellation_terms?: string;
@@ -183,7 +185,7 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (t.location) {
     const locP = document.createElement("p");
     locP.className = "receipt-location";
-    locP.textContent = `Location: ${t.location.where}`;
+    locP.textContent = `Location: ${serviceLocationCardLabel(t.location.where)}`;
     card.appendChild(locP);
 
     if (t.location.address) {

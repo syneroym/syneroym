@@ -109,7 +109,7 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
         "product": { "unit": "hour", "pack_size": 1, "condition": "new", "sku": "HT-1" },
         "service": { "duration_secs": 3600, "includes": ["clippings removed"] },
         "location": {
-            "where": "at-customer",
+            "where": "at-receiver",
             "service_area": [
                 { "kind": "circle", "lat_e6": 52000000, "lon_e6": 13000000, "radius_m": 5000 }
             ],
@@ -122,6 +122,19 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
             "retention_secs": 31536000
         }
     })
+}
+
+/// The storage schema version each service reports in its status. Profile,
+/// catalog, conversation, transaction and directory carry real state; the
+/// others report 1.
+pub(crate) fn expected_schema_version(service: &str) -> u32 {
+    match service {
+        "directory" => 5,
+        "conversation" | "transaction" => 4,
+        "catalog" => 3,
+        "profile" => 2,
+        _ => 1,
+    }
 }
 
 pub(crate) fn is_err(v: &Value, code: i64) -> bool {
@@ -238,7 +251,7 @@ pub(crate) fn sample_quote_terms() -> Value {
         "payee": "Garden Services Ltd",
         "payment_timing": "after-work",
         "location": {
-            "where": "at-customer",
+            "where": "at-receiver",
             "address": "123 Flower St",
         },
         "cancellation_terms": "Cancel 24h prior for full refund",

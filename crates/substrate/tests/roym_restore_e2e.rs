@@ -226,7 +226,7 @@ async fn setup_scheduled_transaction(
                     "currency": "EUR", "amount_minor": 8000, "tax_minor": 0, "fees_minor": 0,
                     "payment_methods": ["cash"], "payee": "Y Cleaning",
                     "payment_timing": "after-work",
-                    "location": { "where": "at-customer", "address": "1 Kitchen Way" },
+                    "location": { "where": "at-receiver", "address": "1 Kitchen Way" },
                     "cancellation_terms": "24 hours notice required",
                     "refund_terms": "Full refund if work not completed",
                     "dispute_path": "Informal mediation",

@@ -848,7 +848,7 @@ test.describe('Roym Hub', () => {
             refund_terms: payload,
             dispute_path: 'javascript:window.maliciousDispute=true',
             location: {
-              where: 'at-customer',
+              where: 'at-receiver',
               address: payload,
             },
           },

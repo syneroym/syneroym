@@ -13,8 +13,10 @@ use crate::{area::Area, safety::PublicationLimits};
 /// `SearchHit::membership`, none of which an older bundle carries. A
 /// bundle exported before that change no longer deserializes, and
 /// `import`'s own version gate must say so rather than accept it and fail
-/// row by row.
-pub const DIRECTORY_SCHEMA_VERSION: u32 = 4;
+/// row by row. Version 5 renames the service-location and audience values
+/// inside signed listings, so a bundle with the old values is refused the
+/// same way.
+pub const DIRECTORY_SCHEMA_VERSION: u32 = 5;
 pub const MAX_SYNORG_NAME_LEN: usize = 128;
 pub const MAX_RULES_LEN: usize = 8192;
 pub const MAX_CONTACT_LEN: usize = 256;

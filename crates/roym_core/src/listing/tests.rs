@@ -329,8 +329,8 @@ fn derive_slot_id_is_stable_and_scoped() {
 #[test]
 fn the_wire_values_of_locations_and_audiences_are_pinned() {
     for (location, wire) in [
-        (ServiceLocation::AtGiver, "at-provider"),
-        (ServiceLocation::AtReceiver, "at-customer"),
+        (ServiceLocation::AtGiver, "at-giver"),
+        (ServiceLocation::AtReceiver, "at-receiver"),
         (ServiceLocation::Remote, "remote"),
     ] {
         assert_eq!(serde_json::to_value(location).unwrap(), wire);
@@ -339,7 +339,7 @@ fn the_wire_values_of_locations_and_audiences_are_pinned() {
         (OpenTo::Anyone, "anyone"),
         (OpenTo::Members, "members"),
         (OpenTo::Referral, "referral"),
-        (OpenTo::ExistingCustomers, "existing-customers"),
+        (OpenTo::PastCounterparties, "past-counterparties"),
     ] {
         assert_eq!(serde_json::to_value(open_to).unwrap(), wire);
     }

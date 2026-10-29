@@ -3,7 +3,15 @@ import {
   ListingInputError,
   slotFromLocalDatetimes,
   type ListingForm,
+  type OpenTo,
+  type ServiceLocationKind,
 } from "../listings/editor";
+import {
+  OPEN_TO_KINDS,
+  OPEN_TO_LABELS,
+  SERVICE_LOCATION_EDITOR_LABELS,
+  SERVICE_LOCATION_KINDS,
+} from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
 import { call, RpcError } from "../rpc";
 
@@ -45,12 +53,14 @@ function input(placeholder: string, value = ""): HTMLInputElement {
   return el;
 }
 
-function select(options: string[], value?: string): HTMLSelectElement {
+/// An option is a plain value, which is also its label, or a `[value, label]` pair.
+function select(options: Array<string | [string, string]>, value?: string): HTMLSelectElement {
   const el = document.createElement("select");
   for (const opt of options) {
+    const [optValue, optLabel] = typeof opt === "string" ? [opt, opt] : opt;
     const o = document.createElement("option");
-    o.value = opt;
-    o.textContent = opt;
+    o.value = optValue;
+    o.textContent = optLabel;
     el.appendChild(o);
   }
   if (value) el.value = value;
@@ -302,7 +312,10 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
 
   // --- location ---
   const location = block("location");
-  const locWhere = select(["remote", "at-provider", "at-customer"], "remote");
+  const locWhere = select(
+    SERVICE_LOCATION_KINDS.map((kind): [string, string] => [kind, SERVICE_LOCATION_EDITOR_LABELS[kind]]),
+    "remote",
+  );
   const locDisclosure = select(["on-agreement", "public"], "on-agreement");
   const locArea = input("service area label (optional)");
   location.body.append(
@@ -313,7 +326,10 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
 
   // --- relationship ---
   const relationship = block("relationship");
-  const relOpen = select(["anyone", "members", "referral", "existing-customers"], "anyone");
+  const relOpen = select(
+    OPEN_TO_KINDS.map((kind): [string, string] => [kind, OPEN_TO_LABELS[kind]]),
+    "anyone",
+  );
   const relMember = input("group DID (required for members)");
   relationship.body.append(labelled("Open to", relOpen), labelled("Group DID", relMember));
 
@@ -393,7 +409,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
       location: {
         enabled: location.enabled.checked,
         value: {
-          where: locWhere.value as "at-provider" | "at-customer" | "remote",
+          where: locWhere.value as ServiceLocationKind,
           address_disclosure: locDisclosure.value as "on-agreement" | "public",
           area_label: locArea.value,
         },
@@ -401,7 +417,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
       relationship: {
         enabled: relationship.enabled.checked,
         value: {
-          open_to: relOpen.value as "anyone" | "members" | "referral" | "existing-customers",
+          open_to: relOpen.value as OpenTo,
           member_of: relMember.value,
         },
       },

@@ -236,8 +236,8 @@ fn build_quote_params(
     }
 
     let where_str = where_.trim().to_lowercase();
-    if where_str != "at-provider" && where_str != "at-customer" && where_str != "remote" {
-        anyhow::bail!("--where must be 'at-provider', 'at-customer', or 'remote'");
+    if where_str != "at-giver" && where_str != "at-receiver" && where_str != "remote" {
+        anyhow::bail!("--where must be 'at-giver', 'at-receiver', or 'remote'");
     }
 
     if address.is_some() {
