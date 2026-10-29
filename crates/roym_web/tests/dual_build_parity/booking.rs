@@ -47,11 +47,11 @@ fn peer_signed_request_with_identity(
     (env.record_id().unwrap(), env.to_json().unwrap())
 }
 
-fn peer_signed_consumer_receipt_with_identity(
+fn peer_counterparty_receipt_with_identity(
     conv: &str,
     quote_record_id: &str,
-    consumer_did: &str,
-    provider_did: &str,
+    counterparty_did: &str,
+    quote_author_did: &str,
     terms: Value,
     issued_at: u64,
     id: &Identity,
@@ -59,8 +59,8 @@ fn peer_signed_consumer_receipt_with_identity(
     let _ = conv;
     let payload = json!({
         "quote_record_id": quote_record_id,
-        "consumer_did": consumer_did,
-        "provider_did": provider_did,
+        "consumer_did": counterparty_did,
+        "provider_did": quote_author_did,
         "role": "consumer",
         "terms": terms,
     });
@@ -73,7 +73,7 @@ fn peer_signed_consumer_receipt_with_identity(
         supersedes: None,
     };
     let (mut env, bytes) =
-        Envelope::unsigned(draft, consumer_did.to_string(), None, issued_at).unwrap();
+        Envelope::unsigned(draft, counterparty_did.to_string(), None, issued_at).unwrap();
     env.attach_signature(z32::encode(&id.sign(&bytes).to_bytes())).unwrap();
     (env.record_id().unwrap(), env.to_json().unwrap())
 }
@@ -180,7 +180,7 @@ async fn scenario_151_quote_set_with_slot_parity() {
 }
 
 #[tokio::test]
-async fn scenario_152_consumer_half_slot_quote_schedules_and_countersigns_parity() {
+async fn scenario_152_counterparty_half_slot_quote_schedules_and_countersigns_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -199,7 +199,7 @@ async fn scenario_152_consumer_half_slot_quote_schedules_and_countersigns_parity
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let q_payload = &quote_env.payload;
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),
@@ -232,7 +232,7 @@ async fn scenario_152_consumer_half_slot_quote_schedules_and_countersigns_parity
 }
 
 #[tokio::test]
-async fn scenario_153_two_consumer_halves_capacity_1_concurrent_sync_parity() {
+async fn scenario_153_two_counterparty_halves_capacity_1_concurrent_sync_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -278,14 +278,8 @@ async fn scenario_153_two_consumer_halves_capacity_1_concurrent_sync_parity() {
     let env2 = Envelope::from_json(gq2["result"]["envelope"].as_str().unwrap()).unwrap();
     let q2_terms = env2.payload["terms"].clone();
 
-    let (agr1_id, agr1_env) = peer_signed_consumer_receipt(
-        &conv1,
-        &q1_rec,
-        &peer_did(),
-        &owner_did(),
-        q1_terms,
-        1_001_000,
-    );
+    let (agr1_id, agr1_env) =
+        peer_counterparty_receipt(&conv1, &q1_rec, &peer_did(), &owner_did(), q1_terms, 1_001_000);
     deliver_peer_card(
         &h,
         &format!("m-agr1-{agr1_id}"),
@@ -297,7 +291,7 @@ async fn scenario_153_two_consumer_halves_capacity_1_concurrent_sync_parity() {
     )
     .await;
 
-    let (agr2_id, agr2_env) = peer_signed_consumer_receipt_with_identity(
+    let (agr2_id, agr2_env) = peer_counterparty_receipt_with_identity(
         &conv2,
         &q2_rec,
         &peer2_did_str,
@@ -342,7 +336,7 @@ async fn scenario_153_two_consumer_halves_capacity_1_concurrent_sync_parity() {
 }
 
 #[tokio::test]
-async fn scenario_154_duplicate_consumer_half_delivery_idempotent_parity() {
+async fn scenario_154_duplicate_counterparty_half_delivery_idempotent_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -361,7 +355,7 @@ async fn scenario_154_duplicate_consumer_half_delivery_idempotent_parity() {
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let q_payload = &quote_env.payload;
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),
@@ -431,7 +425,7 @@ async fn scenario_155_slot_removed_before_acceptance_conflict_parity() {
     both_rpc(&h, "availability.remove", json!({ "slot_id": slot_id })).await;
 
     // Consumer acceptance arrives after slot is removed
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),
@@ -478,7 +472,7 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let q_payload = &quote_env.payload;
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),
@@ -541,7 +535,7 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
     let env3 = Envelope::from_json(gq3["result"]["envelope"].as_str().unwrap()).unwrap();
     let q3_terms = env3.payload["terms"].clone();
 
-    let (agr3_id, agr3_env) = peer_signed_consumer_receipt_with_identity(
+    let (agr3_id, agr3_env) = peer_counterparty_receipt_with_identity(
         &conv3,
         &q3_rec,
         &peer3_did_str,
@@ -574,7 +568,7 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
     assert!(is_err(&cant_n, -32602) || is_err(&cant_n, -32603));
 }
 
-async fn setup_accepted_consumer_quote(h: &Harness, conv: &str) -> String {
+async fn setup_accepted_counterparty_quote(h: &Harness, conv: &str) -> String {
     let req = both_rpc(
         h,
         "request.set",
@@ -648,7 +642,7 @@ async fn scenario_157_progress_card_wrong_key_or_lower_seq_refused_parity() {
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
-    let q_rec_id = setup_accepted_consumer_quote(&h, &conv).await;
+    let q_rec_id = setup_accepted_counterparty_quote(&h, &conv).await;
 
     // A legitimate seq-1 snapshot, signed by the provider's own key.
     let (prog1_id, prog1_env) = peer_signed_progress(

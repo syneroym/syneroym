@@ -15,7 +15,7 @@ use syneroym_roym_core::{
     envelope::{Request, Response},
     payment::{self, PaymentAcknowledgementPayload, PaymentRequestPayload},
     record::{Envelope, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST},
-    transaction::{PairState, ReceiptHalf, Role, pair_state},
+    transaction::{DealRole, PairState, ReceiptHalf, pair_state},
     verdict::RecordVerdict,
 };
 
@@ -66,8 +66,8 @@ pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Resp
             agreement: p.agreement.clone(),
             conversation: agr.conversation.clone(),
             request: None,
-            consumer: Vec::new(),
-            provider: Vec::new(),
+            counterparty: Vec::new(),
+            quote_author: Vec::new(),
             updated_at_secs: now,
         },
         Err(e) => return Response::internal_error(e),
@@ -84,8 +84,8 @@ pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Resp
     let payload = PaymentRequestPayload {
         agreement: p.agreement.clone(),
         conversation: agr.conversation.clone(),
-        consumer_did: agr.consumer_did.clone(),
-        provider_did: agr.provider_did.clone(),
+        counterparty_did: agr.counterparty_did.clone(),
+        quote_author_did: agr.quote_author_did.clone(),
         currency: agr.terms.currency.clone(),
         amount_minor: agr.terms.amount_minor,
         note: p.note,
@@ -147,7 +147,7 @@ struct AckContext {
     principal: Principal,
     owner: String,
     agr: AgreementRow,
-    role: Role,
+    role: DealRole,
     payments: PaymentsRow,
 }
 
@@ -175,8 +175,8 @@ async fn load_ack_context<H: AppHost>(
             agreement: agreement_id.to_string(),
             conversation: agr.conversation.clone(),
             request: None,
-            consumer: Vec::new(),
-            provider: Vec::new(),
+            counterparty: Vec::new(),
+            quote_author: Vec::new(),
             updated_at_secs: now,
         },
         Err(e) => return Err(Response::internal_error(e)),
@@ -184,18 +184,18 @@ async fn load_ack_context<H: AppHost>(
     Ok(AckContext { principal, owner, agr, role, payments })
 }
 
-async fn maybe_transition_provider_ack<H: AppHost>(
+async fn maybe_transition_author_ack<H: AppHost>(
     host: &H,
     agreement: &str,
     owner: &str,
-    provider_did: &str,
+    quote_author_did: &str,
     now: u64,
 ) {
-    if owner == provider_did {
+    if owner == quote_author_did {
         let _ = booking_ops::transition(
             host,
             agreement,
-            BookingEvent::Half { track: Track::Payment, role: Role::Provider },
+            BookingEvent::Half { track: Track::Payment, role: DealRole::QuoteAuthor },
             now,
         )
         .await;
@@ -216,8 +216,8 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
         };
 
     let versions = match role {
-        Role::Consumer => &mut payments.consumer,
-        Role::Provider => &mut payments.provider,
+        DealRole::Counterparty => &mut payments.counterparty,
+        DealRole::QuoteAuthor => &mut payments.quote_author,
     };
 
     if let Some(early_resp) =
@@ -226,7 +226,7 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
             Err(resp) => return resp,
         }
     {
-        maybe_transition_provider_ack(host, &p.agreement, &owner, &agr.provider_did, now).await;
+        maybe_transition_author_ack(host, &p.agreement, &owner, &agr.quote_author_did, now).await;
         return early_resp;
     }
 
@@ -261,7 +261,7 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
         role,
         supersedes: p.supersedes.as_deref(),
         owner: &owner,
-        provider_did: &agr.provider_did,
+        quote_author_did: &agr.quote_author_did,
     };
     if let Err(resp) = claim_payment_ack_fence(host, ack_fence_claim, &half, now).await {
         return resp;
@@ -282,7 +282,7 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
         Err(resp) => return resp,
     };
 
-    maybe_transition_provider_ack(host, &p.agreement, &owner, &agr.provider_did, now).await;
+    maybe_transition_author_ack(host, &p.agreement, &owner, &agr.quote_author_did, now).await;
 
     Response::ok(json!({
         "record_id": record_id,
@@ -295,10 +295,10 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
 async fn check_booking_not_terminal<H: AppHost>(
     host: &H,
     agreement: &str,
-    role: Role,
+    role: DealRole,
 ) -> Option<Response> {
     match role {
-        Role::Provider => {
+        DealRole::QuoteAuthor => {
             if let Ok(Some(b)) = load_booking(host, agreement).await {
                 if b.state == BookingState::Conflict {
                     return Some(Response::invalid_params("booking-conflict"));
@@ -308,7 +308,7 @@ async fn check_booking_not_terminal<H: AppHost>(
                 }
             }
         }
-        Role::Consumer => {
+        DealRole::Counterparty => {
             if let Ok(Some(pr)) = get_row::<ProgressRow, _>(host, PROGRESS, agreement).await {
                 if pr.snapshot.state == BookingState::Conflict {
                     return Some(Response::invalid_params("booking-conflict"));
@@ -327,11 +327,11 @@ fn validate_payment_request_preconditions(
     booking: &BookingRow,
     owner: &str,
 ) -> Result<(), Response> {
-    let pair = pair_state(agr.consumer.as_ref(), agr.provider.as_ref());
+    let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
         return Err(Response::invalid_params("agreement-incomplete"));
     }
-    if owner != agr.provider_did {
+    if owner != agr.quote_author_did {
         return Err(Response::invalid_params("provider-only"));
     }
     match booking.state {
@@ -357,16 +357,16 @@ async fn check_acknowledgement_preconditions<H: AppHost>(
     agreement: &str,
     agr: &AgreementRow,
     owner: &str,
-) -> Result<Role, Response> {
-    let pair = pair_state(agr.consumer.as_ref(), agr.provider.as_ref());
+) -> Result<DealRole, Response> {
+    let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
         return Err(Response::invalid_params("agreement-incomplete"));
     }
 
-    let role = if owner == agr.provider_did {
-        Role::Provider
-    } else if owner == agr.consumer_did {
-        Role::Consumer
+    let role = if owner == agr.quote_author_did {
+        DealRole::QuoteAuthor
+    } else if owner == agr.counterparty_did {
+        DealRole::Counterparty
     } else {
         return Err(Response::invalid_params("not-a-party"));
     };
@@ -380,7 +380,7 @@ async fn check_acknowledgement_preconditions<H: AppHost>(
 fn check_acknowledgement_version(
     supersedes: Option<&str>,
     versions: &[ReceiptHalf],
-    role: Role,
+    role: DealRole,
 ) -> Result<Option<Response>, Response> {
     match supersedes {
         None if !versions.is_empty() => {
@@ -449,9 +449,9 @@ pub(crate) async fn payment_get<H: AppHost>(host: &H, req: &Request) -> Response
         b.snapshot.payment
     } else if let Ok(Some(pr)) = get_row::<ProgressRow, _>(host, PROGRESS, &p.agreement).await {
         pr.snapshot.payment
-    } else if !payments.provider.is_empty() {
+    } else if !payments.quote_author.is_empty() {
         TrackState::Acknowledged
-    } else if !payments.consumer.is_empty() {
+    } else if !payments.counterparty.is_empty() {
         TrackState::Claimed
     } else {
         TrackState::None
@@ -459,8 +459,8 @@ pub(crate) async fn payment_get<H: AppHost>(host: &H, req: &Request) -> Response
 
     Response::ok(json!({
         "request": payments.request,
-        "consumer": payments.consumer,
-        "provider": payments.provider,
+        "consumer": payments.counterparty,
+        "provider": payments.quote_author,
         "track": track,
     }))
 }
@@ -497,7 +497,7 @@ pub(crate) async fn payment_verify<H: AppHost>(_host: &H, req: &Request) -> Resp
 fn build_payment_ack_payload(
     p: &AcknowledgeParams,
     agr: &AgreementRow,
-    role: Role,
+    role: DealRole,
     now: u64,
 ) -> Result<PaymentAcknowledgementPayload, Response> {
     if !payment::matches_terms(
@@ -511,8 +511,8 @@ fn build_payment_ack_payload(
     let payload = PaymentAcknowledgementPayload {
         agreement: p.agreement.clone(),
         conversation: agr.conversation.clone(),
-        consumer_did: agr.consumer_did.clone(),
-        provider_did: agr.provider_did.clone(),
+        counterparty_did: agr.counterparty_did.clone(),
+        quote_author_did: agr.quote_author_did.clone(),
         role,
         currency: agr.terms.currency.clone(),
         amount_minor: agr.terms.amount_minor,
@@ -598,14 +598,14 @@ async fn record_and_send_ack<H: AppHost>(
     agreement: &str,
     conversation: &str,
     payments: &mut PaymentsRow,
-    role: Role,
+    role: DealRole,
     half: ReceiptHalf,
     now: u64,
 ) -> Result<(String, String), Response> {
     let env_json = half.envelope.clone();
     let versions = match role {
-        Role::Consumer => &mut payments.consumer,
-        Role::Provider => &mut payments.provider,
+        DealRole::Counterparty => &mut payments.counterparty,
+        DealRole::QuoteAuthor => &mut payments.quote_author,
     };
     versions.push(half);
     payments.updated_at_secs = now;

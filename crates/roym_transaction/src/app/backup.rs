@@ -15,7 +15,7 @@ use syneroym_roym_core::{
     booking, clock,
     envelope::{Request, Response},
     fulfilment, paging, payment, signing,
-    transaction::{self, QuotePayload, ReceiptHalf, Role},
+    transaction::{self, DealRole, QuotePayload, ReceiptHalf},
 };
 
 use super::{
@@ -326,7 +326,7 @@ fn verify_imported_requests(
 /// record id.
 #[derive(Debug, Clone)]
 pub(crate) struct ImportedQuote {
-    pub(crate) provider_did: String,
+    pub(crate) quote_author_did: String,
     pub(crate) payload: QuotePayload,
 }
 
@@ -381,11 +381,11 @@ fn verify_imported_quotes(
         row.mine = v.issuer.as_deref() == Some(owner);
         row.issued_at_secs = v.issued_at_secs.unwrap_or(row.issued_at_secs);
         row.request_record_id = Some(p.request_record_id.clone());
-        row.consumer_did = Some(p.consumer_did.clone());
+        row.counterparty_did = Some(p.counterparty_did.clone());
 
         quotes_by_record_id.insert(
             verified_record_id.to_string(),
-            ImportedQuote { provider_did: row.issuer.clone(), payload: p.clone() },
+            ImportedQuote { quote_author_did: row.issuer.clone(), payload: p.clone() },
         );
         verified_quotes.push((p.quote_id.clone(), row));
     }
@@ -403,7 +403,7 @@ async fn resolve_quote_for_agreement<H: AppHost>(
     now: u64,
 ) -> Result<(String, QuotePayload), Response> {
     if let Some(entry) = quotes_by_record_id.get(quote_record_id) {
-        return Ok((entry.provider_did.clone(), entry.payload.clone()));
+        return Ok((entry.quote_author_did.clone(), entry.payload.clone()));
     }
     let bytes = match get_bytes(host, QUOTE_HISTORY, quote_record_id).await {
         Ok(Some(b)) => b,
@@ -440,7 +440,7 @@ async fn resolve_quote_for_agreement<H: AppHost>(
 struct QuoteContext<'a> {
     row_quote_record_id: &'a str,
     payload: &'a QuotePayload,
-    provider_did: &'a str,
+    quote_author_did: &'a str,
 }
 
 /// Verifies one half (consumer or provider) of an imported agreement
@@ -449,7 +449,7 @@ fn verify_receipt_half(
     half: &mut ReceiptHalf,
     id: &str,
     label: &str,
-    expected_role: Role,
+    expected_role: DealRole,
     quote: &QuoteContext<'_>,
     now: u64,
 ) -> Result<(), Response> {
@@ -480,8 +480,8 @@ fn verify_receipt_half(
             receipt_payload.quote_record_id
         )));
     }
-    if receipt_payload.consumer_did != quote.payload.consumer_did
-        || receipt_payload.provider_did != quote.provider_did
+    if receipt_payload.counterparty_did != quote.payload.counterparty_did
+        || receipt_payload.quote_author_did != quote.quote_author_did
     {
         return Err(Response::invalid_params(format!(
             "agreement '{id}' {label} receipt names wrong parties"
@@ -499,8 +499,8 @@ fn verify_receipt_half(
         )));
     }
     let expected_issuer = match expected_role {
-        Role::Consumer => &receipt_payload.consumer_did,
-        Role::Provider => &receipt_payload.provider_did,
+        DealRole::Counterparty => &receipt_payload.counterparty_did,
+        DealRole::QuoteAuthor => &receipt_payload.quote_author_did,
     };
     if v.issuer.as_deref() != Some(expected_issuer.as_str()) {
         return Err(Response::invalid_params(format!(
@@ -544,30 +544,30 @@ async fn verify_imported_agreements<H: AppHost>(
                 row.quote_record_id
             )));
         }
-        if row.consumer.is_none() && row.provider.is_none() {
+        if row.counterparty.is_none() && row.quote_author.is_none() {
             return Err(Response::invalid_params(format!(
                 "agreement '{id}' has neither consumer nor provider receipt"
             )));
         }
 
-        let (quote_provider_did, quote_payload) =
+        let (quote_author_did, quote_payload) =
             resolve_quote_for_agreement(host, id, &row.quote_record_id, quotes_by_record_id, now)
                 .await?;
         let quote_ctx = QuoteContext {
             row_quote_record_id: &row.quote_record_id,
             payload: &quote_payload,
-            provider_did: &quote_provider_did,
+            quote_author_did: &quote_author_did,
         };
 
-        if let Some(ref mut c) = row.consumer {
-            verify_receipt_half(c, id, "consumer", Role::Consumer, &quote_ctx, now)?;
+        if let Some(ref mut c) = row.counterparty {
+            verify_receipt_half(c, id, "consumer", DealRole::Counterparty, &quote_ctx, now)?;
         }
-        if let Some(ref mut p) = row.provider {
-            verify_receipt_half(p, id, "provider", Role::Provider, &quote_ctx, now)?;
+        if let Some(ref mut p) = row.quote_author {
+            verify_receipt_half(p, id, "provider", DealRole::QuoteAuthor, &quote_ctx, now)?;
         }
 
-        row.consumer_did = quote_payload.consumer_did.clone();
-        row.provider_did = quote_provider_did;
+        row.counterparty_did = quote_payload.counterparty_did.clone();
+        row.quote_author_did = quote_author_did;
         row.terms = quote_payload.terms;
 
         verified_agreements.push((row.quote_record_id.clone(), row));
@@ -606,11 +606,11 @@ async fn write_imported_agreements<H: AppHost>(
     imported_history: &mut HashMap<String, (String, String)>,
 ) -> Result<(), Response> {
     for (id, row) in verified_agreements {
-        if let Some(ref c) = row.consumer {
+        if let Some(ref c) = row.counterparty {
             imported_history
                 .insert(c.record_id.clone(), ("agreement-receipt".to_string(), c.envelope.clone()));
         }
-        if let Some(ref p) = row.provider {
+        if let Some(ref p) = row.quote_author {
             imported_history
                 .insert(p.record_id.clone(), ("agreement-receipt".to_string(), p.envelope.clone()));
         }

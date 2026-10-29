@@ -28,37 +28,52 @@ fn a_repeated_event_is_no_change() {
 fn a_self_serving_half_never_acknowledges() {
     let b = sample_booking();
     // Consumer claiming payment
-    let b1 = apply(&b, &BookingEvent::Half { track: Track::Payment, role: Role::Consumer }, 1000)
-        .unwrap()
-        .unwrap();
+    let b1 = apply(
+        &b,
+        &BookingEvent::Half { track: Track::Payment, role: DealRole::Counterparty },
+        1000,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(b1.payment, TrackState::Claimed);
 
     // Another claim by consumer stays claimed
-    let b2 = apply(&b1, &BookingEvent::Half { track: Track::Payment, role: Role::Consumer }, 1001)
-        .unwrap();
+    let b2 = apply(
+        &b1,
+        &BookingEvent::Half { track: Track::Payment, role: DealRole::Counterparty },
+        1001,
+    )
+    .unwrap();
     assert!(b2.is_none());
 
     // Provider claiming fulfilment
-    let b3 =
-        apply(&b, &BookingEvent::Half { track: Track::Fulfilment, role: Role::Provider }, 1000)
-            .unwrap()
-            .unwrap();
+    let b3 = apply(
+        &b,
+        &BookingEvent::Half { track: Track::Fulfilment, role: DealRole::QuoteAuthor },
+        1000,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(b3.fulfilment, TrackState::Claimed);
 }
 
 #[test]
 fn completed_needs_both_acknowledged() {
     let b = sample_booking();
-    let b1 = apply(&b, &BookingEvent::Half { track: Track::Payment, role: Role::Provider }, 1000)
-        .unwrap()
-        .unwrap();
+    let b1 =
+        apply(&b, &BookingEvent::Half { track: Track::Payment, role: DealRole::QuoteAuthor }, 1000)
+            .unwrap()
+            .unwrap();
     assert_eq!(b1.payment, TrackState::Acknowledged);
     assert_eq!(b1.state, BookingState::InProgress);
 
-    let b2 =
-        apply(&b1, &BookingEvent::Half { track: Track::Fulfilment, role: Role::Consumer }, 1001)
-            .unwrap()
-            .unwrap();
+    let b2 = apply(
+        &b1,
+        &BookingEvent::Half { track: Track::Fulfilment, role: DealRole::Counterparty },
+        1001,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(b2.fulfilment, TrackState::Acknowledged);
     assert_eq!(b2.state, BookingState::Completed);
 }
@@ -66,9 +81,13 @@ fn completed_needs_both_acknowledged() {
 #[test]
 fn cancel_is_refused_once_a_track_moved() {
     let b = sample_booking();
-    let b1 = apply(&b, &BookingEvent::Half { track: Track::Payment, role: Role::Consumer }, 1000)
-        .unwrap()
-        .unwrap();
+    let b1 = apply(
+        &b,
+        &BookingEvent::Half { track: Track::Payment, role: DealRole::Counterparty },
+        1000,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(b1.payment, TrackState::Claimed);
 
     let res = apply(&b1, &BookingEvent::Cancel { reason: "change of mind".to_string() }, 1001);
@@ -80,7 +99,7 @@ fn cancel_is_refused_once_a_track_moved() {
             .unwrap()
             .unwrap();
     assert_eq!(b_cancel.state, BookingState::Cancelled);
-    assert_eq!(b_cancel.cancelled_by, Some(Role::Provider));
+    assert_eq!(b_cancel.cancelled_by, Some(DealRole::QuoteAuthor));
     assert_eq!(b_cancel.cancel_reason.as_deref(), Some("schedule conflict"));
 
     // Long reason fails
@@ -93,10 +112,13 @@ fn cancel_is_refused_once_a_track_moved() {
 fn the_time_edge_runs_before_the_event() {
     let b = sample_booking();
     // After track_window_ends_at_secs (100_000)
-    let res =
-        apply(&b, &BookingEvent::Half { track: Track::Payment, role: Role::Provider }, 100_001)
-            .unwrap()
-            .unwrap();
+    let res = apply(
+        &b,
+        &BookingEvent::Half { track: Track::Payment, role: DealRole::QuoteAuthor },
+        100_001,
+    )
+    .unwrap()
+    .unwrap();
     // Tracks expired before event, moving both None to Unconfirmed ->
     // EndedUnconfirmed
     assert_eq!(res.state, BookingState::EndedUnconfirmed);
@@ -112,17 +134,19 @@ fn a_terminal_track_ignores_a_late_half() {
     b.track_window_ends_at_secs = 200_000;
 
     // A half arriving for an unconfirmed track does not change it
-    let res = apply(&b, &BookingEvent::Half { track: Track::Payment, role: Role::Provider }, 1000)
-        .unwrap();
+    let res =
+        apply(&b, &BookingEvent::Half { track: Track::Payment, role: DealRole::QuoteAuthor }, 1000)
+            .unwrap();
     assert!(res.is_none());
 }
 
 #[test]
 fn one_acknowledged_one_unconfirmed_ends_unconfirmed() {
     let b = sample_booking();
-    let b1 = apply(&b, &BookingEvent::Half { track: Track::Payment, role: Role::Provider }, 1000)
-        .unwrap()
-        .unwrap();
+    let b1 =
+        apply(&b, &BookingEvent::Half { track: Track::Payment, role: DealRole::QuoteAuthor }, 1000)
+            .unwrap()
+            .unwrap();
     assert_eq!(b1.payment, TrackState::Acknowledged);
 
     // Tick past window
@@ -141,13 +165,13 @@ fn validate_refuses_invalid_snapshots() {
     assert!(matches!(b.validate(), Err(BookingPayloadError::InvalidAgreement(_))));
     b.agreement = "rec_ok".to_string();
 
-    b.consumer_did = "invalid_did".to_string();
-    assert!(matches!(b.validate(), Err(BookingPayloadError::InvalidConsumerDid(_))));
-    b.consumer_did = "did:key:zConsumer".to_string();
+    b.counterparty_did = "invalid_did".to_string();
+    assert!(matches!(b.validate(), Err(BookingPayloadError::InvalidCounterpartyDid(_))));
+    b.counterparty_did = "did:key:zConsumer".to_string();
 
-    b.provider_did = b.consumer_did.clone();
+    b.quote_author_did = b.counterparty_did.clone();
     assert!(matches!(b.validate(), Err(BookingPayloadError::SamePartyDid)));
-    b.provider_did = "did:key:zProvider".to_string();
+    b.quote_author_did = "did:key:zProvider".to_string();
 
     b.conversation = String::new();
     assert!(matches!(b.validate(), Err(BookingPayloadError::ConversationEmpty)));
@@ -167,7 +191,7 @@ fn validate_refuses_invalid_snapshots() {
     b.conflict = None;
     b.state = BookingState::Cancelled;
     assert!(matches!(b.validate(), Err(BookingPayloadError::CancelledStateMismatch)));
-    b.cancelled_by = Some(Role::Provider);
+    b.cancelled_by = Some(DealRole::QuoteAuthor);
     b.cancel_reason = Some("reason".to_string());
     assert!(b.validate().is_ok());
 
@@ -186,30 +210,42 @@ fn next_step_branches() {
     let mut b = sample_booking();
 
     // Before-work: provider sees RequestPayment, consumer sees PayOutsideRoym
-    assert_eq!(next_step(&b, PaymentTiming::BeforeWork, Role::Provider), NextStep::RequestPayment);
-    assert_eq!(next_step(&b, PaymentTiming::BeforeWork, Role::Consumer), NextStep::PayOutsideRoym);
+    assert_eq!(
+        next_step(&b, PaymentTiming::BeforeWork, DealRole::QuoteAuthor),
+        NextStep::RequestPayment
+    );
+    assert_eq!(
+        next_step(&b, PaymentTiming::BeforeWork, DealRole::Counterparty),
+        NextStep::PayOutsideRoym
+    );
 
     // After-work: provider sees MarkWorkComplete, consumer sees WaitForProvider
-    assert_eq!(next_step(&b, PaymentTiming::AfterWork, Role::Provider), NextStep::MarkWorkComplete);
-    assert_eq!(next_step(&b, PaymentTiming::AfterWork, Role::Consumer), NextStep::WaitForProvider);
+    assert_eq!(
+        next_step(&b, PaymentTiming::AfterWork, DealRole::QuoteAuthor),
+        NextStep::MarkWorkComplete
+    );
+    assert_eq!(
+        next_step(&b, PaymentTiming::AfterWork, DealRole::Counterparty),
+        NextStep::WaitForQuoteAuthor
+    );
 
     // Consumer claimed payment
     b.payment = TrackState::Claimed;
     assert_eq!(
-        next_step(&b, PaymentTiming::BeforeWork, Role::Provider),
+        next_step(&b, PaymentTiming::BeforeWork, DealRole::QuoteAuthor),
         NextStep::ConfirmPaymentReceived
     );
 
     // Provider claimed fulfilment
     b.fulfilment = TrackState::Claimed;
     assert_eq!(
-        next_step(&b, PaymentTiming::BeforeWork, Role::Consumer),
+        next_step(&b, PaymentTiming::BeforeWork, DealRole::Counterparty),
         NextStep::ConfirmWorkComplete
     );
 
     // Terminal booking
     b.state = BookingState::Completed;
-    assert_eq!(next_step(&b, PaymentTiming::BeforeWork, Role::Provider), NextStep::Nothing);
+    assert_eq!(next_step(&b, PaymentTiming::BeforeWork, DealRole::QuoteAuthor), NextStep::Nothing);
 }
 
 #[test]
@@ -234,7 +270,7 @@ fn verify_booking_progress_envelope() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
     let mut b = sample_booking();
-    b.provider_did = issuer.clone();
+    b.quote_author_did = issuer.clone();
     let draft = RecordDraft {
         version: BOOKING_PROGRESS_VERSION,
         record_type: RECORD_BOOKING_PROGRESS.to_string(),

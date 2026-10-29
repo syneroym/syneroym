@@ -14,10 +14,10 @@ use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteVal
 use syneroym_roym_core::{
     booking::{BookingEvent, Track},
     envelope::Response,
-    transaction::{ReceiptHalf, Role},
+    transaction::{DealRole, ReceiptHalf},
 };
 
-use super::{PAYMENTS, PaymentsRow, check_acknowledgement_version, maybe_transition_provider_ack};
+use super::{PAYMENTS, PaymentsRow, check_acknowledgement_version, maybe_transition_author_ack};
 use crate::app::{
     LEDGER, booking_ops, get_row,
     ledger::{LedgerKind, LedgerRow},
@@ -88,8 +88,8 @@ async fn ensure_payment_request_recorded<H: AppHost>(
             agreement: agreement.to_string(),
             conversation: conversation.to_string(),
             request: None,
-            consumer: Vec::new(),
-            provider: Vec::new(),
+            counterparty: Vec::new(),
+            quote_author: Vec::new(),
             updated_at_secs: now,
         },
         Err(e) => return Response::internal_error(e),
@@ -121,10 +121,10 @@ async fn ensure_payment_request_recorded<H: AppHost>(
 pub(super) struct AckFenceClaim<'a> {
     pub(super) agreement: &'a str,
     pub(super) conversation: &'a str,
-    pub(super) role: Role,
+    pub(super) role: DealRole,
     pub(super) supersedes: Option<&'a str>,
     pub(super) owner: &'a str,
-    pub(super) provider_did: &'a str,
+    pub(super) quote_author_did: &'a str,
 }
 
 pub(super) async fn claim_payment_ack_fence<H: AppHost>(
@@ -133,11 +133,12 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
     half: &ReceiptHalf,
     now: u64,
 ) -> Result<(), Response> {
-    let AckFenceClaim { agreement, conversation, role, supersedes, owner, provider_did } = claim;
+    let AckFenceClaim { agreement, conversation, role, supersedes, owner, quote_author_did } =
+        claim;
     let ver_tag = supersedes.unwrap_or("first");
     let role_str = match role {
-        Role::Consumer => "consumer",
-        Role::Provider => "provider",
+        DealRole::Counterparty => "consumer",
+        DealRole::QuoteAuthor => "provider",
     };
     let ack_fence_key = format!("ack:{agreement}:{role_str}:{ver_tag}");
     let ack_fence_row = LedgerRow {
@@ -159,20 +160,23 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
             if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &ack_fence_key).await
                 && let Some(h) = &fence.half
             {
-                let ctx = AckRecordCtx { agreement, conversation, role, owner, provider_did };
+                let ctx = AckRecordCtx { agreement, conversation, role, owner, quote_author_did };
                 return Err(ensure_payment_ack_recorded(host, ctx, h, now).await);
             }
             if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await {
                 let v = match role {
-                    Role::Consumer => &py.consumer,
-                    Role::Provider => &py.provider,
+                    DealRole::Counterparty => &py.counterparty,
+                    DealRole::QuoteAuthor => &py.quote_author,
                 };
                 if let Ok(Some(early)) = check_acknowledgement_version(supersedes, v, role) {
-                    if owner == provider_did {
+                    if owner == quote_author_did {
                         let _ = booking_ops::transition(
                             host,
                             agreement,
-                            BookingEvent::Half { track: Track::Payment, role: Role::Provider },
+                            BookingEvent::Half {
+                                track: Track::Payment,
+                                role: DealRole::QuoteAuthor,
+                            },
                             now,
                         )
                         .await;
@@ -189,9 +193,9 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
 struct AckRecordCtx<'a> {
     agreement: &'a str,
     conversation: &'a str,
-    role: Role,
+    role: DealRole,
     owner: &'a str,
-    provider_did: &'a str,
+    quote_author_did: &'a str,
 }
 
 async fn ensure_payment_ack_recorded<H: AppHost>(
@@ -200,22 +204,22 @@ async fn ensure_payment_ack_recorded<H: AppHost>(
     half: &ReceiptHalf,
     now: u64,
 ) -> Response {
-    let AckRecordCtx { agreement, conversation, role, owner, provider_did } = ctx;
+    let AckRecordCtx { agreement, conversation, role, owner, quote_author_did } = ctx;
     let mut py: PaymentsRow = match get_row(host, PAYMENTS, agreement).await {
         Ok(Some(p)) => p,
         Ok(None) => PaymentsRow {
             agreement: agreement.to_string(),
             conversation: conversation.to_string(),
             request: None,
-            consumer: Vec::new(),
-            provider: Vec::new(),
+            counterparty: Vec::new(),
+            quote_author: Vec::new(),
             updated_at_secs: now,
         },
         Err(e) => return Response::internal_error(e),
     };
     let versions = match role {
-        Role::Consumer => &mut py.consumer,
-        Role::Provider => &mut py.provider,
+        DealRole::Counterparty => &mut py.counterparty,
+        DealRole::QuoteAuthor => &mut py.quote_author,
     };
     let already_present = versions.iter().any(|v| v.record_id == half.record_id);
     if !already_present {
@@ -226,7 +230,7 @@ async fn ensure_payment_ack_recorded<H: AppHost>(
         }
     }
 
-    maybe_transition_provider_ack(host, agreement, owner, provider_did, now).await;
+    maybe_transition_author_ack(host, agreement, owner, quote_author_did, now).await;
 
     if already_present {
         return Response::ok(json!({
@@ -237,8 +241,8 @@ async fn ensure_payment_ack_recorded<H: AppHost>(
         }));
     }
     let version_count = match role {
-        Role::Consumer => py.consumer.len(),
-        Role::Provider => py.provider.len(),
+        DealRole::Counterparty => py.counterparty.len(),
+        DealRole::QuoteAuthor => py.quote_author.len(),
     } as u64;
     let (message_id, send_state, _) = send_card_and_file(
         host,

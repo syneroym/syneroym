@@ -238,7 +238,7 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
 }
 
 #[tokio::test]
-async fn scenario_129_agreement_accept_provider_and_consumer_halves_parity() {
+async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -396,7 +396,7 @@ async fn scenario_130_full_agreement_pair_countersigns_parity() {
 
         // Peer signs consumer receipt half
         let (_, peer_receipt_env) =
-            peer_signed_consumer_receipt(&conv, &q_rec_id, &peer_did(), &owner_did(), terms, 1_100);
+            peer_counterparty_receipt(&conv, &q_rec_id, &peer_did(), &owner_did(), terms, 1_100);
         let receipt_card = inbound_card(
             &format!("m-receipt-130-{wasm}"),
             &conv,
@@ -435,7 +435,7 @@ async fn scenario_130_full_agreement_pair_countersigns_parity() {
 }
 
 #[tokio::test]
-async fn scenario_131_consumer_half_terms_differ_filed_refused_parity() {
+async fn scenario_131_counterparty_half_terms_differ_filed_refused_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -471,7 +471,7 @@ async fn scenario_131_consumer_half_terms_differ_filed_refused_parity() {
         terms["amount_minor"] = json!(99999);
 
         let (_, peer_receipt_env) =
-            peer_signed_consumer_receipt(&conv, &q_rec_id, &peer_did(), &owner_did(), terms, 1_100);
+            peer_counterparty_receipt(&conv, &q_rec_id, &peer_did(), &owner_did(), terms, 1_100);
         let receipt_card = inbound_card(
             &format!("m-receipt-131-{wasm}"),
             &conv,
@@ -499,7 +499,7 @@ async fn scenario_131_consumer_half_terms_differ_filed_refused_parity() {
 }
 
 #[tokio::test]
-async fn scenario_132_consumer_half_from_stranger_filed_refused_parity() {
+async fn scenario_132_counterparty_half_from_stranger_filed_refused_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -534,14 +534,8 @@ async fn scenario_132_consumer_half_from_stranger_filed_refused_parity() {
         let terms = env.payload["terms"].clone();
 
         let stranger_did = "did:key:zStranger132";
-        let (_, receipt_env) = peer_signed_consumer_receipt(
-            &conv,
-            &q_rec_id,
-            stranger_did,
-            &owner_did(),
-            terms,
-            1_100,
-        );
+        let (_, receipt_env) =
+            peer_counterparty_receipt(&conv, &q_rec_id, stranger_did, &owner_did(), terms, 1_100);
         let receipt_card = inbound_card(
             &format!("m-receipt-132-{wasm}"),
             &conv,
@@ -664,7 +658,7 @@ async fn scenario_133b_completed_pair_survives_quote_expiry_parity() {
         let terms = env.payload["terms"].clone();
 
         let (_, peer_receipt_env) =
-            peer_signed_consumer_receipt(&conv, &q_rec_id, &peer_did(), &owner_did(), terms, 1_050);
+            peer_counterparty_receipt(&conv, &q_rec_id, &peer_did(), &owner_did(), terms, 1_050);
         let receipt_card = inbound_card(
             &format!("m-receipt-133b-{wasm}"),
             &conv,

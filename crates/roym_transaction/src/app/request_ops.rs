@@ -230,7 +230,7 @@ fn build_request_pointer(
         version_count: next_count,
         issued_at_secs: now,
         request_record_id: None,
-        consumer_did: None,
+        counterparty_did: None,
         declined_at_secs: None,
         decline_note: None,
     }
@@ -366,7 +366,7 @@ pub(crate) async fn store_received_request<H: AppHost>(
         version_count,
         issued_at_secs: incoming_issued,
         request_record_id: None,
-        consumer_did: None,
+        counterparty_did: None,
         declined_at_secs: None,
         decline_note: None,
     };

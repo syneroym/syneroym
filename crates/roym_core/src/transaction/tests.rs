@@ -17,7 +17,7 @@ fn sample_terms() -> AgreedTerms {
         payment_timing: PaymentTiming::AfterWork,
         schedule: Some(TimeWindow { earliest_secs: 10000, latest_secs: 20000 }),
         location: QuoteLocation {
-            where_: ServiceLocation::AtCustomer,
+            where_: ServiceLocation::AtReceiver,
             area: None,
             address: Some("123 Flower St".to_string()),
         },
@@ -45,7 +45,7 @@ fn sample_request(issuer: &str) -> RequestPayload {
     }
 }
 
-fn sample_quote(issuer: &str, consumer_did: &str) -> QuotePayload {
+fn sample_quote(issuer: &str, counterparty_did: &str) -> QuotePayload {
     let conversation = "conv_123456";
     let sequence = 1;
     let quote_id = derive_quote_id(conversation, issuer, sequence).unwrap();
@@ -56,7 +56,7 @@ fn sample_quote(issuer: &str, consumer_did: &str) -> QuotePayload {
         request_record_id: "rec_req123".to_string(),
         listing_id: Some("lst_abc123".to_string()),
         slot_id: None,
-        consumer_did: consumer_did.to_string(),
+        counterparty_did: counterparty_did.to_string(),
         terms: sample_terms(),
     }
 }
@@ -98,7 +98,7 @@ fn time_window_validate() {
 #[test]
 fn quote_location_validate() {
     let at_cust = QuoteLocation {
-        where_: ServiceLocation::AtCustomer,
+        where_: ServiceLocation::AtReceiver,
         area: None,
         address: Some("123 Main St".to_string()),
     };
@@ -112,7 +112,7 @@ fn quote_location_validate() {
     assert_eq!(remote_with_addr.validate(), Err(TransactionError::AddressNotApplicable));
 
     let long_addr = QuoteLocation {
-        where_: ServiceLocation::AtCustomer,
+        where_: ServiceLocation::AtReceiver,
         area: None,
         address: Some("a".repeat(MAX_ADDRESS_LEN + 1)),
     };
@@ -244,10 +244,10 @@ fn request_payload_validate_rules() {
 fn quote_payload_validate_rules() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let consumer_key = Identity::generate().unwrap();
-    let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
+    let counterparty_key = Identity::generate().unwrap();
+    let counterparty_did = substrate::derive_did_key(&counterparty_key.public_key());
 
-    let mut q = sample_quote(&issuer, &consumer_did);
+    let mut q = sample_quote(&issuer, &counterparty_did);
     assert!(q.validate().is_ok());
 
     q.quote_id = "".to_string();
@@ -266,24 +266,24 @@ fn quote_payload_validate_rules() {
     assert!(matches!(q.validate(), Err(TransactionError::InvalidRecordId(_))));
     q.request_record_id = "rec_req123".to_string();
 
-    q.consumer_did = "not-a-did".to_string();
+    q.counterparty_did = "not-a-did".to_string();
     assert!(matches!(q.validate(), Err(TransactionError::InvalidDid(_))));
-    q.consumer_did = consumer_did;
+    q.counterparty_did = counterparty_did;
     assert!(q.validate().is_ok());
 }
 
 #[test]
 fn agreement_receipt_payload_validate_rules() {
-    let consumer_key = Identity::generate().unwrap();
-    let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
-    let provider_key = Identity::generate().unwrap();
-    let provider_did = substrate::derive_did_key(&provider_key.public_key());
+    let counterparty_key = Identity::generate().unwrap();
+    let counterparty_did = substrate::derive_did_key(&counterparty_key.public_key());
+    let quote_author_key = Identity::generate().unwrap();
+    let quote_author_did = substrate::derive_did_key(&quote_author_key.public_key());
 
     let mut a = AgreementReceiptPayload {
         quote_record_id: "rec_quote123".to_string(),
-        consumer_did: consumer_did.clone(),
-        provider_did: provider_did.clone(),
-        role: Role::Consumer,
+        counterparty_did: counterparty_did.clone(),
+        quote_author_did: quote_author_did.clone(),
+        role: DealRole::Counterparty,
         terms: sample_terms(),
     };
     assert!(a.validate().is_ok());
@@ -292,17 +292,17 @@ fn agreement_receipt_payload_validate_rules() {
     assert!(matches!(a.validate(), Err(TransactionError::InvalidRecordId(_))));
     a.quote_record_id = "rec_quote123".to_string();
 
-    a.consumer_did = "invalid".to_string();
+    a.counterparty_did = "invalid".to_string();
     assert!(matches!(a.validate(), Err(TransactionError::InvalidDid(_))));
-    a.consumer_did = consumer_did.clone();
+    a.counterparty_did = counterparty_did.clone();
 
-    a.provider_did = "invalid".to_string();
+    a.quote_author_did = "invalid".to_string();
     assert!(matches!(a.validate(), Err(TransactionError::InvalidDid(_))));
-    a.provider_did = provider_did.clone();
+    a.quote_author_did = quote_author_did.clone();
 
-    a.consumer_did = provider_did;
+    a.counterparty_did = quote_author_did;
     assert_eq!(a.validate(), Err(TransactionError::SamePartyDid));
-    a.consumer_did = consumer_did;
+    a.counterparty_did = counterparty_did;
     assert!(a.validate().is_ok());
 }
 
@@ -335,11 +335,11 @@ fn verify_quote_refuses_a_payload_whose_quote_id_was_derived_from_a_different_is
     let wrong_key = Identity::generate().unwrap();
     let wrong_issuer = substrate::derive_did_key(&wrong_key.public_key());
 
-    let consumer_key = Identity::generate().unwrap();
-    let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
+    let counterparty_key = Identity::generate().unwrap();
+    let counterparty_did = substrate::derive_did_key(&counterparty_key.public_key());
 
     // Derive quote_id using wrong_issuer
-    let quote = sample_quote(&wrong_issuer, &consumer_did);
+    let quote = sample_quote(&wrong_issuer, &counterparty_did);
     let env = sign_envelope(
         &real_signer,
         RECORD_QUOTE,
@@ -360,21 +360,21 @@ fn verify_quote_refuses_a_payload_whose_quote_id_was_derived_from_a_different_is
 
 #[test]
 fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer() {
-    let consumer_key = Identity::generate().unwrap();
-    let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
-    let provider_key = Identity::generate().unwrap();
-    let provider_did = substrate::derive_did_key(&provider_key.public_key());
+    let counterparty_key = Identity::generate().unwrap();
+    let counterparty_did = substrate::derive_did_key(&counterparty_key.public_key());
+    let quote_author_key = Identity::generate().unwrap();
+    let quote_author_did = substrate::derive_did_key(&quote_author_key.public_key());
 
     // A receipt saying role is Consumer, but signed by provider_key!
     let payload = AgreementReceiptPayload {
         quote_record_id: "rec_quote123".to_string(),
-        consumer_did: consumer_did.clone(),
-        provider_did: provider_did.clone(),
-        role: Role::Consumer,
+        counterparty_did: counterparty_did.clone(),
+        quote_author_did: quote_author_did.clone(),
+        role: DealRole::Counterparty,
         terms: sample_terms(),
     };
-    let env_provider_signing_consumer_half = sign_envelope(
-        &provider_key,
+    let author_signs_counterparty_half = sign_envelope(
+        &quote_author_key,
         RECORD_AGREEMENT_RECEIPT,
         AGREEMENT_RECEIPT_VERSION,
         &payload.quote_record_id,
@@ -382,7 +382,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
         None,
         1000,
     );
-    let verdict = verify_agreement_receipt(&env_provider_signing_consumer_half, 1000);
+    let verdict = verify_agreement_receipt(&author_signs_counterparty_half, 1000);
     assert!(!verdict.verified);
     assert_eq!(
         verdict.reason.as_deref(),
@@ -391,7 +391,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
 
     // Subject mismatch
     let env_subject_mismatch = sign_envelope(
-        &consumer_key,
+        &counterparty_key,
         RECORD_AGREEMENT_RECEIPT,
         AGREEMENT_RECEIPT_VERSION,
         "rec_wrong_subject",
@@ -408,7 +408,7 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
 
     // Valid consumer half
     let env_valid = sign_envelope(
-        &consumer_key,
+        &counterparty_key,
         RECORD_AGREEMENT_RECEIPT,
         AGREEMENT_RECEIPT_VERSION,
         &payload.quote_record_id,
@@ -420,17 +420,17 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     assert!(verdict_ok.verified);
 
     // A receipt saying role is Provider, but signed by consumer_key!
-    let payload_provider = AgreementReceiptPayload { role: Role::Provider, ..payload };
-    let env_consumer_signing_provider_half = sign_envelope(
-        &consumer_key,
+    let payload_quote_author = AgreementReceiptPayload { role: DealRole::QuoteAuthor, ..payload };
+    let counterparty_signs_author_half = sign_envelope(
+        &counterparty_key,
         RECORD_AGREEMENT_RECEIPT,
         AGREEMENT_RECEIPT_VERSION,
-        &payload_provider.quote_record_id,
-        serde_json::to_value(&payload_provider).unwrap(),
+        &payload_quote_author.quote_record_id,
+        serde_json::to_value(&payload_quote_author).unwrap(),
         None,
         1000,
     );
-    let verdict_prov_bad = verify_agreement_receipt(&env_consumer_signing_provider_half, 1000);
+    let verdict_prov_bad = verify_agreement_receipt(&counterparty_signs_author_half, 1000);
     assert!(!verdict_prov_bad.verified);
     assert_eq!(
         verdict_prov_bad.reason.as_deref(),
@@ -438,77 +438,77 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
     );
 
     // Valid provider half signed by provider_key
-    let env_provider_valid = sign_envelope(
-        &provider_key,
+    let env_quote_author_valid = sign_envelope(
+        &quote_author_key,
         RECORD_AGREEMENT_RECEIPT,
         AGREEMENT_RECEIPT_VERSION,
-        &payload_provider.quote_record_id,
-        serde_json::to_value(&payload_provider).unwrap(),
+        &payload_quote_author.quote_record_id,
+        serde_json::to_value(&payload_quote_author).unwrap(),
         None,
         1000,
     );
-    let verdict_prov_ok = verify_agreement_receipt(&env_provider_valid, 1000);
+    let verdict_prov_ok = verify_agreement_receipt(&env_quote_author_valid, 1000);
     assert!(verdict_prov_ok.verified);
 }
 
 #[test]
 fn halves_agree_table_test() {
-    let consumer_did = "did:key:zConsumer".to_string();
-    let provider_did = "did:key:zProvider".to_string();
+    let counterparty_did = "did:key:zConsumer".to_string();
+    let quote_author_did = "did:key:zProvider".to_string();
     let terms = sample_terms();
 
-    let base_consumer = AgreementReceiptPayload {
+    let base_counterparty = AgreementReceiptPayload {
         quote_record_id: "rec_quo123".to_string(),
-        consumer_did: consumer_did.clone(),
-        provider_did: provider_did.clone(),
-        role: Role::Consumer,
+        counterparty_did: counterparty_did.clone(),
+        quote_author_did: quote_author_did.clone(),
+        role: DealRole::Counterparty,
         terms: terms.clone(),
     };
-    let base_provider = AgreementReceiptPayload {
+    let base_quote_author = AgreementReceiptPayload {
         quote_record_id: "rec_quo123".to_string(),
-        consumer_did: consumer_did.clone(),
-        provider_did: provider_did.clone(),
-        role: Role::Provider,
+        counterparty_did: counterparty_did.clone(),
+        quote_author_did: quote_author_did.clone(),
+        role: DealRole::QuoteAuthor,
         terms: terms.clone(),
     };
 
     // Identical except role -> true
-    assert!(halves_agree(&base_consumer, &base_provider));
-    assert!(halves_agree(&base_provider, &base_consumer));
+    assert!(halves_agree(&base_counterparty, &base_quote_author));
+    assert!(halves_agree(&base_quote_author, &base_counterparty));
 
     // Same role -> false
-    assert!(!halves_agree(&base_consumer, &base_consumer));
-    assert!(!halves_agree(&base_provider, &base_provider));
+    assert!(!halves_agree(&base_counterparty, &base_counterparty));
+    assert!(!halves_agree(&base_quote_author, &base_quote_author));
 
     // Differ in quote_record_id -> false
-    let mut diff_quote = base_provider.clone();
+    let mut diff_quote = base_quote_author.clone();
     diff_quote.quote_record_id = "rec_diff".to_string();
-    assert!(!halves_agree(&base_consumer, &diff_quote));
+    assert!(!halves_agree(&base_counterparty, &diff_quote));
 
     // Differ in consumer_did -> false
-    let mut diff_cdid = base_provider.clone();
-    diff_cdid.consumer_did = "did:key:zOther".to_string();
-    assert!(!halves_agree(&base_consumer, &diff_cdid));
+    let mut diff_cdid = base_quote_author.clone();
+    diff_cdid.counterparty_did = "did:key:zOther".to_string();
+    assert!(!halves_agree(&base_counterparty, &diff_cdid));
 
     // Differ in provider_did -> false
-    let mut diff_pdid = base_provider.clone();
-    diff_pdid.provider_did = "did:key:zOther".to_string();
-    assert!(!halves_agree(&base_consumer, &diff_pdid));
+    let mut diff_pdid = base_quote_author.clone();
+    diff_pdid.quote_author_did = "did:key:zOther".to_string();
+    assert!(!halves_agree(&base_counterparty, &diff_pdid));
 
     // Differ in terms (e.g. amount) -> false
-    let mut diff_terms = base_provider.clone();
+    let mut diff_terms = base_quote_author.clone();
     diff_terms.terms.amount_minor = 99999;
-    assert!(!halves_agree(&base_consumer, &diff_terms));
+    assert!(!halves_agree(&base_counterparty, &diff_terms));
 }
 
 #[test]
 fn expired_quote_envelope_verifies_with_expired_flag() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let consumer_key = Identity::generate().unwrap();
-    let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
+    let counterparty_key = Identity::generate().unwrap();
+    let counterparty_did = substrate::derive_did_key(&counterparty_key.public_key());
 
-    let mut quote = sample_quote(&issuer, &consumer_did);
+    let mut quote = sample_quote(&issuer, &counterparty_did);
     let quote_expiry = 1500;
     quote.terms.quote_expires_at_secs = quote_expiry;
     let env = sign_envelope(
@@ -558,8 +558,8 @@ fn pair_state_transitions() {
     };
 
     assert_eq!(pair_state(None, None), PairState::None);
-    assert_eq!(pair_state(Some(&half_c), None), PairState::Half { role: Role::Consumer });
-    assert_eq!(pair_state(None, Some(&half_p)), PairState::Half { role: Role::Provider });
+    assert_eq!(pair_state(Some(&half_c), None), PairState::Half { role: DealRole::Counterparty });
+    assert_eq!(pair_state(None, Some(&half_p)), PairState::Half { role: DealRole::QuoteAuthor });
     assert_eq!(pair_state(Some(&half_c), Some(&half_p)), PairState::Complete);
 }
 
@@ -607,10 +607,10 @@ fn verify_request_happy_and_mismatch() {
 fn verify_quote_refuses_envelope_whose_expiry_mismatches_terms() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let consumer_key = Identity::generate().unwrap();
-    let consumer_did = substrate::derive_did_key(&consumer_key.public_key());
+    let counterparty_key = Identity::generate().unwrap();
+    let counterparty_did = substrate::derive_did_key(&counterparty_key.public_key());
 
-    let quote = sample_quote(&issuer, &consumer_did);
+    let quote = sample_quote(&issuer, &counterparty_did);
     // terms say quote_expires_at_secs = 15000, but envelope says 5000
     let env = sign_envelope(
         &key,
@@ -647,7 +647,7 @@ fn verify_quote_refuses_envelope_whose_expiry_mismatches_terms() {
 }
 
 #[test]
-fn verify_quote_refuses_same_consumer_and_provider_did() {
+fn verify_quote_refuses_same_counterparty_and_quote_author_did() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
 
@@ -719,9 +719,9 @@ fn verify_agreement_receipt_refuses_expiry() {
     let issuer = substrate::derive_did_key(&key.public_key());
     let receipt = AgreementReceiptPayload {
         quote_record_id: "rec_quote123".to_string(),
-        consumer_did: issuer.clone(),
-        provider_did: "did:key:provider123".to_string(),
-        role: Role::Consumer,
+        counterparty_did: issuer.clone(),
+        quote_author_did: "did:key:provider123".to_string(),
+        role: DealRole::Counterparty,
         terms: sample_terms(),
     };
     let env = sign_envelope(

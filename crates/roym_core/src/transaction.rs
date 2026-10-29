@@ -82,9 +82,11 @@ pub enum PaymentTiming {
 /// Which of the two parties a receipt half is from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum Role {
-    Consumer,
-    Provider,
+pub enum DealRole {
+    #[serde(rename = "provider")]
+    QuoteAuthor,
+    #[serde(rename = "consumer")]
+    Counterparty,
 }
 
 /// A window in unix seconds. `latest_secs` is inclusive and must not be
@@ -184,7 +186,8 @@ pub struct QuotePayload {
     pub slot_id: Option<String>,
     /// The request's own issuer. This is what names the second party, and
     /// it is what makes the agreement pair checkable.
-    pub consumer_did: String,
+    #[serde(rename = "consumer_did")]
+    pub counterparty_did: String,
     pub terms: AgreedTerms,
 }
 
@@ -193,10 +196,12 @@ pub struct AgreementReceiptPayload {
     /// The quote's own `record_id`. A content hash of the whole quote
     /// envelope, so it pins the terms exactly.
     pub quote_record_id: String,
-    pub consumer_did: String,
-    pub provider_did: String,
+    #[serde(rename = "consumer_did")]
+    pub counterparty_did: String,
+    #[serde(rename = "provider_did")]
+    pub quote_author_did: String,
     /// The only field the two halves of a complete pair differ in.
-    pub role: Role,
+    pub role: DealRole,
     pub terms: AgreedTerms,
 }
 
@@ -215,7 +220,7 @@ pub enum PairState {
     /// Neither party has attested.
     None,
     /// Exactly one half exists.
-    Half { role: Role },
+    Half { role: DealRole },
     /// One attestation from each of the two parties the quote names, with
     /// identical terms and each inside its own validity window.
     Complete,
@@ -227,11 +232,14 @@ pub enum PairState {
 /// when each half is filed, not when the pair is read -- a half that
 /// failed them is never stored as a half.
 #[must_use]
-pub fn pair_state(consumer: Option<&ReceiptHalf>, provider: Option<&ReceiptHalf>) -> PairState {
-    match (consumer, provider) {
+pub fn pair_state(
+    counterparty: Option<&ReceiptHalf>,
+    quote_author: Option<&ReceiptHalf>,
+) -> PairState {
+    match (counterparty, quote_author) {
         (Some(_), Some(_)) => PairState::Complete,
-        (Some(_), None) => PairState::Half { role: Role::Consumer },
-        (None, Some(_)) => PairState::Half { role: Role::Provider },
+        (Some(_), None) => PairState::Half { role: DealRole::Counterparty },
+        (None, Some(_)) => PairState::Half { role: DealRole::QuoteAuthor },
         (None, None) => PairState::None,
     }
 }
@@ -366,7 +374,7 @@ impl TimeWindow {
 
 impl QuoteLocation {
     pub fn validate(&self) -> Result<(), TransactionError> {
-        if self.where_ != ServiceLocation::AtCustomer && self.address.is_some() {
+        if self.where_ != ServiceLocation::AtReceiver && self.address.is_some() {
             return Err(TransactionError::AddressNotApplicable);
         }
         if self.address.as_deref().is_some_and(|addr| addr.len() > MAX_ADDRESS_LEN) {
@@ -508,8 +516,8 @@ impl QuotePayload {
         if !self.request_record_id.starts_with("rec_") {
             return Err(TransactionError::InvalidRecordId(self.request_record_id.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(TransactionError::InvalidDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(TransactionError::InvalidDid(self.counterparty_did.clone()));
         }
         self.terms.validate()?;
         if let Some(ref slot_id) = self.slot_id {
@@ -539,13 +547,13 @@ impl AgreementReceiptPayload {
         if !self.quote_record_id.starts_with("rec_") {
             return Err(TransactionError::InvalidRecordId(self.quote_record_id.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(TransactionError::InvalidDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(TransactionError::InvalidDid(self.counterparty_did.clone()));
         }
-        if !person::is_did_key(&self.provider_did) {
-            return Err(TransactionError::InvalidDid(self.provider_did.clone()));
+        if !person::is_did_key(&self.quote_author_did) {
+            return Err(TransactionError::InvalidDid(self.quote_author_did.clone()));
         }
-        if self.consumer_did == self.provider_did {
+        if self.counterparty_did == self.quote_author_did {
             return Err(TransactionError::SamePartyDid);
         }
         self.terms.validate()?;
@@ -588,8 +596,8 @@ pub fn derive_quote_id(
 #[must_use]
 pub fn halves_agree(a: &AgreementReceiptPayload, b: &AgreementReceiptPayload) -> bool {
     a.quote_record_id == b.quote_record_id
-        && a.consumer_did == b.consumer_did
-        && a.provider_did == b.provider_did
+        && a.counterparty_did == b.counterparty_did
+        && a.quote_author_did == b.quote_author_did
         && a.terms == b.terms
         && a.role != b.role
 }
@@ -665,7 +673,7 @@ pub fn verify_quote(envelope: &str, now_secs: u64) -> RecordVerdict<QuotePayload
     if !(MIN_QUOTE_LIFETIME_SECS..=MAX_QUOTE_LIFETIME_SECS).contains(&lifetime) {
         return RecordVerdict::refused("quote lifetime outside permitted bounds");
     }
-    if payload.consumer_did == verified.issuer {
+    if payload.counterparty_did == verified.issuer {
         return RecordVerdict::refused("consumer_did cannot be the quote issuer");
     }
     let expected_id =
@@ -720,15 +728,15 @@ pub fn verify_agreement_receipt(
         return RecordVerdict::refused("an agreement receipt may not declare an expiry");
     }
     match payload.role {
-        Role::Consumer => {
-            if verified.issuer != payload.consumer_did {
+        DealRole::Counterparty => {
+            if verified.issuer != payload.counterparty_did {
                 return RecordVerdict::refused(
                     "consumer receipt issuer does not match consumer_did",
                 );
             }
         }
-        Role::Provider => {
-            if verified.issuer != payload.provider_did {
+        DealRole::QuoteAuthor => {
+            if verified.issuer != payload.quote_author_did {
                 return RecordVerdict::refused(
                     "provider receipt issuer does not match provider_did",
                 );

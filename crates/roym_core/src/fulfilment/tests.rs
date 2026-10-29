@@ -26,12 +26,12 @@ fn sample_terms() -> AgreedTerms {
     }
 }
 
-fn sample_receipt(role: Role) -> FulfilmentReceiptPayload {
+fn sample_receipt(role: DealRole) -> FulfilmentReceiptPayload {
     FulfilmentReceiptPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
-        consumer_did: "did:key:zConsumer".to_string(),
-        provider_did: "did:key:zProvider".to_string(),
+        counterparty_did: "did:key:zConsumer".to_string(),
+        quote_author_did: "did:key:zProvider".to_string(),
         role,
         terms: sample_terms(),
     }
@@ -39,20 +39,20 @@ fn sample_receipt(role: Role) -> FulfilmentReceiptPayload {
 
 #[test]
 fn fulfilment_receipt_validation() {
-    let mut receipt = sample_receipt(Role::Consumer);
+    let mut receipt = sample_receipt(DealRole::Counterparty);
     assert!(receipt.validate().is_ok());
 
     receipt.agreement = "bad_prefix".to_string();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::InvalidAgreement(_))));
     receipt.agreement = "rec_quote123".to_string();
 
-    receipt.consumer_did = "bad_did".to_string();
-    assert!(matches!(receipt.validate(), Err(FulfilmentError::InvalidConsumerDid(_))));
-    receipt.consumer_did = "did:key:zConsumer".to_string();
+    receipt.counterparty_did = "bad_did".to_string();
+    assert!(matches!(receipt.validate(), Err(FulfilmentError::InvalidCounterpartyDid(_))));
+    receipt.counterparty_did = "did:key:zConsumer".to_string();
 
-    receipt.provider_did = receipt.consumer_did.clone();
+    receipt.quote_author_did = receipt.counterparty_did.clone();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::SamePartyDid)));
-    receipt.provider_did = "did:key:zProvider".to_string();
+    receipt.quote_author_did = "did:key:zProvider".to_string();
 
     receipt.conversation = String::new();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::ConversationEmpty)));
@@ -60,16 +60,16 @@ fn fulfilment_receipt_validation() {
 
 #[test]
 fn test_fulfilment_halves_agree() {
-    let consumer_half = sample_receipt(Role::Consumer);
-    let provider_half = sample_receipt(Role::Provider);
-    assert!(fulfilment_halves_agree(&consumer_half, &provider_half));
+    let counterparty_half = sample_receipt(DealRole::Counterparty);
+    let quote_author_half = sample_receipt(DealRole::QuoteAuthor);
+    assert!(fulfilment_halves_agree(&counterparty_half, &quote_author_half));
 
-    let mut mismatched = provider_half.clone();
+    let mut mismatched = quote_author_half.clone();
     mismatched.terms.amount_minor = 20_000;
-    assert!(!fulfilment_halves_agree(&consumer_half, &mismatched));
+    assert!(!fulfilment_halves_agree(&counterparty_half, &mismatched));
 
-    let same_role = consumer_half.clone();
-    assert!(!fulfilment_halves_agree(&consumer_half, &same_role));
+    let same_role = counterparty_half.clone();
+    assert!(!fulfilment_halves_agree(&counterparty_half, &same_role));
 }
 
 #[test]
@@ -77,8 +77,8 @@ fn verify_fulfilment_envelopes() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
 
-    let mut receipt = sample_receipt(Role::Provider);
-    receipt.provider_did = issuer.clone();
+    let mut receipt = sample_receipt(DealRole::QuoteAuthor);
+    receipt.quote_author_did = issuer.clone();
     let draft = RecordDraft {
         version: FULFILMENT_RECEIPT_VERSION,
         record_type: RECORD_FULFILMENT_RECEIPT.to_string(),

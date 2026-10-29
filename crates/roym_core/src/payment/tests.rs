@@ -30,20 +30,20 @@ fn sample_request() -> PaymentRequestPayload {
     PaymentRequestPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
-        consumer_did: "did:key:zConsumer".to_string(),
-        provider_did: "did:key:zProvider".to_string(),
+        counterparty_did: "did:key:zConsumer".to_string(),
+        quote_author_did: "did:key:zProvider".to_string(),
         currency: "USD".to_string(),
         amount_minor: 10_000,
         note: Some("Initial payment".to_string()),
     }
 }
 
-fn sample_ack(role: Role) -> PaymentAcknowledgementPayload {
+fn sample_ack(role: DealRole) -> PaymentAcknowledgementPayload {
     PaymentAcknowledgementPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
-        consumer_did: "did:key:zConsumer".to_string(),
-        provider_did: "did:key:zProvider".to_string(),
+        counterparty_did: "did:key:zConsumer".to_string(),
+        quote_author_did: "did:key:zProvider".to_string(),
         role,
         currency: "USD".to_string(),
         amount_minor: 10_000,
@@ -62,13 +62,13 @@ fn payment_request_validation() {
     assert!(matches!(req.validate(), Err(PaymentError::InvalidAgreement(_))));
     req.agreement = "rec_quote123".to_string();
 
-    req.consumer_did = "bad_did".to_string();
-    assert!(matches!(req.validate(), Err(PaymentError::InvalidConsumerDid(_))));
-    req.consumer_did = "did:key:zConsumer".to_string();
+    req.counterparty_did = "bad_did".to_string();
+    assert!(matches!(req.validate(), Err(PaymentError::InvalidCounterpartyDid(_))));
+    req.counterparty_did = "did:key:zConsumer".to_string();
 
-    req.provider_did = req.consumer_did.clone();
+    req.quote_author_did = req.counterparty_did.clone();
     assert!(matches!(req.validate(), Err(PaymentError::SamePartyDid)));
-    req.provider_did = "did:key:zProvider".to_string();
+    req.quote_author_did = "did:key:zProvider".to_string();
 
     req.currency = "INVALID".to_string();
     assert!(matches!(req.validate(), Err(PaymentError::UnknownCurrency(_))));
@@ -85,7 +85,7 @@ fn payment_request_validation() {
 
 #[test]
 fn payment_acknowledgement_validation() {
-    let mut ack = sample_ack(Role::Consumer);
+    let mut ack = sample_ack(DealRole::Counterparty);
     assert!(ack.validate().is_ok());
 
     ack.observed_at_secs = 0;
@@ -113,18 +113,18 @@ fn test_matches_terms() {
 
 #[test]
 fn test_acknowledgements_agree() {
-    let consumer_ack = sample_ack(Role::Consumer);
-    let provider_ack = sample_ack(Role::Provider);
-    assert!(acknowledgements_agree(&consumer_ack, &provider_ack));
+    let counterparty_ack = sample_ack(DealRole::Counterparty);
+    let quote_author_ack = sample_ack(DealRole::QuoteAuthor);
+    assert!(acknowledgements_agree(&counterparty_ack, &quote_author_ack));
 
-    let mut mismatched = provider_ack.clone();
+    let mut mismatched = quote_author_ack.clone();
     mismatched.amount_minor = 20_000;
-    assert!(!acknowledgements_agree(&consumer_ack, &mismatched));
+    assert!(!acknowledgements_agree(&counterparty_ack, &mismatched));
 }
 
 #[test]
 fn test_is_valid_correction() {
-    let old = sample_ack(Role::Consumer);
+    let old = sample_ack(DealRole::Counterparty);
     let mut new = old.clone();
     new.reference = Some("corrected_ref".to_string());
     new.method = Some("cash".to_string());
@@ -143,7 +143,7 @@ fn verify_payment_envelopes() {
 
     // Payment request
     let mut req = sample_request();
-    req.provider_did = issuer.clone();
+    req.quote_author_did = issuer.clone();
     let draft = RecordDraft {
         version: PAYMENT_REQUEST_VERSION,
         record_type: RECORD_PAYMENT_REQUEST.to_string(),
@@ -162,8 +162,8 @@ fn verify_payment_envelopes() {
     assert_eq!(verdict.payload, Some(req));
 
     // Payment ack
-    let mut ack = sample_ack(Role::Provider);
-    ack.provider_did = issuer.clone();
+    let mut ack = sample_ack(DealRole::QuoteAuthor);
+    ack.quote_author_did = issuer.clone();
     let ack_draft = RecordDraft {
         version: PAYMENT_ACKNOWLEDGEMENT_VERSION,
         record_type: RECORD_PAYMENT_ACKNOWLEDGEMENT.to_string(),

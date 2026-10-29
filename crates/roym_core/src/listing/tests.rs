@@ -125,7 +125,7 @@ fn a_full_payload_validates_and_signs() {
         prerequisites: vec![],
     });
     p.location = Some(LocationTerms {
-        where_: ServiceLocation::AtCustomer,
+        where_: ServiceLocation::AtReceiver,
         service_area: vec![Area::Circle {
             lat_e6: 48_856_600,
             lon_e6: 2_352_200,

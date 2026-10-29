@@ -131,7 +131,7 @@ pub async fn open_request_conv(
 
 /// The provider's own conversation id for the consumer at `peer_address`,
 /// once the consumer's first message has arrived.
-pub async fn provider_conv_for(y: &Node, peer_address: &str) -> String {
+pub async fn quote_author_conv_for(y: &Node, peer_address: &str) -> String {
     let found = wait_until(Duration::from_secs(20), || async {
         let list = y.rpc_ok("conversation.list", json!({})).await;
         list["conversations"]
@@ -155,11 +155,16 @@ pub async fn provider_conv_for(y: &Node, peer_address: &str) -> String {
 
 /// Files the request that arrived in `provider_conv` and returns its record
 /// id -- what `quote.set` names.
-pub async fn request_record_on_provider(provider: &Node, provider_conv: &str) -> String {
-    let sync = provider.rpc_ok("transaction.sync", json!({ "conversation": provider_conv })).await;
+pub async fn request_record_on_quote_author(
+    quote_author: &Node,
+    quote_author_conv: &str,
+) -> String {
+    let sync =
+        quote_author.rpc_ok("transaction.sync", json!({ "conversation": quote_author_conv })).await;
     assert_eq!(sync["filed"], 1, "the provider files the one request: {sync}");
-    let thread =
-        provider.rpc_ok("transaction.thread", json!({ "conversation": provider_conv })).await;
+    let thread = quote_author
+        .rpc_ok("transaction.thread", json!({ "conversation": quote_author_conv }))
+        .await;
     thread["cards"]
         .as_array()
         .unwrap()
@@ -191,13 +196,13 @@ pub fn quote_terms(payee: &str, amount_minor: u64) -> Value {
 /// The provider quotes `request_record_id` against `slot_id`, delivered.
 /// Returns the quote's record id.
 pub async fn send_quote(
-    provider: &Node,
+    quote_author: &Node,
     request_record_id: &str,
     listing_id: &str,
     slot_id: &str,
     terms: Value,
 ) -> String {
-    let quote = provider
+    let quote = quote_author
         .rpc_ok(
             "quote.set",
             json!({
@@ -210,19 +215,20 @@ pub async fn send_quote(
         )
         .await;
     let msg = quote["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(provider, &msg).await, "the quote is delivered");
+    assert!(wait_delivered(quote_author, &msg).await, "the quote is delivered");
     quote["record_id"].as_str().unwrap().to_string()
 }
 
 /// The consumer syncs the quote in and accepts it; the accept is delivered
 /// and the pair is one half.
-pub async fn accept_quote(consumer: &Node, conversation: &str, quote_record_id: &str) {
-    consumer.rpc_ok("transaction.sync", json!({ "conversation": conversation })).await;
-    let accept =
-        consumer.rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id })).await;
+pub async fn accept_quote(counterparty: &Node, conversation: &str, quote_record_id: &str) {
+    counterparty.rpc_ok("transaction.sync", json!({ "conversation": conversation })).await;
+    let accept = counterparty
+        .rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id }))
+        .await;
     assert_eq!(accept["pair"]["state"], "half");
     let msg = accept["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(consumer, &msg).await, "the accept is delivered");
+    assert!(wait_delivered(counterparty, &msg).await, "the accept is delivered");
 }
 
 pub async fn assert_no_directory(nodes: &[&Node]) {
@@ -292,16 +298,16 @@ pub async fn complete_winner_lifecycle(
     assert!(wait_delivered(winner_node, &x_ack_msg).await, "consumer's payment ack delivered");
 
     node_y.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_on_y })).await;
-    let y_payment_after_consumer =
+    let y_payment_after_counterparty =
         node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(y_payment_after_consumer["track"], "claimed");
+    assert_eq!(y_payment_after_counterparty["track"], "claimed");
 
     let y_ack =
         node_y.rpc_ok("payment.acknowledge", json!({ "agreement": winner_quote_record_id })).await;
     assert_ne!(y_ack["state"], "already-recorded");
-    let y_payment_after_provider =
+    let y_payment_after_quote_author =
         node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(y_payment_after_provider["track"], "acknowledged");
+    assert_eq!(y_payment_after_quote_author["track"], "acknowledged");
 
     let y_fulfil =
         node_y.rpc_ok("fulfilment.sign", json!({ "agreement": winner_quote_record_id })).await;
@@ -343,11 +349,11 @@ async fn assert_booking_completed(
     .await;
     assert!(synced, "provider's booking reaches completed");
 
-    let synced_consumer = wait_until(Duration::from_secs(30), || async {
+    let synced_counterparty = wait_until(Duration::from_secs(30), || async {
         winner_node.rpc_ok("transaction.sync", json!({ "conversation": conv_on_winner })).await;
         let b = winner_node.rpc_ok("booking.get", json!({ "agreement": quote_record_id })).await;
         b["state"] == "completed"
     })
     .await;
-    assert!(synced_consumer, "winner's own progress reaches completed");
+    assert!(synced_counterparty, "winner's own progress reaches completed");
 }

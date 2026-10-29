@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::{
     listing, person,
     record::{self, RECORD_BOOKING_PROGRESS, VerifyOptions},
-    transaction::{PaymentTiming, Role, TimeWindow},
+    transaction::{DealRole, PaymentTiming, TimeWindow},
     verdict::RecordVerdict,
 };
 
@@ -82,7 +82,7 @@ pub enum Track {
 pub enum BookingEvent {
     Start,
     Cancel { reason: String },
-    Half { track: Track, role: Role },
+    Half { track: Track, role: DealRole },
     Tick,
 }
 
@@ -92,8 +92,10 @@ pub enum BookingEvent {
 pub struct BookingProgressPayload {
     pub agreement: String,
     pub conversation: String,
-    pub consumer_did: String,
-    pub provider_did: String,
+    #[serde(rename = "consumer_did")]
+    pub counterparty_did: String,
+    #[serde(rename = "provider_did")]
+    pub quote_author_did: String,
     pub seq: u32,
     pub state: BookingState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,7 +104,7 @@ pub struct BookingProgressPayload {
     pub fulfilment: TrackState,
     pub track_window_ends_at_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cancelled_by: Option<Role>,
+    pub cancelled_by: Option<DealRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancel_reason: Option<String>,
 }
@@ -124,9 +126,9 @@ pub enum BookingPayloadError {
     #[error("agreement '{0}' must start with 'rec_'")]
     InvalidAgreement(String),
     #[error("consumer_did '{0}' is not a valid did:key")]
-    InvalidConsumerDid(String),
+    InvalidCounterpartyDid(String),
     #[error("provider_did '{0}' is not a valid did:key")]
-    InvalidProviderDid(String),
+    InvalidQuoteAuthorDid(String),
     #[error("consumer and provider cannot be the same DID")]
     SamePartyDid,
     #[error("conversation is empty")]
@@ -148,13 +150,13 @@ impl BookingProgressPayload {
         if !self.agreement.starts_with("rec_") {
             return Err(BookingPayloadError::InvalidAgreement(self.agreement.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(BookingPayloadError::InvalidConsumerDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(BookingPayloadError::InvalidCounterpartyDid(self.counterparty_did.clone()));
         }
-        if !person::is_did_key(&self.provider_did) {
-            return Err(BookingPayloadError::InvalidProviderDid(self.provider_did.clone()));
+        if !person::is_did_key(&self.quote_author_did) {
+            return Err(BookingPayloadError::InvalidQuoteAuthorDid(self.quote_author_did.clone()));
         }
-        if self.consumer_did == self.provider_did {
+        if self.counterparty_did == self.quote_author_did {
             return Err(BookingPayloadError::SamePartyDid);
         }
         if self.conversation.is_empty() {
@@ -199,8 +201,8 @@ pub fn is_terminal(state: BookingState) -> bool {
 pub fn open(
     agreement: String,
     conversation: String,
-    consumer_did: String,
-    provider_did: String,
+    counterparty_did: String,
+    quote_author_did: String,
     conflict: Option<ConflictReason>,
     window_end: u64,
 ) -> BookingProgressPayload {
@@ -208,8 +210,8 @@ pub fn open(
     BookingProgressPayload {
         agreement,
         conversation,
-        consumer_did,
-        provider_did,
+        counterparty_did,
+        quote_author_did,
         seq: 1,
         state,
         conflict,
@@ -256,10 +258,10 @@ fn finish_if_both_terminal(n: &mut BookingProgressPayload) {
     }
 }
 
-fn apply_half(n: &mut BookingProgressPayload, track: Track, role: Role) {
+fn apply_half(n: &mut BookingProgressPayload, track: Track, role: DealRole) {
     let against_interest = matches!(
         (track, role),
-        (Track::Payment, Role::Provider) | (Track::Fulfilment, Role::Consumer)
+        (Track::Payment, DealRole::QuoteAuthor) | (Track::Fulfilment, DealRole::Counterparty)
     );
     let t = match track {
         Track::Payment => &mut n.payment,
@@ -310,7 +312,7 @@ pub fn apply(
                 return Err(TransitionError::CannotCancel);
             }
             n.state = BookingState::Cancelled;
-            n.cancelled_by = Some(Role::Provider);
+            n.cancelled_by = Some(DealRole::QuoteAuthor);
             n.cancel_reason = Some(reason.clone());
         }
         BookingEvent::Half { track, role } => {
@@ -371,7 +373,8 @@ pub fn verify_booking_progress(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NextStep {
-    WaitForProvider,
+    #[serde(rename = "wait-for-provider")]
+    WaitForQuoteAuthor,
     RequestPayment,
     PayOutsideRoym,
     ConfirmPaymentReceived,
@@ -381,12 +384,12 @@ pub enum NextStep {
 }
 
 #[must_use]
-pub fn next_step(s: &BookingProgressPayload, timing: PaymentTiming, me: Role) -> NextStep {
+pub fn next_step(s: &BookingProgressPayload, timing: PaymentTiming, me: DealRole) -> NextStep {
     if is_terminal(s.state) {
         return NextStep::Nothing;
     }
     match me {
-        Role::Provider => {
+        DealRole::QuoteAuthor => {
             if s.payment == TrackState::None && timing == PaymentTiming::BeforeWork {
                 NextStep::RequestPayment
             } else if s.payment == TrackState::Claimed {
@@ -397,17 +400,17 @@ pub fn next_step(s: &BookingProgressPayload, timing: PaymentTiming, me: Role) ->
                 NextStep::Nothing
             }
         }
-        Role::Consumer => {
+        DealRole::Counterparty => {
             if s.payment == TrackState::None {
                 if timing == PaymentTiming::BeforeWork || s.fulfilment != TrackState::None {
                     NextStep::PayOutsideRoym
                 } else {
-                    NextStep::WaitForProvider
+                    NextStep::WaitForQuoteAuthor
                 }
             } else if s.fulfilment == TrackState::Claimed {
                 NextStep::ConfirmWorkComplete
             } else {
-                NextStep::WaitForProvider
+                NextStep::WaitForQuoteAuthor
             }
         }
     }

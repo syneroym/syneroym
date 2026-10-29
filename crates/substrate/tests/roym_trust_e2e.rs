@@ -43,9 +43,9 @@ mod common;
 use common::{
     roym::{RoymNode as Node, fast_conversation_role, roym_artifacts_present},
     roym_flow::{
-        accept_quote, complete_winner_lifecycle, hits, open_request_conv, provider_conv_for,
-        quote_terms, request_record_on_provider, run_client_loop, send_quote, stranger_wire_invoke,
-        wait_and_verify_winner_scheduled,
+        accept_quote, complete_winner_lifecycle, hits, open_request_conv, quote_author_conv_for,
+        quote_terms, request_record_on_quote_author, run_client_loop, send_quote,
+        stranger_wire_invoke, wait_and_verify_winner_scheduled,
     },
 };
 
@@ -263,8 +263,8 @@ async fn hire_the_provider(t: &Trio, hit: &Value, listing_id: &str, slot_id: &st
     )
     .await;
     let (x_conv, _request) = open_request_conv(&t.x, address, "Fix my bike", &["cycling"]).await;
-    let y_conv = provider_conv_for(&t.y, &t.x.dids["conversation"]).await;
-    let request = request_record_on_provider(&t.y, &y_conv).await;
+    let y_conv = quote_author_conv_for(&t.y, &t.x.dids["conversation"]).await;
+    let request = request_record_on_quote_author(&t.y, &y_conv).await;
     let quote = send_quote(&t.y, &request, listing_id, slot_id, quote_terms(PAYEE, 6000)).await;
     accept_quote(&t.x, &x_conv, &quote).await;
 

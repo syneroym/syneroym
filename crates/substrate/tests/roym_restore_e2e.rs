@@ -420,17 +420,17 @@ async fn assert_post_restore_operations(
 
     let payment_after =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx_active.quote_record_id })).await;
-    let latest_provider_ack = payment_after["provider"].as_array().unwrap().last().unwrap();
+    let latest_quote_author_ack = payment_after["provider"].as_array().unwrap().last().unwrap();
     let post_restore_correction = node_y2
         .rpc_ok(
             "payment.acknowledge",
             json!({
                 "agreement": tx_active.quote_record_id, "method": "cash", "reference": "post-restore",
-                "supersedes": latest_provider_ack["record_id"],
+                "supersedes": latest_quote_author_ack["record_id"],
             }),
         )
         .await;
-    assert_ne!(post_restore_correction["record_id"], latest_provider_ack["record_id"]);
+    assert_ne!(post_restore_correction["record_id"], latest_quote_author_ack["record_id"]);
     let post_restore_envelope =
         post_restore_correction_envelope(node_y2, &tx_active.quote_record_id).await;
     let post_restore_verify =
@@ -463,7 +463,7 @@ async fn assert_post_restore_operations(
 }
 
 #[tokio::test]
-async fn a_provider_transaction_survives_an_encrypted_backup_and_restore() {
+async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {

@@ -10,7 +10,7 @@ use syneroym_roym_core::{
     booking,
     envelope::Response,
     fulfilment, payment,
-    transaction::{AgreedTerms, ReceiptHalf, Role},
+    transaction::{AgreedTerms, DealRole, ReceiptHalf},
 };
 
 use super::{
@@ -95,16 +95,16 @@ fn validate_payments(
         }
 
         verify_payment_half_chain(
-            &row.consumer,
-            Role::Consumer,
+            &row.counterparty,
+            DealRole::Counterparty,
             &agr.terms,
             id,
             &mut history,
             now,
         )?;
         verify_payment_half_chain(
-            &row.provider,
-            Role::Provider,
+            &row.quote_author,
+            DealRole::QuoteAuthor,
             &agr.terms,
             id,
             &mut history,
@@ -118,7 +118,7 @@ fn validate_payments(
 
 fn verify_payment_half_chain(
     halves: &[ReceiptHalf],
-    expected_role: Role,
+    expected_role: DealRole,
     terms: &AgreedTerms,
     id: &str,
     history: &mut Vec<(String, String, String)>,
@@ -198,7 +198,7 @@ fn validate_fulfilments(
             }
         };
 
-        if let Some(ref c) = row.consumer {
+        if let Some(ref c) = row.counterparty {
             let v = fulfilment::verify_fulfilment_receipt(&c.envelope, now);
             if !v.verified {
                 return Err(Response::invalid_params(format!(
@@ -213,7 +213,7 @@ fn validate_fulfilments(
                     )));
                 }
             };
-            if p.terms != agr.terms || p.role != Role::Consumer {
+            if p.terms != agr.terms || p.role != DealRole::Counterparty {
                 return Err(Response::invalid_params(format!(
                     "fulfilments '{id}' consumer receipt mismatch"
                 )));
@@ -225,7 +225,7 @@ fn validate_fulfilments(
             ));
         }
 
-        if let Some(ref p_half) = row.provider {
+        if let Some(ref p_half) = row.quote_author {
             let v = fulfilment::verify_fulfilment_receipt(&p_half.envelope, now);
             if !v.verified {
                 return Err(Response::invalid_params(format!(
@@ -240,7 +240,7 @@ fn validate_fulfilments(
                     )));
                 }
             };
-            if p.terms != agr.terms || p.role != Role::Provider {
+            if p.terms != agr.terms || p.role != DealRole::QuoteAuthor {
                 return Err(Response::invalid_params(format!(
                     "fulfilments '{id}' provider receipt mismatch"
                 )));
@@ -367,7 +367,7 @@ fn validate_progress(
                 v.reason
             )));
         }
-        if owner != row.snapshot.consumer_did {
+        if owner != row.snapshot.counterparty_did {
             return Err(Response::invalid_params(format!(
                 "progress '{id}' owner did not match consumer did"
             )));

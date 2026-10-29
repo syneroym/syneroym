@@ -19,7 +19,7 @@ async fn setup_active_agreement(h: &Harness, conv: &str) -> (String, Value) {
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let terms = quote_env.payload["terms"].clone();
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         conv,
         &quote_rec_id,
         &peer_did(),
@@ -381,7 +381,7 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     assert_eq!(s1n["result"]["deferred"], 1, "s1n: {s1n}");
 
     // Agreement card now arrives with earlier sender timestamp 1_000
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),

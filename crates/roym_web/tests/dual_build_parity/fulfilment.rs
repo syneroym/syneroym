@@ -20,7 +20,7 @@ async fn setup_active_agreement(h: &Harness, conv: &str, timing: &str) -> (Strin
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let terms = quote_env.payload["terms"].clone();
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         conv,
         &quote_rec_id,
         &peer_did(),
@@ -227,7 +227,7 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let q_payload = &quote_env.payload;
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),

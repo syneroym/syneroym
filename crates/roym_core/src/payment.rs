@@ -8,7 +8,7 @@ use crate::{
     listing::{self, MAX_PAYMENT_METHOD_LEN},
     money, person,
     record::{self, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST, VerifyOptions},
-    transaction::{AgreedTerms, Role},
+    transaction::{AgreedTerms, DealRole},
     verdict::RecordVerdict,
 };
 
@@ -22,9 +22,9 @@ pub enum PaymentError {
     #[error("agreement '{0}' must start with 'rec_'")]
     InvalidAgreement(String),
     #[error("consumer_did '{0}' is not a valid did:key")]
-    InvalidConsumerDid(String),
+    InvalidCounterpartyDid(String),
     #[error("provider_did '{0}' is not a valid did:key")]
-    InvalidProviderDid(String),
+    InvalidQuoteAuthorDid(String),
     #[error("consumer and provider cannot be the same DID")]
     SamePartyDid,
     #[error("conversation is empty")]
@@ -49,8 +49,10 @@ pub enum PaymentError {
 pub struct PaymentRequestPayload {
     pub agreement: String,
     pub conversation: String,
-    pub consumer_did: String,
-    pub provider_did: String,
+    #[serde(rename = "consumer_did")]
+    pub counterparty_did: String,
+    #[serde(rename = "provider_did")]
+    pub quote_author_did: String,
     pub currency: String,
     pub amount_minor: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,13 +64,13 @@ impl PaymentRequestPayload {
         if !self.agreement.starts_with("rec_") {
             return Err(PaymentError::InvalidAgreement(self.agreement.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(PaymentError::InvalidConsumerDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(PaymentError::InvalidCounterpartyDid(self.counterparty_did.clone()));
         }
-        if !person::is_did_key(&self.provider_did) {
-            return Err(PaymentError::InvalidProviderDid(self.provider_did.clone()));
+        if !person::is_did_key(&self.quote_author_did) {
+            return Err(PaymentError::InvalidQuoteAuthorDid(self.quote_author_did.clone()));
         }
-        if self.consumer_did == self.provider_did {
+        if self.counterparty_did == self.quote_author_did {
             return Err(PaymentError::SamePartyDid);
         }
         if self.conversation.is_empty() {
@@ -94,9 +96,11 @@ impl PaymentRequestPayload {
 pub struct PaymentAcknowledgementPayload {
     pub agreement: String,
     pub conversation: String,
-    pub consumer_did: String,
-    pub provider_did: String,
-    pub role: Role,
+    #[serde(rename = "consumer_did")]
+    pub counterparty_did: String,
+    #[serde(rename = "provider_did")]
+    pub quote_author_did: String,
+    pub role: DealRole,
     pub currency: String,
     pub amount_minor: i64,
     /// When the issuer says the payment happened. The issuer's own word.
@@ -113,13 +117,13 @@ impl PaymentAcknowledgementPayload {
         if !self.agreement.starts_with("rec_") {
             return Err(PaymentError::InvalidAgreement(self.agreement.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(PaymentError::InvalidConsumerDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(PaymentError::InvalidCounterpartyDid(self.counterparty_did.clone()));
         }
-        if !person::is_did_key(&self.provider_did) {
-            return Err(PaymentError::InvalidProviderDid(self.provider_did.clone()));
+        if !person::is_did_key(&self.quote_author_did) {
+            return Err(PaymentError::InvalidQuoteAuthorDid(self.quote_author_did.clone()));
         }
-        if self.consumer_did == self.provider_did {
+        if self.counterparty_did == self.quote_author_did {
             return Err(PaymentError::SamePartyDid);
         }
         if self.conversation.is_empty() {
@@ -174,8 +178,8 @@ pub fn acknowledgements_agree(
 ) -> bool {
     a.agreement == b.agreement
         && a.conversation == b.conversation
-        && a.consumer_did == b.consumer_did
-        && a.provider_did == b.provider_did
+        && a.counterparty_did == b.counterparty_did
+        && a.quote_author_did == b.quote_author_did
         && a.currency == b.currency
         && a.amount_minor == b.amount_minor
         && a.role != b.role
@@ -189,8 +193,8 @@ pub fn is_valid_correction(
 ) -> bool {
     old.agreement == new.agreement
         && old.conversation == new.conversation
-        && old.consumer_did == new.consumer_did
-        && old.provider_did == new.provider_did
+        && old.counterparty_did == new.counterparty_did
+        && old.quote_author_did == new.quote_author_did
         && old.role == new.role
         && old.currency == new.currency
         && old.amount_minor == new.amount_minor
@@ -225,7 +229,7 @@ pub fn verify_payment_request(
     if verified.supersedes.is_some() {
         return RecordVerdict::refused("a payment request cannot be corrected");
     }
-    if verified.issuer != payload.provider_did {
+    if verified.issuer != payload.quote_author_did {
         return RecordVerdict::refused("payment request issuer does not match provider_did");
     }
     RecordVerdict {
@@ -274,8 +278,8 @@ pub fn verify_payment_acknowledgement(
         return RecordVerdict::refused("a payment acknowledgement may not declare an expiry");
     }
     let expected_issuer = match payload.role {
-        Role::Consumer => &payload.consumer_did,
-        Role::Provider => &payload.provider_did,
+        DealRole::Counterparty => &payload.counterparty_did,
+        DealRole::QuoteAuthor => &payload.quote_author_did,
     };
     if verified.issuer != *expected_issuer {
         return RecordVerdict::refused("acknowledgement issuer does not match role's DID");

@@ -377,8 +377,8 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     let mut tampered_bundle_agr: Bundle = serde_json::from_value(bundle_val.clone()).unwrap();
     let agr_rows = tampered_bundle_agr.sections.get_mut("agreements").unwrap();
     let mut agr_payload = agr_rows[0].get("payload").unwrap().clone();
-    let consumer_env_str = agr_payload["consumer"]["envelope"].as_str().unwrap();
-    let mut c_env: Value = serde_json::from_str(consumer_env_str).unwrap();
+    let counterparty_env_str = agr_payload["consumer"]["envelope"].as_str().unwrap();
+    let mut c_env: Value = serde_json::from_str(counterparty_env_str).unwrap();
     c_env["payload"]["terms"]["scope"] = json!("Tampered agreement scope");
     agr_payload["consumer"]["envelope"] = json!(c_env.to_string());
     agr_rows[0]["payload"] = agr_payload;

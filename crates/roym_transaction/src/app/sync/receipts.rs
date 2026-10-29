@@ -6,7 +6,7 @@ use syneroym_roym_core::{
     booking::{self, BookingEvent, Track},
     fulfilment, payment,
     record::Envelope,
-    transaction::{self, PairState, ReceiptHalf, Role, pair_state},
+    transaction::{self, DealRole, PairState, ReceiptHalf, pair_state},
     verdict::RecordVerdict,
 };
 
@@ -61,7 +61,7 @@ pub(crate) async fn file_progress_card<H: AppHost>(
     if p.conversation != conversation {
         return refuse_card(host, msg_id, row, "card names another conversation").await;
     }
-    if owner != p.consumer_did {
+    if owner != p.counterparty_did {
         return refuse_card(
             host,
             msg_id,
@@ -97,7 +97,9 @@ pub(crate) async fn file_progress_card<H: AppHost>(
         Some(q) => q,
         None => return refuse_card(host, msg_id, row, "stored quote has no payload").await,
     };
-    if p.provider_did != qv.issuer.unwrap_or_default() || p.consumer_did != qp.consumer_did {
+    if p.quote_author_did != qv.issuer.unwrap_or_default()
+        || p.counterparty_did != qp.counterparty_did
+    {
         return refuse_card(host, msg_id, row, "names the wrong parties").await;
     }
 
@@ -164,7 +166,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
             .await;
         }
     };
-    let pair = pair_state(agr.consumer.as_ref(), agr.provider.as_ref());
+    let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
         return defer_or_refuse(
             host,
@@ -176,7 +178,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
         )
         .await;
     }
-    if p.provider_did != agr.provider_did || p.consumer_did != agr.consumer_did {
+    if p.quote_author_did != agr.quote_author_did || p.counterparty_did != agr.counterparty_did {
         return refuse_card(host, msg_id, row, "names the wrong parties").await;
     }
     if p.conversation != conversation || p.conversation != agr.conversation {
@@ -191,8 +193,8 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
             agreement: p.agreement.clone(),
             conversation: conversation.to_string(),
             request: None,
-            consumer: Vec::new(),
-            provider: Vec::new(),
+            counterparty: Vec::new(),
+            quote_author: Vec::new(),
             updated_at_secs: now,
         });
 
@@ -274,8 +276,8 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
             agreement: p.agreement.clone(),
             conversation: conversation.to_string(),
             request: None,
-            consumer: Vec::new(),
-            provider: Vec::new(),
+            counterparty: Vec::new(),
+            quote_author: Vec::new(),
             updated_at_secs: now,
         });
 
@@ -285,8 +287,8 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     };
 
     let versions = match p.role {
-        Role::Consumer => &mut payments.consumer,
-        Role::Provider => &mut payments.provider,
+        DealRole::Counterparty => &mut payments.counterparty,
+        DealRole::QuoteAuthor => &mut payments.quote_author,
     };
 
     let _first = match append_ack_half(versions, env.supersedes.as_deref(), envelope, &v, p, now) {
@@ -307,11 +309,11 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     row.data = serde_json::to_value(p).ok();
     put_row(host, CARDS, msg_id, &row).await?;
 
-    if owner == agr.provider_did && p.role == Role::Consumer {
+    if owner == agr.quote_author_did && p.role == DealRole::Counterparty {
         let _ = booking_ops::transition(
             host,
             &p.agreement,
-            BookingEvent::Half { track: Track::Payment, role: Role::Consumer },
+            BookingEvent::Half { track: Track::Payment, role: DealRole::Counterparty },
             now,
         )
         .await;
@@ -359,7 +361,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
             .await;
         }
     };
-    let pair = pair_state(agr.consumer.as_ref(), agr.provider.as_ref());
+    let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
         return defer_or_refuse(
             host,
@@ -371,7 +373,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         )
         .await;
     }
-    if p.provider_did != agr.provider_did || p.consumer_did != agr.consumer_did {
+    if p.quote_author_did != agr.quote_author_did || p.counterparty_did != agr.counterparty_did {
         return refuse_card(host, msg_id, row, "names the wrong parties").await;
     }
     if p.conversation != conversation || p.conversation != agr.conversation {
@@ -385,15 +387,15 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         get_row(host, FULFILMENTS, &p.agreement).await?.unwrap_or_else(|| FulfilmentsRow {
             agreement: p.agreement.clone(),
             conversation: conversation.to_string(),
-            consumer: None,
-            provider: None,
+            counterparty: None,
+            quote_author: None,
             updated_at_secs: now,
         });
 
     let rec_id = v.record_id.clone().unwrap_or_default();
     let existing = match p.role {
-        Role::Consumer => &mut fulfilments.consumer,
-        Role::Provider => &mut fulfilments.provider,
+        DealRole::Counterparty => &mut fulfilments.counterparty,
+        DealRole::QuoteAuthor => &mut fulfilments.quote_author,
     };
 
     let _first = if let Some(ex) = existing {
@@ -420,11 +422,11 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     row.data = serde_json::to_value(p).ok();
     put_row(host, CARDS, msg_id, &row).await?;
 
-    if owner == agr.provider_did && p.role == Role::Consumer {
+    if owner == agr.quote_author_did && p.role == DealRole::Counterparty {
         let _ = booking_ops::transition(
             host,
             &p.agreement,
-            BookingEvent::Half { track: Track::Fulfilment, role: Role::Consumer },
+            BookingEvent::Half { track: Track::Fulfilment, role: DealRole::Counterparty },
             now,
         )
         .await;
@@ -447,11 +449,11 @@ fn validate_ack_agreement(
         Some(a) => a,
         None => return Err(("names an agreement this node does not hold", true)),
     };
-    let pair = pair_state(agr.consumer.as_ref(), agr.provider.as_ref());
+    let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
         return Err(("agreement not complete on this node", true));
     }
-    if p.provider_did != agr.provider_did || p.consumer_did != agr.consumer_did {
+    if p.quote_author_did != agr.quote_author_did || p.counterparty_did != agr.counterparty_did {
         return Err(("names the wrong parties", false));
     }
     if p.conversation != agr.conversation {

@@ -245,12 +245,12 @@ async fn an_offer_is_agreed_across_two_installations() {
     assert!(x_agr["consumer"].is_object());
     assert!(x_agr["provider"].is_object());
 
-    let x_consumer_env =
+    let x_counterparty_env =
         Envelope::from_json(x_agr["consumer"]["envelope"].as_str().unwrap()).unwrap();
-    let x_provider_env =
+    let x_quote_author_env =
         Envelope::from_json(x_agr["provider"]["envelope"].as_str().unwrap()).unwrap();
-    let mut c_payload = x_consumer_env.payload.clone();
-    let mut p_payload = x_provider_env.payload.clone();
+    let mut c_payload = x_counterparty_env.payload.clone();
+    let mut p_payload = x_quote_author_env.payload.clone();
     assert_eq!(c_payload["role"], "consumer");
     assert_eq!(p_payload["role"], "provider");
     c_payload["role"] = json!("same");
@@ -258,7 +258,7 @@ async fn an_offer_is_agreed_across_two_installations() {
     assert_eq!(c_payload, p_payload);
 
     // Step 11: Every field the Records table names is present on both halves.
-    for half_payload in [&x_consumer_env.payload, &x_provider_env.payload] {
+    for half_payload in [&x_counterparty_env.payload, &x_quote_author_env.payload] {
         assert_eq!(half_payload["consumer_did"], owner_x_did);
         assert_eq!(half_payload["provider_did"], owner_y_did);
         assert_eq!(half_payload["quote_record_id"], quote_record_id);
@@ -284,16 +284,16 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     // Step 12: Restart X, redeploy on resume, and re-read agreement.get: still
     // complete.
-    let step10_consumer_env = x_agr["consumer"]["envelope"].as_str().unwrap().to_string();
-    let step10_provider_env = x_agr["provider"]["envelope"].as_str().unwrap().to_string();
+    let step10_counterparty_env = x_agr["consumer"]["envelope"].as_str().unwrap().to_string();
+    let step10_quote_author_env = x_agr["provider"]["envelope"].as_str().unwrap().to_string();
 
     node_x.restart(None, None).await;
 
     let x_agr_restarted =
         node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
     assert_eq!(x_agr_restarted["pair"]["state"], "complete");
-    assert_eq!(x_agr_restarted["consumer"]["envelope"], step10_consumer_env);
-    assert_eq!(x_agr_restarted["provider"]["envelope"], step10_provider_env);
+    assert_eq!(x_agr_restarted["consumer"]["envelope"], step10_counterparty_env);
+    assert_eq!(x_agr_restarted["provider"]["envelope"], step10_quote_author_env);
 
     // Step 13: X sends plain chat message claiming different payee; agreement payee
     // is unchanged.

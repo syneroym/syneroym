@@ -431,7 +431,7 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
     let quote_envelope = Envelope::from_json(env_json).unwrap();
     let terms = quote_envelope.payload["terms"].clone();
 
-    let (_, peer_receipt_env) = peer_signed_consumer_receipt_with_expiry(
+    let (_, peer_receipt_env) = peer_counterparty_receipt_with_expiry(
         &conv,
         &q_rec_id,
         &peer_did(),
@@ -475,7 +475,7 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
 }
 
 #[tokio::test]
-async fn scenario_149_quote_naming_wrong_consumer_did_refused_parity() {
+async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;

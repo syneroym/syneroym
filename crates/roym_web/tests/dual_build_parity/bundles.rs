@@ -136,7 +136,7 @@ async fn scenario_168_transaction_export_import_full_vertical_parity() {
         serde_json::from_str(gq["result"]["envelope"].as_str().unwrap()).unwrap();
     let terms = env.payload["terms"].clone();
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),

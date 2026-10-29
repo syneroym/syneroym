@@ -24,7 +24,7 @@ use common::{
     roym::{RoymNode as Node, fast_conversation_role, roym_artifacts_present},
     roym_flow::{
         accept_quote, assert_no_directory, complete_winner_lifecycle, open_request_conv,
-        provider_conv_for, quote_terms, request_record_on_provider, send_quote,
+        quote_author_conv_for, quote_terms, request_record_on_quote_author, send_quote,
         wait_and_verify_winner_scheduled,
     },
 };
@@ -147,11 +147,11 @@ async fn exchange_quotes_and_accept(
     let (w_conv_id, _w_req) =
         open_request_conv(node_w, &y_conv_did, "Clear the front garden", &["gardening"]).await;
 
-    let y_conv_for_x = provider_conv_for(node_y, &x_conv_did).await;
-    let y_conv_for_w = provider_conv_for(node_y, &w_conv_did).await;
+    let y_conv_for_x = quote_author_conv_for(node_y, &x_conv_did).await;
+    let y_conv_for_w = quote_author_conv_for(node_y, &w_conv_did).await;
 
-    let x_req_record_id = request_record_on_provider(node_y, &y_conv_for_x).await;
-    let w_req_record_id = request_record_on_provider(node_y, &y_conv_for_w).await;
+    let x_req_record_id = request_record_on_quote_author(node_y, &y_conv_for_x).await;
+    let w_req_record_id = request_record_on_quote_author(node_y, &y_conv_for_w).await;
 
     let x_quote_record_id =
         send_quote(node_y, &x_req_record_id, listing_id, slot_id, quote_terms("Y Gardens", 6000))

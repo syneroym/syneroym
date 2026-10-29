@@ -7,7 +7,7 @@ use thiserror::Error;
 use crate::{
     listing, person,
     record::{self, RECORD_FULFILMENT_RECEIPT, VerifyOptions},
-    transaction::{AgreedTerms, Role, TransactionError},
+    transaction::{AgreedTerms, DealRole, TransactionError},
     verdict::RecordVerdict,
 };
 
@@ -18,9 +18,9 @@ pub enum FulfilmentError {
     #[error("agreement '{0}' must start with 'rec_'")]
     InvalidAgreement(String),
     #[error("consumer_did '{0}' is not a valid did:key")]
-    InvalidConsumerDid(String),
+    InvalidCounterpartyDid(String),
     #[error("provider_did '{0}' is not a valid did:key")]
-    InvalidProviderDid(String),
+    InvalidQuoteAuthorDid(String),
     #[error("consumer and provider cannot be the same DID")]
     SamePartyDid,
     #[error("conversation is empty")]
@@ -35,9 +35,11 @@ pub enum FulfilmentError {
 pub struct FulfilmentReceiptPayload {
     pub agreement: String,
     pub conversation: String,
-    pub consumer_did: String,
-    pub provider_did: String,
-    pub role: Role,
+    #[serde(rename = "consumer_did")]
+    pub counterparty_did: String,
+    #[serde(rename = "provider_did")]
+    pub quote_author_did: String,
+    pub role: DealRole,
     pub terms: AgreedTerms,
 }
 
@@ -46,13 +48,13 @@ impl FulfilmentReceiptPayload {
         if !self.agreement.starts_with("rec_") {
             return Err(FulfilmentError::InvalidAgreement(self.agreement.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(FulfilmentError::InvalidConsumerDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(FulfilmentError::InvalidCounterpartyDid(self.counterparty_did.clone()));
         }
-        if !person::is_did_key(&self.provider_did) {
-            return Err(FulfilmentError::InvalidProviderDid(self.provider_did.clone()));
+        if !person::is_did_key(&self.quote_author_did) {
+            return Err(FulfilmentError::InvalidQuoteAuthorDid(self.quote_author_did.clone()));
         }
-        if self.consumer_did == self.provider_did {
+        if self.counterparty_did == self.quote_author_did {
             return Err(FulfilmentError::SamePartyDid);
         }
         if self.conversation.is_empty() {
@@ -69,8 +71,8 @@ impl FulfilmentReceiptPayload {
 pub fn fulfilment_halves_agree(a: &FulfilmentReceiptPayload, b: &FulfilmentReceiptPayload) -> bool {
     a.agreement == b.agreement
         && a.conversation == b.conversation
-        && a.consumer_did == b.consumer_did
-        && a.provider_did == b.provider_did
+        && a.counterparty_did == b.counterparty_did
+        && a.quote_author_did == b.quote_author_did
         && a.terms == b.terms
         && a.role != b.role
 }
@@ -106,8 +108,8 @@ pub fn verify_fulfilment_receipt(
         return RecordVerdict::refused("a fulfilment receipt cannot be corrected");
     }
     let expected_issuer = match payload.role {
-        Role::Consumer => &payload.consumer_did,
-        Role::Provider => &payload.provider_did,
+        DealRole::Counterparty => &payload.counterparty_did,
+        DealRole::QuoteAuthor => &payload.quote_author_did,
     };
     if verified.issuer != *expected_issuer {
         return RecordVerdict::refused("fulfilment receipt issuer does not match role's DID");
