@@ -116,8 +116,7 @@ pub fn encode_body(content_type: &str, body: &[u8]) -> (BodyEncoding, String) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageRow {
-    /// The host's own message id.
+pub struct MessageView {
     pub id: String,
     pub conversation: String,
     pub author: String,
@@ -125,23 +124,49 @@ pub struct MessageRow {
     pub sender_timestamp_ms: i64,
     pub content_type: String,
     pub body_encoding: BodyEncoding,
-    /// Absent once deleted. The row itself is the durable deletion record:
-    /// the spec's rule is that deleting removes the local copy and writes
-    /// a record, not that the row disappears.
+    pub state: StoredState,
+    pub last_error: Option<String>,
+    pub stored_at_secs: i64,
+    pub refused: Option<String>,
+    pub restored: bool,
+    pub visible_seq: u64,
+    pub verified: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at_secs: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
-    pub state: StoredState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub deleted_at_secs: Option<u64>,
-    pub stored_at_secs: u64,
 }
 
-impl MessageRow {
+impl From<&syneroym_app_host::types::conversation::Message> for MessageView {
+    fn from(m: &syneroym_app_host::types::conversation::Message) -> Self {
+        let (body_encoding, body_str) = encode_body(&m.content_type, &m.body);
+        let (deleted_at_secs, body) =
+            if let Some(del) = m.deleted_at { (Some(del), None) } else { (None, Some(body_str)) };
+        Self {
+            id: m.id.clone(),
+            conversation: m.conversation.clone(),
+            author: m.author.clone(),
+            direction: if m.outgoing { Direction::Outgoing } else { Direction::Incoming },
+            sender_timestamp_ms: m.sender_timestamp,
+            content_type: m.content_type.clone(),
+            body_encoding,
+            state: StoredState::from(m.state),
+            last_error: m.last_error.clone(),
+            stored_at_secs: m.received_at,
+            refused: m.refused.clone(),
+            restored: m.restored,
+            visible_seq: m.visible_seq,
+            verified: m.verified,
+            deleted_at_secs,
+            body,
+        }
+    }
+}
+
+impl MessageView {
     /// Drops the body and stamps the deletion. The id, timestamp and
     /// author are kept -- the row is the durable deletion record.
-    pub fn tombstone(&mut self, now_secs: u64) {
+    pub fn tombstone(&mut self, now_secs: i64) {
         self.body = None;
         self.deleted_at_secs = Some(now_secs);
     }
@@ -156,7 +181,7 @@ impl MessageRow {
 /// order a person sees here is the order the host would give and the order
 /// every other participant computes: `(sender-timestamp, author, id)`.
 #[must_use]
-pub fn sort_key(m: &MessageRow) -> (i64, &str, &str) {
+pub fn sort_key(m: &MessageView) -> (i64, &str, &str) {
     (m.sender_timestamp_ms, m.author.as_str(), m.id.as_str())
 }
 
@@ -195,8 +220,8 @@ pub fn deletion_request_body(target_message_id: &str) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn row(id: &str, ts: i64, author: &str) -> MessageRow {
-        MessageRow {
+    fn row(id: &str, ts: i64, author: &str) -> MessageView {
+        MessageView {
             id: id.to_string(),
             conversation: "conv".to_string(),
             author: author.to_string(),
@@ -207,8 +232,12 @@ mod tests {
             body: Some("hi".to_string()),
             state: StoredState::Delivered,
             last_error: None,
-            deleted_at_secs: None,
             stored_at_secs: 100,
+            refused: None,
+            restored: false,
+            visible_seq: 1,
+            verified: true,
+            deleted_at_secs: None,
         }
     }
 

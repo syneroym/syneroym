@@ -2,10 +2,16 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
+use syneroym_app_host::{AppHost, types::proxy::CallTarget};
 
-use crate::envelope::{Request, Response};
+use crate::{
+    envelope::{Request, Response, RpcError},
+    services::Service,
+};
 
 pub mod check;
+pub mod conversation;
+pub mod profile;
 #[cfg(test)]
 mod tests;
 
@@ -119,6 +125,55 @@ where
         Ok(v) => Response::ok(v),
         Err(e) => Response::internal_error(e.to_string()),
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SiblingError {
+    #[error("{0}")]
+    Transport(String),
+    #[error("{} (code {})", .0.message, .0.code)]
+    Refused(RpcError),
+    #[error("{0}")]
+    BadReply(String),
+}
+
+pub async fn call_sibling<H: AppHost, I: Serialize, O: DeserializeOwned>(
+    host: &H,
+    service: Service,
+    method: &str,
+    input: &I,
+) -> Result<O, SiblingError> {
+    let req = serde_json::to_string(&serde_json::json!({
+        "method": method,
+        "params": input,
+    }))
+    .map_err(|e| SiblingError::Transport(e.to_string()))?;
+
+    let raw = host
+        .call(
+            CallTarget::Dependency(service.name.to_string()),
+            service.interface.to_string(),
+            "invoke".to_string(),
+            serde_json::to_string(&serde_json::json!([req]))
+                .map_err(|e| SiblingError::Transport(e.to_string()))?,
+            None,
+        )
+        .await
+        .map_err(|e| SiblingError::Transport(format!("{method}: {e:?}")))?;
+
+    let resp: Response = serde_json::from_str(&raw)
+        .map_err(|e| SiblingError::BadReply(format!("invalid JSON-RPC response: {e}")))?;
+
+    if let Some(err) = resp.error {
+        return Err(SiblingError::Refused(err));
+    }
+
+    let Some(result) = resp.result else {
+        return Err(SiblingError::BadReply("missing result in response".to_string()));
+    };
+
+    serde_json::from_value(result)
+        .map_err(|e| SiblingError::BadReply(format!("invalid output: {e}")))
 }
 
 #[derive(Debug, Clone)]

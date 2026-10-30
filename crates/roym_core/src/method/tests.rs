@@ -2,15 +2,36 @@ use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use syneroym_app_host::AppHost;
+use syneroym_app_host::{
+    AppHost,
+    types::{
+        conversation::{DeliveryState, Message},
+        proxy::ProxyError,
+        signing::SigningIdentity,
+    },
+};
+use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
 
 use super::{
-    MethodInfo, NoParams, ParamError, Reply, check::assert_service_table, parse_value, typed,
+    MethodInfo, NoParams, ParamError, Reply, SiblingError, call_sibling,
+    check::assert_service_table,
+    parse_value,
+    profile::{
+        AdmissionKind, AdmitFirstContactOutput, BlockCheckOutput, BlockedSince,
+        ResolveAddressOutput,
+    },
+    typed,
 };
 use crate::{
+    backup::ImportInput,
+    conversation::MessageView,
     envelope::{Request, Response},
     services::PROFILE,
-    signing::tests::TestHost,
+    signing::{
+        CertificateStatus, InstallCertificateInput, install_signing_certificate, signing_status,
+        tests::TestHost,
+    },
 };
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -392,4 +413,236 @@ fn check_fails_on_unlisted_method_literal() {
     if let Err(e) = res {
         std::panic::resume_unwind(e);
     }
+}
+
+#[test]
+fn message_view_writes_the_same_keys_as_the_old_json() {
+    let mut m = Message {
+        id: "msg-1".to_string(),
+        conversation: "conv-1".to_string(),
+        author: "did:key:zAuthor".to_string(),
+        outgoing: true,
+        sender_timestamp: 1_700_000_000,
+        content_type: "text/plain".to_string(),
+        body: b"Hello world".to_vec(),
+        state: DeliveryState::Delivered,
+        last_error: None,
+        received_at: 1_700_000_010,
+        refused: None,
+        restored: false,
+        visible_seq: 42,
+        verified: true,
+        deleted_at: None,
+    };
+    let view = MessageView::from(&m);
+    let val = serde_json::to_value(&view).unwrap();
+    let obj = val.as_object().unwrap();
+
+    let expected_keys = [
+        "id",
+        "conversation",
+        "author",
+        "direction",
+        "sender_timestamp_ms",
+        "content_type",
+        "body_encoding",
+        "state",
+        "last_error",
+        "stored_at_secs",
+        "refused",
+        "restored",
+        "visible_seq",
+        "verified",
+        "body",
+    ];
+    for k in expected_keys {
+        assert!(obj.contains_key(k), "missing key {k} in non-deleted message");
+    }
+    assert!(!obj.contains_key("deleted_at_secs"));
+    assert_eq!(obj["body"], json!("Hello world"));
+    assert_eq!(obj["direction"], json!("outgoing"));
+    assert_eq!(obj["body_encoding"], json!("utf8"));
+    assert_eq!(obj["state"], json!("delivered"));
+    assert_eq!(obj["last_error"], Value::Null);
+    assert_eq!(obj["refused"], Value::Null);
+
+    m.deleted_at = Some(1_700_000_100);
+    let view_del = MessageView::from(&m);
+    let val_del = serde_json::to_value(&view_del).unwrap();
+    let obj_del = val_del.as_object().unwrap();
+    assert!(obj_del.contains_key("deleted_at_secs"));
+    assert_eq!(obj_del["deleted_at_secs"], json!(1_700_000_100));
+    assert!(!obj_del.contains_key("body"));
+}
+
+#[test]
+fn block_check_output_blocked_and_unblocked_shapes() {
+    let unblocked = BlockCheckOutput { blocked: false, since: None };
+    let json_unblocked = serde_json::to_value(&unblocked).unwrap();
+    assert_eq!(json_unblocked, json!({ "blocked": false }));
+
+    let blocked_with_data = BlockCheckOutput {
+        blocked: true,
+        since: Some(BlockedSince {
+            reason: Some("spam".to_string()),
+            since_secs: Some(1_700_000_000),
+        }),
+    };
+    let json_blocked = serde_json::to_value(&blocked_with_data).unwrap();
+    assert_eq!(
+        json_blocked,
+        json!({ "blocked": true, "reason": "spam", "since_secs": 1_700_000_000 })
+    );
+
+    let blocked_nulls = BlockCheckOutput {
+        blocked: true,
+        since: Some(BlockedSince { reason: None, since_secs: None }),
+    };
+    let json_nulls = serde_json::to_value(&blocked_nulls).unwrap();
+    assert_eq!(
+        json_nulls,
+        json!({ "blocked": true, "reason": Value::Null, "since_secs": Value::Null })
+    );
+}
+
+#[test]
+fn admit_output_leaves_retry_out_unless_rate_limited() {
+    let allow = AdmitFirstContactOutput {
+        admission: AdmissionKind::Allow,
+        blocked: false,
+        retry_after_secs: None,
+    };
+    let j_allow = serde_json::to_value(&allow).unwrap();
+    assert_eq!(j_allow, json!({ "admission": "allow", "blocked": false }));
+    assert!(!j_allow.as_object().unwrap().contains_key("retry_after_secs"));
+
+    let blocked = AdmitFirstContactOutput {
+        admission: AdmissionKind::Blocked,
+        blocked: true,
+        retry_after_secs: None,
+    };
+    let j_blocked = serde_json::to_value(&blocked).unwrap();
+    assert_eq!(j_blocked, json!({ "admission": "blocked", "blocked": true }));
+    assert!(!j_blocked.as_object().unwrap().contains_key("retry_after_secs"));
+
+    let rate_limited = AdmitFirstContactOutput {
+        admission: AdmissionKind::RateLimited,
+        blocked: false,
+        retry_after_secs: Some(3600),
+    };
+    let j_rate = serde_json::to_value(&rate_limited).unwrap();
+    assert_eq!(
+        j_rate,
+        json!({ "admission": "rate-limited", "blocked": false, "retry_after_secs": 3600 })
+    );
+}
+
+#[test]
+fn import_input_refuses_a_bare_bundle() {
+    let bare_bundle = json!({
+        "manifest": {
+            "bundle_version": 1,
+            "subject_did": "did:key:zTest",
+            "sections": {}
+        },
+        "sections": {}
+    });
+    let err = parse_value::<ImportInput>(&bare_bundle).unwrap_err();
+    assert!(err.message.contains("manifest") || err.message.contains("bundle"));
+
+    let empty_err = parse_value::<ImportInput>(&json!({})).unwrap_err();
+    assert_eq!(empty_err.field.as_deref(), Some("bundle"));
+
+    let wrapped = json!({ "bundle": bare_bundle });
+    let ok = parse_value::<ImportInput>(&wrapped);
+    assert!(ok.is_ok());
+}
+
+#[tokio::test]
+async fn signing_status_and_install_certificate_typed_handlers() {
+    let host = TestHost::default();
+    let master = Identity::generate().unwrap();
+    let service_key = Identity::generate().unwrap();
+    let master_did = derive_did_key(&master.public_key());
+    let service_did = derive_did_key(&service_key.public_key());
+
+    host.set_signing_id(SigningIdentity {
+        signing_did: service_did.clone(),
+        pubkey_hex: "00".to_string(),
+        owner_did: Some(master_did.clone()),
+    });
+
+    let st = signing_status(&host, NoParams {}).await.unwrap();
+    assert_eq!(st.signing_did, service_did);
+    assert_eq!(st.owner_did, Some(master_did.clone()));
+    assert_eq!(st.certificate, CertificateStatus::Missing);
+
+    let cert = DelegationCertificate::issue(
+        &master,
+        service_key.public_key(),
+        86400,
+        SCOPE_RECORD_SIGNING.to_string(),
+    )
+    .unwrap();
+
+    let inst = install_signing_certificate(
+        &host,
+        InstallCertificateInput { certificate: cert.to_json().unwrap() },
+    )
+    .await
+    .unwrap();
+    assert_eq!(inst.master_did, master_did);
+
+    let st_after = signing_status(&host, NoParams {}).await.unwrap();
+    assert!(matches!(st_after.certificate, CertificateStatus::Installed { .. }));
+}
+
+#[tokio::test]
+async fn call_sibling_with_test_host() {
+    let host = TestHost::default();
+
+    // 1. Transport error
+    host.set_proxy_response(Err(ProxyError::Transport("connection reset".to_string())));
+    let res: Result<ResolveAddressOutput, _> =
+        call_sibling(&host, PROFILE, "contacts.resolve-address", &json!({})).await;
+    assert!(matches!(res, Err(SiblingError::Transport(_))));
+
+    // 2. Refused
+    host.set_proxy_response(Ok(json!({
+        "error": { "code": -32602, "message": "bad argument" }
+    })
+    .to_string()));
+    let res2: Result<ResolveAddressOutput, _> =
+        call_sibling(&host, PROFILE, "contacts.resolve-address", &json!({})).await;
+    match res2 {
+        Err(SiblingError::Refused(err)) => {
+            assert_eq!(err.code, -32602);
+            assert_eq!(err.message, "bad argument");
+        }
+        other => panic!("expected Refused, got {other:?}"),
+    }
+
+    // 3. Bad reply (invalid JSON)
+    host.set_proxy_response(Ok("invalid json string".to_string()));
+    let res3: Result<ResolveAddressOutput, _> =
+        call_sibling(&host, PROFILE, "contacts.resolve-address", &json!({})).await;
+    assert!(matches!(res3, Err(SiblingError::BadReply(_))));
+
+    // 4. Bad reply (missing result and error)
+    host.set_proxy_response(Ok(json!({}).to_string()));
+    let res4: Result<ResolveAddressOutput, _> =
+        call_sibling(&host, PROFILE, "contacts.resolve-address", &json!({})).await;
+    assert!(matches!(res4, Err(SiblingError::BadReply(_))));
+
+    // 5. Success
+    host.set_proxy_response(Ok(json!({
+        "result": { "conversation_address": "addr-123" }
+    })
+    .to_string()));
+    let res5: Result<ResolveAddressOutput, _> =
+        call_sibling(&host, PROFILE, "contacts.resolve-address", &json!({})).await;
+    assert_eq!(
+        res5.unwrap(),
+        ResolveAddressOutput { conversation_address: "addr-123".to_string() }
+    );
 }

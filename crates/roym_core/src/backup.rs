@@ -79,6 +79,12 @@ pub struct Bundle {
     pub manifest_signature: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportInput {
+    pub bundle: Bundle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BundleError {
     #[error("bundle version {0} is not understood by this build")]
