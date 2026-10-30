@@ -9,21 +9,74 @@ use syneroym_roym_core::{
         TrackState,
     },
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
     method::{Reply, VerifyInput},
     paging, signing,
     transaction::{DealRole, PairState, PaymentTiming, QuotePayload, RecordVerdict, pair_state},
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BOOKINGS, BookingRow, BookingWriter, CARDS, CardRow, LEDGER,
-    PROGRESS, ProgressRow, get_row,
+    AGREEMENTS, AgreementRef, AgreementRow, BOOKINGS, BookingRow, BookingWriter, CARDS, CardRow,
+    LEDGER, PROGRESS, ProgressRow, get_row,
     ledger::{
         Claim, LedgerKind, LedgerRow, StepRow, claim_decision, claim_seat, load_booking, seat_id,
         step_id,
     },
     progress, put_row,
 };
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BookingCancelInput {
+    pub agreement: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BookingListInput {
+    #[serde(default)]
+    pub conversation: Option<String>,
+    #[serde(default)]
+    pub state: Option<BookingState>,
+    #[serde(default = "super::default_list_limit_u64")]
+    pub limit: u64,
+    #[serde(default)]
+    pub offset: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BookingListOutput {
+    pub bookings: Vec<BookingView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BookingHistoryOutput {
+    pub history: Vec<BookingHistoryStep>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum BookingHistoryStep {
+    Author(AuthorStep),
+    Peer(PeerStep),
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthorStep {
+    pub seq: u32,
+    pub event: String,
+    pub snapshot: BookingProgressPayload,
+    pub envelope: String,
+    pub record_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PeerStep {
+    pub seq: Option<u32>,
+    pub snapshot: Value,
+    pub record_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookingView {
@@ -270,264 +323,216 @@ pub(crate) async fn verify<H: AppHost>(
     syneroym_roym_core::method::verify_with(input, booking::verify_booking_progress)
 }
 
-#[derive(Debug, Deserialize)]
-struct AgreementParam {
-    agreement: String,
-}
-
-pub(crate) async fn booking_get<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: AgreementParam = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
-    let agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await {
+pub(crate) async fn booking_get<H: AppHost>(host: &H, input: AgreementRef) -> Reply<BookingView> {
+    let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
-        Ok(None) => return Response::invalid_params("no-such-agreement"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     let now = clock::now_secs();
     if owner == agr.quote_author_did {
-        if let Ok(Some(row)) = load_booking(host, &p.agreement).await
+        if let Ok(Some(row)) = load_booking(host, &input.agreement).await
             && now >= row.snapshot.track_window_ends_at_secs
             && !row.snapshot.state.is_terminal()
         {
-            let _ = transition(host, &p.agreement, BookingEvent::Tick, now).await;
+            let _ = transition(host, &input.agreement, BookingEvent::Tick, now).await;
         }
 
-        let booking = match load_booking(host, &p.agreement).await {
+        let booking = match load_booking(host, &input.agreement).await {
             Ok(b) => b,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
 
         let view = match booking {
             Some(b) => booking_view(
-                &p.agreement,
+                &input.agreement,
                 Some(&b.snapshot),
                 Some(&b.progress_record_id),
                 Some(BookingWriter::Mine),
                 &agr,
                 DealRole::QuoteAuthor,
             ),
-            None => booking_view(&p.agreement, None, None, None, &agr, DealRole::QuoteAuthor),
+            None => booking_view(&input.agreement, None, None, None, &agr, DealRole::QuoteAuthor),
         };
-        Response::ok(json!(view))
+        Ok(view)
     } else if owner == agr.counterparty_did {
-        let progress: Option<ProgressRow> = match get_row(host, PROGRESS, &p.agreement).await {
+        let progress: Option<ProgressRow> = match get_row(host, PROGRESS, &input.agreement).await {
             Ok(pr) => pr,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
 
         let view = match progress {
             Some(pr) => booking_view(
-                &p.agreement,
+                &input.agreement,
                 Some(&pr.snapshot),
                 Some(&pr.record_id),
                 Some(BookingWriter::Peer),
                 &agr,
                 DealRole::Counterparty,
             ),
-            None => booking_view(&p.agreement, None, None, None, &agr, DealRole::Counterparty),
+            None => booking_view(&input.agreement, None, None, None, &agr, DealRole::Counterparty),
         };
-        Response::ok(json!(view))
+        Ok(view)
     } else {
-        Response::invalid_params("not-a-party")
+        Err(Response::invalid_params("not-a-party"))
     }
 }
 
-pub(crate) async fn booking_start<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: AgreementParam = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
-    let agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await {
+pub(crate) async fn booking_start<H: AppHost>(host: &H, input: AgreementRef) -> Reply<BookingView> {
+    let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
-        Ok(None) => return Response::invalid_params("no-such-agreement"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     if owner != agr.quote_author_did {
-        return Response::invalid_params("quote-author-only");
+        return Err(Response::invalid_params("quote-author-only"));
     }
 
     let now = clock::now_secs();
-    let row = match transition(host, &p.agreement, BookingEvent::Start, now).await {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let row = transition(host, &input.agreement, BookingEvent::Start, now).await?;
 
-    Response::ok(json!(booking_view(
-        &p.agreement,
+    Ok(booking_view(
+        &input.agreement,
         Some(&row.snapshot),
         Some(&row.progress_record_id),
         Some(BookingWriter::Mine),
         &agr,
         DealRole::QuoteAuthor,
-    )))
+    ))
 }
 
-#[derive(Debug, Deserialize)]
-struct CancelParams {
-    agreement: String,
-    reason: String,
-}
-
-pub(crate) async fn booking_cancel<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: CancelParams = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
-    let agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await {
+pub(crate) async fn booking_cancel<H: AppHost>(
+    host: &H,
+    input: BookingCancelInput,
+) -> Reply<BookingView> {
+    let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
-        Ok(None) => return Response::invalid_params("no-such-agreement"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     if owner != agr.quote_author_did {
-        return Response::invalid_params("quote-author-only");
+        return Err(Response::invalid_params("quote-author-only"));
     }
 
     let now = clock::now_secs();
-    let row = match transition(host, &p.agreement, BookingEvent::Cancel { reason: p.reason }, now)
-        .await
-    {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let row =
+        transition(host, &input.agreement, BookingEvent::Cancel { reason: input.reason }, now)
+            .await?;
 
-    Response::ok(json!(booking_view(
-        &p.agreement,
+    Ok(booking_view(
+        &input.agreement,
         Some(&row.snapshot),
         Some(&row.progress_record_id),
         Some(BookingWriter::Mine),
         &agr,
         DealRole::QuoteAuthor,
-    )))
+    ))
 }
 
-pub(crate) async fn booking_history<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: AgreementParam = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
-    let agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await {
+pub(crate) async fn history<H: AppHost>(
+    host: &H,
+    input: AgreementRef,
+) -> Reply<BookingHistoryOutput> {
+    let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
-        Ok(None) => return Response::invalid_params("no-such-agreement"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     if owner == agr.quote_author_did {
         let mut steps = Vec::new();
         let mut seq = 1;
         loop {
-            let step_key = step_id(&p.agreement, seq);
+            let step_key = step_id(&input.agreement, seq);
             let lr: Option<LedgerRow> = match get_row(host, LEDGER, &step_key).await {
                 Ok(r) => r,
-                Err(e) => return Response::internal_error(e),
+                Err(e) => return Err(Response::internal_error(e)),
             };
             match lr.and_then(|r| r.step) {
                 Some(step) => {
-                    steps.push(json!({
-                        "seq": step.seq,
-                        "event": step.event,
-                        "snapshot": step.snapshot,
-                        "envelope": step.envelope,
-                        "record_id": step.record_id,
+                    steps.push(BookingHistoryStep::Author(AuthorStep {
+                        seq: step.seq,
+                        event: step.event,
+                        snapshot: step.snapshot,
+                        envelope: step.envelope,
+                        record_id: step.record_id,
                     }));
                     seq += 1;
                 }
                 None => break,
             }
         }
-        Response::ok(json!({ "history": steps }))
+        Ok(BookingHistoryOutput { history: steps })
     } else if owner == agr.counterparty_did {
         let filter = json!({ "conversation": agr.conversation }).to_string();
         let cards: Vec<CardRow> = match paging::query_all(host, CARDS, Some(filter)).await {
             Ok(c) => c,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
         let mut history = Vec::new();
         for card in cards {
             if card.card_type == "booking-progress"
                 && card.verified
                 && let Some(data) = &card.data
-                && data.get("agreement").and_then(Value::as_str) == Some(&p.agreement)
+                && data.get("agreement").and_then(Value::as_str) == Some(&input.agreement)
             {
-                history.push(json!({
-                    "seq": data.get("seq"),
-                    "snapshot": data,
-                    "record_id": card.record_id,
+                let seq =
+                    data.get("seq").and_then(Value::as_u64).and_then(|v| u32::try_from(v).ok());
+                history.push(BookingHistoryStep::Peer(PeerStep {
+                    seq,
+                    snapshot: data.clone(),
+                    record_id: card.record_id,
                 }));
             }
         }
-        Response::ok(json!({ "history": history }))
+        Ok(BookingHistoryOutput { history })
     } else {
-        Response::invalid_params("not-a-party")
+        Err(Response::invalid_params("not-a-party"))
     }
 }
 
-fn default_list_limit() -> usize {
-    200
-}
-
-#[derive(Debug, Deserialize)]
-struct BookingListParams {
-    #[serde(default)]
-    conversation: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default = "default_list_limit")]
-    limit: usize,
-    #[serde(default)]
-    offset: usize,
-}
-
-pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: BookingListParams = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
+pub(crate) async fn booking_list<H: AppHost>(
+    host: &H,
+    input: BookingListInput,
+) -> Reply<BookingListOutput> {
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     let mut views = Vec::new();
-    let filter = p.conversation.as_ref().map(|c| json!({ "conversation": c }).to_string());
+    let filter = input.conversation.as_ref().map(|c| json!({ "conversation": c }).to_string());
 
     let author_bookings: Vec<BookingRow> =
         match paging::query_all(host, BOOKINGS, filter.clone()).await {
             Ok(b) => b,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
 
     for b in author_bookings {
-        if let Some(ref st) = p.state
-            && serde_json::to_value(b.state).ok().and_then(|v| v.as_str().map(ToString::to_string))
-                != Some(st.clone())
+        if let Some(st) = input.state
+            && b.state != st
         {
             continue;
         }
@@ -539,14 +544,14 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
             } else {
                 DealRole::Counterparty
             };
-            views.push(json!(booking_view(
+            views.push(booking_view(
                 &b.agreement,
                 Some(&b.snapshot),
                 Some(&b.progress_record_id),
                 Some(BookingWriter::Mine),
                 &agr,
                 role,
-            )));
+            ));
         }
     }
 
@@ -554,14 +559,11 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
         let counterparty_progress: Vec<ProgressRow> =
             match paging::query_all(host, PROGRESS, filter).await {
                 Ok(pr) => pr,
-                Err(e) => return Response::internal_error(e),
+                Err(e) => return Err(Response::internal_error(e)),
             };
         for pr in counterparty_progress {
-            if let Some(ref st) = p.state
-                && serde_json::to_value(pr.snapshot.state)
-                    .ok()
-                    .and_then(|v| v.as_str().map(ToString::to_string))
-                    != Some(st.clone())
+            if let Some(st) = input.state
+                && pr.snapshot.state != st
             {
                 continue;
             }
@@ -573,18 +575,20 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
                 } else {
                     DealRole::Counterparty
                 };
-                views.push(json!(booking_view(
+                views.push(booking_view(
                     &pr.agreement,
                     Some(&pr.snapshot),
                     Some(&pr.record_id),
                     Some(BookingWriter::Peer),
                     &agr,
                     role,
-                )));
+                ));
             }
         }
     }
 
-    let paged: Vec<Value> = views.into_iter().skip(p.offset).take(p.limit).collect();
-    Response::ok(json!({ "bookings": paged }))
+    let offset = usize::try_from(input.offset).unwrap_or(usize::MAX);
+    let limit = usize::try_from(input.limit).unwrap_or(usize::MAX);
+    let paged: Vec<BookingView> = views.into_iter().skip(offset).take(limit).collect();
+    Ok(BookingListOutput { bookings: paged })
 }

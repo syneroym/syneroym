@@ -1,14 +1,18 @@
 //! Decision and seat reservation ledger for quote author bookings.
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
     booking::{self, BookingProgressPayload, BookingState, ConflictReason},
+    method::{
+        SiblingError, call_sibling,
+        catalog::{SlotKeyInput, SlotRow},
+    },
+    services,
     transaction::ReceiptHalf,
 };
 
-use super::{BOOKINGS, BookingRow, LEDGER, catalog_call, get_row, put_row};
+use super::{BOOKINGS, BookingRow, LEDGER, get_row, put_row};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -135,12 +139,21 @@ pub(crate) async fn claim_seat<H: AppHost>(
     scheduled_env: &(String, String),
     now: u64,
 ) -> Result<Claim, String> {
-    let slot_resp = catalog_call(host, "availability.get", json!({ "slot_id": slot })).await?;
-    let slot_row = match slot_resp.result {
-        Some(serde_json::Value::Object(map)) => map,
-        _ => return Ok(Claim::NoSeat(ConflictReason::SlotUnavailable)),
+    let slot_row = match call_sibling::<_, SlotKeyInput, Option<SlotRow>>(
+        host,
+        services::CATALOG,
+        "availability.get",
+        &SlotKeyInput { slot_id: slot.to_string() },
+    )
+    .await
+    {
+        Ok(Some(s)) => s,
+        Ok(None) | Err(SiblingError::Refused(_) | SiblingError::BadReply(_)) => {
+            return Ok(Claim::NoSeat(ConflictReason::SlotUnavailable));
+        }
+        Err(SiblingError::Transport(e)) => return Err(e),
     };
-    let capacity = slot_row.get("capacity").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+    let capacity = slot_row.capacity;
     if capacity == 0 {
         return Ok(Claim::NoSeat(ConflictReason::SlotUnavailable));
     }

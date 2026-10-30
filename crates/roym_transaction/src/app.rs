@@ -18,7 +18,6 @@ use syneroym_app_host::{
     AppDataLayer, AppHost,
     types::{
         data_layer::{CollectionSchema, IndexDefinition, IndexType, RecordWriteValue},
-        proxy::CallTarget,
         signing::Principal,
     },
 };
@@ -94,6 +93,20 @@ pub enum BookingWriter {
 #[serde(deny_unknown_fields)]
 pub struct AgreementRef {
     pub agreement: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HalfRecordedOutput {
+    pub record_id: String,
+    pub role: DealRole,
+    pub message_id: Option<String>,
+    pub state: SendState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FenceOutcome<O> {
+    Claimed,
+    Answered(O),
 }
 
 #[derive(Debug, Deserialize)]
@@ -269,22 +282,7 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     if let Some(resp) = api::dispatch(host, &req).await {
         return resp;
     }
-
-    match req.method.as_str() {
-        "booking.get" => booking_ops::booking_get(host, &req).await,
-        "booking.list" => booking_ops::booking_list(host, &req).await,
-        "booking.start" => booking_ops::booking_start(host, &req).await,
-        "booking.cancel" => booking_ops::booking_cancel(host, &req).await,
-        "booking.history" => booking_ops::booking_history(host, &req).await,
-
-        "payment.request" => payment_ops::payment_request(host, &req).await,
-        "payment.acknowledge" => payment_ops::payment_acknowledge(host, &req).await,
-        "payment.get" => payment_ops::payment_get(host, &req).await,
-
-        "fulfilment.sign" => fulfilment_ops::fulfilment_sign(host, &req).await,
-        "fulfilment.get" => fulfilment_ops::fulfilment_get(host, &req).await,
-        other => Response::method_not_found(other),
-    }
+    Response::method_not_found(&req.method)
 }
 
 pub(crate) async fn resolve_principal_and_owner<H: AppHost>(
@@ -447,35 +445,6 @@ pub(crate) async fn count_mine<H: AppHost>(
     })
     .to_string();
     Ok(paging::count(host, collection, Some(filter)).await? as u32)
-}
-
-pub(crate) async fn sibling_call<H: AppHost>(
-    host: &H,
-    service: &str,
-    interface: &str,
-    method: &str,
-    params: Value,
-) -> Result<Response, String> {
-    let req = json!({ "method": method, "params": params }).to_string();
-    let raw = host
-        .call(
-            CallTarget::Dependency(service.to_string()),
-            interface.to_string(),
-            "invoke".to_string(),
-            json!([req]).to_string(),
-            None,
-        )
-        .await
-        .map_err(|e| format!("{method}: {e:?}"))?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
-}
-
-pub(crate) async fn catalog_call<H: AppHost>(
-    host: &H,
-    method: &str,
-    params: Value,
-) -> Result<Response, String> {
-    sibling_call(host, services::CATALOG.name, services::CATALOG.interface, method, params).await
 }
 
 #[allow(clippy::too_many_arguments)]

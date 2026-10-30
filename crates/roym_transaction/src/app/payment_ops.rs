@@ -4,7 +4,6 @@ mod fence;
 
 use fence::{AckFenceClaim, claim_payment_ack_fence, claim_payment_request_fence};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
@@ -12,7 +11,7 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     booking::{BookingEvent, BookingState, Track, TrackState},
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
     method::{Reply, VerifyInput},
     payment::{self, PaymentAcknowledgementPayload, PaymentRequestPayload},
     record::{Envelope, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST},
@@ -21,85 +20,106 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BookingRow, PAYMENTS, PROGRESS, PaymentsRow, ProgressRow, SendState,
-    booking_ops, get_row, ledger::load_booking, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    AGREEMENTS, AgreementRef, AgreementRow, BookingRow, FenceOutcome, PAYMENTS, PROGRESS,
+    PaymentsRow, ProgressRow, SendState, booking_ops, get_row, ledger::load_booking, put_row,
+    resolve_principal_and_owner, send_card_and_file,
 };
+pub use crate::app::HalfRecordedOutput;
 
 #[derive(Debug, Deserialize)]
-struct PaymentRequestParams {
-    agreement: String,
+#[serde(deny_unknown_fields)]
+pub struct PaymentRequestInput {
+    pub agreement: String,
     #[serde(default)]
-    note: Option<String>,
+    pub note: Option<String>,
 }
 
-pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: PaymentRequestParams = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentRequestOutput {
+    pub record_id: String,
+    pub message_id: Option<String>,
+    pub state: SendState,
+}
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaymentAckInput {
+    pub agreement: String,
+    #[serde(default)]
+    pub observed_at_secs: Option<u64>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub reference: Option<String>,
+    #[serde(default)]
+    pub supersedes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaymentGetOutput {
+    pub request: Option<ReceiptHalf>,
+    pub counterparty: Vec<ReceiptHalf>,
+    pub quote_author: Vec<ReceiptHalf>,
+    pub track: TrackState,
+}
+
+pub(crate) async fn request<H: AppHost>(
+    host: &H,
+    input: PaymentRequestInput,
+) -> Reply<PaymentRequestOutput> {
     let now = clock::now_secs();
-    let (principal, owner) = match resolve_principal_and_owner(host, now).await {
-        Ok(res) => res,
-        Err(resp) => return resp,
-    };
+    let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
-    let agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await {
+    let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
-        Ok(None) => return Response::invalid_params("no-such-agreement"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let booking = match load_booking(host, &p.agreement).await {
+    let booking = match load_booking(host, &input.agreement).await {
         Ok(Some(b)) => b,
-        Ok(None) => return Response::invalid_params("no-booking"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no-booking")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
-    if let Err(resp) = validate_payment_request_preconditions(&agr, &booking, &owner) {
-        return resp;
-    }
+    validate_payment_request_preconditions(&agr, &booking, &owner)?;
 
-    let mut payments: PaymentsRow = match get_row(host, PAYMENTS, &p.agreement).await {
+    let mut payments: PaymentsRow = match get_row(host, PAYMENTS, &input.agreement).await {
         Ok(Some(py)) => py,
         Ok(None) => PaymentsRow {
-            agreement: p.agreement.clone(),
+            agreement: input.agreement.clone(),
             conversation: agr.conversation.clone(),
             request: None,
             counterparty: Vec::new(),
             quote_author: Vec::new(),
             updated_at_secs: now,
         },
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     if let Some(existing) = &payments.request {
-        return Response::ok(json!({
-            "record_id": existing.record_id,
-            "message_id": Value::Null,
-            "state": "already-recorded",
-        }));
+        return Ok(PaymentRequestOutput {
+            record_id: existing.record_id.clone(),
+            message_id: None,
+            state: SendState::AlreadyRecorded,
+        });
     }
 
     let payload = PaymentRequestPayload {
-        agreement: p.agreement.clone(),
+        agreement: input.agreement.clone(),
         conversation: agr.conversation.clone(),
         counterparty_did: agr.counterparty_did.clone(),
         quote_author_did: agr.quote_author_did.clone(),
         currency: agr.terms.currency.clone(),
         amount_minor: agr.terms.amount_minor,
-        note: p.note,
+        note: input.note,
     };
     if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
 
     let (env_json, env, record_id) =
-        match sign_payment_request(host, &p.agreement, &payload, principal).await {
-            Ok(triplet) => triplet,
-            Err(resp) => return resp,
-        };
+        sign_payment_request(host, &input.agreement, &payload, principal).await?;
 
     let half = ReceiptHalf {
         record_id: record_id.clone(),
@@ -108,40 +128,23 @@ pub(crate) async fn payment_request<H: AppHost>(host: &H, req: &Request) -> Resp
         issued_at_secs: env.issued_at_secs,
     };
 
-    if let Err(resp) =
-        claim_payment_request_fence(host, &p.agreement, &agr.conversation, &half, now).await
+    match claim_payment_request_fence(host, &input.agreement, &agr.conversation, &half, now).await?
     {
-        return resp;
+        FenceOutcome::Claimed => {}
+        FenceOutcome::Answered(out) => return Ok(out),
     }
 
     payments.request = Some(half);
     payments.updated_at_secs = now;
-    if let Err(e) = put_row(host, PAYMENTS, &p.agreement, &payments).await {
-        return Response::internal_error(e);
+    if let Err(e) = put_row(host, PAYMENTS, &input.agreement, &payments).await {
+        return Err(Response::internal_error(e));
     }
 
     let (message_id, send_state, _) =
         send_card_and_file(host, &agr.conversation, "payment-request", 1, &env_json, now, None)
             .await;
 
-    Response::ok(json!({
-        "record_id": record_id,
-        "message_id": message_id,
-        "state": send_state,
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-struct AcknowledgeParams {
-    agreement: String,
-    #[serde(default)]
-    observed_at_secs: Option<u64>,
-    #[serde(default)]
-    method: Option<String>,
-    #[serde(default)]
-    reference: Option<String>,
-    #[serde(default)]
-    supersedes: Option<String>,
+    Ok(PaymentRequestOutput { record_id, message_id: Some(message_id), state: send_state })
 }
 
 struct AckContext {
@@ -203,51 +206,37 @@ async fn maybe_transition_author_ack<H: AppHost>(
     }
 }
 
-pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: AcknowledgeParams = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
+pub(crate) async fn acknowledge<H: AppHost>(
+    host: &H,
+    input: PaymentAckInput,
+) -> Reply<HalfRecordedOutput> {
     let now = clock::now_secs();
     let AckContext { principal, owner, agr, role, mut payments } =
-        match load_ack_context(host, &p.agreement, now).await {
-            Ok(ctx) => ctx,
-            Err(resp) => return resp,
-        };
+        load_ack_context(host, &input.agreement, now).await?;
 
     let versions = match role {
         DealRole::Counterparty => &mut payments.counterparty,
         DealRole::QuoteAuthor => &mut payments.quote_author,
     };
 
-    if let Some(early_resp) =
-        match check_acknowledgement_version(p.supersedes.as_deref(), versions, role) {
+    if let Some(early_out) =
+        match check_acknowledgement_version(input.supersedes.as_deref(), versions, role) {
             Ok(opt) => opt,
-            Err(resp) => return resp,
+            Err(resp) => return Err(resp),
         }
     {
-        maybe_transition_author_ack(host, &p.agreement, &owner, &agr.quote_author_did, now).await;
-        return early_resp;
+        maybe_transition_author_ack(host, &input.agreement, &owner, &agr.quote_author_did, now)
+            .await;
+        return Ok(early_out);
     }
 
-    let payload = match build_payment_ack_payload(&p, &agr, role, now) {
-        Ok(pl) => pl,
-        Err(resp) => return resp,
-    };
+    let payload = build_payment_ack_payload(&input, &agr, role, now)?;
 
-    if let Err(resp) =
-        check_acknowledgement_correction(p.supersedes.as_deref(), versions, &payload, now)
-    {
-        return resp;
-    }
+    check_acknowledgement_correction(input.supersedes.as_deref(), versions, &payload, now)?;
 
     let (env_json, env, record_id) =
-        match sign_payment_ack(host, &p.agreement, &payload, p.supersedes.clone(), principal).await
-        {
-            Ok(triplet) => triplet,
-            Err(resp) => return resp,
-        };
+        sign_payment_ack(host, &input.agreement, &payload, input.supersedes.clone(), principal)
+            .await?;
 
     let half = ReceiptHalf {
         record_id: record_id.clone(),
@@ -257,40 +246,32 @@ pub(crate) async fn payment_acknowledge<H: AppHost>(host: &H, req: &Request) -> 
     };
 
     let ack_fence_claim = AckFenceClaim {
-        agreement: &p.agreement,
+        agreement: &input.agreement,
         conversation: &agr.conversation,
         role,
-        supersedes: p.supersedes.as_deref(),
+        supersedes: input.supersedes.as_deref(),
         owner: &owner,
         quote_author_did: &agr.quote_author_did,
     };
-    if let Err(resp) = claim_payment_ack_fence(host, ack_fence_claim, &half, now).await {
-        return resp;
+    match claim_payment_ack_fence(host, ack_fence_claim, &half, now).await? {
+        FenceOutcome::Claimed => {}
+        FenceOutcome::Answered(out) => return Ok(out),
     }
 
-    let (message_id, send_state) = match record_and_send_ack(
+    let (message_id, send_state) = record_and_send_ack(
         host,
-        &p.agreement,
+        &input.agreement,
         &agr.conversation,
         &mut payments,
         role,
         half,
         now,
     )
-    .await
-    {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
-    };
+    .await?;
 
-    maybe_transition_author_ack(host, &p.agreement, &owner, &agr.quote_author_did, now).await;
+    maybe_transition_author_ack(host, &input.agreement, &owner, &agr.quote_author_did, now).await;
 
-    Response::ok(json!({
-        "record_id": record_id,
-        "role": role,
-        "message_id": message_id,
-        "state": send_state,
-    }))
+    Ok(HalfRecordedOutput { record_id, role, message_id: Some(message_id), state: send_state })
 }
 
 async fn check_booking_not_terminal<H: AppHost>(
@@ -378,20 +359,20 @@ async fn check_acknowledgement_preconditions<H: AppHost>(
     Ok(role)
 }
 
-fn check_acknowledgement_version(
+pub(super) fn check_acknowledgement_version(
     supersedes: Option<&str>,
     versions: &[ReceiptHalf],
     role: DealRole,
-) -> Result<Option<Response>, Response> {
+) -> Result<Option<HalfRecordedOutput>, Response> {
     match supersedes {
         None if !versions.is_empty() => {
             let rec_id = versions.last().map(|v| v.record_id.as_str()).unwrap_or_default();
-            Ok(Some(Response::ok(json!({
-                "record_id": rec_id,
-                "role": role,
-                "message_id": Value::Null,
-                "state": "already-recorded",
-            }))))
+            Ok(Some(HalfRecordedOutput {
+                record_id: rec_id.to_string(),
+                role,
+                message_id: None,
+                state: SendState::AlreadyRecorded,
+            }))
         }
         None => Ok(None),
         Some(prev) => {
@@ -423,32 +404,22 @@ fn check_acknowledgement_correction(
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-struct AgreementParam {
-    agreement: String,
-}
-
-pub(crate) async fn payment_get<H: AppHost>(host: &H, req: &Request) -> Response {
-    let p: AgreementParam = match serde_json::from_value(req.params.clone()) {
-        Ok(v) => v,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
-    let _agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await {
+pub(crate) async fn get<H: AppHost>(host: &H, input: AgreementRef) -> Reply<PaymentGetOutput> {
+    let _agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
-        Ok(None) => return Response::invalid_params("no-such-agreement"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let payments: PaymentsRow = match get_row(host, PAYMENTS, &p.agreement).await {
+    let payments: PaymentsRow = match get_row(host, PAYMENTS, &input.agreement).await {
         Ok(Some(py)) => py,
         Ok(None) => PaymentsRow::default(),
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let track = if let Ok(Some(b)) = load_booking(host, &p.agreement).await {
+    let track = if let Ok(Some(b)) = load_booking(host, &input.agreement).await {
         b.snapshot.payment
-    } else if let Ok(Some(pr)) = get_row::<ProgressRow, _>(host, PROGRESS, &p.agreement).await {
+    } else if let Ok(Some(pr)) = get_row::<ProgressRow, _>(host, PROGRESS, &input.agreement).await {
         pr.snapshot.payment
     } else if !payments.quote_author.is_empty() {
         TrackState::Acknowledged
@@ -458,12 +429,12 @@ pub(crate) async fn payment_get<H: AppHost>(host: &H, req: &Request) -> Response
         TrackState::None
     };
 
-    Response::ok(json!({
-        "request": payments.request,
-        "counterparty": payments.counterparty,
-        "quote_author": payments.quote_author,
-        "track": track,
-    }))
+    Ok(PaymentGetOutput {
+        request: payments.request,
+        counterparty: payments.counterparty,
+        quote_author: payments.quote_author,
+        track,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -496,7 +467,7 @@ pub(crate) async fn verify<H: AppHost>(_host: &H, input: VerifyInput) -> Reply<P
 }
 
 fn build_payment_ack_payload(
-    p: &AcknowledgeParams,
+    p: &PaymentAckInput,
     agr: &AgreementRow,
     role: DealRole,
     now: u64,
