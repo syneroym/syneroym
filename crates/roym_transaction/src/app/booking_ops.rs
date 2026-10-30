@@ -10,7 +10,7 @@ use syneroym_roym_core::{
     },
     clock,
     envelope::Response,
-    method::{Reply, VerifyInput},
+    method::{self, Reply, VerifyInput},
     paging, signing,
     transaction::{DealRole, PairState, PaymentTiming, QuotePayload, RecordVerdict, pair_state},
 };
@@ -320,7 +320,7 @@ pub(crate) async fn verify<H: AppHost>(
     _host: &H,
     input: VerifyInput,
 ) -> Reply<RecordVerdict<BookingProgressPayload>> {
-    syneroym_roym_core::method::verify_with(input, booking::verify_booking_progress)
+    method::verify_with(input, booking::verify_booking_progress)
 }
 
 pub(crate) async fn booking_get<H: AppHost>(host: &H, input: AgreementRef) -> Reply<BookingView> {

@@ -14,7 +14,7 @@ use syneroym_roym_core::{
     clock,
     envelope::Response,
     method::{
-        EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
+        self, EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
         catalog::{SlotKeyInput, SlotRow},
     },
     paging,
@@ -573,7 +573,7 @@ pub(crate) async fn verify<H: AppHost>(
     _host: &H,
     input: VerifyInput,
 ) -> Reply<RecordVerdict<QuotePayload>> {
-    syneroym_roym_core::method::verify_with(input, transaction::verify_quote)
+    method::verify_with(input, transaction::verify_quote)
 }
 
 pub(crate) async fn store_received_quote<H: AppHost>(

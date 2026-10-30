@@ -11,7 +11,7 @@ use syneroym_roym_core::{
     booking::BookingState,
     clock,
     envelope::Response,
-    method::{Reply, VerifyInput},
+    method::{self, Reply, VerifyInput},
     paging,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
@@ -369,7 +369,7 @@ pub(crate) async fn verify<H: AppHost>(
     _host: &H,
     input: VerifyInput,
 ) -> Reply<RecordVerdict<AgreementReceiptPayload>> {
-    syneroym_roym_core::method::verify_with(input, transaction::verify_agreement_receipt)
+    method::verify_with(input, transaction::verify_agreement_receipt)
 }
 
 async fn prepare_author_booking<H: AppHost>(

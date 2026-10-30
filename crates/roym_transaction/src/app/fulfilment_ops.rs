@@ -13,7 +13,7 @@ use syneroym_roym_core::{
     clock,
     envelope::Response,
     fulfilment::{self, FulfilmentReceiptPayload},
-    method::{Reply, VerifyInput},
+    method::{self, Reply, VerifyInput},
     record::{Envelope, RECORD_FULFILMENT_RECEIPT},
     transaction::{DealRole, PairState, ReceiptHalf, RecordVerdict, pair_state},
 };
@@ -412,5 +412,5 @@ pub(crate) async fn verify<H: AppHost>(
     _host: &H,
     input: VerifyInput,
 ) -> Reply<RecordVerdict<FulfilmentReceiptPayload>> {
-    syneroym_roym_core::method::verify_with(input, fulfilment::verify_fulfilment_receipt)
+    method::verify_with(input, fulfilment::verify_fulfilment_receipt)
 }

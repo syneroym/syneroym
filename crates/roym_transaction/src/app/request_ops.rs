@@ -11,7 +11,7 @@ use syneroym_roym_core::{
     area::Area,
     clock,
     envelope::Response,
-    method::{EnvelopeHistoryOutput, Reply, VerifyInput},
+    method::{self, EnvelopeHistoryOutput, Reply, VerifyInput},
     paging,
     record::{Envelope, RECORD_REQUEST},
     transaction::{self, REQUEST_VERSION, RecordVerdict, RequestPayload, TimeWindow},
@@ -312,7 +312,7 @@ pub(crate) async fn verify<H: AppHost>(
     _host: &H,
     input: VerifyInput,
 ) -> Reply<RecordVerdict<RequestPayload>> {
-    syneroym_roym_core::method::verify_with(input, transaction::verify_request)
+    method::verify_with(input, transaction::verify_request)
 }
 
 pub(crate) async fn store_received_request<H: AppHost>(
