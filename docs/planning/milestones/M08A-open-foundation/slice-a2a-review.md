@@ -361,3 +361,8 @@ Checked the plan at `f6691087`. P1 to P18 are confirmed fixed in the plan
   *Status:* Fixed (d0d7f172).
 
 Count for this round: 0 blockers, 0 major, 1 minor.
+
+Confirmed, 2026-10-30: P19 is fixed in the plan at `d0d7f172`. Steps 2 and
+7 declare `shapes` and `contract` with `#[path = "method_contract/..."]`
+and name both files under `crates/roym_web/tests/method_contract/`. No
+module line without a path is left. No plan review item is open.
