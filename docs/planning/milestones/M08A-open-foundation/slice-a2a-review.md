@@ -366,3 +366,321 @@ Confirmed, 2026-10-30: P19 is fixed in the plan at `d0d7f172`. Steps 2 and
 7 declare `shapes` and `contract` with `#[path = "method_contract/..."]`
 and name both files under `crates/roym_web/tests/method_contract/`. No
 module line without a path is left. No plan review item is open.
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code), 2026-10-30
+
+Checked the code at `74ebebfa` on `feat/m08a-a2a-typed-methods` (PR
+[#333](https://github.com/syneroym/syneroym/pull/333)), against the plan and
+`main`. Line numbers below are at `74ebebfa`. The implementer was Gemini 3.8
+Flash. No test suite was re-run here; CI on the PR runs it.
+
+What was checked and found correct:
+
+- **Method lists.** Both `api.rs` files list 24 rows, with the input and
+  output types of the plan's Q1 tables. `invoke` in both services runs
+  `admit::require_internal`, then `api::dispatch`, then
+  `Response::method_not_found`. No hand-written arm and no
+  `handle_certificate_verb` call is left in either service.
+  `grep -rn "params\.get\|req\.params"` over both `src/` trees prints nothing.
+- **The parser** ([method.rs:74](../../../../crates/roym_core/src/method.rs#L74)).
+  `null` reads as `{}`. Any other non-object gives `-32602 "invalid params:
+  expected an object"` with no `data`. The field rule for missing and
+  duplicate fields (path joined with the quoted name) and for wrong type,
+  wrong value and unknown field (the path) is as in D-A2a-6. The message is
+  cut to 256 bytes on a char boundary. Unit tests cover the five error kinds
+  at the top level and two levels down.
+- **`deny_unknown_fields`.** Every input struct of the 48 rows has it, also
+  `ImportInput`, `InstallCertificateInput` and `NoParams`. No struct read from
+  storage has it (`ContactRow`, `ProfileRecord`, `BlockRow`, `ReportRow`,
+  `FirstContactCharge`, `ContactLimits`, `MessageView`, `Bundle`). Stored
+  `admission` is still the kebab-case word (`AdmissionKind::as_str`).
+- **Output `Option` rules (P6, P7).** `SigningStatusOutput.owner_did` is
+  `Option` with no skip. `BlockCheckOutput` uses the flattened
+  `Option<BlockedSince>` with no skip inside. `MessageView` skips only `body`
+  and `deleted_at_secs`. `AdmitFirstContactOutput` skips only
+  `retry_after_secs`. These match the old `json!` code.
+- **Closed word sets.** `KindFilter`, `ReportSubject`, `ReportCategory`,
+  `AdmissionKind` and `StoredState::as_str` give the same words the old code
+  accepted or wrote. `report.create` turns the enums back into the same
+  strings before `content_digest`.
+- **Shape files (P3).** `shape` records object keys, all item shapes of an
+  array (sorted, de-duplicated) and the exact value for the closed-word keys
+  of D-A2a-14 and anything under `notices`. All 48 methods have at least one
+  case (63 files). The 63 files and `shapes.rs` were written in `72c2c49f` and
+  are not changed by any later commit, so they come from the old code.
+- **Sibling call sites (P4).** `call_sibling` sends the same request by the
+  same route as the old `profile_call` and `sibling_call`:
+  `host.call(CallTarget::Dependency(<service>), <interface>, "invoke",
+  [<request>], None)`. Per site: `send_card_and_file` and `maybe_countersign`
+  keep the not-sent path on every `Err`, and `Refused(e)` gives `e.message`
+  with no ` (code N)`. `address_from_profile` maps `Refused` to `Ok(None)`.
+  `contacts_map` gives an empty map on any `Err`. `fetch_sync_messages` gives
+  `Response::internal_error(e.message)` on `Refused`. `resolve_open_address`
+  keeps `Response::err(code, message)` for a refusal and the same transport
+  text. A reply that has `"result": null` still reaches `Option<ProfileRecord>`
+  as `None`, because `Response::ok(Value::Null)` writes the `result` key.
+- **Parity harness.** 24 module files, 222 `fn scenario_`. In the scenario
+  files only scenario 2 changed: its name and its last assertion
+  (`-32602`, `data.field == "auth"`). `helpers.rs` changed too; see the
+  answer below.
+- **Hub (B1).** `contacts.ts` sends the trimmed envelope text and checks
+  only that it parses. `contacts.test.ts` covers object, text, empty and
+  address.
+- **xtask.** Adding `serde_path_to_error` to `target_independent` in
+  `check_roym_deps` is correct and minimal: `roym_core` builds for both
+  targets, and the crate is pure Rust. The workspace and crate entries name
+  `0.1`.
+- **Rules.** No changed file passes 800 lines except the two parity files on
+  the oversized list (`helpers.rs` was lowered to 1429 in the ratchet). No
+  planning id (`A2a`, `M08`, `OF-`, `D-A2a`, `B<n>`, `P<n>`) is in code,
+  comments or test names.
+- **CI.** Run [41043929726](https://github.com/syneroym/syneroym/actions/runs/41043929726)
+  on `74ebebfa` passed: "Lints, licenses & checks" (clippy, fmt, xtask
+  checks), "Test 1/6" to "Test 6/6" and "Playwright E2E". "Benchmarks" and
+  "Code Coverage" were skipped by the workflow. So no blocker comes from CI.
+- **Docs.** The backlog rows of plan section 8 are all there. The task.md
+  result line and the status.md row (63 shapes, 24 and 222, 11
+  `method_contract` tests) are true.
+  `docs/roym-integrated-experience-spec.md` has no `-32602` text, so it needed
+  no change.
+
+### Answer: why `helpers.rs` now installs a service-instance certificate
+
+Only the test harness was wrong. Production behaviour did not change.
+
+- The certificate was added in `72c2c49f` ("record method result shapes").
+  That commit changes only test files (`git show --stat 72c2c49f`). So the
+  old production code already needed it in this harness.
+- The shape test needs one successful `group.add-member`. That method calls
+  the host function `AppConversation::add_member`. The host fetches the new
+  member's prekey bundle: `fetch_prekey_bundle` →
+  `call_peer` → `peer_request` → `check_outbound_identity`
+  ([transport.rs:83](../../../../crates/conversation/src/transport.rs#L83)).
+  That check refuses when the service holds no instance certificate, and
+  `fetch_prekey_bundle` turns the refusal into `InvalidArgument`, so the
+  method answers an error.
+- A real deploy installs the certificate
+  ([deploy/commit.rs:120](../../../../crates/control_plane/src/service/orchestration/deploy/commit.rs#L120)).
+  The `roym_web` parity harness on `main` never did. On `main`, no parity
+  scenario adds a group member with success: the only `group.add-member` call
+  is in `wire_origin.rs:119`, sent from off the node and expected to get
+  `-32013`.
+- `call_sibling` is not on this path. A sibling call is a guest-to-guest
+  `host.call(CallTarget::Dependency(..))`, the same as before. The peer call
+  is made by the host crate `syneroym-conversation`, which this PR does not
+  change. So no sibling call goes by a different route or with a different
+  identity.
+- One side effect in the harness only: every service now holds a
+  certificate, so the outbox delivery of every scenario now passes
+  `check_outbound_identity` instead of ending with "no instance certificate".
+  No scenario asserts that old path (scenario 56 sets `failed` with
+  `notify_state`), and the parity run is reported green. R4 asks to record
+  this.
+
+Not done: no test was run to show the failure on `main`. The proof is the
+commit content and the code path above.
+
+### Findings
+
+- [ ] **R1 — major.** *Where:*
+  [contract.rs:20](../../../../crates/roym_web/tests/method_contract/contract.rs#L20)
+  and [:32](../../../../crates/roym_web/tests/method_contract/contract.rs#L32);
+  [check.rs:94](../../../../crates/roym_core/src/method/check.rs#L94).
+  *Problem:* the OF-15 source scan never runs. The test passes the relative
+  path `crates/roym_profile/src`. cargo and nextest run an integration test
+  with the package directory (`crates/roym_web`) as the working directory,
+  and `crates/roym_web/crates/roym_profile/src` does not exist.
+  `scan_source_dir` then returns at once (`if !dir.exists() { return; }`),
+  so the hand-written-arm, `req.method` and string-literal checks find
+  nothing, whatever the source says. The Step 7 proof ("put a hand-written
+  `"profile.get" =>` arm in `app.rs` and it fails") would not fail today.
+  The unit tests hide this, because they pass `Path::new("/nonexistent")` and
+  expect no panic from the scan. I ran the scan's rules by hand over the real
+  directories: today they find no problem, so the fix should stay green.
+  *Fix:* (1) In `contract.rs`, build the path from the manifest dir:
+  `Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_profile/src")` (and
+  `../roym_conversation/src`). (2) In `assert_service_table`, add a problem
+  when `service_src_dir` does not exist, and another when no `.rs` file was
+  read; do not return silently. Also report a `read_dir` error in
+  `collect_rs_files` instead of ignoring it. (3) In `method/tests.rs`, give
+  every test that does not test the scan a real empty temp directory in
+  place of `/nonexistent`, and add `check_fails_when_the_source_dir_is_missing`.
+  (4) Do the Step 7 manual proof once (add an arm, see the test fail, remove
+  it) and say so in the PR. *Status:* Open.
+
+- [ ] **R2 — minor.** *Where:* change doc
+  [change.md:233-250](../../changes/roym-open-foundation/change.md#L233),
+  section "Decisions"; also "Open questions" (`Resolved by D-A2a-2 and
+  D-A2a-17`). *Problem:* the change doc has eighteen `D-A2a-*` decisions,
+  but they are not the plan's eighteen. The numbers carry other meanings
+  (for example change-doc D-A2a-3 is "Unknown fields policy", plan D-A2a-3 is
+  "Where types live"; change-doc D-A2a-11 is "Dead types", plan D-A2a-11 is
+  "Backup"). Some plan decisions are missing (D-A2a-3 where types live,
+  D-A2a-11 backup, D-A2a-14 shape files, D-A2a-15 output rules), and the
+  owner's answers to Q1–Q9 are not recorded, as plan section 9 asks. A reader
+  who follows `D-A2a-2` from code review or the plan lands on a different
+  decision. *Fix:* replace the eighteen bullets with the plan's D-A2a-1 to
+  D-A2a-18, same numbers and same meaning, shortened if needed, and add one
+  line with the owner's answers ("Q1–Q9: option (a), 2026-10-30"). Check
+  that "Resolved by D-A2a-2 and D-A2a-17" still points at the method table
+  and the test binary. *Status:* Open.
+
+- [ ] **R3 — minor.** *Where:* change doc
+  [change.md:262-267](../../changes/roym-open-foundation/change.md#L262),
+  section "Deviations". *Problem:* (a) Only the `helpers.rs` bullet is a real
+  deviation from the plan. The other five bullets are wire changes the plan
+  planned (section 4 rows B1, B2, B4, B5, B7–B10); plan section 9 asked for
+  them here, but mixed together a reader cannot tell "done differently from
+  the plan" from "planned wire change". (b) The `helpers.rs` bullet gives no
+  reason that a reader can check, and does not say that it changes the
+  environment of all 222 scenarios. (c) Two planned wire changes are
+  missing: B21 (the certificate verbs of `catalog`, `transaction` and
+  `directory` now refuse unknown fields, and a missing `certificate` gives
+  `missing field` text instead of `certificate is required`; this also holds
+  for `<svc>.signing-status`, which now takes `NoParams`, and section 4 says
+  only "install"), and B22 (`profile.get` answers `-32603` for a stored row
+  with no `record_id`). (d) "Standardized on `-32602` with `data.field`" is
+  not exact: a non-object `params` gets `-32602` with no `data`. *Fix:* split
+  the A2a bullets under two labels. "Different from the plan": the
+  `helpers.rs` bullet, rewritten as: "The `roym_web` parity harness did not
+  install a service-instance certificate, unlike a real deploy
+  (`deploy/commit.rs`). The shape test needs a successful
+  `group.add-member`, whose host-side prekey fetch runs
+  `check_outbound_identity` and refuses without one. The harness now
+  installs one per service on both builds. This also lets outbox delivery in
+  every parity scenario pass that check; no scenario asserted the old
+  refusal. Production code is unchanged." "Planned wire changes (plan
+  section 4)": the five current bullets, plus B21 (with `signing-status`)
+  and B22, and with (d) made exact. *Status:* Open.
+
+- [ ] **R4 — minor.** *Where:*
+  [method.rs:91-97](../../../../crates/roym_core/src/method.rs#L91).
+  *Problem:* the 256-byte cut applies only to `message`. `data.field` is the
+  serde path, and for an unknown field the path ends with the key the client
+  sent. A request with a 10 KB unknown key (`{"<10 KB>": 1}`) gets the whole
+  key back in `data.field`, and in any log of the response. This is the
+  reflection P10 meant to stop. *Fix:* cut `field` with the same
+  `truncate_utf8(.., 256)` before it goes into `ParamError`, and add the
+  unit test `unknown_field_name_in_data_is_cut_to_256_bytes`. *Status:* Open.
+
+- [ ] **R5 — minor.** *Where:*
+  [tests.rs:202-208](../../../../crates/roym_core/src/method/tests.rs#L202);
+  tests at [:93-200](../../../../crates/roym_core/src/method/tests.rs#L93).
+  *Problem:* (a) the truncation test uses only `"x"`, a one-byte char, so
+  every cut point is a char boundary and
+  `err.message.is_char_boundary(err.message.len())` is always true. The
+  char-boundary half of the test cannot fail. (b) Q4 says "a unit test in
+  Step 3 pins the real text". The tests only check `contains("invalid type")`
+  and similar; none pins the full message, so the `invalid params: <path>:
+  <text>` form (and the rule that a top-level error has no path part) is not
+  tested. *Fix:* (a) build the long value from a multi-byte char (for
+  example `"€".repeat(4000)`) so the 256-byte limit falls inside a char, and
+  assert `message.len() <= 256` and that `message` ends with a whole `€`.
+  (b) For one nested case and one top-level case, assert the whole message
+  with `assert_eq!` (for example `invalid params: mid.deep: missing field
+  `val_str``). *Status:* Open.
+
+- [ ] **R6 — minor.** *Where:*
+  [check.rs:40-51](../../../../crates/roym_core/src/method/check.rs#L40).
+  *Problem:* two ways a method slips past the OF-15/OF-18 check. (a) The "no
+  `Value`" rule reads only the outer type name, so `FooOutput { data: Value }`
+  or `FooInput(Value)` passes. (b) The unknown-field probe tests only the top
+  level, so a nested input struct without `deny_unknown_fields` (for example
+  `struct FooInput { filter: Filter }` where `Filter` has no attribute)
+  passes and accepts unknown nested keys. Today no row has either problem
+  (the only nested input is `ImportInput.bundle: Bundle`, which by design has
+  no attribute and carries `Value` sections inside a signed document). But
+  OF-15 says the test "fails when one has no typed input or output", and
+  the developer guide says the contract test verifies that "every method is
+  typed". *Fix:* write the limits down where a method author reads them: a
+  doc comment on `assert_service_table` naming what it checks and the two
+  limits above, and one sentence in the developer guide's "Add a Roym
+  method" step 1: "a nested input struct needs `deny_unknown_fields` too; the
+  check sees only the outer type". No new code needed. *Status:* Open.
+
+- [ ] **R7 — minor.** *Where:*
+  [tests.rs:601](../../../../crates/roym_core/src/method/tests.rs#L601)
+  (`call_sibling_with_test_host`); `TestHost::call` in `signing.rs` tests.
+  *Problem:* the test checks only how replies are read. It does not check
+  what `call_sibling` sends (the `Dependency` target, the interface, the
+  `invoke` export, the `[{"method", "params"}]` envelope), which is the part
+  that must equal the old `profile_call`. It also has no case for
+  `{"result": null}` read as `Option<T>` = `None`, which `catalog`'s
+  "no profile" path (B18) depends on. *Fix:* let `TestHost` record the
+  arguments of its last `call`, and assert them in this test. Add a case:
+  reply `{"result": null}` read as `Option<ProfileRecord>` gives `Ok(None)`.
+  *Status:* Open.
+
+- [ ] **R8 — minor.** *Where:*
+  [system-architecture.md:1143](../../../system-architecture.md#L1143);
+  [developer-guide.md:1687](../../../developer-guide.md#L1687), `:1689` and
+  `:1702`. *Problem:* living docs state more than is true now. (a) "Each
+  service owns one method table" and "Every Roym method uses typed input and
+  output structs": only `profile` and `conversation` do; `catalog`,
+  `transaction`, `directory` and `web` still read loose JSON. (b) Step 1 of
+  "Add a Roym method" says to put `deny_unknown_fields` on the input struct,
+  with no exception, but the next section says a wire-reachable method must
+  ignore unknown fields. (c) "The error object includes `data`" is not true
+  when `params` is not an object (no `data` then). *Fix:* (a) name the two
+  services in both places ("Today `profile` and `conversation` have a method
+  table; the other services still read their params by hand"). (b) Step 1:
+  "on a local-only method; leave it off on a wire-reachable method, and list
+  that method in the check's wire list". (c) Add: "When no field can be
+  named, for example when `params` is not a JSON object, `data` is absent."
+  *Status:* Open.
+
+- [ ] **R9 — minor.** *Where:*
+  [roym_conversation app.rs:85-89](../../../../crates/roym_conversation/src/app.rs#L85)
+  (`serde_json::Value`, `serde_json::Value::as_str`);
+  [roym_core conversation.rs:162-163](../../../../crates/roym_core/src/conversation.rs#L162)
+  (`syneroym_app_host::types::conversation::Message`);
+  [method.rs:82](../../../../crates/roym_core/src/method.rs#L82),
+  [:195-196](../../../../crates/roym_core/src/method.rs#L195)
+  (`serde_json::Map::new`, `std::any::type_name`);
+  [contract.rs:14-32](../../../../crates/roym_web/tests/method_contract/contract.rs#L14)
+  (`syneroym_roym_profile::api::method_table`, `std::path::Path::new`);
+  `method/tests.rs` (`std::env::temp_dir`, `std::panic::catch_unwind`,
+  `std::panic::resume_unwind`). *Problem:* inline paths with more than one
+  `::`, against the AGENTS.md import rule. In `app.rs` the change removed
+  the `Value` import and wrote the full path in its place. *Fix:* import the
+  types (`use serde_json::{Map, Value};`,
+  `use syneroym_app_host::types::conversation::Message;`, `use std::path::Path;`)
+  and qualify functions by their parent module (`use std::{any, env, panic};`
+  then `any::type_name`, `env::temp_dir`, `panic::catch_unwind`;
+  `use syneroym_roym_profile::api;` then `api::method_table()`, with an alias
+  for the conversation one). *Status:* Open.
+
+- [ ] **R10 — minor.** *Where:*
+  [check.rs:20-60](../../../../crates/roym_core/src/method/check.rs#L20).
+  *Problem:* the comments `// 1. Duplicate name` … `// 4 & 5. Probe unknown
+  fields` … `// 7, 8, 9. Source code scan` number the problem list of the
+  plan's Step 3. The code has no list 1 to 9, so the numbers only make sense
+  next to the plan, which gets archived ("comments explain why, not which
+  plan"). *Fix:* drop the numbers. Put one doc comment on
+  `assert_service_table` that lists, in words, what it checks (this can be
+  the same comment as R6). *Status:* Open.
+
+- [ ] **R11 — minor.** *Where:*
+  [tests.rs:308](../../../../crates/roym_core/src/method/tests.rs#L308),
+  `:369`, `:386`, `:405`. *Problem:* the scan tests write files into fixed
+  names under the shared system temp directory (`test_correct_table`,
+  `test_hand_written_arm`, …) and delete them with `remove_dir_all`. Two
+  runs at the same time (two worktrees, or a nextest retry beside a running
+  test) delete each other's files, and a test then passes or fails for the
+  wrong reason. *Fix:* use `tempfile::TempDir` (already a workspace
+  dependency, `tempfile = "3.10"`; add `tempfile.workspace = true` to
+  `roym_core`'s `[dev-dependencies]`). The `TempDir` drop also replaces the
+  `catch_unwind` / `resume_unwind` clean-up code. *Status:* Open.
+
+- [ ] **R12 — minor.** *Where:*
+  [method.rs:81-83](../../../../crates/roym_core/src/method.rs#L81).
+  *Problem:* `parse_value` clones the whole `params` before it reads it.
+  For `*.import` the params hold the whole backup bundle, so each import
+  holds two copies in guest memory. `&Value` is already a serde
+  `Deserializer`, so the copy is not needed. *Fix:* pass `params` (or a
+  static empty map for `null`) by reference:
+  `serde_path_to_error::deserialize(params)` with `params: &Value`, and for
+  `null` a `static EMPTY` or a local `Value::Object(Map::new())` that is
+  only built in that branch. Keep the existing tests green. *Status:* Open.
+
+Count: 0 blockers, 1 major, 11 minor.
