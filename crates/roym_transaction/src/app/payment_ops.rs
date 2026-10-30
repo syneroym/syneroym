@@ -3,7 +3,7 @@
 mod fence;
 
 use fence::{AckFenceClaim, claim_payment_ack_fence, claim_payment_request_fence};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppHost, AppSigning,
@@ -13,6 +13,7 @@ use syneroym_roym_core::{
     booking::{BookingEvent, BookingState, Track, TrackState},
     clock,
     envelope::{Request, Response},
+    method::{Reply, VerifyInput},
     payment::{self, PaymentAcknowledgementPayload, PaymentRequestPayload},
     record::{Envelope, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST},
     transaction::{DealRole, PairState, ReceiptHalf, pair_state},
@@ -20,7 +21,7 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BookingRow, PAYMENTS, PROGRESS, PaymentsRow, ProgressRow,
+    AGREEMENTS, AgreementRow, BookingRow, PAYMENTS, PROGRESS, PaymentsRow, ProgressRow, SendState,
     booking_ops, get_row, ledger::load_booking, put_row, resolve_principal_and_owner,
     send_card_and_file,
 };
@@ -465,32 +466,32 @@ pub(crate) async fn payment_get<H: AppHost>(host: &H, req: &Request) -> Response
     }))
 }
 
-pub(crate) async fn payment_verify<H: AppHost>(_host: &H, req: &Request) -> Response {
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum PaymentVerdict {
+    Request(RecordVerdict<PaymentRequestPayload>),
+    Ack(RecordVerdict<PaymentAcknowledgementPayload>),
+    Refused(RecordVerdict<()>),
+}
+
+pub(crate) async fn verify<H: AppHost>(_host: &H, input: VerifyInput) -> Reply<PaymentVerdict> {
     let now = clock::now_secs();
-    let env_val = match req.params.get("envelope") {
-        Some(v) => v,
-        None => return Response::invalid_params("envelope is required"),
-    };
-    let env_str = match env_val {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    let envelope = match Envelope::from_json(&env_str) {
+    let envelope = match Envelope::from_json(&input.envelope) {
         Ok(e) => e,
         Err(e) => {
-            return Response::ok(json!(RecordVerdict::<()>::refused(format!(
+            return Ok(PaymentVerdict::Refused(RecordVerdict::<()>::refused(format!(
                 "envelope is not valid json: {e}"
             ))));
         }
     };
     match envelope.record_type.as_str() {
         RECORD_PAYMENT_REQUEST => {
-            Response::ok(json!(payment::verify_payment_request(&env_str, now)))
+            Ok(PaymentVerdict::Request(payment::verify_payment_request(&input.envelope, now)))
         }
         RECORD_PAYMENT_ACKNOWLEDGEMENT => {
-            Response::ok(json!(payment::verify_payment_acknowledgement(&env_str, now)))
+            Ok(PaymentVerdict::Ack(payment::verify_payment_acknowledgement(&input.envelope, now)))
         }
-        _ => Response::ok(json!(RecordVerdict::<()>::refused("not a payment record type"))),
+        _ => Ok(PaymentVerdict::Refused(RecordVerdict::<()>::refused("not a payment record type"))),
     }
 }
 
@@ -601,7 +602,7 @@ async fn record_and_send_ack<H: AppHost>(
     role: DealRole,
     half: ReceiptHalf,
     now: u64,
-) -> Result<(String, String), Response> {
+) -> Result<(String, SendState), Response> {
     let env_json = half.envelope.clone();
     let versions = match role {
         DealRole::Counterparty => &mut payments.counterparty,

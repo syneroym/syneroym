@@ -14,8 +14,9 @@ use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
     fulfilment::{self, FulfilmentReceiptPayload},
+    method::{Reply, VerifyInput},
     record::{Envelope, RECORD_FULFILMENT_RECEIPT},
-    transaction::{DealRole, PairState, ReceiptHalf, pair_state},
+    transaction::{DealRole, PairState, ReceiptHalf, RecordVerdict, pair_state},
 };
 
 use super::{
@@ -415,4 +416,11 @@ async fn ensure_fulfilment_recorded<H: AppHost>(
         "message_id": message_id,
         "state": send_state,
     }))
+}
+
+pub(crate) async fn verify<H: AppHost>(
+    _host: &H,
+    input: VerifyInput,
+) -> Reply<RecordVerdict<FulfilmentReceiptPayload>> {
+    syneroym_roym_core::method::verify_with(input, fulfilment::verify_fulfilment_receipt)
 }

@@ -24,12 +24,10 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     admit,
-    booking::{self, BookingProgressPayload, BookingState},
+    booking::{BookingProgressPayload, BookingState},
     card::{self, CARD_CONTENT_TYPE},
-    clock,
-    conversation::Direction,
+    conversation::{Direction, StoredState},
     envelope::{Request, Response},
-    fulfilment,
     method::{
         SiblingError, call_sibling,
         conversation::{SendInput, SendOutput},
@@ -38,8 +36,10 @@ use syneroym_roym_core::{
     record::Envelope,
     services,
     signing::{self, CertificateError},
-    transaction::{self, AgreedTerms, DealRole, ReceiptHalf},
+    transaction::{AgreedTerms, DealRole, ReceiptHalf},
 };
+
+use crate::api;
 
 // Schema version 4 names the deal roles by action (counterparty, quote
 // author). Version 3 added the booking vertical, payments, fulfilments and
@@ -58,6 +58,60 @@ pub(crate) const BOOKINGS: &str = "bookings";
 pub(crate) const PROGRESS: &str = "progress";
 pub(crate) const PAYMENTS: &str = "payments";
 pub(crate) const FULFILMENTS: &str = "fulfilments";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SendState {
+    Pending,
+    Deposited,
+    Delivered,
+    Failed,
+    NotSent,
+    AlreadyAccepted,
+    AlreadyRecorded,
+}
+
+impl From<StoredState> for SendState {
+    fn from(s: StoredState) -> Self {
+        match s {
+            StoredState::Pending => Self::Pending,
+            StoredState::Deposited => Self::Deposited,
+            StoredState::Delivered => Self::Delivered,
+            StoredState::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BookingWriter {
+    #[serde(rename = "self")]
+    Mine,
+    Peer,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgreementRef {
+    pub agreement: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListInput {
+    #[serde(default)]
+    pub conversation: Option<String>,
+    #[serde(default)]
+    pub mine: Option<bool>,
+    #[serde(default = "default_list_limit_u64")]
+    pub limit: u64,
+    #[serde(default)]
+    pub offset: u64,
+}
+
+pub(crate) fn default_list_limit_u64() -> u64 {
+    200
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RecordPointerRow {
@@ -113,36 +167,36 @@ impl AgreementRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct CardRow {
-    pub(crate) message_id: String,
-    pub(crate) conversation: String,
-    pub(crate) direction: Direction,
-    pub(crate) sender_timestamp_ms: i64,
-    pub(crate) card_type: String,
-    pub(crate) version: u32,
-    pub(crate) known: bool,
-    pub(crate) verified: bool,
+pub struct CardRow {
+    pub message_id: String,
+    pub conversation: String,
+    pub direction: Direction,
+    pub sender_timestamp_ms: i64,
+    pub card_type: String,
+    pub version: u32,
+    pub known: bool,
+    pub verified: bool,
     #[serde(default)]
-    pub(crate) expired: bool,
+    pub expired: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reason: Option<String>,
+    pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) issuer: Option<String>,
+    pub issuer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) record_id: Option<String>,
+    pub record_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) revocation_status: Option<String>,
+    pub revocation_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) data: Option<Value>,
-    pub(crate) stored_at_secs: u64,
+    pub data: Option<Value>,
+    pub stored_at_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) declined: Option<bool>,
+    pub declined: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) version_count: Option<u64>,
+    pub version_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) agreement_payee: Option<String>,
+    pub agreement_payee: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) agreement_payment_methods: Vec<String>,
+    pub agreement_payment_methods: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,22 +254,6 @@ pub(crate) struct FulfilmentsRow {
     pub(crate) updated_at_secs: u64,
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct ListParams {
-    #[serde(default)]
-    pub(crate) conversation: Option<String>,
-    #[serde(default)]
-    pub(crate) mine: Option<bool>,
-    #[serde(default = "default_list_limit")]
-    pub(crate) limit: usize,
-    #[serde(default)]
-    pub(crate) offset: usize,
-}
-
-pub(crate) fn default_list_limit() -> usize {
-    200
-}
-
 pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     Ok(json!({
         "service": services::TRANSACTION.name,
@@ -228,53 +266,23 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     if let Some(resp) = admit::require_internal(host).await {
         return resp;
     }
-    if let Some(resp) = signing::handle_certificate_verb(host, "transaction.", &req).await {
+    if let Some(resp) = api::dispatch(host, &req).await {
         return resp;
     }
 
     match req.method.as_str() {
-        "request.ping" | "quote.ping" | "agreement.ping" | "receipt.ping" | "booking.ping"
-        | "payment.ping" | "fulfilment.ping" => {
-            Response::ok(json!({ "service": services::TRANSACTION.name }))
-        }
-        "request.set" => request_ops::request_set(host, &req).await,
-        "request.get" => request_ops::request_get(host, &req).await,
-        "request.list" => request_ops::request_list(host, &req).await,
-        "request.history" => request_ops::request_history(host, &req).await,
-        "request.verify" => verify_verb(host, &req, RecordKind::Request).await,
-
-        "quote.set" => quote_ops::quote_set(host, &req).await,
-        "quote.get" => quote_ops::quote_get(host, &req).await,
-        "quote.list" => quote_ops::quote_list(host, &req).await,
-        "quote.history" => quote_ops::quote_history(host, &req).await,
-        "quote.verify" => verify_verb(host, &req, RecordKind::Quote).await,
-        "quote.decline" => quote_ops::quote_decline(host, &req).await,
-
-        "agreement.accept" => agreement_ops::agreement_accept(host, &req).await,
-        "agreement.get" => agreement_ops::agreement_get(host, &req).await,
-        "agreement.list" => agreement_ops::agreement_list(host, &req).await,
-        "agreement.verify" => verify_verb(host, &req, RecordKind::AgreementReceipt).await,
-
         "booking.get" => booking_ops::booking_get(host, &req).await,
         "booking.list" => booking_ops::booking_list(host, &req).await,
         "booking.start" => booking_ops::booking_start(host, &req).await,
         "booking.cancel" => booking_ops::booking_cancel(host, &req).await,
         "booking.history" => booking_ops::booking_history(host, &req).await,
-        "booking.verify" => verify_verb(host, &req, RecordKind::BookingProgress).await,
 
         "payment.request" => payment_ops::payment_request(host, &req).await,
         "payment.acknowledge" => payment_ops::payment_acknowledge(host, &req).await,
         "payment.get" => payment_ops::payment_get(host, &req).await,
-        "payment.verify" => payment_ops::payment_verify(host, &req).await,
 
         "fulfilment.sign" => fulfilment_ops::fulfilment_sign(host, &req).await,
         "fulfilment.get" => fulfilment_ops::fulfilment_get(host, &req).await,
-        "fulfilment.verify" => verify_verb(host, &req, RecordKind::FulfilmentReceipt).await,
-
-        "transaction.sync" => sync::sync(host, &req).await,
-        "transaction.thread" => thread::thread(host, &req).await,
-        "transaction.export" => backup::export(host).await,
-        "transaction.import" => backup::import(host, &req).await,
         other => Response::method_not_found(other),
     }
 }
@@ -306,41 +314,6 @@ pub(crate) async fn resolve_principal_and_owner<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     Ok((principal, owner))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RecordKind {
-    Request,
-    Quote,
-    AgreementReceipt,
-    BookingProgress,
-    FulfilmentReceipt,
-}
-
-async fn verify_verb<H: AppHost>(host: &H, req: &Request, kind: RecordKind) -> Response {
-    let _ = host;
-    let now = clock::now_secs();
-    let env_val = match req.params.get("envelope") {
-        Some(v) => v,
-        None => return Response::invalid_params("envelope is required"),
-    };
-    let env_str = match env_val {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    match kind {
-        RecordKind::Request => Response::ok(json!(transaction::verify_request(&env_str, now))),
-        RecordKind::Quote => Response::ok(json!(transaction::verify_quote(&env_str, now))),
-        RecordKind::AgreementReceipt => {
-            Response::ok(json!(transaction::verify_agreement_receipt(&env_str, now)))
-        }
-        RecordKind::BookingProgress => {
-            Response::ok(json!(booking::verify_booking_progress(&env_str, now)))
-        }
-        RecordKind::FulfilmentReceipt => {
-            Response::ok(json!(fulfilment::verify_fulfilment_receipt(&env_str, now)))
-        }
-    }
 }
 
 async fn ensure_coll<H: AppHost>(
@@ -557,10 +530,10 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
     envelope_json: &str,
     now: u64,
     version_count: Option<u64>,
-) -> (String, String, Option<String>) {
+) -> (String, SendState, Option<String>) {
     let body = match card::card_body(card_type, version, envelope_json) {
         Ok(b) => b,
-        Err(e) => return (String::new(), "not-sent".to_string(), Some(e.to_string())),
+        Err(e) => return (String::new(), SendState::NotSent, Some(e.to_string())),
     };
 
     let send_resp = call_sibling::<_, SendInput, SendOutput>(
@@ -576,12 +549,12 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
     .await;
 
     let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
-        Ok(out) => (out.message_id, out.state.as_str().to_string(), out.sender_timestamp_ms, None),
+        Ok(out) => (out.message_id, SendState::from(out.state), out.sender_timestamp_ms, None),
         Err(SiblingError::Refused(err)) => {
-            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(err.message))
+            (String::new(), SendState::NotSent, now as i64 * 1000, Some(err.message))
         }
         Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => {
-            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e))
+            (String::new(), SendState::NotSent, now as i64 * 1000, Some(e))
         }
     };
 

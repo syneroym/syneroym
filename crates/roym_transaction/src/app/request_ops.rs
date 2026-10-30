@@ -2,8 +2,7 @@
 
 use std::cmp::Reverse;
 
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
@@ -11,90 +10,108 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     area::Area,
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
+    method::{EnvelopeHistoryOutput, Reply, VerifyInput},
     paging,
     record::{Envelope, RECORD_REQUEST},
     transaction::{self, REQUEST_VERSION, RecordVerdict, RequestPayload, TimeWindow},
 };
 
 use super::{
-    ListParams, REQUEST_HISTORY, REQUESTS, RecordPointerRow, conversation_mine_filter, count_mine,
-    ensure_collections, get_row, put_bytes, put_row, resolve_principal_and_owner,
+    ListInput, REQUEST_HISTORY, REQUESTS, RecordPointerRow, SendState, conversation_mine_filter,
+    count_mine, ensure_collections, get_row, put_bytes, put_row, resolve_principal_and_owner,
     send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
-struct RequestSetParams {
-    conversation: String,
+#[serde(deny_unknown_fields)]
+pub struct RequestSetInput {
+    pub conversation: String,
     #[serde(default)]
-    request_id: Option<String>,
+    pub request_id: Option<String>,
     #[serde(default)]
-    listing_id: Option<String>,
+    pub listing_id: Option<String>,
     #[serde(default)]
-    categories: Vec<String>,
-    description: String,
+    pub categories: Vec<String>,
+    pub description: String,
     #[serde(default)]
-    area: Option<Area>,
+    pub area: Option<Area>,
     #[serde(default)]
-    window: Option<TimeWindow>,
-    data_use_notice: String,
+    pub window: Option<TimeWindow>,
+    pub data_use_notice: String,
 }
 
-pub(crate) async fn request_set<H: AppHost>(host: &H, req: &Request) -> Response {
+#[derive(Debug, Serialize)]
+pub struct RequestSetOutput {
+    pub request_id: String,
+    pub record_id: String,
+    pub version_count: u64,
+    pub message_id: String,
+    pub state: SendState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestKeyInput {
+    pub request_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RequestView {
+    pub envelope: String,
+    pub record_id: String,
+    pub request_id: String,
+    pub conversation: String,
+    pub mine: bool,
+    pub updated_at_secs: u64,
+    pub version_count: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RequestListOutput {
+    pub requests: Vec<RequestView>,
+}
+
+pub(crate) async fn set<H: AppHost>(host: &H, input: RequestSetInput) -> Reply<RequestSetOutput> {
     let now = clock::now_secs();
-    let (principal, owner) = match resolve_principal_and_owner(host, now).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
-    };
+    let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
-    let params: RequestSetParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
+    ensure_collections(host).await.map_err(Response::internal_error)?;
 
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
+    let (sequence, supersedes, next_count) = resolve_request_sequence(host, &input, &owner).await?;
 
-    let (sequence, supersedes, next_count) =
-        match resolve_request_sequence(host, &params, &owner).await {
-            Ok(v) => v,
-            Err(resp) => return resp,
-        };
-
-    let request_id = match transaction::derive_request_id(&params.conversation, &owner, sequence) {
+    let request_id = match transaction::derive_request_id(&input.conversation, &owner, sequence) {
         Ok(id) => id,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     let payload = RequestPayload {
         request_id: request_id.clone(),
-        conversation: params.conversation.clone(),
+        conversation: input.conversation.clone(),
         sequence,
-        listing_id: params.listing_id,
-        categories: params.categories,
-        description: params.description,
-        area: params.area,
-        window: params.window,
-        data_use_notice: params.data_use_notice,
+        listing_id: input.listing_id,
+        categories: input.categories,
+        description: input.description,
+        area: input.area,
+        window: input.window,
+        data_use_notice: input.data_use_notice,
     };
     if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
 
-    let signed = match sign_and_store_request(host, principal, &owner, &payload, supersedes).await {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
+    let signed = sign_and_store_request(host, principal, &owner, &payload, supersedes).await?;
 
     let pointer = build_request_pointer(&payload, &signed, &owner, next_count, now);
     if let Err(e) = put_row(host, REQUESTS, &request_id, &pointer).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     let (message_id, state, send_error) = send_card_and_file(
         host,
-        &params.conversation,
+        &input.conversation,
         RECORD_REQUEST,
         REQUEST_VERSION,
         &signed.envelope_json,
@@ -103,24 +120,21 @@ pub(crate) async fn request_set<H: AppHost>(host: &H, req: &Request) -> Response
     )
     .await;
 
-    let mut out = json!({
-        "request_id": request_id,
-        "record_id": signed.record_id,
-        "version_count": next_count,
-        "message_id": message_id,
-        "state": state,
-    });
-    if let Some(err) = send_error {
-        out["send_error"] = json!(err);
-    }
-    Response::ok(out)
+    Ok(RequestSetOutput {
+        request_id,
+        record_id: signed.record_id,
+        version_count: next_count,
+        message_id,
+        state,
+        send_error,
+    })
 }
 
 /// Works out this request's sequence number and, when it revises an earlier
 /// request, which record it supersedes.
 async fn resolve_request_sequence<H: AppHost>(
     host: &H,
-    params: &RequestSetParams,
+    params: &RequestSetInput,
     owner: &str,
 ) -> Result<(u32, Option<String>, u64), Response> {
     if let Some(ref id) = params.request_id {
@@ -197,10 +211,6 @@ async fn sign_and_store_request<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
-    // The record is stored before the card is sent. A send that fails leaves a
-    // signed record this node holds and the peer does not, which a later `set`
-    // or a retry repairs; the reverse -- a card the peer holds and this node
-    // cannot show -- has no repair.
     if let Err(e) = put_bytes(host, REQUEST_HISTORY, &record_id, envelope_json.as_bytes()).await {
         return Err(Response::internal_error(e));
     }
@@ -236,93 +246,73 @@ fn build_request_pointer(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct RequestGetParams {
-    request_id: String,
+pub(crate) async fn get<H: AppHost>(
+    host: &H,
+    input: RequestKeyInput,
+) -> Reply<Option<RequestView>> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
+    let pointer: Option<RecordPointerRow> = match get_row(host, REQUESTS, &input.request_id).await {
+        Ok(p) => p,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    Ok(pointer.map(|p| RequestView {
+        envelope: p.envelope,
+        record_id: p.record_id,
+        request_id: p.id,
+        conversation: p.conversation,
+        mine: p.mine,
+        updated_at_secs: p.updated_at_secs,
+        version_count: p.version_count,
+    }))
 }
 
-pub(crate) async fn request_get<H: AppHost>(host: &H, req: &Request) -> Response {
-    let params: RequestGetParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-    let pointer: Option<RecordPointerRow> = match get_row(host, REQUESTS, &params.request_id).await
-    {
-        Ok(p) => p,
-        Err(e) => return Response::internal_error(e),
-    };
-    match pointer {
-        Some(p) => Response::ok(json!({
-            "envelope": p.envelope,
-            "record_id": p.record_id,
-            "request_id": p.id,
-            "conversation": p.conversation,
-            "mine": p.mine,
-            "updated_at_secs": p.updated_at_secs,
-            "version_count": p.version_count,
-        })),
-        None => Response::ok(Value::Null),
-    }
-}
+pub(crate) async fn list<H: AppHost>(host: &H, input: ListInput) -> Reply<RequestListOutput> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
 
-pub(crate) async fn request_list<H: AppHost>(host: &H, req: &Request) -> Response {
-    let params: ListParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-
-    let filter = conversation_mine_filter(params.conversation.as_deref(), params.mine);
+    let filter = conversation_mine_filter(input.conversation.as_deref(), input.mine);
     let mut rows: Vec<RecordPointerRow> = match paging::query_all(host, REQUESTS, filter).await {
         Ok(rows) => rows,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     rows.sort_by_key(|p| Reverse(p.updated_at_secs));
-    let page: Vec<Value> = rows
+    let offset = usize::try_from(input.offset).unwrap_or(usize::MAX);
+    let limit = usize::try_from(input.limit).unwrap_or(usize::MAX);
+    let page: Vec<RequestView> = rows
         .into_iter()
-        .skip(params.offset)
-        .take(params.limit)
-        .map(|p| {
-            json!({
-                "envelope": p.envelope,
-                "record_id": p.record_id,
-                "request_id": p.id,
-                "conversation": p.conversation,
-                "mine": p.mine,
-                "updated_at_secs": p.updated_at_secs,
-                "version_count": p.version_count,
-            })
+        .skip(offset)
+        .take(limit)
+        .map(|p| RequestView {
+            envelope: p.envelope,
+            record_id: p.record_id,
+            request_id: p.id,
+            conversation: p.conversation,
+            mine: p.mine,
+            updated_at_secs: p.updated_at_secs,
+            version_count: p.version_count,
         })
         .collect();
-    Response::ok(json!({ "requests": page }))
+    Ok(RequestListOutput { requests: page })
 }
 
-#[derive(Debug, Deserialize)]
-struct RequestHistoryParams {
-    request_id: String,
-}
-
-pub(crate) async fn request_history<H: AppHost>(host: &H, req: &Request) -> Response {
-    let params: RequestHistoryParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
+pub(crate) async fn history<H: AppHost>(
+    host: &H,
+    input: RequestKeyInput,
+) -> Reply<EnvelopeHistoryOutput> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
+    let out = match paging::envelope_history(host, REQUEST_HISTORY, "request_id", &input.request_id)
+        .await
+    {
+        Ok(out) => out,
+        Err(e) => return Err(Response::internal_error(e)),
     };
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-    let out =
-        match paging::envelope_history(host, REQUEST_HISTORY, "request_id", &params.request_id)
-            .await
-        {
-            Ok(out) => out,
-            Err(e) => return Response::internal_error(e),
-        };
-    Response::ok(json!({ "history": out }))
+    Ok(EnvelopeHistoryOutput { history: out })
+}
+
+pub(crate) async fn verify<H: AppHost>(
+    _host: &H,
+    input: VerifyInput,
+) -> Reply<RecordVerdict<RequestPayload>> {
+    syneroym_roym_core::method::verify_with(input, transaction::verify_request)
 }
 
 pub(crate) async fn store_received_request<H: AppHost>(

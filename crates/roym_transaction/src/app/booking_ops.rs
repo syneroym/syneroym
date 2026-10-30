@@ -1,25 +1,46 @@
 //! Booking operations: decision, lifecycle transitions, queries, and history.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
-    booking::{self, BookingEvent, BookingProgressPayload, BookingState, NextStep},
+    booking::{
+        self, BookingEvent, BookingProgressPayload, BookingState, ConflictReason, NextStep,
+        TrackState,
+    },
     clock,
     envelope::{Request, Response},
+    method::{Reply, VerifyInput},
     paging, signing,
-    transaction::{DealRole, PaymentTiming, QuotePayload, pair_state},
+    transaction::{DealRole, PairState, PaymentTiming, QuotePayload, RecordVerdict, pair_state},
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BOOKINGS, BookingRow, CARDS, CardRow, LEDGER, PROGRESS, ProgressRow,
-    default_list_limit, get_row,
+    AGREEMENTS, AgreementRow, BOOKINGS, BookingRow, BookingWriter, CARDS, CardRow, LEDGER,
+    PROGRESS, ProgressRow, get_row,
     ledger::{
         Claim, LedgerKind, LedgerRow, StepRow, claim_decision, claim_seat, load_booking, seat_id,
         step_id,
     },
     progress, put_row,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookingView {
+    pub agreement: String,
+    pub writer: Option<BookingWriter>,
+    pub seq: Option<u32>,
+    pub state: Option<BookingState>,
+    pub conflict: Option<ConflictReason>,
+    pub payment: Option<TrackState>,
+    pub fulfilment: Option<TrackState>,
+    pub track_window_ends_at_secs: Option<u64>,
+    pub cancel_reason: Option<String>,
+    pub progress_record_id: Option<String>,
+    pub next: NextStep,
+    pub payment_timing: PaymentTiming,
+    pub pair: PairState,
+}
 
 pub(crate) async fn decide_booking<H: AppHost>(
     host: &H,
@@ -209,10 +230,10 @@ pub(crate) fn booking_view(
     agreement: &str,
     snapshot: Option<&BookingProgressPayload>,
     progress_record_id: Option<&str>,
-    writer: Option<&str>,
+    writer: Option<BookingWriter>,
     agr: &AgreementRow,
     role: DealRole,
-) -> Value {
+) -> BookingView {
     let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     let next_step_enum = match snapshot {
         Some(s) => booking::next_step(s, agr.terms.payment_timing, role),
@@ -225,21 +246,28 @@ pub(crate) fn booking_view(
         },
     };
 
-    json!({
-        "agreement": agreement,
-        "writer": writer,
-        "seq": snapshot.map(|s| s.seq),
-        "state": snapshot.map(|s| s.state),
-        "conflict": snapshot.and_then(|s| s.conflict),
-        "payment": snapshot.map(|s| s.payment),
-        "fulfilment": snapshot.map(|s| s.fulfilment),
-        "track_window_ends_at_secs": snapshot.map(|s| s.track_window_ends_at_secs),
-        "cancel_reason": snapshot.and_then(|s| s.cancel_reason.as_deref()),
-        "progress_record_id": progress_record_id,
-        "next": next_step_enum,
-        "payment_timing": agr.terms.payment_timing,
-        "pair": pair,
-    })
+    BookingView {
+        agreement: agreement.to_string(),
+        writer,
+        seq: snapshot.map(|s| s.seq),
+        state: snapshot.map(|s| s.state),
+        conflict: snapshot.and_then(|s| s.conflict),
+        payment: snapshot.map(|s| s.payment),
+        fulfilment: snapshot.map(|s| s.fulfilment),
+        track_window_ends_at_secs: snapshot.map(|s| s.track_window_ends_at_secs),
+        cancel_reason: snapshot.and_then(|s| s.cancel_reason.clone()),
+        progress_record_id: progress_record_id.map(str::to_string),
+        next: next_step_enum,
+        payment_timing: agr.terms.payment_timing,
+        pair,
+    }
+}
+
+pub(crate) async fn verify<H: AppHost>(
+    _host: &H,
+    input: VerifyInput,
+) -> Reply<RecordVerdict<BookingProgressPayload>> {
+    syneroym_roym_core::method::verify_with(input, booking::verify_booking_progress)
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,13 +311,13 @@ pub(crate) async fn booking_get<H: AppHost>(host: &H, req: &Request) -> Response
                 &p.agreement,
                 Some(&b.snapshot),
                 Some(&b.progress_record_id),
-                Some("self"),
+                Some(BookingWriter::Mine),
                 &agr,
                 DealRole::QuoteAuthor,
             ),
             None => booking_view(&p.agreement, None, None, None, &agr, DealRole::QuoteAuthor),
         };
-        Response::ok(view)
+        Response::ok(json!(view))
     } else if owner == agr.counterparty_did {
         let progress: Option<ProgressRow> = match get_row(host, PROGRESS, &p.agreement).await {
             Ok(pr) => pr,
@@ -301,13 +329,13 @@ pub(crate) async fn booking_get<H: AppHost>(host: &H, req: &Request) -> Response
                 &p.agreement,
                 Some(&pr.snapshot),
                 Some(&pr.record_id),
-                Some("peer"),
+                Some(BookingWriter::Peer),
                 &agr,
                 DealRole::Counterparty,
             ),
             None => booking_view(&p.agreement, None, None, None, &agr, DealRole::Counterparty),
         };
-        Response::ok(view)
+        Response::ok(json!(view))
     } else {
         Response::invalid_params("not-a-party")
     }
@@ -339,14 +367,14 @@ pub(crate) async fn booking_start<H: AppHost>(host: &H, req: &Request) -> Respon
         Err(resp) => return resp,
     };
 
-    Response::ok(booking_view(
+    Response::ok(json!(booking_view(
         &p.agreement,
         Some(&row.snapshot),
         Some(&row.progress_record_id),
-        Some("self"),
+        Some(BookingWriter::Mine),
         &agr,
         DealRole::QuoteAuthor,
-    ))
+    )))
 }
 
 #[derive(Debug, Deserialize)]
@@ -383,14 +411,14 @@ pub(crate) async fn booking_cancel<H: AppHost>(host: &H, req: &Request) -> Respo
         Err(resp) => return resp,
     };
 
-    Response::ok(booking_view(
+    Response::ok(json!(booking_view(
         &p.agreement,
         Some(&row.snapshot),
         Some(&row.progress_record_id),
-        Some("self"),
+        Some(BookingWriter::Mine),
         &agr,
         DealRole::QuoteAuthor,
-    ))
+    )))
 }
 
 pub(crate) async fn booking_history<H: AppHost>(host: &H, req: &Request) -> Response {
@@ -460,6 +488,10 @@ pub(crate) async fn booking_history<H: AppHost>(host: &H, req: &Request) -> Resp
     }
 }
 
+fn default_list_limit() -> usize {
+    200
+}
+
 #[derive(Debug, Deserialize)]
 struct BookingListParams {
     #[serde(default)]
@@ -507,14 +539,14 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
             } else {
                 DealRole::Counterparty
             };
-            views.push(booking_view(
+            views.push(json!(booking_view(
                 &b.agreement,
                 Some(&b.snapshot),
                 Some(&b.progress_record_id),
-                Some("self"),
+                Some(BookingWriter::Mine),
                 &agr,
                 role,
-            ));
+            )));
         }
     }
 
@@ -541,14 +573,14 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
                 } else {
                     DealRole::Counterparty
                 };
-                views.push(booking_view(
+                views.push(json!(booking_view(
                     &pr.agreement,
                     Some(&pr.snapshot),
                     Some(&pr.record_id),
-                    Some("peer"),
+                    Some(BookingWriter::Peer),
                     &agr,
                     role,
-                ));
+                )));
             }
         }
     }

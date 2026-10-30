@@ -4,17 +4,20 @@ pub(crate) mod sections;
 
 use std::collections::{BTreeMap, HashMap};
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
-        self, Bundle, SECTION_AGREEMENTS, SECTION_BOOKINGS, SECTION_CARDS, SECTION_FULFILMENTS,
-        SECTION_LEDGER, SECTION_PAYMENTS, SECTION_PROGRESS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
-        SECTION_REQUEST_HISTORY, SECTION_REQUESTS,
+        self, Bundle, ImportInput, SECTION_AGREEMENTS, SECTION_BOOKINGS, SECTION_CARDS,
+        SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS, SECTION_PROGRESS,
+        SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_REQUEST_HISTORY, SECTION_REQUESTS,
     },
     booking, clock,
-    envelope::{Request, Response},
-    fulfilment, paging, payment, signing,
+    envelope::Response,
+    fulfilment,
+    method::{NoParams, Reply},
+    paging, payment, signing,
     transaction::{self, DealRole, QuotePayload, ReceiptHalf},
 };
 
@@ -24,15 +27,20 @@ use super::{
     ensure_collections, get_bytes, put_bytes, put_row,
 };
 
+#[derive(Debug, Serialize)]
+pub struct TransactionImportOutput {
+    pub imported: bool,
+}
+
 /// Exports transaction data: requests, quotes, agreements, cards, and history.
-pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bundle> {
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     let now = clock::now_secs();
     if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let mut sections = match backup::collect_sections(
         host,
@@ -51,7 +59,7 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     .await
     {
         Ok(s) => s,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     for (section, collection) in
         [(SECTION_REQUEST_HISTORY, REQUEST_HISTORY), (SECTION_QUOTE_HISTORY, QUOTE_HISTORY)]
@@ -60,32 +68,26 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
             Ok(rows) => {
                 sections.insert(section.to_string(), rows);
             }
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         }
     }
-    backup::export_signed(host, owner, SCHEMA_VERSION, sections, now).await
+    backup::export_signed_bundle(host, owner, SCHEMA_VERSION, sections, now).await
 }
 
-pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
-    let bundle_val = match req.params.get("bundle").cloned().or_else(|| Some(req.params.clone())) {
-        Some(v) => v,
-        None => return Response::invalid_params("bundle is required"),
-    };
-    let bundle = match Bundle::from_json(&bundle_val.to_string()) {
-        Ok(b) => b,
-        Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
-    };
+pub(crate) async fn import<H: AppHost>(
+    host: &H,
+    input: ImportInput,
+) -> Reply<TransactionImportOutput> {
+    let bundle = input.bundle;
     let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
-    if let Err(resp) = validate_bundle_header(&bundle, &owner, now) {
-        return resp;
-    }
+    validate_bundle_header(&bundle, &owner, now)?;
 
     if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     let req_rows = bundle.sections.get(SECTION_REQUESTS).cloned().unwrap_or_default();
@@ -95,17 +97,17 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let verified_requests = match verify_imported_requests(req_rows, &owner, now) {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return Err(e),
     };
     let (verified_quotes, quotes_by_record_id) =
         match verify_imported_quotes(quote_rows, &owner, now) {
             Ok(v) => v,
-            Err(e) => return e,
+            Err(e) => return Err(e),
         };
     let verified_agreements =
         match verify_imported_agreements(host, agr_rows, &quotes_by_record_id, now).await {
             Ok(v) => v,
-            Err(e) => return e,
+            Err(e) => return Err(e),
         };
 
     let agreements_map: HashMap<String, AgreementRow> =
@@ -118,11 +120,11 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         now,
     ) {
         Ok(v) => v,
-        Err(e) => return e,
+        Err(e) => return Err(e),
     };
 
     let mut imported_history: HashMap<String, (String, String)> = HashMap::new();
-    if let Err(resp) = import_negotiation_sections(
+    import_negotiation_sections(
         host,
         &bundle.sections,
         verified_requests,
@@ -131,22 +133,13 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
         &mut imported_history,
         now,
     )
-    .await
-    {
-        return resp;
-    }
+    .await?;
 
-    if let Err(resp) =
-        sections::write_vertical_sections(host, validated_vertical, &mut imported_history).await
-    {
-        return resp;
-    }
+    sections::write_vertical_sections(host, validated_vertical, &mut imported_history).await?;
 
-    if let Err(e) = write_imported_cards(host, card_rows, &imported_history, now).await {
-        return e;
-    }
+    write_imported_cards(host, card_rows, &imported_history, now).await?;
 
-    Response::ok(json!({ "imported": true }))
+    Ok(TransactionImportOutput { imported: true })
 }
 
 fn validate_bundle_header(bundle: &Bundle, owner: &str, now: u64) -> Result<(), Response> {
