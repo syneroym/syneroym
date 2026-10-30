@@ -202,6 +202,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - [ ] Remote access setting, default bind `127.0.0.1`, `local` login by socket peer address and off when remote access is on, `delegated-key` for remote clients, the Hub CSP, the Docker deploy.
 - [ ] Typed input and output for every Roym method, the unknown-field rule, and the check test.
   - [x] profile and conversation
+  - [x] catalog and transaction
 - [ ] "Build a Roym client" in the developer guide.
 
 ## Decisions
@@ -251,6 +252,24 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A2a-16. Numbers keep the width the handler already cast to**: `limit` of the conversation methods is `u32` (they cast `as u32`), the profile lists use `u64` (they cast `as usize`).
 - **D-A2a-17. The shape tests and check tests live in one binary, `crates/roym_web/tests/method_contract.rs`.** It has modules `shapes` and `contract` in `method_contract/shapes.rs` and `method_contract/contract.rs`, declared with explicit `#[path = "method_contract/..."]` attributes, including the four parity harness helper modules with `#[allow(dead_code)]`.
 - **D-A2a-18. Dead types are replaced.** Step 4 replaces `MessageRow` with `MessageView`. Step 6 replaces `ConversationRow` by `ConversationListItem` (`opened_at_secs: i64`, `last_activity_ms: i64`) and reuses `ConversationRowKind` for the `kind` output. `GroupMeta` and `apply_group_profile` remain as domain code.
+- **Q1–Q6: option (a), 2026-10-30.**
+- **D-A2b-1. No new machinery.** Both services use `service_methods!`, `typed`, `parse_value`, `call_sibling` and `assert_service_table` as A2a built them. The only additions to `roym_core` are structs (D-A2b-2).
+- **D-A2b-2. Where types live.** Shared types in `roym_core::method` (`VerifyInput`, `EnvelopeHistoryOutput`); catalog shared types in `roym_core::method::catalog`; service-specific types in `crates/roym_catalog/src/app` and `crates/roym_transaction/src/app`.
+- **D-A2b-3. Record types inside inputs have no `deny_unknown_fields`.** Blocks inside inputs (`payment`, `area`, `window`, etc.) omit `deny_unknown_fields` because they also parse signed records from other nodes.
+- **D-A2b-4. Page fields repeated without flatten.** Input structs write out page fields (`limit`, `offset`, `cursor`) individually so `deny_unknown_fields` is preserved.
+- **D-A2b-5. Nullable and tri-state outputs.** Keys with null in the old code omit `skip_serializing_if`. Keys absent in the old code use `skip_serializing_if = "Option::is_none"`.
+- **D-A2b-6. Wide numbers.** `limit`, `offset` and `cursor` are `u64` in input structs and converted with `usize::try_from(v).unwrap_or(usize::MAX)` to avoid 32/64-bit differences.
+- **D-A2b-7. Verify methods take `VerifyInput { envelope: String }`.** Sent as a string envelope.
+- **D-A2b-8. Output shapes match existing JSON.** `agreement.accept` uses `booking: Option<Option<BookingView>>` with skip so missing is omitted and null is preserved. Counterparty `BookingHistoryStep` keeps raw `Value` snapshot.
+- **D-A2b-9. Fences return typed answers and no `Response::ok` in handler code.** Fences F1 to F6 return `FenceOutcome<O>` (`Claimed` or `Answered(O)`). `ensure_*_recorded` returns `Reply<O>`. Crash recovery answers keep their `-32603` on error.
+- **D-A2b-10. `booking_view` returns `BookingView`.** Returns typed struct directly.
+- **D-A2b-11. Sibling calls keep error mapping.** `call_sibling` mappings for `Ok(None)`, `Refused`, `Transport`, `BadReply`. `sibling_call` and `catalog_call` deleted.
+- **D-A2b-12. Exports use `backup::export_signed_bundle`.** Returns `Reply<Bundle>`.
+- **D-A2b-13. Closed-word keys recorded in shapes.** Exact string values checked for closed enums.
+- **D-A2b-14. Shared deal set-up in tests.** Moved to `deal_fixtures.rs`.
+- **D-A2b-15. Transaction conversion in two steps.** Deal records first, then booking, payment, and fulfilment.
+- **D-A2b-16. `quote.set` takes typed terms.** `QuoteTermsInput` with `into_agreed_terms`.
+- **D-A2b-17. `roymctl` loses `booking list --agreement`.** Option removed from CLI.
 
 ## Deviations
 
@@ -266,6 +285,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 ### Different from the plan
 
 - **Dual-build parity test harness instance certificate:** The `roym_web` parity harness did not install a service-instance certificate, unlike a real deploy (`deploy/commit.rs`). The shape test needs a successful `group.add-member`, whose host-side prekey fetch runs `check_outbound_identity` and refuses without one. The harness now installs one per service on both builds. This also lets outbox delivery in every parity scenario pass that check; no scenario asserted the old refusal. Production code is unchanged.
+- **Substrate directory E2E test `listing.set` parameter:** In `crates/substrate/tests/roym_directory_e2e.rs:392`, the test previously passed `"listing_id": y_listing_id` to `listing.set`. The old untyped handler silently ignored unknown fields, but typed `SetListingInput` enforces `#[serde(deny_unknown_fields)]`. The redundant parameter was removed to match the method contract.
 
 ### Planned wire changes (plan section 4)
 
@@ -276,6 +296,18 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Import parameter format (B9):** Removed support for passing the bundle directly as the whole params object; callers must send `{ "bundle": ... }`.
 - **Certificate verbs refuse unknown fields (B21):** The certificate verbs of `catalog`, `transaction` and `directory` now refuse unknown fields, and a missing `certificate` gives `missing field` text instead of `certificate is required`. This also holds for `<svc>.signing-status`, which now takes `NoParams`.
 - **Stored profile without record_id (B22):** `profile.get` answers `-32603` for a stored row with no `record_id`.
+- **Check ordering in `request.set`, `quote.set`, `agreement.accept`, `quote.decline` (B23):** Input parsing runs before certificate, owner, range, and existence checks. An invalid parameter returns `-32602` before any business logic check.
+- **Error text and field pointer on invalid params (B24):** Standardized on `-32602 invalid params: <path>: <text>` with `data.field` across catalog and transaction. Scenario 40 updated.
+- **Refusal of unknown top-level keys across catalog and transaction (B26):** Local-only methods reject unknown top-level keys with `-32602` (`data.field = <key>`). Removed `--agreement` from `roymctl roym transaction booking list`.
+- **Verify methods require string envelope (B28):** Verify methods reject JSON object envelopes with `-32602` (`data.field = "envelope"`). The Hub was updated to send string text.
+- **Import parameter format for catalog and transaction (B29):** Passing bundle as whole params is rejected; callers must pass `{ "bundle": ... }`.
+- **Listing limits overflow rejected (B30):** `max_per_window` above `u32::MAX` is rejected with `-32602`.
+- **Invalid enum variants rejected (B31):** Unknown listing status or booking state rejected with `-32602 unknown variant` with `data.field`.
+- **Malformed slot row handling (B32):** `availability.get` returns `-32603` on unparseable stored row; `availability.list` skips malformed rows.
+- **Sibling error mapping standardization (B33):** Sibling calls preserve `-32602` / `-32603` mapping via `call_sibling`.
+- **Null or missing params accepted when all fields optional (B34):** Methods where all fields are optional accept `null` params or `{}`.
+- **Large limit/offset supported across targets (B35):** `u64` values accepted uniformly on WASM and native.
+- **Quote set rejects `quote_expires_at_secs` in terms (B36):** Overwriting terms expiry disallowed with `-32602` (`data.field = "terms.quote_expires_at_secs"`).
 
 ## Close-out
 
