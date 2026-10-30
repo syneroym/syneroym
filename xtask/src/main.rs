@@ -187,6 +187,7 @@ fn check_roym_deps() -> Result<()> {
             "syneroym-signed-record",
             "serde",
             "serde_json",
+            "serde_path_to_error",
             "async-trait",
             "thiserror",
         ],
