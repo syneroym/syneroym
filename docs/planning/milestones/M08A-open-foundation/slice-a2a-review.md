@@ -684,3 +684,55 @@ commit content and the code path above.
   only built in that branch. Keep the existing tests green. *Status:* Fixed (68540d14).
 
 Count for this round: 0 blockers, 0 open (1 major fixed, 11 minor fixed).
+
+## Code review round 1 — fixes confirmed — Claude Opus 5.5 (Claude Code), 2026-10-30
+
+Checked the fix commits `5bc5b759`..`2538716a` against R1 to R12. Every
+item is fixed as written. No new item is open.
+
+- **R1.** `contract.rs` builds both paths from `CARGO_MANIFEST_DIR`.
+  `assert_service_table` now reports a missing folder, a folder with no `.rs`
+  file, and every `read_dir` error. The scan tests use real temp folders,
+  and `check_fails_when_the_source_dir_is_missing` and
+  `check_fails_when_no_rs_files_found` are new. A missing folder now fails
+  the check, so the two table tests passing shows that the scan really reads
+  both service folders. I did not repeat the manual hand-written-arm proof;
+  the fix session records it under R1.
+- **R2, R3.** The change doc now has the plan's D-A2a-1 to D-A2a-18 with
+  the same numbers and meaning, plus the line for the owner's answers. "Resolved
+  by D-A2a-2 and D-A2a-17" points at the method list and the test binary
+  again. Deviations is split into "Different from the plan" (the harness
+  certificate, with its reason and its effect on all scenarios) and "Planned
+  wire changes", which now has B21 (with `signing-status`) and B22, and the
+  exact `data` rule.
+- **R4, R12.** `parse_value` cuts `field` to 256 bytes and reads `params`
+  by reference. It builds an empty map only for the `null` case.
+- **R5.** The truncation test uses `€`, so the 256-byte limit falls inside a
+  char, and it checks that the message ends with a whole `€`. The missing-field
+  test pins the full text at the top level and nested.
+- **R6, R10.** `assert_service_table` has a doc comment that lists each check
+  and the two limits. The numbered comments are gone. The developer guide
+  step 1 names the nested-struct rule.
+- **R7.** `TestHost` records the last `call`. The test checks the
+  `Dependency("profile")` target, the interface, `invoke`, no options and the
+  `[{"method", "params"}]` envelope, and that `{"result": null}` reads as
+  `Ok(None)`.
+- **R8.** The architecture doc and the developer guide name `profile` and
+  `conversation` as the only services with a method table. Step 1 gives
+  the wire-reachable exception. The guide says `data` is absent when no field
+  can be named.
+- **R9.** The inline paths named in R9 are now imports
+  (`Value`, `Message`, `Map`, `any`, `Path`, `profile_api`, `conversation_api`).
+- **R11.** The scan tests use `tempfile::tempdir()`. `tempfile` is a
+  `roym_core` dev-dependency.
+
+Tests run here: `cargo nextest run -p syneroym-roym-core` (221 passed) and
+`cargo nextest run -p syneroym-roym-web --test method_contract
+every_profile_method_has_typed every_conversation_method_has_typed`
+(2 passed). CI run
+[41051964145](https://github.com/syneroym/syneroym/actions/runs/41051964145)
+on `2538716a` passed every job: "Lints, licenses & checks", "Test 1/6" to
+"Test 6/6" and "Playwright E2E" ("Benchmarks" and "Code Coverage" skipped by
+the workflow).
+
+Count for this check: 0 new items. A2a has no open review item.
