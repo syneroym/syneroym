@@ -344,7 +344,7 @@ Checked the plan at `f6691087`. P1 to P18 are confirmed fixed in the plan
 
 ### Findings
 
-- [ ] **P19 — minor.** *Where:* section 6 Step 2 (the line "New test binary
+- [x] **P19 — minor.** *Where:* section 6 Step 2 (the line "New test binary
   `crates/roym_web/tests/method_contract.rs` with `mod shapes;`") and Step 7
   (the line "Add `mod contract;`"). *Problem:* `tests/method_contract.rs`
   is the root file of a test crate. In a root file, `mod shapes;` makes Rust
@@ -358,6 +358,6 @@ Checked the plan at `f6691087`. P1 to P18 are confirmed fixed in the plan
   `#[path = "method_contract/contract.rs"] mod contract;`. Name the two files
   `crates/roym_web/tests/method_contract/shapes.rs` and
   `crates/roym_web/tests/method_contract/contract.rs` in the step text.
-  *Status:* Open.
+  *Status:* Fixed (d0d7f172).
 
 Count for this round: 0 blockers, 0 major, 1 minor.
