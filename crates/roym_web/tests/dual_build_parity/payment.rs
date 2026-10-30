@@ -1,62 +1,8 @@
-use serde_json::{Value, json};
+use serde_json::json;
 use syneroym_roym_core::transaction;
 use syneroym_signed_record::Envelope;
 
-use super::{fixtures::*, helpers::*};
-
-async fn setup_active_agreement(h: &Harness, conv: &str) -> (String, Value) {
-    let (req_rec_id, _req_env) = setup_peer_request(h, conv).await;
-    let q_params = valid_quote_params(conv, &req_rec_id);
-    let (qw, qn) = both_rpc(h, "quote.set", q_params).await;
-    assert_eq!(
-        qw["result"]["record_id"], qn["result"]["record_id"],
-        "quote.set record_id parity failed: qw: {qw}, qn: {qn}"
-    );
-    let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
-    let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
-
-    let (get_q, _) = both_rpc(h, "quote.get", json!({ "quote_id": quote_id })).await;
-    let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
-    let terms = quote_env.payload["terms"].clone();
-
-    let (agr_id, agr_env) = peer_counterparty_receipt(
-        conv,
-        &quote_rec_id,
-        &peer_did(),
-        &owner_did(),
-        terms.clone(),
-        1_001_000,
-    );
-    deliver_peer_card(
-        h,
-        &format!("m-agr-{agr_id}"),
-        conv,
-        &peer_did(),
-        transaction::RECORD_AGREEMENT_RECEIPT,
-        transaction::AGREEMENT_RECEIPT_VERSION,
-        &agr_env,
-    )
-    .await;
-    both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-
-    (quote_rec_id, terms)
-}
-
-async fn setup_peer_request(h: &Harness, conv: &str) -> (String, String) {
-    let (req_id, req_env) = peer_signed_request(conv, 1, 1_000_000);
-    deliver_peer_card(
-        h,
-        &format!("m-req-{req_id}"),
-        conv,
-        &peer_did(),
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
-        &req_env,
-    )
-    .await;
-    both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-    (req_id, req_env)
-}
+use super::{deal_fixtures::*, fixtures::*, helpers::*};
 
 #[tokio::test]
 async fn scenario_158_payment_request_carries_no_payee_parity() {
@@ -65,7 +11,7 @@ async fn scenario_158_payment_request_carries_no_payee_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, _terms) = setup_active_agreement(&h, &conv).await;
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // Quote author requests payment
     let (pr_w, pr_n) = both_rpc(
@@ -103,7 +49,7 @@ async fn scenario_159_payment_track_states_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, terms) = setup_active_agreement(&h, &conv).await;
+    let (agr_rec, terms) = setup_active_agreement(&h, &conv, "after-work").await;
     let amount_minor = terms["amount_minor"].as_i64().unwrap();
     let curr = terms["currency"].as_str().unwrap();
 
@@ -165,7 +111,7 @@ async fn scenario_160_payment_wrong_amount_or_method_refused_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, terms) = setup_active_agreement(&h, &conv).await;
+    let (agr_rec, terms) = setup_active_agreement(&h, &conv, "after-work").await;
     let amount_minor = terms["amount_minor"].as_i64().unwrap();
 
     // Method outside terms via verb
@@ -227,7 +173,7 @@ async fn scenario_161_payment_correction_round_trip_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, _terms) = setup_active_agreement(&h, &conv).await;
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // Quote author first acknowledgement. `observed_at_secs` is given
     // explicitly so both builds sign an identical payload and each can use
@@ -294,7 +240,7 @@ async fn scenario_162_payment_acknowledge_duplicate_already_recorded_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, _terms) = setup_active_agreement(&h, &conv).await;
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // First acknowledge
     let (a1w, a1n) = both_rpc(
@@ -426,7 +372,7 @@ async fn scenario_171_payment_fence_unblocks_after_refused_call_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, _terms) = setup_active_agreement(&h, &conv).await;
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // 1. Refused payment.request (note exceeds 512 chars)
     let long_note = "a".repeat(513);

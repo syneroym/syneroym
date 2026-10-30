@@ -1,0 +1,5 @@
+{
+  "listing_id": "string",
+  "record_id": "string",
+  "version_count": "number"
+}

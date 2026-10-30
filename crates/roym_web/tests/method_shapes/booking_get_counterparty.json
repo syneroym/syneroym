@@ -1,0 +1,18 @@
+{
+  "agreement": "string",
+  "cancel_reason": "null",
+  "conflict": "null",
+  "fulfilment": "null",
+  "next": "wait-for-quote-author",
+  "pair": {
+    "role": "counterparty",
+    "state": "half"
+  },
+  "payment": "null",
+  "payment_timing": "after-work",
+  "progress_record_id": "null",
+  "seq": "null",
+  "state": "null",
+  "track_window_ends_at_secs": "null",
+  "writer": "null"
+}

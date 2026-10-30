@@ -1,0 +1,8 @@
+{
+  "certificate": {
+    "state": "missing"
+  },
+  "owner_did": "string",
+  "pubkey_hex": "string",
+  "signing_did": "string"
+}

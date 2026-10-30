@@ -1,0 +1,8 @@
+{
+  "expires_at_secs": "number",
+  "message_id": "string",
+  "quote_id": "string",
+  "record_id": "string",
+  "state": "pending",
+  "version_count": "number"
+}

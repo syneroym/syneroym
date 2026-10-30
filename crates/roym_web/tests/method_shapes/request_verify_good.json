@@ -1,0 +1,19 @@
+{
+  "expired": "boolean",
+  "issued_at_secs": "number",
+  "issuer": "string",
+  "payload": {
+    "categories": [
+      "string"
+    ],
+    "conversation": "string",
+    "data_use_notice": "string",
+    "description": "string",
+    "request_id": "string",
+    "sequence": "number"
+  },
+  "record_id": "string",
+  "revocation_status": "unknown",
+  "signer_did": "string",
+  "verified": "boolean"
+}

@@ -1,0 +1,7 @@
+{
+  "envelope": "string",
+  "listing_id": "string",
+  "record_id": "string",
+  "status": "active",
+  "updated_at_secs": "number"
+}

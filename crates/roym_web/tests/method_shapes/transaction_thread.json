@@ -1,0 +1,208 @@
+{
+  "cards": [
+    {
+      "agreement_payee": "string",
+      "agreement_payment_methods": [
+        "string"
+      ],
+      "card_type": "payment-request",
+      "conversation": "string",
+      "data": {
+        "agreement": "string",
+        "amount_minor": "number",
+        "conversation": "string",
+        "counterparty_did": "string",
+        "currency": "string",
+        "quote_author_did": "string"
+      },
+      "direction": "outgoing",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "not-revoked",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number"
+    },
+    {
+      "card_type": "agreement-receipt",
+      "conversation": "string",
+      "data": {
+        "counterparty_did": "string",
+        "quote_author_did": "string",
+        "quote_record_id": "string",
+        "role": "counterparty",
+        "terms": {
+          "amount_minor": "number",
+          "cancellation_terms": "string",
+          "currency": "string",
+          "dispute_path": "string",
+          "fees_minor": "number",
+          "location": {
+            "address": "string",
+            "where": "at-receiver"
+          },
+          "payee": "string",
+          "payment_methods": [
+            "string"
+          ],
+          "payment_timing": "after-work",
+          "quote_expires_at_secs": "number",
+          "refund_terms": "string",
+          "scope": "string",
+          "tax_minor": "number"
+        }
+      },
+      "direction": "incoming",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "unknown",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number"
+    },
+    {
+      "card_type": "agreement-receipt",
+      "conversation": "string",
+      "data": {
+        "counterparty_did": "string",
+        "quote_author_did": "string",
+        "quote_record_id": "string",
+        "role": "quote-author",
+        "terms": {
+          "amount_minor": "number",
+          "cancellation_terms": "string",
+          "currency": "string",
+          "dispute_path": "string",
+          "fees_minor": "number",
+          "location": {
+            "address": "string",
+            "where": "at-receiver"
+          },
+          "payee": "string",
+          "payment_methods": [
+            "string"
+          ],
+          "payment_timing": "after-work",
+          "quote_expires_at_secs": "number",
+          "refund_terms": "string",
+          "scope": "string",
+          "tax_minor": "number"
+        }
+      },
+      "direction": "outgoing",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "not-revoked",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number"
+    },
+    {
+      "card_type": "booking-progress",
+      "conversation": "string",
+      "data": {
+        "agreement": "string",
+        "conversation": "string",
+        "counterparty_did": "string",
+        "fulfilment": "none",
+        "payment": "none",
+        "quote_author_did": "string",
+        "seq": "number",
+        "state": "scheduled",
+        "track_window_ends_at_secs": "number"
+      },
+      "direction": "outgoing",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "not-revoked",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number"
+    },
+    {
+      "card_type": "quote",
+      "conversation": "string",
+      "data": {
+        "conversation": "string",
+        "counterparty_did": "string",
+        "quote_id": "string",
+        "request_record_id": "string",
+        "sequence": "number",
+        "terms": {
+          "amount_minor": "number",
+          "cancellation_terms": "string",
+          "currency": "string",
+          "dispute_path": "string",
+          "fees_minor": "number",
+          "location": {
+            "address": "string",
+            "where": "at-receiver"
+          },
+          "payee": "string",
+          "payment_methods": [
+            "string"
+          ],
+          "payment_timing": "after-work",
+          "quote_expires_at_secs": "number",
+          "refund_terms": "string",
+          "scope": "string",
+          "tax_minor": "number"
+        }
+      },
+      "direction": "outgoing",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "not-revoked",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number",
+      "version_count": "number"
+    },
+    {
+      "card_type": "request",
+      "conversation": "string",
+      "data": {
+        "categories": [
+          "string"
+        ],
+        "conversation": "string",
+        "data_use_notice": "string",
+        "description": "string",
+        "request_id": "string",
+        "sequence": "number"
+      },
+      "direction": "incoming",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "unknown",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number",
+      "version_count": "number"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "expired": "boolean",
+  "expires_at_secs": "number",
+  "issued_at_secs": "number",
+  "issuer": "string",
+  "payload": {
+    "conversation": "string",
+    "counterparty_did": "string",
+    "quote_id": "string",
+    "request_record_id": "string",
+    "sequence": "number",
+    "terms": {
+      "amount_minor": "number",
+      "cancellation_terms": "string",
+      "currency": "string",
+      "dispute_path": "string",
+      "fees_minor": "number",
+      "location": {
+        "address": "string",
+        "where": "at-receiver"
+      },
+      "payee": "string",
+      "payment_methods": [
+        "string"
+      ],
+      "payment_timing": "after-work",
+      "quote_expires_at_secs": "number",
+      "refund_terms": "string",
+      "scope": "string",
+      "tax_minor": "number"
+    }
+  },
+  "record_id": "string",
+  "revocation_status": "unknown",
+  "signer_did": "string",
+  "verified": "boolean"
+}

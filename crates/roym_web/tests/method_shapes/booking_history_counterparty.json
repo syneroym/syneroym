@@ -1,0 +1,19 @@
+{
+  "history": [
+    {
+      "record_id": "string",
+      "seq": "number",
+      "snapshot": {
+        "agreement": "string",
+        "conversation": "string",
+        "counterparty_did": "string",
+        "fulfilment": "none",
+        "payment": "none",
+        "quote_author_did": "string",
+        "seq": "number",
+        "state": "scheduled",
+        "track_window_ends_at_secs": "number"
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "quotes": [
+    {
+      "conversation": "string",
+      "counterparty_did": "string",
+      "envelope": "string",
+      "mine": "boolean",
+      "quote_id": "string",
+      "record_id": "string",
+      "request_record_id": "string",
+      "updated_at_secs": "number",
+      "version_count": "number"
+    }
+  ]
+}

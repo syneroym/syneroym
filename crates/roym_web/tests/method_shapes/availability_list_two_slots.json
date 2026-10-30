@@ -1,0 +1,11 @@
+{
+  "slots": [
+    {
+      "capacity": "number",
+      "end_secs": "number",
+      "listing_id": "string",
+      "slot_id": "string",
+      "start_secs": "number"
+    }
+  ]
+}

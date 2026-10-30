@@ -1,63 +1,8 @@
-use serde_json::{Value, json};
+use serde_json::json;
 use syneroym_roym_core::transaction;
 use syneroym_signed_record::Envelope;
 
-use super::{fixtures::*, helpers::*};
-
-async fn setup_active_agreement(h: &Harness, conv: &str, timing: &str) -> (String, Value) {
-    let (req_rec_id, _req_env) = setup_peer_request(h, conv).await;
-    let mut q_params = valid_quote_params(conv, &req_rec_id);
-    q_params["terms"]["payment_timing"] = json!(timing);
-    let (qw, qn) = both_rpc(h, "quote.set", q_params).await;
-    assert_eq!(
-        qw["result"]["record_id"], qn["result"]["record_id"],
-        "quote.set record_id parity failed: qw: {qw}, qn: {qn}"
-    );
-    let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
-    let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
-
-    let (get_q, _) = both_rpc(h, "quote.get", json!({ "quote_id": quote_id })).await;
-    let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
-    let terms = quote_env.payload["terms"].clone();
-
-    let (agr_id, agr_env) = peer_counterparty_receipt(
-        conv,
-        &quote_rec_id,
-        &peer_did(),
-        &owner_did(),
-        terms.clone(),
-        1_001_000,
-    );
-    deliver_peer_card(
-        h,
-        &format!("m-agr-{agr_id}"),
-        conv,
-        &peer_did(),
-        transaction::RECORD_AGREEMENT_RECEIPT,
-        transaction::AGREEMENT_RECEIPT_VERSION,
-        &agr_env,
-    )
-    .await;
-    both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-
-    (quote_rec_id, terms)
-}
-
-async fn setup_peer_request(h: &Harness, conv: &str) -> (String, String) {
-    let (req_id, req_env) = peer_signed_request(conv, 1, 1_000_000);
-    deliver_peer_card(
-        h,
-        &format!("m-req-{req_id}"),
-        conv,
-        &peer_did(),
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
-        &req_env,
-    )
-    .await;
-    both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-    (req_id, req_env)
-}
+use super::{deal_fixtures::*, fixtures::*, helpers::*};
 
 #[tokio::test]
 async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {

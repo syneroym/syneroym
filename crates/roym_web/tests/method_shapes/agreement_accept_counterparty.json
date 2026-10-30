@@ -1,0 +1,12 @@
+{
+  "booking": "null",
+  "message_id": "string",
+  "pair": {
+    "role": "counterparty",
+    "state": "half"
+  },
+  "quote_record_id": "string",
+  "record_id": "string",
+  "role": "counterparty",
+  "state": "pending"
+}

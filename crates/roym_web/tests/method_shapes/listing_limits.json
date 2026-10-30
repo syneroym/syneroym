@@ -1,0 +1,4 @@
+{
+  "max_per_window": "number",
+  "window_secs": "number"
+}

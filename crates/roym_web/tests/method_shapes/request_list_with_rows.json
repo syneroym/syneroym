@@ -1,0 +1,13 @@
+{
+  "requests": [
+    {
+      "conversation": "string",
+      "envelope": "string",
+      "mine": "boolean",
+      "record_id": "string",
+      "request_id": "string",
+      "updated_at_secs": "number",
+      "version_count": "number"
+    }
+  ]
+}

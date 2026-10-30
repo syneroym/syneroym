@@ -1,0 +1,18 @@
+{
+  "counterparty": [],
+  "quote_author": [
+    {
+      "envelope": "string",
+      "issued_at_secs": "number",
+      "issuer": "string",
+      "record_id": "string"
+    }
+  ],
+  "request": {
+    "envelope": "string",
+    "issued_at_secs": "number",
+    "issuer": "string",
+    "record_id": "string"
+  },
+  "track": "acknowledged"
+}

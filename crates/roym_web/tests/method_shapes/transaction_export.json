@@ -1,0 +1,473 @@
+{
+  "manifest": {
+    "bundle_version": "number",
+    "sections": {
+      "agreements": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "bookings": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "cards": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "fulfilments": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "ledger": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "payments": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "progress": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "quote_history": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "quotes": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "request_history": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "requests": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      }
+    },
+    "subject_did": "string"
+  },
+  "manifest_signature": "string",
+  "sections": {
+    "agreements": [
+      {
+        "id": "string",
+        "payload": {
+          "conversation": "string",
+          "counterparty": {
+            "envelope": "string",
+            "issued_at_secs": "number",
+            "issuer": "string",
+            "record_id": "string"
+          },
+          "counterparty_did": "string",
+          "quote_author": {
+            "envelope": "string",
+            "issued_at_secs": "number",
+            "issuer": "string",
+            "record_id": "string"
+          },
+          "quote_author_did": "string",
+          "quote_record_id": "string",
+          "terms": {
+            "amount_minor": "number",
+            "cancellation_terms": "string",
+            "currency": "string",
+            "dispute_path": "string",
+            "fees_minor": "number",
+            "location": {
+              "address": "string",
+              "where": "at-receiver"
+            },
+            "payee": "string",
+            "payment_methods": [
+              "string"
+            ],
+            "payment_timing": "after-work",
+            "quote_expires_at_secs": "number",
+            "refund_terms": "string",
+            "scope": "string",
+            "tax_minor": "number"
+          },
+          "updated_at_secs": "number"
+        }
+      }
+    ],
+    "bookings": [
+      {
+        "id": "string",
+        "payload": {
+          "agreement": "string",
+          "conversation": "string",
+          "progress_record_id": "string",
+          "snapshot": {
+            "agreement": "string",
+            "conversation": "string",
+            "counterparty_did": "string",
+            "fulfilment": "none",
+            "payment": "none",
+            "quote_author_did": "string",
+            "seq": "number",
+            "state": "scheduled",
+            "track_window_ends_at_secs": "number"
+          },
+          "state": "scheduled",
+          "updated_at_secs": "number"
+        }
+      }
+    ],
+    "cards": [
+      {
+        "id": "string",
+        "payload": {
+          "card_type": "agreement-receipt",
+          "conversation": "string",
+          "data": {
+            "counterparty_did": "string",
+            "quote_author_did": "string",
+            "quote_record_id": "string",
+            "role": "counterparty",
+            "terms": {
+              "amount_minor": "number",
+              "cancellation_terms": "string",
+              "currency": "string",
+              "dispute_path": "string",
+              "fees_minor": "number",
+              "location": {
+                "address": "string",
+                "where": "at-receiver"
+              },
+              "payee": "string",
+              "payment_methods": [
+                "string"
+              ],
+              "payment_timing": "after-work",
+              "quote_expires_at_secs": "number",
+              "refund_terms": "string",
+              "scope": "string",
+              "tax_minor": "number"
+            }
+          },
+          "direction": "incoming",
+          "expired": "boolean",
+          "issuer": "string",
+          "known": "boolean",
+          "message_id": "string",
+          "record_id": "string",
+          "revocation_status": "unknown",
+          "sender_timestamp_ms": "number",
+          "stored_at_secs": "number",
+          "verified": "boolean",
+          "version": "number"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "card_type": "agreement-receipt",
+          "conversation": "string",
+          "data": {
+            "counterparty_did": "string",
+            "quote_author_did": "string",
+            "quote_record_id": "string",
+            "role": "quote-author",
+            "terms": {
+              "amount_minor": "number",
+              "cancellation_terms": "string",
+              "currency": "string",
+              "dispute_path": "string",
+              "fees_minor": "number",
+              "location": {
+                "address": "string",
+                "where": "at-receiver"
+              },
+              "payee": "string",
+              "payment_methods": [
+                "string"
+              ],
+              "payment_timing": "after-work",
+              "quote_expires_at_secs": "number",
+              "refund_terms": "string",
+              "scope": "string",
+              "tax_minor": "number"
+            }
+          },
+          "direction": "outgoing",
+          "expired": "boolean",
+          "issuer": "string",
+          "known": "boolean",
+          "message_id": "string",
+          "record_id": "string",
+          "revocation_status": "not-revoked",
+          "sender_timestamp_ms": "number",
+          "stored_at_secs": "number",
+          "verified": "boolean",
+          "version": "number"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "card_type": "booking-progress",
+          "conversation": "string",
+          "data": {
+            "agreement": "string",
+            "conversation": "string",
+            "counterparty_did": "string",
+            "fulfilment": "none",
+            "payment": "none",
+            "quote_author_did": "string",
+            "seq": "number",
+            "state": "scheduled",
+            "track_window_ends_at_secs": "number"
+          },
+          "direction": "outgoing",
+          "expired": "boolean",
+          "issuer": "string",
+          "known": "boolean",
+          "message_id": "string",
+          "record_id": "string",
+          "revocation_status": "not-revoked",
+          "sender_timestamp_ms": "number",
+          "stored_at_secs": "number",
+          "verified": "boolean",
+          "version": "number"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "card_type": "payment-request",
+          "conversation": "string",
+          "data": {
+            "agreement": "string",
+            "amount_minor": "number",
+            "conversation": "string",
+            "counterparty_did": "string",
+            "currency": "string",
+            "quote_author_did": "string"
+          },
+          "direction": "outgoing",
+          "expired": "boolean",
+          "issuer": "string",
+          "known": "boolean",
+          "message_id": "string",
+          "record_id": "string",
+          "revocation_status": "not-revoked",
+          "sender_timestamp_ms": "number",
+          "stored_at_secs": "number",
+          "verified": "boolean",
+          "version": "number"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "card_type": "quote",
+          "conversation": "string",
+          "data": {
+            "conversation": "string",
+            "counterparty_did": "string",
+            "quote_id": "string",
+            "request_record_id": "string",
+            "sequence": "number",
+            "terms": {
+              "amount_minor": "number",
+              "cancellation_terms": "string",
+              "currency": "string",
+              "dispute_path": "string",
+              "fees_minor": "number",
+              "location": {
+                "address": "string",
+                "where": "at-receiver"
+              },
+              "payee": "string",
+              "payment_methods": [
+                "string"
+              ],
+              "payment_timing": "after-work",
+              "quote_expires_at_secs": "number",
+              "refund_terms": "string",
+              "scope": "string",
+              "tax_minor": "number"
+            }
+          },
+          "direction": "outgoing",
+          "expired": "boolean",
+          "issuer": "string",
+          "known": "boolean",
+          "message_id": "string",
+          "record_id": "string",
+          "revocation_status": "not-revoked",
+          "sender_timestamp_ms": "number",
+          "stored_at_secs": "number",
+          "verified": "boolean",
+          "version": "number",
+          "version_count": "number"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "card_type": "request",
+          "conversation": "string",
+          "data": {
+            "categories": [
+              "string"
+            ],
+            "conversation": "string",
+            "data_use_notice": "string",
+            "description": "string",
+            "request_id": "string",
+            "sequence": "number"
+          },
+          "direction": "incoming",
+          "expired": "boolean",
+          "issuer": "string",
+          "known": "boolean",
+          "message_id": "string",
+          "record_id": "string",
+          "revocation_status": "unknown",
+          "sender_timestamp_ms": "number",
+          "stored_at_secs": "number",
+          "verified": "boolean",
+          "version": "number",
+          "version_count": "number"
+        }
+      }
+    ],
+    "fulfilments": [],
+    "ledger": [
+      {
+        "id": "string",
+        "payload": {
+          "agreement": "string",
+          "created_at_secs": "number",
+          "half": {
+            "envelope": "string",
+            "issued_at_secs": "number",
+            "issuer": "string",
+            "record_id": "string"
+          },
+          "kind": "fence"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "agreement": "string",
+          "created_at_secs": "number",
+          "kind": "decision"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "agreement": "string",
+          "created_at_secs": "number",
+          "kind": "step",
+          "step": {
+            "envelope": "string",
+            "event": "open",
+            "message_id": "string",
+            "record_id": "string",
+            "seq": "number",
+            "snapshot": {
+              "agreement": "string",
+              "conversation": "string",
+              "counterparty_did": "string",
+              "fulfilment": "none",
+              "payment": "none",
+              "quote_author_did": "string",
+              "seq": "number",
+              "state": "scheduled",
+              "track_window_ends_at_secs": "number"
+            }
+          }
+        }
+      }
+    ],
+    "payments": [
+      {
+        "id": "string",
+        "payload": {
+          "agreement": "string",
+          "conversation": "string",
+          "request": {
+            "envelope": "string",
+            "issued_at_secs": "number",
+            "issuer": "string",
+            "record_id": "string"
+          },
+          "updated_at_secs": "number"
+        }
+      }
+    ],
+    "progress": [],
+    "quote_history": [
+      {
+        "id": "string",
+        "payload": {
+          "envelope": "string"
+        }
+      }
+    ],
+    "quotes": [
+      {
+        "id": "string",
+        "payload": {
+          "conversation": "string",
+          "counterparty_did": "string",
+          "envelope": "string",
+          "id": "string",
+          "issued_at_secs": "number",
+          "issuer": "string",
+          "mine": "boolean",
+          "record_id": "string",
+          "request_record_id": "string",
+          "sequence": "number",
+          "updated_at_secs": "number",
+          "version_count": "number"
+        }
+      }
+    ],
+    "request_history": [
+      {
+        "id": "string",
+        "payload": {
+          "envelope": "string"
+        }
+      }
+    ],
+    "requests": [
+      {
+        "id": "string",
+        "payload": {
+          "conversation": "string",
+          "envelope": "string",
+          "id": "string",
+          "issued_at_secs": "number",
+          "issuer": "string",
+          "mine": "boolean",
+          "record_id": "string",
+          "sequence": "number",
+          "updated_at_secs": "number",
+          "version_count": "number"
+        }
+      }
+    ]
+  }
+}

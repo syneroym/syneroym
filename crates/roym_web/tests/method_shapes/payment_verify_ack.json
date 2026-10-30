@@ -1,0 +1,21 @@
+{
+  "expired": "boolean",
+  "issued_at_secs": "number",
+  "issuer": "string",
+  "payload": {
+    "agreement": "string",
+    "amount_minor": "number",
+    "conversation": "string",
+    "counterparty_did": "string",
+    "currency": "string",
+    "method": "string",
+    "observed_at_secs": "number",
+    "quote_author_did": "string",
+    "reference": "string",
+    "role": "counterparty"
+  },
+  "record_id": "string",
+  "revocation_status": "unknown",
+  "signer_did": "string",
+  "verified": "boolean"
+}

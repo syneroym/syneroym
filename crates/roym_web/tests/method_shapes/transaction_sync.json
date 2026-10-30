@@ -1,0 +1,9 @@
+{
+  "countersigned": "number",
+  "deferred": "number",
+  "filed": "number",
+  "last_seq": "number",
+  "refused": "number",
+  "scanned": "number",
+  "unknown": "number"
+}

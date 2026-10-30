@@ -5,7 +5,7 @@ use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_roym_core::transaction;
 use syneroym_signed_record::{Envelope, RecordDraft};
 
-use super::{fixtures::*, helpers::*};
+use super::{deal_fixtures::*, fixtures::*, helpers::*};
 
 fn peer_identity_2() -> Identity {
     Identity::from_bytes(&[8; 32])
@@ -91,40 +91,6 @@ fn slot_quote(
     q["slot_id"] = json!(slot_id);
     q["terms"]["schedule"] = json!({ "earliest_secs": earliest, "latest_secs": latest });
     q
-}
-
-async fn setup_listing_with_slot(
-    h: &Harness,
-    slug: &str,
-    start: u64,
-    end: u64,
-    cap: u32,
-) -> (String, String) {
-    enrol_signing(h, "catalog").await;
-    let (set, _) = both_rpc(h, "listing.set", full_listing_params(slug, "Fence Repair")).await;
-    let listing_id = set["result"]["listing_id"].as_str().unwrap().to_string();
-
-    let slots = json!([{ "start_secs": start, "end_secs": end, "capacity": cap }]);
-    let (w, _) =
-        both_rpc(h, "availability.set", json!({ "listing_id": listing_id, "slots": slots })).await;
-    let slot_id = w["result"]["slot_ids"][0].as_str().unwrap().to_string();
-    (listing_id, slot_id)
-}
-
-async fn setup_peer_request(h: &Harness, conv: &str) -> (String, String) {
-    let (req_id, req_env) = peer_signed_request(conv, 1, 1_000_000);
-    deliver_peer_card(
-        h,
-        "m-req-setup",
-        conv,
-        &peer_did(),
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
-        &req_env,
-    )
-    .await;
-    both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-    (req_id, req_env)
 }
 
 #[tokio::test]
@@ -568,37 +534,6 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
         both_rpc(&h, "booking.cancel", json!({ "agreement": q3_rec, "reason": "Too late" })).await;
     assert!(is_err(&cant_w, -32602) || is_err(&cant_w, -32603));
     assert!(is_err(&cant_n, -32602) || is_err(&cant_n, -32603));
-}
-
-async fn setup_accepted_counterparty_quote(h: &Harness, conv: &str) -> String {
-    let req = both_rpc(
-        h,
-        "request.set",
-        json!({
-            "conversation": conv,
-            "description": "Prune the hedge",
-            "categories": ["gardening"],
-            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
-        }),
-    )
-    .await
-    .0;
-    let req_rec_id = req["result"]["record_id"].as_str().unwrap().to_string();
-
-    let (q_rec_id, q_env) = peer_signed_quote(conv, 1, &req_rec_id, &owner_did(), None, 1_000);
-    deliver_peer_card(
-        h,
-        "m-quote-157",
-        conv,
-        &peer_did(),
-        transaction::RECORD_QUOTE,
-        transaction::QUOTE_VERSION,
-        &q_env,
-    )
-    .await;
-    both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-    both_rpc(h, "agreement.accept", json!({ "quote_record_id": q_rec_id })).await;
-    q_rec_id
 }
 
 async fn deliver_progress_card(h: &Harness, mid: &str, conv: &str, env: &str) {

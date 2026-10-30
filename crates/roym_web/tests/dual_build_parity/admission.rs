@@ -9,10 +9,9 @@ use syneroym_app_orchestration::{
     TopologyKey, TopologyMode,
 };
 use syneroym_conversation::store::ConversationStore;
-use syneroym_data_db::host_store::RecordWriteValue;
 use syneroym_rpc::{ConversationError, ConversationHost};
 
-use super::{fixtures::*, helpers::*};
+use super::{deal_fixtures::seed_row, fixtures::*, helpers::*};
 
 const STRANGER_A: &str = "did:key:zStrangerA216";
 const STRANGER_B: &str = "did:key:zStrangerB216";
@@ -239,14 +238,6 @@ fn bring_back(h: &Harness, name: &str) {
     }
 }
 
-async fn seed_row(h: &Harness, wasm: bool, collection: &str, id: &str, row: serde_json::Value) {
-    let (storage, ks) =
-        if wasm { (&h.wasm_storage, &h.wasm_ks) } else { (&h.native_storage, &h.native_ks) };
-    let db = storage.open_service_db(&did_for_service("conversation"), ks).await.unwrap();
-    let write = RecordWriteValue { id: id.to_string(), payload: serde_json::to_vec(&row).unwrap() };
-    db.put(collection, &write, "seed", None).await.unwrap();
-}
-
 async fn old_charge_rows(h: &Harness, wasm: bool) -> usize {
     let rows = h.conv_rows(wasm, "first_contact_charges").await;
     rows.iter().filter(|r| r["marker"] == "seeded-old").count()
@@ -263,8 +254,16 @@ async fn scenario_227_old_first_contact_charges_are_pruned_at_most_once_an_hour(
     for wasm in [true, false] {
         // The last prune was just now: an old row survives the next message,
         // even though each WASM call starts from a fresh component.
-        seed_row(&h, wasm, "first_contact_charges", "old-227", old.clone()).await;
-        seed_row(&h, wasm, "conversation_meta", "charge-prune", json!({ "at_secs": now })).await;
+        seed_row(&h, wasm, "conversation", "first_contact_charges", "old-227", old.clone()).await;
+        seed_row(
+            &h,
+            wasm,
+            "conversation",
+            "conversation_meta",
+            "charge-prune",
+            json!({ "at_secs": now }),
+        )
+        .await;
     }
     deliver_both(&h, "m-227-second", "conv-227-b", STRANGER_A, 2_000).await;
     for wasm in [true, false] {
@@ -273,7 +272,15 @@ async fn scenario_227_old_first_contact_charges_are_pruned_at_most_once_an_hour(
 
     // The last prune was long ago: the next message prunes the old row.
     for wasm in [true, false] {
-        seed_row(&h, wasm, "conversation_meta", "charge-prune", json!({ "at_secs": 0 })).await;
+        seed_row(
+            &h,
+            wasm,
+            "conversation",
+            "conversation_meta",
+            "charge-prune",
+            json!({ "at_secs": 0 }),
+        )
+        .await;
     }
     deliver_both(&h, "m-227-third", "conv-227-c", STRANGER_A, 3_000).await;
     for wasm in [true, false] {
