@@ -41,7 +41,7 @@ fn every_conversation_method_has_typed_input_and_output() {
 async fn every_listed_method_is_dispatched() {
     let h = harness().await;
 
-    let profile_table = syneroym_roym_profile::api::method_table();
+    let profile_table = profile_api::method_table();
     for row in profile_table {
         let (wasm_res, native_res) =
             h.local_invoke(services::PROFILE, &env(&row.name, json!({}))).await;
@@ -59,7 +59,7 @@ async fn every_listed_method_is_dispatched() {
         );
     }
 
-    let conv_table = syneroym_roym_conversation::api::method_table();
+    let conv_table = conversation_api::method_table();
     for row in conv_table {
         let (wasm_res, native_res) =
             h.local_invoke(services::CONVERSATION, &env(&row.name, json!({}))).await;
@@ -88,7 +88,7 @@ async fn every_listed_method_is_dispatched() {
 async fn every_listed_method_is_refused_off_the_node_before_parsing() {
     let h = harness().await;
 
-    let profile_table = syneroym_roym_profile::api::method_table();
+    let profile_table = profile_api::method_table();
     for row in profile_table {
         let (wasm_res, native_res) =
             h.wire_invoke(services::PROFILE, &env(&row.name, json!({ "zz": 1 }))).await;
@@ -104,7 +104,7 @@ async fn every_listed_method_is_refused_off_the_node_before_parsing() {
         );
     }
 
-    let conv_table = syneroym_roym_conversation::api::method_table();
+    let conv_table = conversation_api::method_table();
     for row in conv_table {
         let (wasm_res, native_res) =
             h.wire_invoke(services::CONVERSATION, &env(&row.name, json!({ "zz": 1 }))).await;

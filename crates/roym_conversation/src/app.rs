@@ -8,7 +8,7 @@ pub mod messages;
 use std::collections::HashMap;
 
 pub use inbox::on_message;
-use serde_json::json;
+use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
     types::{
@@ -82,11 +82,9 @@ pub(crate) async fn load_admission_info<H: AppHost>(
         .map_err(|e| e.to_string())?;
     match row {
         Some(r) => {
-            let v: serde_json::Value =
-                serde_json::from_slice(&r.payload).map_err(|e| e.to_string())?;
-            let state = v.get("state").and_then(serde_json::Value::as_str).map(str::to_string);
-            let peer =
-                v.get("peer_address").and_then(serde_json::Value::as_str).map(str::to_string);
+            let v: Value = serde_json::from_slice(&r.payload).map_err(|e| e.to_string())?;
+            let state = v.get("state").and_then(Value::as_str).map(str::to_string);
+            let peer = v.get("peer_address").and_then(Value::as_str).map(str::to_string);
             Ok((state, peer))
         }
         None => Ok((None, None)),

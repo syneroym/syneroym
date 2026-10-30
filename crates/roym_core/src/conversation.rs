@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use syneroym_app_host::types::conversation::DeliveryState;
+use syneroym_app_host::types::conversation::{DeliveryState, Message};
 
 pub mod group;
 
@@ -159,8 +159,8 @@ pub struct MessageView {
     pub body: Option<String>,
 }
 
-impl From<&syneroym_app_host::types::conversation::Message> for MessageView {
-    fn from(m: &syneroym_app_host::types::conversation::Message) -> Self {
+impl From<&Message> for MessageView {
+    fn from(m: &Message) -> Self {
         let (body_encoding, body_str) = encode_body(&m.content_type, &m.body);
         let (deleted_at_secs, body) =
             if let Some(del) = m.deleted_at { (Some(del), None) } else { (None, Some(body_str)) };
