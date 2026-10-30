@@ -230,24 +230,25 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A1-6. Guard tests.** `roym_core` has a test that fails when a signed record or a wire value carries "provider", "consumer" or "customer". It fills every optional field and runs every variant of the role, place, audience and next-step enums. The Hub has a test for the shared notices, the labels and the card text.
 - **D-A1-7. Other names.** `NextStep::WaitForQuoteAuthor` (`"wait-for-quote-author"`). The booking helpers use `author` and `counterparty` in their names. `DealRole::as_str()` is the one source of the role name in fence ids and in the backup import message.
 - **D-A1-8. Audience value.** `OpenTo::ExistingCustomers` is now `OpenTo::PastCounterparties`, signed as `"past-counterparties"`. The Hub label is "People I have worked with before".
-- **D-A2a-1. Typed parsing runs before method handler.** The typed parameter parse runs before handler logic (such as signing certificate enrollment checks). A missing or invalid field fails with `-32602` immediately.
-- **D-A2a-2. Service method tables.** Each service exposes a method table (`api::method_table() -> Vec<MethodInfo>`) mapping method names to typed parameter and return types.
-- **D-A2a-3. Unknown fields policy.** Local-only methods reject unknown fields via `#[serde(deny_unknown_fields)]`. Wire-reachable methods ignore unknown fields to allow forward compatibility.
-- **D-A2a-4. Sibling calls.** Calls between sibling services use `roym_core::method::call_sibling::<H, I, O>` with typed input and output structs.
-- **D-A2a-5. Preserved list shapes.** Bare list responses (`contacts.list`, `block.list`, `report.list`) keep returning bare JSON arrays without premature envelope wrapping.
-- **D-A2a-6. Path-to-error formatting.** Parameter parse errors use `serde_path_to_error` to return `-32602` with `data: { "field": "<path>" }`.
-- **D-A2a-7. Missing or null params is empty object.** Missing or `Value::Null` params is parsed as `{}`. Non-object and non-null values (such as JSON arrays) are rejected with `-32602`.
-- **D-A2a-8. Group alias key.** `ConversationRef`, `GroupRenameInput`, and `GroupMemberInput` accept `#[serde(alias = "group")]`. Passing both keys in the same request yields duplicate-field `-32602` with `data.field = "conversation"`.
-- **D-A2a-9. Optional address or person_did validation in handlers.** Methods accepting either address or person_did parse both as `Option<String>` and validate in the handler when both are missing.
-- **D-A2a-10. Error message truncation.** Error messages are truncated to 256 bytes on valid UTF-8 character boundaries.
-- **D-A2a-11. Dead types replaced.** `MessageRow` is replaced by `MessageView`, `ConversationRow` by `ConversationListItem`.
-- **D-A2a-12. Number field widths.** Numeric fields retain existing cast widths (`u32` for conversation paging, `u64` for profile lists).
-- **D-A2a-13. Method contract tests.** Shape tests and contract tests reside in `crates/roym_web/tests/method_contract.rs`.
-- **D-A2a-14. Closed sets of words use enums.** Closed sets of variant words use kebab-case enums (`AdmissionKind`, `KindFilter`, `ReportSubject`, `ReportCategory`).
-- **D-A2a-15. Shared certificate verbs.** Typed certificate verbs are implemented in `roym_core::signing::verbs`.
-- **D-A2a-16. NoParams for parameterless methods.** Methods without parameters use `NoParams`, which rejects unexpected input fields with `-32602`.
-- **D-A2a-17. Integration contract test binary.** Table, dispatch, off-node refusal, and error parity tests live in `crates/roym_web/tests/method_contract/contract.rs`.
-- **D-A2a-18. Profile envelope string format.** `contacts.upsert` expects `profile_envelope` as a serialized JSON string, not a JSON object.
+- **Q1–Q9: option (a), 2026-10-30.**
+- **D-A2a-1. One wrapper for every handler.** A handler is `async fn(host: &H, input: I) -> Reply<O>` with `type Reply<T> = Result<T, Response>`. The `Err` side is an error `Response`. A function `typed` reads `req.params` into `I`, runs the handler, and writes `O` with `serde_json::to_value`. The parse runs once, before the handler. The one effect on the order of checks is B11.
+- **D-A2a-2. One list per service writes the dispatch and the table** (`roym_core::service_methods!`, Q1 (a)). `invoke` keeps `require_internal` and then calls `dispatch`. It has no `match` on method names and no `handle_certificate_verb` call in profile and conversation. The certificate verbs are normal rows in the macro list, handled by typed functions in `roym_core::signing::verbs`. `certificate_rows` is deleted.
+- **D-A2a-3. Where types live** (Q2 (a)). `roym_core::method` for X2. `roym_core::signing::verbs` for shared certificate types and verb handlers. `roym_core::method::profile` and `::conversation` for the structs that a sibling uses. `src/api.rs` for the `service_methods!` list in each service, and each service-only struct in `src/app/<area>.rs` beside the handler that reads it. No `src/api/` subdirectory is added.
+- **D-A2a-4. Every A2a input refuses unknown fields.** Each input struct has `#[serde(deny_unknown_fields)]`. `NoParams` too (Q6 (a)). Two input structs are never joined with `#[serde(flatten)]`: `flatten` and `deny_unknown_fields` do not work together, so `Page`-like fields are repeated in each struct. Structs read from storage never use `deny_unknown_fields`.
+- **D-A2a-5. The wire half of the rule is built as a check only** (Q3 (a)). `check::assert_service_table` takes a list of wire-reachable method names. A2a passes an empty list. A2c passes the directory's four.
+- **D-A2a-6. The error** (Q4 (a)). `-32602`, message `invalid params: <path>: <serde text>` (no `<path>:` when the error is at the top), `data` `{"field": "<path>"}` when a field can be named. If the text starts with `missing field` or `duplicate field`, `field` is the path joined with the quoted name (only the name when the path is `.`). Otherwise, `field` is the path when it has at least one named segment. Otherwise there is no field. Error messages are truncated to 256 bytes on a char boundary. `serde_path_to_error` `0.1` is added to the workspace and to `roym_core`.
+- **D-A2a-7. A missing or `null` `params` is `{}`.** Any non-object / non-null JSON value (such as an array) is rejected with `-32602 "invalid params: expected an object"` with no `data`.
+- **D-A2a-8. The `group` key stays.** `ConversationRef`, `GroupRenameInput` and `GroupMemberInput` name the field `conversation` with `#[serde(alias = "group")]`. Both keys at once is a duplicate-field `-32602` with `data.field = "conversation"`. No caller sends both.
+- **D-A2a-9. "One of two fields" rules stay in the handler**, with their old words: `conversation.open` and `group.add-member`/`remove-member` (`"person_did or address is required"`; `address` wins when both are sent), `block.add`/`remove`/`check` (`"at least one of person_did or address is required"`), `conversation.search` (an empty `query`: `"query is required"`).
+- **D-A2a-10. Closed sets are enums** (Q7 (a)): `KindFilter { Direct, Group }`, `ReportSubject { Person, Listing, Message }`, `ReportCategory { Impersonation, Fraud, Harassment, UnsafeService, IllegalContent }`, all kebab-case. Stored rows keep their `String` fields.
+- **D-A2a-11. Backup.** `*.export` returns `Bundle`. `*.import` takes `ImportInput { bundle: Bundle }`. The "whole `params` is the bundle" fallback is removed (B9).
+- **D-A2a-12. Siblings use the structs** (Q8 (a)). `roym_core::method::call_sibling` takes the typed input and returns the typed output. It replaces `profile_call` in `conversation`. Five call sites in other crates move to it. Each site preserves its existing error handling (B17-B20).
+- **D-A2a-13. Tests and clients keep sending raw JSON.** `roymctl`, the parity harness, the e2e tests and the Hub do not import the structs. A contract test that reuses the server's struct cannot find a wrong name.
+- **D-A2a-14. The output shape is proved by shape files**, recorded from the unchanged code in Step 2 and kept green by every later step. An array records the sorted, de-duplicated list of its item shapes. A string records its exact value (not `"string"`) when its key is a closed word set (`kind`, `state`, `direction`, `body_encoding`, `admission`, `status`, `content_type`, `subject_kind`, `category`, `note`, or any key under `notices`).
+- **D-A2a-15. Output rules.** An output struct reproduces today's JSON exactly. Where the old code wrote `null` (a `json!` with an `Option`), the field has no `skip_serializing_if`. Where the old code left a key out, the field has `skip_serializing_if = "Option::is_none"`. These places have the second kind: `body` and `deleted_at_secs` of `MessageView`, and `retry_after_secs`. `SigningStatusOutput.owner_did` is `Option<String>` without skip. `BlockCheckOutput` uses `struct BlockCheckOutput { blocked: bool, #[serde(flatten)] since: Option<BlockedSince> }` where `BlockedSince { reason: Option<String>, since_secs: Option<u64> }` has no skip on its options, preserving `null` when blocked without a reason. The three `get` methods write `null` for a missing row (an `Option` result, not a key). Stored `admission` remains kebab-case.
+- **D-A2a-16. Numbers keep the width the handler already cast to**: `limit` of the conversation methods is `u32` (they cast `as u32`), the profile lists use `u64` (they cast `as usize`).
+- **D-A2a-17. The shape tests and check tests live in one binary, `crates/roym_web/tests/method_contract.rs`.** It has modules `shapes` and `contract` in `method_contract/shapes.rs` and `method_contract/contract.rs`, declared with explicit `#[path = "method_contract/..."]` attributes, including the four parity harness helper modules with `#[allow(dead_code)]`.
+- **D-A2a-18. Dead types are replaced.** Step 4 replaces `MessageRow` with `MessageView`. Step 6 replaces `ConversationRow` by `ConversationListItem` (`opened_at_secs: i64`, `last_activity_ms: i64`) and reuses `ConversationRowKind` for the `kind` output. `GroupMeta` and `apply_group_profile` remain as domain code.
 
 ## Deviations
 
@@ -259,12 +260,20 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **`call-all` interface:** task.md and change doc originally named `syneroym:invocation`. Corrected to `syneroym:proxy` beside `call` (Q1 / D-OF-6).
 - **`call-all` params type:** sketch originally used `params: list<u8>`. Corrected to `params: string` (JSON text) matching `proxy.call` (Q1 / D-OF-6).
 - **`web` instance reuse:** change doc table previously stated `web` instances are reused and keep no state. In fact each ordinary call and WebSocket event creates a new store and instance (`engine.rs:469`, `guest_stream.rs:294`, `app.rs:295`) (Q5 / D-OF-3).
-- **Dual-build parity test harness instance certificate:** `harness_with_unbound` in `crates/roym_web/tests/dual_build_parity/helpers.rs` was updated to issue and install a `SCOPE_SERVICE_INSTANCE` delegation certificate for each service on both the WASM and native endpoint registries, matching `app_host_native/tests/dual_build_parity/helpers.rs`, allowing outbound requests such as `group.add-member` to pass `check_outbound_identity`.
-- **NoParams refusal changes parity scenario 2 (B2):** `profile.policy` now rejects unexpected extra fields (`auth`), returning `-32602` with `data.field = "auth"`.
+
+### Different from the plan
+
+- **Dual-build parity test harness instance certificate:** The `roym_web` parity harness did not install a service-instance certificate, unlike a real deploy (`deploy/commit.rs`). The shape test needs a successful `group.add-member`, whose host-side prekey fetch runs `check_outbound_identity` and refuses without one. The harness now installs one per service on both builds. This also lets outbox delivery in every parity scenario pass that check; no scenario asserted the old refusal. Production code is unchanged.
+
+### Planned wire changes (plan section 4)
+
 - **Hub profile_envelope format (B1):** The Hub's object parameter was a bug and was updated to send trimmed string text.
-- **Import parameter format (B9):** Removed support for passing the bundle directly as the whole params object; callers must send `{ "bundle": ... }`.
-- **Error text changes for missing and wrong fields (B4, B5, B10):** Standardized on `-32602` with `data.field` across profile and conversation.
+- **NoParams refusal changes parity scenario 2 (B2):** `profile.policy` now rejects unexpected extra fields (`auth`), returning `-32602` with `data.field = "auth"`.
+- **Error text changes for missing and wrong fields (B4, B5, B10):** Standardized on `-32602` with `data.field` across profile and conversation. When no field can be named, for example when `params` is not a JSON object, `data` is absent.
 - **Enums for closed word sets (B7, B8):** `conversation.list` now rejects invalid `kind` values with `-32602` instead of ignoring them.
+- **Import parameter format (B9):** Removed support for passing the bundle directly as the whole params object; callers must send `{ "bundle": ... }`.
+- **Certificate verbs refuse unknown fields (B21):** The certificate verbs of `catalog`, `transaction` and `directory` now refuse unknown fields, and a missing `certificate` gives `missing field` text instead of `certificate is required`. This also holds for `<svc>.signing-status`, which now takes `NoParams`.
+- **Stored profile without record_id (B22):** `profile.get` answers `-32603` for a stored row with no `record_id`.
 
 ## Close-out
 
