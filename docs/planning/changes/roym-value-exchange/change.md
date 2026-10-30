@@ -652,6 +652,7 @@ EEP redemption demands and reissue requests use the [service mailbox](../service
 - **A refused EEP in a bundle.** One payment commitment per EEP, which lapses when its EEP is refused, or one payment for the bundle with a rule for refunds. The obligation change document decides.
 - **Bids on one want.** Whether a want shows bidders how many bids it has, and whether a wanter can close a want without answering each bid.
 - **First values to tune.** Starting points: standing cache 15 minutes; default EEP expiry 12 months; redemption notice at most 7 days (the mailbox's longest time-to-live); aggregates over at least 10 participants; opinion writing window 14 days and resolution window 7 days. Still to choose: the friend timeout and the cap per friend. The evidence size cap is measured, not guessed (see [Notes for the module documents](#notes-for-the-module-documents)).
+- **Showcase and fuel.** Whether an exchange may show a collage of offerings and let providers pay for slots with fuel (a balance held at one exchange, for that exchange's services only). The purpose is to make people aware of new developments and to encourage new offerings, not to push buying. Fuel must never change match results or their order. The exchange and membership module document must answer it before M08F starts. The checklist is in the M08F `task.md`, under "Open before planning".
 
 ## Notes for the module documents
 
