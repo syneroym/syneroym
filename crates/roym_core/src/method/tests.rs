@@ -322,13 +322,13 @@ fn check_accepts_a_correct_table() {
         MethodInfo::of::<NoParams, DummyOutput>("profile.ping"),
         MethodInfo::of::<WireOpenTest, DummyOutput>("profile.echo"),
     ];
-    let temp_dir = std::env::temp_dir().join("test_correct_table");
-    let _ = fs::remove_dir_all(&temp_dir);
-    fs::create_dir_all(&temp_dir).unwrap();
-    fs::write(temp_dir.join("app.rs"), "fn route() { Response::method_not_found(&req.method); }")
-        .unwrap();
-    assert_service_table(PROFILE, &rows, &["profile.echo"], &temp_dir);
-    let _ = fs::remove_dir_all(&temp_dir);
+    let temp_dir = tempfile::tempdir().unwrap();
+    fs::write(
+        temp_dir.path().join("app.rs"),
+        "fn route() { Response::method_not_found(&req.method); }",
+    )
+    .unwrap();
+    assert_service_table(PROFILE, &rows, &["profile.echo"], temp_dir.path());
 }
 
 #[test]
@@ -404,34 +404,18 @@ fn check_fails_on_hand_written_arm() {
         MethodInfo::of::<NoParams, DummyOutput>("profile.ping"),
         MethodInfo::of::<NoParams, DummyOutput>("profile.get"),
     ];
-    let temp_dir = std::env::temp_dir().join("test_hand_written_arm");
-    let _ = fs::remove_dir_all(&temp_dir);
-    fs::create_dir_all(&temp_dir).unwrap();
-    fs::write(temp_dir.join("ops.rs"), "\"profile.get\" => handle_get(),\n").unwrap();
-    let res = std::panic::catch_unwind(|| {
-        assert_service_table(PROFILE, &rows, &[], &temp_dir);
-    });
-    let _ = fs::remove_dir_all(&temp_dir);
-    if let Err(e) = res {
-        std::panic::resume_unwind(e);
-    }
+    let temp_dir = tempfile::tempdir().unwrap();
+    fs::write(temp_dir.path().join("ops.rs"), "\"profile.get\" => handle_get(),\n").unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp_dir.path());
 }
 
 #[test]
 #[should_panic(expected = "req.method used outside allowed method_not_found")]
 fn check_fails_on_req_method_inspection() {
     let rows = vec![MethodInfo::of::<NoParams, DummyOutput>("profile.ping")];
-    let temp_dir = std::env::temp_dir().join("test_req_method");
-    let _ = fs::remove_dir_all(&temp_dir);
-    fs::create_dir_all(&temp_dir).unwrap();
-    fs::write(temp_dir.join("other.rs"), "if req.method == \"profile.ping\" {}").unwrap();
-    let res = std::panic::catch_unwind(|| {
-        assert_service_table(PROFILE, &rows, &[], &temp_dir);
-    });
-    let _ = fs::remove_dir_all(&temp_dir);
-    if let Err(e) = res {
-        std::panic::resume_unwind(e);
-    }
+    let temp_dir = tempfile::tempdir().unwrap();
+    fs::write(temp_dir.path().join("other.rs"), "if req.method == \"profile.ping\" {}").unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp_dir.path());
 }
 
 #[test]
@@ -440,17 +424,9 @@ fn check_fails_on_req_method_inspection() {
 )]
 fn check_fails_on_unlisted_method_literal() {
     let rows = vec![MethodInfo::of::<NoParams, DummyOutput>("profile.ping")];
-    let temp_dir = std::env::temp_dir().join("test_unlisted_literal");
-    let _ = fs::remove_dir_all(&temp_dir);
-    fs::create_dir_all(&temp_dir).unwrap();
-    fs::write(temp_dir.join("ops.rs"), "let m = \"profile.not-in-table\";").unwrap();
-    let res = std::panic::catch_unwind(|| {
-        assert_service_table(PROFILE, &rows, &[], &temp_dir);
-    });
-    let _ = fs::remove_dir_all(&temp_dir);
-    if let Err(e) = res {
-        std::panic::resume_unwind(e);
-    }
+    let temp_dir = tempfile::tempdir().unwrap();
+    fs::write(temp_dir.path().join("ops.rs"), "let m = \"profile.not-in-table\";").unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp_dir.path());
 }
 
 #[test]
