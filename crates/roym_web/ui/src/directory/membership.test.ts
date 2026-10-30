@@ -127,7 +127,7 @@ describe("refusalWords and issuer words", () => {
     expect(refusalWords(undefined)).toBe("This group has no membership on record for you.");
   });
 
-  it("gives any other refusal the same words a consumer would read", () => {
+  it("gives any other refusal the same words a searcher would read", () => {
     expect(refusalWords(VERDICTS.revoked)).toContain("Membership revoked");
   });
 

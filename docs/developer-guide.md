@@ -1629,7 +1629,7 @@ roymctl --dir <DIR> roym address
 # Hub gateway host:        s<web-did-hash>.localhost
 ```
 
-##### The Directory: running a SynOrg and finding providers
+##### The Directory: running a SynOrg and finding listing owners
 
 `directory` signs nothing (its settings and roster are unsigned app
 state), so it needs no certificate. `roym enrol-signing` does not touch
@@ -1665,7 +1665,7 @@ per-source problems (a directory that timed out, was refused, was not
 found, or that this node was too busy to call) print first, one line
 each, before the `N result(s):` header. Refused evidence (a forged or
 unparseable listing a directory served) prints in its own block after
-the results. Neither is ever mixed into the result list. A provider
+the results. Neither is ever mixed into the result list. A listing owner
 publishes their own listing to a directory they chose:
 
 ```bash
@@ -1674,7 +1674,7 @@ roymctl --dir <DIR> --as owner roym directory info did:key:z...
 ```
 
 No Directory needs to be deployed anywhere for the rest of Roym's flow to
-work — a consumer reaching a provider by direct link completes the whole
+work — a searcher reaching a listing owner by direct link completes the whole
 find-and-engage path with `roym directory sources` returning nothing.
 
 The Hub has a **Directory** tab (add a directory, search, read the merged

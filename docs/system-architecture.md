@@ -47,13 +47,13 @@
 - [Federation Architecture](#federation-architecture)
   - [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow)
   - [Minimum Federation Contract](#minimum-federation-contract)
-- [Consumer Experience Architecture](#consumer-experience-architecture)
-  - [Consumer App Architecture](#consumer-app-architecture)
+- [Participant Experience Architecture](#participant-experience-architecture)
+  - [Participant App Architecture](#participant-app-architecture)
 - [Observability Architecture](#observability-architecture)
   - [Design Philosophy](#design-philosophy)
   - [Instrumentation Layer](#instrumentation-layer)
   - [Control-Plane Health and Alerts](#control-plane-health-and-alerts)
-  - [Provider-Facing Observability](#provider-facing-observability)
+  - [Owner-Facing Observability](#owner-facing-observability)
   - [Simulation Testing and Replay Validation](#simulation-testing-and-replay-validation)
 - [Security Architecture](#security-architecture)
   - [Encryption at Every Layer](#encryption-at-every-layer)
@@ -65,7 +65,7 @@
 - [Consolidated Technology Stack](#consolidated-technology-stack)
   - [Core Infrastructure & Substrate](#core-infrastructure--substrate)
   - [SynApp & Crypto Libraries](#synapp--crypto-libraries)
-  - [Consumer Frontend](#consumer-frontend)
+  - [Participant Frontend](#participant-frontend)
   - [Developer Toolchain](#developer-toolchain)
 - [Connectivity Substrate In Heterogeneous networks](#connectivity-substrate-in-heterogeneous-networks)
   - [Overview](#overview)
@@ -126,7 +126,7 @@
 
 ## Executive Summary
 
-Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**). These mini-apps run on ordinary hardware that providers control. Clusters work together through federation. Federation here means that independently owned peer clusters cooperate over shared protocols. It is not server federation. A direct connection between two participants needs no server in the data path. An Iroh relay helps two peers connect. The relay carries their traffic until a direct path is found, or for as long as no direct path exists. A coordinator forwards traffic only in two cases. One case is when a caller names it as the entry point. The other case is when a browser falls back to the tunnel. Registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to give the benefits of large consumer platforms. These benefits are discovery, reputation, standard transaction flows and institutional trust. The system also aims to avoid their drawbacks. These drawbacks are vendor lock-in, loss of data ownership, unequal governance and opaque algorithms.
+Syneroym is a truly peer-to-peer, locality-first ecosystem for autonomous mini-applications (**SynApps**). These mini-apps run on ordinary hardware that participants control. Clusters work together through federation. Federation here means that independently owned peer clusters cooperate over shared protocols. It is not server federation. A direct connection between two participants needs no server in the data path. An Iroh relay helps two peers connect. The relay carries their traffic until a direct path is found, or for as long as no direct path exists. A coordinator forwards traffic only in two cases. One case is when a caller names it as the entry point. The other case is when a browser falls back to the tunnel. Registries store signed endpoint records and answer lookups. The [thesis](../THESIS.md) states the core bet. The system aims to give the benefits of large participant platforms. These benefits are discovery, reputation, standard transaction flows and institutional trust. The system also aims to avoid their drawbacks. These drawbacks are vendor lock-in, loss of data ownership, unequal governance and opaque algorithms.
 
 > **Envisioned.** Not built yet. Reputation. Today Roym has no reputation record. Trust comes from the signed membership credentials of a SynOrg.
 
@@ -145,9 +145,9 @@ This document defines the architecture, technology stack, and component design f
 
 | Principle | Implication |
 |---|---|
-| **Locality-first** | The design serves nearby providers and consumers first; global scale is secondary |
+| **Locality-first** | The design serves nearby participants first; global scale is secondary |
 | **Progressive decentralization** | A single device is fully useful; federation is additive |
-| **Data sovereignty** | All provider data lives on infrastructure the provider chooses |
+| **Data sovereignty** | All participant data lives on infrastructure the participant chooses |
 | **Transparency over opacity** | Ranking, discovery, and reputation algorithms are open-source or can be audited |
 | **Interoperability by convention** | SynApps cooperate through shared primitives; no central coordinator is needed |
 | **Offline-first** | The system keeps working in a reduced way during network partitions; delivery between nodes is queued and asynchronous |
@@ -158,8 +158,8 @@ The RAM figures are sizing hints, not tested requirements.
 
 | Hardware tier | Hardware | Typical Use |
 |---|---|---|
-| Tier 1 — Minimal | Raspberry Pi 4 (2 GB RAM) | Single provider self-host, light load |
-| Tier 2 — Standard | Old PC / mini PC (4–8 GB RAM, SSD) | Provider or small aggregator |
+| Tier 1 — Minimal | Raspberry Pi 4 (2 GB RAM) | Single participant self-host, light load |
+| Tier 2 — Standard | Old PC / mini PC (4–8 GB RAM, SSD) | Participant or small aggregator |
 | Tier 3 — Distributed | Multiple VMs, PCs, Servers (8–32 GB RAM) | Infrastructure provider, large aggregator |
 
 The release workflow builds the substrate for Linux (x86_64 and aarch64), Windows, and macOS.
@@ -239,7 +239,7 @@ erDiagram
 
 A SynApp can be placed on several substrates, because each service can name its own substrate. A substrate has at most one home relay. The substrate does not register at the relay. It publishes the URL in its signed record. A WASM service and a container service run in a sandbox. A TCP service and a native-host service run without one. The process of a TCP service runs outside the substrate. A native-host service cannot be named in a deployment plan. A WASM or container service is built from an artifact. The artifact is a WASM component or an OCI image. The `source` field of the service spec names it. For a container, `image` in `custom_config` replaces `source` when it is set.
 
-Provider and Consumer are not substrate entities. They are the two roles of a person in one Roym transaction. An aggregator is a `directory` service of a SynOrg (Syneroym Organization). It collects the listings of the providers who publish to it. See [Federation Architecture](#federation-architecture).
+The quote author and the counterparty are not substrate entities. They are the two roles of a person in one Roym deal. An aggregator is a `directory` service of a SynOrg (Syneroym Organization). It collects the listings of the listing owners who publish to it. See [Federation Architecture](#federation-architecture).
 
 > **Envisioned.** Not built yet. Federation between aggregators, and an aggregator that passes a query on to other aggregators. Today a directory answers from its own listings and does not forward a query to another directory.
 
@@ -257,7 +257,7 @@ A caller dials a node over Iroh QUIC (UDP). Iroh makes first contact through the
 
 ```mermaid
 flowchart TD
-    A([Provider substrate])
+    A([Participant substrate])
     B([Caller: SDK client or substrate])
     R([Iroh relay on a coordinator])
     REG([Community registry])
@@ -622,7 +622,7 @@ The command encrypts the data with AES-GCM under a random 32-byte recovery key. 
 
 Restore has two commands. `restore-identity` writes the master key file. `restore-data` replays the bundles into the running Roym services through the gateway. It is safe to run again after an interrupted restore. Restore accepts only archive version 1.
 
-After a restore, the node has new addresses. The person can read old conversations, but they cannot continue. The test `a_provider_transaction_survives_an_encrypted_backup_and_restore` in `crates/substrate/tests/roym_restore_e2e.rs` covers backup and restore of a provider transaction.
+After a restore, the node has new addresses. The person can read old conversations, but they cannot continue. The test `a_quote_author_transaction_survives_an_encrypted_backup_and_restore` in `crates/substrate/tests/roym_restore_e2e.rs` covers backup and restore of a quote author's transaction.
 
 `roymctl identity export` and `roymctl identity import` move one local identity as an encrypted file. For the full steps, see [Moving a Substrate to a New Machine](developer-guide.md#moving-a-substrate-to-a-new-machine).
 
@@ -653,13 +653,13 @@ The rules that decide a winner belong to the services. The Roym services keep th
 
 ### Multi-Device Sync and Sharded Deployment
 
-This section covers two needs. The first is apps that work across the devices of a provider. The second is one app that runs on several hosts.
+This section covers two needs. The first is apps that work across the devices of a participant. The second is one app that runs on several hosts.
 
-**A) Multi-device sync (primary + secondary provider devices)**
+**A) Multi-device sync (primary + secondary participant devices)**
 
 > **Envisioned.** Not built yet. No secondary-device feature exists. The SDK client does not set an idempotency key on its requests. The durable outbox runs on the node, not on a device.
 >
-> - A secondary provider device is a client of the primary service. It is not a second writer to the database.
+> - A secondary participant device is a client of the primary service. It is not a second writer to the database.
 > - Requests made offline queue in the local outbox of the device ([PLT-ASY](#plt-asy-asynchronous-operations--scheduling)). Each request has an idempotency key.
 > - On reconnection, the queued requests replay against the single writer.
 > - Operational ownership stays deterministic because there is one writer. A merge step is not needed.
@@ -905,22 +905,22 @@ flowchart TD
 
 **Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves endpoint records and master anchors. These are identity-to-route lookups and not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
 
-**Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text, and filters. Its answer is a list of candidates and is never a verified answer. Today a provider publishes only the `listing` record to a directory.
+**Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A listing owner signs a `listing` record and publishes it to a SynOrg directory that the listing owner chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text, and filters. Its answer is a list of candidates and is never a verified answer. Today a listing owner publishes only the `listing` record to a directory.
 
-The consumer's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry and the delegation window. Each hit also carries a revocation status. Today this status is always `unknown`, because no revocation source is given to the check. A hit that fails the check is kept apart from the others. A withdrawn membership is judged apart, by the standing check (see [Trust & Reputation](#trust--reputation)). Each node that runs the `directory` service keeps its own list of directories and chooses which of them to query. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
+The searcher's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry and the delegation window. Each hit also carries a revocation status. Today this status is always `unknown`, because no revocation source is given to the check. A hit that fails the check is kept apart from the others. A withdrawn membership is judged apart, by the standing check (see [Trust & Reputation](#trust--reputation)). Each node that runs the `directory` service keeps its own list of directories and chooses which of them to query. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
 
 > **Envisioned.** Not built yet. A real revocation check on each listing hit. The verifier accepts a revocation source, but the node gives it none, so no hit is checked against a revocation list today.
 
-**Ranking today:** each directory sorts its matching listings by the time of issue of the signed record, newest first. Ties go by `listing_id`. The consumer's node merges the answers of the directories in turn, so no one directory fills the page. No score is computed.
+**Ranking today:** each directory sorts its matching listings by the time of issue of the signed record, newest first. Ties go by `listing_id`. The searcher's node merges the answers of the directories in turn, so no one directory fills the page. No score is computed.
 
-> **Envisioned.** Not built yet. Today a consumer asks the directories that it was given. No routing schema places a listing, no index has shards, and no hit carries a score or an ad boost. The design below is one option for later. It is not the plan. Tag-routed discovery ([P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics)) is another option.
+> **Envisioned.** Not built yet. Today a searcher asks the directories that it was given. No routing schema places a listing, no index has shards, and no hit carries a score or an ad boost. The design below is one option for later. It is not the plan. Tag-routed discovery ([P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics)) is another option.
 
-**Distributed matching (one option):** providers publish signed Publications (listings, intents, capabilities). Today only the `listing` record exists. Indexes are caches and are never the source of truth. Clients verify every result before trusting it. They check the signature, the timestamp and the expiry.
+**Distributed matching (one option):** listing owners publish signed Publications (listings, intents, capabilities). Today only the `listing` record exists. Indexes are caches and are never the source of truth. Clients verify every result before trusting it. They check the signature, the timestamp and the expiry.
 
 ```mermaid
 flowchart TD
     subgraph PUB["Publish"]
-        P[Provider signs a Publication] --> PLACE[Rendezvous-hash onto routing descriptor]
+        P[Listing owner signs a Publication] --> PLACE[Rendezvous-hash onto routing descriptor]
     end
 
     subgraph LEAF["Leaf Index Shards"]
@@ -928,7 +928,7 @@ flowchart TD
     end
 
     subgraph MATCH["Query"]
-        Q[Consumer match expression] --> RESOLVE[Resolve routing descriptor]
+        Q[Searcher match expression] --> RESOLVE[Resolve routing descriptor]
         RESOLVE --> L1
         L1 --> RANK[Rank: keyword + geo + reputation + ad-boost + recency]
         RANK --> VERIFY[Client verifies signature/expiry]
@@ -938,7 +938,7 @@ flowchart TD
     PLACE --> L1
 ```
 
-**Placement:** a protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication deterministically onto leaf index shards. Providers compute their own placement, so no coordinator is needed.
+**Placement:** a protocol-defined Routing Schema (spatial cell, category, ...) plus rendezvous hashing maps each Publication deterministically onto leaf index shards. Listing owners compute their own placement, so no coordinator is needed.
 
 **Ranking:** transparent weighted formula (keyword relevance, geo proximity, reputation, ad-boost, recency). The weights are published open source. The ad-boost has a cap, and row 15 of the [Resolved Architecture TBD Items](#resolved-architecture-tbd-items) gives its value. There is no auction at first (row 17). The reputation signal depends on the reputation design, which is not frozen: see [Trust & Reputation](#trust--reputation). This formula orders the answer to one query. Suggesting items with no query is a separate design: see [Recommendation Algorithm](#recommendation-algorithm).
 
@@ -1010,7 +1010,7 @@ The sender gets the prekey bundle of the receiver with the `prekey-bundle` call 
 **Built today.** Roym computes no rating, score or vouch. These parts exist:
 
 - **Signed receipts.** A booking has two receipts, the agreement receipt and the fulfilment receipt. Each party signs its own copy, and the two copies are separate records. [P2P-REP](#p2p-rep-satisfaction-signal-mechanics) says more.
-- **SynOrg standing.** The owner of a SynOrg signs three kinds of record about a member: a `membership-credential`, a `revocation` that withdraws a credential, and a `moderation-decision` (`member.suspend` and `member.lift`). The credential names the categories and the areas that it covers. It lasts at most two years. These are Roym records, not W3C Verifiable Credentials. A directory returns a listing only when its publisher has a valid membership. A consumer's node judges the same evidence itself, against the group that it pinned for that directory. The pin is set when the node first learns which group the directory speaks for, and a later reply does not change it. A decision of the group reaches copies that other people hold only when they next check, and the Hub says so. The verbs that issue a credential or a revocation, or suspend or lift a member, are local only. `directory.standing` answers any caller.
+- **SynOrg standing.** The owner of a SynOrg signs three kinds of record about a member: a `membership-credential`, a `revocation` that withdraws a credential, and a `moderation-decision` (`member.suspend` and `member.lift`). The credential names the categories and the areas that it covers. It lasts at most two years. These are Roym records, not W3C Verifiable Credentials. A directory returns a listing only when its publisher has a valid membership. A searcher's node judges the same evidence itself, against the group that it pinned for that directory. The pin is set when the node first learns which group the directory speaks for, and a later reply does not change it. A decision of the group reaches copies that other people hold only when they next check, and the Hub says so. The verbs that issue a credential or a revocation, or suspend or lift a member, are local only. `directory.standing` answers any caller.
 - **Rate limits.** The limits on first contact and on publication are described in [Messaging](#messaging).
 - **Block list.** A person keeps a local block list in the `profile` service.
 - **Moving history.** The nearest to portable history is the Roym backup archive, with a signed manifest.
@@ -1019,8 +1019,8 @@ The sender gets the prekey bundle of the receiver with the `prekey-bundle` call 
 
 **Reputation:** Replaces global average ratings with network-gated trust signals and transactional proofs.
 
-- **Network-Gated Ratings:** A provider's rating is only visible to consumers sharing a trust path in the vouch graph. This prevents rating inflation and fake reviews from strangers, reflecting real-world community trust. (Note: May present a cold-start challenge for consumers with small networks).
-- **Transactional Proof:** Displays verified transaction counts and repeat customer rates instead of subjective ratings. Both parties must sign the transaction record, providing a strong, verifiable signal.
+- **Network-Gated Ratings:** A listing owner's rating is only visible to searchers sharing a trust path in the vouch graph. This prevents rating inflation and fake reviews from strangers, reflecting real-world community trust. (Note: May present a cold-start challenge for searchers with small networks).
+- **Transactional Proof:** Displays verified transaction counts and repeat counterparty rates instead of subjective ratings. Both parties must sign the transaction record, providing a strong, verifiable signal.
 
 **Trust, vouching, credentials, reputation portability, and anti-gaming**
 
@@ -1038,8 +1038,8 @@ flowchart TD
 
         L3["Layer 3: Verifiable Credentials
         W3C VC Data Model 2.0.
-        Provider attaches signed VC to profile.
-        Consumer configures trusted VC issuers."]
+        Listing owner attaches signed VC to profile.
+        Searcher configures trusted VC issuers."]
 
         L4["Layer 4: Transaction Reputation
         ReputationRecord signed by both parties.
@@ -1057,11 +1057,11 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A[Consumer A trusted anchor] -->|"vouch weight: 1.0"| B[Provider B]
-    A -->|"vouch weight: 1.0"| C[Provider C]
-    C -->|"vouch weight: 0.5 (1 hop decay)"| D[Provider D]
-    D -->|"vouch weight: 0.25 (2 hop decay)"| E[Provider E]
-    E -. "3 hop limit not propagated" .-> F[Provider F]
+    A[Searcher A trusted anchor] -->|"vouch weight: 1.0"| B[Listing owner B]
+    A -->|"vouch weight: 1.0"| C[Listing owner C]
+    C -->|"vouch weight: 0.5 (1 hop decay)"| D[Listing owner D]
+    D -->|"vouch weight: 0.25 (2 hop decay)"| E[Listing owner E]
+    E -. "3 hop limit not propagated" .-> F[Listing owner F]
 
     style A fill:#1F4E79,color:#fff
     style F fill:#CCCCCC
@@ -1073,7 +1073,7 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 **Sybil resistance mechanisms:**
 1. **Stake requirement:** To issue a vouch with weight > 0.5, the issuer must have ≥ 5 completed transactions with positive reputation in their own history
 2. **Rate limiting:** Max 10 new vouches issued per 30-day window per identity
-3. **Reputation anchoring:** Reputation records require both-party signatures — a provider cannot self-generate fake transaction history
+3. **Reputation anchoring:** Reputation records require both-party signatures — a listing owner cannot self-generate fake transaction history
 4. **Community moderation override:** Aggregator block lists can zero out reputation from known Sybil clusters
 
 **Anti-gaming (discovery ranking):**
@@ -1081,13 +1081,13 @@ Default `decay_factor = 0.5`. Max effective depth: 3 hops (weight < 0.125 beyond
 - Keyword stuffing is reduced by TF-IDF scoring on index entries (raw keyword count is not used)
 - Review bombing detection: reputation score uses a Bayesian average with a prior of 3.5/5.0 and minimum 5 reviews before score is published
 
-**Reputation portability:** A provider migrating substrates republishes their `ReputationRecord` collection (each record is independently signed by both parties) to the DHT under their existing identity key. No loss of history.
+**Reputation portability:** A listing owner migrating substrates republishes their `ReputationRecord` collection (each record is independently signed by both parties) to the DHT under their existing identity key. No loss of history.
 
 ### Payments
 
 Payment handling is a Roym feature, not a substrate component. See [Flexible Payment Integration](#3-flexible-payment-integration) in Phase 6.
 
-**Built today.** Payment is out of band by design. Roym does not process a payment or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency, and method, and it refuses a record that does not. The provider signs a `payment-request` record. Either party signs a `payment-acknowledgement` record that says a payment happened. The acknowledgement is the word of its issuer, and Roym does not see the money move. The Hub shows a notice that says so. The payee text of a card is a link only when it uses `http` or `https`. Any other scheme, such as a UPI link, shows as plain text.
+**Built today.** Payment is out of band by design. Roym does not process a payment or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency, and method, and it refuses a record that does not. The listing owner signs a `payment-request` record. Either party signs a `payment-acknowledgement` record that says a payment happened. The acknowledgement is the word of its issuer, and Roym does not see the money move. The Hub shows a notice that says so. The payee text of a card is a link only when it uses `http` or `https`. Any other scheme, such as a UPI link, shows as plain text.
 
 > **Envisioned.** Not built yet. No payment gateway, `PaymentIntent` interface, adapter, mutual credit or coin code exists. The direction of the design below is to redirect to external payment flows (for example UPI deep links) and later to add fully integrated gateways. The aim is to keep central dependencies few at the start. Today nothing verifies a payment.
 
@@ -1114,7 +1114,7 @@ flowchart TD
 
 Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow & Dispute Resolution](#6-decentralized-escrow--dispute-resolution).
 
-**Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where providers and consumers issue credits to each other, counted in a local unit. No external currency is required. Each credit line is a signed ledger between two parties. Roym mediates settlement. Regulatory classification varies by jurisdiction.
+**Mutual credit (layers onto the Payment Abstraction Layer above; legal review required before rollout):** A bilateral IOU system where participants issue credits to each other, counted in a local unit. No external currency is required. Each credit line is a signed ledger between two parties. Roym mediates settlement. Regulatory classification varies by jurisdiction.
 
 **Syneroym Coin (layers onto the same abstraction; legal review required before launch):** Internal ledger token (not a cryptocurrency or blockchain-based token) managed by a community governance multi-sig. Used for ecosystem incentives and cross-aggregator settlement.
 
@@ -1123,7 +1123,7 @@ Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow
 ## Layer 4 — SynApp Specifications
 
 ### SynApp 1: Roym
-Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain has three records: `request` (the consumer asks), `quote` (the provider offers) and `agreement-receipt` (each side signs one half). After that, a booking exists on the provider's node. Its status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
+Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain has three records: `request` (the counterparty asks), `quote` (the quote author offers) and `agreement-receipt` (each side signs one half). After that, a booking exists on the quote author's node. Its status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
 
 #### Component Architecture
 
@@ -1134,7 +1134,7 @@ The manifest of Roym declares six services: `web`, `profile`, `conversation`, `c
 | `web` | Serves the Hub UI and `POST /rpc`. It forwards each method to the service that owns the method prefix. Every method that it forwards, except `profile.policy`, needs a session of the node owner. `session.whoami` is answered without a session. | `conversation`, `profile`, `catalog`, `transaction`, `directory` |
 | `profile` | The person's own profile, contacts, block list, and reports. | none |
 | `conversation` | One-to-one messages and private groups. It uses the conversation interface of the substrate for encryption, the outbox and delivery. | `profile` |
-| `catalog` | The provider's listings and availability slots. | `profile` |
+| `catalog` | The listing owner's listings and availability slots. | `profile` |
 | `transaction` | Requests, quotes, agreements, bookings, payments, and fulfilments. Booking logic and payment records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
 | `directory` | A SynOrg's member list, published listings, search index, and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
 
@@ -1181,7 +1181,7 @@ flowchart TD
     style OWN_NODE fill:#E2EFDA,stroke:#548235
 ```
 
-The Hub calls its own node only. It never calls the provider's node.
+The Hub calls its own node only. It never calls the quote author's node.
 
 > **Envisioned.** Not built yet. A DRM content server (an OCI service for protected media), push notifications, payment adapters for external gateways, and a review service. Roym declares no OCI service. Today a card reaches the other person as a message in the conversation, and Roym has no push code, no payment gateway code, and no review record. Also Envisioned: wRPC and WebSocket links from the Hub, which uses HTTP today. See [Payments](#payments) and [Trust & Reputation](#trust--reputation).
 
@@ -1191,21 +1191,21 @@ A card is a signed record sent as a message with content type `application/vnd.r
 
 | Card | Signed by | Meaning |
 |---|---|---|
-| `request` | the consumer | The consumer asks for a service. It has a description, and it may name a listing, categories, an area, and a time window. |
-| `quote` | the provider | An offer. It carries the agreed terms: scope, currency, and amount, payment methods, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
+| `request` | the counterparty | The counterparty asks for a service. It has a description, and it may name a listing, categories, an area, and a time window. |
+| `quote` | the quote author | An offer. It carries the agreed terms: scope, currency, and amount, payment methods, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
 | `agreement-receipt` | each party signs one half | Each side signs the quote terms. A deal exists when both halves exist. |
-| `booking-progress` | the provider's service | A snapshot of the booking. The consumer's node accepts it only when the signer is the one that signed the quote. |
-| `payment-request` | the provider | The provider asks to be paid. It carries currency, amount, and an optional note. It is optional. |
+| `booking-progress` | the quote author's service | A snapshot of the booking. The counterparty's node accepts it only when the signer is the one that signed the quote. |
+| `payment-request` | the quote author | The quote author asks to be paid. It carries currency, amount, and an optional note. It is optional. |
 | `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method and reference as text. |
 | `fulfilment-receipt` | either party | A statement that the work is done. |
 
-The expiry of a quote is set by the provider. It must be from 5 minutes to 90 days. A request has no expiry. The consumer can mark a quote as declined with `quote.decline`. This mark stays on the consumer's own node and sends nothing. It is refused after either half of the agreement is signed. Roym has no method for a provider to reject a request.
+The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. A request has no expiry. The counterparty can mark a quote as declined with `quote.decline`. This mark stays on the counterparty's own node and sends nothing. It is refused after either half of the agreement is signed. Roym has no method for a quote author to reject a request.
 
 #### Booking State Machine
 
-Roym has no single order record. A deal is the record chain above, and the booking that follows it. The provider's node is the only writer of the booking. Every other node reads the signed snapshots of that writer. Each snapshot has a number `seq` that counts up from 1. A snapshot is written with the create fence of the data layer, so two writers of the same `seq` cannot both win. The writer retries a lost write up to three times.
+Roym has no single order record. A deal is the record chain above, and the booking that follows it. The quote author's node is the only writer of the booking. Every other node reads the signed snapshots of that writer. Each snapshot has a number `seq` that counts up from 1. A snapshot is written with the create fence of the data layer, so two writers of the same `seq` cannot both win. The writer retries a lost write up to three times.
 
-The booking opens on the provider's node once the consumer has accepted. When the consumer's `agreement-receipt` card is filed there and the quote has not expired, the node does three things on its own. It claims a seat or a decision (see below). It opens the booking. It countersigns the agreement. This happens when `transaction.sync` runs on the provider's node, for example when the provider opens the conversation in the Hub. The provider can also accept by hand with `agreement.accept`. A quote that names a slot is booked by the acceptance of the consumer. The provider cannot accept such a quote before the consumer.
+The booking opens on the quote author's node once the counterparty has accepted. When the counterparty's `agreement-receipt` card is filed there and the quote has not expired, the node does three things on its own. It claims a seat or a decision (see below). It opens the booking. It countersigns the agreement. This happens when `transaction.sync` runs on the quote author's node, for example when the quote author opens the conversation in the Hub. The quote author can also accept by hand with `agreement.accept`. A quote that names a slot is booked by the acceptance of the counterparty. The quote author cannot accept such a quote before the counterparty.
 
 ```mermaid
 stateDiagram-v2
@@ -1216,9 +1216,9 @@ stateDiagram-v2
     [*] --> conflict : no seat free
 
     scheduled --> InProgress : booking.start, or the first payment or fulfilment half
-    scheduled --> cancelled : provider cancels, both tracks none
+    scheduled --> cancelled : quote author cancels, both tracks none
     scheduled --> EndedUnconfirmed : track window closes, nothing acknowledged
-    InProgress --> cancelled : provider cancels, both tracks none
+    InProgress --> cancelled : quote author cancels, both tracks none
     InProgress --> completed : payment and fulfilment both acknowledged
     InProgress --> EndedUnconfirmed : track window closes, not both acknowledged
 
@@ -1228,103 +1228,103 @@ stateDiagram-v2
     EndedUnconfirmed --> [*]
 ```
 
-The six states are `scheduled`, `in-progress`, `completed`, `cancelled`, `conflict`, and `ended-unconfirmed`. The last four are final. A booking opens as `scheduled`, or as `conflict` when no seat is free. A `conflict` booking carries the reason `slot-taken` or `slot-unavailable`. In that case the provider's node does not countersign the agreement.
+The six states are `scheduled`, `in-progress`, `completed`, `cancelled`, `conflict`, and `ended-unconfirmed`. The last four are final. A booking opens as `scheduled`, or as `conflict` when no seat is free. A `conflict` booking carries the reason `slot-taken` or `slot-unavailable`. In that case the quote author's node does not countersign the agreement.
 
 **Two tracks.** Payment and fulfilment are two separate tracks. They are not states of the booking. Each track is `none`, `claimed`, `acknowledged`, or `unconfirmed`. Both parties can write to both tracks.
 
 | Track | Who makes the claim | Who acknowledges |
 |---|---|---|
-| Payment | The consumer says they paid (`payment-acknowledgement`). | The provider confirms they received the payment (`payment-acknowledgement`). |
-| Fulfilment | The provider says the work is done (`fulfilment-receipt`). | The consumer confirms the work is done (`fulfilment-receipt`). |
+| Payment | The counterparty says they paid (`payment-acknowledgement`). | The quote author confirms they received the payment (`payment-acknowledgement`). |
+| Fulfilment | The quote author says the work is done (`fulfilment-receipt`). | The counterparty confirms the work is done (`fulfilment-receipt`). |
 
 Money moves outside Roym. Roym records what each side says and cannot confirm that a payment happened. The quote says whether payment is due before or after the work. That term only decides what the Hub suggests next. It never blocks a step.
 
 The rules of the booking:
 
-- **Against interest.** A statement that goes against the interest of the person who signs it moves the track to `acknowledged` at once: the provider's payment half, and the consumer's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is `acknowledged` or `unconfirmed` does not change again. A repeated statement changes nothing.
-- **First half.** The first payment or fulfilment half moves `scheduled` to `in-progress`. The provider can also move it with `booking.start`.
+- **Against interest.** A statement that goes against the interest of the person who signs it moves the track to `acknowledged` at once: the quote author's payment half, and the counterparty's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is `acknowledged` or `unconfirmed` does not change again. A repeated statement changes nothing.
+- **First half.** The first payment or fulfilment half moves `scheduled` to `in-progress`. The quote author can also move it with `booking.start`.
 - **Completed.** The booking is `completed` only when both tracks are `acknowledged`.
 - **Track window.** Each track stays open for 30 days after the end of the quote's schedule. With no schedule, it is 30 days after the booking opens. After that, a track that is `none` or `claimed` becomes `unconfirmed`. When both tracks are final and not both are `acknowledged`, the booking is `ended-unconfirmed`. It holds whatever claims exist.
-- **Cancel.** Only the provider can cancel, with `booking.cancel` and a reason. It is possible only while both tracks are `none`. A consumer asks in the conversation. A cancel frees the claimed seat.
+- **Cancel.** Only the quote author can cancel, with `booking.cancel` and a reason. It is possible only while both tracks are `none`. A counterparty asks in the conversation. A cancel frees the claimed seat.
 
-**Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The provider's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the booking is `conflict` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result. The provider's node is the only writer of a booking, so a race is two requests that reach one writer. The code names the two outcomes `AlreadyDecided` and `SlotTaken`. The signed `booking-progress` snapshot writes the second one as `slot-taken`.
+**Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The quote author's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the booking is `conflict` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result. The quote author's node is the only writer of a booking, so a race is two requests that reach one writer. The code names the two outcomes `AlreadyDecided` and `SlotTaken`. The signed `booking-progress` snapshot writes the second one as `slot-taken`.
 
-**Listing and message rules.** The catalog saves the whole listing with `put`, so the last write wins for the listing. Each version is also kept in a history collection. The catalog is provider-owned. A message log is append-only. An entry that is already stored is ignored. Messages are immutable once sent.
+**Listing and message rules.** The catalog saves the whole listing with `put`, so the last write wins for the listing. Each version is also kept in a history collection. The listing owner owns the catalog. A message log is append-only. An entry that is already stored is ignored. Messages are immutable once sent.
 
-> **Envisioned.** Not built yet. A dispute workflow, a refund, a review of a completed booking and a cancel by the consumer. Today the cancellation terms, the refund terms, and the dispute path are text in the agreed terms, and the Roym `directory` settings carry a dispute path as text. A rule that the provider wins a cancel from the consumer at the same instant needs a consumer cancel first. That rule would say: a provider action beats a same-instant consumer action, and otherwise the first request wins, because the provider has operational authority over their service. Today the nearest rule is the agreement decision.
+> **Envisioned.** Not built yet. A dispute workflow, a refund, a review of a completed booking and a cancel by the counterparty. Today the cancellation terms, the refund terms, and the dispute path are text in the agreed terms, and the Roym `directory` settings carry a dispute path as text. A rule that the quote author wins a cancel from the counterparty at the same instant needs a counterparty cancel first. That rule would say: a quote author action beats a same-instant counterparty action, and otherwise the first request wins, because the quote author has operational authority over their service. Today the nearest rule is the agreement decision.
 
-#### Consumer Transaction Flow
+#### Counterparty Transaction Flow
 
-The consumer's node does the search. It talks to the SynOrg directories that the person chose, and to the provider's node only through the conversation, which carries the cards.
+The searcher's node does the search. It talks to the SynOrg directories that the person chose, and to the listing owner's node only through the conversation, which carries the cards.
 
 ```mermaid
 sequenceDiagram
-    actor Consumer
-    participant CN as Consumer's node
+    actor Counterparty
+    participant CN as Counterparty's node
     participant DIR as SynOrg directory
-    participant PN as Provider's node
-    actor Provider
+    participant PN as Quote author's node
+    actor QuoteAuthor as Quote author
 
-    Consumer->>CN: search for a service
+    Counterparty->>CN: search for a service
     CN->>DIR: directory.search
     DIR-->>CN: hits with signed listings
     CN->>CN: verify each listing, merge hits
-    CN-->>Consumer: verified hits, each with its signed listing
+    CN-->>Counterparty: verified hits, each with its signed listing
 
-    Consumer->>CN: request.set
+    Counterparty->>CN: request.set
     CN->>PN: request card over the conversation
-    Provider->>PN: quote.set with terms, expiry and optional slot
+    QuoteAuthor->>PN: quote.set with terms, expiry and optional slot
     PN->>CN: quote card
-    Consumer->>CN: agreement.accept
-    CN->>PN: agreement-receipt card, consumer half
+    Counterparty->>CN: agreement.accept
+    CN->>PN: agreement-receipt card, counterparty half
     PN->>PN: claim seat or decision, open booking
     PN->>CN: booking-progress card, scheduled
     PN->>PN: countersign
-    PN->>CN: agreement-receipt card, provider half
+    PN->>CN: agreement-receipt card, quote author half
 
     Note over CN,PN: Payment happens outside Roym
-    Provider->>PN: payment.request, optional
+    QuoteAuthor->>PN: payment.request, optional
     PN->>CN: payment-request card
-    Consumer->>CN: payment.acknowledge, the consumer's claim
+    Counterparty->>CN: payment.acknowledge, the counterparty's claim
     CN->>PN: payment-acknowledgement card
-    Provider->>PN: payment.acknowledge, receipt confirmed
+    QuoteAuthor->>PN: payment.acknowledge, receipt confirmed
     PN->>CN: payment-acknowledgement card and booking-progress card
 
-    Provider->>PN: fulfilment.sign, the provider's claim
+    QuoteAuthor->>PN: fulfilment.sign, the quote author's claim
     PN->>CN: fulfilment-receipt card
-    Consumer->>CN: fulfilment.sign, work confirmed
+    Counterparty->>CN: fulfilment.sign, work confirmed
     CN->>PN: fulfilment-receipt card
     PN->>CN: booking-progress card, completed
 ```
 
 Notes on the flow:
 
-- **Search.** The hit carries the signed listing, so the consumer needs no call to the provider's catalog. `catalog` refuses a caller from another node. The consumer's node verifies the listing itself. See [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow).
-- **Request and quote.** `request.set` signs the request and sends it in one step. The provider's node files the card when it runs `transaction.sync`, and the provider answers with `quote.set`.
-- **Agreement.** The consumer accepts the quote with `agreement.accept`. The provider's node decides the booking and countersigns. If the slot is full, it does not countersign, and the booking is `conflict`.
+- **Search.** The hit carries the signed listing, so the searcher needs no call to the listing owner's catalog. `catalog` refuses a caller from another node. The searcher's node verifies the listing itself. See [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow).
+- **Request and quote.** `request.set` signs the request and sends it in one step. The quote author's node files the card when it runs `transaction.sync`, and the quote author answers with `quote.set`.
+- **Agreement.** The counterparty accepts the quote with `agreement.accept`. The quote author's node decides the booking and countersigns. If the slot is full, it does not countersign, and the booking is `conflict`.
 - **Notices.** Each node shows the card in the conversation. No push notification is sent.
-- **Payment.** The provider may send a `payment-request`. The consumer pays outside Roym. Either party then records a `payment-acknowledgement`. The Hub shows a notice that Roym does not see the money move.
-- **Fulfilment.** The booking is complete when the payment track and the fulfilment track are both acknowledged. The consumer's confirmation acknowledges the fulfilment track at once, even if the provider has not claimed the work. It takes effect on the provider's node when the card is filed there.
+- **Payment.** The quote author may send a `payment-request`. The counterparty pays outside Roym. Either party then records a `payment-acknowledgement`. The Hub shows a notice that Roym does not see the money move.
+- **Fulfilment.** The booking is complete when the payment track and the fulfilment track are both acknowledged. The counterparty's confirmation acknowledges the fulfilment track at once, even if the quote author has not claimed the work. It takes effect on the quote author's node when the card is filed there.
 
-> **Envisioned.** Not built yet. A payment through an external gateway: a Stripe `PaymentIntent`, a client secret, a card confirmed with the Stripe SDK and a webhook that marks the booking as paid. Also a review that the consumer submits after the booking. Roym has no gateway code and no review record. See [Payments](#payments) and [Flexible Payment Integration](#3-flexible-payment-integration).
+> **Envisioned.** Not built yet. A payment through an external gateway: a Stripe `PaymentIntent`, a client secret, a card confirmed with the Stripe SDK and a webhook that marks the booking as paid. Also a review that the counterparty submits after the booking. Roym has no gateway code and no review record. See [Payments](#payments) and [Flexible Payment Integration](#3-flexible-payment-integration).
 
 #### Recommendation Algorithm
 
-**Built today.** Roym has no recommendation feature. It has search. A search sends its query to each directory that the person chose. The query can hold text, categories, an area, and filters. Each directory sorts its matching listings by the `issued_at_secs` of the signed record, newest first. Ties go by `listing_id`. The consumer's node then takes hits from the directories in turn, newest first inside each directory. It takes at most 10 hits per directory and 50 per page. No score is computed. A search run is working state. The node deletes runs older than one hour when the next search starts. Beyond those runs, the consumer's node keeps no query history and no list of viewed items. Search ranking is the ordering of the answer to one query. A recommendation would suggest items with no query.
+**Built today.** Roym has no recommendation feature. It has search. A search sends its query to each directory that the person chose. The query can hold text, categories, an area, and filters. Each directory sorts its matching listings by the `issued_at_secs` of the signed record, newest first. Ties go by `listing_id`. The searcher's node then takes hits from the directories in turn, newest first inside each directory. It takes at most 10 hits per directory and 50 per page. No score is computed. A search run is working state. The node deletes runs older than one hour when the next search starts. Beyond those runs, the searcher's node keeps no query history and no list of viewed items. Search ranking is the ordering of the answer to one query. A recommendation would suggest items with no query.
 
 > **Envisioned.** Not built yet. No recommendation, scoring or collaborative-signal code exists. This is the design.
 >
-> Catalog recommendations are **client-side only**. The recommender sends no consumer query data to third parties. A search still sends its query to the directories that the person chose.
+> Catalog recommendations are **client-side only**. The recommender sends no searcher query data to third parties. A search still sends its query to the directories that the person chose.
 >
 > ```
-> score(item, consumer_context) =
->     0.4 × collaborative_signal     // items frequently co-viewed/co-ordered by similar consumers (local cluster only)
->   + 0.3 × semantic_similarity      // embedding distance between item description and consumer's session query history
->   + 0.2 × provider_reputation      // normalized reputation score of the provider
+> score(item, searcher_context) =
+>     0.4 × collaborative_signal     // items frequently co-viewed/co-ordered by similar searchers (local cluster only)
+>   + 0.3 × semantic_similarity      // embedding distance between item description and searcher's session query history
+>   + 0.2 × listing_owner_reputation      // normalized reputation score of the listing owner
 >   + 0.1 × recency                  // freshness of catalog entry
 > ```
 >
-> Consumer session context (query history, viewed items) is kept **only in local app storage**, never transmitted. Collaborative signals are computed from **aggregate anonymized counts** published by the provider substrate. No individual consumer data leaves their device. The reputation design is not frozen, see [Trust & Reputation](#trust--reputation).
+> Searcher session context (query history, viewed items) is kept **only in local app storage**, never transmitted. Collaborative signals are computed from **aggregate anonymized counts** published by the listing owner substrate. No individual searcher data leaves their device. The reputation design is not frozen, see [Trust & Reputation](#trust--reputation).
 
 ### Local Producer-Distributor Mesh
 
@@ -1340,39 +1340,39 @@ Notes on the flow:
 
 ### Cross-Substrate Discovery Flow
 
-**Built today.** Discovery is what the Roym `directory` service does. Each substrate decides for itself what it asks and whom it asks. A provider signs a `listing` record and publishes it to a SynOrg directory that the provider chose (`directory.publish`, or `directory.publish-to-source` from the provider's own node). A SynOrg runs the `directory` service on its own substrate. The directory holds a member list, the listings published to it, and a search index, and it answers from those. It does not forward a query to another directory. `directory.search` accepts any caller, including a stranger. `directory.publish` accepts only a caller whose identity the router has verified.
+**Built today.** Discovery is what the Roym `directory` service does. Each substrate decides for itself what it asks and whom it asks. A listing owner signs a `listing` record and publishes it to a SynOrg directory that the listing owner chose (`directory.publish`, or `directory.publish-to-source` from the listing owner's own node). A SynOrg runs the `directory` service on its own substrate. The directory holds a member list, the listings published to it, and a search index, and it answers from those. It does not forward a query to another directory. `directory.search` accepts any caller, including a stranger. `directory.publish` accepts only a caller whose identity the router has verified.
 
-A consumer's own node runs the search. It keeps a list of up to 8 directories that the person added. The Hub starts a search run on its own node. For each directory the Hub asks the node to send `directory.search`. The node reports a limit of 3 requests at the same time, and the Hub follows it. The node does not enforce that limit. The node has its own limit of `max_concurrent_guest_http_per_service` requests at the same time for each service (default 4). If the node is busy, it refuses to start a request, and the Hub retries that directory once. The node verifies the signed envelope of every listing itself. A directory's own answer never counts as verification. The node keeps hits that fail verification apart from the others. It merges the verified hits. It takes one hit from each directory in turn, with at most 10 hits per directory and 50 per page. The node deletes search runs older than one hour when the next search starts. It keeps no index cache.
+A searcher's own node runs the search. It keeps a list of up to 8 directories that the person added. The Hub starts a search run on its own node. For each directory the Hub asks the node to send `directory.search`. The node reports a limit of 3 requests at the same time, and the Hub follows it. The node does not enforce that limit. The node has its own limit of `max_concurrent_guest_http_per_service` requests at the same time for each service (default 4). If the node is busy, it refuses to start a request, and the Hub retries that directory once. The node verifies the signed envelope of every listing itself. A directory's own answer never counts as verification. The node keeps hits that fail verification apart from the others. It merges the verified hits. It takes one hit from each directory in turn, with at most 10 hits per directory and 50 per page. The node deletes search runs older than one hour when the next search starts. It keeps no index cache.
 
 ```mermaid
 flowchart TD
     subgraph REGION_A["Region A (e.g. Mumbai)"]
-        SA1[Provider substrate A1]
-        SA2[Provider substrate A2]
+        SA1[Listing owner substrate A1]
+        SA2[Listing owner substrate A2]
     end
 
     subgraph REGION_B["Region B (e.g. Pune)"]
-        SB1[Provider substrate B1]
+        SB1[Listing owner substrate B1]
     end
 
     DIR_A[SynOrg directory chosen by A1 and A2]
     DIR_B[SynOrg directory chosen by B1]
-    CONSUMER3[Consumer's own node]
+    SEARCHER_NODE[Searcher's own node]
 
     SA1 -->|"publish signed listing"| DIR_A
     SA2 -->|"publish signed listing"| DIR_A
     SB1 -->|"publish signed listing"| DIR_B
 
-    CONSUMER3 -->|"directory.search"| DIR_A
-    CONSUMER3 -->|"directory.search"| DIR_B
-    DIR_A -->|"signed listings"| CONSUMER3
-    DIR_B -->|"signed listings"| CONSUMER3
-    CONSUMER3 --> VERIFY[Verify each listing, then merge]
+    SEARCHER_NODE -->|"directory.search"| DIR_A
+    SEARCHER_NODE -->|"directory.search"| DIR_B
+    DIR_A -->|"signed listings"| SEARCHER_NODE
+    DIR_B -->|"signed listings"| SEARCHER_NODE
+    SEARCHER_NODE --> VERIFY[Verify each listing, then merge]
 ```
 
-An aggregator is a SynOrg `directory` service that gathers the listings of many providers. The `directory` service has a client half on every installation. So any node keeps its own list of directories and chooses which of them to query. This holds for a consumer's node and for a SynOrg's node.
+An aggregator is a SynOrg `directory` service that gathers the listings of many listing owners. The `directory` service has a client half on every installation. So any node keeps its own list of directories and chooses which of them to query. This holds for a searcher's node and for a SynOrg's node.
 
-> **Envisioned.** Not built yet. Today a directory does not query other directories. Envisioned: federation between aggregators, and an aggregator that proxies a query to other aggregators. Also Envisioned, as options and not the plan, are leaf index shards and tag-routed discovery ([P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics)). In leaf index shards, a protocol Routing Schema and rendezvous hashing place each signed Publication. The consumer keeps a local index cache (see [Discovery & Matching](#discovery--matching)).
+> **Envisioned.** Not built yet. Today a directory does not query other directories. Envisioned: federation between aggregators, and an aggregator that proxies a query to other aggregators. Also Envisioned, as options and not the plan, are leaf index shards and tag-routed discovery ([P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics)). In leaf index shards, a protocol Routing Schema and rendezvous hashing place each signed Publication. The searcher keeps a local index cache (see [Discovery & Matching](#discovery--matching)).
 
 ### Minimum Federation Contract
 
@@ -1386,22 +1386,22 @@ A third-party SynApp is federation-compatible if it implements:
 
 > **Envisioned.** Not built yet. Today Roym has no `ReputationRecord`, and the reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). Also Envisioned: an identity document in the DHT, a generic archive format for third-party SynApps, and one check of every record against `RECORD_TYPES` before the verifiers run. Also Envisioned: a shared Routing Schema that places each signed record (see the Envisioned note above).
 
-No central coordinator is required. These contracts are based on convention, and schema validation enforces them. Each Roym verifier that accepts a record from another party checks that the record has the type and version it expects, and refuses any other. Code that re-reads a record this node signed itself does not check the type again. The table `RECORD_TYPES` lists the twelve record types and their versions. The code does not read this table when it verifies. The `booking-progress` record is signed by the provider's service and is not in the table.
+No central coordinator is required. These contracts are based on convention, and schema validation enforces them. Each Roym verifier that accepts a record from another party checks that the record has the type and version it expects, and refuses any other. Code that re-reads a record this node signed itself does not check the type again. The table `RECORD_TYPES` lists the twelve record types and their versions. The code does not read this table when it verifies. The `booking-progress` record is signed by the listing owner's service and is not in the table.
 
 
 ---
 
-## Consumer Experience Architecture
+## Participant Experience Architecture
 
-### Consumer App Architecture
+### Participant App Architecture
 
-**Built today.** The consumer app is the Roym Hub, a web UI written in TypeScript and built with Vite. The `web` service serves it from the person's own substrate, so the person opens it in a browser. Each consumer runs their own substrate ("Option A" below). The Hub has no native shell, no Tauri project, and no mobile project.
+**Built today.** The participant app is the Roym Hub, a web UI written in TypeScript and built with Vite. The `web` service serves it from the person's own substrate, so the person opens it in a browser. Each participant runs their own substrate ("Option A" below). The Hub has no native shell, no Tauri project, and no mobile project.
 
 The Hub holds little state. It keeps the session token in `sessionStorage` and a delegated key in IndexedDB, as a non-extractable WebCrypto key. It has no local database. All data is in the person's own node, in its SQLite databases. The node encrypts them when encryption is enabled. The master key never enters the browser. The Hub logs in with a delegated key: it signs a challenge from the node's auth service, which has its own origin ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). A short-lived delegation certificate for that key comes from `roymctl session delegate`.
 
 The Hub does no message crypto. Message encryption and the key ratchet run in the `conversation` service of the substrate, with `vodozemac` ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). There is no `libsignal`.
 
-The Hub talks to its own node only. It sends JSON-RPC 2.0 over HTTP `POST /rpc` with the session token as a Bearer header. The node talks to the provider's node with the route preamble on an Iroh stream. Node-to-node calls do not use WebRTC today. Separately, a browser can reach a node through the WebRTC bootstrap page. That page registers a service worker and carries the page's HTTP requests over a WebRTC data channel. This path is tested with a sample web app, not with the Hub.
+The Hub talks to its own node only. It sends JSON-RPC 2.0 over HTTP `POST /rpc` with the session token as a Bearer header. The node talks to the other participant's node with the route preamble on an Iroh stream. Node-to-node calls do not use WebRTC today. Separately, a browser can reach a node through the WebRTC bootstrap page. That page registers a service worker and carries the page's HTTP requests over a WebRTC data channel. This path is tested with a sample web app, not with the Hub.
 
 ```mermaid
 flowchart TD
@@ -1419,26 +1419,26 @@ flowchart TD
     end
 
     AUTH[Node auth service, own origin]
-    PROVIDER_NODE[Provider's substrate]
+    PARTICIPANT_NODE[Participant's substrate]
 
     UI -->|"JSON-RPC 2.0, HTTP POST /rpc, Bearer token"| GW
     UI -->|"login: signed challenge"| AUTH
     GW --> WEB --> SERVICES
     SERVICES --> CRYPTO
     SERVICES --> DATA
-    SERVICES -->|"route preamble over Iroh"| PROVIDER_NODE
+    SERVICES -->|"route preamble over Iroh"| PARTICIPANT_NODE
 
     style BROWSER fill:#D6E4F0,stroke:#2E75B6
     style OWN_NODE fill:#E2EFDA,stroke:#548235
 ```
 
-**Consumer identity options.** Option A is built. Options B and C are Envisioned.
+**Participant identity options.** Option A is built. Options B and C are Envisioned.
 
-- **Option A: self-hosted substrate on the person's own machine.** Every Roym participant runs a substrate. The consumer's own node holds the consumer's data and runs the search.
+- **Option A: self-hosted substrate on the person's own machine.** Every Roym participant runs a substrate. The participant's own node holds the participant's data and runs the search.
 
 Today a substrate can hold a delegated instance key for a member it hosts, and Roym has export and import. Every Hub method that `web` forwards, except `profile.policy`, needs an owner session. `session.whoami` is answered without a session.
 
-> **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the consumer, and the consumer can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned.
+> **Envisioned.** Not built yet. Option B: a trusted aggregator hosts the participant, and the participant can migrate. Option C: a guest can browse with no account and no history. A substrate on a phone is also Envisioned.
 
 > **Envisioned.** Not built yet. The Hub runs in a browser today. Envisioned: a Tauri desktop app and a native mobile app. Also Envisioned: a native shell with a WebView that loads the UIs of other SynApps, and native crypto bindings. Also Envisioned: an FFI connection manager, a client-side SQLite or CoreData store, and a WebSocket link from the client. Today the Hub is Roym's own fixed screens. The `web` service declares a `/ws` route, but its handlers do nothing. The mobile case is in [Phase 7](#phase-7-edge-expansion).
 
@@ -1446,11 +1446,11 @@ Today a substrate can hold a delegated instance key for a member it hosts, and R
 
 ## Observability Architecture
 
-**Built today.** The substrate gives operators and developers these signals: structured log events, a plain-text health endpoint, a JSON snapshot of in-memory metrics, and health polling with alerts for apps that the control plane manages. The provider-facing part is not built: the plain-language status page, the `health-narrator` component, and the tiered stack. Each block of that design is marked Envisioned. Text without a marker is built.
+**Built today.** The substrate gives operators and developers these signals: structured log events, a plain-text health endpoint, a JSON snapshot of in-memory metrics, and health polling with alerts for apps that the control plane manages. The owner-facing part is not built: the plain-language status page, the `health-narrator` component, and the tiered stack. Each block of that design is marked Envisioned. Text without a marker is built.
 
 ### Design Philosophy
 
-Observability in Syneroym is meant for two audiences: **non-technical providers** (business health) and **support staff/developers** (technical diagnostics). Today only the second audience has signals. The provider-facing design is in [Provider-Facing Observability](#provider-facing-observability).
+Observability in Syneroym is meant for two audiences: **non-technical owners** (business health) and **support staff/developers** (technical diagnostics). Today only the second audience has signals. The owner-facing design is in [Owner-Facing Observability](#owner-facing-observability).
 
 The substrate provides **instrumentation primitives, not bundled observability stacks**. It writes logs as JSON when configured to, and serves metrics as a JSON snapshot on a pull endpoint. No external observability service is required to operate a substrate. Routing signals to Prometheus, VictoriaMetrics or an OTLP collector is Envisioned.
 
@@ -1482,7 +1482,7 @@ Alerts live in an alert store, the SQLite table `alerts`. `roymctl` keeps it in 
 
 The alert kinds are `SubstrateUnreachable`, `InstanceNotRunning`, `ProbeFailing`, `CertificateNearExpiry`, `CertificateExpired`, `SupervisorSuperseded`, `RemediationExhausted`, `BindingConflict`, `PlacementChangeRefused`, `OrphanedService`, `VaultLocked`, `InstanceRevoked`, `RotationRestartPending`, `DeliveryExhausted`, `ScheduledRunFailed`, and `AppIdentityMismatch`. See [LFC-MGT](#lfc-mgt-synapp-lifecycle-management-design).
 
-### Provider-Facing Observability
+### Owner-Facing Observability
 
 > **Envisioned.** Not built yet. Today there is no `health-narrator`, no status page, no `HealthState`, no diagnostic bundle, no ring buffer, no notification dispatcher and no `syneroym observability enable` command. The signals above are what exists.
 
@@ -1498,7 +1498,7 @@ The Phase 4 design [`[ADV-OBS]`](#adv-obs-observability-enhancements) is a secon
 
 #### The `health-narrator` Component
 
-The translation layer between raw instrumentation and what the provider sees. It is a lightweight WASM component deployed as part of the substrate core. It does these things:
+The translation layer between raw instrumentation and what the owner sees. It is a lightweight WASM component deployed as part of the substrate core. It does these things:
 
 - Subscribes to the substrate event stream
 - Keeps a rolling 7-day **plain-language event timeline** in SQLite. These are human-readable records that it makes from structured log events with templates (e.g. *"Order #47 confirmed"*, *"Connection to relay lost"*)
@@ -1506,7 +1506,7 @@ The translation layer between raw instrumentation and what the provider sees. It
 - Sends proactive alerts via the notification dispatcher when health degrades
 - Generates **diagnostic bundles** on demand: a signed, sanitized snapshot of recent timeline events, metric snapshots, substrate version, and configuration. It is formatted to pass to support staff
 
-#### Provider-Facing Status UI
+#### Owner-Facing Status UI
 
 Built into the substrate's own HTTP server as a static HTML page (assets bundled into the binary, no external process). Reached at the `/admin` path. Shows:
 
@@ -1514,7 +1514,7 @@ Built into the substrate's own HTTP server as a static HTML page (assets bundled
 - Last booking time and today's order counts — business-level signals, not technical ones
 - Three plain-language health indicators: Connection / Payments / Sync
 - Proactive alert banners with plain-language explanations and suggested actions
-- A **Get Help** button that generates and sends a diagnostic bundle to the provider's support contact through the substrate messaging layer. It needs one tap and no technical knowledge
+- A **Get Help** button that generates and sends a diagnostic bundle to the owner's support contact through the substrate messaging layer. It needs one tap and no technical knowledge
 
 ```mermaid
 flowchart TD
@@ -1529,12 +1529,12 @@ flowchart TD
         Diagnostic bundle generation"]
 
         HTTP["Built-in HTTP Server
-        /admin  → Provider status UI
+        /admin  → Owner status UI
         /health → Structured JSON API
         /metrics → JSON metrics snapshot"]
     end
 
-    subgraph PROVIDER_UI["Provider Experience"]
+    subgraph OWNER_UI["Owner Experience"]
         UI["Status Screen
         Shop open or closed
         Connection · Payments · Sync
@@ -1555,7 +1555,7 @@ flowchart TD
     HELP -->|diagnostic bundle over substrate messaging| AGG
 
     style SUBSTRATE fill:#f0f4f8,stroke:#1F4E79
-    style PROVIDER_UI fill:#E2EFDA,stroke:#548235
+    style OWNER_UI fill:#E2EFDA,stroke:#548235
     style SUPPORT fill:#FCE4D6,stroke:#C55A11
 ```
 
@@ -1573,9 +1573,9 @@ Today there is one level: the instrumentation, endpoints, and logs in [Instrumen
 
 **Bundled OCI stack (Tier 2+, disabled by default):** Grafana OSS + VictoriaMetrics + Loki + Promtail. All single binaries, self-hosted, low-resource. Enabled via `syneroym observability enable`. Pre-built Syneroym dashboard JSON for core substrate and SynApp metrics is set up automatically on enable.
 
-**Aggregator as support console:** The aggregator's Grafana instance is the primary diagnostic tool for support staff. Diagnostic bundles from managed providers arrive via substrate messaging as structured reports. Deeper diagnostics can be pulled from any managed node with provider consent, enforced by access-control policy.
+**Aggregator as support console:** The aggregator's Grafana instance is the primary diagnostic tool for support staff. Diagnostic bundles from managed owners arrive via substrate messaging as structured reports. Deeper diagnostics can be pulled from any managed node with owner consent, enforced by access-control policy.
 
-**Tier 1 under aggregator:** A mobile or RPi node operating under an aggregator forwards its metrics scrape endpoint and log stream to the aggregator's bundled stack. The provider gets full dashboard visibility via the aggregator without running any stack locally.
+**Tier 1 under aggregator:** A mobile or RPi node operating under an aggregator forwards its metrics scrape endpoint and log stream to the aggregator's bundled stack. The owner gets full dashboard visibility via the aggregator without running any stack locally.
 
 ### Simulation Testing and Replay Validation
 
@@ -1589,7 +1589,7 @@ The substrate gets a **multi-node simulation harness** for development and CI:
 - Property-based tests (`proptest`) verify outbox replay is idempotent for arbitrary request orderings and retries
 - Simulation output carries the same `trace_id` correlation used in production, so failures are immediately diagnosable from the trace
 
-The harness is the primary validation tool for offline and reconnect behavior before it reaches a real provider's device.
+The harness is the primary validation tool for offline and reconnect behavior before it reaches a real owner's device.
 
 ## Security Architecture
 
@@ -1611,7 +1611,7 @@ flowchart TD
 
     subgraph AT_REST["Data at Rest"]
         R1[Service database: SQLCipher under a per-service key when storage.encryption is on. Secrets: AES-256-GCM vault rows]
-        R2[Replicated backups: encrypted with provider key before upload. Envisioned]
+        R2[Replicated backups: encrypted with owner key before upload. Envisioned]
         R3[Blob store: content-addressed optionally encrypted]
     end
 ```
@@ -1739,17 +1739,17 @@ This section lists the design decisions for the open items of the architecture, 
 | 1 | Migration protocol | Roym archive: encrypted under a recovery key, with person-signed service manifests (`roymctl roym backup`). A generic SynApp export (SQLite snapshot, blob store, App Spec) is Envisioned. | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) | Built. The generic export is Envisioned. |
 | 2 | Backup mechanism | Roym archive on demand. Continuous replication and S3-compatible backups are Envisioned: [PLT-RED](#plt-red-service-redundancy) | [SynApp Packaging & API Pipeline](#synapp-packaging--api-pipeline) | Built. Replication and S3-compatible backups are Envisioned. |
 | 3 | Storage conflict model | Single writer task per service database (SQLite); write rules per record type in the Roym services, not CRDT merge | [Storage & Write Arbitration](#storage--write-arbitration) | Built |
-| 4 | Conflict resolution rules per entity type | Write rules per record type (agreement decision, booking slot, listing, message, policy). The order-state rule that favors provider authority is Envisioned. | [Booking State Machine](#booking-state-machine) (Roym rules) and [Storage & Write Arbitration](#storage--write-arbitration) (substrate primitives and the policy rule) | Built. The order-state rule is Envisioned. |
+| 4 | Conflict resolution rules per entity type | Write rules per record type (agreement decision, booking slot, listing, message, policy). The order-state rule that favors quote author authority is Envisioned. | [Booking State Machine](#booking-state-machine) (Roym rules) and [Storage & Write Arbitration](#storage--write-arbitration) (substrate primitives and the policy rule) | Built. The order-state rule is Envisioned. |
 | 5 | Vouching mechanics and weighting | Candidate design, not final: signed VouchRecord; weight = `base × 0.5^hops`; max depth 3; stake requirement for high-weight vouches. The reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). | [Trust & Reputation](#trust--reputation) | Envisioned |
-| 6 | Credential format and verification | Built: a SynOrg issues a signed Roym `membership-credential` record and withdraws it with a signed revocation. Envisioned: W3C VC Data Model 2.0; the `ssi` library for issuance/verification; consumer configures trusted issuers. | [Trust & Reputation](#trust--reputation) | Built in part. W3C VC Data Model 2.0 with `ssi` is Envisioned. |
+| 6 | Credential format and verification | Built: a SynOrg issues a signed Roym `membership-credential` record and withdraws it with a signed revocation. Envisioned: W3C VC Data Model 2.0; the `ssi` library for issuance/verification; searcher configures trusted issuers. | [Trust & Reputation](#trust--reputation) | Built in part. W3C VC Data Model 2.0 with `ssi` is Envisioned. |
 | 7 | Reputation portability mechanism | Candidate design, not final: both-party signed `ReputationRecord` anchored in DHT; portable by republishing under same identity key. The reputation design is not frozen: see [P2P-REP](#p2p-rep-satisfaction-signal-mechanics). | [Trust & Reputation](#trust--reputation) | Envisioned |
 | 8 | Propagation protocol (community moderation) | Built: a SynOrg signs `member.suspend` and `member.lift` decisions about its own members. Envisioned: signed block/trust lists; propagated via DHT with decay weight; aggregators are authoritative for their cluster. | [Trust & Reputation](#trust--reputation) | Built in part. Propagation by DHT is Envisioned. |
 | 9 | Anti-gaming mechanisms | Bayesian reputation average; ad boost cap (see row 15); TF-IDF keyword scoring; review bomb detection | [Trust & Reputation](#trust--reputation) | Envisioned |
 | 10 | Sybil resistance | Built: rate limits on first contact (default 3 in 24 hours for one sender) and on publication to a directory (default 20 in 24 hours). Envisioned: stake requirement for vouching; rate limiting of vouches; both-party signature on reputation records. | [Trust & Reputation](#trust--reputation) | Built in part. Stake, vouch limits, and reputation signatures are Envisioned. |
 | 11 | Payment rails and escrow | Built: out-of-band settlement. Roym records a payment that happens outside the system, with signed `payment-request` and `payment-acknowledgement` records, and does not process it. Envisioned: UPI redirection; pluggable adapter pattern extends it without rework; escrow. | [Payments](#payments) | Built in part. UPI redirection, adapters, and escrow are Envisioned. |
 | 12 | Coin and mutual credit mechanics | Bilateral signed IOU ledger and Syneroym internal ledger token, sequenced after core payments; no blockchain; both need legal review before launch | [Payments](#payments) | Envisioned |
-| 13 | Recommendation algorithm | Client-side scoring formula; no consumer data transmitted; collaborative signals from anonymized aggregates. It suggests items without a query, and is separate from search ranking (row 15). | [Recommendation Algorithm](#recommendation-algorithm) | Envisioned |
-| 14 | Discovery partitioning and consistency model | Built: the consumer's node asks the directories that the person chose, merges the answers, and verifies every listing itself. Envisioned, as one option and not the plan: publications placed via protocol routing schema + rendezvous hashing onto leaf index shards; cache-only indexes. | [Discovery & Matching](#discovery--matching) | Built in part. Leaf index shards are Envisioned. |
+| 13 | Recommendation algorithm | Client-side scoring formula; no participant data transmitted; collaborative signals from anonymized aggregates. It suggests items without a query, and is separate from search ranking (row 15). | [Recommendation Algorithm](#recommendation-algorithm) | Envisioned |
+| 14 | Discovery partitioning and consistency model | Built: the searcher's node asks the directories that the person chose, merges the answers, and verifies every listing itself. Envisioned, as one option and not the plan: publications placed via protocol routing schema + rendezvous hashing onto leaf index shards; cache-only indexes. | [Discovery & Matching](#discovery--matching) | Built in part. Leaf index shards are Envisioned. |
 | 15 | Discovery ranking algorithm | Transparent weighted formula (5 signals); ad boost capped at 0.3; formula published open-source. Today there is no formula: a directory orders hits by the time of issue, newest first. | [Discovery & Matching](#discovery--matching) | Envisioned |
 | 16 | Decentralized bootstrap fallback | Built: `pkarr` signed packets carry the signed endpoint record of each node to the BitTorrent DHT (BEP 0044), and the community registry is asked first. Envisioned: the bootstrap server mirrors its relay list as `pkarr` signed packets on the BitTorrent DHT; 24h local cache; community governance key. | [Bootstrap Server & DHT Fallback](#bootstrap-server--dht-fallback) | Built in part. The relay list mirror is Envisioned. |
 | 17 | Ad auction mechanics and placement limits | Ad boost is a float on the Publication, from 0.0 up to the cap in row 15; no auction at first; elevated placement within local cluster only | [Discovery & Matching](#discovery--matching) | Envisioned |
@@ -1912,7 +1912,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 
 > **Envisioned.** Not built yet. The rows marked Envisioned name libraries that are in no `Cargo.toml` or `package.json` today.
 
-### Consumer Frontend
+### Participant Frontend
 
 | Concern | Technology |
 |---|---|
@@ -2634,7 +2634,7 @@ This part gives design details for the features in the [Feature Specification](s
     *   **Crash Consistency:** If a deployment fails midway, the journal record stays `APPLYING` or `DEGRADED`. `roymctl app reconcile` computes and prints the actions that are still to be done. When the app is `ACTIVE` and the caller gives a manifest, it prints the difference between the manifest and the active deployment. Running `roymctl app deploy` again with the same plan resumes the record and retries only the services that are not yet applied. Nothing rolls a deployment back, because rolling back a stateful service is itself destructive ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md) §5). No code writes `ROLLING_BACK` or `ROLLED_BACK`. The manifest check refuses `replicas > 1` on a service that declares a config `schema`. It treats that field as a sign of a service that holds state, because each member has its own database and the data would split. It cannot see a service that uses the data layer without a `schema`. The check also refuses a `sharding_strategy` on a service with one member, and `range_sharding`.
 *   **Master Anchor Resolution:**
     *   **Design:** The router tells the Master Key from the Temporary Key. When a connection carries a delegation certificate, the router resolves the Master Anchor of the certificate's master. The Master Anchor is a signed record. It lists the temporary keys that the master has revoked (`revoked_keys`). The router asks the community registry first and the Mainline DHT second. The router refuses the connection if the temporary key is on that list. It also refuses the connection if the anchor lookup fails or takes more than 5 seconds. The Master Anchor is a deny list, not a list of allowed keys. An anchor that the registry returns must carry the master's signature and be less than 24 hours old. See [Identity Resolution & Revocation](#identity-resolution--revocation-the-master-anchor).
-*   **Finding Providers and Listings:**
+*   **Finding Listing Owners and Listings:**
     *   **Design:** Discovery is what the Roym `directory` service does today. A node keeps its own list of directories (at most 8) and queries those. See [P2P-DSC](#p2p-dsc-tag-routed-discovery-routing-mechanics) for what is built and what is not.
 
 ### [TOP-ROB] Network & Connection Robustness
@@ -2753,7 +2753,7 @@ A platform-managed persistent store that `SynSvcs` use through typed host functi
     *   **Design:** The app-context registry maps logical names (for example, `org-service`) to explicit service IDs inside a `SynApp Instance`. Resolution order is: `manifest pin → app-context registry/cache`. For an app known only by its DID, the signed topology document of [ADR-0022](decisions/0022-two-tier-logical-service-discovery.md) is also used (see [LFC-MGT](#lfc-mgt-synapp-lifecycle-management-design)). The app-context step involves **no remote query**: its entries are pushed into the service's own configuration and resolved in process ([ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)). The community registry also derives a short alias, `<nickname>-<short hash of the DID>`, from the nickname in the signed endpoint record of a service. That alias is a discovery hint, not a replacement for manifest-pinned dependency resolution.
 *   **Object Service (Blob Store):** 
     *   **Design:** Blob content is addressed by SHA-256 hash. The node sets one blob quota in its `storage.blob_store` configuration and applies it to each service: a size limit per blob (default 100 MiB) and an optional total per service. Individual services store blob hashes as ordinary fields in structured records.
-    *   **Durability:** The durable backend is configurable: a local directory, or S3-compatible object storage (the optional `aws` Cargo feature). With an S3-compatible backend the provider is responsible for redundancy. Blob durability is never guaranteed by SQLite WAL replication, which would only cover structured record state.
+    *   **Durability:** The durable backend is configurable: a local directory, or S3-compatible object storage (the optional `aws` Cargo feature). With an S3-compatible backend the owner is responsible for redundancy. Blob durability is never guaranteed by SQLite WAL replication, which would only cover structured record state.
 
 > **Envisioned.** Not built yet. Today a service has one state database (`state.db`) on one node. The data layer sets no WAL pragma on `state.db`, so SQLite's default journal mode is in use. Only the per-service queue file `async.db` runs in WAL mode.
 >
@@ -2881,7 +2881,7 @@ Today a service has one database on one node. There is no replica role, no datab
     *   **The Applier (Secondary):** The Secondary receives ordered frame batches and applies them through a SQLite-safe applier path. It must not directly mutate a live SQLite connection's `-wal` or `-shm` files. Acceptable approaches include these. One is to apply frames while the database is closed to readers. Another is to publish read-only snapshots after a verified checkpoint. A third is to use a well-tested SQLite extension/API path that preserves WAL-index invariants. Readers observe a new state only after the applier publishes a consistent snapshot.
 *   **Disaster Recovery:** If live, low-latency replication uses Iroh (the proposal above), periodic full backups and WAL segments are still pushed asynchronously to an external S3-compatible object store. This is done with a library like `wal-backup`. The backups serve cold starts and disaster recovery.
 *   **Pub/Sub Log Replication ([PLT-DAP-04]):** The topic log of the in-process `rumqttd` broker is synchronized to peer nodes. It uses the same Iroh multiplexed-stream, ordered and checksummed frame-shipping primitive as the Database Replication Mechanism above. The payload is MQTT topic-log entries instead of SQLite WAL frames. The transport, ordering, and pull/ack model are shared. This is a redundancy and failover feature for the state of the broker itself. It is exactly parallel to WAL replication for the database of a service. It is **not** what enables cross-node pub/sub access. That already works through the standard RPC/native-dispatch routing to whichever node hosts the target service, the same way cross-node `data-layer` calls do. See [§2 Messaging](#2-messaging-pubsub-and-bidirectional-streaming-plt-dap-04-plt-dap-06).
-*   **Blob Replication:** For deployments with a configured S3-compatible backend, the provider is responsible for blob redundancy — Syneroym does not re-replicate. For pure peer-to-peer deployments (no S3-compatible backend), Syneroym replicates blobs across Substrate nodes under the same `DeploymentPlan` topology. Syneroym verifies that each blob's SHA-256 hash has a valid copy on the configured number of peer nodes. Content-addressing means this needs no ordering or sequence invariants, unlike WAL or pub/sub log replication.
+*   **Blob Replication:** For deployments with a configured S3-compatible backend, the owner is responsible for blob redundancy — Syneroym does not re-replicate. For pure peer-to-peer deployments (no S3-compatible backend), Syneroym replicates blobs across Substrate nodes under the same `DeploymentPlan` topology. Syneroym verifies that each blob's SHA-256 hash has a valid copy on the configured number of peer nodes. Content-addressing means this needs no ordering or sequence invariants, unlike WAL or pub/sub log replication.
 *   **Registry & Coordination Model:** The App Supervisor, not a separate registry service, would act as the authoritative control plane for membership and topology.
     *   **Node States:** Nodes progress through strict states: `ACTIVE` → `SUSPECT` (communication issues) → `QUARANTINED` (no data-plane work/traffic, but management allowed) → `RETIRED`. Quarantine is an App Supervisor decision for a topology epoch, not a local node guess.
     *   **Routing-Level Fencing:** Split-brain mitigation is handled purely at the network/routing layer. When a primary is deposed due to failure, the App Supervisor marks it `QUARANTINED` and propagates this topology update to all clients and routers.
@@ -2965,9 +2965,9 @@ To avoid rigid (and brittle) version matching across a decentralized network, Su
 
 ### [ADV-OBS] Observability enhancements
 
-**Built today.** Components count requests and errors through the `metrics` facade. A lock-based in-memory recorder holds the counters, gauges, and histograms. The substrate can serve a JSON snapshot of the recorder over HTTP when the metrics endpoint is enabled. The `ObservabilityEngine` sets up logging, installs the recorder, and samples system use once a second. See [Observability Architecture](#observability-architecture) for the signals that exist and for the provider-facing design.
+**Built today.** Components count requests and errors through the `metrics` facade. A lock-based in-memory recorder holds the counters, gauges, and histograms. The substrate can serve a JSON snapshot of the recorder over HTTP when the metrics endpoint is enabled. The `ObservabilityEngine` sets up logging, installs the recorder, and samples system use once a second. See [Observability Architecture](#observability-architecture) for the signals that exist and for the listing owner-facing design.
 
-> **Envisioned.** Not built yet. No `metrics.db`, no channel pipeline, no byte counters per stream and no metrics RPC exist. This design keeps metrics in a SQLite file. The Envisioned design in [Provider-Facing Observability](#provider-facing-observability) keeps recent spans and metric snapshots in memory. The two disagree on where metrics are kept. Neither is built. Today metrics live only in the in-memory recorder. The design below calls its background task the `Metrics Pipeline` so the name does not conflict with the built `ObservabilityEngine`.
+> **Envisioned.** Not built yet. No `metrics.db`, no channel pipeline, no byte counters per stream and no metrics RPC exist. This design keeps metrics in a SQLite file. The Envisioned design in [Owner-Facing Observability](#owner-facing-observability) keeps recent spans and metric snapshots in memory. The two disagree on where metrics are kept. Neither is built. Today metrics live only in the in-memory recorder. The design below calls its background task the `Metrics Pipeline` so the name does not conflict with the built `ObservabilityEngine`.
 
 #### 1. Observability Pipeline & Non-Blocking Emission
 To keep observability from adding latency to the hot paths (WASM execution and Iroh/WebRTC network routing), the metrics pipeline is asynchronous and decoupled:
@@ -2991,7 +2991,7 @@ For multi-hop scenarios and standard data routing, measuring data transfer is im
 The unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md)) controls access to `metrics.db` through standard RPC endpoints:
 *   **Root Capabilities**: The Substrate owner uses an administrative UCAN. Queries then run against `metrics.db` without restrictions.
 *   **Scoped Capabilities**: SynApp/SynSvc owners who call the metrics RPC present a UCAN bound to their identity. The engine automatically adds a `WHERE service_owner_did = ?` clause to the SQL query.
-*   **Data Consumption**: The Metrics Pipeline does not host its own visualizations. Standalone SynApps or dedicated BI tools, acting as external clients, use the metric data. The small provider status page in [Provider-Facing Observability](#provider-facing-observability) is a separate design. It reads the `health-narrator` state, not `metrics.db`.
+*   **Data Consumption**: The Metrics Pipeline does not host its own visualizations. Standalone SynApps or dedicated BI tools, acting as external clients, use the metric data. The small owner status page in [Owner-Facing Observability](#owner-facing-observability) is a separate design. It reads the `health-narrator` state, not `metrics.db`.
 
 ### [ADV-AI] Advanced AI & Agentic Workflows
 
@@ -2999,7 +2999,7 @@ The unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-sc
 
 *   **Local Inference Engine Wrapper (Ollama / Candle):**
     *   **Design:** The substrate provides a lightweight wrapper service that controls the underlying AI engine (for example, **Ollama** as a managed process). The wrapper tells the AI engine to download and install base models. A node-operator-defined allow-list strictly gates this, to prevent bandwidth and storage exhaustion. The wrapper also proxies inference calls from agents to the correct model combination, and the agents do not see this. Alternatively, for tighter integration without external daemons, HuggingFace's **Candle** framework could be embedded directly in a Rust host extension for in-process inference of GGUF models.
-    *   **Hardware Capability Gating & Decoupled Architecture:** Automatic hardware capability checks gate the ability to download, install, and serve models locally (for example, detecting GPU/NPU presence and system RAM capacity). The owner can also set explicit configuration override flags at substrate startup. If the hardware lacks the required capabilities, or the feature is manually disabled, the local inference wrapper is deactivated. The Agent logic (WASM) and LLM Inference (GPU) are fully decoupled. So a node can still run local Concierge Agents and send their raw inference requests through the Universal Proxy to designated remote LLM providers. Alternatively, a node can outsource the entire agent-and-LLM stack remotely. Importantly, these remote fallback endpoints are set explicitly in the proxy agent service configuration. This keeps the core substrate from depending on application-layer discovery mechanisms.
+    *   **Hardware Capability Gating & Decoupled Architecture:** Automatic hardware capability checks gate the ability to download, install, and serve models locally (for example, detecting GPU/NPU presence and system RAM capacity). The owner can also set explicit configuration override flags at substrate startup. If the hardware lacks the required capabilities, or the feature is manually disabled, the local inference wrapper is deactivated. The Agent logic (WASM) and LLM Inference (GPU) are fully decoupled. So a node can still run local Concierge Agents and send their raw inference requests through the Universal Proxy to designated remote LLM listing owners. Alternatively, a node can outsource the entire agent-and-LLM stack remotely. Importantly, these remote fallback endpoints are set explicitly in the proxy agent service configuration. This keeps the core substrate from depending on application-layer discovery mechanisms.
 *   **The Concierge Agent Architecture:**
     *   **Design:** A native WASM `SynSvc` built using **`rig-core`**. Importantly, `rig-core` remains the base for *all* agentic workflows. It provides the core abstractions for communicating with LLMs, generating embeddings, and defining MCP tools in Rust. The different "Architectures" below are simply routing logic built *on top* of `rig-core`'s completion API.
     *   **WASM Component Compilation:** Host socket networking (like `reqwest`) is not allowed. To compile `rig-core` to `wasm32-wasip2` without it, Syneroym implements a custom `SyneroymModel` struct that fulfills `rig-core`'s `CompletionModel` and `EmbeddingModel` traits. This custom implementation routes all LLM requests through the **Universal Proxy's WIT interface** and not over standard HTTP. This keeps the WASM sandbox rules and keeps the full convenience of `rig-core`.
@@ -3043,7 +3043,7 @@ The unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-sc
 
 ### [P2P-DSC] Tag-Routed Discovery Routing Mechanics
 
-**Built today.** Discovery is what the Roym `directory` service does. A SynOrg runs a `directory` service. Providers publish listings to it. Any caller can ask it to search by category, area, text, and filters, because `directory.search` is open on the wire. A consumer's node keeps a list of directories that the person chose, at most 8. It sends the query to each of them directly. It runs at most 3 calls at once, gives each call 2 seconds, and merges the answers round-robin, so no one directory fills the page. The consumer's node verifies every listing itself and does not trust the directory's word. Each client chooses which directories it queries. No node forwards a query for another node. See [Search](roym-integrated-experience-spec.md#search) in the Roym spec.
+**Built today.** Discovery is what the Roym `directory` service does. A SynOrg runs a `directory` service. Listing owners publish listings to it. Any caller can ask it to search by category, area, text, and filters, because `directory.search` is open on the wire. A searcher's node keeps a list of directories that the person chose, at most 8. It sends the query to each of them directly. It runs at most 3 calls at once, gives each call 2 seconds, and merges the answers round-robin, so no one directory fills the page. The searcher's node verifies every listing itself and does not trust the directory's word. Each client chooses which directories it queries. No node forwards a query for another node. See [Search](roym-integrated-experience-spec.md#search) in the Roym spec.
 
 > **Envisioned.** Not built yet. No query carries tags or a hop limit (TTL), and no node forwards a query to its peers. A SynOrg, a directory or an aggregator does not query other directories, so federation between aggregators does not exist. The tag routing below is one option for later. It is not the plan. The leaf index shards in [Discovery & Matching](#discovery--matching) are another option.
 
@@ -3065,10 +3065,10 @@ The unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-sc
     *   `interaction_receipt`: A cryptographic hash pointing to a receipt that both parties signed, each in its own copy (see Independent, Owned Attestation below).
     *   `score`: An integer strictly bounded to `0`, `1`, or `2`.
     *   `note`: An optional, short text description.
-*   **Time-Decay Algorithm:** The app maintains a rolling Exponential Moving Average (EMA). The formula anchors to `1.0`. As signals age past defined thresholds (e.g., 30 days, 90 days), their weight in the EMA computation approaches 0. This pulls the provider's overall score back to `1.0`.
+*   **Time-Decay Algorithm:** The app maintains a rolling Exponential Moving Average (EMA). The formula anchors to `1.0`. As signals age past defined thresholds (e.g., 30 days, 90 days), their weight in the EMA computation approaches 0. This pulls the participant's overall score back to `1.0`.
 *   **Incremental Rolling Summaries:** Instead of recalculating summaries from scratch, the app triggers a background task when it receives a new signal. It updates simple counters (e.g., `total_ratings`, `moving_average`) and maintains 3 small text fields (e.g., `summary_last_30_days`, `summary_all_time`). This bounded approach guarantees O(1) performance for reputation queries.
 *   **Independent, Owned Attestation:** Each party signs and stores its own copy of the `interaction_receipt` in its own single-writer ledger. The receipt is never a jointly-written shared record. Each signature stands alone. A record is complete when both signatures exist. Validity is a check at read time. The check confirms that both independently created, matching signatures exist. It is not a live signing ceremony or a merge.
-*   **Provider-Hosted Presentation:** When Consumer A evaluates Provider B, B's app serves its own single-writer reputation log directly to A. This log is an append-only log of received signals, the same as any other append-only entity. Consumer A's app mathematically verifies the `interaction_receipt` signatures against the network. If valid, Consumer A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
+*   **Participant-Hosted Presentation:** When Participant A evaluates Participant B, B's app serves its own single-writer reputation log directly to A. This log is an append-only log of received signals, the same as any other append-only entity. Participant A's app mathematically verifies the `interaction_receipt` signatures against the network. If valid, Participant A's local AI (`[ADV-AI]`) reads the pre-computed rolling summaries and presents them to the user.
 
 ## Phase 6: High-Level Applications (SynApps)
 
@@ -3089,12 +3089,12 @@ To achieve the "Hybrid Headless Substrate" vision, the Syneroym Hub is designed 
 - **Surface Rendering & Intent Translation:** When a user interacts with a Trusted Room or the Agentic Concierge, the UI just renders the Action Cards or relays raw text/audio to the Substrate's local Rig-core agent. That agent translates the input into API calls.
 
 ### 1. Service Bundling & Sub-Workflow Composition
-*Addresses the Consumer activity of combining multiple services (e.g., Food + Delivery).*
+*Addresses the Participant activity of combining multiple services (e.g., Food + Delivery).*
 
-> **Envisioned.** Not built yet. No Roym service composes services of several providers. The building block exists: a guest service can open a saga, and the substrate walks the compensations backwards when the guest gives up or the deadline of the saga passes ([ADR-0023](decisions/0023-durable-async-primitives.md)).
+> **Envisioned.** Not built yet. No Roym service composes services of several participants. The building block exists: a guest service can open a saga, and the substrate walks the compensations backwards when the guest gives up or the deadline of the saga passes ([ADR-0023](decisions/0023-durable-async-primitives.md)).
 
 **Design Approach:** 
-Syneroym has no central coordinator. To execute distributed sagas across independent providers, we use a loosely coupled "State-Channel" approach. The consumer's local node acts as the orchestrator. It holds a composite intent state machine. When sub-task A (Food prep) signals completion through the messaging layer, the consumer's local node automatically triggers the next state transition, issuing an event to Provider B (Delivery). If a sub-task fails, the consumer's node executes compensating logic (e.g., requesting a refund via Escrow).
+Syneroym has no central coordinator. To execute distributed sagas across independent participants, we use a loosely coupled "State-Channel" approach. The participant's local node acts as the orchestrator. It holds a composite intent state machine. When sub-task A (Food prep) signals completion through the messaging layer, the participant's local node automatically triggers the next state transition, issuing an event to Participant B (Delivery). If a sub-task fails, the participant's node executes compensating logic (e.g., requesting a refund via Escrow).
 
 ### 2. Action Card Architecture
 *Addresses the interactive widgets (Quotes, Payment Requests, Receipts) dropped into Trusted Rooms.*
@@ -3107,14 +3107,14 @@ Roym has seven card types: `request`, `quote`, `agreement-receipt`, `booking-pro
 ### 3. Flexible Payment Integration
 *Addresses integrating external gateways (Stripe/UPI) alongside the internal Mutual Credit ledger.*
 
-**Built today.** Roym does not process payments or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency and method, and it refuses a record that does not. The agreed terms in a quote list the accepted payment methods, the amount, and the currency. The provider sends a `payment-request` card (currency, amount, and an optional note). Either party can send a `payment-acknowledgement` card that says a payment happened, with an optional method and a reference as text. The Hub shows a notice that Roym does not see the money move.
+**Built today.** Roym does not process payments or hold money. It does not check that money moved. It records what each side says. It checks only that a payment record uses the agreed amount, currency and method, and it refuses a record that does not. The agreed terms in a quote list the accepted payment methods, the amount, and the currency. The listing owner sends a `payment-request` card (currency, amount, and an optional note). Either party can send a `payment-acknowledgement` card that says a payment happened, with an optional method and a reference as text. The Hub shows a notice that Roym does not see the money move.
 
 > **Envisioned.** Not built yet. No `PaymentIntent` interface, no payment gateway code and no Dynamic Ledger Network (DLN, the mutual credit ledger) exists.
 
 **Design Approach:** 
 The substrate defines an abstract `PaymentIntent` interface for Invoice Cards. An Invoice Card payload contains an array of acceptable settlement methods.
 - **Native Mutual Credit:** Payload contains the exact DLN multi-sig hash to be counter-signed.
-- **External Gateway:** Payload contains a standard Web2 webhook/checkout URL (e.g., a Stripe session ID or UPI deep link). After the external payment completes, the client submits the resulting receipt token back into the chat as proof. The provider's node verifies the receipt against the external API before updating local state.
+- **External Gateway:** Payload contains a standard Web2 webhook/checkout URL (e.g., a Stripe session ID or UPI deep link). After the external payment completes, the client submits the resulting receipt token back into the chat as proof. The listing owner's node verifies the receipt against the external API before updating local state.
 
 ### 4. Portable Data & Reputation Envelopes
 *Addresses taking service history and reputation across hosting platforms.*
@@ -3124,19 +3124,19 @@ The substrate defines an abstract `PaymentIntent` interface for Invoice Cards. A
 > **Envisioned.** Not built yet. No Verifiable Credential, JSON-LD or IPFS code exists. The import of a service history into a new data homebase, and the proof of reputation to a new Aggregator, are not built.
 
 **Design Approach:**
-Data portability uses standardized Export/Import Envelopes. A provider compiles a user's service history into an archive of Verifiable Credentials (signed JSON-LD) or pkarr-signed IPFS blobs. The user imports this envelope into their new data homebase. When the user interacts with a new Aggregator, the user cryptographically proves their past reputation by submitting these pre-signed blobs. The new node verifies the blobs against the original provider's public key. It does not need to contact the original provider.
+Data portability uses standardized Export/Import Envelopes. A listing owner compiles a user's service history into an archive of Verifiable Credentials (signed JSON-LD) or pkarr-signed IPFS blobs. The user imports this envelope into their new data homebase. When the user interacts with a new Aggregator, the user cryptographically proves their past reputation by submitting these pre-signed blobs. The new node verifies the blobs against the original listing owner's public key. It does not need to contact the original listing owner.
 
 ### 5. Staked Messaging & Spam Deterrence (Digital Stamps)
-*Addresses the Provider activity of paying a refundable stamp to send promotional offers.*
+*Addresses the activity of a listing owner paying a refundable stamp to send promotional offers.*
 
 **Built today.** The spam control is a limit on first contact. A recipient sets how many first-contact attempts one sender may make in a time window. The default is 3 in 24 hours. A recipient can also block a sender. See [Safety and operations](roym-integrated-experience-spec.md#safety-and-operations).
 
 > **Envisioned.** Not built yet. No stamp, lock or slash code exists.
 
 **Design Approach:**
-Without a public blockchain, staking relies on the mutual-credit DLN. A provider starts a "locked" multi-sig transaction representing the micro-credit stamp. This intent is attached to the cold-message payload. 
-- If the consumer accepts the message, they counter-sign the intent, claiming the credit.
-- If the consumer reports it as spam, the consumer signs a "slash" transaction. This destroys the locked credit and creates a signed negative reputation signal. The signal is stored in the relevant participant or provider-hosted reputation log and can be shared with aggregators or peers. It is not written to a global public DHT.
+Without a public blockchain, staking relies on the mutual-credit DLN. A listing owner starts a "locked" multi-sig transaction representing the micro-credit stamp. This intent is attached to the cold-message payload. 
+- If the recipient accepts the message, they counter-sign the intent, claiming the credit.
+- If the recipient reports it as spam, the recipient signs a "slash" transaction. This destroys the locked credit and creates a signed negative reputation signal. The signal is stored in the relevant participant-hosted reputation log and can be shared with aggregators or peers. It is not written to a global public DHT.
 
 ### 6. Decentralized Escrow & Dispute Resolution
 *Addresses the Facilitator activity of holding funds or arbitrating.*
@@ -3144,19 +3144,19 @@ Without a public blockchain, staking relies on the mutual-credit DLN. A provider
 > **Envisioned.** Not built yet. Roym holds no money and runs no escrow. It has no dispute workflow. The agreed terms of a quote carry a dispute path as free text only.
 
 **Design Approach:**
-The designated Facilitator's own single-writer ledger service is the custodian that holds the pending funds/credits. It is not a jointly-written shared ledger. A 2-of-3 Multi-Signature scheme gates release: an Invoice Intent requires signatures from any two of the three parties (Consumer, Provider, Facilitator) before the custodian's single writer executes the release.
-- **Happy Path:** Consumer and Provider both sign the completion state; the custodian releases funds on receiving both.
+The designated Facilitator's own single-writer ledger service is the custodian that holds the pending funds/credits. It is not a jointly-written shared ledger. A 2-of-3 Multi-Signature scheme gates release: an Invoice Intent requires signatures from any two of the three parties (Counterparty, Quote author, Facilitator) before the custodian's single writer executes the release.
+- **Happy Path:** Counterparty and Quote author both sign the completion state; the custodian releases funds on receiving both.
 - **Dispute Path:** If they disagree, the Arbitrator reviews the case off-chain or through chat logs. The Arbitrator signs a final settling transaction together with the winning party. The custodian applies it as an ordinary single-writer state transition. No merge is involved.
 
 ### 7. Aggregator Fuel Quotas
 *Addresses how Aggregators prevent spam when indexing catalogs.*
 
-**Built today.** An aggregator is a SynOrg (Syneroym Organization) `directory` service. It aggregates provider data. The `directory` service limits how often one publisher can call `directory.publish`. The default is 20 in 24 hours, and the limit is a setting of the directory.
+**Built today.** An aggregator is a SynOrg (Syneroym Organization) `directory` service. It aggregates listing owner data. The `directory` service limits how often one publisher can call `directory.publish`. The default is 20 in 24 hours, and the limit is a setting of the directory.
 
 > **Envisioned.** Not built yet. No fuel quota table exists. Federation between aggregators and the proxying of queries to other aggregators are not built.
 
 **Design Approach:**
-In the design, an aggregator is a SynOrg `directory` service. It can federate with other aggregators and proxy queries to them. It uses the same internal SQLite ledger to track API consumption. A provider establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Middleware processes every incoming `directory.publish` or `directory.search` API request. It atomically decrements the fuel quota in the local SQLite DB. It rejects requests when the balance reaches zero. Providers add fuel through standard Flexible Payment integrations.
+In the design, an aggregator is a SynOrg `directory` service. It can federate with other aggregators and proxy queries to them. It uses the same internal SQLite ledger to track API consumption. A listing owner establishes a DID-based session with the Aggregator. The Aggregator maintains an internal table mapping the DID to an integer "fuel quota". Middleware processes every incoming `directory.publish` or `directory.search` API request. It atomically decrements the fuel quota in the local SQLite DB. It rejects requests when the balance reaches zero. Listing owners add fuel through standard Flexible Payment integrations.
 
 ## Phase 7: Edge Expansion
 
@@ -3183,12 +3183,12 @@ In the design, an aggregator is a SynOrg `directory` service. It can federate wi
 | # | Question | Priority | Recommendation / Direction |
 |---|---|---|---|
 | OQ-1 | **DHT implementation choice:** libp2p Kademlia vs BEP 0044. | High | **Resolved: `pkarr` over BEP 0044.** The DHT records are signed `pkarr` packets published to the mainline DHT. There is no libp2p dependency. Iroh stays the peer transport and relay. |
-| OQ-2 | **Consumer identity for non-self-hosters:** SLA and migration. | High | **Delegated device key.** Built today: the person's master key never enters the browser. `roymctl session delegate` makes a temporary key pair and a delegation certificate. The Hub imports them once and keeps the private key in IndexedDB as a non-extractable WebCrypto key ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). Envisioned: encrypted state and keys for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
+| OQ-2 | **Participant identity for non-self-hosters:** SLA and migration. | High | **Delegated device key.** Built today: the person's master key never enters the browser. `roymctl session delegate` makes a temporary key pair and a delegation certificate. The Hub imports them once and keeps the private key in IndexedDB as a non-extractable WebCrypto key ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). Envisioned: encrypted state and keys for multi-device sync, stored as opaque blobs on Syneroym/Aggregator storage. |
 | OQ-3 | **Bootstrap governance:** operations and funding. | High | **Consortium Model.** Major aggregators (e.g., Guilds, Meshes) form a non-profit consortium to share the hosting costs of distributed bootstrap nodes. The DHT fallback ensures the network survives. |
 | OQ-4 | **Minimum federation contract:** WIT versioning. | Medium | **RFC Process for WIT Interfaces.** Establish `syneroym/core-interfaces`. Use Wasmtime adapter components to translate between versions (e.g., `v1` to `v2`) during deprecation periods. |
-| OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** An aggregator is a SynOrg (Syneroym Organization) `directory` service. Built today: a SynOrg issues signed membership credentials and withdraws them with signed revocation and moderation records. These are Roym records, not W3C Verifiable Credentials. Envisioned: if a SynOrg is malicious, providers move with the Roym archive, drop the bad credential, and get a new one from a trusted SynOrg. |
-| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Provider Apps. If SLA drops (e.g., < 99%), UI prompts provider to move to another node using the Roym archive. Built today: a substrate republishes its endpoint records every hour. This is not an uptime proof. |
-| OQ-7 | **Consumer UX ownership:** Consumer App governance. | Medium | **Reference Open-Source Apps.** Built today: the Hub, a web UI, is the one reference client. Envisioned: Syneroym builds and open-sources native mobile and Tauri desktop reference apps. Aggregators fork and brand them. They hardcode their bootstrap nodes and tune local discovery weights. |
+| OQ-5 | **Aggregator accountability:** legal and operational obligations. | Medium | **Layer 3/4 Trust Mechanisms.** An aggregator is a SynOrg (Syneroym Organization) `directory` service. Built today: a SynOrg issues signed membership credentials and withdraws them with signed revocation and moderation records. These are Roym records, not W3C Verifiable Credentials. Envisioned: if a SynOrg is malicious, listing owners move with the Roym archive, drop the bad credential, and get a new one from a trusted SynOrg. |
+| OQ-6 | **Infrastructure Provider SLA:** formal guarantees. | Medium | **Substrate Uptime Proofs.** Substrates broadcast encrypted heartbeats to Participant Apps. If SLA drops (e.g., < 99%), UI prompts participant to move to another node using the Roym archive. Built today: a substrate republishes its endpoint records every hour. This is not an uptime proof. |
+| OQ-7 | **Participant UX ownership:** Participant App governance. | Medium | **Reference Open-Source Apps.** Built today: the Hub, a web UI, is the one reference client. Envisioned: Syneroym builds and open-sources native mobile and Tauri desktop reference apps. Aggregators fork and brand them. They hardcode their bootstrap nodes and tune local discovery weights. |
 | OQ-8 | **Payment rail expansion:** cross-border, smart-contract escrow. | Low | This follows core payments. Evaluate based on initial adoption metrics. |
 | OQ-9 | **Regulatory review:** mutual credit and Syneroym coin in target markets. | Low | Required before either ships. Needs engagement with legal counsel. |
 | OQ-10 | **AI-assisted workflow synthesis:** scope, integration, privacy. | Low | This follows the core platform. Workflows stay manual until then. |

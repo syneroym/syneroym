@@ -42,7 +42,7 @@ pub const RECORD_PAYMENT_REQUEST: &str = "payment-request";
 pub const RECORD_PAYMENT_ACKNOWLEDGEMENT: &str = "payment-acknowledgement";
 pub const RECORD_FULFILMENT_RECEIPT: &str = "fulfilment-receipt";
 pub const RECORD_BUNDLE_MANIFEST: &str = "bundle-manifest";
-/// Signed by the provider's transaction service, not by a person, and
+/// Signed by the quote author's transaction service, not by a person, and
 /// deliberately absent from `RECORD_TYPES`: it is derived state that
 /// names its writer, never evidence of anything.
 pub const RECORD_BOOKING_PROGRESS: &str = "booking-progress";
@@ -52,24 +52,4 @@ pub fn is_known_record(record_type: &str, version: u32) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_known_record_types() {
-        for &(t, v) in RECORD_TYPES {
-            assert!(is_known_record(t, v));
-            let draft = RecordDraft {
-                version: v,
-                record_type: t.to_string(),
-                subject: "sub".to_string(),
-                payload: serde_json::json!({"k": "v"}),
-                expires_at_secs: None,
-                supersedes: None,
-            };
-            assert!(draft.validate(0).is_ok(), "record type '{t}' must pass draft validation");
-        }
-        assert!(!is_known_record("unknown", 1));
-        assert!(!is_known_record("profile", 2));
-    }
-}
+mod tests;

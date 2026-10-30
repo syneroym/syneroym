@@ -11,15 +11,15 @@ export const PAYMENT_NOTICE =
   "This records what each side says about the payment. Roym does not see the money move and cannot confirm that it did.";
 
 export const PROGRESS_NOTICE =
-  "This status comes from the provider's system. It is not a signed statement by either person.";
+  "This status comes from the system of the person who wrote the quote. It is not a signed statement by either person.";
 
-export const PAYMENT_CLAIMED = "The customer says they paid.";
+export const PAYMENT_CLAIMED = "The payer says they paid.";
 
-export const PAYMENT_ACKNOWLEDGED = "The provider confirms they received the payment.";
+export const PAYMENT_ACKNOWLEDGED = "The payee confirms they received the payment.";
 
-export const FULFILMENT_CLAIMED = "The provider says the work is done.";
+export const FULFILMENT_CLAIMED = "The person doing the work says it is done.";
 
-export const FULFILMENT_ACKNOWLEDGED = "The customer confirms the work is done.";
+export const FULFILMENT_ACKNOWLEDGED = "The person receiving the work confirms it is done.";
 
 export const TRACK_UNCONFIRMED = "No confirmation was recorded before the window closed.";
 

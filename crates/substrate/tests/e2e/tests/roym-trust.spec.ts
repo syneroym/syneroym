@@ -4,7 +4,7 @@ import { readE2EPorts } from '../ports';
 
 // The trust half of the Hub, on the one node the whole suite shares: the
 // node's own directory is the loopback source, and its owner is at once the
-// group's owner (who issues, suspends and revokes) and the provider (whose
+// group's owner (who issues, suspends and revokes) and the listing owner (whose
 // listing is published, hidden and shown). Each test leaves the next one's
 // starting point behind, so they run in order and stop at the first failure.
 test.describe.configure({ mode: 'serial' });

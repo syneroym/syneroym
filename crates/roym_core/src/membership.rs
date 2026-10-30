@@ -1,7 +1,7 @@
 //! A SynOrg's signed statements about one member -- credential,
 //! revocation, moderation decision -- and the one function that turns a
 //! bundle of them into a verdict. The directory uses it on its own
-//! records; a consumer uses it on records it received. Neither ever takes
+//! records; a searcher uses it on records it received. Neither ever takes
 //! the other's verdict.
 
 use serde::{Deserialize, Serialize};
@@ -396,7 +396,7 @@ fn find_revocation(
 ) -> Option<VerifiedRevocation> {
     // One revocation per credential is ever meaningful, so bounding the
     // scan the same way as the credentials themselves stops a hostile
-    // source from making a consumer pay for a signature check per forged
+    // source from making a searcher pay for a signature check per forged
     // revocation it stuffs into the reply.
     evidence.revocations.iter().take(MAX_EVIDENCE_CREDENTIALS).find_map(|env| {
         let r = verify_revocation(env, issuer, now_secs).ok()?;

@@ -1,5 +1,5 @@
-//! The three signed records of an offer: what the consumer asked for,
-//! the exact terms the provider offered, and each party's attestation
+//! The three signed records of an offer: what the counterparty asked for,
+//! the exact terms the quote author offered, and each party's attestation
 //! that they accepted those terms.
 //!
 //! Every number here is an integer, for the reason `listing` states:
@@ -28,14 +28,14 @@ pub const REQUEST_VERSION: u32 = 1;
 pub const QUOTE_VERSION: u32 = 1;
 pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 
-/// The notice a consumer is shown before a request is signed, and which
+/// The notice a counterparty is shown before a request is signed, and which
 /// the request then carries under their own signature. One constant, so
 /// the Hub, `roymctl` and the record cannot drift apart, and so the
 /// notice is never an empty string nobody noticed.
-pub const DEFAULT_DATA_USE_NOTICE: &str = "This request is signed by you and sent to the provider \
-                                           you chose. They keep a copy. It carries the area you \
-                                           gave, not your exact address; an address is disclosed \
-                                           only inside a quote you accept.";
+pub const DEFAULT_DATA_USE_NOTICE: &str = "This request is signed by you and sent to the person \
+                                           or business you chose. They keep a copy. It carries \
+                                           the area you gave, not your exact address; an address \
+                                           is disclosed only inside a quote you accept.";
 
 /// Shown above the address field whenever a quote states one, and pinned
 /// character-for-character by the browser suite -- the same discipline
@@ -79,12 +79,24 @@ pub enum PaymentTiming {
     AfterWork,
 }
 
-/// Which of the two parties a receipt half is from.
+/// One of the two parties of a deal: the quote author or the counterparty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum Role {
-    Consumer,
-    Provider,
+pub enum DealRole {
+    QuoteAuthor,
+    Counterparty,
+}
+
+impl DealRole {
+    /// The role's name on the wire, the same text serde writes. Ids that
+    /// are built from a role use this, so they cannot drift from the wire.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QuoteAuthor => "quote-author",
+            Self::Counterparty => "counterparty",
+        }
+    }
 }
 
 /// A window in unix seconds. `latest_secs` is inclusive and must not be
@@ -97,7 +109,7 @@ pub struct TimeWindow {
 
 /// Where the work happens, as a quote states it. `address` is the one
 /// field the spec's disclosure rule is about: it is present only when the
-/// work is at the customer, it is part of a signed record both parties
+/// work is at the receiver's place, it is part of a signed record both parties
 /// keep, and the product says so before it is filled in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteLocation {
@@ -118,7 +130,7 @@ pub struct AgreedTerms {
     pub scope: String,
     /// ISO-4217, and a code `money::currency_minor_exponent` knows.
     pub currency: String,
-    /// The total the consumer owes, inclusive, in minor units.
+    /// The total the counterparty owes, inclusive, in minor units.
     pub amount_minor: i64,
     /// Informational breakdowns of `amount_minor`, never additions to it.
     pub tax_minor: i64,
@@ -161,7 +173,7 @@ pub struct RequestPayload {
     pub area: Option<Area>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<TimeWindow>,
-    /// What the consumer was told about how this data is used, recorded
+    /// What the counterparty was told about how this data is used, recorded
     /// under their own signature so the notice is part of the record.
     pub data_use_notice: String,
 }
@@ -176,15 +188,15 @@ pub struct QuotePayload {
     pub request_record_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listing_id: Option<String>,
-    /// The provider's availability slot this quote offers, when it offers one.
-    /// Re-derivable: `listing::derive_slot_id(listing_id,
+    /// The listing owner's availability slot this quote offers, when it offers
+    /// one. Re-derivable: `listing::derive_slot_id(listing_id,
     /// schedule.earliest_secs, schedule.latest_secs)`. Accepting a quote
     /// that names one books it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_id: Option<String>,
     /// The request's own issuer. This is what names the second party, and
     /// it is what makes the agreement pair checkable.
-    pub consumer_did: String,
+    pub counterparty_did: String,
     pub terms: AgreedTerms,
 }
 
@@ -193,10 +205,10 @@ pub struct AgreementReceiptPayload {
     /// The quote's own `record_id`. A content hash of the whole quote
     /// envelope, so it pins the terms exactly.
     pub quote_record_id: String,
-    pub consumer_did: String,
-    pub provider_did: String,
+    pub counterparty_did: String,
+    pub quote_author_did: String,
     /// The only field the two halves of a complete pair differ in.
-    pub role: Role,
+    pub role: DealRole,
     pub terms: AgreedTerms,
 }
 
@@ -215,7 +227,7 @@ pub enum PairState {
     /// Neither party has attested.
     None,
     /// Exactly one half exists.
-    Half { role: Role },
+    Half { role: DealRole },
     /// One attestation from each of the two parties the quote names, with
     /// identical terms and each inside its own validity window.
     Complete,
@@ -227,11 +239,14 @@ pub enum PairState {
 /// when each half is filed, not when the pair is read -- a half that
 /// failed them is never stored as a half.
 #[must_use]
-pub fn pair_state(consumer: Option<&ReceiptHalf>, provider: Option<&ReceiptHalf>) -> PairState {
-    match (consumer, provider) {
+pub fn pair_state(
+    counterparty: Option<&ReceiptHalf>,
+    quote_author: Option<&ReceiptHalf>,
+) -> PairState {
+    match (counterparty, quote_author) {
         (Some(_), Some(_)) => PairState::Complete,
-        (Some(_), None) => PairState::Half { role: Role::Consumer },
-        (None, Some(_)) => PairState::Half { role: Role::Provider },
+        (Some(_), None) => PairState::Half { role: DealRole::Counterparty },
+        (None, Some(_)) => PairState::Half { role: DealRole::QuoteAuthor },
         (None, None) => PairState::None,
     }
 }
@@ -241,7 +256,7 @@ pub enum TransactionError {
     #[error("latest_secs ({latest_secs}) is before earliest_secs ({earliest_secs})")]
     InvalidTimeWindow { earliest_secs: u64, latest_secs: u64 },
 
-    #[error("address is only applicable when location is at-customer")]
+    #[error("address is only applicable when location is at-receiver")]
     AddressNotApplicable,
 
     #[error("address is over {MAX_ADDRESS_LEN} characters")]
@@ -321,7 +336,7 @@ pub enum TransactionError {
     #[error("did '{0}' is not a valid did:key")]
     InvalidDid(String),
 
-    #[error("consumer and provider cannot be the same DID")]
+    #[error("counterparty and quote author cannot be the same DID")]
     SamePartyDid,
 
     #[error("request_id is empty")]
@@ -366,7 +381,7 @@ impl TimeWindow {
 
 impl QuoteLocation {
     pub fn validate(&self) -> Result<(), TransactionError> {
-        if self.where_ != ServiceLocation::AtCustomer && self.address.is_some() {
+        if self.where_ != ServiceLocation::AtReceiver && self.address.is_some() {
             return Err(TransactionError::AddressNotApplicable);
         }
         if self.address.as_deref().is_some_and(|addr| addr.len() > MAX_ADDRESS_LEN) {
@@ -508,8 +523,8 @@ impl QuotePayload {
         if !self.request_record_id.starts_with("rec_") {
             return Err(TransactionError::InvalidRecordId(self.request_record_id.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(TransactionError::InvalidDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(TransactionError::InvalidDid(self.counterparty_did.clone()));
         }
         self.terms.validate()?;
         if let Some(ref slot_id) = self.slot_id {
@@ -539,13 +554,13 @@ impl AgreementReceiptPayload {
         if !self.quote_record_id.starts_with("rec_") {
             return Err(TransactionError::InvalidRecordId(self.quote_record_id.clone()));
         }
-        if !person::is_did_key(&self.consumer_did) {
-            return Err(TransactionError::InvalidDid(self.consumer_did.clone()));
+        if !person::is_did_key(&self.counterparty_did) {
+            return Err(TransactionError::InvalidDid(self.counterparty_did.clone()));
         }
-        if !person::is_did_key(&self.provider_did) {
-            return Err(TransactionError::InvalidDid(self.provider_did.clone()));
+        if !person::is_did_key(&self.quote_author_did) {
+            return Err(TransactionError::InvalidDid(self.quote_author_did.clone()));
         }
-        if self.consumer_did == self.provider_did {
+        if self.counterparty_did == self.quote_author_did {
             return Err(TransactionError::SamePartyDid);
         }
         self.terms.validate()?;
@@ -588,8 +603,8 @@ pub fn derive_quote_id(
 #[must_use]
 pub fn halves_agree(a: &AgreementReceiptPayload, b: &AgreementReceiptPayload) -> bool {
     a.quote_record_id == b.quote_record_id
-        && a.consumer_did == b.consumer_did
-        && a.provider_did == b.provider_did
+        && a.counterparty_did == b.counterparty_did
+        && a.quote_author_did == b.quote_author_did
         && a.terms == b.terms
         && a.role != b.role
 }
@@ -665,8 +680,8 @@ pub fn verify_quote(envelope: &str, now_secs: u64) -> RecordVerdict<QuotePayload
     if !(MIN_QUOTE_LIFETIME_SECS..=MAX_QUOTE_LIFETIME_SECS).contains(&lifetime) {
         return RecordVerdict::refused("quote lifetime outside permitted bounds");
     }
-    if payload.consumer_did == verified.issuer {
-        return RecordVerdict::refused("consumer_did cannot be the quote issuer");
+    if payload.counterparty_did == verified.issuer {
+        return RecordVerdict::refused("counterparty_did cannot be the quote issuer");
     }
     let expected_id =
         match derive_quote_id(&payload.conversation, &verified.issuer, payload.sequence) {
@@ -720,17 +735,17 @@ pub fn verify_agreement_receipt(
         return RecordVerdict::refused("an agreement receipt may not declare an expiry");
     }
     match payload.role {
-        Role::Consumer => {
-            if verified.issuer != payload.consumer_did {
+        DealRole::Counterparty => {
+            if verified.issuer != payload.counterparty_did {
                 return RecordVerdict::refused(
-                    "consumer receipt issuer does not match consumer_did",
+                    "counterparty receipt issuer does not match counterparty_did",
                 );
             }
         }
-        Role::Provider => {
-            if verified.issuer != payload.provider_did {
+        DealRole::QuoteAuthor => {
+            if verified.issuer != payload.quote_author_did {
                 return RecordVerdict::refused(
-                    "provider receipt issuer does not match provider_did",
+                    "quote author receipt issuer does not match quote_author_did",
                 );
             }
         }

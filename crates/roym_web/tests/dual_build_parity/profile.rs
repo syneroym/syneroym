@@ -179,14 +179,7 @@ async fn scenario_8_status_on_all_six_services() {
         assert_eq!(wasm_status, native_status, "status mismatch on service {}", svc.name);
         let val: Value = serde_json::from_str(&wasm_status).unwrap();
         assert_eq!(val["service"], svc.name);
-        // profile, catalog, conversation, transaction and directory carry real state.
-        let expected_schema_version = match svc.name {
-            "directory" | "conversation" => 4,
-            "transaction" => 3,
-            "profile" | "catalog" => 2,
-            _ => 1,
-        };
-        assert_eq!(val["schema_version"], expected_schema_version);
+        assert_eq!(val["schema_version"], expected_schema_version(svc.name));
     }
 }
 

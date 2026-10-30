@@ -1,5 +1,5 @@
 //! The member-standing decision cap: which suspensions survive into the
-//! bounded evidence a consumer or a search hit receives, across several
+//! bounded evidence a searcher or a search hit receives, across several
 //! rounds of tightening (an old unlifted suspension outliving newer
 //! decisions, a membership-wide suspension outranking listing-scoped
 //! ones, and a permanent suspension outranking a newer timed one). Kept

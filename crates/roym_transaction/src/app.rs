@@ -33,11 +33,13 @@ use syneroym_roym_core::{
     record::Envelope,
     services,
     signing::{self, CertificateError},
-    transaction::{self, AgreedTerms, ReceiptHalf, Role},
+    transaction::{self, AgreedTerms, DealRole, ReceiptHalf},
 };
 
-// Schema version 3: booking vertical, payments, fulfilments, and ledger.
-pub const SCHEMA_VERSION: u32 = 3;
+// Schema version 4 names the deal roles by action (counterparty, quote
+// author). Version 3 added the booking vertical, payments, fulfilments and
+// the ledger.
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub(crate) const REQUESTS: &str = "requests";
 pub(crate) const REQUEST_HISTORY: &str = "request_history";
@@ -68,7 +70,7 @@ pub(crate) struct RecordPointerRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) request_record_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) consumer_did: Option<String>,
+    pub(crate) counterparty_did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) declined_at_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -79,28 +81,28 @@ pub(crate) struct RecordPointerRow {
 pub(crate) struct AgreementRow {
     pub(crate) quote_record_id: String,
     pub(crate) conversation: String,
-    pub(crate) consumer_did: String,
-    pub(crate) provider_did: String,
+    pub(crate) counterparty_did: String,
+    pub(crate) quote_author_did: String,
     pub(crate) terms: AgreedTerms,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) consumer: Option<ReceiptHalf>,
+    pub(crate) counterparty: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) provider: Option<ReceiptHalf>,
+    pub(crate) quote_author: Option<ReceiptHalf>,
     pub(crate) updated_at_secs: u64,
 }
 
 impl AgreementRow {
-    pub(crate) fn half(&self, role: Role) -> Option<&ReceiptHalf> {
+    pub(crate) fn half(&self, role: DealRole) -> Option<&ReceiptHalf> {
         match role {
-            Role::Consumer => self.consumer.as_ref(),
-            Role::Provider => self.provider.as_ref(),
+            DealRole::Counterparty => self.counterparty.as_ref(),
+            DealRole::QuoteAuthor => self.quote_author.as_ref(),
         }
     }
 
-    pub(crate) fn set_half(&mut self, role: Role, half: ReceiptHalf) {
+    pub(crate) fn set_half(&mut self, role: DealRole, half: ReceiptHalf) {
         match role {
-            Role::Consumer => self.consumer = Some(half),
-            Role::Provider => self.provider = Some(half),
+            DealRole::Counterparty => self.counterparty = Some(half),
+            DealRole::QuoteAuthor => self.quote_author = Some(half),
         }
     }
 }
@@ -176,9 +178,9 @@ pub(crate) struct PaymentsRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) request: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) consumer: Vec<ReceiptHalf>,
+    pub(crate) counterparty: Vec<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) provider: Vec<ReceiptHalf>,
+    pub(crate) quote_author: Vec<ReceiptHalf>,
     pub(crate) updated_at_secs: u64,
 }
 
@@ -187,9 +189,9 @@ pub(crate) struct FulfilmentsRow {
     pub(crate) agreement: String,
     pub(crate) conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) consumer: Option<ReceiptHalf>,
+    pub(crate) counterparty: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) provider: Option<ReceiptHalf>,
+    pub(crate) quote_author: Option<ReceiptHalf>,
     pub(crate) updated_at_secs: u64,
 }
 

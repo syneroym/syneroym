@@ -29,10 +29,10 @@ interface SourceRow {
 const sourceLabels = new Map<string, string>();
 
 /// One line per source: what that directory's own signed evidence shows
-/// about the provider, judged on this node, and a button that asks again.
+/// about the listing owner, judged on this node, and a button that asks again.
 /// The line is judged against this listing (scope, listing-scoped
 /// suspensions). The re-check is not: `directory.check-standing` judges the
-/// provider's membership alone, so its answer goes on a separate line and
+/// listing owner's membership alone, so its answer goes on a separate line and
 /// never replaces the listing's own verdict.
 export function membershipLine(source: MergedHit["sources"][number], hit: MergedHit): HTMLElement {
   const label = sourceLabels.get(source.directory) || source.directory;
@@ -93,7 +93,7 @@ export async function renderDirectory(container: HTMLElement) {
     text(
       "p",
       "A directory is a place you choose to search. It is optional: you can " +
-        "always reach a provider directly from a link they send you. Your node " +
+        "always reach a listing owner directly from a link they send you. Your node " +
         "checks every result itself -- a directory is never trusted.",
       "directory-intro",
     ),
@@ -295,7 +295,7 @@ function buildSearch(): HTMLElement {
       });
       progress.textContent =
         run.sources.length === 0
-          ? "You have not added any directories. Add one above, or reach a provider by a direct link."
+          ? "You have not added any directories. Add one above, or reach a listing owner by a direct link."
           : `${run.sources.length} directories searched.`;
       results.replaceChildren();
       refusedHost.replaceChildren();
@@ -397,7 +397,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
     }
 
     if (hit.verified) {
-      const engage = text("button", "Message this provider", "button hit-engage") as HTMLButtonElement;
+      const engage = text("button", "Message this listing owner", "button hit-engage") as HTMLButtonElement;
       const engageOut = text("div", "", "hit-engage-out");
       engage.onclick = async () => {
         engageOut.textContent = "";

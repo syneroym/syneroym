@@ -13,7 +13,7 @@
 //! from the host's own answer and never optimistically `delivered`; Roym's
 //! own copy on each side is the same message; a blocked sender's message
 //! reaches no conversation, no search result and no count, and the sender
-//! is never told; a listing carries the provider's conversation address
+//! is never told; a listing carries the listing owner's conversation address
 //! under their own signature so a stranger can engage them with no
 //! directory anywhere; every service's own copy round-trips through
 //! export/import; deleting a message removes the local copy, keeps a
@@ -300,7 +300,7 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     let listings_declared = b_catalog_export["manifest"]["sections"]["listings"]["schema_version"]
         .as_u64()
         .unwrap_or(0);
-    assert_eq!(listings_declared, 2, "the bundle declares the listings schema version");
+    assert_eq!(listings_declared, 3, "the bundle declares the listings schema version");
     node_b.rpc_ok("catalog.import", json!({ "bundle": b_catalog_export })).await;
     let b_listing_back = node_b.rpc_ok("listing.get", json!({ "listing_id": b_listing_id })).await;
     assert_eq!(b_listing_back["listing_id"], b_listing_id, "same listing id after import");

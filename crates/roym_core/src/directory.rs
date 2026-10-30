@@ -13,8 +13,10 @@ use crate::{area::Area, safety::PublicationLimits};
 /// `SearchHit::membership`, none of which an older bundle carries. A
 /// bundle exported before that change no longer deserializes, and
 /// `import`'s own version gate must say so rather than accept it and fail
-/// row by row.
-pub const DIRECTORY_SCHEMA_VERSION: u32 = 4;
+/// row by row. Version 5 renames the service-location and audience values
+/// inside signed listings, so a bundle with the old values is refused the
+/// same way.
+pub const DIRECTORY_SCHEMA_VERSION: u32 = 5;
 pub const MAX_SYNORG_NAME_LEN: usize = 128;
 pub const MAX_RULES_LEN: usize = 8192;
 pub const MAX_CONTACT_LEN: usize = 256;
@@ -187,13 +189,13 @@ pub struct SearchQuery {
 pub struct SearchHit {
     pub listing_id: String,
     pub record_id: String,
-    /// The bytes the provider signed. Never a projection.
+    /// The bytes the listing owner signed. Never a projection.
     pub envelope: String,
     pub issued_at_secs: u64,
     /// This directory's own clock, its claim, never used for age.
     pub received_at_secs: u64,
     pub area_match: AreaMatch,
-    /// The issuer's own signed statements about this listing's provider,
+    /// The issuer's own signed statements about this listing's listing owner,
     /// exactly as the directory stores them. Never a verdict.
     #[serde(default)]
     pub membership: crate::membership::MembershipEvidence,

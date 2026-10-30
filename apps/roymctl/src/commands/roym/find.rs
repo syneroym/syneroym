@@ -340,7 +340,7 @@ pub(super) async fn find(
 
     if sources.is_empty() {
         println!("No directories added. Add one with `roymctl roym directory add <did>`,");
-        println!("or reach a provider directly by link -- a directory is optional.");
+        println!("or reach a listing owner directly by link -- a directory is optional.");
     }
 
     let outcomes = run_source_queries(

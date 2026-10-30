@@ -3,6 +3,8 @@ import { whoami } from "../session/login";
 import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
 import { toMinorUnits, currencyMinorExponent } from "../money";
+import type { ServiceLocationKind } from "../listings/editor";
+import { SERVICE_LOCATION_EDITOR_LABELS } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 
 // These two strings are shown to the person *before* a delete runs, and are
@@ -19,7 +21,7 @@ const DELETE_NOTE_RECEIVED =
   "message you received; the other side's copy is theirs.";
 
 export const DEFAULT_DATA_USE_NOTICE =
-  "This request is signed by you and sent to the provider you chose. They " +
+  "This request is signed by you and sent to the person or business you chose. They " +
   "keep a copy. It carries the area you gave, not your exact address; an " +
   "address is disclosed only inside a quote you accept.";
 
@@ -75,7 +77,7 @@ export interface CardRow {
     request_id?: string;
     request_record_id?: string;
     sequence?: number;
-    consumer_did?: string;
+    counterparty_did?: string;
     terms?: {
       quote_expires_at_secs?: number;
     };
@@ -547,7 +549,7 @@ export function renderCardActions(
 
   // Accept / Decline: on verified quote for me, not expired, not declined
   if (card.card_type === "quote" && card.verified) {
-    const forMe = !!myDid && card.data?.consumer_did === myDid;
+    const forMe = !!myDid && card.data?.counterparty_did === myDid;
     const nowSecs = Math.floor(Date.now() / 1000);
     const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
     const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
@@ -673,16 +675,16 @@ export function openQuoteForm(
 
   const whereSelect = document.createElement("select");
   whereSelect.className = "quote-where-select";
-  const optCust = document.createElement("option");
-  optCust.value = "at-customer";
-  optCust.textContent = "At customer";
-  const optProv = document.createElement("option");
-  optProv.value = "at-provider";
-  optProv.textContent = "At provider";
+  const optReceiver = document.createElement("option");
+  optReceiver.value = "at-receiver";
+  optReceiver.textContent = SERVICE_LOCATION_EDITOR_LABELS["at-receiver"];
+  const optGiver = document.createElement("option");
+  optGiver.value = "at-giver";
+  optGiver.textContent = SERVICE_LOCATION_EDITOR_LABELS["at-giver"];
   const optRem = document.createElement("option");
   optRem.value = "remote";
-  optRem.textContent = "Remote";
-  whereSelect.append(optCust, optProv, optRem);
+  optRem.textContent = SERVICE_LOCATION_EDITOR_LABELS.remote;
+  whereSelect.append(optReceiver, optGiver, optRem);
 
   const addressWrap = document.createElement("div");
   addressWrap.className = "quote-address-wrap";
@@ -693,7 +695,7 @@ export function openQuoteForm(
   addressWrap.append(addressNotice, addressInput);
 
   whereSelect.onchange = () => {
-    addressWrap.style.display = whereSelect.value === "at-customer" ? "block" : "none";
+    addressWrap.style.display = whereSelect.value === "at-receiver" ? "block" : "none";
   };
 
   const cancInput = document.createElement("input");
@@ -781,8 +783,8 @@ export function openQuoteForm(
     const hours = Number.parseInt(hoursInput.value || "24", 10);
     const expires_in_secs = Math.max(300, hours * 3600);
 
-    const where = whereSelect.value as "at-customer" | "at-provider" | "remote";
-    const address = where === "at-customer" ? addressInput.value.trim() : undefined;
+    const where = whereSelect.value as ServiceLocationKind;
+    const address = where === "at-receiver" ? addressInput.value.trim() : undefined;
 
     submitBtn.disabled = true;
     try {

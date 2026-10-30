@@ -49,7 +49,7 @@ pub(in crate::app) struct SearchRunRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(in crate::app) reason: Option<String>,
     pub(in crate::app) revocation_status: String,
-    /// The consumer's own verdict, computed on this node from the hit's
+    /// The searcher's own verdict, computed on this node from the hit's
     /// signed evidence. `None` on a refused hit, which
     /// never reaches a membership check at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -57,7 +57,7 @@ pub(in crate::app) struct SearchRunRow {
     pub(in crate::app) issued_at_secs: u64,
     pub(in crate::app) received_at_secs: u64,
     pub(in crate::app) at_secs: u64,
-    /// The provider's signed bytes, kept on a verified row so a later
+    /// The listing owner's signed bytes, kept on a verified row so a later
     /// `run-envelope` call can hand them back. `merge` builds projections
     /// and never reads this field, so an envelope never travels through a
     /// merge result.

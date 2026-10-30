@@ -91,7 +91,7 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
         "title": title,
         "summary": "Neat hedges, fortnightly.",
         "categories": ["gardening", "outdoor"],
-        "conversation_address": "did:key:zProviderConv",
+        "conversation_address": "did:key:zListingOwnerConv",
         "booking": {
             "mode": "slots",
             "lead_time_secs": 3600,
@@ -109,7 +109,7 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
         "product": { "unit": "hour", "pack_size": 1, "condition": "new", "sku": "HT-1" },
         "service": { "duration_secs": 3600, "includes": ["clippings removed"] },
         "location": {
-            "where": "at-customer",
+            "where": "at-receiver",
             "service_area": [
                 { "kind": "circle", "lat_e6": 52000000, "lon_e6": 13000000, "radius_m": 5000 }
             ],
@@ -122,6 +122,19 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
             "retention_secs": 31536000
         }
     })
+}
+
+/// The storage schema version each service reports in its status. Profile,
+/// catalog, conversation, transaction and directory carry real state; the
+/// others report 1.
+pub(crate) fn expected_schema_version(service: &str) -> u32 {
+    match service {
+        "directory" => 5,
+        "conversation" | "transaction" => 4,
+        "catalog" => 3,
+        "profile" => 2,
+        _ => 1,
+    }
 }
 
 pub(crate) fn is_err(v: &Value, code: i64) -> bool {
@@ -238,7 +251,7 @@ pub(crate) fn sample_quote_terms() -> Value {
         "payee": "Garden Services Ltd",
         "payment_timing": "after-work",
         "location": {
-            "where": "at-customer",
+            "where": "at-receiver",
             "address": "123 Flower St",
         },
         "cancellation_terms": "Cancel 24h prior for full refund",
@@ -278,7 +291,7 @@ pub(crate) fn peer_signed_quote(
     conv: &str,
     seq: u32,
     req_record_id: &str,
-    consumer_did: &str,
+    counterparty_did: &str,
     expires_at: Option<u64>,
     issued_at: u64,
 ) -> (String, String) {
@@ -295,7 +308,7 @@ pub(crate) fn peer_signed_quote(
         "conversation": conv,
         "sequence": seq,
         "request_record_id": req_record_id,
-        "consumer_did": consumer_did,
+        "counterparty_did": counterparty_did,
         "terms": terms,
     });
     let env_json = sign_as_peer(
@@ -311,20 +324,20 @@ pub(crate) fn peer_signed_quote(
     (record_id, env_json)
 }
 
-pub(crate) fn peer_signed_consumer_receipt(
+pub(crate) fn peer_counterparty_receipt(
     conv: &str,
     quote_record_id: &str,
-    consumer_did: &str,
-    provider_did: &str,
+    counterparty_did: &str,
+    quote_author_did: &str,
     terms: Value,
     issued_at: u64,
 ) -> (String, String) {
     let _ = conv;
     let payload = json!({
         "quote_record_id": quote_record_id,
-        "consumer_did": consumer_did,
-        "provider_did": provider_did,
-        "role": "consumer",
+        "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did,
+        "role": "counterparty",
         "terms": terms,
     });
     let env_json = sign_as_peer(
@@ -378,7 +391,7 @@ pub(crate) fn peer_signed_quote_with(
     conv: &str,
     seq: u32,
     req_record_id: &str,
-    consumer_did: &str,
+    counterparty_did: &str,
     expires_at: Option<u64>,
     issued_at: u64,
     supersedes: Option<String>,
@@ -392,7 +405,7 @@ pub(crate) fn peer_signed_quote_with(
         "conversation": conv,
         "sequence": seq,
         "request_record_id": req_record_id,
-        "consumer_did": consumer_did,
+        "counterparty_did": counterparty_did,
         "terms": terms,
     });
     let peer = peer_identity();
@@ -413,11 +426,11 @@ pub(crate) fn peer_signed_quote_with(
     (record_id, env_json)
 }
 
-pub(crate) fn peer_signed_consumer_receipt_with_expiry(
+pub(crate) fn peer_counterparty_receipt_with_expiry(
     conv: &str,
     quote_record_id: &str,
-    consumer_did: &str,
-    provider_did: &str,
+    counterparty_did: &str,
+    quote_author_did: &str,
     terms: Value,
     issued_at: u64,
     expires_at_secs: Option<u64>,
@@ -425,9 +438,9 @@ pub(crate) fn peer_signed_consumer_receipt_with_expiry(
     let _ = conv;
     let payload = json!({
         "quote_record_id": quote_record_id,
-        "consumer_did": consumer_did,
-        "provider_did": provider_did,
-        "role": "consumer",
+        "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did,
+        "role": "counterparty",
         "terms": terms,
     });
     let peer = peer_identity();
@@ -648,8 +661,8 @@ pub(crate) async fn fan_out(h: &Harness, sources: &[&str]) -> (String, String, V
 pub(crate) fn peer_signed_payment_ack(
     conv: &str,
     agreement: &str,
-    consumer_did: &str,
-    provider_did: &str,
+    counterparty_did: &str,
+    quote_author_did: &str,
     role: &str,
     currency: &str,
     amount_minor: i64,
@@ -660,8 +673,8 @@ pub(crate) fn peer_signed_payment_ack(
     issued_at: u64,
 ) -> (String, String) {
     let payload = json!({
-        "agreement": agreement, "conversation": conv, "consumer_did": consumer_did,
-        "provider_did": provider_did, "role": role, "currency": currency,
+        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did, "role": role, "currency": currency,
         "amount_minor": amount_minor, "observed_at_secs": observed_at_secs,
         "method": method, "reference": reference,
     });
@@ -682,15 +695,15 @@ pub(crate) fn peer_signed_payment_ack(
 pub(crate) fn peer_signed_fulfilment(
     conv: &str,
     agreement: &str,
-    consumer_did: &str,
-    provider_did: &str,
+    counterparty_did: &str,
+    quote_author_did: &str,
     role: &str,
     terms: Value,
     issued_at: u64,
 ) -> (String, String) {
     let payload = json!({
-        "agreement": agreement, "conversation": conv, "consumer_did": consumer_did,
-        "provider_did": provider_did, "role": role, "terms": terms,
+        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did, "role": role, "terms": terms,
     });
     let draft = RecordDraft {
         version: syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
@@ -709,8 +722,8 @@ pub(crate) fn peer_signed_fulfilment(
 pub(crate) fn peer_signed_progress(
     conv: &str,
     agreement: &str,
-    consumer_did: &str,
-    provider_did: &str,
+    counterparty_did: &str,
+    quote_author_did: &str,
     seq: u32,
     state: &str,
     conflict: Option<&str>,
@@ -721,8 +734,8 @@ pub(crate) fn peer_signed_progress(
     issued_at: u64,
 ) -> (String, String) {
     let mut payload = json!({
-        "agreement": agreement, "conversation": conv, "consumer_did": consumer_did,
-        "provider_did": provider_did, "seq": seq, "state": state,
+        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did, "seq": seq, "state": state,
         "payment": payment, "fulfilment": fulfilment, "track_window_ends_at_secs": window_ends,
     });
     if let Some(c) = conflict {

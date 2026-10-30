@@ -1,4 +1,4 @@
-//! Decision and seat reservation ledger for provider bookings.
+//! Decision and seat reservation ledger for quote author bookings.
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;

@@ -203,7 +203,7 @@ async fn scenario_46_listing_verify_good_envelope_parity() {
     let (w, n) = both_rpc(&h, "listing.verify", json!({ "envelope": env })).await;
     assert_eq!(w, n);
     assert_eq!(w["result"]["verified"], true, "verify refused the envelope: {w}");
-    assert_eq!(w["result"]["conversation_address"], "did:key:zProviderConv");
+    assert_eq!(w["result"]["conversation_address"], "did:key:zListingOwnerConv");
 }
 
 #[tokio::test]
@@ -274,7 +274,7 @@ async fn scenario_49_catalog_export_integrity_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["listings"].schema_version, 2);
+        assert_eq!(sections["listings"].schema_version, 3);
         assert!(sections.contains_key("availability"));
     }
 

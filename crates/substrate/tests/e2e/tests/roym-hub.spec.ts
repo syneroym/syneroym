@@ -601,7 +601,7 @@ test.describe('Roym Hub', () => {
     await expect(row2.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
   });
 
-  test('21. Listings tab: a provider chooses a directory and publishes a listing to it, and a draft is refused with a reason', async ({ page }) => {
+  test('21. Listings tab: a listing owner chooses a directory and publishes a listing to it, and a draft is refused with a reason', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
@@ -848,7 +848,7 @@ test.describe('Roym Hub', () => {
             refund_terms: payload,
             dispute_path: 'javascript:window.maliciousDispute=true',
             location: {
-              where: 'at-customer',
+              where: 'at-receiver',
               address: payload,
             },
           },
@@ -972,7 +972,7 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.request-form')).toBeVisible();
     const reqNotice = await page.locator('.request-form .data-use-notice').innerText();
     expect(reqNotice).toBe(
-      'This request is signed by you and sent to the provider you chose. They ' +
+      'This request is signed by you and sent to the person or business you chose. They ' +
         'keep a copy. It carries the area you gave, not your exact address; an ' +
         'address is disclosed only inside a quote you accept.',
     );
@@ -1076,7 +1076,7 @@ test.describe('Roym Hub', () => {
         record_id: 'rec_quote_active',
         stored_at_secs: 1000,
         data: {
-          consumer_did: 'did:key:testme',
+          counterparty_did: 'did:key:testme',
           terms: {
             scope: 'Tree trimming',
             currency: 'USD',
@@ -1120,7 +1120,7 @@ test.describe('Roym Hub', () => {
         record_id: 'rec_quote_declined',
         stored_at_secs: 1000,
         data: {
-          consumer_did: 'did:key:testme',
+          counterparty_did: 'did:key:testme',
         },
       };
       win.RoymMessages.renderCardActions(host, declinedQuoteCard, 'conv_test', 'did:key:testme', async () => {});

@@ -20,7 +20,7 @@ async fn setup_active_agreement(h: &Harness, conv: &str, timing: &str) -> (Strin
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let terms = quote_env.payload["terms"].clone();
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         conv,
         &quote_rec_id,
         &peer_did(),
@@ -70,25 +70,25 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     let amount_minor = terms["amount_minor"].as_i64().unwrap();
     let curr = terms["currency"].as_str().unwrap();
 
-    // Provider starts booking
+    // Quote author starts booking
     both_rpc(&h, "booking.start", json!({ "agreement": agr_rec })).await;
 
-    // Provider fulfilment half -> claimed
+    // Quote author fulfilment half -> claimed
     let (fw, fn_) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
-    assert_eq!(fw["result"]["role"], "provider");
-    assert_eq!(fn_["result"]["role"], "provider");
+    assert_eq!(fw["result"]["role"], "quote-author");
+    assert_eq!(fn_["result"]["role"], "quote-author");
 
     let (fg_w, fg_n) = both_rpc(&h, "fulfilment.get", json!({ "agreement": agr_rec })).await;
     assert_eq!(fg_w["result"]["track"], "claimed");
     assert_eq!(fg_n["result"]["track"], "claimed");
 
-    // Consumer fulfilment half -> acknowledged
+    // Counterparty fulfilment half -> acknowledged
     let (cf_id, cf_env) = peer_signed_fulfilment(
         &conv,
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         terms.clone(),
         1_002_000,
     );
@@ -114,7 +114,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         curr,
         amount_minor,
         1_003_000,
@@ -161,13 +161,13 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
     assert!(is_err(&bad_w, -32602));
     assert!(is_err(&bad_n, -32602));
 
-    // Peer fulfilment with wrong consumer_did
+    // Peer fulfilment with wrong counterparty_did
     let (bad_cf_id, bad_cf_env) = peer_signed_fulfilment(
         &conv,
         &agr_rec,
         "did:key:zWrong",
         &owner_did(),
-        "consumer",
+        "counterparty",
         terms,
         1_002_000,
     );
@@ -198,7 +198,7 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
     // return -- so the refusal is found by its outcome, not its id.
     let cards = tw["result"]["cards"].as_array().unwrap();
     let unverified: Vec<_> = cards.iter().filter(|c| c["verified"] == false).collect();
-    assert_eq!(unverified.len(), 1, "only the wrong-consumer card must be unverified");
+    assert_eq!(unverified.len(), 1, "only the wrong-counterparty card must be unverified");
 }
 
 #[tokio::test]
@@ -227,7 +227,7 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let q_payload = &quote_env.payload;
 
-    let (agr_id, agr_env) = peer_signed_consumer_receipt(
+    let (agr_id, agr_env) = peer_counterparty_receipt(
         &conv,
         &quote_rec_id,
         &peer_did(),
@@ -262,7 +262,7 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
         &quote_rec_id,
         &peer_did(),
         &owner_did(),
-        "consumer",
+        "counterparty",
         q_payload["terms"].clone(),
         20_000_000,
     );

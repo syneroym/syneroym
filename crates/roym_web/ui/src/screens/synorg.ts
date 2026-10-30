@@ -21,7 +21,7 @@ export async function renderSynOrg(container: HTMLElement) {
   box.appendChild(
     text(
       "p",
-      "A SynOrg is a directory you run: providers publish their own listings " +
+      "A SynOrg is a directory you run: listing owners publish their own listings " +
         "to it, and anyone can search it. Creating settings is what turns this " +
         "installation into one.",
       "synorg-intro",
@@ -134,7 +134,7 @@ function buildSettingsForm(current: SynOrgSettings | null): HTMLElement {
 }
 
 /// The publication limit, editable here rather than a hidden default: the
-/// likely case is a provider with a large catalogue joining and being
+/// likely case is a listing owner with a large catalogue joining and being
 /// refused partway through their first publish, and the group's owner is
 /// the person who should set the limit.
 function buildLimitEditor(limits: { window_secs: number; max_per_window: number }): HTMLElement {
@@ -144,7 +144,7 @@ function buildLimitEditor(limits: { window_secs: number; max_per_window: number 
   wrap.appendChild(
     text(
       "p",
-      "How many listings one provider may publish here inside one window. " +
+      "How many listings one listing owner may publish here inside one window. " +
         "Taking a listing down never counts against this.",
     ),
   );

@@ -1,8 +1,8 @@
-//! The consumer's own verdict on membership evidence a source serves, when
+//! The searcher's own verdict on membership evidence a source serves, when
 //! the source is a *second* SynOrg (a real directory with its own owner) or
 //! a canned trust source whose evidence has one chosen defect. Everything a
 //! directory says about itself is a claim; each scenario here is a claim
-//! that must not become a verdict on the consumer's node.
+//! that must not become a verdict on the searcher's node.
 
 use serde_json::{Value, json};
 
@@ -10,19 +10,19 @@ use super::{
     fixtures::*,
     helpers::*,
     trust_fixtures::*,
-    trust_harness::{claimed_issuer_did, provider_did, trust_issuer_did},
+    trust_harness::{claimed_issuer_did, listing_owner_did, trust_issuer_did},
 };
 
-const CONSUMER_SEARCH_HIT: &str = "the one listing the trust source serves";
+const SEARCHER_SEARCH_HIT: &str = "the one listing the trust source serves";
 
-/// Adds `target` as a source, searches it and asks it for the provider's
+/// Adds `target` as a source, searches it and asks it for the listing owner's
 /// standing, on both builds. Returns `(search hit's membership verdict,
 /// check-standing's reply)`, having asserted the two builds agree.
 async fn canned_verdicts(h: &Harness, target: &str) -> (Value, Value) {
     let (_rw, _rn, mw, mn) = fan_out(h, &[target]).await;
     assert_eq!(stripped(&mw), stripped(&mn));
     let hits = mw["result"]["hits"].as_array().unwrap();
-    assert_eq!(hits.len(), 1, "{CONSUMER_SEARCH_HIT}: {mw}");
+    assert_eq!(hits.len(), 1, "{SEARCHER_SEARCH_HIT}: {mw}");
     assert_eq!(hits[0]["verified"], true, "the listing itself is genuine: {mw}");
     let sources = hits[0]["sources"].as_array().unwrap();
     assert_eq!(sources.len(), 1, "{mw}");
@@ -31,7 +31,7 @@ async fn canned_verdicts(h: &Harness, target: &str) -> (Value, Value) {
     let (cw, cn) = both_rpc(
         h,
         "directory.check-standing",
-        json!({ "source": target, "member_did": provider_did() }),
+        json!({ "source": target, "member_did": listing_owner_did() }),
     )
     .await;
     assert_eq!(stripped(&cw), stripped(&cn));
@@ -39,7 +39,7 @@ async fn canned_verdicts(h: &Harness, target: &str) -> (Value, Value) {
 }
 
 #[tokio::test]
-async fn scenario_182_a_consumer_sees_valid_membership_per_source_parity() {
+async fn scenario_182_a_searcher_sees_valid_membership_per_source_parity() {
     let h = harness().await;
     ensure_synorg(&h).await;
     ensure_dir2_synorg(&h).await;
@@ -73,7 +73,7 @@ async fn scenario_182_a_consumer_sees_valid_membership_per_source_parity() {
 }
 
 #[tokio::test]
-async fn scenario_183_a_forged_credential_is_refused_on_the_consumers_node_parity() {
+async fn scenario_183_a_forged_credential_is_refused_on_the_searchers_node_parity() {
     let h = harness().await;
 
     // Control: a source whose evidence is sound is `valid`, so the

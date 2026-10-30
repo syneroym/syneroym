@@ -7,7 +7,7 @@ const NOW = Math.floor(Date.now() / 1000);
 const HIT: MergedHit = {
   listing_id: "lst_1",
   record_id: "rec_1",
-  issuer: "did:key:zProvider",
+  issuer: "did:key:zListingOwner",
   title: "Jam",
   summary: "",
   categories: ["gardening"],
@@ -63,7 +63,7 @@ afterEach(() => {
 
 describe("a search card's membership line", () => {
   it("keeps the listing's own verdict when the person checks again", async () => {
-    // `check-standing` judges the provider with no listing, so it says
+    // `check-standing` judges the listing owner with no listing, so it says
     // "valid" for a credential that does not cover this listing's category.
     stubCheckStanding({ verdict: VALID, as_of_secs: NOW, refreshed: true });
     const line = cardLine();

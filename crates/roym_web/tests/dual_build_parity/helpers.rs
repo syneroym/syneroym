@@ -155,7 +155,7 @@ pub(crate) fn strip_volatile(val: &mut Value) {
             // is, so these can legitimately differ by the odd second.
             //
             // `age_secs` could in principle be value-asserted (it must be
-            // `consumer_now - issued_at_secs`, never the directory's own
+            // `searcher_now - issued_at_secs`, never the directory's own
             // `received_at_secs`), but not in this harness: the signing
             // clock is pinned 240 s in the *future* (for certificate
             // freshness), so `now - issued_at` saturates to 0 on both
@@ -261,8 +261,8 @@ pub(crate) fn dir2_owner_caller() -> CallerContext {
 /// presents to a *foreign* directory over the wire -- deliberately not
 /// this node's own owner, so a directory's publication limiter (keyed on
 /// the verified connection identity) sees a distinct party.
-pub(crate) fn foreign_consumer_caller() -> CallerContext {
-    custom_caller("did:key:zForeignConsumer")
+pub(crate) fn foreign_searcher_caller() -> CallerContext {
+    custom_caller("did:key:zForeignSearcher")
 }
 
 /// A wire caller with no verified identity -- `AuthLevel::System` maps to
@@ -785,7 +785,7 @@ impl ServiceProxy for TestWasmServiceProxy {
         }
 
         if let Some((service_id, anon)) = foreign_wire_route(target) {
-            let caller = if anon { anon_wire_caller() } else { foreign_consumer_caller() };
+            let caller = if anon { anon_wire_caller() } else { foreign_searcher_caller() };
             let rpc_req = JsonRpcRequest {
                 jsonrpc: "2.0".to_string(),
                 method: request.method,
@@ -875,7 +875,7 @@ impl ServiceProxy for TestNativeServiceProxy {
             } else {
                 &self.directory_wire
             };
-            let caller = if anon { anon_wire_caller() } else { foreign_consumer_caller() };
+            let caller = if anon { anon_wire_caller() } else { foreign_searcher_caller() };
             let inv = NativeInvocation {
                 interface: request.interface,
                 method: request.method,

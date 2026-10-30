@@ -8,15 +8,17 @@
 ///   and never as a guess.
 /// - Never says "verified".
 
+import type { ServiceLocationKind } from "../../listings/editor";
+import { serviceLocationCardLabel } from "../../listings/labels";
 import { formatMinor } from "../../money";
 import { renderLink } from "../link";
 import { type AgreedTermsData } from "./quote";
 
 export interface AgreementReceiptData {
   quote_record_id?: string;
-  consumer_did?: string;
-  provider_did?: string;
-  role?: "consumer" | "provider";
+  counterparty_did?: string;
+  quote_author_did?: string;
+  role?: "counterparty" | "quote-author";
   pair_state?: "none" | "half" | "complete" | { state: string; role?: string };
   pair?: "none" | "half" | "complete" | { state: string; role?: string };
   terms?: AgreedTermsData;
@@ -32,7 +34,7 @@ export interface AgreementReceiptData {
     latest_secs: number;
   };
   location?: {
-    where: "at-customer" | "at-provider" | "remote";
+    where: ServiceLocationKind;
     address?: string;
   };
   cancellation_terms?: string;
@@ -51,20 +53,20 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   card.appendChild(title);
 
   // Pair state in words:
-  // "Both parties have signed these terms." / "Only the consumer has signed so far." / "Only the provider has signed so far."
+  // "Both parties have signed these terms." / "Only the person the quote was sent to has signed so far." / "Only the person who wrote the quote has signed so far."
   const rawPair = data?.pair_state ?? data?.pair;
   const pairState = typeof rawPair === "object" && rawPair !== null ? rawPair.state : rawPair;
   const pairRole = typeof rawPair === "object" && rawPair !== null ? rawPair.role : data?.role;
 
-  let pairText = "Only the consumer has signed so far.";
+  let pairText = "Only the person the quote was sent to has signed so far.";
   if (pairState === "complete") {
     pairText = "Both parties have signed these terms.";
-  } else if (pairState === "half" && pairRole === "provider") {
-    pairText = "Only the provider has signed so far.";
-  } else if (pairRole === "provider") {
-    pairText = "Only the provider has signed so far.";
+  } else if (pairState === "half" && pairRole === "quote-author") {
+    pairText = "Only the person who wrote the quote has signed so far.";
+  } else if (pairRole === "quote-author") {
+    pairText = "Only the person who wrote the quote has signed so far.";
   } else {
-    pairText = "Only the consumer has signed so far.";
+    pairText = "Only the person the quote was sent to has signed so far.";
   }
 
   const pairP = document.createElement("p");
@@ -75,21 +77,24 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (data?.role) {
     const roleP = document.createElement("p");
     roleP.className = "receipt-role";
-    roleP.textContent = `Role: ${data.role}`;
+    roleP.textContent =
+      data.role === "quote-author"
+        ? "Signed by: the person who wrote the quote"
+        : "Signed by: the person the quote was sent to";
     card.appendChild(roleP);
   }
 
-  if (data?.consumer_did) {
+  if (data?.counterparty_did) {
     const conP = document.createElement("p");
-    conP.className = "receipt-consumer";
-    conP.textContent = `Consumer: ${data.consumer_did}`;
+    conP.className = "receipt-counterparty";
+    conP.textContent = `Quote to: ${data.counterparty_did}`;
     card.appendChild(conP);
   }
 
-  if (data?.provider_did) {
+  if (data?.quote_author_did) {
     const proP = document.createElement("p");
-    proP.className = "receipt-provider";
-    proP.textContent = `Provider: ${data.provider_did}`;
+    proP.className = "receipt-author";
+    proP.textContent = `Quote by: ${data.quote_author_did}`;
     card.appendChild(proP);
   }
 
@@ -180,7 +185,7 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (t.location) {
     const locP = document.createElement("p");
     locP.className = "receipt-location";
-    locP.textContent = `Location: ${t.location.where}`;
+    locP.textContent = `Location: ${serviceLocationCardLabel(t.location.where)}`;
     card.appendChild(locP);
 
     if (t.location.address) {

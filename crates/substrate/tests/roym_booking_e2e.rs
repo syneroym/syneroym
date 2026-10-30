@@ -5,12 +5,12 @@
     clippy::panic,
     dead_code
 )]
-//! The Roym product's booking arbitration: two consumers race for the one
-//! seat a provider's slot holds, across three independent
+//! The Roym product's booking arbitration: two counterparties race for the
+//! one seat a quote author's slot holds, across three independent
 //! `syneroym-substrate` instances, each running the full Roym SynApp.
 //!
 //! Proves the single-writer fence actually arbitrates a
-//! real concurrent booking: exactly one consumer schedules, the other gets
+//! real concurrent booking: exactly one counterparty schedules, the other gets
 //! a named conflict, and the winner's booking runs to completion through
 //! both tracks. No directory is deployed anywhere.
 
@@ -24,7 +24,7 @@ use common::{
     roym::{RoymNode as Node, fast_conversation_role, roym_artifacts_present},
     roym_flow::{
         accept_quote, assert_no_directory, complete_winner_lifecycle, open_request_conv,
-        provider_conv_for, quote_terms, request_record_on_provider, send_quote,
+        quote_author_conv_for, quote_terms, request_record_on_quote_author, send_quote,
         wait_and_verify_winner_scheduled,
     },
 };
@@ -147,11 +147,11 @@ async fn exchange_quotes_and_accept(
     let (w_conv_id, _w_req) =
         open_request_conv(node_w, &y_conv_did, "Clear the front garden", &["gardening"]).await;
 
-    let y_conv_for_x = provider_conv_for(node_y, &x_conv_did).await;
-    let y_conv_for_w = provider_conv_for(node_y, &w_conv_did).await;
+    let y_conv_for_x = quote_author_conv_for(node_y, &x_conv_did).await;
+    let y_conv_for_w = quote_author_conv_for(node_y, &w_conv_did).await;
 
-    let x_req_record_id = request_record_on_provider(node_y, &y_conv_for_x).await;
-    let w_req_record_id = request_record_on_provider(node_y, &y_conv_for_w).await;
+    let x_req_record_id = request_record_on_quote_author(node_y, &y_conv_for_x).await;
+    let w_req_record_id = request_record_on_quote_author(node_y, &y_conv_for_w).await;
 
     let x_quote_record_id =
         send_quote(node_y, &x_req_record_id, listing_id, slot_id, quote_terms("Y Gardens", 6000))
@@ -219,8 +219,8 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
     node_y.restart(None, None).await;
 
     // Y runs transaction.sync on both conversations concurrently -- both
-    // consumer accept halves complete their pair and trigger the booking
-    // decision on the same provider-held slot at the same time.
+    // counterparty accept halves complete their pair and trigger the booking
+    // decision on the same quote-author-held slot at the same time.
     let (sync_x_res, sync_w_res) = tokio::join!(
         node_y.rpc_ok("transaction.sync", json!({ "conversation": quotes.y_conv_for_x })),
         node_y.rpc_ok("transaction.sync", json!({ "conversation": quotes.y_conv_for_w })),
@@ -229,7 +229,7 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
     assert_eq!(sync_w_res["filed"], 1);
 
     // Exactly one scheduled and one conflict; the loser's pair stays
-    // half (the provider does not countersign a conflicting booking).
+    // half (the quote author does not countersign a conflicting booking).
     let x_booking =
         node_y.rpc_ok("booking.get", json!({ "agreement": quotes.x_quote_record_id })).await;
     let w_booking =

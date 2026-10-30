@@ -8,7 +8,7 @@ use syneroym_roym_core::{
     clock,
     envelope::{Request, Response},
     paging, signing,
-    transaction::{PaymentTiming, QuotePayload, Role, pair_state},
+    transaction::{DealRole, PaymentTiming, QuotePayload, pair_state},
 };
 
 use super::{
@@ -28,8 +28,8 @@ pub(crate) async fn decide_booking<H: AppHost>(
     now: u64,
 ) -> Result<BookingRow, String> {
     let owner = signing::owner_did(host).await.map_err(|e| e.to_string())?;
-    if owner != agreement.provider_did {
-        return Err("provider-only".to_string());
+    if owner != agreement.quote_author_did {
+        return Err("quote-author-only".to_string());
     }
 
     if let Some(row) = load_booking(host, &agreement.quote_record_id).await? {
@@ -40,8 +40,8 @@ pub(crate) async fn decide_booking<H: AppHost>(
     let scheduled = booking::open(
         agreement.quote_record_id.clone(),
         agreement.conversation.clone(),
-        agreement.consumer_did.clone(),
-        agreement.provider_did.clone(),
+        agreement.counterparty_did.clone(),
+        agreement.quote_author_did.clone(),
         None,
         window_end,
     );
@@ -80,8 +80,8 @@ pub(crate) async fn decide_booking<H: AppHost>(
             let conflict = booking::open(
                 agreement.quote_record_id.clone(),
                 agreement.conversation.clone(),
-                agreement.consumer_did.clone(),
-                agreement.provider_did.clone(),
+                agreement.counterparty_did.clone(),
+                agreement.quote_author_did.clone(),
                 Some(reason),
                 window_end,
             );
@@ -211,17 +211,17 @@ pub(crate) fn booking_view(
     progress_record_id: Option<&str>,
     writer: Option<&str>,
     agr: &AgreementRow,
-    role: Role,
+    role: DealRole,
 ) -> Value {
-    let pair = pair_state(agr.consumer.as_ref(), agr.provider.as_ref());
+    let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     let next_step_enum = match snapshot {
         Some(s) => booking::next_step(s, agr.terms.payment_timing, role),
         None => match role {
-            Role::Provider if agr.terms.payment_timing == PaymentTiming::BeforeWork => {
+            DealRole::QuoteAuthor if agr.terms.payment_timing == PaymentTiming::BeforeWork => {
                 NextStep::RequestPayment
             }
-            Role::Provider => NextStep::Nothing,
-            Role::Consumer => NextStep::WaitForProvider,
+            DealRole::QuoteAuthor => NextStep::Nothing,
+            DealRole::Counterparty => NextStep::WaitForQuoteAuthor,
         },
     };
 
@@ -265,7 +265,7 @@ pub(crate) async fn booking_get<H: AppHost>(host: &H, req: &Request) -> Response
     };
 
     let now = clock::now_secs();
-    if owner == agr.provider_did {
+    if owner == agr.quote_author_did {
         if let Ok(Some(row)) = load_booking(host, &p.agreement).await
             && now >= row.snapshot.track_window_ends_at_secs
             && !row.snapshot.state.is_terminal()
@@ -285,12 +285,12 @@ pub(crate) async fn booking_get<H: AppHost>(host: &H, req: &Request) -> Response
                 Some(&b.progress_record_id),
                 Some("self"),
                 &agr,
-                Role::Provider,
+                DealRole::QuoteAuthor,
             ),
-            None => booking_view(&p.agreement, None, None, None, &agr, Role::Provider),
+            None => booking_view(&p.agreement, None, None, None, &agr, DealRole::QuoteAuthor),
         };
         Response::ok(view)
-    } else if owner == agr.consumer_did {
+    } else if owner == agr.counterparty_did {
         let progress: Option<ProgressRow> = match get_row(host, PROGRESS, &p.agreement).await {
             Ok(pr) => pr,
             Err(e) => return Response::internal_error(e),
@@ -303,9 +303,9 @@ pub(crate) async fn booking_get<H: AppHost>(host: &H, req: &Request) -> Response
                 Some(&pr.record_id),
                 Some("peer"),
                 &agr,
-                Role::Consumer,
+                DealRole::Counterparty,
             ),
-            None => booking_view(&p.agreement, None, None, None, &agr, Role::Consumer),
+            None => booking_view(&p.agreement, None, None, None, &agr, DealRole::Counterparty),
         };
         Response::ok(view)
     } else {
@@ -329,8 +329,8 @@ pub(crate) async fn booking_start<H: AppHost>(host: &H, req: &Request) -> Respon
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
     };
-    if owner != agr.provider_did {
-        return Response::invalid_params("provider-only");
+    if owner != agr.quote_author_did {
+        return Response::invalid_params("quote-author-only");
     }
 
     let now = clock::now_secs();
@@ -345,7 +345,7 @@ pub(crate) async fn booking_start<H: AppHost>(host: &H, req: &Request) -> Respon
         Some(&row.progress_record_id),
         Some("self"),
         &agr,
-        Role::Provider,
+        DealRole::QuoteAuthor,
     ))
 }
 
@@ -371,8 +371,8 @@ pub(crate) async fn booking_cancel<H: AppHost>(host: &H, req: &Request) -> Respo
         Ok(o) => o,
         Err(e) => return Response::internal_error(e.to_string()),
     };
-    if owner != agr.provider_did {
-        return Response::invalid_params("provider-only");
+    if owner != agr.quote_author_did {
+        return Response::invalid_params("quote-author-only");
     }
 
     let now = clock::now_secs();
@@ -389,7 +389,7 @@ pub(crate) async fn booking_cancel<H: AppHost>(host: &H, req: &Request) -> Respo
         Some(&row.progress_record_id),
         Some("self"),
         &agr,
-        Role::Provider,
+        DealRole::QuoteAuthor,
     ))
 }
 
@@ -410,7 +410,7 @@ pub(crate) async fn booking_history<H: AppHost>(host: &H, req: &Request) -> Resp
         Err(e) => return Response::internal_error(e.to_string()),
     };
 
-    if owner == agr.provider_did {
+    if owner == agr.quote_author_did {
         let mut steps = Vec::new();
         let mut seq = 1;
         loop {
@@ -434,7 +434,7 @@ pub(crate) async fn booking_history<H: AppHost>(host: &H, req: &Request) -> Resp
             }
         }
         Response::ok(json!({ "history": steps }))
-    } else if owner == agr.consumer_did {
+    } else if owner == agr.counterparty_did {
         let filter = json!({ "conversation": agr.conversation }).to_string();
         let cards: Vec<CardRow> = match paging::query_all(host, CARDS, Some(filter)).await {
             Ok(c) => c,
@@ -486,13 +486,13 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
     let mut views = Vec::new();
     let filter = p.conversation.as_ref().map(|c| json!({ "conversation": c }).to_string());
 
-    let provider_bookings: Vec<BookingRow> =
+    let author_bookings: Vec<BookingRow> =
         match paging::query_all(host, BOOKINGS, filter.clone()).await {
             Ok(b) => b,
             Err(e) => return Response::internal_error(e),
         };
 
-    for b in provider_bookings {
+    for b in author_bookings {
         if let Some(ref st) = p.state
             && serde_json::to_value(b.state).ok().and_then(|v| v.as_str().map(ToString::to_string))
                 != Some(st.clone())
@@ -500,9 +500,13 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
             continue;
         }
         if let Ok(Some(agr)) = get_row::<AgreementRow, _>(host, AGREEMENTS, &b.agreement).await
-            && (owner == agr.provider_did || owner == agr.consumer_did)
+            && (owner == agr.quote_author_did || owner == agr.counterparty_did)
         {
-            let role = if owner == agr.provider_did { Role::Provider } else { Role::Consumer };
+            let role = if owner == agr.quote_author_did {
+                DealRole::QuoteAuthor
+            } else {
+                DealRole::Counterparty
+            };
             views.push(booking_view(
                 &b.agreement,
                 Some(&b.snapshot),
@@ -515,12 +519,12 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
     }
 
     if views.is_empty() {
-        let consumer_progress: Vec<ProgressRow> =
+        let counterparty_progress: Vec<ProgressRow> =
             match paging::query_all(host, PROGRESS, filter).await {
                 Ok(pr) => pr,
                 Err(e) => return Response::internal_error(e),
             };
-        for pr in consumer_progress {
+        for pr in counterparty_progress {
             if let Some(ref st) = p.state
                 && serde_json::to_value(pr.snapshot.state)
                     .ok()
@@ -530,9 +534,13 @@ pub(crate) async fn booking_list<H: AppHost>(host: &H, req: &Request) -> Respons
                 continue;
             }
             if let Ok(Some(agr)) = get_row::<AgreementRow, _>(host, AGREEMENTS, &pr.agreement).await
-                && (owner == agr.provider_did || owner == agr.consumer_did)
+                && (owner == agr.quote_author_did || owner == agr.counterparty_did)
             {
-                let role = if owner == agr.provider_did { Role::Provider } else { Role::Consumer };
+                let role = if owner == agr.quote_author_did {
+                    DealRole::QuoteAuthor
+                } else {
+                    DealRole::Counterparty
+                };
                 views.push(booking_view(
                     &pr.agreement,
                     Some(&pr.snapshot),

@@ -19,15 +19,15 @@ import {
 export interface BookingProgressData {
   agreement?: string;
   conversation?: string;
-  consumer_did?: string;
-  provider_did?: string;
+  counterparty_did?: string;
+  quote_author_did?: string;
   seq?: number;
   state?: "scheduled" | "in-progress" | "completed" | "cancelled" | "conflict" | "ended-unconfirmed";
   conflict?: "slot-taken" | "slot-unavailable";
   payment?: "none" | "claimed" | "acknowledged" | "unconfirmed";
   fulfilment?: "none" | "claimed" | "acknowledged" | "unconfirmed";
   track_window_ends_at_secs?: number;
-  cancelled_by?: "consumer" | "provider";
+  cancelled_by?: "counterparty" | "quote-author";
   cancel_reason?: string;
 }
 
@@ -42,7 +42,7 @@ const STATE_WORDS: Record<string, string> = {
 
 const CONFLICT_SENTENCES: Record<string, string> = {
   "slot-taken": "Another booking took this slot first.",
-  "slot-unavailable": "The provider removed this slot.",
+  "slot-unavailable": "The listing owner removed this slot.",
 };
 
 function trackSentence(track: string | undefined, claimed: string, acknowledged: string): string | undefined {

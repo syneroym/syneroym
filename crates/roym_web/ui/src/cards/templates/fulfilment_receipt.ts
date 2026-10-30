@@ -13,9 +13,9 @@ import { type AgreedTermsData } from "./quote";
 export interface FulfilmentReceiptData {
   agreement?: string;
   conversation?: string;
-  consumer_did?: string;
-  provider_did?: string;
-  role?: "consumer" | "provider";
+  counterparty_did?: string;
+  quote_author_did?: string;
+  role?: "counterparty" | "quote-author";
   terms?: AgreedTermsData;
 }
 
@@ -30,7 +30,7 @@ export function renderFulfilmentReceipt(data?: FulfilmentReceiptData): HTMLEleme
   if (data?.role) {
     const roleP = document.createElement("p");
     roleP.className = "fulfilment-role";
-    roleP.textContent = data.role === "provider" ? FULFILMENT_CLAIMED : FULFILMENT_ACKNOWLEDGED;
+    roleP.textContent = data.role === "quote-author" ? FULFILMENT_CLAIMED : FULFILMENT_ACKNOWLEDGED;
     card.appendChild(roleP);
   }
 

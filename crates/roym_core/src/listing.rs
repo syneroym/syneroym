@@ -1,4 +1,4 @@
-//! The provider's offer: one signed record type, a small required core
+//! The listing owner's offer: one signed record type, a small required core
 //! plus seven optional named blocks. An edit is a new envelope carrying
 //! `supersedes`; nothing is rewritten.
 //!
@@ -122,8 +122,8 @@ pub struct ServiceDetail {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServiceLocation {
-    AtProvider,
-    AtCustomer,
+    AtGiver,
+    AtReceiver,
     Remote,
 }
 
@@ -151,7 +151,7 @@ pub enum OpenTo {
     Anyone,
     Members,
     Referral,
-    ExistingCustomers,
+    PastCounterparties,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,7 +169,7 @@ pub struct ServiceRecordTerms {
     pub issues_fulfilment_receipt: bool,
     /// Seconds; `0` means no stated warranty.
     pub warranty_secs: u64,
-    /// Seconds the provider states it retains the record for.
+    /// Seconds the listing owner states it retains the record for.
     pub retention_secs: u64,
 }
 
@@ -186,7 +186,7 @@ pub struct ListingPayload {
     /// filters on; the vocabulary is the group's, not the product's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
-    /// Under the provider's own signature, so a stranger who verifies this
+    /// Under the listing owner's own signature, so a stranger who verifies this
     /// listing can start a conversation with no directory and no prior
     /// contact entry.
     pub conversation_address: String,
@@ -386,7 +386,7 @@ pub fn derive_listing_id(issuer: &str, slug: &str) -> Result<String, EnvelopeErr
 }
 
 /// One definition for the slot id, shared by the catalog that stores the
-/// slot and the quote that names it, so a consumer can re-derive it from
+/// slot and the quote that names it, so a searcher can re-derive it from
 /// signed fields.
 pub fn derive_slot_id(
     listing_id: &str,
@@ -499,7 +499,7 @@ pub fn revocation_status_word(status: crate::record::RevocationStatus) -> String
 
 /// Checks a signed `listing` envelope on the caller's own node: signature,
 /// record shape, `listing_id` derivability, and payload validity. Never
-/// consults a directory's own claim about any of this -- the consumer's
+/// consults a directory's own claim about any of this -- the searcher's
 /// own node is the only party whose verdict counts.
 #[must_use]
 pub fn verify_envelope(envelope: &str, now_secs: u64) -> ListingVerdict {
