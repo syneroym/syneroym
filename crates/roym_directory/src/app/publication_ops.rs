@@ -264,7 +264,7 @@ fn validate_publishable(payload: &listing::ListingPayload) -> Result<(), Respons
 /// declared edit of, whatever this directory already holds for the
 /// listing. Without this, replaying an old signed envelope -- of any
 /// status, withdrawal included -- silently rewrites or deletes a
-/// provider's current, live listing. Strict `issued_at_secs` alone is
+/// listing owner's current, live listing. Strict `issued_at_secs` alone is
 /// not enough: the signing clock's resolution is one second, so a
 /// second, legitimate edit issued in the same second as the one it
 /// replaces would tie on timestamp -- `supersedes` naming the stored
@@ -394,7 +394,7 @@ struct PublishedRecord {
 /// deleted: a crash between the two steps then leaves both the old and
 /// the new publication briefly present (a later publish or `reindex`
 /// reconciles), never neither -- losing the row outright would also have
-/// spent one of the provider's daily publications on nothing. Then
+/// spent one of the listing owner's daily publications on nothing. Then
 /// rebuilds this listing's search-index rows -- deleted before the
 /// rebuild so a republish with fewer areas never leaves an orphaned row
 /// behind.

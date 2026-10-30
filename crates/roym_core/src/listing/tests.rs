@@ -83,7 +83,7 @@ fn core() -> ListingPayload {
         title: "Hedge trimming".to_string(),
         summary: "Neat hedges, fortnightly.".to_string(),
         categories: vec!["gardening".to_string(), "outdoor".to_string()],
-        conversation_address: "did:key:zProviderConv".to_string(),
+        conversation_address: "did:key:zListingOwnerConv".to_string(),
         status: ListingStatus::Active,
         booking: None,
         payment: Some(PaymentTerms {
@@ -125,7 +125,7 @@ fn a_full_payload_validates_and_signs() {
         prerequisites: vec![],
     });
     p.location = Some(LocationTerms {
-        where_: ServiceLocation::AtCustomer,
+        where_: ServiceLocation::AtReceiver,
         service_area: vec![Area::Circle {
             lat_e6: 48_856_600,
             lon_e6: 2_352_200,
@@ -324,4 +324,23 @@ fn derive_slot_id_is_stable_and_scoped() {
     assert_ne!(s1, s2);
     let s3 = derive_slot_id("lst_other", 1000, 2000).unwrap();
     assert_ne!(s1, s3);
+}
+
+#[test]
+fn the_wire_values_of_locations_and_audiences_are_pinned() {
+    for (location, wire) in [
+        (ServiceLocation::AtGiver, "at-giver"),
+        (ServiceLocation::AtReceiver, "at-receiver"),
+        (ServiceLocation::Remote, "remote"),
+    ] {
+        assert_eq!(serde_json::to_value(location).unwrap(), wire);
+    }
+    for (open_to, wire) in [
+        (OpenTo::Anyone, "anyone"),
+        (OpenTo::Members, "members"),
+        (OpenTo::Referral, "referral"),
+        (OpenTo::PastCounterparties, "past-counterparties"),
+    ] {
+        assert_eq!(serde_json::to_value(open_to).unwrap(), wire);
+    }
 }

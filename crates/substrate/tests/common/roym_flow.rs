@@ -1,5 +1,5 @@
 //! Multi-node Roym flows shared by the directory, booking and trust e2e
-//! tests: the consumer's client loop, a stranger's wire call, and the
+//! tests: the searcher's client loop, a stranger's wire call, and the
 //! request -> quote -> accept -> booking -> payment -> fulfilment steps.
 //! Each is a step a test reads as one line, parameterised only by what
 //! differs between the tests that use it.
@@ -50,7 +50,7 @@ pub fn hits(result: &Value) -> Vec<Value> {
     result["hits"].as_array().cloned().unwrap_or_default()
 }
 
-/// Drive the consumer client loop the way `roymctl roym directory find` and
+/// Drive the searcher client loop the way `roymctl roym directory find` and
 /// the Hub do: `start-run`, one `query-source` per source (respecting
 /// `max_concurrency`), then `merge`. Returns `(run_id, merge_result)`.
 pub async fn run_client_loop(node: &Node, query: Value) -> (String, Value) {
@@ -103,7 +103,7 @@ pub async fn deliver_one_message(from: &Node, to_label: &str, address: &str, bod
     assert!(delivered, "{} -> {to_label} message must deliver: {body}", from.label);
 }
 
-/// Opens a conversation to the provider at `peer_address` and files one
+/// Opens a conversation to the listing owner at `peer_address` and files one
 /// request in it, delivered. Returns `(conversation id, request record id)`.
 pub async fn open_request_conv(
     node: &Node,
@@ -125,13 +125,13 @@ pub async fn open_request_conv(
         )
         .await;
     let msg_id = req["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node, &msg_id).await, "request delivered to provider");
+    assert!(wait_delivered(node, &msg_id).await, "request delivered to quote author");
     (conv_id, req["record_id"].as_str().unwrap().to_string())
 }
 
-/// The provider's own conversation id for the consumer at `peer_address`,
-/// once the consumer's first message has arrived.
-pub async fn provider_conv_for(y: &Node, peer_address: &str) -> String {
+/// The quote author's own conversation id for the counterparty at
+/// `peer_address`, once the counterparty's first message has arrived.
+pub async fn quote_author_conv_for(y: &Node, peer_address: &str) -> String {
     let found = wait_until(Duration::from_secs(20), || async {
         let list = y.rpc_ok("conversation.list", json!({})).await;
         list["conversations"]
@@ -140,7 +140,7 @@ pub async fn provider_conv_for(y: &Node, peer_address: &str) -> String {
             .unwrap_or(false)
     })
     .await;
-    assert!(found, "provider sees a conversation with {peer_address}");
+    assert!(found, "quote author sees a conversation with {peer_address}");
     let list = y.rpc_ok("conversation.list", json!({})).await;
     list["conversations"]
         .as_array()
@@ -153,19 +153,24 @@ pub async fn provider_conv_for(y: &Node, peer_address: &str) -> String {
         .to_string()
 }
 
-/// Files the request that arrived in `provider_conv` and returns its record
+/// Files the request that arrived in `quote_author_conv` and returns its record
 /// id -- what `quote.set` names.
-pub async fn request_record_on_provider(provider: &Node, provider_conv: &str) -> String {
-    let sync = provider.rpc_ok("transaction.sync", json!({ "conversation": provider_conv })).await;
-    assert_eq!(sync["filed"], 1, "the provider files the one request: {sync}");
-    let thread =
-        provider.rpc_ok("transaction.thread", json!({ "conversation": provider_conv })).await;
+pub async fn request_record_on_quote_author(
+    quote_author: &Node,
+    quote_author_conv: &str,
+) -> String {
+    let sync =
+        quote_author.rpc_ok("transaction.sync", json!({ "conversation": quote_author_conv })).await;
+    assert_eq!(sync["filed"], 1, "the quote author files the one request: {sync}");
+    let thread = quote_author
+        .rpc_ok("transaction.thread", json!({ "conversation": quote_author_conv }))
+        .await;
     thread["cards"]
         .as_array()
         .unwrap()
         .iter()
         .find(|c| c["card_type"] == "request")
-        .expect("request card in the provider's thread")["record_id"]
+        .expect("request card in the quote author's thread")["record_id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -181,23 +186,23 @@ pub fn quote_terms(payee: &str, amount_minor: u64) -> Value {
         "payment_methods": ["cash"],
         "payee": payee,
         "payment_timing": "after-work",
-        "location": { "where": "at-customer", "address": "1 Garden Lane" },
+        "location": { "where": "at-receiver", "address": "1 Garden Lane" },
         "cancellation_terms": "24 hours notice required",
         "refund_terms": "Full refund if work not completed",
         "dispute_path": "Informal mediation",
     })
 }
 
-/// The provider quotes `request_record_id` against `slot_id`, delivered.
+/// The quote author quotes `request_record_id` against `slot_id`, delivered.
 /// Returns the quote's record id.
 pub async fn send_quote(
-    provider: &Node,
+    quote_author: &Node,
     request_record_id: &str,
     listing_id: &str,
     slot_id: &str,
     terms: Value,
 ) -> String {
-    let quote = provider
+    let quote = quote_author
         .rpc_ok(
             "quote.set",
             json!({
@@ -210,19 +215,20 @@ pub async fn send_quote(
         )
         .await;
     let msg = quote["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(provider, &msg).await, "the quote is delivered");
+    assert!(wait_delivered(quote_author, &msg).await, "the quote is delivered");
     quote["record_id"].as_str().unwrap().to_string()
 }
 
-/// The consumer syncs the quote in and accepts it; the accept is delivered
+/// The counterparty syncs the quote in and accepts it; the accept is delivered
 /// and the pair is one half.
-pub async fn accept_quote(consumer: &Node, conversation: &str, quote_record_id: &str) {
-    consumer.rpc_ok("transaction.sync", json!({ "conversation": conversation })).await;
-    let accept =
-        consumer.rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id })).await;
+pub async fn accept_quote(counterparty: &Node, conversation: &str, quote_record_id: &str) {
+    counterparty.rpc_ok("transaction.sync", json!({ "conversation": conversation })).await;
+    let accept = counterparty
+        .rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id }))
+        .await;
     assert_eq!(accept["pair"]["state"], "half");
     let msg = accept["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(consumer, &msg).await, "the accept is delivered");
+    assert!(wait_delivered(counterparty, &msg).await, "the accept is delivered");
 }
 
 pub async fn assert_no_directory(nodes: &[&Node]) {
@@ -233,7 +239,7 @@ pub async fn assert_no_directory(nodes: &[&Node]) {
     }
 }
 
-/// The provider's countersigned receipt reaches the winner, whose booking
+/// The quote author's countersigned receipt reaches the winner, whose booking
 /// then reads `scheduled`.
 pub async fn wait_and_verify_winner_scheduled(
     node_y: &Node,
@@ -249,7 +255,7 @@ pub async fn wait_and_verify_winner_scheduled(
     let y_prov_card = y_cards_winner
         .iter()
         .find(|c| c["card_type"] == "agreement-receipt" && c["issuer"] == owner_y_did)
-        .expect("provider card in Y thread for winner");
+        .expect("quote author card in Y thread for winner");
     let prov_msg_id = y_prov_card["message_id"].as_str().unwrap();
     assert!(wait_delivered(node_y, prov_msg_id).await, "countersigned receipt delivered to winner");
 
@@ -289,24 +295,27 @@ pub async fn complete_winner_lifecycle(
         .rpc_ok("payment.acknowledge", json!({ "agreement": winner_quote_record_id }))
         .await;
     let x_ack_msg = x_ack["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(winner_node, &x_ack_msg).await, "consumer's payment ack delivered");
+    assert!(wait_delivered(winner_node, &x_ack_msg).await, "counterparty's payment ack delivered");
 
     node_y.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_on_y })).await;
-    let y_payment_after_consumer =
+    let y_payment_after_counterparty =
         node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(y_payment_after_consumer["track"], "claimed");
+    assert_eq!(y_payment_after_counterparty["track"], "claimed");
 
     let y_ack =
         node_y.rpc_ok("payment.acknowledge", json!({ "agreement": winner_quote_record_id })).await;
     assert_ne!(y_ack["state"], "already-recorded");
-    let y_payment_after_provider =
+    let y_payment_after_quote_author =
         node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(y_payment_after_provider["track"], "acknowledged");
+    assert_eq!(y_payment_after_quote_author["track"], "acknowledged");
 
     let y_fulfil =
         node_y.rpc_ok("fulfilment.sign", json!({ "agreement": winner_quote_record_id })).await;
     let y_fulfil_msg = y_fulfil["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_y, &y_fulfil_msg).await, "provider's fulfilment sign delivered");
+    assert!(
+        wait_delivered(node_y, &y_fulfil_msg).await,
+        "quote author's fulfilment sign delivered"
+    );
 
     winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
     let x_fulfil =
@@ -314,7 +323,7 @@ pub async fn complete_winner_lifecycle(
     let x_fulfil_msg = x_fulfil["message_id"].as_str().unwrap().to_string();
     assert!(
         wait_delivered(winner_node, &x_fulfil_msg).await,
-        "consumer's fulfilment sign delivered"
+        "counterparty's fulfilment sign delivered"
     );
 
     assert_booking_completed(
@@ -341,13 +350,13 @@ async fn assert_booking_completed(
         b["state"] == "completed"
     })
     .await;
-    assert!(synced, "provider's booking reaches completed");
+    assert!(synced, "quote author's booking reaches completed");
 
-    let synced_consumer = wait_until(Duration::from_secs(30), || async {
+    let synced_counterparty = wait_until(Duration::from_secs(30), || async {
         winner_node.rpc_ok("transaction.sync", json!({ "conversation": conv_on_winner })).await;
         let b = winner_node.rpc_ok("booking.get", json!({ "agreement": quote_record_id })).await;
         b["state"] == "completed"
     })
     .await;
-    assert!(synced_consumer, "winner's own progress reaches completed");
+    assert!(synced_counterparty, "winner's own progress reaches completed");
 }

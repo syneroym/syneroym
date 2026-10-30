@@ -17,8 +17,8 @@ use syneroym_roym_core::{
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
     transaction::{
-        self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, QuotePayload, ReceiptHalf,
-        RecordVerdict, Role, pair_state,
+        self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DealRole, QuotePayload,
+        ReceiptHalf, RecordVerdict, pair_state,
     },
 };
 
@@ -49,7 +49,7 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         return Response::internal_error(e);
     }
 
-    let (quote_payload, provider_did, role) =
+    let (quote_payload, quote_author_did, role) =
         match load_verified_quote_and_role(host, &params.quote_record_id, now, &owner).await {
             Ok(v) => v,
             Err(resp) => return resp,
@@ -59,7 +59,7 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         host,
         &params.quote_record_id,
         &quote_payload,
-        &provider_did,
+        &quote_author_did,
         now,
     )
     .await
@@ -72,9 +72,8 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
         return resp;
     }
 
-    let booking_view_val = if role == Role::Provider {
-        match prepare_provider_booking(host, &row, &quote_payload, &params.quote_record_id, now)
-            .await
+    let booking_view_val = if role == DealRole::QuoteAuthor {
+        match prepare_author_booking(host, &row, &quote_payload, &params.quote_record_id, now).await
         {
             Ok(v) => v,
             Err(resp) => return resp,
@@ -110,7 +109,7 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
     )
     .await;
 
-    let pair = pair_state(row.consumer.as_ref(), row.provider.as_ref());
+    let pair = pair_state(row.counterparty.as_ref(), row.quote_author.as_ref());
     let mut out = json!({
         "quote_record_id": params.quote_record_id,
         "role": role,
@@ -127,13 +126,14 @@ pub(crate) async fn agreement_accept<H: AppHost>(host: &H, req: &Request) -> Res
 }
 
 /// Fetches and verifies the quote a caller wants to accept, and works out
-/// which side of it (consumer or provider) this installation's owner is.
+/// which side of it (counterparty or quote author) this installation's owner
+/// is.
 async fn load_verified_quote_and_role<H: AppHost>(
     host: &H,
     quote_record_id: &str,
     now: u64,
     owner: &str,
-) -> Result<(QuotePayload, String, Role), Response> {
+) -> Result<(QuotePayload, String, DealRole), Response> {
     let quote_envelope_bytes = match get_bytes(host, QUOTE_HISTORY, quote_record_id).await {
         Ok(Some(b)) => b,
         Ok(None) => return Err(Response::invalid_params("no such quote")),
@@ -160,20 +160,20 @@ async fn load_verified_quote_and_role<H: AppHost>(
         Some(p) => p,
         None => return Err(Response::internal_error("missing quote payload")),
     };
-    let provider_did = match verdict.issuer {
+    let quote_author_did = match verdict.issuer {
         Some(i) => i,
         None => return Err(Response::internal_error("missing quote issuer")),
     };
 
-    let role = if owner == quote_payload.consumer_did {
-        Role::Consumer
-    } else if owner == provider_did {
-        Role::Provider
+    let role = if owner == quote_payload.counterparty_did {
+        DealRole::Counterparty
+    } else if owner == quote_author_did {
+        DealRole::QuoteAuthor
     } else {
         return Err(Response::invalid_params("this installation is neither party to that quote"));
     };
 
-    Ok((quote_payload, provider_did, role))
+    Ok((quote_payload, quote_author_did, role))
 }
 
 /// Loads the agreement row this quote already has, or seeds a fresh one from
@@ -182,7 +182,7 @@ async fn load_or_init_agreement_row<H: AppHost>(
     host: &H,
     quote_record_id: &str,
     quote_payload: &QuotePayload,
-    provider_did: &str,
+    quote_author_did: &str,
     now: u64,
 ) -> Result<AgreementRow, Response> {
     match get_row(host, AGREEMENTS, quote_record_id).await {
@@ -190,11 +190,11 @@ async fn load_or_init_agreement_row<H: AppHost>(
         Ok(None) => Ok(AgreementRow {
             quote_record_id: quote_record_id.to_string(),
             conversation: quote_payload.conversation.clone(),
-            consumer_did: quote_payload.consumer_did.clone(),
-            provider_did: provider_did.to_string(),
+            counterparty_did: quote_payload.counterparty_did.clone(),
+            quote_author_did: quote_author_did.to_string(),
             terms: quote_payload.terms.clone(),
-            consumer: None,
-            provider: None,
+            counterparty: None,
+            quote_author: None,
             updated_at_secs: now,
         }),
         Err(e) => Err(Response::internal_error(e)),
@@ -206,11 +206,11 @@ async fn load_or_init_agreement_row<H: AppHost>(
 /// reply instead of signing a second one.
 fn already_accepted_response(
     row: &AgreementRow,
-    role: Role,
+    role: DealRole,
     quote_record_id: &str,
 ) -> Option<Response> {
     let existing = row.half(role)?;
-    let pair = pair_state(row.consumer.as_ref(), row.provider.as_ref());
+    let pair = pair_state(row.counterparty.as_ref(), row.quote_author.as_ref());
     Some(Response::ok(json!({
         "quote_record_id": quote_record_id,
         "role": role,
@@ -229,12 +229,12 @@ async fn sign_agreement_receipt<H: AppHost>(
     quote_record_id: &str,
     row: &AgreementRow,
     owner: &str,
-    role: Role,
+    role: DealRole,
 ) -> Result<ReceiptHalf, Response> {
     let payload = AgreementReceiptPayload {
         quote_record_id: quote_record_id.to_string(),
-        consumer_did: row.consumer_did.clone(),
-        provider_did: row.provider_did.clone(),
+        counterparty_did: row.counterparty_did.clone(),
+        quote_author_did: row.quote_author_did.clone(),
         role,
         terms: row.terms.clone(),
     };
@@ -304,14 +304,14 @@ pub(crate) async fn agreement_get<H: AppHost>(host: &H, req: &Request) -> Respon
     };
     match row {
         Some(r) => {
-            let pair = pair_state(r.consumer.as_ref(), r.provider.as_ref());
+            let pair = pair_state(r.counterparty.as_ref(), r.quote_author.as_ref());
             Response::ok(json!({
                 "quote_record_id": r.quote_record_id,
                 "conversation": r.conversation,
-                "consumer_did": r.consumer_did,
-                "provider_did": r.provider_did,
-                "consumer": r.consumer,
-                "provider": r.provider,
+                "counterparty_did": r.counterparty_did,
+                "quote_author_did": r.quote_author_did,
+                "counterparty": r.counterparty,
+                "quote_author": r.quote_author,
                 "pair": pair,
                 "terms": r.terms,
             }))
@@ -350,14 +350,14 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
         .skip(params.offset)
         .take(params.limit)
         .map(|r| {
-            let pair = pair_state(r.consumer.as_ref(), r.provider.as_ref());
+            let pair = pair_state(r.counterparty.as_ref(), r.quote_author.as_ref());
             json!({
                 "quote_record_id": r.quote_record_id,
                 "conversation": r.conversation,
-                "consumer_did": r.consumer_did,
-                "provider_did": r.provider_did,
-                "consumer": r.consumer,
-                "provider": r.provider,
+                "counterparty_did": r.counterparty_did,
+                "quote_author_did": r.quote_author_did,
+                "counterparty": r.counterparty,
+                "quote_author": r.quote_author,
                 "pair": pair,
                 "terms": r.terms,
             })
@@ -366,19 +366,19 @@ pub(crate) async fn agreement_list<H: AppHost>(host: &H, req: &Request) -> Respo
     Response::ok(json!({ "agreements": page }))
 }
 
-async fn prepare_provider_booking<H: AppHost>(
+async fn prepare_author_booking<H: AppHost>(
     host: &H,
     row: &AgreementRow,
     quote_payload: &QuotePayload,
     quote_record_id: &str,
     now: u64,
 ) -> Result<Value, Response> {
-    if quote_payload.slot_id.is_some() && row.consumer.is_none() {
+    if quote_payload.slot_id.is_some() && row.counterparty.is_none() {
         return Err(Response::invalid_params(
-            "provider cannot accept a slot quote before the consumer accepts",
+            "the quote author cannot accept a slot quote before the counterparty accepts",
         ));
     }
-    if row.consumer.is_some() {
+    if row.counterparty.is_some() {
         let b = match booking_ops::decide_booking(host, row, quote_payload, now).await {
             Ok(b) => b,
             Err(e) => return Err(Response::internal_error(e)),
@@ -392,16 +392,16 @@ async fn prepare_provider_booking<H: AppHost>(
             Some(&b.progress_record_id),
             Some("self"),
             row,
-            Role::Provider,
+            DealRole::QuoteAuthor,
         );
         return Ok(view);
     }
     Ok(Value::Null)
 }
 
-/// Attempts to countersign an agreement on the provider's node when the
-/// consumer has accepted. Refused, and left to the person, when the slot the
-/// quote names is already full.
+/// Attempts to countersign an agreement on the quote author's node when the
+/// counterparty has accepted. Refused, and left to the person, when the slot
+/// the quote names is already full.
 pub(crate) async fn maybe_countersign<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
@@ -409,18 +409,18 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
     now: u64,
     owner: &str,
 ) -> Result<bool, String> {
-    if row.consumer.is_none() {
+    if row.counterparty.is_none() {
         return Ok(false);
     }
     let q_payload = match qv.payload.as_ref() {
         Some(p) => p,
         None => return Ok(false),
     };
-    if row.provider.is_some() {
+    if row.quote_author.is_some() {
         let _ = booking_ops::decide_booking(host, row, q_payload, now).await;
         return Ok(false);
     }
-    if owner.is_empty() || owner != row.provider_did {
+    if owner.is_empty() || owner != row.quote_author_did {
         return Ok(false);
     }
     if now >= row.terms.quote_expires_at_secs {
@@ -437,9 +437,9 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
 
     let payload = AgreementReceiptPayload {
         quote_record_id: row.quote_record_id.clone(),
-        consumer_did: row.consumer_did.clone(),
-        provider_did: row.provider_did.clone(),
-        role: Role::Provider,
+        counterparty_did: row.counterparty_did.clone(),
+        quote_author_did: row.quote_author_did.clone(),
+        role: DealRole::QuoteAuthor,
         terms: q_payload.terms.clone(),
     };
     if payload.validate().is_err() {
@@ -470,7 +470,7 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
         issuer: owner.to_string(),
         issued_at_secs: envelope.issued_at_secs,
     };
-    row.provider = Some(half);
+    row.quote_author = Some(half);
     row.updated_at_secs = now;
     put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
 

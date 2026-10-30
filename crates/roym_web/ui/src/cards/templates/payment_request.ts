@@ -18,8 +18,8 @@ import { ONE_PAYMENT_NOTICE, PAYMENT_NOTICE } from "../wording";
 export interface PaymentRequestData {
   agreement?: string;
   conversation?: string;
-  consumer_did?: string;
-  provider_did?: string;
+  counterparty_did?: string;
+  quote_author_did?: string;
   currency?: string;
   amount_minor?: number;
   note?: string;

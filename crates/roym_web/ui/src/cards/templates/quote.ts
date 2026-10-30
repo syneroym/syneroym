@@ -7,6 +7,8 @@
 /// - A missing optional field renders as an omitted row, never as undefined
 ///   and never as a guess.
 
+import type { ServiceLocationKind } from "../../listings/editor";
+import { serviceLocationCardLabel } from "../../listings/labels";
 import { formatMinor } from "../../money";
 import { renderLink } from "../link";
 
@@ -24,7 +26,7 @@ export interface AgreedTermsData {
     latest_secs: number;
   };
   location?: {
-    where: "at-customer" | "at-provider" | "remote";
+    where: ServiceLocationKind;
     address?: string;
     area?: unknown;
   };
@@ -40,7 +42,7 @@ export interface QuoteData {
   sequence?: number;
   request_record_id?: string;
   listing_id?: string;
-  consumer_did?: string;
+  counterparty_did?: string;
   terms?: AgreedTermsData;
   scope?: string;
   currency?: string;
@@ -54,7 +56,7 @@ export interface QuoteData {
     latest_secs: number;
   };
   location?: {
-    where: "at-customer" | "at-provider" | "remote";
+    where: ServiceLocationKind;
     address?: string;
   };
   cancellation_terms?: string;
@@ -159,7 +161,7 @@ export function renderQuote(data?: QuoteData): HTMLElement {
   if (t.location) {
     const locP = document.createElement("p");
     locP.className = "quote-location";
-    locP.textContent = `Location: ${t.location.where}`;
+    locP.textContent = `Location: ${serviceLocationCardLabel(t.location.where)}`;
     card.appendChild(locP);
 
     if (t.location.address) {

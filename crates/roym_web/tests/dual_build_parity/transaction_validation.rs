@@ -431,7 +431,7 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
     let quote_envelope = Envelope::from_json(env_json).unwrap();
     let terms = quote_envelope.payload["terms"].clone();
 
-    let (_, peer_receipt_env) = peer_signed_consumer_receipt_with_expiry(
+    let (_, peer_receipt_env) = peer_counterparty_receipt_with_expiry(
         &conv,
         &q_rec_id,
         &peer_did(),
@@ -475,7 +475,7 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
 }
 
 #[tokio::test]
-async fn scenario_149_quote_naming_wrong_consumer_did_refused_parity() {
+async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -486,14 +486,15 @@ async fn scenario_149_quote_naming_wrong_consumer_did_refused_parity() {
         "request.set",
         json!({
             "conversation": conv,
-            "description": "Wrong consumer DID test",
+            "description": "Wrong counterparty DID test",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
     .await;
     let req_rec_id = rw["result"]["record_id"].as_str().unwrap();
 
-    // Peer creates quote for req_rec_id, but sets consumer_did to a stranger DID
+    // Peer creates quote for req_rec_id, but sets counterparty_did to a stranger
+    // DID
     let stranger_did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
     let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, stranger_did, None, 1_000);
     let card_msg = inbound_card(
@@ -518,7 +519,10 @@ async fn scenario_149_quote_naming_wrong_consumer_did_refused_parity() {
     let q_card = cards.iter().find(|c| c["message_id"] == "m-quote-149").unwrap();
     assert_eq!(q_card["verified"], false);
     assert!(
-        q_card["reason"].as_str().unwrap().contains("consumer_did does not match request issuer")
+        q_card["reason"]
+            .as_str()
+            .unwrap()
+            .contains("counterparty_did does not match request issuer")
     );
 
     strip_volatile(&mut tw);

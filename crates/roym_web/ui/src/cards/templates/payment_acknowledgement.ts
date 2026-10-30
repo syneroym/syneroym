@@ -13,9 +13,9 @@ import { PAYMENT_ACKNOWLEDGED, PAYMENT_CLAIMED, PAYMENT_NOTICE } from "../wordin
 export interface PaymentAcknowledgementData {
   agreement?: string;
   conversation?: string;
-  consumer_did?: string;
-  provider_did?: string;
-  role?: "consumer" | "provider";
+  counterparty_did?: string;
+  quote_author_did?: string;
+  role?: "counterparty" | "quote-author";
   currency?: string;
   amount_minor?: number;
   observed_at_secs?: number;
@@ -38,7 +38,7 @@ export function renderPaymentAcknowledgement(data?: PaymentAcknowledgementData):
   if (data?.role) {
     const roleP = document.createElement("p");
     roleP.className = "payment-ack-role";
-    roleP.textContent = data.role === "consumer" ? PAYMENT_CLAIMED : PAYMENT_ACKNOWLEDGED;
+    roleP.textContent = data.role === "counterparty" ? PAYMENT_CLAIMED : PAYMENT_ACKNOWLEDGED;
     card.appendChild(roleP);
   }
 

@@ -459,9 +459,14 @@ async fn file_quote_card<H: AppHost>(
         }
     };
     let req_v = transaction::verify_request(&req_str, now);
-    if !req_v.verified || req_v.issuer.as_deref() != Some(payload.consumer_did.as_str()) {
-        return refuse_card(host, msg_id, row, "quote consumer_did does not match request issuer")
-            .await;
+    if !req_v.verified || req_v.issuer.as_deref() != Some(payload.counterparty_did.as_str()) {
+        return refuse_card(
+            host,
+            msg_id,
+            row,
+            "quote counterparty_did does not match request issuer",
+        )
+        .await;
     }
     let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {
         Ok(vc) => vc,
@@ -525,8 +530,8 @@ async fn file_agreement_receipt_card<H: AppHost>(
     if q_payload.terms != payload.terms {
         return refuse_card(host, msg_id, row, "terms differ from the quote").await;
     }
-    if payload.consumer_did != q_payload.consumer_did
-        || payload.provider_did != qv.issuer.as_deref().unwrap_or("")
+    if payload.counterparty_did != q_payload.counterparty_did
+        || payload.quote_author_did != qv.issuer.as_deref().unwrap_or("")
     {
         return refuse_card(host, msg_id, row, "names the wrong parties").await;
     }
@@ -540,11 +545,11 @@ async fn file_agreement_receipt_card<H: AppHost>(
             None => AgreementRow {
                 quote_record_id: payload.quote_record_id.clone(),
                 conversation: conversation.to_string(),
-                consumer_did: payload.consumer_did.clone(),
-                provider_did: payload.provider_did.clone(),
+                counterparty_did: payload.counterparty_did.clone(),
+                quote_author_did: payload.quote_author_did.clone(),
                 terms: q_payload.terms.clone(),
-                consumer: None,
-                provider: None,
+                counterparty: None,
+                quote_author: None,
                 updated_at_secs: now,
             },
         };

@@ -748,17 +748,17 @@ async fn scenario_114_search_filters_by_the_serde_spelling_of_a_multi_word_enum_
     enrol_signing(&h, "catalog").await;
     ensure_synorg(&h).await;
     let mut params = full_listing_params("hedge-trimming-114", "Hedge trimming");
-    params["relationship"] = json!({ "open_to": "existing-customers" });
+    params["relationship"] = json!({ "open_to": "past-counterparties" });
     let (_id, gw, _gn) = set_and_get(&h, params).await;
     let e = gw["result"]["envelope"].as_str().unwrap().to_string();
     publish_signed_listing(&h, &e).await;
 
-    // Before the fix this indexed as `Debug`'s "existingcustomers" and a
+    // Before the fix this indexed as `Debug`'s "pastcounterparties" and a
     // query for the documented, serde-spelled value matched nothing.
     let (w, n) = wire_invoke(
         &h,
         services::DIRECTORY,
-        &env("directory.search", json!({ "open_to": "existing-customers" })),
+        &env("directory.search", json!({ "open_to": "past-counterparties" })),
     )
     .await;
     assert_eq!(stripped(&w), stripped(&n));
@@ -858,7 +858,7 @@ async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_t
     assert_eq!(stripped(&xw), stripped(&xn));
     for section in DIRECTORY_BUNDLE_SECTIONS {
         assert_eq!(
-            xw["result"]["manifest"]["sections"][section]["schema_version"], 4,
+            xw["result"]["manifest"]["sections"][section]["schema_version"], 5,
             "section '{section}' must carry the bumped schema version: {xw}"
         );
     }
@@ -882,7 +882,7 @@ async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_t
 // round trip with a verified caller, to this node's own directory;
 // `did:key:hForeignWire2` routes the same way to a second directory
 // instance holding its own store. `did:key:hForge1` / `hForge2` are canned
-// hostile sources that serve forgeries the consumer's own verification
+// hostile sources that serve forgeries the searcher's own verification
 // rejects. Without this a merge scenario can only drive one directory
 // against itself, which never disagrees with itself about a version and
 // never crowds its own page.

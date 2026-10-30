@@ -103,8 +103,8 @@ function buildIssueForm(categories: string[], reload: () => Promise<void>): HTML
   form.appendChild(
     text(
       "p",
-      "A provider gives you their DID outside this app. The credential you sign here is what " +
-        "lets them publish to this group, and what a consumer's node checks.",
+      "A listing owner gives you their DID outside this app. The credential you sign here is what " +
+        "lets them publish to this group, and what a searcher's node checks.",
     ),
   );
   const member = document.createElement("input");

@@ -41,7 +41,7 @@ pub enum BookingCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Provider starts work on a scheduled booking.
+    /// Quote author starts work on a scheduled booking.
     Start {
         #[arg(long)]
         agreement: String,
@@ -50,7 +50,7 @@ pub enum BookingCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Provider cancels a scheduled booking.
+    /// Quote author cancels a scheduled booking.
     Cancel {
         #[arg(long)]
         agreement: String,
@@ -74,7 +74,7 @@ pub enum BookingCommands {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum PaymentCommands {
-    /// Request payment from consumer.
+    /// Request payment from the counterparty.
     Request {
         #[arg(long)]
         agreement: String,

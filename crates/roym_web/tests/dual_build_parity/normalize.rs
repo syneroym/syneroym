@@ -19,7 +19,7 @@ pub(crate) fn normalize_message_ids(val: &mut Value) -> usize {
 
 /// Replaces every `booking-progress` card's `record_id` with
 /// `<progress:N>`, N being the card's position once `cards` rows are in
-/// their own sort order. A snapshot the provider's own node signs embeds
+/// their own sort order. A snapshot the quote author's own node signs embeds
 /// `track_window_ends_at_secs` (computed from `clock::now_secs()`, not the
 /// pinned signing clock) in its payload, so the two builds' independent
 /// wall-clock reads can each produce a different content hash for the same

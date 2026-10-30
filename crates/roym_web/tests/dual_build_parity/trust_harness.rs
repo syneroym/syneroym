@@ -1,4 +1,4 @@
-//! Canned fake directories the consumer's fan-out talks to instead of a real
+//! Canned fake directories the searcher's fan-out talks to instead of a real
 //! second directory: hostile sources that serve forgeries, and a trust
 //! source that serves a validly signed listing with membership evidence of
 //! a chosen defect. A real directory cannot serve either -- its own
@@ -19,7 +19,7 @@ use super::{fixtures::peer_identity, helpers::owner_identity, trust_fixtures::di
 pub(crate) const HOSTILE_SOURCE_FORGERIES: usize = 15;
 
 /// A few shapes a forged envelope can take, cycled across a hostile
-/// source's hits so the consumer's verification is exercised past its
+/// source's hits so the searcher's verification is exercised past its
 /// outermost JSON parse: not-an-object, an object with no signature, an
 /// object with an unusable signature, a wrong record type, and an
 /// issued-at far in the future.
@@ -39,7 +39,7 @@ pub(crate) const FORGED_ENVELOPE_SHAPES: &[&str] = &[
 /// forgeries -- its own `directory.publish` verifies every envelope at
 /// the door -- so a canned page is the only way to drive "a source that
 /// returns nothing but forgeries" or "a source that had more matches
-/// than it would return". The consumer's own verification in
+/// than it would return". The searcher's own verification in
 /// `query-source`, not the source, is what must reject a forgery.
 /// Returned as the `Value::String` shape both real directory calls
 /// produce, so the two builds see byte-identical input.
@@ -70,7 +70,7 @@ pub(crate) fn hostile_source_response(target: &str) -> Option<Value> {
 }
 
 /// The five canned trust sources. A trust source differs from a hostile
-/// one in that its listing is genuine: it verifies on the consumer's node,
+/// one in that its listing is genuine: it verifies on the searcher's node,
 /// so the hit reaches the membership check, which is where these sources
 /// differ. `hTrustValid` is the control: without it, every other target
 /// could be "refused" for a reason in the fixture instead of the evidence.
@@ -92,12 +92,12 @@ const CANNED_EXPIRED_AT_SECS: u64 = CANNED_ISSUED_AT_SECS + 100;
 
 /// The person a trust source lists. Not `owner_did()` or `peer_did()`:
 /// nothing about this member is known to any real directory in the run.
-pub(crate) fn provider_identity() -> Identity {
+pub(crate) fn listing_owner_identity() -> Identity {
     Identity::from_bytes(&[61; 32])
 }
 
-pub(crate) fn provider_did() -> String {
-    derive_did_key(&provider_identity().public_key())
+pub(crate) fn listing_owner_did() -> String {
+    derive_did_key(&listing_owner_identity().public_key())
 }
 
 /// The key each trust source's own `info` names as its issuer. One
@@ -161,10 +161,10 @@ fn sign_claiming(identity: &Identity, issuer: &str, draft: RecordDraft) -> Strin
     env.to_json().unwrap()
 }
 
-/// The one listing every trust source serves, signed by `provider_did()`.
+/// The one listing every trust source serves, signed by `listing_owner_did()`.
 /// Category `gardening`: what `hTrustOutOfScope`'s credential leaves out.
 fn canned_listing_envelope() -> String {
-    let issuer = provider_did();
+    let issuer = listing_owner_did();
     let slug = "trust-hedges";
     let payload = json!({
         "listing_id": listing::derive_listing_id(&issuer, slug).unwrap(),
@@ -172,7 +172,7 @@ fn canned_listing_envelope() -> String {
         "title": "Hedge trimming",
         "summary": "Neat hedges, fortnightly.",
         "categories": ["gardening"],
-        "conversation_address": "did:key:zProviderConv",
+        "conversation_address": "did:key:zListingOwnerConv",
         "status": "active",
         "booking": {
             "mode": "enquiry",
@@ -182,7 +182,7 @@ fn canned_listing_envelope() -> String {
         },
     });
     sign_directly(
-        &provider_identity(),
+        &listing_owner_identity(),
         RecordDraft {
             version: listing::LISTING_VERSION,
             record_type: record::RECORD_LISTING.to_string(),
@@ -194,7 +194,7 @@ fn canned_listing_envelope() -> String {
     )
 }
 
-/// The membership credential a trust source serves for `provider_did()`.
+/// The membership credential a trust source serves for `listing_owner_did()`.
 fn canned_credential_envelope(target: &str) -> String {
     let categories =
         if target == "did:key:hTrustOutOfScope" { vec!["plumbing"] } else { vec!["gardening"] };
@@ -203,7 +203,7 @@ fn canned_credential_envelope(target: &str) -> String {
     } else {
         CANNED_VALID_UNTIL_SECS
     };
-    let member = provider_did();
+    let member = listing_owner_did();
     let payload = MembershipCredentialPayload {
         synorg_name: "Canned Guild".to_string(),
         member_did: member.clone(),
@@ -238,7 +238,7 @@ fn canned_hit(target: &str) -> Value {
     let envelope = canned_listing_envelope();
     let parsed = Envelope::from_json(&envelope).unwrap();
     json!({
-        "listing_id": listing::derive_listing_id(&provider_did(), "trust-hedges").unwrap(),
+        "listing_id": listing::derive_listing_id(&listing_owner_did(), "trust-hedges").unwrap(),
         "record_id": parsed.record_id().unwrap(),
         "envelope": envelope,
         "issued_at_secs": CANNED_ISSUED_AT_SECS,
@@ -280,7 +280,7 @@ pub(crate) fn trust_source_response(target: &str, params: &Value) -> Option<Valu
         "directory.search" => json!({ "hits": [canned_hit(target)] }),
         "directory.standing" => json!({
             "issuer_did": claimed_issuer_did(target),
-            "member_did": provider_did(),
+            "member_did": listing_owner_did(),
             "evidence": canned_evidence(target),
             "answered_at_secs": CANNED_ISSUED_AT_SECS,
         }),

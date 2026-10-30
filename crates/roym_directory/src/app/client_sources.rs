@@ -197,7 +197,7 @@ pub(in crate::app) async fn sources<H: AppHost>(host: &H) -> Response {
 /// Push one of this installation's own listings to a directory. The
 /// `source` is not required to be a registered search source: publishing
 /// to a directory and searching one are two separate lists on purpose --
-/// a provider may publish to a guild directory they never search, and
+/// a listing owner may publish to a guild directory they never search, and
 /// search directories they never publish to. The target is dialled
 /// directly; the far end's `directory.publish` verifies the envelope and
 /// enforces its own rate limit, so an unknown target costs this node

@@ -11,8 +11,9 @@
 //! identity.
 //!
 //! Proves an offer is agreed across two installations:
-//! consumer finds provider by signed listing without a directory, sends a
-//! signed request, receives a signed quote, and accepts it. Provider
+//! the counterparty finds the quote author by signed listing without a
+//! directory, sends a signed request, receives a signed quote, and accepts
+//! it. The quote author
 //! countersigns and both parties reach a completed agreement pair with
 //! identical terms. Also proves tampered cards are refused and never verified.
 
@@ -177,7 +178,7 @@ async fn an_offer_is_agreed_across_two_installations() {
                         "latest_secs": 1800003600
                     },
                     "location": {
-                        "where": "at-customer",
+                        "where": "at-receiver",
                         "address": "123 High Street"
                     },
                     "cancellation_terms": "24 hours notice required for full refund",
@@ -194,7 +195,7 @@ async fn an_offer_is_agreed_across_two_installations() {
     assert!(quote_delivered, "quote card was delivered to X");
 
     // Step 7: X transaction.sync -> files the quote; thread shows it verified with
-    // X as consumer_did.
+    // X as counterparty_did.
     let x_sync = node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
     assert_eq!(x_sync["filed"], 1);
 
@@ -203,14 +204,15 @@ async fn an_offer_is_agreed_across_two_installations() {
     let quote_card =
         x_cards.iter().find(|c| c["card_type"] == "quote").expect("quote card present");
     assert_eq!(quote_card["verified"], true);
-    assert_eq!(quote_card["data"]["consumer_did"], owner_x_did);
+    assert_eq!(quote_card["data"]["counterparty_did"], owner_x_did);
 
-    // Step 8: X agreement.accept { quote_record_id } -> role: consumer, pair: half.
+    // Step 8: X agreement.accept { quote_record_id } -> role: counterparty, pair:
+    // half.
     let accept_res =
         node_x.rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id })).await;
-    assert_eq!(accept_res["role"], "consumer");
+    assert_eq!(accept_res["role"], "counterparty");
     assert_eq!(accept_res["pair"]["state"], "half");
-    assert_eq!(accept_res["pair"]["role"], "consumer");
+    assert_eq!(accept_res["pair"]["role"], "counterparty");
     let accept_msg_id = accept_res["message_id"].as_str().unwrap().to_string();
 
     let accept_delivered = wait_delivered(&node_x, &accept_msg_id).await;
@@ -223,16 +225,16 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     let y_agr = node_y.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
     assert_eq!(y_agr["pair"]["state"], "complete");
-    assert!(y_agr["consumer"].is_object());
-    assert!(y_agr["provider"].is_object());
+    assert!(y_agr["counterparty"].is_object());
+    assert!(y_agr["quote_author"].is_object());
 
-    // Wait until X receives the provider's countersigned card
+    // Wait until X receives the quote author's countersigned card
     let y_thread2 = node_y.rpc_ok("transaction.thread", json!({ "conversation": y_conv_id })).await;
     let y_cards2 = y_thread2["cards"].as_array().unwrap();
     let y_prov_card = y_cards2
         .iter()
         .find(|c| c["card_type"] == "agreement-receipt" && c["issuer"] == owner_y_did)
-        .expect("provider card in Y thread");
+        .expect("quote author card in Y thread");
     let prov_msg_id = y_prov_card["message_id"].as_str().unwrap();
     let prov_delivered = wait_delivered(&node_y, prov_msg_id).await;
     assert!(prov_delivered, "countersigned receipt delivered to X");
@@ -242,25 +244,25 @@ async fn an_offer_is_agreed_across_two_installations() {
     let _x_sync2 = node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
     let x_agr = node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
     assert_eq!(x_agr["pair"]["state"], "complete");
-    assert!(x_agr["consumer"].is_object());
-    assert!(x_agr["provider"].is_object());
+    assert!(x_agr["counterparty"].is_object());
+    assert!(x_agr["quote_author"].is_object());
 
-    let x_consumer_env =
-        Envelope::from_json(x_agr["consumer"]["envelope"].as_str().unwrap()).unwrap();
-    let x_provider_env =
-        Envelope::from_json(x_agr["provider"]["envelope"].as_str().unwrap()).unwrap();
-    let mut c_payload = x_consumer_env.payload.clone();
-    let mut p_payload = x_provider_env.payload.clone();
-    assert_eq!(c_payload["role"], "consumer");
-    assert_eq!(p_payload["role"], "provider");
+    let x_counterparty_env =
+        Envelope::from_json(x_agr["counterparty"]["envelope"].as_str().unwrap()).unwrap();
+    let x_quote_author_env =
+        Envelope::from_json(x_agr["quote_author"]["envelope"].as_str().unwrap()).unwrap();
+    let mut c_payload = x_counterparty_env.payload.clone();
+    let mut p_payload = x_quote_author_env.payload.clone();
+    assert_eq!(c_payload["role"], "counterparty");
+    assert_eq!(p_payload["role"], "quote-author");
     c_payload["role"] = json!("same");
     p_payload["role"] = json!("same");
     assert_eq!(c_payload, p_payload);
 
     // Step 11: Every field the Records table names is present on both halves.
-    for half_payload in [&x_consumer_env.payload, &x_provider_env.payload] {
-        assert_eq!(half_payload["consumer_did"], owner_x_did);
-        assert_eq!(half_payload["provider_did"], owner_y_did);
+    for half_payload in [&x_counterparty_env.payload, &x_quote_author_env.payload] {
+        assert_eq!(half_payload["counterparty_did"], owner_x_did);
+        assert_eq!(half_payload["quote_author_did"], owner_y_did);
         assert_eq!(half_payload["quote_record_id"], quote_record_id);
         let terms = &half_payload["terms"];
         assert!(terms["payee"].is_string() && !terms["payee"].as_str().unwrap().is_empty());
@@ -284,16 +286,16 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     // Step 12: Restart X, redeploy on resume, and re-read agreement.get: still
     // complete.
-    let step10_consumer_env = x_agr["consumer"]["envelope"].as_str().unwrap().to_string();
-    let step10_provider_env = x_agr["provider"]["envelope"].as_str().unwrap().to_string();
+    let step10_counterparty_env = x_agr["counterparty"]["envelope"].as_str().unwrap().to_string();
+    let step10_quote_author_env = x_agr["quote_author"]["envelope"].as_str().unwrap().to_string();
 
     node_x.restart(None, None).await;
 
     let x_agr_restarted =
         node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
     assert_eq!(x_agr_restarted["pair"]["state"], "complete");
-    assert_eq!(x_agr_restarted["consumer"]["envelope"], step10_consumer_env);
-    assert_eq!(x_agr_restarted["provider"]["envelope"], step10_provider_env);
+    assert_eq!(x_agr_restarted["counterparty"]["envelope"], step10_counterparty_env);
+    assert_eq!(x_agr_restarted["quote_author"]["envelope"], step10_quote_author_env);
 
     // Step 13: X sends plain chat message claiming different payee; agreement payee
     // is unchanged.

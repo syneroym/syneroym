@@ -62,7 +62,7 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         return Response::internal_error(e);
     }
 
-    let (req_payload, consumer_did) =
+    let (req_payload, counterparty_did) =
         match load_verified_request(host, &params.request_record_id, now, &owner).await {
             Ok(v) => v,
             Err(resp) => return resp,
@@ -100,7 +100,7 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
         request_record_id: params.request_record_id.clone(),
         listing_id: params.listing_id,
         slot_id: params.slot_id,
-        consumer_did: consumer_did.clone(),
+        counterparty_did: counterparty_did.clone(),
         terms,
     };
     if let Err(e) = payload.validate() {
@@ -175,16 +175,16 @@ async fn load_verified_request<H: AppHost>(
         Some(p) => p,
         None => return Err(Response::internal_error("missing request payload")),
     };
-    let consumer_did = match req_verdict.issuer {
+    let counterparty_did = match req_verdict.issuer {
         Some(i) => i,
         None => return Err(Response::internal_error("missing request issuer")),
     };
-    if consumer_did == owner {
+    if counterparty_did == owner {
         return Err(Response::invalid_params(
             "a request cannot be quoted by the person who made it",
         ));
     }
-    Ok((req_payload, consumer_did))
+    Ok((req_payload, counterparty_did))
 }
 
 /// Works out this quote's sequence number and, when it revises an earlier
@@ -348,7 +348,7 @@ fn build_quote_pointer(
         version_count: next_count,
         issued_at_secs: now,
         request_record_id: Some(payload.request_record_id.clone()),
-        consumer_did: Some(payload.consumer_did.clone()),
+        counterparty_did: Some(payload.counterparty_did.clone()),
         declined_at_secs: None,
         decline_note: None,
     }
@@ -381,7 +381,7 @@ pub(crate) async fn quote_get<H: AppHost>(host: &H, req: &Request) -> Response {
             "updated_at_secs": p.updated_at_secs,
             "version_count": p.version_count,
             "request_record_id": p.request_record_id,
-            "consumer_did": p.consumer_did,
+            "counterparty_did": p.counterparty_did,
             "declined_at_secs": p.declined_at_secs,
             "decline_note": p.decline_note,
         })),
@@ -418,7 +418,7 @@ pub(crate) async fn quote_list<H: AppHost>(host: &H, req: &Request) -> Response 
                 "updated_at_secs": p.updated_at_secs,
                 "version_count": p.version_count,
                 "request_record_id": p.request_record_id,
-                "consumer_did": p.consumer_did,
+                "counterparty_did": p.counterparty_did,
             })
         })
         .collect();
@@ -495,13 +495,13 @@ pub(crate) async fn quote_decline<H: AppHost>(host: &H, req: &Request) -> Respon
         None => return Response::internal_error("missing quote payload"),
     };
 
-    if owner != quote_payload.consumer_did {
-        return Response::invalid_params("only the consumer can decline this quote");
+    if owner != quote_payload.counterparty_did {
+        return Response::invalid_params("only the counterparty can decline this quote");
     }
 
     if let Ok(Some(agr)) =
         get_row::<AgreementRow, _>(host, AGREEMENTS, &params.quote_record_id).await
-        && (agr.consumer.is_some() || agr.provider.is_some())
+        && (agr.counterparty.is_some() || agr.quote_author.is_some())
     {
         return Response::invalid_params("cannot decline a quote that has already been accepted");
     }
@@ -569,7 +569,7 @@ pub(crate) async fn store_received_quote<H: AppHost>(
         version_count,
         issued_at_secs: incoming_issued,
         request_record_id: Some(payload.request_record_id.clone()),
-        consumer_did: Some(payload.consumer_did.clone()),
+        counterparty_did: Some(payload.counterparty_did.clone()),
         declined_at_secs,
         decline_note,
     };

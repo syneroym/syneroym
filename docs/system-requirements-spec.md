@@ -40,27 +40,27 @@ This requirements specification contains the following sections:
 
 ## Philosophy & Design Constraints
 
-Providers and consumers cluster locally. The system does not require global reach from a single central source. Reach grows through federation across autonomous clusters. Independent peer clusters cooperate over shared open protocols rather than central server federation. Direct peer-to-peer connections require no intermediary server. Relays and coordinators provide fallback connectivity when direct paths fail. The system retains the benefits of large platforms while avoiding their drawbacks ([VISION.md](./VISION.md#background)). It solves the open problem described in the [thesis](../THESIS.md): rich group activity at scale without a central server, where no participant device needs to trust any other device fully.
+Participants cluster locally. The system does not require global reach from a single central source. Reach grows through federation across autonomous clusters. Independent peer clusters cooperate over shared open protocols rather than central server federation. Direct peer-to-peer connections require no intermediary server. Relays and coordinators provide fallback connectivity when direct paths fail. The system retains the benefits of large platforms while avoiding their drawbacks ([VISION.md](./VISION.md#background)). It solves the open problem described in the [thesis](../THESIS.md): rich group activity at scale without a central server, where no participant device needs to trust any other device fully.
 
 ### Design Principles
 
 The following principles guide design decisions throughout the system:
 
-**Locality-first.** The system is optimized for scenarios where providers and consumers are geographically close. Federation between local clusters is important. Undifferentiated global reach is not an initial goal.
+**Locality-first.** The system is optimized for scenarios where participants are geographically close. Federation between local clusters is important. Undifferentiated global reach is not an initial goal.
 
-**Progressive decentralisation.** A provider starts with a single device and no federation. The system introduces complexity gradually as provider needs grow. The system is useful without requiring full federation.
+**Progressive decentralisation.** A participant starts with a single device and no federation. The system introduces complexity gradually as participant needs grow. The system is useful without requiring full federation.
 
-**Data sovereignty.** Authoritative private provider data resides on infrastructure that the provider controls or explicitly chooses. Caches or replicas may store public listings and records that the provider shares deliberately, under disclosed retention rules. Syneroym-operated infrastructure receives no special right to store or monetize provider data.
+**Data sovereignty.** Authoritative private participant data resides on infrastructure that the participant controls or explicitly chooses. Caches or replicas may store public listings and records that the participant shares deliberately, under disclosed retention rules. Syneroym-operated infrastructure receives no special right to store or monetize participant data.
 
-**Transparency over opaqueness.** Ranking, discovery, and reputation algorithms are either open source or auditable by providers. No hidden algorithms decide outcomes for providers.
+**Transparency over opaqueness.** Ranking, discovery, and reputation algorithms are either open source or auditable by participants. No hidden algorithms decide outcomes for participants.
 
 **Interoperability by convention.** SynApps cooperate through shared substrate primitives and open protocols. No SynApp requires a central coordinator to interoperate with another SynApp.
 
-**Human-operable by default.** A provider must be able to start with minimal resources, understand current system state, recover from common failures, and leave without specialist assistance. Decentralization that only technical experts can operate does not satisfy the product goal.
+**Human-operable by default.** A participant must be able to start with minimal resources, understand current system state, recover from common failures, and leave without specialist assistance. Decentralization that only technical experts can operate does not satisfy the product goal.
 
-**User agency over ecosystem purity.** Self-hosting is always available. Managed hosting, familiar payment rails, and lightweight consumer identities are valid adoption paths when their trade-offs are explicit and providers can exit freely.
+**User agency over ecosystem purity.** Self-hosting is always available. Managed hosting, familiar payment rails, and lightweight participant identities are valid adoption paths when their trade-offs are explicit and participants can exit freely.
 
-**End-to-end slices before platform breadth.** Developers validate new substrate capabilities through a real provider-consumer workflow before adding adjacent general features.
+**End-to-end slices before platform breadth.** Developers validate new substrate capabilities through a real deal workflow between two participants before adding adjacent general features.
 
 **Additive evolution.** Core contracts evolve without breaking existing deployments. Advanced capabilities — external payment rails, ledger primitives, AI assistance, hardware attestation, and government identity assurance — are Envisioned capabilities tracked in the deferred backlog (`docs/planning/deferred-backlog.md`). Teams sequence each capability to compose with shipped contracts without redesigning existing contracts.
 
@@ -72,9 +72,9 @@ The following principles guide design decisions throughout the system:
 
 Syneroym succeeds when it provides a viable third option between a large centralized marketplace and an isolated website or messaging account. The product must deliver these outcomes:
 
-1. **Provider autonomy without an operations burden.** A small provider or guild can publish offerings, transact, retain customer relationships, and change operators without rebuilding its digital business.
-2. **A coherent consumer experience across independent operators.** A consumer can discover, assess, contact, agree with, and return to providers without understanding substrates, relays, or federation.
-3. **Cooperation without surrendering control.** Independent providers can share discovery, referrals, infrastructure, and composed workflows while retaining their own identity, data, policies, and right to exit.
+1. **Participant autonomy without an operations burden.** A small business or guild can publish offerings, transact, keep its relationships with past counterparties, and change operators without rebuilding its digital business.
+2. **A coherent participant experience across independent operators.** A participant can discover, assess, contact, agree with, and return to other participants without understanding substrates, relays, or federation.
+3. **Cooperation without surrendering control.** Independent participants can share discovery, referrals, infrastructure, and composed workflows while retaining their own identity, data, policies, and right to exit.
 4. **Useful operation under real local constraints.** Core workflows tolerate intermittent connectivity, modest hardware, and varying technical skill.
 5. **An ecosystem developers can safely extend.** Stable contracts, conformance tests, capability negotiation, and transparent governance allow third parties to build interoperable SynApps without privileged access.
 
@@ -84,19 +84,19 @@ Syneroym succeeds when it provides a viable third option between a large central
 
 High-level requirement highlights:
 
-- Providers either self-host on commodity hardware or choose a managed operator, without requiring a cloud account or deep technical expertise.
-- Providers federate with other providers to share infrastructure, increase resilience, and expand discovery reach.
-- Consumers discover and transact with providers through a unified experience, regardless of which substrate hosts the provider.
-- Consumers can participate using a lightweight device-bound identity. Running a personal substrate is an optional upgrade path, not an entry requirement.
+- Participants either self-host on commodity hardware or choose a managed operator, without requiring a cloud account or deep technical expertise.
+- Participants federate with each other to share infrastructure, increase resilience, and expand discovery reach.
+- Participants discover and transact with each other through a unified experience, regardless of which substrate hosts the other participant.
+- Participants can take part using a lightweight device-bound identity. Running a personal substrate is an optional upgrade path, not an entry requirement.
 - The substrate provides shared contracts for identity, messaging, discovery, agreements, receipts, trust signals, and data portability. Payment execution remains pluggable and stays outside the system trust boundary.
 - The system degrades gracefully during network partitions. Message queuing, offline-first storage, and asynchronous workflows keep transactions progressing.
-- All provider participants retain the ability to exit. They can migrate data and services to a different infrastructure provider or run independently.
+- All participants retain the ability to exit. They can migrate data and services to a different infrastructure provider or run independently.
 - Ecosystem protocols are open, versioned, testable, and governed through a published process that does not give special privilege to Syneroym-operated services.
 
 | Requirement | Outcome | Primary Acceptance Evidence |
 |---|---|---|
-| **PRD-AUT** | Provider identity, data, policy, and operator choice remain under provider control. | Delegation-revocation and operator-migration journeys. |
-| **PRD-CUX** | Consumers complete the reference journey without understanding hosting or federation. | Moderated task-success test and accessibility audit. |
+| **PRD-AUT** | Participant identity, data, policy, and operator choice remain under participant control. | Delegation-revocation and operator-migration journeys. |
+| **PRD-CUX** | Participants complete the reference journey without understanding hosting or federation. | Moderated task-success test and accessibility audit. |
 | **PRD-FED** | Independent implementations interoperate without a mandatory central data plane or authority. | Two-node federation and bootstrap-outage tests. |
 | **PRD-OFF** | Safe workflows remain intelligible and converge after disconnection; unsafe retries fail explicitly. | Fault-injection, idempotency, and state-model tests. |
 | **PRD-POR** | Participants can export, verify, and restore in-scope identity-linked data through versioned open formats. | Clean-node export/import drill and cross-version fixtures. |
@@ -132,13 +132,13 @@ The following table lists key personas in the Syneroym ecosystem. A single perso
 
 | Persona | Primary job to be done | Adoption constraint |
 |---|---|---|
-| **Individual Service Provider** | Publish an offering, receive qualified local work, serve repeat customers, and retain business history. | Limited time and technical skill; intermittent connectivity. (Note: mobile phone substrate operation is an Envisioned capability; today substrates execute on desktop and server platforms, while phone users participate via web browsers or client gateways). |
-| **Self-hosting Provider / Node Owner** | Run the provider digital business without depending on an aggregator. | Needs safe defaults, understandable health, backups, and recovery. Must not require specialized site reliability engineering skills. |
-| **Guild or Provider Aggregator** | Operate a directory-type SynOrg to aggregate provider listings, offer local discovery, and curate community trust signals. | Must earn trust without acquiring irrevocable control over provider identity, data, or hosting infrastructure. |
+| **Individual Listing Owner** | Publish an offering, receive qualified local work, serve repeat counterparties, and retain business history. | Limited time and technical skill; intermittent connectivity. (Note: mobile phone substrate operation is an Envisioned capability; today substrates execute on desktop and server platforms, while phone users participate via web browsers or client gateways). |
+| **Self-hosting Listing Owner / Node Owner** | Run the digital business without depending on an aggregator. | Needs safe defaults, understandable health, backups, and recovery. Must not require specialized site reliability engineering skills. |
+| **Guild or Listing Aggregator** | Operate a directory-type SynOrg to aggregate listings, offer local discovery, and curate community trust signals. | Must earn trust without acquiring irrevocable control over the identity, data, or hosting infrastructure of listing owners. |
 | **Infrastructure Provider** | Offer bounded compute, storage, and connectivity with auditable usage and responsibilities. | Needs isolation, quotas, abuse controls, and an explicit service agreement. |
-| **Consumer** | Find a suitable provider, understand why they are trustworthy, agree on terms, communicate, pay, and keep records. | Will not install infrastructure or learn federation concepts before receiving value. |
+| **Searcher** | Find a suitable listing owner, understand why they are trustworthy, agree on terms, communicate, pay, and keep records. | Will not install infrastructure or learn federation concepts before receiving value. |
 | **SynApp Developer** | Build once against stable contracts, test locally, distribute safely, and interoperate with other apps. | Needs concise contracts, compatibility signals, examples, and conformance tooling. |
-| **SynApp Owner / Provider Manager** | Configure a provider or guild presence, policies, catalog, availability, and staff access. | Needs delegated permissions and an audit trail without access to unrelated provider data. |
+| **SynApp Owner / Listing Manager** | Configure a listing owner or guild presence, policies, catalog, availability, and staff access. | Needs delegated permissions and an audit trail without access to unrelated data of listing owners. |
 | **Facilitator** | Offer an optional bounded service such as delivery, payment gateway, credential issuance, backup, or dispute handling. | Must disclose terms and authority. Cannot become an implicit mandatory intermediary. |
 
 ---
@@ -146,34 +146,40 @@ The following table lists key personas in the Syneroym ecosystem. A single perso
 <a id="glossary--terminology"></a>
 ## Glossary / Terminology
 
-**Aggregator.** A directory-type SynOrg service that aggregates provider listings and credentials. It does not host or control provider infrastructure (such as a guild directory or trade cooperative).
+**Aggregator.** A directory-type SynOrg service that aggregates listings and credentials. It does not host or control the infrastructure of listing owners (such as a guild directory or trade cooperative).
 
 **App Developer.** A person or organization that builds SynApps and publishes them for others to deploy. An App Developer does not necessarily host or operate any infrastructure.
 
 **Bootstrap Server.** An envisioned centralized registry service that coordinates active services and relays.
 > **Envisioned.** Not built yet. Centralized bootstrap servers (`*.syneroym.xyz`) are not built. Today a substrate node sets a parent coordinator relay URL (`parent_coordinator.iroh.url`) or picks a relay from the coordinator list of its Community Registry, and publishes endpoints to local Community Registries and Mainline DHT.
 
-**Consumer / General User.** A user who discovers and purchases services or products, or interacts with other entities in the Syneroym ecosystem.
+**Counterparty.** The other party of a deal: the participant who sent the request and to whom the quote is addressed. Compare *Quote Author*.
 
-**Federation.** The process by which independent providers and infrastructure nodes interoperate. They share discovery, reputation, and messaging capabilities without a central authority.
+**Federation.** The process by which independent participants and infrastructure nodes interoperate. They share discovery, reputation, and messaging capabilities without a central authority.
 
 **Home Relay / Coordinator Relay.** A coordinator relay endpoint confirmed at the substrate node level (`parent_coordinator.iroh.url`, or a relay picked from the coordinator list of the registry). It provides fallback connectivity when direct peer-to-peer connections fail. Hosted services inherit the relay connectivity of the substrate node rather than binding to individual relays. A substrate without a confirmed home relay operates in degraded mode.
 
-**Infrastructure Provider.** A person or organization that provides hardware or virtual infrastructure for Service Providers to host applications on a lease.
+**Infrastructure Provider.** A person or organization that provides hardware or virtual infrastructure for SynApp Owners to host applications on a lease.
 
-**Operator.** The person or organization responsible for administering a Substrate or a managed SynApp Instance. An Operator may also be a Provider, Aggregator, or Infrastructure Provider, but each role carries distinct duties.
+**Operator.** The person or organization responsible for administering a Substrate or a managed SynApp Instance. An Operator may also be a Listing Owner, Aggregator, or Infrastructure Provider, but each role carries distinct duties.
 
 **Node.** A physical or virtual machine that runs one Substrate instance. A Node may run multiple SVC-Sandboxes.
 
 **P2P.** Peer-to-peer. Denotes direct interaction between two entities without an intermediate broker service.
 
-**Provider.** Short for *Service Provider*. A person or business providing services to others (such as a plumber, photographer, or consultant). A provider may self-host infrastructure or publish listings through an Aggregator directory.
+**Listing Owner.** The participant who publishes a listing: a person or business offering services to others (such as a plumber, photographer, or consultant). A listing owner may self-host infrastructure or publish listings through an Aggregator directory. A listing exists before any deal, so this is not a deal role.
+
+**Participant.** Any person or business that takes part in Roym. Roym has no fixed seller and buyer roles; the role of a participant is named where it applies: *Listing Owner*, *Searcher*, *Quote Author* or *Counterparty*.
+
+**Quote Author.** The participant who writes and signs the quote of a deal. Today this is the owner of the listing. The quote author is the only writer of the booking.
+
+**Searcher.** The participant who searches directories and reads the results. Not a deal role.
 
 **Relay.** A service or coordinator node that provides encrypted transport fallback for substrates and services that cannot accept inbound connections directly (such as nodes behind symmetric NAT or firewalls). The relay coordinates direct P2P connectivity when possible, and forwards encrypted traffic when direct connections fail.
 
-**SynApp Instance / Catalog.** A named, provider-configured business context within a SynApp deployment (such as a plumber catalog and booking service).
+**SynApp Instance / Catalog.** A named, owner-configured business context within a SynApp deployment (such as a plumber catalog and booking service).
 
-**SynApp Owner / Operator.** The person or provider responsible for configuring and operating a SynApp instance. Responsibilities include the catalog, branding, access control, and operational policies.
+**SynApp Owner / Operator.** The person or business responsible for configuring and operating a SynApp instance. Responsibilities include the catalog, branding, access control, and operational policies.
 
 **Substrate (SYN-SUBSTRATE).** The core runtime layer on a Node. The Substrate manages service deployment, lifecycle, discovery registration, messaging, and access control on behalf of the Node owner.
 
@@ -183,13 +189,13 @@ The following table lists key personas in the Syneroym ecosystem. A single perso
 
 **SynApp Instance.** One deployment of a SynApp blueprint. Each instance has its own stable instance identifier, namespace, bindings, policy grants, configuration, and accounting context.
 
-**SynApp Owner.** The provider who deploys a SynApp to deliver services to clients. Distinct from the App Developer who writes the code.
+**SynApp Owner.** The participant who deploys a SynApp to deliver services to others. Distinct from the App Developer who writes the code.
 
 **Service Artifact.** A reusable, independently deployable unit of business logic. Packaged as a Wasm component (`wasm32-wasip2`) or native binary.
 
 **Syneroym Service (SYN-SVC).** A running instance of a module executing within a SVC-SANDBOX on a Node. It is the foundational zero-trust execution primitive of the Syneroym Substrate. The Substrate manages and proxies the service.
 
-**Verifiable Credential / Signed Record.** A cryptographically signed attestation issued by an entity (such as a provider, trade authority, or community directory) using canonical signed Roym record envelopes (`crates/signed_record/`). The consuming party decides which credential issuers they trust.
+**Verifiable Credential / Signed Record.** A cryptographically signed attestation issued by an entity (such as a listing owner, trade authority, or community directory) using canonical signed Roym record envelopes (`crates/signed_record/`). The consuming party decides which credential issuers they trust.
 > **Envisioned.** Not built yet. Generic W3C VC 2.0 envelope schemas and SSI wallet integration. Today credentials use canonical JSON signed records with Ed25519 signatures.
 
 **Vouching.** A trust mechanism where entities issue signed endorsements for other entities in their network, creating a verifiable web of trust.
@@ -210,21 +216,21 @@ config:
     layout: elk
 ---
 flowchart TD
-    Consumer([Consumer])
-    Provider([Provider])
+    Searcher([Searcher])
+    ListingOwner([Listing Owner])
     Aggregator([Aggregator: Directory SynOrg])
     InfraProv([Infrastructure Provider])
     
-    ConsumerApp[Consumer App]
+    ParticipantApp[Participant App]
     SynApp[SynApp: Catalog / Services]
     SynSvc[SynSvc: Service Instance]
     Substrate[Syneroym Substrate]
     Node[Compute Node]
 
-    Consumer -->|uses| ConsumerApp
-    ConsumerApp -->|discovers & interacts via| Substrate
+    Searcher -->|uses| ParticipantApp
+    ParticipantApp -->|discovers & interacts via| Substrate
     
-    Provider -->|manages| SynApp
+    ListingOwner -->|manages| SynApp
     Aggregator -->|aggregates listings from| SynApp
     
     SynSvc -->|executes on| Substrate
@@ -245,16 +251,16 @@ These requirements apply to all business domains and SynApps.
 
 ### Infrastructure & Hosting
 
-- Service Providers run business applications on supported commodity computers that they control. They can also run applications on infrastructure operated under an explicit agreement (`crates/identity/src/substrate.rs:48`). This works even when the host is behind NAT or a firewall (`crates/router/src/net_iroh.rs:130`).
-- Infrastructure Providers make hardware (such as older personal computers or cloud virtual machines) available to Service Providers. Service Providers use this hardware to host applications or application components under explicit node agreements (`crates/identity/src/substrate.rs:48`).
+- SynApp Owners run business applications on supported commodity computers that they control. They can also run applications on infrastructure operated under an explicit agreement (`crates/identity/src/substrate.rs:48`). This works even when the host is behind NAT or a firewall (`crates/router/src/net_iroh.rs:130`).
+- Infrastructure Providers make hardware (such as older personal computers or cloud virtual machines) available to SynApp Owners. SynApp Owners use this hardware to host applications or application components under explicit node agreements (`crates/identity/src/substrate.rs:48`).
   > **Envisioned.** Not built yet. Commercial leased hosting accounting and automated compute marketplaces. Today infrastructure nodes are claimed and authorized via ControllerAgreement and roymctl.
-- Service Providers can view service status in plain language (`crates/coordinator_iroh/src/info_endpoint.rs:104`). They manage routine operations through a web user interface or command-line interface without shell access (`crates/roym_web/ui/`).
-  > **Envisioned.** Not built yet. Automated push notifications when provider intervention is required. Today operators inspect status via /v1/info endpoints and the Roym Hub web UI.
+- SynApp Owners can view service status in plain language (`crates/coordinator_iroh/src/info_endpoint.rs:104`). They manage routine operations through a web user interface or command-line interface without shell access (`crates/roym_web/ui/`).
+  > **Envisioned.** Not built yet. Automated push notifications when owner intervention is required. Today operators inspect status via /v1/info endpoints and the Roym Hub web UI.
 - Infrastructure Providers monitor infrastructure health and resource use (`crates/observability/src/recorder.rs`). They control node access with Admin DIDs and UCAN delegation (`crates/control_plane/src/service/orchestration.rs:200`).
   > **Envisioned.** Not built yet. Incident-to-obligation impact mapping and automated SLA tracking during outages. Today health metrics are recorded in memory and node access is governed by UCAN delegation.
-- App Developers package SynApps as WASM modules or OCI images (`crates/app_orchestration/src/models/manifest.rs:16`). Providers deploy these SynApps to matching container infrastructure, such as a WASM runtime or Podman/Docker (`crates/sandbox_wasm/src/engine.rs:84`, `crates/sandbox_podman/src/engine.rs:238`).
-- Consumers access Provider services through options that the Provider makes available: an application user interface, a web browser, an API, or command-line tools (`crates/roym_web/ui/`, `crates/client_gateway/src/gateway.rs:73`, `apps/roymctl/src/commands/`).
-- Service Providers export and restore all in-scope data, configuration, grants, and signed history using documented, versioned formats (`ARCHIVE_VERSION = 1`). Each export contains a manifest and a completeness report. Secrets transfer inside encrypted archives (`crates/roym_directory/src/app/backup.rs:25`).
+- App Developers package SynApps as WASM modules or OCI images (`crates/app_orchestration/src/models/manifest.rs:16`). SynApp Owners deploy these SynApps to matching container infrastructure, such as a WASM runtime or Podman/Docker (`crates/sandbox_wasm/src/engine.rs:84`, `crates/sandbox_podman/src/engine.rs:238`).
+- Searchers and counterparties access the services of a listing owner through options that the listing owner makes available: an application user interface, a web browser, an API, or command-line tools (`crates/roym_web/ui/`, `crates/client_gateway/src/gateway.rs:73`, `apps/roymctl/src/commands/`).
+- SynApp Owners export and restore all in-scope data, configuration, grants, and signed history using documented, versioned formats (`ARCHIVE_VERSION = 1`). Each export contains a manifest and a completeness report. Secrets transfer inside encrypted archives (`crates/roym_directory/src/app/backup.rs:25`).
   > **Envisioned.** Not built yet. Cross-version migration test fixtures for exported data archives. Today same-version export and clean-node restore are verified by automated tests.
 - Every production profile supports encrypted backup and verified restore. The operator selects the backup destination. Peer backup pools are optional. The system must not require peer backup pools for portability (`apps/roymctl/src/commands/roym/backup.rs:25`).
 - The system must never treat an upload success as proof of a successful backup. Automated integration test suites verify data restoration on clean nodes (`crates/substrate/tests/roym_restore_e2e.rs:49`).
@@ -281,7 +287,7 @@ When browser clients lack native QUIC or WebRTC direct peer connectivity, the sy
 
 ### Messaging & Data Sharing
 
-- Providers, Consumers, and Services exchange messages only within an explicit conversation or capability context. All message exchanges follow owner-approved access policy (`crates/conversation/src/lib.rs:56`, `crates/ucan/src/token.rs`).
+- Participants and Services exchange messages only within an explicit conversation or capability context. All message exchanges follow owner-approved access policy (`crates/conversation/src/lib.rs:56`, `crates/ucan/src/token.rs`).
 - The system supports one-to-one text, attachments, private group chat, and structured service cards. Supported cards include requests, quotes, agreements, status updates, receipts, and grants (`crates/roym_conversation`, `crates/conversation/src/dag.rs`).
   > **Envisioned.** Not built yet. Audio/video calls, social feeds, and collaborative editing. Today 1:1 messaging, structured cards, and group chat are supported.
 - A structured message has a stable type, schema version, sender, intended recipients, creation timestamp, idempotency identifier when applicable, and verification status (`crates/conversation/src/store.rs:116`). Clients render unknown message types safely without executing sender code.
@@ -324,11 +330,11 @@ Integration and end-to-end test harnesses MUST dynamically allocate network port
 
 ### Onboarding and recovery
 
-- A provider can choose a managed-guild path or a self-hosted path. Providers initialize self-hosted substrates with `roymctl substrate init` or connect to managed controllers through a `ControllerAgreement` (`apps/roymctl/src/commands/substrate.rs:65`).
+- A listing owner can choose a managed-guild path or a self-hosted path. Listing owners initialize self-hosted substrates with `roymctl substrate init` or connect to managed controllers through a `ControllerAgreement` (`apps/roymctl/src/commands/substrate.rs:65`).
   > **Envisioned.** Not built yet. A guided onboarding wizard comparing control, cost, availability, privacy, and support trade-offs before committing. Today substrate initialization and management run via roymctl CLI commands.
-- Joining a guild must not transfer ownership of the provider's root identity, signed history, or export rights to the guild. Joining a guild does not delegate administration through a `DelegationCertificate`. Providers use signed membership credentials instead (`crates/roym_core/src/membership.rs`). Root key backup protects master keys (`crates/identity/src/backup.rs`). Any delegated administration is scoped (`crates/identity/src/delegation.rs:25`), visible, revocable through Master Anchor deny lists, and audit-recorded through FDAE `DecisionTrace`.
-- Consumer onboarding creates or imports a lightweight device-bound Ed25519 identity on the consumer's device. This identity maps to short-lived session tokens (`crates/client_gateway/src/gateway.rs`). Users export encrypted identity backups (`crates/identity/src/backup.rs`) to protect master keys. The recovery model does not claim self-sovereignty if an operator can unilaterally recover or impersonate the consumer. Root keys are self-sovereign Ed25519 master DIDs.
-  > **Envisioned.** Not built yet. Automated post-transaction backup prompts in the UI and optional government identity assurance credentials. Today consumers manage device-bound session keys and export encrypted backups on demand.
+- Joining a guild must not transfer ownership of the listing owner's root identity, signed history, or export rights to the guild. Joining a guild does not delegate administration through a `DelegationCertificate`. Listing owners use signed membership credentials instead (`crates/roym_core/src/membership.rs`). Root key backup protects master keys (`crates/identity/src/backup.rs`). Any delegated administration is scoped (`crates/identity/src/delegation.rs:25`), visible, revocable through Master Anchor deny lists, and audit-recorded through FDAE `DecisionTrace`.
+- Participant onboarding creates or imports a lightweight device-bound Ed25519 identity on the participant's device. This identity maps to short-lived session tokens (`crates/client_gateway/src/gateway.rs`). Users export encrypted identity backups (`crates/identity/src/backup.rs`) to protect master keys. The recovery model does not claim self-sovereignty if an operator can unilaterally recover or impersonate the participant. Root keys are self-sovereign Ed25519 master DIDs.
+  > **Envisioned.** Not built yet. Automated post-transaction backup prompts in the UI and optional government identity assurance credentials. Today participants manage device-bound session keys and export encrypted backups on demand.
 - Destructive actions state their scope and recovery consequences. Common recovery flows are available through an expert CLI (`roymctl roym backup restore`) with warnings on destructive actions.
   > **Envisioned.** Not built yet. A guided graphical UI recovery wizard for identity and database restore. Today disaster recovery flows execute through the roymctl CLI.
 
@@ -336,18 +342,18 @@ Integration and end-to-end test harnesses MUST dynamically allocate network port
 
 - Every durable record has a documented owner or controller, permitted writers, retention policy, export representation, and deletion or tombstone behaviour. FDAE policies enforce permissions (`crates/fdae/src/policy.rs`). Directory publications enforce retention pruning (`crates/roym_directory/src/app/publication_ops.rs`). Deleted messages leave tombstones in the conversation DAG (`crates/conversation/src/host_impl.rs:333`).
 - A single party cannot rewrite shared records such as agreements, receipts, and revocations. These records are tamper-proof canonical signed Roym records (`crates/signed_record/`). A participant may remove their local copy or personal display when law permits. The protocol preserves the other party's signed record and stores later corrections separately.
-  > **Envisioned.** Not built yet. Public consumer reviews, reputation ratings, and generic W3C Verifiable Credentials 2.0 envelopes. Today shared records use canonical signed Roym records and bilateral agreement receipts.
+  > **Envisioned.** Not built yet. Public reviews, reputation ratings, and generic W3C Verifiable Credentials 2.0 envelopes. Today shared records use canonical signed Roym records and bilateral agreement receipts.
 - Access grants have limited purpose and scope. Grants expire by default for sensitive data. Grants can be revoked through UCAN tokens (`crates/ucan/src/token.rs`), delegation certificates (`crates/identity/src/delegation.rs`), and Master Anchor deny lists (`crates/core/src/dht_registry/master_anchor.rs`).
   > **Envisioned.** Not built yet. A graphical UI dashboard displaying active access grants and explaining what revocation can and cannot retract from already-received data. Today capability grants and revocations are enforced cryptographically via UCAN tokens and Master Anchor deny lists.
-- Export and account deletion are separate actions. Deletion identifies data held by the provider, operator, backup destination, peers, and legally required records. The product must not promise deletion that it cannot enforce. Users export data through sealed backup archives (`roymctl roym backup create`). Message deletion removes readable bodies locally and leaves DAG tombstones (`crates/roym_profile/src/app/profile_ops.rs:25`).
-  > **Envisioned.** Not built yet. Comprehensive multi-party account deletion coordinating erasure across providers, hosting operators, backup destinations, and peer nodes. Today users export data via backup archives and delete local message content via tombstones.
+- Export and account deletion are separate actions. Deletion identifies data held by the listing owner, operator, backup destination, peers, and legally required records. The product must not promise deletion that it cannot enforce. Users export data through sealed backup archives (`roymctl roym backup create`). Message deletion removes readable bodies locally and leaves DAG tombstones (`crates/roym_profile/src/app/profile_ops.rs:25`).
+  > **Envisioned.** Not built yet. Comprehensive multi-party account deletion coordinating erasure across listing owners, hosting operators, backup destinations, and peer nodes. Today users export data via backup archives and delete local message content via tombstones.
 
 ### Safety, support, and disputes
 
 - Before production use, the system must have a reviewed threat model and privacy data inventory. These documents cover malicious packages, peers, clients, and operators. They also cover compromised keys, metadata leakage, denial of service, backup exposure, and recovery abuse. Documentation states residual risks and unsupported deployment profiles.
   > **Envisioned.** Not built yet. Formal reviewed threat model documents and privacy data inventories. Today technical protections include Wasmtime fuel limits, mlock memory protection, TLS 1.3 QUIC transports, and Double Ratchet messaging encryption.
-- Syneroym supplies evidence and workflow primitives. The system does not imply that the Syneroym project has vetted every listed provider, guild, credential issuer, or facilitator.
-- Provider terms, price, cancellation rules, data use, payment method, and named dispute paths are recorded before agreement in `AgreedTerms` (`crates/roym_core/src/transaction.rs:116`). Any material change requires renewed consent and produces a new version.
+- Syneroym supplies evidence and workflow primitives. The system does not imply that the Syneroym project has vetted every listed participant, guild, credential issuer, or facilitator.
+- The quote's terms, price, cancellation rules, data use, payment method, and named dispute paths are recorded before agreement in `AgreedTerms` (`crates/roym_core/src/transaction.rs:116`). Any material change requires renewed consent and produces a new version.
 - Users can report impersonation, fraud, harassment, unsafe service, and illegal content to the relevant operator or community. Reports include a status, an appeal or correction path when appropriate, and safeguards against publishing unverified allegations as fact. Submitting nodes store reports locally and track report status (`crates/roym_profile/src/app/moderation.rs:188`).
   > **Envisioned.** Not built yet. Community-level appeal, dispute arbitration, and public correction workflows. Today moderation reports are stored locally with status tracked on the submitting node.
 - Emergency response, guaranteed refunds, insurance, professional licensing, and legal arbitration are not platform services. When a guild or facilitator offers these services, it must state the jurisdiction, limits, and responsible legal entity in `AgreedTerms`.
@@ -359,7 +365,7 @@ Integration and end-to-end test harnesses MUST dynamically allocate network port
 
 *Reader: developers and system architects.*
 
-- The minimum federation contract includes versioned identity resolution, endpoint discovery, provider and catalog publication, service requests, agreements, receipts, trust signals, and backup archive export schemas (`crates/roym_directory/src/app/backup.rs`).
+- The minimum federation contract includes versioned identity resolution, endpoint discovery, listing and catalog publication, service requests, agreements, receipts, trust signals, and backup archive export schemas (`crates/roym_directory/src/app/backup.rs`).
   > **Envisioned.** Not built yet. Dynamic protocol capability negotiation and cross-vendor federation testing suites. Today protocols bind fixed ALPN `syneroym/0.1` and typed WIT interface packages.
 - Normative contracts use stable identifiers in versioned WIT interface packages (`crates/wit_interfaces/wit/`) and dual-build parity tests.
   > **Envisioned.** Not built yet. Standalone third-party test vectors and an executable public conformance test suite. Today compatibility is verified via cargo test suites and dual-build parity tests.
@@ -382,7 +388,7 @@ A SynOrg directory service MUST manage signed membership credentials, suspension
 
 - **Credential and Revocation Lifecycle:** The SynOrg host issues canonical signed `MembershipCredential` records. These records carry subject DIDs, authorized categories, and expiration timestamps (`credential.issue`). The host publishes signed revocation records (`revocation.issue`) when membership terminates or suspends. Clients MUST be able to query stored credentials and revocations through wire RPC methods (`directory.standing`, `directory.info`).
 - **Publication Admission Gating:** A directory MUST accept service publications (`directory.publish`) only from verified members. These members must hold an unexpired, unrevoked membership credential issued by the directory's owning SynOrg.
-- **Pinned Directory Sources:** Consumer and provider nodes MUST maintain an explicit list of trusted directory sources (`SourceRow`). Nodes pin the directory DID and the issuing SynOrg DID on first contact (`issuer_did`) to prevent directory spoofing. Client discovery queries MUST query only configured sources. Clients MUST verify returned listing credentials against pinned directory issuers.
+- **Pinned Directory Sources:** Searcher and listing owner nodes MUST maintain an explicit list of trusted directory sources (`SourceRow`). Nodes pin the directory DID and the issuing SynOrg DID on first contact (`issuer_did`) to prevent directory spoofing. Client discovery queries MUST query only configured sources. Clients MUST verify returned listing credentials against pinned directory issuers.
 
 ---
 
@@ -390,19 +396,19 @@ A SynOrg directory service MUST manage signed membership credentials, suspension
 
 *Reader: developers and system architects.*
 
-Centralized platforms build consumer trust from brand recognition, legal accountability, and aggregated reviews. A peer-to-peer system needs explicit mechanisms to build trust without a central authority. In this system, no device needs to trust another device completely.
+Centralized platforms build participant trust from brand recognition, legal accountability, and aggregated reviews. A peer-to-peer system needs explicit mechanisms to build trust without a central authority. In this system, no device needs to trust another device completely.
 
 ### The Trust Problem
 
-When a consumer discovers a provider through Syneroym, they have no existing relationship with the provider or the infrastructure operator. The system gives the consumer clear signals to decide whether to transact. The system also gives providers signals that consumers are not fraudulent.
+When a searcher discovers a listing owner through Syneroym, they have no existing relationship with the listing owner or the infrastructure operator. The system gives the searcher clear signals to decide whether to transact. The system also gives listing owners signals that searchers are not fraudulent.
 
 Minimum requirements at transaction time:
 
-- Before accepting an agreement, the consumer can inspect the provider's stable identity, the provenance and freshness of trust signals, material terms in `AgreedTerms`, the payment recipient, and dispute or cancellation paths. The system displays missing trust signals as unknown. It never converts a missing signal into a positive default.
-- The product avoids collecting stronger identity details than risk warrants. Consumers use lightweight device-bound Ed25519 session keys. Providers configure contact rate limits and block lists (`crates/roym_core/src/safety.rs`).
-  > **Envisioned.** Not built yet. Dynamic provider configuration of consumer-side gates (mandatory deposits, required prior receipts, verified external contacts, or named facilitators). Today consumers use lightweight session identities with recipient-configurable rate limits and block lists.
+- Before accepting an agreement, the searcher can inspect the listing owner's stable identity, the provenance and freshness of trust signals, material terms in `AgreedTerms`, the payment recipient, and dispute or cancellation paths. The system displays missing trust signals as unknown. It never converts a missing signal into a positive default.
+- The product avoids collecting stronger identity details than risk warrants. Searchers use lightweight device-bound Ed25519 session keys. Listing owners configure contact rate limits and block lists (`crates/roym_core/src/safety.rs`).
+  > **Envisioned.** Not built yet. Dynamic configuration, by listing owners, of searcher-side gates (mandatory deposits, required prior receipts, verified external contacts, or named facilitators). Today searchers use lightweight session identities with recipient-configurable rate limits and block lists.
 - Trust displays present separate facts (credentials, receipts from completed interactions, recency) rather than hiding facts behind a single score. Directory search ranking uses open, explainable deterministic recency and round-robin merging (`crates/roym_directory/src/app/client_merge.rs`).
-  > **Envisioned.** Not built yet. Joint DHT reputation records, exponential moving average (EMA) score formulas, and consumer vouch graphs are unbuilt. Today trust relies on independent credentials and bilateral receipts without numerical reputation scores.
+  > **Envisioned.** Not built yet. Joint DHT reputation records, exponential moving average (EMA) score formulas, and participant vouch graphs are unbuilt. Today trust relies on independent credentials and bilateral receipts without numerical reputation scores.
 
 ### Trust Layers
 
@@ -414,17 +420,17 @@ Trust in the Syneroym ecosystem operates across multiple layers:
 
 **Layer 2: Referral and vouching.** Guild entities issue signed, scoped, and expiring statements about members (`MembershipCredential`). The display preserves who issued the statement and in what context. The system does not treat an issued credential as objective proof of quality.
 
-> **Envisioned.** Not built yet. Consumer referral vouches, recommendation statements, web-of-trust vouching graphs, and vouch decay formulas are unbuilt. Today trust relies on signed SynOrg membership credentials and revocations.
+> **Envisioned.** Not built yet. Participant referral vouches, recommendation statements, web-of-trust vouching graphs, and vouch decay formulas are unbuilt. Today trust relies on signed SynOrg membership credentials and revocations.
 
-**Layer 3: Verifiable credentials.** Providers attach credentials (such as guild membership or trade certification) packaged as canonical signed Roym records (`crates/signed_record/`). Verification checks Ed25519 signatures, the issuer DID, scope, expiration timestamps, and issuer revocation lists (`crates/roym_directory/src/app/credential_ops.rs`). The consuming party or community decides which issuers to trust. The user interface does not reduce a valid signature to a trusted claim.
+**Layer 3: Verifiable credentials.** Listing owners attach credentials (such as guild membership or trade certification) packaged as canonical signed Roym records (`crates/signed_record/`). Verification checks Ed25519 signatures, the issuer DID, scope, expiration timestamps, and issuer revocation lists (`crates/roym_directory/src/app/credential_ops.rs`). The consuming party or community decides which issuers to trust. The user interface does not reduce a valid signature to a trusted claim.
 
 > **Envisioned.** Not built yet. Generic W3C Verifiable Credentials 2.0 envelopes and external credential library integrations are unbuilt. Today all credentials use canonical signed Roym records.
 
 **Layer 4: Interaction receipts and feedback.** Completed commercial interactions create bilateral agreement receipts (`AgreementReceiptPayload`) and fulfilment receipts (`FulfilmentRecord`). Each party signs and stores these receipts independently. A receipt proves that both parties agreed to a workflow event under identical terms. It does not prove that every real-world claim is true. Export archives preserve record provenance with signed manifests.
 
-> **Envisioned.** Not built yet. Separately signed consumer feedback, public reviews, and selective disclosure (redactable zero-knowledge or field-level disclosure) are unbuilt. Today interactions produce bilateral independent agreement and fulfilment receipts.
+> **Envisioned.** Not built yet. Separately signed feedback from counterparties, public reviews, and selective disclosure (redactable zero-knowledge or field-level disclosure) are unbuilt. Today interactions produce bilateral independent agreement and fulfilment receipts.
 
-**Layer 5: Community moderation.** Guilds and communities maintain signed membership revocation and suspension records (`crates/roym_core/src/membership.rs`). Abuse reports submitted by users stay on recipient nodes (`crates/roym_profile/src/app/moderation.rs`). The system does not broadcast reports as global truth. Consumers can see the source of moderation policies.
+**Layer 5: Community moderation.** Guilds and communities maintain signed membership revocation and suspension records (`crates/roym_core/src/membership.rs`). Abuse reports submitted by users stay on recipient nodes (`crates/roym_profile/src/app/moderation.rs`). The system does not broadcast reports as global truth. Searchers can see the source of moderation policies.
 
 > **Envisioned.** Not built yet. Published community warning lists and formal automated correction or appeal workflows are unbuilt. Today guilds publish signed revocation lists and nodes store local abuse reports.
 
@@ -438,8 +444,8 @@ The system does not provide legal liability protection like centralized platform
 
 Requirements:
 
-- The substrate allows a Provider or Aggregator (directory-type SynOrg) to show terms of service, cancellation policies, and refund rules to consumers through `AgreedTerms` structures.
-- The substrate must not state or imply to consumers that the Syneroym project vetted a federated node.
+- The substrate allows a Listing owner or Aggregator (directory-type SynOrg) to show terms of service, cancellation policies, and refund rules to searchers through `AgreedTerms` structures.
+- The substrate must not state or imply to searchers that the Syneroym project vetted a federated node.
 - A separate document will outline recommended legal structures for Directory SynOrgs and Aggregators operating at scale. [Legal guidance: Out of scope for this spec]
 
 ---
@@ -469,7 +475,7 @@ erDiagram
     SUBSTRATE ||--o{ SERVICE : manages-and-proxies
 
     %% --- Ownership & Placement ---
-    PROVIDER ||--o{ SUBSTRATE : owns
+    LISTING-OWNER ||--o{ SUBSTRATE : owns
     SYNAPP-OWNER ||--|{ SYNAPP : owns
     SYNAPP }o--|{ SUBSTRATE : placed-on
 
@@ -478,18 +484,18 @@ erDiagram
     RELAY }o--|| BOOTSTRAP : registers-with
 
     %% --- Application & Commercial entities ---
-    PROVIDER ||--o{ CATALOG : manages
+    LISTING-OWNER ||--o{ CATALOG : manages
     CATALOG }o--|| SYNAPP : runs-within
     AGGREGATOR ||--o{ CATALOG : aggregates-listings-from
 
-    %% --- Consumer side ---
-    CONSUMER ||--o{ CONSUMER-APP : uses
-    CONSUMER-APP }o--|{ SUBSTRATE : connects-to
-    CONSUMER ||--o{ PROVIDER : transacts-with
+    %% --- Searcher side ---
+    SEARCHER ||--o{ PARTICIPANT-APP : uses
+    PARTICIPANT-APP }o--|{ SUBSTRATE : connects-to
+    SEARCHER ||--o{ LISTING-OWNER : transacts-with
 
     %% --- Trust & Credentials ---
-    PROVIDER }o--o{ VERIFIABLE-CRED : holds
-    CONSUMER }o--o{ PROVIDER : vouches-for
+    LISTING-OWNER }o--o{ VERIFIABLE-CRED : holds
+    SEARCHER }o--o{ LISTING-OWNER : vouches-for
 
     SERVICE-ARTIFACT[SERVICE-ARTIFACT]{}
     SERVICE[SERVICE]{}
@@ -500,21 +506,21 @@ erDiagram
     NODE[NODE]{}
     RELAY[COORDINATOR-RELAY]{}
     BOOTSTRAP[BOOTSTRAP-SERVER]{}
-    PROVIDER[PROVIDER]{}
+    LISTING-OWNER[LISTING-OWNER]{}
     AGGREGATOR[DIRECTORY-SYNORG]{}
     CATALOG[CATALOG-OR-LISTING]{}
-    CONSUMER[CONSUMER]{}
-    CONSUMER-APP[CONSUMER-APP]{}
+    SEARCHER[SEARCHER]{}
+    PARTICIPANT-APP[PARTICIPANT-APP]{}
     VERIFIABLE-CRED[SIGNED-ROYM-RECORD]{}
 ```
 
-Operators place a SynApp on one or more substrates. Each service inside a SynApp defines its own execution artifact (`ServiceDefinition::source`, such as a WebAssembly component or container image). The service runs inside a sandbox or native host runner. Stale entity concepts (`SYN-MOD`, `Space`, and `Space Manager`) do not exist in code. Services manage catalogs and listings directly. Providers transact with consumers through structured quote and booking workflows.
+Operators place a SynApp on one or more substrates. Each service inside a SynApp defines its own execution artifact (`ServiceDefinition::source`, such as a WebAssembly component or container image). The service runs inside a sandbox or native host runner. Stale entity concepts (`SYN-MOD`, `Space`, and `Space Manager`) do not exist in code. Services manage catalogs and listings directly. Listing owners transact with searchers through structured quote and booking workflows.
 
-An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates provider listings and credentials. Aggregators do not manage infrastructure or host services for providers. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
+An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates listings and credentials. Aggregators do not manage infrastructure or host services for listing owners. Node operators claim substrate ownership through a mutually signed `ControllerAgreement`.
 
 Substrates connect to a coordinator relay: the one in `parent_coordinator.iroh.url`, or one from the coordinator list of the registry. They publish signed endpoint records to the Community Registry and the Mainline DHT. Trust evidence uses canonical signed Roym records (such as guild membership credentials and bilateral agreement receipts). Trust evidence does not use centralized reputation scores or generic W3C VC 2.0 envelopes.
 
-> **Envisioned.** Not built yet. Centralized bootstrap servers, dynamic relay DNS assignment, and consumer-to-provider vouching graphs. Today a relay is set in the config or picked from the coordinator list, and trust relies on signed SynOrg membership credentials.
+> **Envisioned.** Not built yet. Centralized bootstrap servers, dynamic relay DNS assignment, and searcher-to-listing owner vouching graphs. Today a relay is set in the config or picked from the coordinator list, and trust relies on signed SynOrg membership credentials.
 
 
 ---
@@ -599,16 +605,16 @@ Substrate nodes boot in an unowned state. They fail closed on privileged operati
 
 > **Single point of failure note.** A default bootstrap service is a governance and availability dependency. Its signed records must be exportable and publishable through alternative operators or discovery mechanisms. Known peers and cached routes must satisfy the bootstrap outage release gate. Continued operation must not require authorization from a single Syneroym-controlled service. Today nodes operate independently without central authorization.
 
-### Consumer-Facing Aggregation
+### Participant-Facing Aggregation
 
-> This section clarifies consumer aggregation. Centralized platforms give consumers a single app. In Syneroym, providers run on different substrates run by different entities. The consumer experience remains coherent.
+> This section clarifies participant aggregation. Centralized platforms give participants a single app. In Syneroym, listing owners run on different substrates run by different entities. The participant experience remains coherent.
 
-- An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates provider listings and credentials. Aggregators do not manage hosting or infrastructure for providers.
-- A Consumer App (such as the Roym Hub browser web application) allows consumers to discover, browse, and transact with providers across multiple substrates and SynApps from a single interface.
-- The Consumer App queries one or more community directories. It merges results with deterministic round-robin client-side merging (`crates/roym_directory/src/app/client_merge.rs`). Results display clear source attribution, freshness timestamps, and refusal reasons.
-  > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today consumers discover providers via direct listing IDs or directory queries.
-- A consumer controls portable identity keys, signed receipts, grants, and preferences from their own device or designated store. Running a personal substrate is optional. Consumers can connect through the Client Gateway.
-- The Consumer App is a thin client. Business logic runs on provider substrates. The Consumer App is not a privileged participant in the ecosystem.
+- An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates listings and credentials. Aggregators do not manage hosting or infrastructure for listing owners.
+- A Participant App (such as the Roym Hub browser web application) allows participants to discover, browse, and transact with listing owners across multiple substrates and SynApps from a single interface.
+- The Participant App queries one or more community directories. It merges results with deterministic round-robin client-side merging (`crates/roym_directory/src/app/client_merge.rs`). Results display clear source attribution, freshness timestamps, and refusal reasons.
+  > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today participants discover listing owners via direct listing IDs or directory queries.
+- A participant controls portable identity keys, signed receipts, grants, and preferences from their own device or designated store. Running a personal substrate is optional. Participants can connect through the Client Gateway.
+- The Participant App is a thin client. Business logic runs on the substrates of listing owners. The Participant App is not a privileged participant in the ecosystem.
 
 ### [GTW-PRX] Client Gateway Multi-Substrate Ingress Proxy
 
@@ -645,7 +651,7 @@ Service deployment packages bundle static web assets (`AssetBundle`). The HTTP p
 - An Application Specification (`SynAppManifest`) composes components into a SynApp. It declares dependencies, resource limits (CPU and memory), and configuration schemas.
 - The specification declares service identifiers, versions, requested capabilities, permissions (FDAE policies), and migration lifecycle hooks (`init` and `migrate`).
   > **Envisioned.** Not built yet. Standalone package signatures, formal data classifications, automated backup declarations, and declarative rollback behaviour.
-- A provider or operator applies the Application Specification to selected substrates using `roymctl app deploy` or the App Supervisor.
+- A listing owner or operator applies the Application Specification to selected substrates using `roymctl app deploy` or the App Supervisor.
 - Before deployment, the substrate validates UCAN deploy permissions, semver constraints, and configuration schemas.
   > **Envisioned.** Not built yet. Pre-deploy node-level resource capacity checks and interactive capability-expansion approval summaries.
 - The SQLite deployment journal cleans up partially failed deployments. It tracks reconciliation actions and rolls back partially registered services. Operators inspect installation state through `roymctl app status`.
@@ -654,7 +660,7 @@ Service deployment packages bundle static web assets (`AssetBundle`). The HTTP p
 
 - The substrate monitors applications and reports health information through the resident reconcile loop of the App Supervisor and HTTP health endpoints (`/health`, `/v1/info`). It publishes failure alerts to MQTT topics.
   > **Envisioned.** Not built yet. Outbound push notifications to external notification services.
-- Providers receive alerts through CLI inspection (`roymctl app status`, `roymctl app alerts`) and supervisor JSON-RPC `alerts` queries.
+- Listing owners receive alerts through CLI inspection (`roymctl app status`, `roymctl app alerts`) and supervisor JSON-RPC `alerts` queries.
   > **Envisioned.** Not built yet. Webhook dispatch and real-time UI push alert notifications.
 - Updates require valid controller UCAN signatures. The substrate versions configuration generations in `config_generations`.
   > **Envisioned.** Not built yet. Automated snapshot and rollback to last known-good packages on post-update health check failure.
@@ -671,28 +677,28 @@ Reference SynApps validate shared ecosystem contracts without forcing different 
 
 ### Home Services Guild
 
-#### Provider and guild setup
+#### Listing owner and guild setup
 
 - A guild operator deploys a signed release profile. The operator creates a guild with public identity, service area, membership policy, support contact, dispute path, directory policy, and data retention policy.
-- A provider controls a stable provider master DID. The provider proves guild membership and standing with signed credentials (`crates/roym_core/src/membership.rs`). The provider does not grant guild administration rights through a `DelegationCertificate`.
+- A listing owner controls a stable master DID. The listing owner proves guild membership and standing with signed credentials (`crates/roym_core/src/membership.rs`). The listing owner does not grant guild administration rights through a `DelegationCertificate`.
   > **Envisioned.** Not built yet. Interactive invitation and application vetting workflows. Today operators manage members directly via roster administration.
-- A provider publishes name, description, service categories, service area, availability, price style (fixed, range, or quote), cancellation policy, supported payment rails, and trust evidence. Required fields and provenance information are machine-readable.
-- One operator can manage multiple provider service instances without getting undeclared read access to private conversations or records. Conversations use Double Ratchet end-to-end encryption. Databases use derived per-instance encryption keys.
+- A listing owner publishes name, description, service categories, service area, availability, price style (fixed, range, or quote), cancellation policy, supported payment rails, and trust evidence. Required fields and provenance information are machine-readable.
+- One operator can manage multiple service instances without getting undeclared read access to private conversations or records. Conversations use Double Ratchet end-to-end encryption. Databases use derived per-instance encryption keys.
   > **Envisioned.** Not built yet. Externally provisioned per-instance Key Encryption Keys (Model B) protecting against an operator with host memory access.
 
-#### Consumer-provider workflow
+#### Deal workflow
 
-- **Discover.** Consumers find a provider through a direct link or guild directory queries with client-side deterministic merging. Results display data source, freshness, and active filters. Paid placement is absent.
-  > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today consumers discover providers via direct listing IDs or directory queries.
-- **Assess.** Consumers review services, price basis, availability, provider identity continuity, trust evidence, guild relationship, and material policies before sharing personal details.
+- **Discover.** Searchers find a listing owner through a direct link or guild directory queries with client-side deterministic merging. Results display data source, freshness, and active filters. Paid placement is absent.
+  > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today searchers discover listing owners via direct listing IDs or directory queries.
+- **Assess.** Searchers review services, price basis, availability, listing owner identity continuity, trust evidence, guild relationship, and material policies before sharing personal details.
 - **Request and clarify.** A request captures category, description, approximate area, preferred window, attachments, and a data-use notice. Machine-readable policy withholds exact address disclosure until both parties agree to a quote. Parties clarify details in the linked conversation.
 - **Quote and agree.** A versioned quote states scope, price, taxes or fees, schedule, location, payment method, cancellation/refund terms, expiration time, and dispute path. When both parties accept, the system creates a signed agreement receipt.
-- **Fulfil `[VRT-SRV]`.** Permitted states and actors are explicit. Bookings follow discrete state tracks (`Scheduled`, `InProgress`, `Completed`, `Cancelled`, `Conflict`, `EndedUnconfirmed`). Transitions enforce actor roles: only the provider can cancel a booking, and only before any track has moved. Completed bookings require mutual confirmation on two independent tracks (`payment` and `fulfilment`). State changes produce append-only signed progress records (`BookingProgressPayload`). State changes supersede previous envelopes idempotently and never rewrite signed history.
-  > **Envisioned.** Not built yet. Consumer-initiated cancellation and automated dispute arbiters. Today cancellation is provider-only and dispute resolution is handled out-of-band.
-- **Settle `[VRT-PAY]`.** Payments use signed out-of-band payment records (`PaymentRequestPayload` and `PaymentAcknowledgementPayload`). Providers request payment stating currency and minor-unit amount. Both parties independently record signed payment acknowledgements. The system does not process funds directly. The system never treats an unverified return from a third-party payment app as final settlement.
+- **Fulfil `[VRT-SRV]`.** Permitted states and actors are explicit. Bookings follow discrete state tracks (`Scheduled`, `InProgress`, `Completed`, `Cancelled`, `Conflict`, `EndedUnconfirmed`). Transitions enforce actor roles: only the quote author can cancel a booking, and only before any track has moved. Completed bookings require mutual confirmation on two independent tracks (`payment` and `fulfilment`). State changes produce append-only signed progress records (`BookingProgressPayload`). State changes supersede previous envelopes idempotently and never rewrite signed history.
+  > **Envisioned.** Not built yet. Counterparty-initiated cancellation and automated dispute arbiters. Today only the quote author can cancel and dispute resolution is handled out-of-band.
+- **Settle `[VRT-PAY]`.** Payments use signed out-of-band payment records (`PaymentRequestPayload` and `PaymentAcknowledgementPayload`). Quote authors request payment stating currency and minor-unit amount. Both parties independently record signed payment acknowledgements. The system does not process funds directly. The system never treats an unverified return from a third-party payment app as final settlement.
   > **Envisioned.** Not built yet. Integrated payment processors (such as Stripe Connect SDK), in-app escrow custody, system coins, and mutual credit rails. Today transactions record signed out-of-band payment notices only.
 - **Close and return.** Workflow completion produces portable signed receipts (`InteractionReceipt` and `FulfilmentRecord`). Either party can start a repeat request in the existing conversation without re-entering consented information.
-  > **Envisioned.** Not built yet. Consumer feedback and review submissions tied to receipts.
+  > **Envisioned.** Not built yet. Counterparty feedback and review submissions tied to receipts.
 
 ### [ROY-ADM] Application-Tier Local-Only Ingress Firewall
 
@@ -707,11 +713,11 @@ Private SynApp services enforce an application-tier admission firewall on all in
 
 ### [TXN-SLT] First-Claim Slot Reservation Concurrency Fence
 
-When multiple consumers accept quotes for the same limited provider availability slot, the transaction ledger enforces single-writer arbitration to prevent double booking.
+When multiple counterparties accept quotes for the same limited availability slot of a quote author, the transaction ledger enforces single-writer arbitration to prevent double booking.
 
-- **Atomic Seat Claims:** The provider transaction service arbitrates accepted quotes against catalog availability. For slot-based bookings, the service checks slot existence and remaining capacity, bounded by `MAX_SLOT_CAPACITY = 64`. The service attempts to write an atomic seat record (`seat:<slot_id>:<seat_number>`) into the ledger.
-- **First-Claim Decision:** Exactly one consumer claim succeeds for an available seat. That booking transitions to `Scheduled` with a signed initial progress snapshot (`BookingProgressPayload`).
-- **Typed Conflict Refusal:** If all seats for the quoted slot are already claimed, or if the slot no longer exists, the competing booking transitions to `Conflict` with a machine-readable reason (`ConflictReason::SlotTaken` or `ConflictReason::SlotUnavailable`). The provider does not countersign conflicting bookings.
+- **Atomic Seat Claims:** The transaction service of the quote author arbitrates accepted quotes against catalog availability. For slot-based bookings, the service checks slot existence and remaining capacity, bounded by `MAX_SLOT_CAPACITY = 64`. The service attempts to write an atomic seat record (`seat:<slot_id>:<seat_number>`) into the ledger.
+- **First-Claim Decision:** Exactly one claim by a counterparty succeeds for an available seat. That booking transitions to `Scheduled` with a signed initial progress snapshot (`BookingProgressPayload`).
+- **Typed Conflict Refusal:** If all seats for the quoted slot are already claimed, or if the slot no longer exists, the competing booking transitions to `Conflict` with a machine-readable reason (`ConflictReason::SlotTaken` or `ConflictReason::SlotUnavailable`). The quote author does not countersign conflicting bookings.
 - **Idempotent Retry:** Repeated quote acceptance or sync requests for an already decided booking return cached results (`AlreadyDecided` or `already-accepted`). These retries do not alter committed seats or create duplicate records.
 
 ### Service Variation Dimensions
@@ -724,8 +730,8 @@ The reference SynApp implements variation dimensions across workflows using seve
 - **Product type (`ProductDetail`):** Physical goods with unit, pack size, SKU, and condition (`New`, `Used`, `Refurbished`).
   > **Envisioned.** Not built yet. Time-bound prepared food spoilage timers and digital content streaming or DRM pipelines.
 - **Service type (`ServiceDetail`):** Time-slot services, job-completion services, and location-based services with declared durations, inclusions, exclusions, and prerequisites.
-- **Location (`LocationTerms`):** Fixed provider locations, customer locations, and remote digital services (`ServiceLocation`). This block includes bounding service areas and machine-readable address disclosure policies (`AddressDisclosure::OnAgreement` and `AddressDisclosure::Public`).
-- **Relationship type (`RelationshipTerms`):** Eligibility controls (`Anyone`, `Members`, `Referral`, `ExistingCustomers`) and guild membership requirements. Durable conversation threads preserve shared history across engagements.
+- **Location (`LocationTerms`):** Work at the giver's place, work at the receiver's place, and remote digital services (`ServiceLocation`: `AtGiver`, `AtReceiver`, `Remote`). This block includes bounding service areas and machine-readable address disclosure policies (`AddressDisclosure::OnAgreement` and `AddressDisclosure::Public`).
+- **Relationship type (`RelationshipTerms`):** Eligibility controls (`Anyone`, `Members`, `Referral`, `PastCounterparties`) and guild membership requirements. Durable conversation threads preserve shared history across engagements.
   > **Envisioned.** Not built yet. Automated recurring relationship agreements and retainer schedules.
 - **Service record (`ServiceRecordTerms`):** Portable completion receipts, stated warranty durations, and declared record retention windows.
   > **Envisioned.** Not built yet. Real-time active GPS and delivery telemetry tracking feeds.
@@ -836,7 +842,7 @@ Track the underlying topology when registering a Logical Service Name in the loc
 
 Discover services across three registry scopes rather than a single monolithic registry:
 
-1.  **Community Identity/Endpoint Registry (HTTP + pkarr/DHT):** Resolves top-level Provider, Node, and public Service identities to signed endpoint records (such as Iroh endpoint addresses, WebRTC peer hints, or public gateway URLs).
+1.  **Community Identity/Endpoint Registry (HTTP + pkarr/DHT):** Resolves top-level Participant, Node, and public Service identities to signed endpoint records (such as Iroh endpoint addresses, WebRTC peer hints, or public gateway URLs).
 2.  **Contextual/App Registry:** Resolves Logical Service Names to Explicit Service IDs within a specific `SynApp Instance` overlay context or shared node namespace. The App Supervisor or `roymctl` **pushes this mapping into each service's configuration** at deploy time, rather than serving queries at runtime (see [ADR-0021](decisions/0021-binding-propagation-and-app-supervisor.md)).
 3.  **Endpoint/Router Registry:** Stores the internal substrate routing table. It maps an Explicit Service ID and interface to actual execution boundaries (such as local WASM channels, native host functions, Podman sockets, TCP host and port endpoints, or remote network sockets).
 
@@ -942,7 +948,7 @@ Run guest WebAssembly components inside Wasmtime sandboxes with strict resource 
 ### [FND-IDT] Cryptographic Identity Primitives
 - **Issuer-Neutral Key Hierarchy:** Provide stable, owner-controlled identity anchors that delegate rotatable device and routing keys. Government IDs, community credentials, hardware keys, and social recovery serve as optional assurance or recovery methods. No external identity system serves as the universal Tier 1 root.
 - **Identity Export & Recovery:** Export or recover identity authority securely without granting impersonation power to node operators. Identity recovery rotates compromised delegates, publishes revocations, preserves an auditable continuity chain, and warns the user when continuity cannot be proven.
-- **Lightweight Consumer Identity:** Support device-bound consumer keys and an encrypted backup and import path. Consumers do not need a personal substrate.
+- **Lightweight Participant Identity:** Support device-bound participant keys and an encrypted backup and import path. Participants do not need a personal substrate.
 - **Privacy-Preserving Credential Plugins:**
   > **Envisioned.** Not built yet. Sandboxed extension points for zero-knowledge or external credential proof schemes.
   >
@@ -1266,7 +1272,7 @@ The project defers all advanced AI capabilities and concierge agent workflows to
 - **Agent-to-Agent Delegation:**
   > **Envisioned.** Not built yet. Autonomous agent-to-agent negotiation protocol. Today inter-service communication uses typed WIT interfaces and RPC routing.
   >
-  > A user's Concierge Agent can autonomously negotiate with external provider agents across the Syneroym substrate.
+  > A user's Concierge Agent can autonomously negotiate with the agents of external listing owners across the Syneroym substrate.
 - **Ecosystem Vector Directory & Memory:**
   > **Envisioned.** Not built yet. Local `sqlite-vec` vector database and episodic agent memory. Today SQLite stores relational service records and deployment metadata.
   >
@@ -1291,17 +1297,17 @@ The project defers all advanced AI capabilities and concierge agent workflows to
 Syneroym can serve as a general open cloud. This section separates foundational low-level network connectivity (`[TOP]`) from higher-level community peer networking primitives.
 
 ### [P2P-DSC] Distributed Matching Fabric
-Discovery uses directory services (`syneroym-roym-directory`). Clients, SynOrgs, and directories choose what they query and publish. Providers publish signed publication records (listings and profiles) to selected directories. Clients fan out queries across designated directory sources, then merge and verify results locally.
+Discovery uses directory services (`syneroym-roym-directory`). Clients, SynOrgs, and directories choose what they query and publish. Listing owners publish signed publication records (listings and profiles) to selected directories. Clients fan out queries across designated directory sources, then merge and verify results locally.
 
-- **Publications, not a global index:** Providers, consumers, and services publish signed publication records (`SignedRecord` envelopes carrying listings, profiles, and intents). Client applications query designated directory services with bounded fan-out. Clients merge results and verify cryptographic signatures, timestamps, and validity windows before use.
+- **Publications, not a global index:** Participants and services publish signed publication records (`SignedRecord` envelopes carrying listings, profiles, and intents). Client applications query designated directory services with bounded fan-out. Clients merge results and verify cryptographic signatures, timestamps, and validity windows before use.
   > **Envisioned.** Not built yet. Fully decentralized P2P index caches across arbitrary peer nodes. Today discovery uses client queries fanned out across designated directory SynOrgs, with client-side verification and merging.
   >
   > Distributed index caches match records across peer substrates. These indexes act as distributed non-authoritative caches. Clients verify every result before use.
 - **Deterministic placement:**
-  > **Envisioned.** Not built yet. Deterministic routing schema and rendezvous hashing onto leaf index shards. Today providers publish directly to chosen directory SynOrg services.
+  > **Envisioned.** Not built yet. Deterministic routing schema and rendezvous hashing onto leaf index shards. Today listing owners publish directly to chosen directory SynOrg services.
   >
-  > A protocol-defined Routing Schema (spatial cell, category, and attributes) and rendezvous hashing map each publication onto leaf index shards. Providers compute their own placement without coordinators.
-- **Aggregators as directory services:** Directory applications ("Aggregators") operate as directory-type SynOrgs (`syneroym-roym-directory`). They index provider listings and credentials without privileged substrate status. No aggregator is a required or privileged intermediary.
+  > A protocol-defined Routing Schema (spatial cell, category, and attributes) and rendezvous hashing map each publication onto leaf index shards. Listing owners compute their own placement without coordinators.
+- **Aggregators as directory services:** Directory applications ("Aggregators") operate as directory-type SynOrgs (`syneroym-roym-directory`). They index listings and credentials without privileged substrate status. No aggregator is a required or privileged intermediary.
   > **Envisioned.** Not built yet. Leaf index shard opt-in and federation protocol. Today directory services run as standard SynApps, and clients configure which directory sources they query.
   >
   > Directory applications can join as leaf index shards in a decentralized matching fabric. They present the same standard interface as any other peer.
@@ -1332,10 +1338,10 @@ Discovery uses directory services (`syneroym-roym-directory`). Clients, SynOrgs,
   > **Envisioned.** Not built yet. Substrate-side rolling summary aggregations and moving averages. Today client nodes inspect individual signed records and credentials directly.
   >
   > The substrate runs continuous, low-compute aggregations. For example, it updates total user counts, moving averages, and short summary text across timeframes. This avoids running heavy LLM summarization on large blocks of raw text.
-- **Portable Trust Evidence:** Trust evidence is not stored on a global public DHT. Providers and SynOrgs serve portable signed records (membership credentials, revocations, and bilateral receipts). Client applications preserve provenance and verify signatures against pinned group sources. A provider that hosts records does not guarantee that the set is complete.
+- **Portable Trust Evidence:** Trust evidence is not stored on a global public DHT. Listing owners and SynOrgs serve portable signed records (membership credentials, revocations, and bilateral receipts). Client applications preserve provenance and verify signatures against pinned group sources. A listing owner that hosts records does not guarantee that the set is complete.
   > **Envisioned.** Not built yet. Joint DHT reputation records and public reputation score distribution. Today trust evidence consists of individual signed records and receipts verified by the recipient.
   >
-  > Nodes share reputation signals and evidence without a global public DHT. This allows clients to compare sources from guilds, consumers, or other authorized parties.
+  > Nodes share reputation signals and evidence without a global public DHT. This allows clients to compare sources from guilds, participants, or other authorized parties.
 
 ## Phase 6: High-Level Applications (SynApps) — [APP-ROY]
 
@@ -1350,12 +1356,12 @@ Roym is the only SynApp built so far. It combines directory discovery, catalog l
   > **Envisioned.** Not built yet. Active FDAE access grant management interface. Today identity sessions and JSON data exports run via the web UI, while encrypted backup creation is performed via `roymctl roym backup create`.
   >
   > A secure vault interface manages digital identity, portable service history, and active FDAE access grants.
-- **The Trusted Room Inbox:** A unified messaging view that combines person-to-person chats, professional guild groups, and interactive customer service threads.
+- **The Trusted Room Inbox:** A unified messaging view that combines person-to-person chats, professional guild groups, and interactive customer-service threads.
 - **The Agentic Concierge (optional):**
   > **Envisioned.** Not built yet. Text or voice AI concierge. Today all Hub interactions use deterministic UI workflows without AI models.
   >
   > A text or voice interface powered by a local or user-selected AI service. It remains subordinate to deterministic workflows, explicit user consent, and a fully functional non-AI path.
-- **The Opportunity & Discovery Radar:** Directory search supports geographic radius filtering (`--near`) to discover local providers and listings.
+- **The Opportunity & Discovery Radar:** Directory search supports geographic radius filtering (`--near`) to discover local listing owners and listings.
   > **Envisioned.** Not built yet. Visual map-based radar, mesh network browsing, and real-time opportunity streams. Today discovery uses directory search with text and radius parameters.
   >
   > A visual map interface allows users to browse local mesh networks, check neighborhood trust proximity, and view localized opportunity streams.
@@ -1364,47 +1370,47 @@ Roym is the only SynApp built so far. It combines directory discovery, catalog l
   >
   > A cross-platform native shell contains no core business logic. It serves purely as a thin renderer for JSON Action Cards pushed by the local substrate node.
 
-### Everyday Users (Consumers)
+### Everyday Users (Searchers)
 *User activities for social connection, service discovery, secure negotiation, and payments.*
 - **Social & Group Messaging:** Users chat with friends, family, or local community groups using an encrypted messaging interface to share messages, media, and recommendations.
 - **AI-Assisted Discovery:**
-  > **Envisioned.** Not built yet. AI assistant searching community directories. Today consumers search directories directly through text queries and location radius filters.
+  > **Envisioned.** Not built yet. AI assistant searching community directories. Today searchers search directories directly through text queries and location radius filters.
   >
-  > A personal AI assistant finds local services (such as a plumber or doctor) by searching community directories and matching provider offerings.
+  > A personal AI assistant finds local services (such as a plumber or doctor) by searching community directories and matching listing owner offerings.
 - **Service Bundling:**
   > **Envisioned.** Not built yet. Multi-service bundling into a single coordinated request. Today each service request is created and agreed independently.
   >
   > The user combines multiple services into one request (such as ordering food from a restaurant and booking a delivery driver).
-- **Interactive Negotiation:** Users chat directly with service providers in secure rooms to discuss details, negotiate prices, and approve interactive Quote Cards in chat.
+- **Interactive Negotiation:** Users chat directly with listing owners in secure rooms to discuss details, negotiate prices, and approve interactive Quote Cards in chat.
 - **Flexible Payments:** Users complete services by approving versioned payment requests and acknowledgement cards. External or out-of-band payment rails remain the default until an approved ledger product exists. Every payment method identifies the responsible payment or settlement provider.
-- **Portable Data & Privacy:** Users export and import encrypted identity and service history archives when switching devices or providers.
-  > **Envisioned.** Not built yet. Time-limited selective record sharing through consumer FDAE interfaces. Today full encrypted backups can be exported and restored.
+- **Portable Data & Privacy:** Users export and import encrypted identity and service history archives when switching devices or listing owners.
+  > **Envisioned.** Not built yet. Time-limited selective record sharing through participant FDAE interfaces. Today full encrypted backups can be exported and restored.
   >
-  > Users can share personal information (such as medical records or delivery addresses) with a provider for a limited time. Users can take service history to another provider.
+  > Users can share personal information (such as medical records or delivery addresses) with a listing owner for a limited time. Users can take service history to another listing owner.
 - **Trust Context:** Users inspect credentials, referrals, receipts, and community context without exposing private social graphs or creating a universal score.
 
-### Service Creators (Primary Providers)
-*Provider activities for setting up shop, generating leads, and delivering services.*
-- **Digital Storefront Setup:** Providers create a business profile and publish service listings and catalogs to discovery directories.
+### Service Creators (Listing Owners)
+*Listing owner activities for setting up shop, generating leads, and delivering services.*
+- **Digital Storefront Setup:** Listing owners create a business profile and publish service listings and catalogs to discovery directories.
 - **Advertising & Outreach (evidence-gated):** Any cold outreach or paid placement requires recipient controls, rate limits, disclosure, and community policy. Digital stamps remain an idea for later evaluation, not a default mechanism.
-- **Lead Engagement:** Providers receive customer requests and reply by sending interactive quote Action Cards into the customer chat.
-  > **Envisioned.** Not built yet. Network-wide live feed of public customer requests. Today providers receive requests sent directly to them by consumers.
+- **Lead Engagement:** Listing owners receive requests and reply by sending interactive quote Action Cards into the conversation.
+  > **Envisioned.** Not built yet. Network-wide live feed of public requests. Today listing owners receive requests sent directly to them by counterparties.
   >
-  > Providers browse a live feed of local customer requests. They reply by sending interactive forms, booking widgets, or quotes into customer chat.
-- **Service Delivery & Billing:** Providers deliver services and send payment request cards into chat.
+  > Listing owners browse a live feed of local requests. They reply by sending interactive forms, booking widgets, or quotes into the conversation.
+- **Service Delivery & Billing:** Listing owners deliver services and send payment request cards into chat.
   > **Envisioned.** Not built yet. Automated debt-clearing ledgers and integrated external payment gateways. Today payment requests identify accepted settlement methods, and payments settle out-of-band.
   >
   > Invoices can feed into an automated debt-clearing ledger or route through external payment gateways based on business configuration.
 - **Professional Guilds:** Professionals join private group chats with industry peers to share work, refer clients, and coordinate projects.
-- **Reputation Building:** Providers collect portable signed agreement receipts, fulfilment receipts, and SynOrg membership credentials that preserve provenance.
+- **Reputation Building:** Listing owners collect portable signed agreement receipts, fulfilment receipts, and SynOrg membership credentials that preserve provenance.
   > **Envisioned.** Not built yet. Public feedback collection and review systems. Today trust evidence consists of cryptographic receipts and membership credentials.
   >
-  > Providers collect portable, receipt-linked feedback and signed trust evidence that preserve provenance across hosts.
+  > Listing owners collect portable, receipt-linked feedback and signed trust evidence that preserve provenance across hosts.
 
 ### Network Enablers (Aggregators & Facilitators)
-*Participant activities for market operation, infrastructure, and dispute handling.* An Aggregator is a directory-type SynOrg service (`syneroym-roym-directory`) that aggregates provider listings and credentials. It does not provide hosting.
+*Participant activities for market operation, infrastructure, and dispute handling.* An Aggregator is a directory-type SynOrg service (`syneroym-roym-directory`) that aggregates listings and credentials. It does not provide hosting.
 
-- **Discovery Directories (Aggregator):** Operators run search services and community directories that collect and index provider listings. This helps users discover services.
+- **Discovery Directories (Aggregator):** Operators run search services and community directories that collect and index listings. This helps users discover services.
 - **Spam Prevention (Aggregator):** Operators enforce declared publication rate limits, recipient block controls, and abuse response policies. Fuel quotas and economic costs remain optional mechanisms.
 - **Trust Summaries (Aggregator):** Directory services serve sourced membership credentials and verify trust records under a declared community policy.
   > **Envisioned.** Not built yet. Computed opinion scores and automated trust summary ratings. Today directory services return verified membership credentials and revocations without computing numerical scores.
@@ -1420,7 +1426,7 @@ Roym is the only SynApp built so far. It combines directory discovery, catalog l
 *Reader: developers and system architects.*
 
 ### [EDG-MOB] Mobile operation
-- **Platform Support:** Consumer and provider interfaces provide responsive web access for mobile viewports. Substrate binaries target Linux, macOS, and Windows.
+- **Platform Support:** Searcher and listing owner interfaces provide responsive web access for mobile viewports. Substrate binaries target Linux, macOS, and Windows.
   > **Envisioned.** Not built yet. Native Syneroym Substrate execution on Android and iOS. Today mobile devices access substrate services through the web client in a browser.
   >
   > Native substrate execution on Android and iOS must prove acceptable reliability, battery use, background behaviour, and key recovery on supported OS versions.
@@ -1494,7 +1500,7 @@ This appendix defines envisioned extensions to substrate and application contrac
 | **[FND-CFG] Service Config (Secrets)** | **Roym Services** | Retrieves secrets dynamically from the encrypted vault via `syneroym:vault/reveal` (`crates/sandbox_wasm`). |
 | **[FND-DEP] App Deployment** | **roymctl** | Compiles and deploys WASM SynApp components into the sandboxed Wasmtime runtime (`apps/roymctl`, `crates/app_orchestration`). |
 | **[FND-VER] Schema Migrations** | **Substrate Runtime** | Executes stateful `init()` and `migrate()` SQL DDL lifecycle hooks (`crates/sandbox_wasm/src/engine/lifecycle.rs`). |
-| **[P2P-DSC] Directory Search** | **Roym Directory** | Publishes signed listing records and resolves local service providers via directory queries and deterministic client-side merging (`crates/roym_directory`). |
+| **[P2P-DSC] Directory Search** | **Roym Directory** | Publishes signed listing records and resolves local listing owners via directory queries and deterministic client-side merging (`crates/roym_directory`). |
 | **[P2P-REP] Bilateral Receipts** | **Roym Transaction** | Generates signed bilateral agreement and fulfilment receipts and renders credential trust summaries in Roym Hub (`crates/roym_core/src/transaction.rs`, `crates/roym_web/ui`). |
 | **[FND-OBS] Metrics Recording** | **Substrate Core** | Records in-memory metrics with `MemoryRecorder` and exposes them over HTTP `/metrics` (`crates/observability`). |
 | **[LFC-*] Deploy Rollback** | **Control Plane** | Rolls back configuration generations, asset bundles, and FDAE policies atomically upon deployment failure (`crates/control_plane`). |

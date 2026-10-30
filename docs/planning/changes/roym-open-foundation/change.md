@@ -1,6 +1,12 @@
 ---
 status: draft
 living-docs-touched:
+  - docs/TERMINOLOGY.md
+  - docs/system-requirements-spec.md
+  - docs/system-architecture.md
+  - docs/roym-integrated-experience-spec.md
+  - docs/developer-guide.md
+  - docs/planning/traceability-matrix.md
 ---
 # Roym open foundation
 
@@ -186,7 +192,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 
 - [x] M08A spike: the epoch-deadline callback for `call-all`, and the event feed's home. Write both results here.
 - [ ] Write the M08A slice plans.
-- [ ] Participant rename across Roym crates, the Hub, `roymctl`, docs.
+- [x] Participant rename across Roym crates, the Hub, `roymctl`, docs.
 - [ ] `call-all` with its limits, the deadline extension (or the fallback), and the native shim.
 - [ ] The federated query library. Move merging and duplicate removal into it. One search method.
 - [ ] The event feed: the bus (or `web`), scoped by app instance, the WebSocket path, internal subscription, catch-up.
@@ -214,9 +220,22 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-OF-4. Event kinds and in-memory catch-up window.** In-memory ring buffer per app instance (newest 10,000 events or 24 hours). Lost on restart (answers "reload"). Four v1 event kinds: `conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking`.
 - **D-OF-5. Search has no live-progress form in v1.** Search is one client call returning a merged page. Bounded by `call-all` total limit. Option (c) (host-emitted progress events) recorded in deferred backlog as a future option.
 - **D-OF-6. `call-all` in `syneroym:proxy`.** Placed beside `proxy.call`, reusing target, options, and error types, with JSON text params.
+- **D-A1-1. One deal role everywhere.** `pub enum DealRole { QuoteAuthor, Counterparty }` in `roym_core::transaction`. On the wire the values are `"quote-author"` and `"counterparty"`. Every `consumer_did` is now `counterparty_did`, and every `provider_did` is now `quote_author_did`. The row halves `consumer` and `provider` are now `counterparty` and `quote_author`. The name `DealRole` keeps it apart from `AppSandboxRole`, `MailboxRole` and the substrate `[roles.*]`. There is no giver and receiver type in code yet.
+- **D-A1-2. Rename in place, no alias.** Record versions stay 1. The storage `SCHEMA_VERSION` of `roym_transaction` goes from 3 to 4, so an older backup is refused with a clear message. A node on an older build and a node on the new build cannot exchange deal cards.
+- **D-A1-3. Place values.** `ServiceLocation { AtGiver, AtReceiver, Remote }`, signed as `"at-giver"`, `"at-receiver"` and `"remote"`. The catalog `SCHEMA_VERSION` goes from 2 to 3 and `DIRECTORY_SCHEMA_VERSION` from 4 to 5, because listings with the old values no longer parse.
+- **D-A1-4. Other senses are renamed too.** The listing owner (who publishes) and the searcher (who reads results) are named in Roym code, the Hub and the docs. "Customer" is part of the rename.
+- **D-A1-5. Words people read.** Cards say "Quote to" and "Quote by", "The payer says they paid", "The person doing the work says it is done", and so on. Errors and `roymctl` help use the exact deal-role words. Places read "At my place", "At their place" and "Remote" in forms, and "At the quote author's place" and "At the counterparty's place" on cards.
+- **D-A1-6. Guard tests.** `roym_core` has a test that fails when a signed record or a wire value carries "provider", "consumer" or "customer". It fills every optional field and runs every variant of the role, place, audience and next-step enums. The Hub has a test for the shared notices, the labels and the card text.
+- **D-A1-7. Other names.** `NextStep::WaitForQuoteAuthor` (`"wait-for-quote-author"`). The booking helpers use `author` and `counterparty` in their names. `DealRole::as_str()` is the one source of the role name in fence ids and in the backup import message.
+- **D-A1-8. Audience value.** `OpenTo::ExistingCustomers` is now `OpenTo::PastCounterparties`, signed as `"past-counterparties"`. The Hub label is "People I have worked with before".
 
 ## Deviations
 
+- **Giver and receiver are in the docs only.** The Design section above lists `giver` and `receiver` for one commitment. A1 uses one role type for the parties of a deal, because the payment and fulfilment records name the deal parties on both tracks. The backlog tracks the move to giver and receiver with commitments.
+- **Enum values are kebab-case.** Field names are `quote_author_did` and `counterparty_did`. The role value is `"quote-author"`, as every enum value on the wire is kebab-case.
+- **"Customer" is part of the rename.** It also covers the audience value `existing-customers` (now `past-counterparties`) and the place value `at-customer` (now `at-receiver`).
+- **More storage schema versions changed than planned.** The plan named the transaction service only. The catalog and the directory also store the renamed place and audience values, so their versions changed too.
+- **One error text changed in the Rust-names-only step.** The backup import message "receipt has role" printed the Rust variant name. It prints the wire name now.
 - **`call-all` interface:** task.md and change doc originally named `syneroym:invocation`. Corrected to `syneroym:proxy` beside `call` (Q1 / D-OF-6).
 - **`call-all` params type:** sketch originally used `params: list<u8>`. Corrected to `params: string` (JSON text) matching `proxy.call` (Q1 / D-OF-6).
 - **`web` instance reuse:** change doc table previously stated `web` instances are reused and keep no state. In fact each ordinary call and WebSocket event creates a new store and instance (`engine.rs:469`, `guest_stream.rs:294`, `app.rs:295`) (Q5 / D-OF-3).

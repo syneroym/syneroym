@@ -23,7 +23,7 @@ pub const MAX_NAMED_LABEL_LEN: usize = 128;
 pub enum Area {
     /// What an index wants.
     Bbox { min_lat_e6: i64, min_lon_e6: i64, max_lat_e6: i64, max_lon_e6: i64 },
-    /// What a provider actually thinks in: "I travel this far from here".
+    /// What a listing owner actually thinks in: "I travel this far from here".
     Circle { lat_e6: i64, lon_e6: i64, radius_m: u64 },
     /// What a person reads. Never queried geometrically.
     Named {

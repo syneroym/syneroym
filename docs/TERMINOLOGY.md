@@ -58,6 +58,12 @@ neighbourhood.
 | **Direct connection** | A stream connection where the client dials the node hosting the target service directly. Identity parameters travel in the route preamble line. | Indirect connection. |
 | **Indirect connection** | A stream connection routed through a forwarder coordinator to reach the target service. Caller identity parameters are sent inside an end-to-end encrypted channel after the host verifies itself. | Direct connection. |
 | **Identity line** | The first encrypted line sent after the end-to-end handshake on an indirect or encrypted stream (`params.join("&") + "\n"`). Carries caller proof (`pubkey`, `sig`, `ts`, `delegation`, `ucan`, `on_behalf`) hidden from forwarders. | Route preamble line. |
+| **Participant** | Any person or business that takes part in Roym. Roym has no fixed seller and buyer roles. What a participant does in one place is named by the role there: listing owner, searcher, quote author or counterparty. | A seller, buyer, "provider" or "consumer". Roym does not use those words for people. |
+| **Quote author** | The participant who writes and signs the quote of a deal. Today this is the owner of the listing. The quote author is the only writer of the booking. | Counterparty. |
+| **Counterparty** | The other party of a deal: the participant who sent the request and to whom the quote is addressed. | Quote author; and a "customer", which Roym does not use as a role. |
+| **Giver / receiver (of a resource)** | Said about one resource in a deal, not about a person. Today the quote author gives the work and receives the money. The counterparty gives the money and receives the work. Docs and UI text use these words. The code names the two parties of a deal, not the giver and receiver. | The receiver of a mailbox message (see **Mailbox** and **Queue lifetime**), which is a service member, not a participant. |
+| **Listing owner** | The participant who publishes a listing. A listing exists before any deal, so this is not a deal role. | Quote author (usually the same person, but a different idea). |
+| **Searcher** | The participant who searches directories and reads the results. Not a deal role. | Counterparty. |
 
 ## Key phrasings
 
@@ -87,6 +93,7 @@ neighbourhood.
 | "Federated Professional Services Guild" (retired name) | **Professional Services Guild**, a Roym vertical |
 | anything implying blockchain or crypto | "no blockchains or cryptocurrency"; Syneroym Coin is "not a cryptocurrency or blockchain-based token" |
 | "controller" or "stateful controller" (for the supervisor process) | **App Supervisor** |
+| "provider", "consumer" or "customer" (as people or deal roles in Roym) | **participant**, or the role: **listing owner**, **searcher**, **quote author**, **counterparty**. Keep "infrastructure provider", "identity provider" and "storage provider", which mean something else. |
 
 ## Which document owns what
 

@@ -5,7 +5,7 @@
     clippy::panic,
     dead_code
 )]
-//! The durability suite: a provider's transaction in flight is
+//! The durability suite: a quote author's transaction in flight is
 //! carried across an encrypted backup and a restore onto a clean
 //! installation, without shelling out to `roymctl` -- the same
 //! `syneroym_identity::backup` calls and the same five `*.export`/`*.import`
@@ -226,7 +226,7 @@ async fn setup_scheduled_transaction(
                     "currency": "EUR", "amount_minor": 8000, "tax_minor": 0, "fees_minor": 0,
                     "payment_methods": ["cash"], "payee": "Y Cleaning",
                     "payment_timing": "after-work",
-                    "location": { "where": "at-customer", "address": "1 Kitchen Way" },
+                    "location": { "where": "at-receiver", "address": "1 Kitchen Way" },
                     "cancellation_terms": "24 hours notice required",
                     "refund_terms": "Full refund if work not completed",
                     "dispute_path": "Informal mediation",
@@ -267,7 +267,7 @@ async fn advance_transaction(node_x: &Node, node_y: &Node, tx: &ActiveTransactio
     let x_ack =
         node_x.rpc_ok("payment.acknowledge", json!({ "agreement": tx.quote_record_id })).await;
     let x_ack_msg = x_ack["message_id"].as_str().unwrap().to_string();
-    assert!(wait_delivered(node_x, &x_ack_msg).await, "consumer payment ack delivered");
+    assert!(wait_delivered(node_x, &x_ack_msg).await, "counterparty payment ack delivered");
     node_y.rpc_ok("transaction.sync", json!({ "conversation": tx.y_conv_id })).await;
 
     let y_ack1 = node_y
@@ -349,13 +349,13 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     let payment_after =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id })).await;
     assert_eq!(payment_after["track"], before.payment["track"]);
-    assert_eq!(payment_after["provider"], before.payment["provider"]);
-    assert_eq!(payment_after["consumer"], before.payment["consumer"]);
+    assert_eq!(payment_after["quote_author"], before.payment["quote_author"]);
+    assert_eq!(payment_after["counterparty"], before.payment["counterparty"]);
 
     let fulfilment_after =
         node_y2.rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id })).await;
     assert_eq!(fulfilment_after["track"], before.fulfilment["track"]);
-    assert_eq!(fulfilment_after["provider"], before.fulfilment["provider"]);
+    assert_eq!(fulfilment_after["quote_author"], before.fulfilment["quote_author"]);
 
     let request_history_after =
         node_y2.rpc_ok("request.history", json!({ "request_id": tx.req_id })).await;
@@ -395,7 +395,10 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     let agreement_after =
         node_y2.rpc_ok("agreement.get", json!({ "quote_record_id": tx.quote_record_id })).await;
     let agreement_verify = node_y2
-        .rpc_ok("agreement.verify", json!({ "envelope": agreement_after["provider"]["envelope"] }))
+        .rpc_ok(
+            "agreement.verify",
+            json!({ "envelope": agreement_after["quote_author"]["envelope"] }),
+        )
         .await;
     assert_eq!(agreement_verify["verified"], true);
 }
@@ -420,17 +423,17 @@ async fn assert_post_restore_operations(
 
     let payment_after =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx_active.quote_record_id })).await;
-    let latest_provider_ack = payment_after["provider"].as_array().unwrap().last().unwrap();
+    let latest_quote_author_ack = payment_after["quote_author"].as_array().unwrap().last().unwrap();
     let post_restore_correction = node_y2
         .rpc_ok(
             "payment.acknowledge",
             json!({
                 "agreement": tx_active.quote_record_id, "method": "cash", "reference": "post-restore",
-                "supersedes": latest_provider_ack["record_id"],
+                "supersedes": latest_quote_author_ack["record_id"],
             }),
         )
         .await;
-    assert_ne!(post_restore_correction["record_id"], latest_provider_ack["record_id"]);
+    assert_ne!(post_restore_correction["record_id"], latest_quote_author_ack["record_id"]);
     let post_restore_envelope =
         post_restore_correction_envelope(node_y2, &tx_active.quote_record_id).await;
     let post_restore_verify =
@@ -463,7 +466,7 @@ async fn assert_post_restore_operations(
 }
 
 #[tokio::test]
-async fn a_provider_transaction_survives_an_encrypted_backup_and_restore() {
+async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {
@@ -530,14 +533,14 @@ async fn a_provider_transaction_survives_an_encrypted_backup_and_restore() {
     let payment_after_reimport =
         node_y2.rpc_ok("payment.get", json!({ "agreement": tx_active.quote_record_id })).await;
     assert_eq!(
-        payment_after_reimport["provider"].as_array().unwrap().len(),
-        before.payment["provider"].as_array().unwrap().len(),
-        "a repeated import must not duplicate provider payment halves"
+        payment_after_reimport["quote_author"].as_array().unwrap().len(),
+        before.payment["quote_author"].as_array().unwrap().len(),
+        "a repeated import must not duplicate quote author payment halves"
     );
     assert_eq!(
-        payment_after_reimport["consumer"].as_array().unwrap().len(),
-        before.payment["consumer"].as_array().unwrap().len(),
-        "a repeated import must not duplicate consumer payment halves"
+        payment_after_reimport["counterparty"].as_array().unwrap().len(),
+        before.payment["counterparty"].as_array().unwrap().len(),
+        "a repeated import must not duplicate counterparty payment halves"
     );
 
     // Step 4: the durability suite.
@@ -591,6 +594,6 @@ async fn a_provider_transaction_survives_an_encrypted_backup_and_restore() {
 
 async fn post_restore_correction_envelope(node: &Node, agreement: &str) -> String {
     let payment = node.rpc_ok("payment.get", json!({ "agreement": agreement })).await;
-    let last = payment["provider"].as_array().unwrap().last().unwrap();
+    let last = payment["quote_author"].as_array().unwrap().last().unwrap();
     last["envelope"].as_str().unwrap().to_string()
 }

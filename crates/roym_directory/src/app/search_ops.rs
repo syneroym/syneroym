@@ -290,8 +290,8 @@ fn build_search_filter(
     if let Some(normalized) = normalized_text.filter(|n| !n.is_empty()) {
         and_clauses.push(json!({ "text": { "$regex": normalized } }));
     }
-    // The index stores the enum's serde spelling (`existing-customers`,
-    // not `ExistingCustomers`). Round-trip the query value through the
+    // The index stores the enum's serde spelling (`past-counterparties`,
+    // not `PastCounterparties`). Round-trip the query value through the
     // same enum so both sides speak one vocabulary; a value that is not a
     // spelling the enum declares is refused, not silently matched to
     // nothing.
@@ -301,7 +301,7 @@ fn build_search_filter(
             Err(_) => {
                 return Err(Response::err(
                     -32602,
-                    "open_to must be one of: anyone, members, referral, existing-customers"
+                    "open_to must be one of: anyone, members, referral, past-counterparties"
                         .to_string(),
                 ));
             }

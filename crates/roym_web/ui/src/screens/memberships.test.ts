@@ -38,7 +38,7 @@ const VALID = {
 
 const HELD = {
   source: "did:key:zDirectory",
-  member_did: "did:key:zProvider",
+  member_did: "did:key:zListingOwner",
   issuer_did: "did:key:zIssuer",
   as_of_secs: NOW - 7200,
   verdict: VALID,
