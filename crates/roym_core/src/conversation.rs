@@ -23,20 +23,31 @@ pub enum ConversationRowKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConversationRow {
+pub struct AdmissionState {
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationGroupItem {
+    pub name: Option<String>,
+    pub admission: AdmissionState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationListItem {
     /// The host's own conversation id.
     pub id: String,
     pub kind: ConversationRowKind,
     /// Direct: the other party. Group: the group's owner.
     pub peer_address: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub peer_person_did: Option<String>,
-    pub opened_at_secs: u64,
+    pub opened_at_secs: i64,
     /// From the newest message's sender timestamp.
     pub last_activity_ms: i64,
     pub message_count: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<group::GroupMeta>,
+    pub name: Option<String>,
+    pub restored: bool,
+    pub group: Option<ConversationGroupItem>,
 }
 
 /// What the host said, never what this service hoped. `Pending` is what a
@@ -48,6 +59,17 @@ pub enum StoredState {
     Deposited,
     Delivered,
     Failed,
+}
+
+impl StoredState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Deposited => "deposited",
+            Self::Delivered => "delivered",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 impl From<DeliveryState> for StoredState {

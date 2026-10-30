@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-pub use crate::conversation::MessageView;
-use crate::conversation::{ConversationRowKind, StoredState};
+pub use crate::conversation::{
+    AdmissionState, ConversationGroupItem, ConversationListItem, ConversationRowKind, MessageView,
+    StoredState,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

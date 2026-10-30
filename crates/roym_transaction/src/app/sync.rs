@@ -10,15 +10,18 @@ use syneroym_roym_core::{
     clock,
     conversation::{Direction, group::CARDS_NOT_IN_GROUPS_MESSAGE},
     envelope::{Request, Response},
-    paging, signing,
+    method::{
+        SiblingError, call_sibling,
+        conversation::{ChangesInput, ChangesOutput},
+    },
+    paging, services, signing,
     transaction::{self, MAX_CARDS_PER_CONVERSATION, ReceiptHalf, SYNC_WINDOW},
 };
 
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTE_HISTORY, REQUEST_HISTORY, SYNC_STATE,
-    SyncStateRow, agreement_ops::maybe_countersign, conversation_call, ensure_collections,
-    get_bytes, get_row, put_row, quote_ops::store_received_quote,
-    request_ops::store_received_request,
+    SyncStateRow, agreement_ops::maybe_countersign, ensure_collections, get_bytes, get_row,
+    put_row, quote_ops::store_received_quote, request_ops::store_received_request,
 };
 
 #[derive(Debug, Deserialize)]
@@ -121,30 +124,31 @@ async fn fetch_sync_messages<H: AppHost>(
     conversation: &str,
     start: u64,
 ) -> Result<(Vec<Value>, u64, Option<String>), Response> {
-    let page_resp = match conversation_call(
+    let out = match call_sibling::<_, ChangesInput, ChangesOutput>(
         host,
+        services::CONVERSATION,
         "conversation.changes",
-        json!({
-            "conversation": conversation,
-            "limit": SYNC_WINDOW,
-            "after_seq": start,
-        }),
+        &ChangesInput {
+            conversation: conversation.to_string(),
+            after_seq: Some(start),
+            limit: Some(SYNC_WINDOW),
+        },
     )
     .await
     {
-        Ok(r) => r,
-        Err(e) => return Err(Response::internal_error(e)),
+        Ok(o) => o,
+        Err(SiblingError::Refused(e)) => return Err(Response::internal_error(e.message)),
+        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => {
+            return Err(Response::internal_error(e));
+        }
     };
 
-    if let Some(err) = page_resp.error {
-        return Err(Response::internal_error(err.message));
-    }
-
-    let res = page_resp.result.unwrap_or(Value::Null);
-    let kind = res.get("kind").and_then(Value::as_str).map(str::to_string);
-    let last_seq = res.get("last_seq").and_then(Value::as_u64).unwrap_or(start);
-    let messages = res.get("messages").and_then(Value::as_array).cloned().unwrap_or_default();
-    Ok((messages, last_seq, kind))
+    let kind = serde_json::to_value(out.kind).ok().and_then(|v| v.as_str().map(str::to_string));
+    let messages = serde_json::to_value(out.messages)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default();
+    Ok((messages, out.last_seq, kind))
 }
 
 #[derive(Default)]

@@ -1,14 +1,16 @@
 //! Conversation backup export and import using host export/import and
 //! admissions.
 
-use serde_json::{Map, Value, json};
+use serde::Serialize;
+use serde_json::{Value, json};
 use syneroym_app_host::{
     AppConversation, AppDataLayer, AppHost, types::data_layer::RecordWriteValue,
 };
 use syneroym_roym_core::{
-    backup::{self, Bundle},
+    backup::{self, Bundle, ImportInput},
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
+    method::{NoParams, Reply},
     signing,
 };
 
@@ -17,14 +19,25 @@ use super::{ADMISSIONS, SCHEMA_VERSION, ensure_admissions};
 pub const SECTION_HISTORY: &str = "conversation_history";
 pub const SECTION_ADMISSIONS: &str = "admissions";
 
-pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationImportCounts {
+    pub messages: u64,
+    pub admissions: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ConversationImportOutput {
+    pub imported: ConversationImportCounts,
+}
+
+pub(crate) async fn export<H: AppHost>(host: &H, _: NoParams) -> Reply<Bundle> {
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     let now = clock::now_secs();
     if let Err(e) = ensure_admissions(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     // Export history chunks from host
@@ -34,7 +47,7 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     loop {
         let chunk = match AppConversation::export_history(host, cursor).await {
             Ok(c) => c,
-            Err(e) => return Response::internal_error(format!("export_history: {e:?}")),
+            Err(e) => return Err(Response::internal_error(format!("export_history: {e:?}"))),
         };
         history_records.push(json!({
             "id": format!("chunk:{idx}"),
@@ -52,40 +65,35 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     let mut sections =
         match backup::collect_sections(host, &[(SECTION_ADMISSIONS, ADMISSIONS)]).await {
             Ok(s) => s,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
     sections.insert(SECTION_HISTORY.to_string(), history_records);
 
-    backup::export_signed(host, owner, SCHEMA_VERSION, sections, now).await
+    backup::export_signed_bundle(host, owner, SCHEMA_VERSION, sections, now).await
 }
 
-pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
-    let bundle_val = match req.params.get("bundle").cloned().or_else(|| Some(req.params.clone())) {
-        Some(v) => v,
-        None => return Response::invalid_params("bundle is required"),
-    };
-    let bundle = match Bundle::from_json(&bundle_val.to_string()) {
-        Ok(b) => b,
-        Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
-    };
+pub(crate) async fn import<H: AppHost>(
+    host: &H,
+    input: ImportInput,
+) -> Reply<ConversationImportOutput> {
+    let bundle = input.bundle;
     let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     if let Err(e) = backup::check_signed_bundle(&bundle, &owner, now) {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
     for (name, declared) in &bundle.manifest.sections {
         if declared.schema_version != SCHEMA_VERSION {
-            return Response::invalid_params(format!(
+            return Err(Response::invalid_params(format!(
                 "section '{name}' has schema version {}, this node requires {SCHEMA_VERSION}",
                 declared.schema_version
-            ));
+            )));
         }
     }
 
-    let mut counts = Map::new();
     let mut message_count = 0u64;
     let mut admission_count = 0u64;
     for (name, records) in &bundle.sections {
@@ -94,20 +102,20 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
                 for rec in records {
                     let data_val = match rec.get("payload").and_then(|p| p.get("data")) {
                         Some(d) => d,
-                        None => return Response::invalid_params("history chunk missing data"),
+                        None => return Err(Response::invalid_params("history chunk missing data")),
                     };
                     let Some(bytes) = data_val.as_str().and_then(backup::bytes_from_hex) else {
-                        return Response::invalid_params("history chunk data is not hex");
+                        return Err(Response::invalid_params("history chunk data is not hex"));
                     };
                     let count = match AppConversation::import_history(host, bytes).await {
                         Ok(n) => n,
                         Err(e) => {
                             // Importing skips what is already stored, so running the
                             // same import again resumes after this failure.
-                            return Response::internal_error(format!(
+                            return Err(Response::internal_error(format!(
                                 "import_history failed ({e:?}); run the same import again to \
                                  resume"
-                            ));
+                            )));
                         }
                     };
                     message_count += count as u64;
@@ -115,20 +123,20 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
             }
             SECTION_ADMISSIONS => {
                 if let Err(e) = ensure_admissions(host).await {
-                    return Response::internal_error(e);
+                    return Err(Response::internal_error(e));
                 }
                 for rec in records {
                     let id = match rec.get("id").and_then(Value::as_str) {
                         Some(i) => i.to_string(),
-                        None => return Response::invalid_params("record missing id"),
+                        None => return Err(Response::invalid_params("record missing id")),
                     };
                     let payload_val = match rec.get("payload") {
                         Some(p) => p.clone(),
-                        None => return Response::invalid_params("record missing payload"),
+                        None => return Err(Response::invalid_params("record missing payload")),
                     };
                     let bytes = match serde_json::to_vec(&payload_val) {
                         Ok(b) => b,
-                        Err(e) => return Response::internal_error(e.to_string()),
+                        Err(e) => return Err(Response::internal_error(e.to_string())),
                     };
                     if let Err(e) = AppDataLayer::put(
                         host,
@@ -137,16 +145,16 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
                     )
                     .await
                     {
-                        return Response::internal_error(e.to_string());
+                        return Err(Response::internal_error(e.to_string()));
                     }
                     admission_count += 1;
                 }
             }
-            other => return Response::invalid_params(format!("unknown section '{other}'")),
+            other => return Err(Response::invalid_params(format!("unknown section '{other}'"))),
         }
     }
 
-    counts.insert("messages".to_string(), json!(message_count));
-    counts.insert("admissions".to_string(), json!(admission_count));
-    Response::ok(json!({ "imported": counts }))
+    Ok(ConversationImportOutput {
+        imported: ConversationImportCounts { messages: message_count, admissions: admission_count },
+    })
 }

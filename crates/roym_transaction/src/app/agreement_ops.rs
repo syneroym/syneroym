@@ -13,9 +13,13 @@ use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
     envelope::{Request, Response},
+    method::{
+        call_sibling,
+        conversation::{SendInput, SendOutput},
+    },
     paging,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
-    signing,
+    services, signing,
     transaction::{
         self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DealRole, QuotePayload,
         ReceiptHalf, RecordVerdict, pair_state,
@@ -23,9 +27,8 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, QUOTE_HISTORY, booking_ops, conversation_call, default_list_limit,
-    ensure_collections, file_own_card, get_bytes, get_row, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    AGREEMENTS, AgreementRow, QUOTE_HISTORY, booking_ops, default_list_limit, ensure_collections,
+    file_own_card, get_bytes, get_row, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -477,26 +480,21 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
     let body = card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &envelope_json)
         .map_err(|e| e.to_string())?;
 
-    let send_resp = conversation_call(
+    let send_resp = call_sibling::<_, SendInput, SendOutput>(
         host,
+        services::CONVERSATION,
         "conversation.send",
-        json!({
-            "conversation": row.conversation,
-            "body": body,
-            "content_type": CARD_CONTENT_TYPE,
-        }),
+        &SendInput {
+            conversation: row.conversation.clone(),
+            body,
+            content_type: Some(CARD_CONTENT_TYPE.to_string()),
+        },
     )
     .await;
 
     let (message_id, sender_timestamp_ms) = match send_resp {
-        Ok(r) if r.error.is_none() => {
-            let res = r.result.unwrap_or(Value::Null);
-            let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
-            let ts =
-                res.get("sender_timestamp_ms").and_then(Value::as_i64).unwrap_or(now as i64 * 1000);
-            (mid, ts)
-        }
-        _ => (String::new(), now as i64 * 1000),
+        Ok(out) => (out.message_id, out.sender_timestamp_ms),
+        Err(_) => (String::new(), now as i64 * 1000),
     };
 
     if !message_id.is_empty() {

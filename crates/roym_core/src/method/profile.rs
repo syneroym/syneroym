@@ -57,6 +57,16 @@ pub enum AdmissionKind {
     RateLimited,
 }
 
+impl AdmissionKind {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Blocked => "blocked",
+            Self::RateLimited => "rate-limited",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdmitFirstContactOutput {
     pub admission: AdmissionKind,
