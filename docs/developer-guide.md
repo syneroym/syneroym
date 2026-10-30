@@ -1686,7 +1686,7 @@ two clients of one service; each still owns its own fan-out loop.
 
 Every Roym method uses typed input and output structs in Rust:
 
-1. **Write input and output structs.** Derive `serde::Deserialize` with `#[serde(deny_unknown_fields)]` on the input struct. Derive `serde::Serialize` on the output struct. If a method takes no parameters, use `NoParams`.
+1. **Write input and output structs.** Derive `serde::Deserialize` with `#[serde(deny_unknown_fields)]` on the input struct. A nested input struct needs `deny_unknown_fields` too; the check sees only the outer type. Derive `serde::Serialize` on the output struct. If a method takes no parameters, use `NoParams`.
 2. **Add a row to the method table.** In the service's `api.rs`, add an entry to the `service_methods!` macro:
    ```rust
    "service.method-name": handler_fn [InputStruct => OutputStruct],

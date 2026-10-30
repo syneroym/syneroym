@@ -8,6 +8,26 @@ use serde_json::json;
 
 use crate::{method::MethodInfo, router, services::Service};
 
+/// Asserts that a service's method table and implementation adhere to contract
+/// rules.
+///
+/// This checks:
+/// - Method names are unique within the table.
+/// - Every method routes to the given [`Service`] in [`router::route`].
+/// - Input and output types do not contain `serde_json::value::Value`.
+/// - Local-only methods reject unknown fields, while wire-reachable methods
+///   allow them.
+/// - Every method listed in `wire` exists in the method table.
+/// - Service source files under `service_src_dir` do not have hand-written
+///   match arms, inspect `req.method` outside `Response::method_not_found`, or
+///   mention unlisted method string literals.
+///
+/// # Limitations
+/// - The `Value` check inspects only the outer type name; nested fields
+///   containing `Value` (such as `FooOutput { data: Value }`) are not detected.
+/// - The unknown-field probe checks only top-level fields; nested input structs
+///   must explicitly add `#[serde(deny_unknown_fields)]` because the check does
+///   not inspect them.
 #[expect(clippy::panic, reason = "test-assertion helper for service tables")]
 pub fn assert_service_table(
     service: Service,
@@ -17,7 +37,7 @@ pub fn assert_service_table(
 ) {
     let mut problems = Vec::new();
 
-    // 1. Duplicate name
+    // Duplicate name
     let mut seen = HashSet::new();
     for row in rows {
         if !seen.insert(&row.name) {
@@ -25,7 +45,7 @@ pub fn assert_service_table(
         }
     }
 
-    // 2. router::route not Some(service)
+    // Routing
     for row in rows {
         if router::route(&row.name) != Some(service) {
             problems.push(format!(
@@ -37,7 +57,7 @@ pub fn assert_service_table(
         }
     }
 
-    // 3. Type name containing serde_json::value::Value
+    // Type name containing serde_json::value::Value
     for row in rows {
         if row.input.contains("serde_json::value::Value") {
             problems.push(format!("method {} input contains Value: {}", row.name, row.input));
@@ -47,17 +67,17 @@ pub fn assert_service_table(
         }
     }
 
-    // 4 & 5. Probe unknown fields
+    // Probe unknown fields
     check_probe_unknown_fields(rows, wire, &mut problems);
 
-    // 6. Name in wire that is not a row
+    // Name in wire that is not a row
     for wire_name in wire {
         if !rows.iter().any(|r| r.name == *wire_name) {
             problems.push(format!("wire method {} is not in method table", wire_name));
         }
     }
 
-    // 7, 8, 9. Source code scan under service_src_dir
+    // Source code scan under service_src_dir
     scan_source_dir(service, rows, service_src_dir, &mut problems);
 
     if !problems.is_empty() {
