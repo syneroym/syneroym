@@ -661,7 +661,9 @@ differently, the decision changes with the answer.
   lists use `u64` (they cast `as usize`).
 - **D-A2a-17. The shape tests and check tests live in one binary,
   `crates/roym_web/tests/method_contract.rs`.** It has modules `shapes` and
-  `contract`, including the four parity harness helper modules with
+  `contract` in `method_contract/shapes.rs` and `method_contract/contract.rs`,
+  declared with explicit `#[path = "method_contract/..."]` attributes,
+  including the four parity harness helper modules with
   `#[allow(dead_code)]`.
 - **D-A2a-18. Dead types are replaced.** Step 4 replaces `MessageRow` with
   `MessageView`. Step 6 replaces `ConversationRow` by `ConversationListItem`
@@ -685,7 +687,13 @@ you run the parity suite (it loads built artifacts).
 
 **Commit:** `test(roym-web): record method result shapes`.
 
-- New test binary `crates/roym_web/tests/method_contract.rs` with `mod shapes;`.
+- New test binary `crates/roym_web/tests/method_contract.rs` and module file
+  `crates/roym_web/tests/method_contract/shapes.rs`. The root file declares
+  the module with an explicit path:
+  ```rust
+  #[path = "method_contract/shapes.rs"]
+  mod shapes;
+  ```
   It is a single binary that will also host the contract tests in Step 7.
   It includes the parity harness modules with `#[allow(dead_code)]`:
   ```rust
@@ -1099,7 +1107,12 @@ you run the parity suite (it loads built artifacts).
 
 **Commit:** `test(roym-web): check every profile and conversation method`.
 
-- Add `mod contract;` to `crates/roym_web/tests/method_contract.rs`.
+- Add `crates/roym_web/tests/method_contract/contract.rs` and declare it in
+  `crates/roym_web/tests/method_contract.rs` with an explicit path:
+  ```rust
+  #[path = "method_contract/contract.rs"]
+  mod contract;
+  ```
 - Tests (names by behaviour):
   - `every_profile_method_has_typed_input_and_output` and
     `every_conversation_method_has_typed_input_and_output`: call
