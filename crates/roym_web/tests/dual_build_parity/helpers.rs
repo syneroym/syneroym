@@ -977,6 +977,63 @@ pub(crate) async fn harness() -> Harness {
     harness_with_unbound(None).await
 }
 
+fn populate_inventory(
+    inventory: &StaticInventory,
+    app_instance: &AppInstanceId,
+    skip: Option<&'static str>,
+) {
+    for svc in services::SIBLINGS {
+        if skip == Some(svc.name) {
+            continue;
+        }
+        let svc_did = did_for_service(svc.name);
+        inventory.register(
+            TopologyKey::local(app_instance.clone(), LogicalServiceName::new(svc.name)),
+            TopologyEntry {
+                mode: TopologyMode::Singleton,
+                members: vec![ServiceId::new(svc_did)],
+                sharding_strategy: None,
+                epoch: TopologyEpoch(1),
+                cache_ttl: Duration::from_secs(60),
+                not_after: None,
+            },
+        );
+    }
+}
+
+async fn configure_service_registry(
+    reg: &EndpointRegistry,
+    app_instance: &str,
+    owner: &Identity,
+    owner_did: &str,
+) {
+    for svc in services::ALL {
+        let service_id = did_for_service(svc.name);
+        reg.set_app_context(service_id.clone(), app_instance.to_string(), svc.name.to_string())
+            .await
+            .unwrap();
+        reg.set_owner(service_id.clone(), owner_did.to_string()).await.unwrap();
+        let instance = Identity::generate().unwrap();
+        let mut cert = DelegationCertificate::issue(
+            owner,
+            instance.public_key(),
+            86_400 * 365,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        cert.temporary_did = service_id.clone();
+        reg.set_instance_cert(service_id, cert).await.unwrap();
+    }
+    reg.set_app_context(
+        did_for_service("directory2"),
+        app_instance.to_string(),
+        "directory".to_string(),
+    )
+    .await
+    .unwrap();
+    reg.set_owner(did_for_service("directory2"), trust_fixtures::dir2_owner_did()).await.unwrap();
+}
+
 #[expect(clippy::too_many_lines, reason = "complex dual-build harness builder")]
 pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness {
     let wasm_paths = [
@@ -1037,58 +1094,13 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
 
     let app_instance = AppInstanceId::new("roym");
     let wasm_inventory = Arc::new(StaticInventory::new());
-    for svc in services::SIBLINGS {
-        if skip == Some(svc.name) {
-            continue;
-        }
-        let svc_did = did_for_service(svc.name);
-        wasm_inventory.register(
-            TopologyKey::local(app_instance.clone(), LogicalServiceName::new(svc.name)),
-            TopologyEntry {
-                mode: TopologyMode::Singleton,
-                members: vec![ServiceId::new(svc_did)],
-                sharding_strategy: None,
-                epoch: TopologyEpoch(1),
-                cache_ttl: Duration::from_secs(60),
-                not_after: None,
-            },
-        );
-    }
+    populate_inventory(&wasm_inventory, &app_instance, skip);
 
     let owner = owner_identity();
     let owner_did = owner_did();
     let node_identity = Arc::new(Identity::generate().unwrap());
     let wasm_resolver = Arc::new(LogicalResolver::new(wasm_inventory.clone()));
-    for svc in services::ALL {
-        let service_id = did_for_service(svc.name);
-        wasm_reg
-            .set_app_context(service_id.clone(), app_instance.to_string(), svc.name.to_string())
-            .await
-            .unwrap();
-        wasm_reg.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
-        let instance = Identity::generate().unwrap();
-        let mut cert = DelegationCertificate::issue(
-            &owner,
-            instance.public_key(),
-            86_400 * 365,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        cert.temporary_did = service_id.clone();
-        wasm_reg.set_instance_cert(service_id, cert).await.unwrap();
-    }
-    wasm_reg
-        .set_app_context(
-            did_for_service("directory2"),
-            app_instance.to_string(),
-            "directory".to_string(),
-        )
-        .await
-        .unwrap();
-    wasm_reg
-        .set_owner(did_for_service("directory2"), trust_fixtures::dir2_owner_did())
-        .await
-        .unwrap();
+    configure_service_registry(&wasm_reg, app_instance.as_str(), &owner, &owner_did).await;
 
     let wasm_conversation =
         test_conversation_service(wasm_storage.clone(), wasm_ks.clone(), wasm_reg.clone());
@@ -1191,54 +1203,9 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     let native_ws_senders = WebSocketSenders::new();
 
     let native_inventory = Arc::new(StaticInventory::new());
-    for svc in services::SIBLINGS {
-        if skip == Some(svc.name) {
-            continue;
-        }
-        let svc_did = did_for_service(svc.name);
-        native_inventory.register(
-            TopologyKey::local(app_instance.clone(), LogicalServiceName::new(svc.name)),
-            TopologyEntry {
-                mode: TopologyMode::Singleton,
-                members: vec![ServiceId::new(svc_did)],
-                sharding_strategy: None,
-                epoch: TopologyEpoch(1),
-                cache_ttl: Duration::from_secs(60),
-                not_after: None,
-            },
-        );
-    }
+    populate_inventory(&native_inventory, &app_instance, skip);
     let native_resolver = Arc::new(LogicalResolver::new(native_inventory.clone()));
-    for svc in services::ALL {
-        let service_id = did_for_service(svc.name);
-        native_reg
-            .set_app_context(service_id.clone(), app_instance.to_string(), svc.name.to_string())
-            .await
-            .unwrap();
-        native_reg.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
-        let instance = Identity::generate().unwrap();
-        let mut cert = DelegationCertificate::issue(
-            &owner,
-            instance.public_key(),
-            86_400 * 365,
-            SCOPE_SERVICE_INSTANCE.to_string(),
-        )
-        .unwrap();
-        cert.temporary_did = service_id.clone();
-        native_reg.set_instance_cert(service_id, cert).await.unwrap();
-    }
-    native_reg
-        .set_app_context(
-            did_for_service("directory2"),
-            app_instance.to_string(),
-            "directory".to_string(),
-        )
-        .await
-        .unwrap();
-    native_reg
-        .set_owner(did_for_service("directory2"), trust_fixtures::dir2_owner_did())
-        .await
-        .unwrap();
+    configure_service_registry(&native_reg, app_instance.as_str(), &owner, &owner_did).await;
 
     let native_conversation =
         test_conversation_service(native_storage.clone(), native_ks.clone(), native_reg.clone());

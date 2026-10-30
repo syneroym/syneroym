@@ -161,18 +161,22 @@ pub async fn call_sibling<H: AppHost, I: Serialize, O: DeserializeOwned>(
         .await
         .map_err(|e| SiblingError::Transport(format!("{method}: {e:?}")))?;
 
-    let resp: Response = serde_json::from_str(&raw)
+    let raw_val: Value = serde_json::from_str(&raw)
         .map_err(|e| SiblingError::BadReply(format!("invalid JSON-RPC response: {e}")))?;
 
-    if let Some(err) = resp.error {
+    if let Some(err_val) = raw_val.get("error")
+        && !err_val.is_null()
+    {
+        let err: RpcError = serde_json::from_value(err_val.clone())
+            .map_err(|e| SiblingError::BadReply(format!("invalid RPC error payload: {e}")))?;
         return Err(SiblingError::Refused(err));
     }
 
-    let Some(result) = resp.result else {
+    let Some(result) = raw_val.get("result") else {
         return Err(SiblingError::BadReply("missing result in response".to_string()));
     };
 
-    serde_json::from_value(result)
+    serde_json::from_value(result.clone())
         .map_err(|e| SiblingError::BadReply(format!("invalid output: {e}")))
 }
 

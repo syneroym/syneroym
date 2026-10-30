@@ -1,3 +1,8 @@
+use syneroym_roym_core::method::{
+    SiblingError, call_sibling,
+    profile::{ProfileGetInput, ProfileRecord},
+};
+
 use super::*;
 
 /// The pointer row `listings/<listing_id>`.
@@ -29,25 +34,20 @@ async fn load_listing_row<H: AppHost>(
 /// The person's own conversation address, read from their `profile`
 /// record through the declared `catalog -> profile` dependency.
 async fn address_from_profile<H: AppHost>(host: &H) -> Result<Option<String>, String> {
-    let req = json!({ "method": "profile.get", "params": {} }).to_string();
-    let raw = host
-        .call(
-            CallTarget::Dependency(services::PROFILE.name.to_string()),
-            services::PROFILE.interface.to_string(),
-            "invoke".to_string(),
-            json!([req]).to_string(),
-            None,
-        )
-        .await
-        .map_err(|e| format!("profile.get: {e:?}"))?;
-    let resp: Response = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    let Some(result) = resp.result else { return Ok(None) };
-    if result.is_null() {
-        return Ok(None);
-    }
-    let env_str =
-        result.get("envelope").and_then(Value::as_str).ok_or("profile row has no envelope")?;
-    let env = Envelope::from_json(env_str).map_err(|e| e.to_string())?;
+    let profile_res = call_sibling::<_, ProfileGetInput, Option<ProfileRecord>>(
+        host,
+        services::PROFILE,
+        "profile.get",
+        &ProfileGetInput::default(),
+    )
+    .await;
+    let maybe_record = match profile_res {
+        Ok(rec) => rec,
+        Err(SiblingError::Refused(_)) => return Ok(None),
+        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => return Err(e),
+    };
+    let Some(record) = maybe_record else { return Ok(None) };
+    let env = Envelope::from_json(&record.envelope).map_err(|e| e.to_string())?;
     let payload: ProfilePayload = serde_json::from_value(env.payload).map_err(|e| e.to_string())?;
     Ok(Some(payload.conversation_address))
 }

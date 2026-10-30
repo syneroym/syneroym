@@ -1,20 +1,31 @@
 //! Profile backup export and import.
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
     types::data_layer::{Mutation, RecordWriteValue},
 };
 use syneroym_roym_core::{
-    backup::{self, Bundle, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE, SECTION_REPORTS},
+    backup::{
+        self, Bundle, ImportInput, SECTION_BLOCKS, SECTION_CONTACTS, SECTION_PROFILE,
+        SECTION_REPORTS,
+    },
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
+    method::{NoParams, Reply},
     paging,
     record::{RECORD_PROFILE, VerifyOptions, verify_json},
     signing,
 };
 
 use super::{BLOCKS, CONTACTS, PROFILES, REPORTS, SCHEMA_VERSION, ensure_coll};
+
+#[derive(Debug, Serialize)]
+pub struct ProfileImportOutput {
+    pub sections: usize,
+    pub profiles_verified: usize,
+}
 
 async fn reverify_profiles<H: AppHost>(host: &H, now: u64) -> Result<u64, String> {
     ensure_coll(host, PROFILES, &[]).await?;
@@ -30,10 +41,10 @@ async fn reverify_profiles<H: AppHost>(host: &H, now: u64) -> Result<u64, String
     Ok(verified)
 }
 
-pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn export<H: AppHost>(host: &H, _: NoParams) -> Reply<Bundle> {
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     let now = clock::now_secs();
     let pairs = [
@@ -44,14 +55,14 @@ pub(crate) async fn export<H: AppHost>(host: &H) -> Response {
     ];
     for (_, collection) in pairs {
         if let Err(e) = ensure_coll(host, collection, &[]).await {
-            return Response::internal_error(e);
+            return Err(Response::internal_error(e));
         }
     }
     let sections = match backup::collect_sections(host, &pairs).await {
         Ok(s) => s,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
-    backup::export_signed(host, owner, SCHEMA_VERSION, sections, now).await
+    backup::export_signed_bundle(host, owner, SCHEMA_VERSION, sections, now).await
 }
 
 fn validate_bundle_manifest(bundle: &Bundle, owner: &str) -> Result<(), Response> {
@@ -139,30 +150,19 @@ async fn apply_prepared_writes<H: AppHost>(
     Ok(())
 }
 
-pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
-    let bundle_val = match req.params.get("bundle").cloned().or_else(|| Some(req.params.clone())) {
-        Some(v) => v,
-        None => return Response::invalid_params("bundle is required"),
-    };
-    let bundle_str = bundle_val.to_string();
-    let bundle = match Bundle::from_json(&bundle_str) {
-        Ok(b) => b,
-        Err(e) => return Response::invalid_params(format!("invalid bundle: {e}")),
-    };
-
+pub(crate) async fn import<H: AppHost>(host: &H, input: ImportInput) -> Reply<ProfileImportOutput> {
+    let bundle = input.bundle;
     let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     if let Err(e) = backup::check_signed_bundle(&bundle, &owner, now) {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
 
-    if let Err(resp) = validate_bundle_manifest(&bundle, &owner) {
-        return resp;
-    }
+    validate_bundle_manifest(&bundle, &owner)?;
 
     let now = clock::now_secs();
     let mut prepared_writes: Vec<(&'static str, Vec<Mutation>)> = Vec::new();
@@ -173,28 +173,25 @@ pub(crate) async fn import<H: AppHost>(host: &H, req: &Request) -> Response {
             SECTION_CONTACTS => CONTACTS,
             SECTION_BLOCKS => BLOCKS,
             SECTION_REPORTS => REPORTS,
-            other => return Response::invalid_params(format!("unknown section '{other}'")),
+            other => return Err(Response::invalid_params(format!("unknown section '{other}'"))),
         };
 
         let mut section_muts = Vec::new();
         for rec in records {
-            match prepare_section_record(name, rec, now) {
-                Ok(mutation) => section_muts.push(mutation),
-                Err(resp) => return resp,
-            }
+            section_muts.push(prepare_section_record(name, rec, now)?);
         }
         prepared_writes.push((collection, section_muts));
     }
 
-    // Phase 2: All records and sections verified clean -- apply mutations
-    if let Err(resp) = apply_prepared_writes(host, prepared_writes).await {
-        return resp;
-    }
+    apply_prepared_writes(host, prepared_writes).await?;
 
     let verified = match reverify_profiles(host, clock::now_secs()).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
-    Response::ok(json!({ "sections": bundle.sections.len(), "profiles_verified": verified }))
+    Ok(ProfileImportOutput {
+        sections: bundle.sections.len(),
+        profiles_verified: verified as usize,
+    })
 }

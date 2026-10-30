@@ -7,6 +7,7 @@ use syneroym_signed_record::{EnvelopeError, content_digest};
 
 use crate::{
     envelope::Response,
+    method::Reply,
     paging,
     record::{self, RECORD_BUNDLE_MANIFEST, VerifyOptions},
     signing::{self, CertificateError},
@@ -291,6 +292,28 @@ pub async fn collect_sections<H: AppHost>(
     Ok(sections)
 }
 
+/// Export sections as a signed bundle.
+pub async fn export_signed_bundle<H: AppHost>(
+    host: &H,
+    subject_did: String,
+    schema_version: u32,
+    sections: BTreeMap<String, Vec<Value>>,
+    now_secs: u64,
+) -> Reply<Bundle> {
+    let mut bundle = match Bundle::new(subject_did, schema_version, sections) {
+        Ok(b) => b,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    match signing::sign_bundle(host, &mut bundle, now_secs).await {
+        Ok(()) => {}
+        Err(CertificateError::NotEnrolled) => {
+            return Err(Response::invalid_params("signing-not-enrolled"));
+        }
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    }
+    Ok(bundle)
+}
+
 /// The answer to every service's `export` verb: `sections` as a bundle
 /// signed by the person. A service with no signing certificate refuses
 /// with `signing-not-enrolled`, the same words on every service, so a
@@ -302,20 +325,12 @@ pub async fn export_signed<H: AppHost>(
     sections: BTreeMap<String, Vec<Value>>,
     now_secs: u64,
 ) -> Response {
-    let mut bundle = match Bundle::new(subject_did, schema_version, sections) {
-        Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    match signing::sign_bundle(host, &mut bundle, now_secs).await {
-        Ok(()) => {}
-        Err(CertificateError::NotEnrolled) => {
-            return Response::invalid_params("signing-not-enrolled");
-        }
-        Err(e) => return Response::internal_error(e.to_string()),
-    }
-    match serde_json::to_value(&bundle) {
-        Ok(v) => Response::ok(v),
-        Err(e) => Response::internal_error(e.to_string()),
+    match export_signed_bundle(host, subject_did, schema_version, sections, now_secs).await {
+        Ok(bundle) => match serde_json::to_value(&bundle) {
+            Ok(v) => Response::ok(v),
+            Err(e) => Response::internal_error(e.to_string()),
+        },
+        Err(resp) => resp,
     }
 }
 

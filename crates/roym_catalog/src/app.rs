@@ -13,7 +13,6 @@ use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
         data_layer::{CollectionSchema, IndexDefinition, IndexType, Mutation, RecordWriteValue},
-        proxy::CallTarget,
         signing::{Principal, RecordDraft},
     },
 };

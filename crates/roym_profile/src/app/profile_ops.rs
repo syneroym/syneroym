@@ -1,6 +1,6 @@
 //! Profile operations: policy, get, and set.
 
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
@@ -10,7 +10,11 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
+    method::{
+        NoParams, Reply,
+        profile::{ProfileGetInput, ProfileRecord},
+    },
     person::ProfilePayload,
     record::{Envelope, RECORD_PROFILE},
     signing::{self, CertificateError},
@@ -18,12 +22,41 @@ use syneroym_roym_core::{
 
 use super::{PROFILE_HISTORY, PROFILES, ensure_coll};
 
-pub(crate) fn policy() -> Response {
-    Response::ok(json!({
-        "statement": "A blocked sender's messages are refused at this node's inbox. They are never shown in any conversation, never fire a notification, and are never counted. Block is enforced locally by this installation's own Conversation service.",
-        "one_person_per_installation": true,
-        "retention": "app-data stored until explicitly deleted or restored. Delete removes the readable message body on this machine, while group log entries and encryption keys remain. A dropped message keeps only its id, sender and time; its text is removed.",
-    }))
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyOutput {
+    pub statement: String,
+    pub one_person_per_installation: bool,
+    pub retention: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSetInput {
+    pub display_name: String,
+    pub about: Option<String>,
+    pub conversation_address: Option<String>,
+    pub locale: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProfileSetOutput {
+    pub record_id: String,
+    pub envelope: String,
+}
+
+pub(crate) async fn policy<H: AppHost>(_host: &H, _: NoParams) -> Reply<PolicyOutput> {
+    Ok(PolicyOutput {
+        statement: "A blocked sender's messages are refused at this node's inbox. They are never \
+                    shown in any conversation, never fire a notification, and are never counted. \
+                    Block is enforced locally by this installation's own Conversation service."
+            .to_string(),
+        one_person_per_installation: true,
+        retention: "app-data stored until explicitly deleted or restored. Delete removes the \
+                    readable message body on this machine, while group log entries and encryption \
+                    keys remain. A dropped message keeps only its id, sender and time; its text \
+                    is removed."
+            .to_string(),
+    })
 }
 
 pub(crate) async fn current_owner_profile_address<H: AppHost>(
@@ -37,9 +70,8 @@ pub(crate) async fn current_owner_profile_address<H: AppHost>(
     else {
         return Ok(None);
     };
-    let val: Value = serde_json::from_slice(&row.payload).map_err(|e| e.to_string())?;
-    let env_str = val.get("envelope").and_then(|v| v.as_str()).ok_or("missing envelope field")?;
-    let env = Envelope::from_json(env_str).map_err(|e| e.to_string())?;
+    let rec: ProfileRecord = serde_json::from_slice(&row.payload).map_err(|e| e.to_string())?;
+    let env = Envelope::from_json(&rec.envelope).map_err(|e| e.to_string())?;
     let payload: ProfilePayload = serde_json::from_value(env.payload).map_err(|e| e.to_string())?;
     Ok(Some(payload.conversation_address))
 }
@@ -55,51 +87,42 @@ pub(crate) async fn current_owner_profile_record_id<H: AppHost>(
     else {
         return Ok(None);
     };
-    let val: Value = serde_json::from_slice(&row.payload).map_err(|e| e.to_string())?;
-    Ok(val.get("record_id").and_then(|v| v.as_str()).map(String::from))
+    let rec: ProfileRecord = serde_json::from_slice(&row.payload).map_err(|e| e.to_string())?;
+    Ok(Some(rec.record_id))
 }
 
-pub(crate) async fn get<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn get<H: AppHost>(
+    host: &H,
+    input: ProfileGetInput,
+) -> Reply<Option<ProfileRecord>> {
     let owner_res = signing::owner_did(host).await;
-    let did = req
-        .params
-        .get("person_did")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .or_else(|| owner_res.ok());
+    let did = input.person_did.or_else(|| owner_res.ok());
 
     let Some(did) = did else {
-        return Response::invalid_params("person_did or recorded owner required");
+        return Err(Response::invalid_params("person_did or recorded owner required"));
     };
 
     if let Err(e) = ensure_coll(host, PROFILES, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     match AppDataLayer::get(host, PROFILES.to_string(), did).await {
-        Ok(Some(row)) => match serde_json::from_slice::<Value>(&row.payload) {
-            Ok(val) => Response::ok(val),
-            Err(e) => Response::internal_error(e.to_string()),
+        Ok(Some(row)) => match serde_json::from_slice::<ProfileRecord>(&row.payload) {
+            Ok(val) => Ok(Some(val)),
+            Err(e) => Err(Response::internal_error(e.to_string())),
         },
-        Ok(None) => Response::ok(Value::Null),
-        Err(e) => Response::internal_error(e.to_string()),
+        Ok(None) => Ok(None),
+        Err(e) => Err(Response::internal_error(e.to_string())),
     }
 }
 
 async fn parse_and_validate_payload<H: AppHost>(
     host: &H,
-    req: &Request,
+    input: &ProfileSetInput,
     owner: &str,
 ) -> Result<ProfilePayload, Response> {
-    let display_name = match req.params.get("display_name").and_then(|v| v.as_str()) {
-        Some(n) => n.to_string(),
-        None => return Err(Response::invalid_params("display_name is required")),
-    };
-    let about = req.params.get("about").and_then(|v| v.as_str()).map(String::from);
-    let locale = req.params.get("locale").and_then(|v| v.as_str()).map(String::from);
-
-    let address = match req.params.get("conversation_address").and_then(|v| v.as_str()) {
-        Some(a) => a.to_string(),
+    let address = match &input.conversation_address {
+        Some(a) => a.clone(),
         None => match current_owner_profile_address(host, owner).await {
             Ok(Some(existing)) => existing,
             _ => {
@@ -110,7 +133,12 @@ async fn parse_and_validate_payload<H: AppHost>(
         },
     };
 
-    let payload = ProfilePayload { display_name, about, conversation_address: address, locale };
+    let payload = ProfilePayload {
+        display_name: input.display_name.clone(),
+        about: input.about.clone(),
+        conversation_address: address,
+        locale: input.locale.clone(),
+    };
     if let Err(e) = payload.validate() {
         return Err(Response::invalid_params(e.to_string()));
     }
@@ -180,11 +208,11 @@ async fn persist_profile_records<H: AppHost>(
         return Err(Response::internal_error(e));
     }
 
-    let profile_row = json!({
-        "envelope": envelope_json,
-        "record_id": record_id,
-        "verified_at_secs": now,
-    });
+    let profile_row = ProfileRecord {
+        envelope: envelope_json.to_string(),
+        record_id: record_id.to_string(),
+        verified_at_secs: now,
+    };
 
     let profile_payload = match serde_json::to_vec(&profile_row) {
         Ok(b) => b,
@@ -218,51 +246,43 @@ async fn persist_profile_records<H: AppHost>(
     Ok(())
 }
 
-pub(crate) async fn set<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn set<H: AppHost>(host: &H, input: ProfileSetInput) -> Reply<ProfileSetOutput> {
     let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(CertificateError::NoOwner) => {
-            return Response::invalid_params("this installation has no recorded owner");
+            return Err(Response::invalid_params("this installation has no recorded owner"));
         }
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     let (principal, _master) = match signing::person_principal(host, now).await {
         Ok(res) => res,
         Err(CertificateError::NotEnrolled) => {
-            return Response::invalid_params("signing-not-enrolled");
+            return Err(Response::invalid_params("signing-not-enrolled"));
         }
         Err(CertificateError::Expired(t)) => {
-            return Response::invalid_params(format!("signing-certificate-expired at {t}"));
+            return Err(Response::invalid_params(format!("signing-certificate-expired at {t}")));
         }
         Err(CertificateError::Stale { installed_for, current }) => {
-            return Response::invalid_params(format!(
+            return Err(Response::invalid_params(format!(
                 "signing-certificate-stale: {installed_for} vs {current}"
-            ));
+            )));
         }
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
-    let payload = match parse_and_validate_payload(host, req, &owner).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+    let payload = parse_and_validate_payload(host, &input, &owner).await?;
 
     let supersedes = match current_owner_profile_record_id(host, &owner).await {
         Ok(s) => s,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let (envelope_json, record_id) =
-        match sign_profile_draft(host, &payload, &owner, supersedes, principal).await {
-            Ok(v) => v,
-            Err(resp) => return resp,
-        };
+        sign_profile_draft(host, &payload, &owner, supersedes, principal).await?;
 
-    if let Err(resp) = persist_profile_records(host, owner, &record_id, &envelope_json, now).await {
-        return resp;
-    }
+    persist_profile_records(host, owner, &record_id, &envelope_json, now).await?;
 
-    Response::ok(json!({ "record_id": record_id, "envelope": envelope_json }))
+    Ok(ProfileSetOutput { record_id, envelope: envelope_json })
 }

@@ -32,15 +32,15 @@ async fn scenario_1_profile_ping_reachability_byte_identical() {
 }
 
 #[tokio::test]
-async fn scenario_2_inert_extra_caller_field_in_params() {
+async fn scenario_2_extra_caller_field_in_params_is_refused() {
     let h = harness().await;
     let req_extra = json!({
         "method": "profile.policy",
         "params": {
             "caller": "did:key:fakeAttacker",
             "person_did": "did:key:fakeAlice",
-            "auth": "delegated"
-        }
+            "auth": "delegated",
+        },
     })
     .to_string();
 
@@ -49,8 +49,8 @@ async fn scenario_2_inert_extra_caller_field_in_params() {
 
     assert_eq!(wasm_res, native_res);
     let resp: Response = serde_json::from_str(&wasm_res).unwrap();
-    let result = resp.result.unwrap();
-    assert!(result.get("statement").is_some());
+    let err = resp.error.unwrap();
+    assert!(err.code == -32602 && err.data.unwrap()["field"] == "auth");
 }
 
 #[tokio::test]
