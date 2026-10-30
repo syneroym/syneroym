@@ -336,3 +336,28 @@ envelope, which is what the form promises. The Playwright helper
   *Status:* Fixed (2b8139af).
 
 Count: 0 blockers, 4 major, 14 minor.
+
+## Plan review round 2 — Claude Opus 5.5 (Claude Code), 2026-10-30
+
+Checked the plan at `f6691087`. P1 to P18 are confirmed fixed in the plan
+(`2b8139af`). The fix for P12 adds one new problem.
+
+### Findings
+
+- [ ] **P19 — minor.** *Where:* section 6 Step 2 (the line "New test binary
+  `crates/roym_web/tests/method_contract.rs` with `mod shapes;`") and Step 7
+  (the line "Add `mod contract;`"). *Problem:* `tests/method_contract.rs`
+  is the root file of a test crate. In a root file, `mod shapes;` makes Rust
+  look for `tests/shapes.rs` (or `tests/shapes/mod.rs`), not
+  `tests/method_contract/shapes.rs`. Cargo also builds every `.rs` file
+  placed directly under `tests/` as its own test binary. So the plan as
+  written either does not compile, or adds two extra test binaries.
+  *Fix:* in both steps, write the module lines with a path, as the parity
+  harness does in `crates/roym_web/tests/dual_build_parity.rs`:
+  `#[path = "method_contract/shapes.rs"] mod shapes;` and
+  `#[path = "method_contract/contract.rs"] mod contract;`. Name the two files
+  `crates/roym_web/tests/method_contract/shapes.rs` and
+  `crates/roym_web/tests/method_contract/contract.rs` in the step text.
+  *Status:* Open.
+
+Count for this round: 0 blockers, 0 major, 1 minor.
