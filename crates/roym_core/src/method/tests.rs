@@ -139,7 +139,7 @@ fn test_missing_field_top_and_nested() {
     });
     let err = parse_value::<TopTest>(&top_missing).unwrap_err();
     assert_eq!(err.field.as_deref(), Some("title"));
-    assert!(err.message.contains("missing field `title`"));
+    assert_eq!(err.message, "invalid params: missing field `title`");
 
     let deep_missing = json!({
         "title": "ok",
@@ -148,7 +148,7 @@ fn test_missing_field_top_and_nested() {
     });
     let err2 = parse_value::<TopTest>(&deep_missing).unwrap_err();
     assert_eq!(err2.field.as_deref(), Some("mid.deep.val_str"));
-    assert!(err2.message.contains("missing field `val_str`"));
+    assert_eq!(err2.message, "invalid params: mid.deep: missing field `val_str`");
 }
 
 #[test]
@@ -200,11 +200,28 @@ fn test_duplicate_field_top_and_nested() {
 
 #[test]
 fn test_message_truncation_stops_at_256_bytes_on_char_boundary() {
-    let long_str = "x".repeat(10_000);
+    let long_str = "€".repeat(4000);
     let val = json!({ "count": long_str });
     let err = parse_value::<TopTest>(&val).unwrap_err();
     assert!(err.message.len() <= 256);
     assert!(err.message.is_char_boundary(err.message.len()));
+    assert!(err.message.ends_with('€'));
+}
+
+#[test]
+fn unknown_field_name_in_data_is_cut_to_256_bytes() {
+    let long_key = "k".repeat(10_000);
+    let val = json!({
+        long_key: 1,
+        "title": "ok",
+        "count": 1,
+        "mid": { "deep": { "val_str": "ok", "val_num": 1 } }
+    });
+    let err = parse_value::<TopTest>(&val).unwrap_err();
+    let field = err.field.expect("field present");
+    assert!(field.len() <= 256);
+    assert_eq!(field.len(), 256);
+    assert!(field.is_char_boundary(field.len()));
 }
 
 #[tokio::test]

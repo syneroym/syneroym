@@ -1,7 +1,7 @@
-use std::future::Future;
+use std::{any, future::Future};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use syneroym_app_host::{AppHost, types::proxy::CallTarget};
 
 use crate::{
@@ -78,8 +78,8 @@ pub fn parse_value<T: DeserializeOwned>(params: &Value) -> Result<T, ParamError>
             message: "invalid params: expected an object".to_string(),
         });
     }
-    let value =
-        if params.is_null() { Value::Object(serde_json::Map::new()) } else { params.clone() };
+    let empty = Value::Object(Map::new());
+    let value = if params.is_null() { &empty } else { params };
     match serde_path_to_error::deserialize(value) {
         Ok(t) => Ok(t),
         Err(e) => {
@@ -95,6 +95,7 @@ pub fn parse_value<T: DeserializeOwned>(params: &Value) -> Result<T, ParamError>
             } else {
                 None
             };
+            let field = field.map(|f| truncate_utf8(&f, 256));
             let msg = if path == "." || path.starts_with('?') {
                 format!("invalid params: {text}")
             } else {
@@ -192,8 +193,8 @@ impl MethodInfo {
     pub fn of<I: DeserializeOwned, O: Serialize>(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            input: std::any::type_name::<I>(),
-            output: std::any::type_name::<O>(),
+            input: any::type_name::<I>(),
+            output: any::type_name::<O>(),
             probe: |v| parse_value::<I>(v).map(|_| ()),
         }
     }
