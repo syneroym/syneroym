@@ -3,9 +3,10 @@
 *Reader: the developer (or AI) who implements slice A2b. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-10-30. Owner questions Q1 to Q6 are open.**
-Section 6 follows the recommendations. If the owner picks another option,
-change section 5 and the steps that name that question before you start.
+**Status: plan revised, 2026-10-30.** The owner answered Q1 to Q6 (all
+option (a)). Plan review round 1 (P1 to P10 in
+[slice-a2b-review.md](slice-a2b-review.md)) is folded in. Section 6
+follows the answers.
 
 **Size and PR.** L. One PR on `feat/m08a-a2b-typed-methods`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -81,13 +82,10 @@ section 4, change.
 
 ## How this is shown to an end user
 
-- An end user sees nothing new. Every screen and every step works as it
-  did before.
-- On the Hub's "Verify a listing" box, the person still pastes a listing
-  and still sees "Verified." or the reason. Only what the Hub sends inside
-  changes (Q3).
-- An operator who runs `roymctl roym booking list` no longer has the
-  `--agreement` option. That option never filtered anything (Q4).
+An end user sees nothing new. Every screen works as before.
+
+- An operator who runs `roymctl roym transaction booking list` no longer
+  has the `--agreement` option. That option never filtered anything.
 - A developer can run `cargo nextest run -p syneroym-roym-web --test
   method_contract`. It lists every catalog and transaction method and shows
   that each has a typed input and a typed output, and that a wrong or
@@ -101,8 +99,8 @@ change doc's `demo:` list keeps its current line.
 
 ## 2. Points for the owner
 
-Each question has the options, a recommendation and the reason. Section 6
-follows the recommendations.
+Each question has the options, a recommendation, the reason and the
+owner's answer. Section 6 follows the answers.
 
 Two choices are not questions, because A2a already decided them for every
 service: closed word sets in inputs are enums (D-A2a-10), so
@@ -141,8 +139,14 @@ the client thinks it set but the service never saw. In (a) the top-level
 names, where most bugs are, are still checked. A wrong key one level down is
 dropped and not signed, so no false data reaches a record. (b) doubles the
 largest types of Roym for a small gain, and the copies can drift. (c) breaks
-records. A wrong *type* inside a record type is still refused with
-`data.field` in every option (for example `payment.amount_minor`).
+records. A wrong *type* inside a nested block is still refused with
+`-32602` in every option. `data.field` names the deepest field it can: for
+a plain block such as a listing's `payment` it is the field
+(`payment.amount_minor`); for a tagged block such as `area` (`Area` is
+`#[serde(tag = "kind")]`) it is the block itself (`area`), because serde
+reads a tagged block into a buffer first and the path stops there.
+
+Owner answer: (a), 2026-10-30.
 
 ### Q2. `quote.set`'s `terms`: what type the input has
 
@@ -171,7 +175,9 @@ instead of silently dropped. A client that sends `quote_expires_at_secs`
 inside `terms` is refused (today it is silently overwritten). No caller
 sends it (checked: the Hub, `roymctl`, the parity and e2e tests). The cost
 is one struct of 13 fields beside `AgreedTerms`, and a unit test that the
-two stay equal (Step 3).
+two stay equal (Step 5a).
+
+Owner answer: (a), 2026-10-30.
 
 ### Q3. The `*.verify` methods accept the envelope as text or as a JSON object
 
@@ -197,8 +203,12 @@ field with two accepted shapes is a second thing to document and test.
 Sending the text is also more correct: today the Hub sends the record as
 re-serialized JSON, not the bytes the person pasted.
 
-### Q4. `roymctl roym booking list --agreement` sends a field the service does not read
+Owner answer: (a), 2026-10-30.
 
+### Q4. `roymctl roym transaction booking list --agreement` sends a field the service does not read
+
+`booking` is a subcommand of `roymctl roym transaction`
+([transaction.rs:142-145](../../../../apps/roymctl/src/commands/roym/transaction.rs#L142)).
 `roymctl` sends `agreement` to `booking.list` when the option is given
 ([booking.rs:163-182](../../../../apps/roymctl/src/commands/roym/booking.rs#L163)).
 `booking.list` has no such field
@@ -206,13 +216,15 @@ re-serialized JSON, not the bytes the person pasted.
 so today the option is ignored and every booking is listed. After A2b the
 call answers `-32602`, `data.field = "agreement"`.
 
-- (a) **Remove the option from `roymctl`.** `roymctl roym booking get
-  --agreement <id>` already shows one booking.
+- (a) **Remove the option from `roymctl`.** `roymctl roym transaction
+  booking get --agreement <id>` already shows one booking.
 - (b) **Add an `agreement` filter to `booking.list`.**
 
 **Recommendation: (a).** A2 adds no features and renames nothing. The
 option never worked, so removing it takes nothing away. If a later client
 needs the filter, it is a small addition then.
+
+Owner answer: (a), 2026-10-30.
 
 ### Q5. Closed word sets in outputs: `String` or `enum`
 
@@ -232,6 +244,8 @@ Two output words are written as strings today: the send state (`state` of
 (D-A2a-10). A client and a later schema can list the words. The wire does
 not change: the shape files record the exact words (section 7.2).
 
+Owner answer: (a), 2026-10-30.
+
 ### Q6. `directory`'s call to `listing.get`
 
 `directory.publish-to-source` calls `listing.get` with a hand-made
@@ -247,6 +261,8 @@ that is not in `roym_transaction`.
 the same slice (A2a Q8), so the compiler sees a field rename on both sides
 at once. The structs are made here. It is one site, and the backlog row
 "`transaction` still has its own sibling-call helper" can then close.
+
+Owner answer: (a), 2026-10-30.
 
 ## 3. Facts checked in the code
 
@@ -356,13 +372,40 @@ written with `null` when the value is missing (a `json!` with an `Option`).
   - `payment.request`, `payment.acknowledge`, `fulfilment.sign`: the normal
     answer has a string `message_id` (it may be `""`) and a send state. The
     "already-recorded" answers have `message_id: null` and `state:
-    "already-recorded"`. They are written in five places, two of them inside
-    the fences as `Err(Response::ok(..))`
-    ([fence.rs:66, :100, :233](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L66),
-    [payment_ops.rs:77, :388](../../../../crates/roym_transaction/src/app/payment_ops.rs#L77),
-    [fulfilment_ops.rs:165, :402](../../../../crates/roym_transaction/src/app/fulfilment_ops.rs#L165)).
-    `payment.request` has no `role`; the other two have `role`. None of
-    the three returns `send_error`.
+    "already-recorded"`. `payment.request` has no `role`; the other two
+    have `role`. None of the three returns `send_error`.
+  - **The fences.** Each of the three methods claims a fence row in
+    `LEDGER` (`payreq:<agreement>`, `ack:<agreement>:<role>:<version>`,
+    `fulfil:<agreement>:<role>`) before it writes the shared row. When the
+    fence row already exists, the fence returns an answer through its `Err`
+    side, and the handler returns that answer as it is
+    (`if let Err(resp) = claim_..(..) { return resp; }`). The answer comes
+    from one of six sites:
+
+    | # | Site | What it returns |
+    | --- | --- | --- |
+    | F1 | [fence.rs:54](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L54) `Err(ensure_payment_request_recorded(..))` | The fence holds a half: crash recovery (below). |
+    | F2 | [fence.rs:66](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L66) `Err(Response::ok(..))` | The fence holds no half, the shared row does: already-recorded. |
+    | F3 | [fence.rs:161](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L161) `Err(ensure_payment_ack_recorded(..))` | The fence holds a half: crash recovery. |
+    | F4 | [fence.rs:168-181](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L168) `Err(early)` | `check_acknowledgement_version` answered `Ok(Some(..))`: already-recorded, after a booking transition for the quote author. Its `Err` (`not-the-current-version`) is ignored here and the fence answers `payment-acknowledgement-in-flight`. |
+    | F5 | [fulfilment_ops.rs:346](../../../../crates/roym_transaction/src/app/fulfilment_ops.rs#L346) `Err(ensure_fulfilment_recorded(..))` | The fence holds a half: crash recovery. |
+    | F6 | [payment_ops.rs:380-404](../../../../crates/roym_transaction/src/app/payment_ops.rs#L380) `check_acknowledgement_version` | Returns `Result<Option<Response>, Response>`: `Ok(Some(Response::ok(already-recorded)))` (`:388`), `Ok(None)`, or `Err(not-the-current-version)`. Called by F4 and by `payment_acknowledge` (`payment_ops.rs:224`). |
+
+    **Crash recovery.** The fence row and the shared `PAYMENTS` or
+    `FULFILMENTS` row are written in two calls. If the node stops between
+    them, the fence holds a signed half that no shared row has and no card
+    carried. The next call of the method signs a new half, finds the fence,
+    and calls `ensure_*_recorded` with the half *in the fence*
+    ([fence.rs:78-119, :198-260](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L78),
+    [fulfilment_ops.rs:365-418](../../../../crates/roym_transaction/src/app/fulfilment_ops.rs#L365)).
+    That function writes the shared row, **sends the card**, and returns
+    the **normal** answer: the fence half's `record_id`, a real
+    `message_id` and the send state. It returns already-recorded only when
+    the shared row already holds that half, and `-32603` when a row read or
+    write fails. The other `Response::ok` sites of these methods are the
+    handlers' own early returns (`payment_ops.rs:77`,
+    `fulfilment_ops.rs:74` through `already_recorded_fulfilment_response`
+    `:165`) and their normal answers.
   - `booking.history`: for the quote author, steps of `{seq, event,
     snapshot, envelope, record_id}` from the ledger; for the counterparty,
     `{seq, snapshot, record_id}` from verified `booking-progress` cards,
@@ -420,13 +463,14 @@ sibling crates were read by hand.
   {conversation}` :333, `transaction.thread {conversation}` :334,
   `agreement.accept {quote_record_id}` :569, `quote.decline
   {quote_record_id, note?}` :611, `quote.set {request_record_id,
-  expires_in_secs, terms: {13 keys, location {where, address?}}}` :791.
+  expires_in_secs, terms: {11 keys (no `payment_methods`, no `schedule`),
+  location {where, address?}}}` :791.
   `screens/backup.ts`: `catalog.export`/`.import`,
   `transaction.export`/`.import` with `{bundle}`. `enrolment.ts`:
   `<svc>.signing-status`. All keys are known to the new structs.
 - **`roymctl`** (`apps/roymctl/src/commands/roym/`). `transaction.rs`:
-  `request.set` :176, `quote.set` :257-282 (terms with 13 keys,
-  `slot_id` without `listing_id`, see B40), `quote.decline` :295,
+  `request.set` :176, `quote.set` :257-282 (terms with 12 keys, plus
+  `schedule` when given; `slot_id` without `listing_id`, see B40), `quote.decline` :295,
   `agreement.accept`/`.get` :445, :459, `transaction.sync {conversation,
   full}` :452, `transaction.thread` :378. `booking.rs`: `booking.get`,
   `booking.list {limit, offset, agreement?, conversation?, state?}` :172
@@ -489,10 +533,10 @@ number in the change doc names one row.
 
 | # | What is sent today | What the service does today | After A2b | How the plan handles it |
 | --- | --- | --- | --- | --- |
-| B23 | `request.set`, `quote.set`, `agreement.accept` with a bad input and no signing certificate; `quote.decline` with a bad input and no recorded owner | `-32602` with `signing-not-enrolled` (or "no recorded owner"): the check runs before the parse | `-32602` for the bad field | Both are `-32602`. The parse runs before the handler (D-A2a-1), as A2a B11. Scenarios 37 and 124 send a valid input and still get `signing-not-enrolled`. |
+| B23 | `request.set`, `quote.set`, `agreement.accept` with a bad input and no signing certificate; `quote.decline` with a bad input and no recorded owner | `-32602` with `signing-not-enrolled` (or "no recorded owner"): the check runs before the parse | `-32602` for the bad field | Both are `-32602`. The parse runs before the handler (D-A2a-1), as A2a B11. Scenarios 37 and 124 send a valid input and still get `signing-not-enrolled`. **`quote.set` also:** today `terms` is parsed late, after the certificate check, the `expires_in_secs` range check, `ensure_collections`, the request lookup (`no such request`, "a request cannot be quoted by the person who made it") and the revision checks. Now a wrong `terms` field is reported before all of them. Only the text changes (`-32602` both times). No parity or e2e test sends bad terms together with another error. |
 | B24 | A wrong or missing field | `-32602` with texts such as `invalid params: missing field ..` (no path, no `data`), `invalid listing params: ..`, `invalid slots: ..`, `invalid terms: ..`, `terms must be an object`, `listing_id is required`, `envelope is required`, `bundle is required`, `invalid bundle: ..` | `-32602 invalid params: <path>: <text>` with `data.field` (D-A2a-6) | Only the text changes. Scenario 40 changes its assertion (Step 4). No other test or caller reads these texts (grep of section 3.4). |
 | B25 | A field of the wrong type to a catalog method that reads with `.get(..)`, for example `listing_id: 5`, `limit: "10"`, `from_secs: "x"` | Read as absent: "is required", or the default | `-32602` with `data.field` | No caller sends one. |
-| B26 | An unknown top-level key, to any of the 58 methods | Ignored | `-32602`, `data.field = <key>` | One caller sends one: `roymctl roym booking list --agreement` (Q4, Step 6). |
+| B26 | An unknown top-level key, to any of the 58 methods | Ignored | `-32602`, `data.field = <key>` | One caller sends one: `roymctl roym transaction booking list --agreement` (Q4, Step 6). |
 | B27 | An unknown key inside a record type (`listing.set`'s `payment`, `request.set`'s `area`, and so on) | Ignored, not signed | The same | Q1 (a). Backlog row and developer-guide sentence. |
 | B28 | A verify method with `envelope` as a JSON object (Hub "Verify a listing") | Turned into text and verified | `-32602`, `data.field = "envelope"` | Q3 (a): the Hub sends the text (Step 4). |
 | B29 | `catalog.import` / `transaction.import` with the bundle as the whole `params` | Read as the bundle | `-32602 missing field `bundle`` | As A2a B9. Every caller sends `{bundle}`. |
@@ -505,7 +549,7 @@ number in the change doc names one row.
 | B36 | `quote.set` with `quote_expires_at_secs` inside `terms` | Overwritten without a message | `-32602`, `data.field = "terms.quote_expires_at_secs"` | Q2 (a). No caller sends it. |
 | B37 | `agreement.accept` that finds this role's half already on file | No `booking` key, `message_id: ""`, `state: "already-accepted"` | The same | `booking: Option<Option<BookingView>>` with `skip_serializing_if = "Option::is_none"` (D-A2b-8). A shape file covers both answers. |
 | B38 | Certificate verbs of both services | Served by `handle_certificate_verb` with the typed functions | The same functions, now as table rows | No change (A2a B21). |
-| B39 | `booking.history` as the counterparty, for a verified `booking-progress` card | `snapshot` is the raw card data, `seq` is read from it | `snapshot: BookingProgressPayload`, `seq: u32`, both from the card data parsed into `BookingProgressPayload`. A card whose data does not parse is skipped. | The card was verified with that type when it was filed (`booking::verify_booking_progress`), so the parse cannot fail for a card this build filed. The shape file proves the keys stay. |
+| B39 | `booking.history` as the counterparty, for a verified `booking-progress` card | `snapshot` is the raw card data, `seq` is read from it (`null` if missing) | The same. `PeerStep.snapshot` is the card data as `Value`, and `seq` is read from it as today (D-A2b-8). | No change. Parsing the snapshot into `BookingProgressPayload` would drop a field that a newer peer added to its signed card; the raw data keeps it, as `CardRow.data` does. |
 
 Found while checking, not changed by A2b:
 
@@ -521,8 +565,10 @@ changes (B24).
 
 ## 5. Decisions this plan makes
 
-These follow the recommendations of Q1 to Q6. Every A2a decision (D-A2a-1 to
-D-A2a-18) applies as it is. These are the new ones.
+These follow the owner's answers to Q1 to Q6 (all option (a), 2026-10-30).
+Every A2a decision (D-A2a-1 to D-A2a-18) applies as it is. These are the
+new ones. Each answer has its decision: Q1 → D-A2b-3, Q2 → D-A2b-16,
+Q3 → D-A2b-7, Q4 → D-A2b-17, Q5 → D-A2b-5, Q6 → D-A2b-11.
 
 - **D-A2b-1. No new machinery.** Both services use `service_methods!`,
   `typed`, `parse_value`, `call_sibling` and `assert_service_table` as A2a
@@ -567,8 +613,21 @@ D-A2a-18) applies as it is. These are the new ones.
   `PaymentVerdict`, an untagged enum (serialize only) of
   `RecordVerdict<PaymentRequestPayload>`,
   `RecordVerdict<PaymentAcknowledgementPayload>` and `RecordVerdict<()>`.
-  `verify_verb` and `RecordKind` are deleted: each verify method gets its
-  own small typed handler.
+  `verify_verb` and `RecordKind` are deleted. One helper sits beside
+  `VerifyInput` in `roym_core::method`:
+  ```rust
+  /// Runs one record verifier on the envelope text, at the current time.
+  pub fn verify_with<V>(input: VerifyInput, verify: fn(&str, u64) -> V) -> Reply<V> {
+      Ok(verify(&input.envelope, clock::now_secs()))
+  }
+  ```
+  Each verify handler is one line that calls it:
+  `verify_with(input, transaction::verify_request)`,
+  `verify_with(input, listing::verify_envelope)`, and the same for
+  `verify_quote`, `verify_agreement_receipt`, `verify_booking_progress` and
+  `verify_fulfilment_receipt` (all are `fn(&str, u64) -> V`).
+  `payment.verify` keeps its own handler, because it picks the verifier by
+  record type.
 - **D-A2b-8. Outputs that have more than one shape.**
   - `agreement.accept`: one struct, `booking: Option<Option<BookingView>>`
     with `skip_serializing_if = "Option::is_none"`. `None` leaves the key
@@ -582,16 +641,56 @@ D-A2a-18) applies as it is. These are the new ones.
   - `booking.history`: `BookingHistoryOutput { history:
     Vec<BookingHistoryStep> }`, where `BookingHistoryStep` is an untagged
     enum (serialize only) of `AuthorStep { seq, event, snapshot, envelope,
-    record_id }` and `PeerStep { seq: u32, snapshot:
-    BookingProgressPayload, record_id: Option<String> }`. A serialize-only
-    untagged enum is safe here: nobody reads this output back through
-    `call_sibling` (the A2a P7 risk was a read-back).
-- **D-A2b-9. No `Response::ok` in handler code.** A handler returns
-  `Ok(Output)`. The early "already-recorded" answers inside the fences
-  (`Err(Response::ok(..))` today) become a typed value: the fence returns
-  `Result<FenceOutcome, Response>` with `enum FenceOutcome { Claimed,
-  AlreadyRecorded(<the output struct>) }` (names are the implementer's
-  choice). After Step 5b, `grep -rn "Response::ok"
+    record_id }` and `PeerStep { seq: Option<u32>, snapshot: Value,
+    record_id: Option<String> }`. `snapshot` is the card data as it is
+    today, and `seq` is read from it as today (`None`, written as `null`,
+    when it is missing). `snapshot` stays `Value` for the same reason as
+    `CardRow.data`: it is a record another node signed, and a newer peer's
+    extra keys must not be dropped (B39). The check allows a `Value` inside
+    an output struct. A serialize-only untagged enum is safe here: nobody
+    reads this output back through `call_sibling` (the A2a P7 risk was a
+    read-back).
+- **D-A2b-9. No `Response::ok` in handler code, and the fences return
+  typed answers.** A handler returns `Ok(Output)`. The six fence sites of
+  section 3.3 (F1 to F6) change to these signatures (in
+  `payment_ops/fence.rs`, `payment_ops.rs` and `fulfilment_ops.rs`):
+  ```rust
+  /// What a fence claim gives back: the row is ours now, or the method
+  /// already has its answer (crash recovery or already-recorded).
+  pub(crate) enum FenceOutcome<O> { Claimed, Answered(O) }
+
+  async fn claim_payment_request_fence<H: AppHost>(..) -> Result<FenceOutcome<PaymentRequestOutput>, Response>;
+  async fn ensure_payment_request_recorded<H: AppHost>(..) -> Reply<PaymentRequestOutput>;
+  async fn claim_payment_ack_fence<H: AppHost>(..) -> Result<FenceOutcome<HalfRecordedOutput>, Response>;
+  async fn ensure_payment_ack_recorded<H: AppHost>(..) -> Reply<HalfRecordedOutput>;
+  async fn claim_fulfilment_fence<H: AppHost>(..) -> Result<FenceOutcome<HalfRecordedOutput>, Response>;
+  async fn ensure_fulfilment_recorded<H: AppHost>(..) -> Reply<HalfRecordedOutput>;
+  async fn already_recorded_fulfilment_response<H: AppHost>(..) -> Reply<HalfRecordedOutput>;
+  fn check_acknowledgement_version(..) -> Result<Option<HalfRecordedOutput>, Response>;
+  ```
+  The arguments do not change. Each site maps as follows. "Same" means the
+  same branch and the same values as today.
+
+  | Site | Today | Typed |
+  | --- | --- | --- |
+  | F1, F3, F5 | `return Err(ensure_*_recorded(..).await)` | `return ensure_*_recorded(..).await.map(FenceOutcome::Answered)`. An `Ok` answer (normal or already-recorded) becomes `Answered`. A `-32603` stays `Err`. Never turn the crash-recovery answer into already-recorded. |
+  | F2 | `return Err(Response::ok(json!{record_id, message_id: null, state: "already-recorded"}))` | `return Ok(FenceOutcome::Answered(PaymentRequestOutput { record_id, message_id: None, state: SendState::AlreadyRecorded }))` |
+  | F4 | `if let Ok(Some(early)) = check_acknowledgement_version(..) { transition; return Err(early) }` | `if let Ok(Some(early)) = .. { transition; return Ok(FenceOutcome::Answered(early)) }`. The `Err` of the check stays ignored here, as today, so the fence still answers `payment-acknowledgement-in-flight`. |
+  | F6 | `Ok(Some(Response::ok(json!{record_id, role, message_id: null, state: "already-recorded"})))` | `Ok(Some(HalfRecordedOutput { record_id, role, message_id: None, state: SendState::AlreadyRecorded }))` |
+  | inside `ensure_*_recorded` | `Response::ok(..)` for already-recorded and for the normal answer; `Response::internal_error(..)` on a row error | `Ok(..)` with the output struct; `Err(Response::internal_error(..))`. Same branches, same order, the card is still sent in the same place. |
+  | the "in-flight" and `create` errors | `Err(Response::..)` | Same. |
+
+  Each handler reads a claim like this:
+  ```rust
+  match claim_payment_request_fence(host, ..).await? {
+      FenceOutcome::Claimed => {}
+      FenceOutcome::Answered(out) => return Ok(out),
+  }
+  ```
+  and `payment_acknowledge` reads `check_acknowledgement_version` at
+  `payment_ops.rs:224` with `Ok(Some(out))` → transition, then
+  `return Ok(out)`; `Ok(None)` → go on; `Err(resp)` → `return Err(resp)`,
+  as today. After Step 5b, `grep -rn "Response::ok"
   crates/roym_catalog/src crates/roym_transaction/src` prints nothing.
 - **D-A2b-10. `booking_view` returns `BookingView`.** Its nine callers
   (eight in `booking_ops.rs`, one in `agreement_ops.rs:392`) use the
@@ -599,28 +698,58 @@ D-A2a-18) applies as it is. These are the new ones.
   done in Step 5a, because `agreement.accept` needs it.
 - **D-A2b-11. Sibling sites keep their error handling** (B33). Each site
   names the mapping of `Ok(None)`, `Refused`, `Transport` and `BadReply` in
-  a `match`. `sibling_call` and `catalog_call` are deleted.
+  a `match`. `sibling_call` and `catalog_call` are deleted. `directory`'s
+  call to `listing.get` in `publish_to_source` also moves to
+  `call_sibling` in this slice (Q6 (a)); the rest of that handler waits for
+  A2c.
 - **D-A2b-12. Exports use `backup::export_signed_bundle`**, which already
   returns `Reply<Bundle>` (A2a). `backup::export_signed` keeps serving
   `directory` until A2c.
 - **D-A2b-13. The shape helper gains closed-word keys.** `role`, `pair`,
   `next`, `payment_timing`, `track`, `writer`, `conflict`, `card_type`,
-  `revocation_status`, `payment`, `fulfilment`, `where` record their exact
-  string value (D-A2a-14). For a key whose value is an object
+  `revocation_status`, `payment`, `fulfilment`, `where`, `event` record
+  their exact string value (D-A2a-14). For a key whose value is an object
   (`payment` of a listing), nothing changes: only strings are recorded by
-  value.
+  value. `event` (the author steps of `booking.history`: `start`, `cancel`,
+  `half`, `tick`) stays a `String` in the output, because it is copied from
+  the stored `StepRow` (stored rows keep their strings, D-A2a-10).
 - **D-A2b-14. Shared deal set-up for tests.** The set-up helpers that reach
   an accepted quote, a held slot and an active booking move from the
   scenario files into a new parity module
   `crates/roym_web/tests/dual_build_parity/deal_fixtures.rs`. The parity
-  binary and the `method_contract` binary both include it. The two copies
-  of `setup_peer_request` (`booking.rs:114`, `fulfilment.rs:46`) become
-  one.
+  binary and the `method_contract` binary both include it. One copy each
+  is kept:
+  - `setup_peer_request`: three copies (`booking.rs:114`,
+    `fulfilment.rs:46`, `payment.rs:45`) become one. `bundles.rs:116-127`
+    (scenario 168) writes the same set-up inline and calls it instead.
+  - `setup_active_agreement(h, conv, timing)`: two copies
+    (`fulfilment.rs:7`, `payment.rs:7`) become one. The `payment.rs` copy
+    has no `timing` argument and keeps the sample terms' `"after-work"`, so
+    `payment.rs` calls `setup_active_agreement(&h, &conv, "after-work")`:
+    the same params as today.
+  - `setup_listing_with_slot` (`booking.rs:96`) and
+    `setup_accepted_counterparty_quote` (`booking.rs:573`) move as they
+    are.
+  - `seed_row` (`admission.rs:242`) moves too, with a `service` argument
+    (today it always opens the `conversation` database). `admission.rs`
+    calls it with `"conversation"`. Step 2 uses it for the crash-recovery
+    cases.
 - **D-A2b-15. The transaction conversion is two commits**, so each can be
   reviewed alone: deal records first, then booking, payment and
   fulfilment. Between them, `invoke` tries `api::dispatch` and falls back
   to the old `match` for the methods not yet listed. The second commit
   removes the fallback. The check test (Step 7) runs only after both.
+- **D-A2b-16. `quote.set` takes typed terms** (Q2 (a)). `QuoteSetInput.terms`
+  is `QuoteTermsInput`: the 13 fields of `AgreedTerms` except
+  `quote_expires_at_secs`, with the same serde attributes, and
+  `#[serde(deny_unknown_fields)]`. `into_agreed_terms(self,
+  quote_expires_at_secs: u64) -> AgreedTerms` builds the record type with a
+  struct literal, so a field added to `AgreedTerms` and not to the input
+  does not compile. `parse_quote_terms` is deleted. The terms are parsed
+  with the rest of the input, before any other check (B23).
+- **D-A2b-17. `roymctl` loses `booking list --agreement`** (Q4 (a)).
+  `booking.list` gains no field. `roymctl roym transaction booking get
+  --agreement <id>` is the way to see one booking.
 
 ### Method tables
 
@@ -725,14 +854,17 @@ artifacts; a stale artifact runs the old code).
 - New `crates/roym_web/tests/dual_build_parity/deal_fixtures.rs`, declared
   in `crates/roym_web/tests/dual_build_parity.rs` with `#[path =
   "dual_build_parity/deal_fixtures.rs"] mod deal_fixtures;` like the other
-  modules. Move into it, unchanged, and make `pub(crate)`:
-  `setup_listing_with_slot` (`booking.rs:96`), `setup_peer_request`
-  (`booking.rs:114`; delete the copy at `fulfilment.rs:46`; both send the
-  same request, only the message id differs; keep the `format!("m-req-{req_id}")`
-  form), `setup_accepted_counterparty_quote` (`booking.rs:573`) and
-  `setup_active_agreement` (`fulfilment.rs:7`). The scenario files import
-  them from `deal_fixtures`. `fixtures.rs` is 778 lines, so it does not
-  take them.
+  modules. Move into it the helpers of D-A2b-14, one copy each, and make
+  them `pub(crate)`. `setup_peer_request` keeps the
+  `format!("m-req-{req_id}")` message id of the `fulfilment.rs` and
+  `payment.rs` copies; the `booking.rs` copy used `"m-req-setup"`, and no
+  test reads that id (`grep -rn "m-req-setup" crates/roym_web/tests` finds
+  only the definition). `setup_active_agreement` keeps the `timing`
+  argument of the `fulfilment.rs` copy; `payment.rs` passes
+  `"after-work"`. Scenario 168 in `bundles.rs` calls `setup_peer_request`
+  in place of its inline copy. `seed_row` takes the service name. Delete
+  every other copy. The scenario files import the helpers from
+  `deal_fixtures`. `fixtures.rs` is 778 lines, so it does not take them.
 - `crates/roym_web/tests/method_contract.rs`: add `#[allow(dead_code)]
   #[path = "dual_build_parity/deal_fixtures.rs"] mod deal_fixtures;` and
   the two new modules `#[path = "method_contract/shapes_catalog.rs"] mod
@@ -773,6 +905,22 @@ artifacts; a stale artifact runs the old code).
   non-payment record); `transaction.sync`; `transaction.thread` with a
   request, a quote and a payment-request card; `transaction.export`;
   `transaction.import`; both certificate verbs.
+- **Crash-recovery cases** (the F1, F3 and F5 paths of section 3.3). For
+  each of `payment.request`, `payment.acknowledge` and `fulfilment.sign`:
+  call the method once (it claims the fence, writes the shared row and
+  sends the card). Then make the state of a crash between the two writes:
+  with `seed_row(h, false, "transaction", ..)`, write the shared row again
+  without this half — `payments/<agreement>` with no `request`
+  (`{"agreement", "conversation", "updated_at_secs"}`); for the
+  acknowledgement, the same row with `request` copied from `payment.get`
+  and the role's list empty; `fulfilments/<agreement>` with no half for
+  this role. Call the method again. Record the answer
+  (`payment_request_crash_recovery`, `payment_ack_crash_recovery`,
+  `fulfilment_sign_crash_recovery`), and assert that its `record_id` is
+  the first call's `record_id` (the half in the fence, not the new one) and
+  that `state` is not `already-recorded`. Recorded on the unchanged code,
+  these prove the typed fences keep the path. Only the native build is
+  seeded, as `rpc` calls only the native build.
 - Record the files on the **unchanged** code:
   ```bash
   mise run build:roym > target/a2b-build.log 2>&1; echo "exit=$?"; tail -n 3 target/a2b-build.log
@@ -903,13 +1051,29 @@ artifacts; a stale artifact runs the old code).
   `SendState::from(out.state)` on success, `SendState::NotSent` on every
   error, exactly where it writes `"not-sent"` today. `verify_verb` and
   `RecordKind` are deleted (D-A2b-7).
+- **Callers in the Step 5b files change their types only** in this commit,
+  so the crate builds. Their `json!` answers stay until Step 5b.
+  - `send_card_and_file` is also called in `payment_ops.rs:123` and `:618`,
+    `payment_ops/fence.rs:112` and `:244`, `fulfilment_ops.rs:133` and
+    `:410`, and `progress.rs:54`. Where the state goes into a `json!`, it
+    is a `SendState` now (it serializes to the same word). `progress.rs`
+    ignores the state and needs no other change.
+    `record_and_send_ack` (`payment_ops.rs:596`) returns
+    `Result<(String, SendState), Response>`.
+  - The eight `booking_view` calls in `booking_ops.rs` (`:282`, `:290`,
+    `:300`, `:308`, `:342`, `:386`, `:510`, `:544`) pass
+    `Some(BookingWriter::Mine)` or `Some(BookingWriter::Peer)` in place of
+    `Some("self")` or `Some("peer")`, or `None`.
 - Handlers in `request_ops.rs`, `quote_ops.rs`, `agreement_ops.rs`,
   `sync.rs`, `thread.rs`, `backup.rs` change to the typed signature. The
   structs of section 5 are added beside them. Rules:
-  - Keep the order of the other checks and every other error text. In
-    `request.set`, `quote.set`, `agreement.accept` and `quote.decline`
-    the owner or certificate check now runs after the parse (B23); the
-    check itself and its text do not change.
+  - Keep the order of the checks that run after the parse, and every other
+    error text. In `request.set`, `quote.set`, `agreement.accept` and
+    `quote.decline` the owner or certificate check now runs after the
+    parse (B23); the check itself and its text do not change. In
+    `quote.set` the terms are now part of the parse, so a wrong `terms`
+    field is reported before the `expires_in_secs` range check and the
+    request and revision checks (B23).
   - `quote.set`: `QuoteTermsInput::into_agreed_terms(expires_at_secs)`
     replaces `parse_quote_terms` (Q2 (a)). Delete `parse_quote_terms`.
     Add a unit test that turns a full `QuoteTermsInput` into
@@ -940,7 +1104,8 @@ artifacts; a stale artifact runs the old code).
   - `transaction.thread`: `cursor` and `limit` as `u64` (D-A2b-6).
 - `booking_ops.rs`: `booking_view` returns `BookingView` (D-A2b-10), so
   `agreement.accept` can hold it. The booking handlers that call it still
-  wrap it with `serde_json::to_value` until Step 5b converts them.
+  wrap it with `serde_json::to_value` until Step 5b converts them. Its
+  `writer` argument is `Option<BookingWriter>`.
 - **Proof:** rebuild WASM, then:
   ```bash
   cargo clippy -q --workspace --all-targets --all-features
@@ -962,9 +1127,17 @@ artifacts; a stale artifact runs the old code).
   `AgreementRef`.
   `booking.list` compares `BookingState` values. `booking.history` builds
   `BookingHistoryStep` values (D-A2b-8, B39).
-- `payment_ops.rs`, `payment_ops/fence.rs`, `fulfilment_ops.rs`: the
-  already-recorded answers become typed values (D-A2b-9). Keep where each
-  early return happens and what it writes.
+- `payment_ops.rs`, `payment_ops/fence.rs`, `fulfilment_ops.rs`: change
+  the fences, the three `ensure_*_recorded` functions,
+  `already_recorded_fulfilment_response` and
+  `check_acknowledgement_version` to the signatures of D-A2b-9, and map
+  F1 to F6 exactly as its table says. Keep where each early return happens,
+  what it writes, and where the card is sent. The crash-recovery shape
+  cases of Step 2 must stay green.
+- **For the code reviewer:** read the F1 to F6 mappings line by line
+  against the table in D-A2b-9, and each `ensure_*_recorded` against its
+  old body. The crash-recovery cases cover F1, F3 and F5 once each; F2, F4
+  and the in-flight errors have no test (section 7.3).
 - `ledger.rs` `claim_seat` (B33):
   ```rust
   let slot_row = match call_sibling::<_, SlotKeyInput, Option<SlotRow>>(..).await {
@@ -992,11 +1165,15 @@ artifacts; a stale artifact runs the old code).
 **Commit:** `fix(roymctl): drop the booking list agreement option`.
 
 - `apps/roymctl/src/commands/roym/booking.rs`: remove `agreement` from
-  `BookingCommands::List` (`:30`) and the two lines that send it
-  (`:173-175`) (Q4 (a)). The `--help` text loses the option. No other
-  `roymctl` change: it keeps sending raw JSON (D-A2a-13).
-- No `roymctl` CLI test names `booking` today (`grep -rn "booking"
-  apps/roymctl/tests` prints nothing), so no test changes.
+  `BookingCommands::List` (the field at `:30`), from the match pattern
+  (`:164`), and the `if let Some(a) = agreement` block that sends it
+  (`:172-174`) (D-A2b-17). The `--help` text of `roymctl roym transaction
+  booking list` loses the option. No other `roymctl` change: it keeps
+  sending raw JSON (D-A2a-13).
+- The only `roymctl` CLI test that names `booking` is
+  `apps/roymctl/tests/backup.rs:30`, which runs `roym transaction booking
+  --help`. It does not name `--agreement`, so it still passes and no test
+  changes.
 - **Proof:** `cargo nextest run -p roymctl` passes.
 
 ### Step 7 — The check test and the error tests
@@ -1038,6 +1215,10 @@ artifacts; a stale artifact runs the old code).
     - `booking.list` with `state: "nonsense"` gives `data.field ==
       "state"` (B31).
     - `request.list` with `params` absent works (B34).
+    - `request.set` with `area: {"kind": "circle", "lat_e6": 0,
+      "lon_e6": 0, "radius_m": "x"}` gives `-32602` with `data.field ==
+      "area"` (a tagged block: the path stops at the block, Q1). Pin the
+      real text, so a later change of the path is seen.
 - `contract.rs` is 257 lines. If the new tests take it past about 600
   lines, put the catalog and transaction error tests in a new
   `method_contract/contract_deals.rs` (declared with `#[path]`).
@@ -1062,15 +1243,18 @@ artifacts; a stale artifact runs the old code).
 - Ratchets: `cargo xtask check-file-lengths` (record a lower value for
   `dual_build_parity/transaction.rs` if it shrank; it is on the list at
   846), `cargo xtask check-duplication` (the three `AgreementParam` copies,
-  the two `setup_peer_request` copies and `sibling_call` go away; record the
-  new value if it improved).
+  the three `setup_peer_request` copies and the inline one in `bundles.rs`,
+  the two `setup_active_agreement` copies, the seven verify handlers and
+  `sibling_call` go away; record the new value if it improved).
 - `cargo xtask check-module-layout`, `cargo xtask check-dep-versions`,
   `cargo shear`.
 - The `cargo dupes` recipe from AGENTS.md over the changed files.
 - `mise run verify` as a background job, no `--skip`, every gate green.
 - Open the PR with the CLA line and the attribution line. The PR text lists
   the commits, the method tables, the audit table (section 4), the manual
-  proof of Step 7, and "calls with a wrong or unknown field now fail".
+  proof of Step 7, and "calls with a wrong or unknown field now fail". It
+  asks the code reviewer to read the fence mappings F1 to F6 (D-A2b-9)
+  line by line.
 
 ## 7. Tests
 
@@ -1105,11 +1289,13 @@ any `roym_*` code change, rebuild with `mise run build:roym` first.
 5. **No behaviour change.**
    - The shape files, recorded from the old code in Step 2 and passing at
      every later step. They record the exact words of `state`, `role`,
-     `pair`, `next`, `writer`, `track`, `conflict` and the other keys of
-     D-A2a-14 and D-A2b-13, every item shape of every array, and the null
-     or absent state of every key. Both answers of `agreement.accept`, of
-     the already-recorded methods and of `booking.history` have their own
-     file.
+     `pair`, `next`, `writer`, `track`, `conflict`, `event` and the other
+     keys of D-A2a-14 and D-A2b-13, every item shape of every array, and
+     the null or absent state of every key. Both answers of
+     `agreement.accept`, of the already-recorded methods and of
+     `booking.history` have their own file. The three crash-recovery cases
+     prove that F1, F3 and F5 still give the normal answer with the fence
+     half's `record_id`.
    - The parity harness: 24 modules, 222 scenarios, the same two-build
      equality. One assertion changes, in scenario 40 (B24).
    - The substrate e2e tests for listings, deals, bookings, restore and
@@ -1126,6 +1312,12 @@ any `roym_*` code change, rebuild with `mise run build:roym` first.
 - A malformed slot row from a hand-made bundle (B32, B33). The mappings are
   small `match` arms; a test would need a hand-made signed bundle.
 - A reply from `catalog` that is not JSON (B33): the host never sends one.
+- The fence sites F2 and F4, and the `*-in-flight` errors (section 3.3).
+  They run only when a fence row exists but cannot be read or holds no
+  half, and this build always writes the half with the fence row. The
+  crash-recovery path (F1, F3, F5) is tested once per method by the shape
+  cases of Step 2, but not its `-32603` branch (a row read or write that
+  fails). The code reviewer reads F1 to F6 line by line (Step 5b).
 
 ### 7.4 Size risks
 
@@ -1158,7 +1350,7 @@ any `roym_*` code change, rebuild with `mise run build:roym` first.
 | P12, P19 (test binary modules) | new modules | Step 2 names each `#[path]` line. |
 | P14 (d), R1 (a check that silently does nothing) | stale WASM; the scan path | Rebuild before every parity run; `CARGO_MANIFEST_DIR` paths; the manual proof of Step 7; the e2e log check. |
 | P17, B22 (stored rows read into structs) | slot rows | B32. |
-| R2, R3 (change doc decisions and deviations mixed) | new decisions | Section 9: decisions D-A2b-1 to D-A2b-15 with the same numbers; planned wire changes and real deviations in their two lists. |
+| R2, R3 (change doc decisions and deviations mixed) | new decisions | Section 9: decisions D-A2b-1 to D-A2b-17 with the same numbers; planned wire changes and real deviations in their two lists. |
 | R6 (nested types not checked) | record types in inputs | Q1, said in the developer guide and the backlog. |
 | R8 (living docs say more than is true) | `directory` and `web` stay untyped | Section 9 names the four typed services exactly. |
 | R9 (inline paths) | many edits | Step 9 import pass. |
@@ -1194,7 +1386,8 @@ All rows are in [deferred-backlog.md](../../deferred-backlog.md).
 - **Append to the §10 row "The Roym API contract is not published":** the
   `catalog` and `transaction` tables can also feed a schema generator.
 - **Resolved in code, no row needed:** the Hub's object `envelope` for
-  `listing.verify` (B28), and `roymctl`'s `booking list --agreement` (B26).
+  `listing.verify` (B28), and `roymctl roym transaction booking list
+  --agreement` (B26).
   Both were bugs, not deferrals.
 - No new open `TODO` or `FIXME` marker is added.
 
@@ -1210,7 +1403,10 @@ change docs, milestone or slice ids in these files. Link ADRs only.
   Roym method" step 1, add: "a record type inside an input (for example a
   listing's `payment` block) has no `deny_unknown_fields`, because it also
   parses signed records from other nodes; an unknown key inside it is
-  ignored and not signed". In "Bad input", add: "send a signed envelope to
+  ignored and not signed". In "Bad input", add: "a wrong type inside a
+  nested block is refused with `-32602`; `data.field` names the deepest
+  field it can, which for a tagged block such as `area` is the block
+  itself". Also add: "send a signed envelope to
   a `*.verify` method as text, not as a JSON object".
 - [docs/system-architecture.md](../../../system-architecture.md) (around
   line 1143): the same list of four services.
@@ -1224,8 +1420,9 @@ change docs, milestone or slice ids in these files. Link ADRs only.
 - Change doc [roym-open-foundation](../../changes/roym-open-foundation/change.md):
   - **Tasks:** under "Typed input and output for every Roym method", add
     "- [x] catalog and transaction". The parent line stays open.
-  - **Decisions:** add D-A2b-1 to D-A2b-15 with the same numbers and
-    meaning as section 5, and one line with the owner's answers to Q1 to Q6.
+  - **Decisions:** add D-A2b-1 to D-A2b-17 with the same numbers and
+    meaning as section 5, and one line with the owner's answers to Q1 to Q6
+    ("Q1–Q6: option (a), 2026-10-30").
   - **Deviations:** under "Planned wire changes", add B23, B24 (with
     scenario 40), B26 (with `roymctl`), B28 (with the Hub), B29, B30, B31,
     B32, B34, B35, B36. Under "Different from the plan", add only what the
@@ -1259,7 +1456,7 @@ A2b is done when all of these are true:
 7. `transaction` and `directory` call `catalog` through typed structs, and
    `sibling_call` and `catalog_call` are gone.
 8. The Hub sends the `listing.verify` envelope as text and has a unit test
-   for it. `roymctl booking list` has no `--agreement`.
+   for it. `roymctl roym transaction booking list` has no `--agreement`.
 9. The change doc, the developer guide, the architecture doc, the
    traceability matrix, task.md, status.md and the backlog are updated as
    in sections 8 and 9.
