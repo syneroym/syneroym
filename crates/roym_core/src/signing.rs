@@ -302,6 +302,15 @@ pub(crate) mod tests {
 
     use super::*;
 
+    #[derive(Debug, Clone)]
+    pub(crate) struct RecordedCall {
+        pub target: CallTarget,
+        pub interface: String,
+        pub method: String,
+        pub params: String,
+        pub options: Option<CallOptions>,
+    }
+
     /// A `#[cfg(test)]` `AppHost` stub shared across `roym_core`'s own unit
     /// tests -- `admit` extends it with a settable `CallerOrigin` rather
     /// than standing up a second stub.
@@ -318,6 +327,7 @@ pub(crate) mod tests {
         /// The collection and options of every `query` call, in order.
         queries: Mutex<Vec<(String, QueryOptions)>>,
         proxy_response: Mutex<Option<Result<String, ProxyError>>>,
+        last_call: Mutex<Option<RecordedCall>>,
     }
 
     impl TestHost {
@@ -327,6 +337,9 @@ pub(crate) mod tests {
 
         pub(crate) fn set_proxy_response(&self, res: Result<String, ProxyError>) {
             *self.proxy_response.lock().unwrap() = Some(res);
+        }
+        pub(crate) fn last_call(&self) -> Option<RecordedCall> {
+            self.last_call.lock().unwrap().clone()
         }
         pub(crate) fn set_caller_origin(&self, origin: CallerOrigin) {
             *self.caller_origin.lock().unwrap() = Some(origin);
@@ -621,12 +634,14 @@ pub(crate) mod tests {
     impl AppProxy for TestHost {
         async fn call(
             &self,
-            _target: CallTarget,
-            _iface: String,
-            _method: String,
-            _params: String,
-            _opts: Option<CallOptions>,
+            target: CallTarget,
+            iface: String,
+            method: String,
+            params: String,
+            opts: Option<CallOptions>,
         ) -> Result<String, ProxyError> {
+            *self.last_call.lock().unwrap() =
+                Some(RecordedCall { target, interface: iface, method, params, options: opts });
             if let Some(res) = self.proxy_response.lock().unwrap().clone() {
                 res
             } else {

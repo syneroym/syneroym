@@ -6,7 +6,7 @@ use syneroym_app_host::{
     AppHost,
     types::{
         conversation::{DeliveryState, Message},
-        proxy::ProxyError,
+        proxy::{CallTarget, ProxyError},
         signing::SigningIdentity,
     },
 };
@@ -18,7 +18,7 @@ use super::{
     check::assert_service_table,
     parse_value,
     profile::{
-        AdmissionKind, AdmitFirstContactOutput, BlockCheckOutput, BlockedSince,
+        AdmissionKind, AdmitFirstContactOutput, BlockCheckOutput, BlockedSince, ProfileRecord,
         ResolveAddressOutput,
     },
     typed,
@@ -683,4 +683,20 @@ async fn call_sibling_with_test_host() {
         res5.unwrap(),
         ResolveAddressOutput { conversation_address: "addr-123".to_string() }
     );
+    let call = host.last_call().expect("last call recorded");
+    assert!(matches!(call.target, CallTarget::Dependency(ref d) if d == "profile"));
+    assert_eq!(call.interface, PROFILE.interface);
+    assert_eq!(call.method, "invoke");
+    assert!(call.options.is_none());
+    let envelope: Vec<String> = serde_json::from_str(&call.params).unwrap();
+    assert_eq!(envelope.len(), 1);
+    let inner: Value = serde_json::from_str(&envelope[0]).unwrap();
+    assert_eq!(inner["method"], "contacts.resolve-address");
+    assert_eq!(inner["params"], json!({}));
+
+    // 6. Null result read as Option<ProfileRecord>
+    host.set_proxy_response(Ok(json!({ "result": null }).to_string()));
+    let res6: Result<Option<ProfileRecord>, _> =
+        call_sibling(&host, PROFILE, "profile.get", &json!({})).await;
+    assert_eq!(res6.unwrap(), None);
 }
