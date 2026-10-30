@@ -63,49 +63,70 @@ fn assert_no_old_words(name: &str, sample: &impl Serialize) {
     assert!(found.is_empty(), "old deal-role words on the wire: {found:#?}");
 }
 
-// Each list below sits next to a `match` without a wildcard, so adding a
-// variant stops the build here until the new variant is listed.
+/// Lists every variant of an enum. The `match` has no wildcard, so adding a
+/// variant stops the build until the new variant is listed here.
+macro_rules! every {
+    ($ty:ty, [$($variant:path),+ $(,)?]) => {{
+        let _ = |value: $ty| match value {
+            $($variant)|+ => (),
+        };
+        [$($variant),+]
+    }};
+}
 
 fn every_role() -> [DealRole; 2] {
-    let _ = |role: DealRole| match role {
-        DealRole::QuoteAuthor | DealRole::Counterparty => (),
-    };
-    [DealRole::QuoteAuthor, DealRole::Counterparty]
+    every!(DealRole, [DealRole::QuoteAuthor, DealRole::Counterparty])
 }
 
 fn every_place() -> [ServiceLocation; 3] {
-    let _ = |place: ServiceLocation| match place {
-        ServiceLocation::AtGiver | ServiceLocation::AtReceiver | ServiceLocation::Remote => (),
-    };
-    [ServiceLocation::AtGiver, ServiceLocation::AtReceiver, ServiceLocation::Remote]
+    every!(
+        ServiceLocation,
+        [ServiceLocation::AtGiver, ServiceLocation::AtReceiver, ServiceLocation::Remote]
+    )
 }
 
 fn every_audience() -> [OpenTo; 4] {
-    let _ = |open_to: OpenTo| match open_to {
-        OpenTo::Anyone | OpenTo::Members | OpenTo::Referral | OpenTo::PastCounterparties => (),
-    };
-    [OpenTo::Anyone, OpenTo::Members, OpenTo::Referral, OpenTo::PastCounterparties]
+    every!(OpenTo, [OpenTo::Anyone, OpenTo::Members, OpenTo::Referral, OpenTo::PastCounterparties])
 }
 
 fn every_next_step() -> [NextStep; 7] {
-    let _ = |step: NextStep| match step {
-        NextStep::WaitForQuoteAuthor
-        | NextStep::RequestPayment
-        | NextStep::PayOutsideRoym
-        | NextStep::ConfirmPaymentReceived
-        | NextStep::MarkWorkComplete
-        | NextStep::ConfirmWorkComplete
-        | NextStep::Nothing => (),
-    };
-    [
-        NextStep::WaitForQuoteAuthor,
-        NextStep::RequestPayment,
-        NextStep::PayOutsideRoym,
-        NextStep::ConfirmPaymentReceived,
-        NextStep::MarkWorkComplete,
-        NextStep::ConfirmWorkComplete,
-        NextStep::Nothing,
-    ]
+    every!(
+        NextStep,
+        [
+            NextStep::WaitForQuoteAuthor,
+            NextStep::RequestPayment,
+            NextStep::PayOutsideRoym,
+            NextStep::ConfirmPaymentReceived,
+            NextStep::MarkWorkComplete,
+            NextStep::ConfirmWorkComplete,
+            NextStep::Nothing,
+        ]
+    )
+}
+
+fn every_booking_state() -> [BookingState; 6] {
+    every!(
+        BookingState,
+        [
+            BookingState::Scheduled,
+            BookingState::InProgress,
+            BookingState::Completed,
+            BookingState::Cancelled,
+            BookingState::Conflict,
+            BookingState::EndedUnconfirmed,
+        ]
+    )
+}
+
+fn every_track_state() -> [TrackState; 4] {
+    every!(
+        TrackState,
+        [TrackState::None, TrackState::Claimed, TrackState::Acknowledged, TrackState::Unconfirmed]
+    )
+}
+
+fn every_conflict() -> [ConflictReason; 2] {
+    every!(ConflictReason, [ConflictReason::SlotTaken, ConflictReason::SlotUnavailable])
 }
 
 fn terms(place: ServiceLocation) -> AgreedTerms {
@@ -236,6 +257,46 @@ fn the_deal_enums_say_no_old_word_in_any_variant() {
 }
 
 #[test]
+fn the_other_wire_enums_say_no_old_word_in_any_variant() {
+    for state in every_booking_state() {
+        assert_no_old_words("booking state", &state);
+    }
+    for track in every_track_state() {
+        assert_no_old_words("track state", &track);
+    }
+    for conflict in every_conflict() {
+        assert_no_old_words("conflict reason", &conflict);
+    }
+    let statuses = every!(
+        ListingStatus,
+        [ListingStatus::Draft, ListingStatus::Active, ListingStatus::Withdrawn]
+    );
+    let modes = every!(BookingMode, [BookingMode::Slots, BookingMode::Order, BookingMode::Enquiry]);
+    let models = every!(
+        PaymentModel,
+        [
+            PaymentModel::Fixed,
+            PaymentModel::PerHour,
+            PaymentModel::PerUnit,
+            PaymentModel::QuoteOnly
+        ]
+    );
+    let conditions = every!(
+        ProductCondition,
+        [ProductCondition::New, ProductCondition::Used, ProductCondition::Refurbished]
+    );
+    let disclosures =
+        every!(AddressDisclosure, [AddressDisclosure::OnAgreement, AddressDisclosure::Public]);
+    let timings = every!(PaymentTiming, [PaymentTiming::BeforeWork, PaymentTiming::AfterWork]);
+    assert_no_old_words("listing status", &statuses);
+    assert_no_old_words("booking mode", &modes);
+    assert_no_old_words("payment model", &models);
+    assert_no_old_words("product condition", &conditions);
+    assert_no_old_words("address disclosure", &disclosures);
+    assert_no_old_words("payment timing", &timings);
+}
+
+#[test]
 fn a_request_and_a_quote_say_no_old_word() {
     assert_no_old_words("request", &request());
     for place in every_place() {
@@ -310,8 +371,8 @@ fn the_payment_records_say_no_old_word() {
 #[test]
 fn a_booking_progress_snapshot_says_no_old_word_for_either_canceller() {
     for role in every_role() {
-        for conflict in [ConflictReason::SlotTaken, ConflictReason::SlotUnavailable] {
-            for state in [BookingState::Cancelled, BookingState::Conflict] {
+        for conflict in every_conflict() {
+            for state in every_booking_state() {
                 assert_no_old_words("booking-progress", &booking_progress(role, conflict, state));
             }
         }

@@ -3124,7 +3124,7 @@ The substrate defines an abstract `PaymentIntent` interface for Invoice Cards. A
 > **Envisioned.** Not built yet. No Verifiable Credential, JSON-LD or IPFS code exists. The import of a service history into a new data homebase, and the proof of reputation to a new Aggregator, are not built.
 
 **Design Approach:**
-Data portability uses standardized Export/Import Envelopes. A listing owner compiles a user's service history into an archive of Verifiable Credentials (signed JSON-LD) or pkarr-signed IPFS blobs. The user imports this envelope into their new data homebase. When the user interacts with a new Aggregator, the user cryptographically proves their past reputation by submitting these pre-signed blobs. The new node verifies the blobs against the original provider's public key. It does not need to contact the original provider.
+Data portability uses standardized Export/Import Envelopes. A listing owner compiles a user's service history into an archive of Verifiable Credentials (signed JSON-LD) or pkarr-signed IPFS blobs. The user imports this envelope into their new data homebase. When the user interacts with a new Aggregator, the user cryptographically proves their past reputation by submitting these pre-signed blobs. The new node verifies the blobs against the original listing owner's public key. It does not need to contact the original listing owner.
 
 ### 5. Staked Messaging & Spam Deterrence (Digital Stamps)
 *Addresses the activity of a listing owner paying a refundable stamp to send promotional offers.*

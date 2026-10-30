@@ -33,8 +33,8 @@ export const SERVICE_LOCATION_KINDS: ServiceLocationKind[] = ["remote", "at-give
 export const OPEN_TO_KINDS: OpenTo[] = ["anyone", "members", "referral", "past-counterparties"];
 
 export const OPEN_TO_LABELS: Record<OpenTo, string> = {
-  anyone: "anyone",
-  members: "members",
-  referral: "referral",
+  anyone: "Anyone",
+  members: "Members",
+  referral: "Referral",
   "past-counterparties": "People I have worked with before",
 };
