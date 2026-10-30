@@ -8,6 +8,8 @@ living-docs-touched:
   - docs/developer-guide.md
   - docs/planning/traceability-matrix.md
   - docs/planning/deferred-backlog.md
+demo:
+  - none: internal typed method contracts and error responses
 ---
 # Roym open foundation
 
