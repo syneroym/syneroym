@@ -92,10 +92,15 @@ fn check_probe_unknown_fields(rows: &[MethodInfo], wire: &[&str], problems: &mut
 
 fn scan_source_dir(service: Service, rows: &[MethodInfo], dir: &Path, problems: &mut Vec<String>) {
     if !dir.exists() {
+        problems.push(format!("service_src_dir does not exist: {}", dir.display()));
         return;
     }
     let mut files = Vec::new();
-    collect_rs_files(dir, &mut files);
+    collect_rs_files(dir, &mut files, problems);
+    if files.is_empty() {
+        problems.push(format!("no .rs files found in {}", dir.display()));
+        return;
+    }
     for path in files {
         if path.file_name().and_then(|n| n.to_str()) == Some("bindings.rs") {
             continue;
@@ -112,17 +117,27 @@ fn scan_source_dir(service: Service, rows: &[MethodInfo], dir: &Path, problems: 
     }
 }
 
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>, problems: &mut Vec<String>) {
     let read_dir = match fs::read_dir(dir) {
         Ok(rd) => rd,
-        Err(_) => return,
+        Err(e) => {
+            problems.push(format!("failed to read directory {}: {e}", dir.display()));
+            return;
+        }
     };
-    for entry in read_dir.flatten() {
-        let p = entry.path();
-        if p.is_dir() {
-            collect_rs_files(&p, out);
-        } else if p.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-            out.push(p);
+    for entry in read_dir {
+        match entry {
+            Ok(entry) => {
+                let p = entry.path();
+                if p.is_dir() {
+                    collect_rs_files(&p, out, problems);
+                } else if p.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                    out.push(p);
+                }
+            }
+            Err(e) => {
+                problems.push(format!("failed to read entry in {}: {e}", dir.display()));
+            }
         }
     }
 }

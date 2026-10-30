@@ -1,8 +1,12 @@
 //! Verification of method contracts, dispatch completeness, off-node refusal,
 //! and error parameter validation.
 
+use std::path::Path;
+
 use serde_json::{Value, json};
+use syneroym_roym_conversation::api as conversation_api;
 use syneroym_roym_core::{method::check::assert_service_table, services};
+use syneroym_roym_profile::api as profile_api;
 
 use super::{
     fixtures::env,
@@ -11,25 +15,25 @@ use super::{
 
 #[test]
 fn every_profile_method_has_typed_input_and_output() {
-    let table = syneroym_roym_profile::api::method_table();
+    let table = profile_api::method_table();
     assert_eq!(table.len(), 24);
     assert_service_table(
         services::PROFILE,
         &table,
         &[],
-        std::path::Path::new("crates/roym_profile/src"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_profile/src"),
     );
 }
 
 #[test]
 fn every_conversation_method_has_typed_input_and_output() {
-    let table = syneroym_roym_conversation::api::method_table();
+    let table = conversation_api::method_table();
     assert_eq!(table.len(), 24);
     assert_service_table(
         services::CONVERSATION,
         &table,
         &[],
-        std::path::Path::new("crates/roym_conversation/src"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_conversation/src"),
     );
 }
 

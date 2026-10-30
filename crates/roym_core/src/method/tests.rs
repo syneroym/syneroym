@@ -321,42 +321,63 @@ fn check_fails_on_duplicate_name() {
         MethodInfo::of::<NoParams, DummyOutput>("profile.ping"),
         MethodInfo::of::<NoParams, DummyOutput>("profile.ping"),
     ];
-    assert_service_table(PROFILE, &rows, &[], Path::new("/nonexistent"));
+    let temp = tempfile::tempdir().unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp.path());
 }
 
 #[test]
 #[should_panic(expected = "does not route to service")]
 fn check_fails_on_wrong_service_route() {
     let rows = vec![MethodInfo::of::<NoParams, DummyOutput>("conversation.send")];
-    assert_service_table(PROFILE, &rows, &[], Path::new("/nonexistent"));
+    let temp = tempfile::tempdir().unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp.path());
 }
 
 #[test]
 #[should_panic(expected = "contains Value")]
 fn check_fails_on_value_in_types() {
     let rows = vec![MethodInfo::of::<Value, DummyOutput>("profile.ping")];
-    assert_service_table(PROFILE, &rows, &[], Path::new("/nonexistent"));
+    let temp = tempfile::tempdir().unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp.path());
 }
 
 #[test]
 #[should_panic(expected = "is not in wire, but does not reject unknown field")]
 fn check_fails_on_non_wire_allowing_unknown() {
     let rows = vec![MethodInfo::of::<WireOpenTest, DummyOutput>("profile.ping")];
-    assert_service_table(PROFILE, &rows, &[], Path::new("/nonexistent"));
+    let temp = tempfile::tempdir().unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp.path());
 }
 
 #[test]
 #[should_panic(expected = "is in wire, but rejects unknown field")]
 fn check_fails_on_wire_rejecting_unknown() {
     let rows = vec![MethodInfo::of::<NoParams, DummyOutput>("profile.ping")];
-    assert_service_table(PROFILE, &rows, &["profile.ping"], Path::new("/nonexistent"));
+    let temp = tempfile::tempdir().unwrap();
+    assert_service_table(PROFILE, &rows, &["profile.ping"], temp.path());
 }
 
 #[test]
 #[should_panic(expected = "wire method profile.missing is not in method table")]
 fn check_fails_on_unlisted_wire_method() {
     let rows = vec![MethodInfo::of::<NoParams, DummyOutput>("profile.ping")];
-    assert_service_table(PROFILE, &rows, &["profile.missing"], Path::new("/nonexistent"));
+    let temp = tempfile::tempdir().unwrap();
+    assert_service_table(PROFILE, &rows, &["profile.missing"], temp.path());
+}
+
+#[test]
+#[should_panic(expected = "service_src_dir does not exist")]
+fn check_fails_when_the_source_dir_is_missing() {
+    let rows = vec![MethodInfo::of::<NoParams, DummyOutput>("profile.ping")];
+    assert_service_table(PROFILE, &rows, &[], Path::new("/nonexistent"));
+}
+
+#[test]
+#[should_panic(expected = "no .rs files found in")]
+fn check_fails_when_no_rs_files_found() {
+    let rows = vec![MethodInfo::of::<NoParams, DummyOutput>("profile.ping")];
+    let temp = tempfile::tempdir().unwrap();
+    assert_service_table(PROFILE, &rows, &[], temp.path());
 }
 
 #[test]

@@ -8349,6 +8349,7 @@ dependencies = [
  "syneroym-app-host",
  "syneroym-identity",
  "syneroym-signed-record",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
