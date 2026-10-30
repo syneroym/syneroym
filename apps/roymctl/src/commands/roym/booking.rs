@@ -27,8 +27,6 @@ pub enum BookingCommands {
     /// List bookings for this installation.
     List {
         #[arg(long)]
-        agreement: Option<String>,
-        #[arg(long)]
         conversation: Option<String>,
         #[arg(long)]
         state: Option<String>,
@@ -160,19 +158,8 @@ pub(super) async fn handle_booking(
             let params = json!({ "agreement": agreement });
             call_and_print(ctx, gateway_url, host.as_deref(), "booking.get", params).await
         }
-        BookingCommands::List {
-            agreement,
-            conversation,
-            state,
-            limit,
-            offset,
-            gateway_url,
-            host,
-        } => {
+        BookingCommands::List { conversation, state, limit, offset, gateway_url, host } => {
             let mut params = json!({ "limit": limit, "offset": offset });
-            if let Some(a) = agreement {
-                params["agreement"] = json!(a);
-            }
             if let Some(c) = conversation {
                 params["conversation"] = json!(c);
             }
