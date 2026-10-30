@@ -3,10 +3,8 @@
 *Reader: the developer (or AI) who implements slice A2a. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-10-30, by Claude Sonnet 5.5 (Claude Code). The
-owner has not answered section 2 yet.** Steps in section 6 follow the
-recommendations. If an answer differs, the step that names that question
-changes.
+**Status: plan revised, 2026-10-30, incorporating plan review round 1.**
+Steps in section 6 follow the agreed design.
 
 **Size and PR.** L. One PR on `feat/m08a-a2a-typed-methods`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -53,13 +51,15 @@ after this one is merged.
 - **Sibling call:** one Roym service calling another through
   `host.call(CallTarget::Dependency(..), .., "invoke", ..)`.
 - **Certificate verbs:** `<service>.signing-status` and
-  `<service>.install-signing-certificate`. Five services share one handler
-  for them (`signing::handle_certificate_verb`,
-  [signing.rs:253](../../../../crates/roym_core/src/signing.rs#L253)).
+  `<service>.install-signing-certificate`. In A2a, each service lists them as
+  normal rows in `service_methods!`, handled by typed functions in
+  `roym_core::signing::verbs`. Other services keep using
+  `signing::handle_certificate_verb`.
 - **Method table:** the list of every method one service answers, with the
   Rust type of its input and output. A test reads it.
-- **Shape file:** a JSON file that records the key names, the JSON types
-  and the null or absent state of a method's result, but not its values.
+- **Shape file:** a JSON file that records the key names, the JSON types,
+  the null or absent state of a method's result, and the exact string values
+  for closed word sets, but not other values.
 
 ## 1. What A2a builds, in one paragraph
 
@@ -81,13 +81,9 @@ request. Only the text and the code of some wrong requests change.
   method_contract`. It lists every profile and conversation method and shows
   that each one has a typed input and a typed output, and that a wrong or
   unknown field gets `-32602` with the field name.
-- A developer can call the node with a wrong field and read the error:
-  `roymctl roym ...` or `curl` to `/rpc` with `{"method":"contacts.upsert",
-  "params":{"person_did":"did:key:zA","favourite":"yes"}}` answers
-  `error.code = -32602` and `error.data.field = "favourite"`.
 - A developer can run `cargo nextest run -p syneroym-roym-web --test
-  method_shapes`. It shows that the JSON every method returns has the same
-  keys and types as before the change.
+  method_contract shapes`. It shows that the JSON every method returns has the
+  same keys and types as before the change.
 
 **Demo:** none. A2a adds no command, no screen and no working path. The
 change doc has no `demo:` list yet. A7 adds it at close-out.
@@ -103,18 +99,22 @@ reason. Section 6 follows the recommendations.
 name, the input type, the output type, and whether the method is
 local-only or wire-reachable. All 48 methods of A2a are local-only. The
 tables are below. "core" means `crates/roym_core/src/method/<service>.rs`
-(Q2). "svc" means `src/api/<area>.rs` in the service crate. `Page` means
-the two optional fields `offset: Option<u64>` and `limit: Option<u64>`.
-Every input struct has `#[serde(deny_unknown_fields)]`. Every field marked
-`Option` may be absent or `null`.
+or `roym_core::signing::verbs` (Q2). "svc" means in `src/app/<area>.rs` beside
+the handler in the service crate. `Page` means the two optional fields
+`offset: Option<u64>` and `limit: Option<u64>`. Every input struct has
+`#[serde(deny_unknown_fields)]`. Every field marked `Option` may be absent
+or `null`.
 
 Shared by every service (in `roym_core`): `NoParams {}`,
 `PingOutput { service: String }`, `ImportInput { bundle: Bundle }`
 (`roym_core::backup`), `Bundle` as the output of every `*.export`,
-`SigningStatusOutput { signing_did, pubkey_hex, owner_did: String,
-certificate: CertificateStatus }`, `InstallCertificateInput { certificate:
-String }`, `InstallCertificateOutput { master_did: String, expires_at_secs:
-u64 }`.
+`SigningStatusOutput { signing_did: String, pubkey_hex: String,
+owner_did: Option<String>, certificate: CertificateStatus }`,
+`InstallCertificateInput { certificate: String }`,
+`InstallCertificateOutput { master_did: String, expires_at_secs: u64 }`.
+The signing types and their typed handlers live in
+`crates/roym_core/src/signing/verbs.rs` and are re-exported from
+`roym_core::signing`.
 
 **profile service (24 methods)**
 
@@ -137,13 +137,13 @@ u64 }`.
 | `block.add` | `BlockAddInput { person_did: Option<String>, address: Option<String>, reason: Option<String> }` | `BlockAddOutput { key: String }` | svc |
 | `block.remove` | `BlockTargetInput { person_did: Option<String>, address: Option<String> }` | `BlockRemoveOutput { removed: String }` | svc |
 | `block.list` | `Page` | `Vec<BlockRow>` | svc |
-| `block.check` | `BlockTargetInput` | `BlockCheckOutput` (`Blocked { blocked, reason: Option<String>, since_secs: Option<u64> }` or `NotBlocked { blocked }`, `#[serde(untagged)]`; the blocked arm writes `null` for a missing reason) | core |
+| `block.check` | `BlockTargetInput` | `BlockCheckOutput` (`struct BlockCheckOutput { blocked: bool, #[serde(flatten)] since: Option<BlockedSince> }` where `BlockedSince { reason: Option<String>, since_secs: Option<u64> }`; `None` writes only `blocked: false`, `Some` writes both keys with `null` when empty) | core |
 | `report.create` | `ReportCreateInput { subject_kind: ReportSubject, subject_id: String, category: ReportCategory, details: Option<String> }` | `ReportCreateOutput { report_id: String, status: String }` | svc |
 | `report.list` | `ReportListInput { status: Option<String>, offset, limit }` | `Vec<ReportRow>` | svc |
 | `report.get` | `ReportIdInput { report_id: String }` | `Option<ReportRow>` | svc |
 | `report.withdraw` | `ReportIdInput` | `ReportCreateOutput` (same two fields) | svc |
-| `profile.signing-status` | `NoParams` | `SigningStatusOutput` | core |
-| `profile.install-signing-certificate` | `InstallCertificateInput` | `InstallCertificateOutput` | core |
+| `profile.signing-status` | `NoParams` | `SigningStatusOutput` | core (`signing::signing_status`) |
+| `profile.install-signing-certificate` | `InstallCertificateInput` | `InstallCertificateOutput` | core (`signing::install_signing_certificate`) |
 
 **conversation service (24 methods)**
 
@@ -171,8 +171,8 @@ u64 }`.
 | `group.sync` | `ConversationRef` | `GroupSyncOutput { synced: bool }` | svc |
 | `group.hide` | `ConversationRef` | `AdmissionOutput { admission: AdmissionState { state: String } }` | svc |
 | `group.unhide` | `ConversationRef` | `GroupUnhideOutput { admission: AdmissionState, filled_in: u64 }` | svc |
-| `conversation.signing-status` | `NoParams` | `SigningStatusOutput` | core |
-| `conversation.install-signing-certificate` | `InstallCertificateInput` | `InstallCertificateOutput` | core |
+| `conversation.signing-status` | `NoParams` | `SigningStatusOutput` | core (`signing::signing_status`) |
+| `conversation.install-signing-certificate` | `InstallCertificateInput` | `InstallCertificateOutput` | core (`signing::install_signing_certificate`) |
 
 `MessageView` is the message object that `message_to_json`
 ([messages.rs:191](../../../../crates/roym_conversation/src/app/messages.rs#L191))
@@ -182,18 +182,23 @@ writes today: `id`, `conversation`, `author`, `direction` (`Direction`),
 `stored_at_secs`, `refused: Option<String>` (written as `null`),
 `restored`, `visible_seq`, `verified`, and two keys that are absent unless
 set: `deleted_at_secs` and `body`. `ConversationListItem` is the row of
-[messages.rs:106-124](../../../../crates/roym_conversation/src/app/messages.rs#L106).
+[messages.rs:106-124](../../../../crates/roym_conversation/src/app/messages.rs#L106),
+with `opened_at_secs: i64` and `last_activity_ms: i64` matching the host types.
 
 **How the check test finds every method.** Options:
 
 - (a) **One macro writes the dispatch and the table.** Each service lists its
   methods once, one line each:
   `"profile.get": profile_ops::get [ProfileGetInput => Option<ProfileRecord>],`.
+  The two certificate verbs are normal rows in that list, calling typed
+  handlers in `roym_core::signing::verbs` (`signing_status` and
+  `install_signing_certificate`).
   The macro (`roym_core::service_methods!`) writes `dispatch(host, req) ->
   Option<Response>` and `method_rows() -> Vec<MethodInfo>` from that list.
   A method cannot be dispatched without a row, and a row cannot exist without
-  an input and an output type. `invoke` has no `match` on method names any
-  more. The check test then proves five things:
+  an input and an output type. `invoke` in profile and conversation has no
+  `match` on method names and no call to `handle_certificate_verb`.
+  `certificate_rows` is deleted. The check test then proves five things:
   1. Names are unique, and `router::route(name)` gives this service.
   2. No input or output type is `serde_json::Value` (read from
      `std::any::type_name`).
@@ -201,9 +206,13 @@ set: `deleted_at_secs` and `body`. `ConversationListItem` is the row of
      it ignores one. The test probes the row's own parser with
      `{"__probe__": 1}`.
   4. Every method is refused off the node with `-32013`, before any parsing.
-  5. The service's `app.rs` source has no hand-written arm. A line that
-     starts with `"x.y" =>` fails the test. This is the "dispatched but not
-     listed" guard: a new arm written by hand, outside the macro, is caught.
+  5. The source check reads every `.rs` file under the service's `src/`
+     except `bindings.rs`. It fails on any line matching
+     `^"[a-z-]+\.[a-z-]+"\s*=>`, and on any use of `req.method` other
+     than the single `Response::method_not_found(&req.method)` in `app.rs`.
+     It also collects every string literal in those files that matches
+     `"<prefix><verb>"` for a prefix that `router::route` sends to the
+     service, and fails when that name is not a row of the service's table.
 - (b) **A hand-written table plus a source scan.** Simple, but nothing makes
   the author add the row. Only the scan catches it, and only after the fact.
 - (c) **An enum of methods.** No macro, and the compiler checks every arm.
@@ -220,9 +229,11 @@ fires, split the list into two macro calls in that service.
 ### Q2. Where the shared X2 code and each struct live
 
 - (a) **The owner's rule, applied one struct at a time.** X2 code lives in
-  `crates/roym_core/src/method.rs` and `method/`. A struct lives in
-  `roym_core` when a sibling service or a client (`roymctl`) also uses it.
-  Otherwise it lives in the service crate.
+  `crates/roym_core/src/method.rs` and `method/`. Shared signing types and
+  verb handlers live in `crates/roym_core/src/signing/verbs.rs`. A struct lives
+  in `roym_core` when a sibling service or a client (`roymctl`) also uses it.
+  Otherwise it lives in the handler's file in the service crate
+  (`src/app/<area>.rs`).
 - (b) **Every struct in `roym_core`**, one file per service, as the single
   place a client author reads.
 
@@ -232,8 +243,10 @@ The structs in `roym_core` are those the sibling calls need: the profile
 methods that `conversation` and `catalog` call, and `conversation.send` and
 `conversation.changes`, which `transaction` calls. The 48 methods still have
 one list each, in `api.rs` of their service, so a reader finds all of a
-service's methods in one file. `roymctl` and the tests send raw JSON on
-purpose (D-A2a-13), so no client uses a struct yet.
+service's methods in one file. Service-only structs live directly beside
+the functions that read them in `src/app/<area>.rs`, avoiding extra files.
+`roymctl` and the tests send raw JSON on purpose (D-A2a-13), so no client
+uses a struct yet.
 
 ### Q3. The unknown-field rule: build the "ignore" mode now, or leave it to A2c
 
@@ -261,19 +274,21 @@ string`. It does not name the field. OF-14 needs the field name.
   dependency of `axum`, pure Rust, builds for `wasm32-wasip2`). It records
   the path of the failing field. Message: `invalid params: favourite:
   invalid type: string "yes", expected a bool`. `data`: `{"field":
-  "favourite"}`. For a missing or unknown field, serde already puts the name
-  in backticks in its text. The helper takes the name from there and
-  prefixes the parent path when the error is nested.
+  "favourite"}`. `parse_value` accepts only a JSON object or `null`. An array
+  or other JSON type gives `-32602 "invalid params: expected an object"` with
+  no `data`. For a missing field or duplicate field, serde puts the quoted
+  name in backticks and the path is the parent: `field` is the path joined
+  with the quoted name (only the quoted name when the path is `.`). For a
+  wrong type or unknown field, `path` already ends with the bad field itself.
+  Error messages are truncated to 256 bytes on a char boundary.
 - (b) **Map serde's text by hand.** No new dependency, but wrong-type errors
   would still have no field name.
 
-**Recommendation: (a).** Four error kinds, all with `data.field`: wrong
+**Recommendation: (a).** Five error kinds, all with `data.field`: wrong
 type, wrong value (for example a number out of range or an unknown enum
-word), missing field, unknown field. When no field can be named (for
-example `params` is a string), `data` is absent. `unverified`: how
-`serde_path_to_error` prints the path of an unknown field (it may print `?`
-for the unknown segment). A unit test in Step 3 pins the real text, and the
-helper falls back to the quoted name.
+word), missing field, unknown field, duplicate field. When no field can be
+named (for example `params` is a string or array), `data` is absent. A unit
+test in Step 3 pins the real text.
 
 ### Q5. Output structs: does every output become a struct
 
@@ -346,9 +361,10 @@ should use are made in A2a.
 
 **Recommendation: (a).** The point of typing is that the compiler sees a
 sibling drifting. Leaving the five sites out leaves the exact bug the
-backlog row names. The edits are small (five call sites). `roym_transaction`
-keeps its own `sibling_call` for its calls to `catalog` until A2b. Add a
-backlog row for that (section 8).
+backlog row names. The edits are small (five call sites). Each site preserves
+its error-handling semantics as today (section 4 B17 to B20).
+`roym_transaction` keeps its own `sibling_call` for its calls to `catalog`
+until A2b. Add a backlog row for that (section 8).
 
 ### Q9. The Hub sends an object where the service reads a string
 
@@ -402,10 +418,13 @@ All paths are from the repository root. Line numbers are at `1d2b071d`.
   names the field. A2b replaces them.
 - `serde_path_to_error` 0.1.20 is in `Cargo.lock`. `deny_unknown_fields` is
   used in `fdae`, `passport` and config types, not in Roym.
-- `ConversationRow`, `ConversationRowKind` and `GroupMeta`
-  ([conversation.rs:19-42](../../../../crates/roym_core/src/conversation.rs#L19))
-  are not used by any service. `StoredState`, `Direction` and `BodyEncoding`
-  are used and have the right kebab-case words.
+- `ConversationRow` and `MessageRow`
+  ([conversation.rs:19-42, :118-161](../../../../crates/roym_core/src/conversation.rs#L19))
+  are not used by any service. `MessageRow` is replaced by `MessageView`,
+  and `ConversationRow` is replaced by `ConversationListItem`. `GroupMeta`
+  is used by `apply_group_profile` and its tests, and remains as an internal
+  domain type. `StoredState`, `Direction` and `BodyEncoding` are used and
+  have the right kebab-case words.
 
 ### 3.2 Methods, handlers and what they read
 
@@ -509,6 +528,12 @@ All paths are from the repository root. Line numbers are at `1d2b071d`.
   `for method in [..]` loops at `profile.rs:706` and `:722`) were read by hand.
 - **Playwright** (`crates/substrate/tests/e2e/tests/roym-hub.spec.ts`,
   `roym-groups.spec.ts`) drives the Hub.
+- **Demo stories and Playwright helpers**
+  (`crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`, `20-roym-setup.sh`,
+  `lib.sh`, and `crates/substrate/tests/e2e/hub-helpers.ts`). Checked, no
+  change. The demos drive the Hub and `roymctl` (`roym enrol-signing`,
+  `roym address`). `lib.sh`'s `rpc` sends `[]` by default, but only the
+  greeter demo uses it. `addContact` sends no envelope.
 
 ## 4. Behaviour-change audit
 
@@ -534,6 +559,12 @@ shape inventory above.
 | B14 | `conversation.history` with `cursor: ""` | Same as no cursor. | The same. The handler keeps `filter(non-empty)`. | Kept. |
 | B15 | Hub `contacts.set-limits` with a negative number (`Number.isInteger` allows it) | `-32602 "window_secs is required"` | `-32602 invalid value`, `data.field` | Only the text changes. |
 | B16 | A non-local caller sends a bad request | `-32013` (admission runs first) | The same. The parse runs after admission. | A test proves the order (section 7). |
+| B17 | Sibling call: `send_card_and_file` and `agreement_ops.rs` | Callee's `error.message` into `send_error` | Same as today. `Refused(e)` uses `e.message` directly (no ` (code N)` suffix), keeping not-sent path on any `Err`. | Step 6 maps `Refused(e)` to `e.message` directly (P4). |
+| B18 | Sibling call: `catalog` `profile.get` | Error treated as "no address" (`Ok(None)`) | Same as today. `Err(Refused(_))` maps to `Ok(None)`; only `Transport` and `BadReply` become `Err`. | Step 5 preserves this mapping (P4). |
+| B19 | Sibling call: `contacts_map` in `roym_conversation` | Ignores every error | Same as today. Any `Err` gives an empty map. | Step 6 preserves this mapping (P4). |
+| B20 | Sibling call: `sync.rs` in `roym_transaction` | Callee error mapped to internal error | Same as today. `Refused(e)` gives `Response::internal_error(e.message)`. | Step 6 preserves this mapping (P4). |
+| B21 | Certificate verbs in `catalog`, `transaction`, `directory` | Unchecked parameters | Reject unknown fields with `-32602` via shared typed `InstallCertificateInput` | Added to audit. All existing callers send only `certificate` (P5). Table rows follow in A2b/A2c. |
+| B22 | Handcrafted bundle with stored profile row missing `record_id` | `profile.get` returns stored payload as-is | `-32603` internal error on deserialization into `ProfileRecord` | Added to audit. Only handcrafted malformed bundle can produce this (P17). |
 
 No other difference was found. The parity harness keeps its 24 module files
 and its 222 `fn scenario_` functions. Only the last assertion of scenario 2
@@ -553,30 +584,40 @@ differently, the decision changes with the answer.
   B11.
 - **D-A2a-2. One list per service writes the dispatch and the table**
   (`roym_core::service_methods!`, Q1 (a)). `invoke` keeps `require_internal`
-  and `handle_certificate_verb` and then calls `dispatch`. It has no
-  `match` on method names. The certificate verbs add their own rows
-  (`signing::certificate_rows(prefix)`).
+  and then calls `dispatch`. It has no `match` on method names and no
+  `handle_certificate_verb` call in profile and conversation. The certificate
+  verbs are normal rows in the macro list, handled by typed functions in
+  `roym_core::signing::verbs`. `certificate_rows` is deleted.
 - **D-A2a-3. Where types live** (Q2 (a)). `roym_core::method` for X2.
+  `roym_core::signing::verbs` for shared certificate types and verb handlers.
   `roym_core::method::profile` and `::conversation` for the structs that a
-  sibling uses. `src/api.rs` and `src/api/<area>.rs` in the service crate
-  for the rest.
+  sibling uses. `src/api.rs` for the `service_methods!` list in each service,
+  and each service-only struct in `src/app/<area>.rs` beside the handler
+  that reads it. No `src/api/` subdirectory is added.
 - **D-A2a-4. Every A2a input refuses unknown fields.** Each input struct has
   `#[serde(deny_unknown_fields)]`. `NoParams` too (Q6 (a)). Two input
   structs are never joined with `#[serde(flatten)]`: `flatten` and
   `deny_unknown_fields` do not work together, so `Page`-like fields are
-  repeated in each struct.
+  repeated in each struct. Structs read from storage never use
+  `deny_unknown_fields`.
 - **D-A2a-5. The wire half of the rule is built as a check only** (Q3 (a)).
   `check::assert_service_table` takes a list of wire-reachable method names.
   A2a passes an empty list. A2c passes the directory's four.
 - **D-A2a-6. The error** (Q4 (a)). `-32602`, message `invalid params:
   <path>: <serde text>` (no `<path>:` when the error is at the top), `data`
-  `{"field": "<path>"}` when a field can be named. `serde_path_to_error`
-  `0.1` is added to the workspace and to `roym_core`.
-- **D-A2a-7. A missing or `null` `params` is `{}`.**
+  `{"field": "<path>"}` when a field can be named. If the text starts with
+  `missing field` or `duplicate field`, `field` is the path joined with the
+  quoted name (only the name when the path is `.`). Otherwise, `field` is
+  the path when it has at least one named segment. Otherwise there is no field.
+  Error messages are truncated to 256 bytes on a char boundary.
+  `serde_path_to_error` `0.1` is added to the workspace and to `roym_core`.
+- **D-A2a-7. A missing or `null` `params` is `{}`.** Any non-object / non-null
+  JSON value (such as an array) is rejected with `-32602 "invalid params:
+  expected an object"` with no `data`.
 - **D-A2a-8. The `group` key stays.** `ConversationRef`, `GroupRenameInput`
   and `GroupMemberInput` name the field `conversation` with `#[serde(alias =
-  "group")]`. Both keys at once is a duplicate-field `-32602`. No caller
-  sends both.
+  "group")]`. Both keys at once is a duplicate-field `-32602` with
+  `data.field = "conversation"`. No caller sends both.
 - **D-A2a-9. "One of two fields" rules stay in the handler**, with their
   old words: `conversation.open` and `group.add-member`/`remove-member`
   (`"person_did or address is required"`; `address` wins when both are
@@ -593,31 +634,40 @@ differently, the decision changes with the answer.
 - **D-A2a-12. Siblings use the structs** (Q8 (a)). `roym_core::method::call_sibling`
   takes the typed input and returns the typed output. It replaces
   `profile_call` in `conversation`. Five call sites in other crates move to
-  it.
+  it. Each site preserves its existing error handling (B17-B20).
 - **D-A2a-13. Tests and clients keep sending raw JSON.** `roymctl`, the
   parity harness, the e2e tests and the Hub do not import the structs. A
   contract test that reuses the server's struct cannot find a wrong name.
 - **D-A2a-14. The output shape is proved by shape files**, recorded from the
-  unchanged code in Step 2 and kept green by every later step.
+  unchanged code in Step 2 and kept green by every later step. An array records
+  the sorted, de-duplicated list of its item shapes. A string records its exact
+  value (not `"string"`) when its key is a closed word set (`kind`, `state`,
+  `direction`, `body_encoding`, `admission`, `status`, `content_type`,
+  `subject_kind`, `category`, `note`, or any key under `notices`).
 - **D-A2a-15. Output rules.** An output struct reproduces today's JSON
   exactly. Where the old code wrote `null` (a `json!` with an `Option`), the
   field has no `skip_serializing_if`. Where the old code left a key out, the
   field has `skip_serializing_if = "Option::is_none"`. These places have the
-  second kind: `body` and `deleted_at_secs` of `MessageView`,
-  `retry_after_secs`, and the two arms of `BlockCheckOutput`. The three `get`
+  second kind: `body` and `deleted_at_secs` of `MessageView`, and
+  `retry_after_secs`. `SigningStatusOutput.owner_did` is `Option<String>`
+  without skip. `BlockCheckOutput` uses `struct BlockCheckOutput { blocked: bool,
+  #[serde(flatten)] since: Option<BlockedSince> }` where `BlockedSince {
+  reason: Option<String>, since_secs: Option<u64> }` has no skip on its
+  options, preserving `null` when blocked without a reason. The three `get`
   methods write `null` for a missing row (an `Option` result, not a key).
+  Stored `admission` remains kebab-case.
 - **D-A2a-16. Numbers keep the width the handler already cast to**: `limit`
   of the conversation methods is `u32` (they cast `as u32`), the profile
   lists use `u64` (they cast `as usize`).
-- **D-A2a-17. The check test lives in `crates/roym_web/tests/method_contract.rs`.**
-  That crate already depends on all five service crates. A2b and A2c add
-  their rows to it.
-- **D-A2a-18. Dead types are removed.** `ConversationRow`,
-  `ConversationRowKind` and `GroupMeta` have no user. Step 6 replaces
-  `ConversationRow` by `ConversationListItem` and reuses
-  `ConversationRowKind` for the `kind` output. Delete `GroupMeta` if a grep
-  finds no user (its tests in `conversation/group/tests.rs` may use it; if
-  so, keep it).
+- **D-A2a-17. The shape tests and check tests live in one binary,
+  `crates/roym_web/tests/method_contract.rs`.** It has modules `shapes` and
+  `contract`, including the four parity harness helper modules with
+  `#[allow(dead_code)]`.
+- **D-A2a-18. Dead types are replaced.** Step 4 replaces `MessageRow` with
+  `MessageView`. Step 6 replaces `ConversationRow` by `ConversationListItem`
+  (`opened_at_secs: i64`, `last_activity_ms: i64`) and reuses
+  `ConversationRowKind` for the `kind` output. `GroupMeta` and
+  `apply_group_profile` remain as domain code.
 
 ## 6. Step-by-step changes
 
@@ -635,16 +685,32 @@ you run the parity suite (it loads built artifacts).
 
 **Commit:** `test(roym-web): record method result shapes`.
 
-- New test binary `crates/roym_web/tests/method_shapes.rs`. It is a separate
-  binary on purpose: the parity entry file keeps its 24 modules. It includes
-  the helper modules it needs with `#[path = "dual_build_parity/fixtures.rs"]`
-  and `helpers.rs` (add whatever the compiler asks for). It uses the native
-  build only, through `fixtures::harness()` and `h.native_http`.
+- New test binary `crates/roym_web/tests/method_contract.rs` with `mod shapes;`.
+  It is a single binary that will also host the contract tests in Step 7.
+  It includes the parity harness modules with `#[allow(dead_code)]`:
+  ```rust
+  #[allow(dead_code)]
+  #[path = "dual_build_parity/helpers.rs"]
+  mod helpers;
+  #[allow(dead_code)]
+  #[path = "dual_build_parity/trust_fixtures.rs"]
+  mod trust_fixtures;
+  #[allow(dead_code)]
+  #[path = "dual_build_parity/trust_harness.rs"]
+  mod trust_harness;
+  #[allow(dead_code)]
+  #[path = "dual_build_parity/fixtures.rs"]
+  mod fixtures;
+  ```
+  It uses the native build only, through `fixtures::harness()` and `h.native_http`.
 - Signature:
   ```rust
   /// The shape of a JSON value: object keys (sorted) with the shape of each
-  /// value; arrays as `[shape of the first item]` or `[]`; strings, numbers,
-  /// booleans and null by their type name.
+  /// value; arrays as a sorted, de-duplicated list of item shapes; strings,
+  /// numbers, booleans and null by their type name, EXCEPT closed word sets
+  /// (`kind`, `state`, `direction`, `body_encoding`, `admission`, `status`,
+  /// `content_type`, `subject_kind`, `category`, `note`, or any key under
+  /// `notices`), which record their exact string value.
   fn shape(v: &Value) -> Value;
   /// Reads `tests/method_shapes/<case>.json`. With the env var
   /// `UPDATE_METHOD_SHAPES=1` it writes the file instead.
@@ -668,9 +734,9 @@ you run the parity suite (it loads built artifacts).
   both services.
 - Record the files on the **unchanged** code:
   ```bash
-  UPDATE_METHOD_SHAPES=1 cargo nextest run -p syneroym-roym-web --test method_shapes
+  UPDATE_METHOD_SHAPES=1 cargo nextest run -p syneroym-roym-web --test method_contract shapes
   ```
-- **Proof:** `cargo nextest run -p syneroym-roym-web --test method_shapes`
+- **Proof:** `cargo nextest run -p syneroym-roym-web --test method_contract shapes`
   passes with no env var. `git diff --stat` shows only the new test file and
   the shape files. This is the first proof of "no behaviour change": the
   files come from the old code.
@@ -722,19 +788,24 @@ you run the parity suite (it loads built artifacts).
   ```
 - `parse_value` pseudo-code:
   ```text
-  value = if params is Null { {} } else { params }
+  if !params.is_object() && !params.is_null():
+      return Err(ParamError { field: None, message: "invalid params: expected an object".into() })
+  value = if params.is_null() { json!({}) } else { params }
   match serde_path_to_error::deserialize(value):
     Ok(t)  -> Ok(t)
     Err(e) -> path = e.path().to_string()          // "." at the top
               text = e.into_inner().to_string()
-              name = quoted_name(text)             // text between the first pair of
-                                                   // backticks, only when text starts
-                                                   // with "missing field" or "unknown field"
-              field = if name is Some and path has no named segment: join(parent path, name)
-                      else if path != "." and has a named segment: path
-                      else None
-              message = if path is the top or only "?": "invalid params: " + text
-                        else "invalid params: " + path + ": " + text
+              name = quoted_name(text)             // text between the first pair of backticks
+              is_missing_or_dup = text.starts_with("missing field") || text.starts_with("duplicate field")
+              field = if is_missing_or_dup:
+                          if path == "." { name } else { name.map(|n| format!("{path}.{n}")) }
+                      else if path != "." && has_named_segment(path):
+                          Some(path)
+                      else:
+                          None
+              msg = if path == "." || path.starts_with("?") { format!("invalid params: {text}") }
+                    else { format!("invalid params: {path}: {text}") }
+              message = truncate_utf8(msg, 256)
               Err(ParamError { field, message })
   ```
   `into_response`: `Response::invalid_params(message)`, plus
@@ -769,25 +840,31 @@ you run the parity suite (it loads built artifacts).
   ```
   A service writes `Response::method_not_found(&req.method)` when `dispatch`
   answers `None`. The macro uses `:` after the name, never `=>`, so the
-  source scan of Step 7 can tell a macro row from a hand-written arm.
+  source scan can tell a macro row from a hand-written arm.
 - `method/check.rs` (a normal `pub fn`, not `#[cfg(test)]`, so the test
   crate can call it):
   ```rust
   pub fn assert_service_table(
-      service: Service, rows: &[MethodInfo], wire: &[&str], app_source: &str,
+      service: Service, rows: &[MethodInfo], wire: &[&str], service_src_dir: &std::path::Path,
   );
   ```
   It panics with every problem it finds: duplicate name; `router::route`
   not `Some(service)`; a type name containing `serde_json::value::Value`;
   a row not in `wire` whose probe error does not contain `unknown field`
   (probe input: `{"__probe__": 1}`); a row in `wire` whose probe error does;
-  a name in `wire` that is not a row; any line of `app_source` whose
-  trimmed text matches `^"[a-z-]+\.[a-z-]+"\s*=>`.
+  a name in `wire` that is not a row; reading every `.rs` file under
+  `service_src_dir` except `bindings.rs`, any line whose trimmed text
+  matches `^"[a-z-]+\.[a-z-]+"\s*=>`; any use of `req.method` other than
+  the single `Response::method_not_found(&req.method)` in `app.rs`; and any
+  string literal matching `"<prefix><verb>"` for a prefix routed to the
+  service that is not a row of `rows`.
 - Unit tests (`method/tests.rs`, names by behaviour):
-  `parse_reads_null_as_empty_object`; one test for each of the four error
-  kinds (wrong type, wrong value, missing field, unknown field) that checks
-  the message and `data.field`, including a nested field (`a.b`);
-  `a_string_params_gives_an_error_with_no_field`;
+  `parse_reads_null_as_empty_object`; `parse_refuses_an_array`;
+  one test for each of the five error kinds (wrong type, wrong value,
+  missing field, unknown field, duplicate field) that checks the message
+  and `data.field`, each at the top level and nested two levels down;
+  a test that message truncation stops at 256 bytes on char boundary with
+  a 10 KB string; `a_string_params_gives_an_error_with_no_field`;
   `typed_runs_the_handler_with_the_parsed_input` and
   `typed_returns_the_handler_error_unchanged` (with `TestHost`);
   `typed_gives_an_internal_error_when_the_output_cannot_be_written`;
@@ -800,25 +877,30 @@ you run the parity suite (it loads built artifacts).
 - **Proof:** `cargo nextest run -p syneroym-roym-core` passes.
   `cargo clippy -q -p syneroym-roym-core --all-targets` is clean.
   `cargo build -p syneroym-roym-core --target wasm32-wasip2` builds
-  (checks the new dependency on the guest target). `unverified`: that the
-  `unknown field` probe text is the same for a struct that also has a
-  required field (serde visits the unknown key before it reports the
-  missing field). The check test of Step 7 proves it on real rows.
+  (checks the new dependency on the guest target). Real rows are proved in
+  Step 7.
 
 ### Step 4 — The certificate verbs, the backup types and `call_sibling`
 
 **Commit:** `refactor(roym-core): type the shared verbs and sibling calls`.
 
-- `crates/roym_core/src/signing.rs`: add `SigningStatusOutput`,
-  `InstallCertificateInput` (`deny_unknown_fields`),
-  `InstallCertificateOutput`. `handle_certificate_verb` parses the install
-  input with `method::parse_value` and writes the outputs from the structs.
-  Add `pub fn certificate_rows(prefix: &str) -> Vec<MethodInfo>` (two rows,
-  names `format!("{prefix}signing-status")` and
-  `format!("{prefix}install-signing-certificate")`). The file grows by about
-  60 lines. It is at 761 lines. If it passes 800, move the verbs and their
-  types to `signing/verbs.rs` (a sibling file, per the module layout rule)
-  and re-export.
+- New `crates/roym_core/src/signing/verbs.rs` (re-exported from `signing.rs`):
+  add `SigningStatusOutput` (`owner_did: Option<String>` with no
+  `skip_serializing_if`), `InstallCertificateInput` (`deny_unknown_fields`),
+  `InstallCertificateOutput`. Add typed handlers:
+  ```rust
+  pub async fn signing_status<H: AppHost>(
+      host: &H, _: NoParams,
+  ) -> Reply<SigningStatusOutput>;
+  pub async fn install_signing_certificate<H: AppHost>(
+      host: &H, input: InstallCertificateInput,
+  ) -> Reply<InstallCertificateOutput>;
+  ```
+  `handle_certificate_verb` in `signing.rs` delegates to these two functions
+  (serving `catalog`, `transaction`, and `directory` in A2a).
+  `certificate_rows` is not needed and deleted.
+- Storage rules: structs read from storage never use `deny_unknown_fields`,
+  and stored `admission` stays the kebab-case word.
 - `crates/roym_core/src/backup.rs`: add
   ```rust
   #[derive(Debug, Deserialize)]
@@ -841,55 +923,55 @@ you run the parity suite (it loads built artifacts).
   ```
   Pseudo-code: serialize `{method, params: input}`, `host.call(Dependency(service.name),
   service.interface, "invoke", json!([req]), None)`, parse a `Response`,
-  turn `error` into `Refused`, parse `result` into `O` (a missing `result` is
+  turn `error` into `Refused(err)`, parse `result` into `O` (a missing `result` is
   `BadReply`). It is the same shape as `profile_call`
   ([app.rs:138](../../../../crates/roym_conversation/src/app.rs#L138)) and
   `sibling_call` ([app.rs:474](../../../../crates/roym_transaction/src/app.rs#L474)).
+  `Refused` holds `RpcError` so callers can access `e.message` directly.
 - New `crates/roym_core/src/method/profile.rs` and
   `method/conversation.rs`: the structs marked "core" in Q1.
   `ContactRow` moves here from `roym_profile` (re-export it from
   `roym_profile::app` so no other import breaks). `MessageView` implements
   `From<&Message>` (the host `Message`, `syneroym_app_host::types::conversation`)
-  so `message_to_json` becomes `MessageView::from(&m)`. `ConversationRow` is
-  replaced (D-A2a-18) in `roym_core/src/conversation.rs`.
+  so `message_to_json` becomes `MessageView::from(&m)`. `MessageRow` and
+  `ConversationRow` are replaced (D-A2a-18) in `roym_core/src/conversation.rs`.
 - Unit tests: `message_view_writes_the_same_keys_as_the_old_json`
   (build a host `Message`, compare with the keys listed in Q1, with and
-  without `deleted_at`); `block_check_output_has_two_shapes`;
+  without `deleted_at`); `block_check_output_blocked_and_unblocked_shapes`
+  (nulls preserved when blocked);
   `admit_output_leaves_retry_out_unless_rate_limited`;
   `import_input_refuses_a_bare_bundle`;
-  `certificate_rows_name_both_verbs`.
+  `signing_status_and_install_certificate_typed_handlers`;
+  `call_sibling_with_test_host` (transport error, refused, bad reply).
 - **Proof:** `cargo nextest run -p syneroym-roym-core` passes. The shape
   files of Step 2 still pass (nothing is wired yet, so this shows the
   shared verbs write the same JSON):
-  `cargo nextest run -p syneroym-roym-web --test method_shapes`.
+  `cargo nextest run -p syneroym-roym-web --test method_contract shapes`.
 
 ### Step 5 — Convert `profile`
 
 **Commit:** `refactor(roym-profile): type every method`.
 
-- New files in `crates/roym_profile/src/`: `api.rs` (entry point, with
-  `service_methods!` and `method_table()`), `api/profile.rs`,
-  `api/contacts.rs`, `api/moderation.rs` (the structs marked "svc" in Q1).
-  Add `mod api;` (public: `pub mod api;`) to `lib.rs`.
+- New file in `crates/roym_profile/src/`: `api.rs` (entry point, with
+  `service_methods!` and `method_table()`). Structs marked "svc" in Q1 live
+  in `app/profile_ops.rs`, `app/contacts.rs`, `app/moderation.rs` beside
+  the functions that read them. Add `pub mod api;` to `lib.rs`.
 - `api.rs`:
   ```rust
   roym_core::service_methods! {
       "profile.ping": ping [NoParams => PingOutput],
       "profile.policy": profile_ops::policy [NoParams => PolicyOutput],
       "profile.get": profile_ops::get [ProfileGetInput => Option<ProfileRecord>],
-      // ... one line for each of the 22 methods in Q1
+      // ... all 24 methods in Q1, including profile.signing-status and profile.install-signing-certificate
   }
   pub fn method_table() -> Vec<MethodInfo> {
-      let mut rows = method_rows();
-      rows.extend(signing::certificate_rows("profile."));
-      rows
+      method_rows()
   }
   ```
 - `app.rs`: `invoke` becomes
   ```rust
   pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
       if let Some(resp) = admit::require_internal(host).await { return resp; }
-      if let Some(resp) = signing::handle_certificate_verb(host, "profile.", &req).await { return resp; }
       api::dispatch(host, &req).await
           .unwrap_or_else(|| Response::method_not_found(&req.method))
   }
@@ -902,9 +984,9 @@ you run the parity suite (it loads built artifacts).
   - Delete every `req.params.get(..)`. The check at the end of the step
     greps for it.
   - Keep the order of the other checks and every error text (D-A2a-9).
-  - `profile.get` reads the stored row into `ProfileRecord`. `contacts.upsert`
-    and `profile.set` write rows from the struct. `current_owner_*` helpers
-    stay.
+  - `profile.get` reads the stored row into `ProfileRecord` (a row missing
+    `record_id` returns `-32603`). `contacts.upsert` and `profile.set`
+    write rows from the struct. `current_owner_*` helpers stay.
   - `contacts.set-limits` builds `ContactLimits` from `ContactLimitsInput`
     and keeps `limits.validate()`.
   - `block.add` keeps `block_keys` and builds the same rows.
@@ -912,11 +994,12 @@ you run the parity suite (it loads built artifacts).
     same strings with `as_str()` before `content_digest`, so
     `report_id` is unchanged.
 - `profile.policy` and `ping` become `async fn(_host: &H, _: NoParams)`.
-- Sibling caller (Q8): `crates/roym_catalog/src/app/listing_ops.rs:32`
+- Sibling caller (Q8, B18): `crates/roym_catalog/src/app/listing_ops.rs:32`
   (`address_from_profile`) uses `call_sibling::<_, ProfileGetInput,
   Option<ProfileRecord>>(host, services::PROFILE, "profile.get",
-  &ProfileGetInput::default())`. It then reads `record.envelope` from the
-  struct.
+  &ProfileGetInput::default())`. `Err(SiblingError::Refused(_))` maps to
+  `Ok(None)` ("no address"), preserving existing behavior; only `Transport`
+  and `BadReply` become `Err`. It reads `record.envelope` from the struct.
 - Hub (Q9): `crates/roym_web/ui/src/screens/contacts.ts`. Add and export
   ```ts
   export function upsertParams(did: string, addr: string, envText: string): Record<string, unknown>
@@ -933,7 +1016,7 @@ you run the parity suite (it loads built artifacts).
   the number prefix, as every scenario has one). It still sends the same
   request to both builds and asserts `wasm_res == native_res`. The last
   lines assert `error.code == -32602` and `error.data.field == "auth"`.
-  The file `profile.rs` is on the size ratchet list (recorded at 1119
+  The file `profile.rs` is on the size ratchet list (recorded at 1112
   lines). The edit must not add lines. If `cargo xtask check-file-lengths`
   says it changed, record the real value.
 - Delete `PROFILES`-row helpers that are now unused, if any (clippy will
@@ -943,7 +1026,7 @@ you run the parity suite (it loads built artifacts).
   mise run build:roym > target/a2a-build.log 2>&1; echo "exit=$?"; tail -n 3 target/a2a-build.log
   cargo clippy -q --workspace --all-targets --all-features
   cargo nextest run -p syneroym-roym-core -p syneroym-roym-profile -p syneroym-roym-catalog > target/a2a.log 2>&1; echo "exit=$?"; tail -n 5 target/a2a.log
-  cargo nextest run -p syneroym-roym-web --test method_shapes --test dual_build_parity > target/a2a-par.log 2>&1; echo "exit=$?"; tail -n 5 target/a2a-par.log
+  cargo nextest run -p syneroym-roym-web --test method_contract --test dual_build_parity > target/a2a-par.log 2>&1; echo "exit=$?"; tail -n 5 target/a2a-par.log
   (cd crates/roym_web/ui && npm test) 2>&1 | tail -n 8
   grep -rn "params\.get\|req\.params" crates/roym_profile/src
   ```
@@ -955,26 +1038,28 @@ you run the parity suite (it loads built artifacts).
 
 **Commit:** `refactor(roym-conversation): type every method`.
 
-- New files in `crates/roym_conversation/src/`: `api.rs`, `api/messages.rs`,
-  `api/group.rs`, `api/backup.rs`. Same pattern as Step 5. The 22 rows of Q1
-  are the list.
-- `app.rs`: `invoke` as in Step 5 (prefix `"conversation."`).
+- New file in `crates/roym_conversation/src/`: `api.rs`. Structs marked
+  "svc" in Q1 live in `app/messages.rs`, `app/group.rs`, `app/backup.rs`.
+  Same pattern as Step 5. The 24 rows of Q1 are the list in `service_methods!`.
+- `app.rs`: `invoke` as in Step 5 (no `handle_certificate_verb`).
   `profile_call` and `contacts_map` change:
   ```rust
   pub(crate) async fn contacts_map<H: AppHost>(host: &H) -> HashMap<String, String>;
   ```
   keeps its signature but uses `call_sibling::<_, ContactsListInput,
-  Vec<ContactRow>>`. `resolve_open_address` takes `OpenInput`-like fields
+  Vec<ContactRow>>`. Any `Err` returns an empty map (B19).
+  `resolve_open_address` takes `OpenInput`-like fields
   (`address: Option<&str>`, `person_did: Option<&str>`) instead of `&Request`,
   because `group.add-member` and `group.remove-member` share it. It calls
   `ContactKeyInput`. `is_blocked` and `on_message` use `BlockCheckInput`
   (`BlockTargetInput`) and `AdmitFirstContactInput`, and read
   `BlockCheckOutput` and `AdmitFirstContactOutput` in place of
-  `.get("blocked")` and string matching on `admission`. Delete `profile_call`.
+  `.get("blocked")` and string matching on `admission`. Stored `admission`
+  stays kebab-case. Delete `profile_call`.
 - `messages.rs` is 490 lines. It shrinks because `message_to_json` and
-  `history_item_to_json` become `MessageView` conversions in
-  `api/messages.rs`. `history_item_to_json` for membership and group-name
-  items builds a `MessageView` with the same fixed values as the old `json!`
+  `history_item_to_json` become `MessageView` conversions.
+  `history_item_to_json` for membership and group-name items builds a
+  `MessageView` with the same fixed values as the old `json!`
   (`state: delivered`, `verified: true`, `visible_seq: 0`, `refused: None`,
   `last_error: None`).
 - `ConversationListItem`, `GroupInfoOutput` and the others are built with
@@ -985,41 +1070,41 @@ you run the parity suite (it loads built artifacts).
   - `crates/roym_transaction/src/app.rs:578` and
     `agreement_ops.rs:482`: `call_sibling::<_, SendInput, SendOutput>(host,
     services::CONVERSATION, "conversation.send", &SendInput { conversation,
-    body, content_type: Some(CARD_CONTENT_TYPE.to_string()) })`. The code
-    after it reads `output.message_id`, `output.state` and
-    `output.sender_timestamp_ms` from the struct (it reads
-    `res.get("message_id")` today). `state` is a `StoredState`: where the
-    code today compares it to a string, use `StoredState`'s kebab name
-    (`StoredState` implements `Serialize`; add `as_str()` if a string is
+    body, content_type: Some(CARD_CONTENT_TYPE.to_string()) })`. On error,
+    every `Err` keeps the not-sent path, and `SiblingError::Refused(e)` uses
+    `e.message` directly without the ` (code N)` suffix (B17).
+    The code after it reads `output.message_id`, `output.state` and
+    `output.sender_timestamp_ms` from the struct. `state` is a `StoredState`:
+    where the code today compares it to a string, use `StoredState`'s kebab
+    name (`StoredState` implements `Serialize`; add `as_str()` if a string is
     needed).
-  - `sync.rs:126`: `ChangesInput` and `ChangesOutput`. The loop that reads
-    `messages` as `Vec<Value>` keeps working if the code needs the raw
+  - `sync.rs:126`: `ChangesInput` and `ChangesOutput`. On `SiblingError::Refused(e)`,
+    it gives `Response::internal_error(e.message)` as today (B20). The loop that
+    reads `messages` as `Vec<Value>` keeps working if the code needs the raw
     messages: use `serde_json::to_value(&out.messages)` there, or read the
     fields it needs from `MessageView`.
   - `conversation_call` stays only for helpers that A2b converts. Delete it
     when no call remains.
-- **Proof:** the commands of Step 5 for `-p syneroym-roym-conversation
-  -p syneroym-roym-transaction`, then
+- **Proof:** build WASM artifacts with `mise run build:roym` first, run the
+  commands of Step 5 for `-p syneroym-roym-conversation -p syneroym-roym-transaction`,
+  then:
   ```bash
   cargo nextest run -p syneroym-substrate -E 'binary(~roym)' > target/a2a-e2e.log 2>&1; echo "exit=$?"; tail -n 5 target/a2a-e2e.log
   grep -rn "params\.get\|req\.params" crates/roym_conversation/src
   ```
-  The grep prints nothing. `unverified`: whether the substrate `roym_*`
-  binaries need `--features roym` with this filter (A1 had the same open
-  point).
+  Check `target/a2a-e2e.log` to confirm the substrate `roym_*` tests ran and
+  were not skipped. The grep prints nothing.
 
 ### Step 7 — The check test and the error tests
 
 **Commit:** `test(roym-web): check every profile and conversation method`.
 
-- New `crates/roym_web/tests/method_contract.rs`. It includes the parity
-  fixtures with `#[path]` as in Step 2 (and may share a small module with
-  `method_shapes.rs` if both need the same include lines).
+- Add `mod contract;` to `crates/roym_web/tests/method_contract.rs`.
 - Tests (names by behaviour):
   - `every_profile_method_has_typed_input_and_output` and
     `every_conversation_method_has_typed_input_and_output`: call
     `check::assert_service_table(services::PROFILE, &roym_profile::api::method_table(),
-    &[], include_str!("../../roym_profile/src/app.rs"))` and the same for
+    &[], std::path::Path::new("crates/roym_profile/src"))` and the same for
     conversation. Also assert the row count is 24 for each (a row added or
     removed changes it on purpose).
   - `every_listed_method_is_dispatched`: for each row of both tables, call
@@ -1028,10 +1113,10 @@ you run the parity suite (it loads built artifacts).
     table must be `-32601` (`conversation.no-such-method`).
   - `every_listed_method_is_refused_off_the_node_before_parsing`: for each
     row, call with a verified-remote caller and params `{"zz": 1}`. The
-    answer must be `-32013`, not `-32602` (B16). `unverified`: the harness
-    helper for a non-internal caller is `wire_invoke_as`
-    ([fixtures.rs:480](../../../../crates/roym_web/tests/dual_build_parity/fixtures.rs#L480)).
-  - Error tests through `/rpc` with `Some(caller())` (as parity scenario 35):
+    answer must be `-32013`, not `-32602` (B16).
+  - Error tests sent to both `h.wasm_http` and `h.native_http` with
+    `Some(caller())` (asserting `wasm_res == native_res`, then asserting code
+    and `data.field`):
     - `contacts.upsert` with `favourite: "yes"` gives `-32602`, `data.field
       == "favourite"` and the text contains `invalid type`.
     - `contacts.upsert` with an unknown key `nick` gives `-32602`,
@@ -1042,7 +1127,7 @@ you run the parity suite (it loads built artifacts).
     - `conversation.send` with an unknown key `colour` gives `data.field ==
       "colour"`.
     - `group.info` with `{"group": id}` works, with `{"conversation": id}`
-      works, with both gives `-32602` (B3).
+      works, with both gives duplicate-field `-32602`, `data.field == "conversation"` (B3).
     - `profile.ping` with `params` absent works (B12).
 - Ports: this file starts no listener. It uses the harness. No port number
   appears (`no_ephemeral_port_literals.rs` stays green).
@@ -1082,7 +1167,7 @@ you run the parity suite (it loads built artifacts).
 ```bash
 cargo clippy -q --workspace --all-targets --all-features
 cargo nextest run -p syneroym-roym-core -p syneroym-roym-profile -p syneroym-roym-conversation > target/a2a.log 2>&1; echo "exit=$?"; tail -n 5 target/a2a.log
-cargo nextest run -p syneroym-roym-web --test method_shapes --test dual_build_parity > target/a2a-par.log 2>&1; echo "exit=$?"; tail -n 5 target/a2a-par.log
+cargo nextest run -p syneroym-roym-web --test method_contract --test dual_build_parity > target/a2a-par.log 2>&1; echo "exit=$?"; tail -n 5 target/a2a-par.log
 ```
 
 From Step 5 on, also the Hub unit tests (`npm test` in
@@ -1091,24 +1176,25 @@ From Step 5 on, also the Hub unit tests (`npm test` in
 
 ### 7.2 What each test proves
 
-1. **X2 code (unit tests, Step 3 and 4).** The parser (null as `{}`, the four
-   error kinds with `data.field`, a nested field), `typed`, the macro's
-   dispatch, the check (each failure mode, the wire branch with synthetic
-   types), `MessageView`, `BlockCheckOutput`, `AdmitFirstContactOutput`,
-   `ImportInput`, `call_sibling` (with `TestHost`: transport error, refused,
-   bad reply).
+1. **X2 code (unit tests, Step 3 and 4).** The parser (null as `{}`, non-object
+   refusal, 256-byte truncation, the five error kinds with `data.field`
+   including nested fields), `typed`, the macro's dispatch, the check (each
+   failure mode, the wire branch with synthetic types), `MessageView`,
+   `BlockCheckOutput`, `AdmitFirstContactOutput`, `ImportInput`, `call_sibling`
+   (with `TestHost`: transport error, refused, bad reply).
 2. **OF-15 (Step 7).** Both tables have 24 rows, typed input and output, no
    `Value`, a route to the right service, a probe that refuses unknown
-   fields, and no hand-written arm in `app.rs`. A name that is not listed
-   answers `-32601`.
-3. **OF-14 (Step 7).** One wrong type and one unknown field per service
-   give `-32602` with `data.field`.
+   fields, and no hand-written arm or `req.method` inspection in the service
+   source files. A name that is not listed answers `-32601`.
+3. **OF-14 (Step 7).** One wrong type, one unknown field, and duplicate
+   fields per service give `-32602` with `data.field`, tested against both
+   WASM and native builds to prove dual-build equality.
 4. **OF-18 (Step 7).** The probe of the check, for all 48 rows, plus the
    off-node test: every method is refused with `-32013` before the parse.
 5. **No behaviour change.**
    - The shape files, recorded from the old code in Step 2 and passing at
-     every later step: every result has the same keys, the same JSON types
-     and the same null or absent state.
+     every later step: every result has the same keys, the same JSON types,
+     the same null or absent state, and exact string values for closed word sets.
    - The parity harness: 24 modules, 222 scenarios, the same two-build
      equality (`assert_eq!(stripped(&w), stripped(&n))` in `helpers.rs` is
      untouched). One assertion line changes in scenario 2 (B2).
@@ -1130,14 +1216,14 @@ From Step 5 on, also the Hub unit tests (`npm test` in
 
 ### 7.4 Size risks
 
-- `crates/roym_core/src/signing.rs` is at 761 lines (Step 4: move the verbs
-  to `signing/verbs.rs` if it passes 800).
+- `crates/roym_core/src/signing.rs` is at 761 lines. The signing types and
+  typed verb handlers are placed directly in `crates/roym_core/src/signing/verbs.rs`
+  and re-exported.
 - `crates/roym_conversation/src/app/messages.rs` shrinks (490 lines now).
   `app/group.rs` and `app/contacts.rs` shrink a little. No new file is
-  expected to pass 400 lines. `api/group.rs` has the biggest struct
-  (`GroupInfoOutput`).
-- `dual_build_parity/profile.rs` is on the oversized-test list (1119).
-  Step 5 must not make it longer.
+  expected to pass 400 lines.
+- `dual_build_parity/profile.rs` is on the oversized-test list (recorded at
+  1112 lines). Step 5 must not make it longer.
 - `cargo xtask check-duplication` can move in either direction. Record
   the new value if it improves.
 
@@ -1158,7 +1244,7 @@ All rows are in [deferred-backlog.md](../../deferred-backlog.md).
   `contacts.list`, `block.list`, `report.list`. An array cannot gain a
   `next_cursor` or a total. Reason: wrapping them changes the wire, and A2
   does not reshape methods (this plan, Q5). Target: the first M8 change that
-  adds a field to a list. Source: `crates/roym_profile/src/api/contacts.rs`.
+  adds a field to a list. Source: `crates/roym_profile/src/app/contacts.rs`.
 - **New row, §10: "`transaction` still has its own sibling-call helper".**
   `roym_transaction::app::sibling_call` and `catalog_call`, and the direct
   `host.call` in `catalog` and `directory`, are not on
@@ -1184,15 +1270,14 @@ change docs, milestone or slice ids in these files. Link ADRs only.
   unknown-field rule (local-only refuses, wire-reachable ignores), the
   `group` key for group methods, and "send a string, not an object, for
   `profile_envelope`". Find the place with `grep -n "Roym" docs/developer-guide.md`.
-- [docs/system-architecture.md](../../../system-architecture.md): where the
-  text describes `require_internal` and the method router (grep
-  `require_internal`), add that each service owns one method table, that
-  admission runs before the input is parsed, and that a wrong input gets
-  `-32602`.
+- [docs/system-architecture.md](../../../system-architecture.md): in the section
+  "SynApp 1: Roym", add a short paragraph describing that each service owns
+  one method table, that admission runs before the input is parsed, and that
+  a wrong input gets `-32602`.
 - [docs/planning/traceability-matrix.md](../../traceability-matrix.md): add
   rows for typed inputs and outputs, the unknown-field rule and the table
-  check, each pointing at `method_contract.rs` and `method_shapes.rs`, and
-  say "profile and conversation" until the other services join.
+  check, each pointing at `method_contract.rs`, and say "profile and
+  conversation" until the other services join.
 - [docs/roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md):
   only if its API section states how bad input is answered (grep `-32602`).
 - Change doc [roym-open-foundation](../../changes/roym-open-foundation/change.md):
@@ -1225,9 +1310,9 @@ A2a is done when all of these are true:
    `roym_profile` or `roym_conversation`.
 3. `method_contract` passes: both tables have 24 rows, typed, local-only,
    with refusing inputs and no hand-written arm (OF-15, OF-18).
-4. A wrong type and an unknown field give `-32602` with `data.field`, tested
-   once per service (OF-14).
-5. `method_shapes` passes with the files recorded from the unchanged code.
+4. A wrong type, an unknown field, and duplicate fields give `-32602` with
+   `data.field`, tested once per service (OF-14).
+5. `method_contract shapes` passes with the files recorded from the unchanged code.
 6. The parity harness has 24 modules and 222 scenarios and passes. Only
    scenario 2's last assertion changed.
 7. The Hub sends a string `profile_envelope` and has a unit test for it.
@@ -1242,7 +1327,9 @@ A2a is done when all of these are true:
 ## 11. What A2a does not do
 
 - No typed methods for `catalog`, `transaction`, `directory` or `web` (A2b
-  and A2c). The 24 typed parse sites of `transaction` stay as they are.
+  and A2c), except that their certificate verbs share the typed functions in
+  `roym_core::signing::verbs` in A2a; their table rows come in A2b and A2c.
+  The 24 typed parse sites of `transaction` stay as they are.
 - No wire-reachable method. The "ignore unknown fields" mode is only a
   check (Q3). The directory's four methods join in A2c.
 - No schema is generated or published (OpenRPC, JSON Schema). No client
