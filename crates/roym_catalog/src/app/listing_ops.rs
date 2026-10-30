@@ -1,9 +1,33 @@
-use syneroym_roym_core::method::{
-    SiblingError, call_sibling,
-    profile::{ProfileGetInput, ProfileRecord},
+use std::cmp::Reverse;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use syneroym_app_host::{
+    AppDataLayer, AppHost, AppSigning,
+    types::{
+        data_layer::{IndexType, RecordWriteValue},
+        signing::{Principal, RecordDraft},
+    },
+};
+use syneroym_roym_core::{
+    clock,
+    envelope::Response,
+    listing::{self, ListingPayload, ListingStatus, ListingVerdict},
+    method::{
+        EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
+        catalog::{ListingGetOutput, ListingKeyInput},
+        profile::{ProfileGetInput, ProfileRecord},
+        verify_with,
+    },
+    paging,
+    person::ProfilePayload,
+    record::{Envelope, RECORD_LISTING},
+    safety::{self, Admission},
+    services,
+    signing::{self, CertificateError},
 };
 
-use super::*;
+use super::{LISTING_HISTORY, LISTINGS, PUBLICATIONS, ensure_coll, ensure_listings, idx, limits};
 
 /// The pointer row `listings/<listing_id>`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -53,29 +77,63 @@ async fn address_from_profile<H: AppHost>(host: &H) -> Result<Option<String>, St
 }
 
 #[derive(Debug, Deserialize)]
-struct SetListingParams {
-    slug: Option<String>,
-    title: String,
+#[serde(deny_unknown_fields)]
+pub struct SetListingInput {
+    pub slug: Option<String>,
+    pub title: String,
     #[serde(default)]
-    summary: String,
+    pub summary: String,
     #[serde(default)]
-    categories: Vec<String>,
-    conversation_address: Option<String>,
-    status: Option<ListingStatus>,
+    pub categories: Vec<String>,
+    pub conversation_address: Option<String>,
+    pub status: Option<ListingStatus>,
     #[serde(default)]
-    booking: Option<listing::BookingTerms>,
+    pub booking: Option<listing::BookingTerms>,
     #[serde(default)]
-    payment: Option<listing::PaymentTerms>,
+    pub payment: Option<listing::PaymentTerms>,
     #[serde(default)]
-    product: Option<listing::ProductDetail>,
+    pub product: Option<listing::ProductDetail>,
     #[serde(default)]
-    service: Option<listing::ServiceDetail>,
+    pub service: Option<listing::ServiceDetail>,
     #[serde(default)]
-    location: Option<listing::LocationTerms>,
+    pub location: Option<listing::LocationTerms>,
     #[serde(default)]
-    relationship: Option<listing::RelationshipTerms>,
+    pub relationship: Option<listing::RelationshipTerms>,
     #[serde(default)]
-    service_record: Option<listing::ServiceRecordTerms>,
+    pub service_record: Option<listing::ServiceRecordTerms>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListingWriteOutput {
+    pub listing_id: String,
+    pub record_id: String,
+    pub version_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListingListInput {
+    pub status: Option<ListingStatus>,
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListingListItem {
+    pub listing_id: String,
+    pub slug: String,
+    pub title: String,
+    pub status: ListingStatus,
+    pub record_id: String,
+    pub updated_at_secs: u64,
+    pub version_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListingListOutput {
+    pub listings: Vec<ListingListItem>,
 }
 
 async fn resolve_principal_and_owner<H: AppHost>(
@@ -286,37 +344,31 @@ async fn write_version<H: AppHost>(
     payload: ListingPayload,
     count_publication: bool,
     now: u64,
-) -> Response {
+) -> Reply<ListingWriteOutput> {
     let (principal, owner) = match resolve_principal_and_owner(host, now).await {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
 
     if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
 
     let prior = match load_listing_row(host, &payload.listing_id).await {
         Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let supersedes = prior.as_ref().map(|r| r.record_id.clone());
     let next_count = prior.as_ref().map(|r| r.version_count).unwrap_or(0) + 1;
 
     if count_publication {
-        match check_and_prune_publication_limits(host, now).await {
-            Ok(()) => {}
-            Err(resp) => return resp,
-        }
+        check_and_prune_publication_limits(host, now).await?;
     }
 
     let (envelope_json, record_id) =
-        match sign_listing_draft(host, &payload, supersedes, principal, &owner).await {
-            Ok(v) => v,
-            Err(resp) => return resp,
-        };
+        sign_listing_draft(host, &payload, supersedes, principal, &owner).await?;
 
-    if let Err(resp) = persist_listing_records(
+    persist_listing_records(
         host,
         &payload,
         &record_id,
@@ -325,21 +377,14 @@ async fn write_version<H: AppHost>(
         count_publication,
         now,
     )
-    .await
-    {
-        return resp;
-    }
+    .await?;
 
-    Response::ok(json!({
-        "listing_id": payload.listing_id,
-        "record_id": record_id,
-        "version_count": next_count,
-    }))
+    Ok(ListingWriteOutput { listing_id: payload.listing_id, record_id, version_count: next_count })
 }
 
 async fn build_payload<H: AppHost>(
     host: &H,
-    p: SetListingParams,
+    p: SetListingInput,
     owner: &str,
     forced_status: Option<ListingStatus>,
 ) -> Result<ListingPayload, Response> {
@@ -393,145 +438,117 @@ async fn build_payload<H: AppHost>(
     })
 }
 
-pub(crate) async fn set_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn set<H: AppHost>(host: &H, input: SetListingInput) -> Reply<ListingWriteOutput> {
     let now = clock::now_secs();
-    let params: SetListingParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid listing params: {e}")),
-    };
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(CertificateError::NoOwner) => {
-            return Response::invalid_params("this installation has no recorded owner");
+            return Err(Response::invalid_params("this installation has no recorded owner"));
         }
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
-    let payload = match build_payload(host, params, &owner, None).await {
-        Ok(p) => p,
-        Err(resp) => return resp,
-    };
+    let payload = build_payload(host, input, &owner, None).await?;
     write_version(host, payload, true, now).await
 }
 
-pub(crate) async fn withdraw_listing<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn withdraw<H: AppHost>(
+    host: &H,
+    input: ListingKeyInput,
+) -> Reply<ListingWriteOutput> {
     let now = clock::now_secs();
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
-    let prior = match load_listing_row(host, &listing_id).await {
+    let prior = match load_listing_row(host, &input.listing_id).await {
         Ok(Some(r)) => r,
-        Ok(None) => return Response::invalid_params("no such listing"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no such listing")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let mut payload: ListingPayload = match serde_json::from_str::<Envelope>(&prior.envelope)
         .ok()
         .and_then(|e| serde_json::from_value(e.payload).ok())
     {
         Some(p) => p,
-        None => return Response::internal_error("stored listing envelope is unreadable"),
+        None => return Err(Response::internal_error("stored listing envelope is unreadable")),
     };
     payload.status = ListingStatus::Withdrawn;
     write_version(host, payload, false, now).await
 }
 
-pub(crate) async fn get_listing<H: AppHost>(host: &H, req: &Request) -> Response {
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id,
-        None => return Response::invalid_params("listing_id is required"),
-    };
-    match load_listing_row(host, listing_id).await {
-        Ok(Some(r)) => Response::ok(json!({
-            "envelope": r.envelope,
-            "record_id": r.record_id,
-            "listing_id": r.listing_id,
-            "status": r.status,
-            "updated_at_secs": r.updated_at_secs,
+pub(crate) async fn get<H: AppHost>(
+    host: &H,
+    input: ListingKeyInput,
+) -> Reply<Option<ListingGetOutput>> {
+    match load_listing_row(host, &input.listing_id).await {
+        Ok(Some(r)) => Ok(Some(ListingGetOutput {
+            envelope: r.envelope,
+            record_id: r.record_id,
+            listing_id: r.listing_id,
+            status: r.status,
+            updated_at_secs: r.updated_at_secs,
         })),
-        Ok(None) => Response::ok(Value::Null),
-        Err(e) => Response::internal_error(e),
+        Ok(None) => Ok(None),
+        Err(e) => Err(Response::internal_error(e)),
     }
 }
 
-pub(crate) async fn list_listings<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn list<H: AppHost>(
+    host: &H,
+    input: ListingListInput,
+) -> Reply<ListingListOutput> {
     if let Err(e) = ensure_listings(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    let status = req.params.get("status").and_then(Value::as_str);
-    let offset = req.params.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let limit = req.params.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
-    // The host sieves by status when the caller asked for one,
-    // rather than every row crossing the boundary to be dropped here.
-    let filter = status.map(|s| json!({ "status": s }).to_string());
+    let offset = usize::try_from(input.offset.unwrap_or(0)).unwrap_or(usize::MAX);
+    let limit = usize::try_from(input.limit.unwrap_or(100)).unwrap_or(usize::MAX);
+    let filter = input.status.map(|s| json!({ "status": s }).to_string());
 
     let mut rows: Vec<ListingRow> = match paging::query_all(host, LISTINGS, filter).await {
         Ok(r) => r,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     rows.sort_by_key(|r| Reverse(r.updated_at_secs));
-    let out: Vec<Value> = rows
+    let listings: Vec<ListingListItem> = rows
         .into_iter()
         .skip(offset)
         .take(limit)
         .map(|r| {
-            // The title lives inside the signed envelope; a listing row that
-            // could not be parsed still lists, with an empty title.
             let title = serde_json::from_str::<Envelope>(&r.envelope)
                 .ok()
                 .and_then(|e| e.payload.get("title").and_then(Value::as_str).map(str::to_string))
                 .unwrap_or_default();
-            json!({
-                "listing_id": r.listing_id,
-                "slug": r.slug,
-                "title": title,
-                "status": r.status,
-                "record_id": r.record_id,
-                "updated_at_secs": r.updated_at_secs,
-                "version_count": r.version_count,
-            })
+            ListingListItem {
+                listing_id: r.listing_id,
+                slug: r.slug,
+                title,
+                status: r.status,
+                record_id: r.record_id,
+                updated_at_secs: r.updated_at_secs,
+                version_count: r.version_count,
+            }
         })
         .collect();
-    Response::ok(json!({ "listings": out }))
+    Ok(ListingListOutput { listings })
 }
 
-pub(crate) async fn listing_history<H: AppHost>(host: &H, req: &Request) -> Response {
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
+pub(crate) async fn history<H: AppHost>(
+    host: &H,
+    input: ListingKeyInput,
+) -> Reply<EnvelopeHistoryOutput> {
     if let Err(e) = ensure_coll(host, LISTING_HISTORY, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    // The history rows are keyed by record_id, so this gathers every
-    // envelope whose payload names this listing_id, oldest first. The
-    // `supersedes` chain in each payload is the exact order if a searcher
-    // needs to separate two versions minted in the same second.
-    let history =
-        match paging::envelope_history(host, LISTING_HISTORY, "listing_id", &listing_id).await {
-            Ok(h) => h,
-            Err(e) => return Response::internal_error(e),
-        };
-    Response::ok(json!({ "history": history }))
+    let history = match paging::envelope_history(
+        host,
+        LISTING_HISTORY,
+        "listing_id",
+        &input.listing_id,
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    Ok(EnvelopeHistoryOutput { history })
 }
 
-/// A thin wrapper over `roym_core::listing::verify_envelope` -- the one
-/// verification body this handler and the directory client both call, so a
-/// stranger's listing is never verified twice by two copies of the same
-/// logic that could quietly disagree. The response is the whole
-/// `ListingVerdict` (record id, revocation status, issued-at, supersedes
-/// and the full payload), not a five-field subset; an underivable
-/// listing_id comes back as `verified: false`, not an internal error.
-pub(crate) async fn verify_listing<H: AppHost>(host: &H, req: &Request) -> Response {
-    let _ = host;
-    let now = clock::now_secs();
-    let env_val = match req.params.get("envelope") {
-        Some(v) => v,
-        None => return Response::invalid_params("envelope is required"),
-    };
-    let env_str = match env_val {
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    };
-    let verdict = listing::verify_envelope(&env_str, now);
-    Response::ok(json!(verdict))
+pub(crate) async fn verify<H: AppHost>(_host: &H, input: VerifyInput) -> Reply<ListingVerdict> {
+    verify_with(input, listing::verify_envelope)
 }

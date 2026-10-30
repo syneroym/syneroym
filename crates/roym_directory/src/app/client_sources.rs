@@ -10,6 +10,10 @@ use syneroym_roym_core::{
     clock,
     directory::{DEFAULT_SOURCE_TIMEOUT_MS, MAX_SOURCES, SourceError},
     envelope::{Request, Response},
+    method::{
+        SiblingError, call_sibling,
+        catalog::{ListingGetOutput, ListingKeyInput},
+    },
     paging, person, services,
 };
 
@@ -214,32 +218,23 @@ pub(in crate::app) async fn publish_to_source<H: AppHost>(host: &H, req: &Reques
         None => return Response::invalid_params("listing_id is required"),
     };
 
-    let get_req =
-        json!({ "method": "listing.get", "params": { "listing_id": listing_id } }).to_string();
-    let raw = match host
-        .call(
-            CallTarget::Dependency(services::CATALOG.name.to_string()),
-            services::CATALOG.interface.to_string(),
-            "invoke".to_string(),
-            json!([get_req]).to_string(),
-            None,
-        )
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(format!("listing.get: {e:?}")),
+    let got = call_sibling::<_, ListingKeyInput, Option<ListingGetOutput>>(
+        host,
+        services::CATALOG,
+        "listing.get",
+        &ListingKeyInput { listing_id: listing_id.clone() },
+    )
+    .await;
+    let listing = match got {
+        Ok(Some(l)) => l,
+        Ok(None) | Err(SiblingError::Refused(_)) => {
+            return Response::invalid_params("no such listing on this installation");
+        }
+        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => {
+            return Response::internal_error(e);
+        }
     };
-    let resp: Response = match serde_json::from_str(&raw) {
-        Ok(r) => r,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
-    let Some(result) = resp.result.filter(|r| !r.is_null()) else {
-        return Response::invalid_params("no such listing on this installation");
-    };
-    let envelope = match result.get("envelope").and_then(Value::as_str) {
-        Some(e) => e.to_string(),
-        None => return Response::internal_error("listing.get returned no envelope"),
-    };
+    let envelope = listing.envelope;
 
     let publish_req =
         json!({ "method": "directory.publish", "params": { "envelope": envelope } }).to_string();
