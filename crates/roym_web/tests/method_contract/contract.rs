@@ -4,9 +4,11 @@
 use std::path::Path;
 
 use serde_json::{Value, json};
+use syneroym_roym_catalog::api as catalog_api;
 use syneroym_roym_conversation::api as conversation_api;
 use syneroym_roym_core::{method::check::assert_service_table, services};
 use syneroym_roym_profile::api as profile_api;
+use syneroym_roym_transaction::api as transaction_api;
 
 use super::{
     fixtures::env,
@@ -37,44 +39,58 @@ fn every_conversation_method_has_typed_input_and_output() {
     );
 }
 
+#[test]
+fn every_catalog_method_has_typed_input_and_output() {
+    let table = catalog_api::method_table();
+    assert_eq!(table.len(), 17);
+    assert_service_table(
+        services::CATALOG,
+        &table,
+        &[],
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_catalog/src"),
+    );
+}
+
+#[test]
+fn every_transaction_method_has_typed_input_and_output() {
+    let table = transaction_api::method_table();
+    assert_eq!(table.len(), 41);
+    assert_service_table(
+        services::TRANSACTION,
+        &table,
+        &[],
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_transaction/src"),
+    );
+}
+
 #[tokio::test]
 async fn every_listed_method_is_dispatched() {
     let h = harness().await;
 
-    let profile_table = profile_api::method_table();
-    for row in profile_table {
-        let (wasm_res, native_res) =
-            h.local_invoke(services::PROFILE, &env(&row.name, json!({}))).await;
-        assert_ne!(
-            wasm_res.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64),
-            Some(-32601),
-            "profile method {} wasm must not be method-not-found",
-            row.name
-        );
-        assert_ne!(
-            native_res.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64),
-            Some(-32601),
-            "profile method {} native must not be method-not-found",
-            row.name
-        );
-    }
-
-    let conv_table = conversation_api::method_table();
-    for row in conv_table {
-        let (wasm_res, native_res) =
-            h.local_invoke(services::CONVERSATION, &env(&row.name, json!({}))).await;
-        assert_ne!(
-            wasm_res.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64),
-            Some(-32601),
-            "conversation method {} wasm must not be method-not-found",
-            row.name
-        );
-        assert_ne!(
-            native_res.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64),
-            Some(-32601),
-            "conversation method {} native must not be method-not-found",
-            row.name
-        );
+    let tables = [
+        (services::PROFILE, profile_api::method_table()),
+        (services::CONVERSATION, conversation_api::method_table()),
+        (services::CATALOG, catalog_api::method_table()),
+        (services::TRANSACTION, transaction_api::method_table()),
+    ];
+    for (service, table) in tables {
+        for row in table {
+            let (wasm_res, native_res) = h.local_invoke(service, &env(&row.name, json!({}))).await;
+            assert_ne!(
+                wasm_res.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64),
+                Some(-32601),
+                "{} method {} wasm must not be method-not-found",
+                service.name,
+                row.name
+            );
+            assert_ne!(
+                native_res.get("error").and_then(|e| e.get("code")).and_then(Value::as_i64),
+                Some(-32601),
+                "{} method {} native must not be method-not-found",
+                service.name,
+                row.name
+            );
+        }
     }
 
     let (wasm_bad, native_bad) = h
@@ -88,36 +104,27 @@ async fn every_listed_method_is_dispatched() {
 async fn every_listed_method_is_refused_off_the_node_before_parsing() {
     let h = harness().await;
 
-    let profile_table = profile_api::method_table();
-    for row in profile_table {
-        let (wasm_res, native_res) =
-            h.wire_invoke(services::PROFILE, &env(&row.name, json!({ "zz": 1 }))).await;
-        assert_eq!(
-            wasm_res["error"]["code"], -32013,
-            "profile method {} wasm must refuse off-node with -32013, got {wasm_res}",
-            row.name
-        );
-        assert_eq!(
-            native_res["error"]["code"], -32013,
-            "profile method {} native must refuse off-node with -32013, got {native_res}",
-            row.name
-        );
-    }
-
-    let conv_table = conversation_api::method_table();
-    for row in conv_table {
-        let (wasm_res, native_res) =
-            h.wire_invoke(services::CONVERSATION, &env(&row.name, json!({ "zz": 1 }))).await;
-        assert_eq!(
-            wasm_res["error"]["code"], -32013,
-            "conversation method {} wasm must refuse off-node with -32013, got {wasm_res}",
-            row.name
-        );
-        assert_eq!(
-            native_res["error"]["code"], -32013,
-            "conversation method {} native must refuse off-node with -32013, got {native_res}",
-            row.name
-        );
+    let tables = [
+        (services::PROFILE, profile_api::method_table()),
+        (services::CONVERSATION, conversation_api::method_table()),
+        (services::CATALOG, catalog_api::method_table()),
+        (services::TRANSACTION, transaction_api::method_table()),
+    ];
+    for (service, table) in tables {
+        for row in table {
+            let (wasm_res, native_res) =
+                h.wire_invoke(service, &env(&row.name, json!({ "zz": 1 }))).await;
+            assert_eq!(
+                wasm_res["error"]["code"], -32013,
+                "{} method {} wasm must refuse off-node with -32013, got {wasm_res}",
+                service.name, row.name
+            );
+            assert_eq!(
+                native_res["error"]["code"], -32013,
+                "{} method {} native must refuse off-node with -32013, got {native_res}",
+                service.name, row.name
+            );
+        }
     }
 }
 
@@ -254,4 +261,116 @@ async fn absent_params_is_accepted_for_no_params_method() {
     let h = harness().await;
     let (ping_res, _) = post_rpc(&h, "profile.ping", None).await;
     assert_eq!(ping_res["result"]["service"], "profile");
+}
+
+#[tokio::test]
+async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_rejected() {
+    let h = harness().await;
+
+    // 1. listing.get with listing_id: 5
+    let (w, _) = post_rpc(&h, "listing.get", Some(json!({ "listing_id": 5 }))).await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "listing_id");
+    assert!(w["error"]["message"].as_str().unwrap().contains("invalid type"));
+
+    // 2. availability.set with a slot having capacity: "two"
+    let (w, _) = post_rpc(
+        &h,
+        "availability.set",
+        Some(json!({
+            "listing_id": "lst_test",
+            "slots": [{
+                "slot_id": "s1",
+                "start_secs": 100,
+                "end_secs": 200,
+                "capacity": "two",
+            }],
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "slots[0].capacity");
+
+    // 3. availability.set with unknown slot key colour
+    let (w, _) = post_rpc(
+        &h,
+        "availability.set",
+        Some(json!({
+            "listing_id": "lst_test",
+            "slots": [{
+                "slot_id": "s1",
+                "start_secs": 100,
+                "end_secs": 200,
+                "colour": "blue",
+            }],
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "slots[0].colour");
+
+    // 4. listing.verify with envelope as an object
+    let (w, _) =
+        post_rpc(&h, "listing.verify", Some(json!({ "envelope": { "issuer": "x" } }))).await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "envelope");
+
+    // 5. request.list with unknown key agreement
+    let (w, _) = post_rpc(&h, "request.list", Some(json!({ "agreement": "agr1" }))).await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "agreement");
+
+    // 6. booking.list with agreement
+    let (w, _) = post_rpc(&h, "booking.list", Some(json!({ "agreement": "agr1" }))).await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "agreement");
+
+    // 7. quote.set with terms.quote_expires_at_secs
+    let (w, _) = post_rpc(
+        &h,
+        "quote.set",
+        Some(json!({
+            "request_record_id": "rec_req",
+            "expires_in_secs": 3600,
+            "terms": {
+                "currency": "EUR",
+                "amount_minor": 1000,
+                "payment_timing": "after-work",
+                "payment_methods": ["cash"],
+                "quote_expires_at_secs": 12345,
+            },
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "terms.quote_expires_at_secs");
+
+    // 8. booking.list with state: "nonsense"
+    let (w, _) = post_rpc(&h, "booking.list", Some(json!({ "state": "nonsense" }))).await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "state");
+
+    // 9. request.list with params absent works
+    let (w, _) = post_rpc(&h, "request.list", None).await;
+    assert!(w.get("error").is_none(), "request.list with no params must succeed: {w}");
+    assert!(w.get("result").is_some());
+
+    // 10. request.set with malformed tagged area block
+    let (w, _) = post_rpc(
+        &h,
+        "request.set",
+        Some(json!({
+            "conversation": "c1",
+            "summary": "Need help",
+            "area": {
+                "kind": "circle",
+                "lat_e6": 0,
+                "lon_e6": 0,
+                "radius_m": "x",
+            },
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "area");
 }
