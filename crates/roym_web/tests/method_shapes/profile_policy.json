@@ -1,0 +1,5 @@
+{
+  "one_person_per_installation": "boolean",
+  "retention": "string",
+  "statement": "string"
+}

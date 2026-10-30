@@ -1,0 +1,9 @@
+{
+  "at_secs": "number",
+  "category": "harassment",
+  "details": "string",
+  "report_id": "string",
+  "status": "recorded",
+  "subject_id": "string",
+  "subject_kind": "person"
+}

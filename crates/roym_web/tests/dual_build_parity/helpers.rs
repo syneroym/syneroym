@@ -31,7 +31,11 @@ use syneroym_core::{
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::{SqliteStorageProvider, StorageProvider, host_store::QueryOptions};
 use syneroym_data_keystore::KeyStore;
-use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_identity::{
+    Identity,
+    delegation::{DelegationCertificate, SCOPE_SERVICE_INSTANCE},
+    substrate::derive_did_key,
+};
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_roym_catalog::native::NativeCatalog;
 use syneroym_roym_conversation::native::NativeConversation;
@@ -1061,7 +1065,17 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
             .set_app_context(service_id.clone(), app_instance.to_string(), svc.name.to_string())
             .await
             .unwrap();
-        wasm_reg.set_owner(service_id, owner_did.clone()).await.unwrap();
+        wasm_reg.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
+        let instance = Identity::generate().unwrap();
+        let mut cert = DelegationCertificate::issue(
+            &owner,
+            instance.public_key(),
+            86_400 * 365,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        cert.temporary_did = service_id.clone();
+        wasm_reg.set_instance_cert(service_id, cert).await.unwrap();
     }
     wasm_reg
         .set_app_context(
@@ -1201,7 +1215,17 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
             .set_app_context(service_id.clone(), app_instance.to_string(), svc.name.to_string())
             .await
             .unwrap();
-        native_reg.set_owner(service_id, owner_did.clone()).await.unwrap();
+        native_reg.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
+        let instance = Identity::generate().unwrap();
+        let mut cert = DelegationCertificate::issue(
+            &owner,
+            instance.public_key(),
+            86_400 * 365,
+            SCOPE_SERVICE_INSTANCE.to_string(),
+        )
+        .unwrap();
+        cert.temporary_did = service_id.clone();
+        native_reg.set_instance_cert(service_id, cert).await.unwrap();
     }
     native_reg
         .set_app_context(

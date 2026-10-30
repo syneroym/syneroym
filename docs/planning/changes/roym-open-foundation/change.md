@@ -239,6 +239,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **`call-all` interface:** task.md and change doc originally named `syneroym:invocation`. Corrected to `syneroym:proxy` beside `call` (Q1 / D-OF-6).
 - **`call-all` params type:** sketch originally used `params: list<u8>`. Corrected to `params: string` (JSON text) matching `proxy.call` (Q1 / D-OF-6).
 - **`web` instance reuse:** change doc table previously stated `web` instances are reused and keep no state. In fact each ordinary call and WebSocket event creates a new store and instance (`engine.rs:469`, `guest_stream.rs:294`, `app.rs:295`) (Q5 / D-OF-3).
+- **Dual-build parity test harness instance certificate:** `harness_with_unbound` in `crates/roym_web/tests/dual_build_parity/helpers.rs` was updated to issue and install a `SCOPE_SERVICE_INSTANCE` delegation certificate for each service on both the WASM and native endpoint registries, matching `app_host_native/tests/dual_build_parity/helpers.rs`, allowing outbound requests such as `group.add-member` to pass `check_outbound_identity`.
 
 ## Close-out
 

@@ -1,0 +1,38 @@
+{
+  "manifest": {
+    "bundle_version": "number",
+    "sections": {
+      "admissions": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "conversation_history": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      }
+    },
+    "subject_did": "string"
+  },
+  "manifest_signature": "string",
+  "sections": {
+    "admissions": [
+      {
+        "id": "string",
+        "payload": {
+          "peer_address": "string",
+          "state": "accepted"
+        }
+      }
+    ],
+    "conversation_history": [
+      {
+        "id": "string",
+        "payload": {
+          "data": "string"
+        }
+      }
+    ]
+  }
+}

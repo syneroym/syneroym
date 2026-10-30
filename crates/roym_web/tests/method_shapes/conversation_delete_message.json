@@ -1,0 +1,5 @@
+{
+  "asked_peer": "boolean",
+  "deleted": "string",
+  "note": "The local copy is removed and a deletion record kept. A request to delete it was sent to the other side; whether their client honours it is theirs to decide, and this cannot check. This installation's own message store still holds what it received."
+}

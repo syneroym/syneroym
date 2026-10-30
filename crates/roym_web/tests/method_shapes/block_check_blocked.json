@@ -1,0 +1,5 @@
+{
+  "blocked": "boolean",
+  "reason": "string",
+  "since_secs": "number"
+}

@@ -1,0 +1,44 @@
+{
+  "manifest": {
+    "bundle_version": "number",
+    "sections": {
+      "blocks": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "contacts": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "profile": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "reports": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      }
+    },
+    "subject_did": "string"
+  },
+  "manifest_signature": "string",
+  "sections": {
+    "blocks": [],
+    "contacts": [],
+    "profile": [
+      {
+        "id": "string",
+        "payload": {
+          "envelope": "string",
+          "record_id": "string",
+          "verified_at_secs": "number"
+        }
+      }
+    ],
+    "reports": []
+  }
+}

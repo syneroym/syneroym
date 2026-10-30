@@ -1,0 +1,40 @@
+{
+  "kind": "direct",
+  "messages": [
+    {
+      "author": "string",
+      "body": "string",
+      "body_encoding": "utf8",
+      "content_type": "text/plain",
+      "conversation": "string",
+      "direction": "outgoing",
+      "id": "string",
+      "last_error": "null",
+      "refused": "null",
+      "restored": "boolean",
+      "sender_timestamp_ms": "number",
+      "state": "pending",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "visible_seq": "number"
+    },
+    {
+      "author": "string",
+      "body_encoding": "utf8",
+      "content_type": "text/plain",
+      "conversation": "string",
+      "deleted_at_secs": "number",
+      "direction": "outgoing",
+      "id": "string",
+      "last_error": "string",
+      "refused": "null",
+      "restored": "boolean",
+      "sender_timestamp_ms": "number",
+      "state": "failed",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "visible_seq": "number"
+    }
+  ],
+  "next_cursor": "null"
+}

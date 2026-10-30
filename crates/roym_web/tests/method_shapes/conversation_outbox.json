@@ -1,0 +1,10 @@
+{
+  "outbox": [
+    {
+      "conversation": "string",
+      "id": "string",
+      "last_error": "null",
+      "state": "pending"
+    }
+  ]
+}
