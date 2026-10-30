@@ -16,6 +16,7 @@ pub mod envelope;
 pub mod fulfilment;
 pub mod listing;
 pub mod membership;
+pub mod method;
 pub mod money;
 pub mod paging;
 pub mod payment;
