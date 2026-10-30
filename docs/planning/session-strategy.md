@@ -6,13 +6,13 @@ This guide defines the strict workflow for navigating the Meta-Implementation Pl
 
 ## 1. Tool Roles
 
-There is no fixed assignment of "Antigravity implements, Claude reviews." The one invariant that matters: **the reviewer for a slice must be a different tool than its implementer.** Which tool implements a given slice is a per-slice judgment call, not a program-wide default — and role reversal (Claude implements, Antigravity reviews, or vice versa) is expected and encouraged rather than an exception.
+There is no fixed assignment of "Antigravity implements, Claude reviews." The one invariant that matters: **the reviewer for a slice must be a different tool than its implementer, and the reviewer of a plan must be a different tool than the author of that plan.** Which tool implements a given slice is a per-slice judgment call, not a program-wide default — and role reversal (Claude implements, Antigravity reviews, or vice versa) is expected and encouraged rather than an exception.
 
 Starting heuristic:
 - Slices dominated by the `cargo`/`clippy`/`mise` compile-test-fix loop lean toward whichever tool drives that loop more directly.
 - Otherwise, default to alternating, and let evidence decide.
 
-Record the assignment as fact, not preference: every slice's `status.md` must note which tool implemented it and which tool reviewed it. Periodically look back across slices at how many review findings and how much rework each implementer/tool pairing produced, and let *that* — not a priori assumption — settle where each tool ends up doing more implementation.
+Record the assignment as fact, not preference: every slice's row in `status.md` must name the tool that wrote the plan, reviewed the plan, implemented the slice and reviewed the code. Periodically look back across slices at how many review findings and how much rework each implementer/tool pairing produced, and let *that* — not a priori assumption — settle where each tool ends up doing more implementation.
 
 ## 2. Recommended Document Structure
 
@@ -28,7 +28,9 @@ docs/planning/
 └── milestones/
     ├── M01-local-app-model/
     │   ├── task.md
-    │   └── status.md
+    │   ├── status.md
+    │   ├── slice-<id>-implementation-plan.md
+    │   └── slice-<id>-review.md
     └── ...
 docs/decisions/            # this is the decision register — one ADR per decision, no separate index file
 ├── 0001-sqlite-encryption.md
@@ -55,6 +57,31 @@ We use three levels of granularity:
 - M1F: End-to-end acceptance tests
 
 Each slice should be small enough to review as one coherent change.
+
+### Slice steps and status values
+
+Every slice has one row in the milestone's `status.md`. The row shows the step the slice has reached. The step is one of these, in order:
+
+1. Not started
+2. Plan written
+3. Plan reviewed
+4. Implemented
+5. Code reviewed
+6. Fixes done
+7. Merged
+
+Every row also records the tool for four jobs: plan, plan review, implementation and code review. Write "—" for a job that has no step yet. Write "not recorded" only for old work where nobody wrote the tool down.
+
+### The review file
+
+Each slice has one review file, `slice-<id>-review.md`, next to its plan. The file is the single place for review findings. Do not paste findings into chat.
+
+- Plan review findings have ids P1, P2, … Code review findings have ids R1, R2, …
+- A new review round is a new section. Its title has the kind of review, the round number, the tool and the date. Example: "Code review round 2 — <tool>, <date>". The reviewer writes its own tool name there.
+- Ids are never renumbered. A new round continues the numbers.
+- Every item has a status: `Open`, `Fixed (<sha>)`, `Rejected: <reason>` or `Deferred: <backlog link>`.
+- The fix session changes the status of each item as it works.
+- A later reviewer checks only the open items, and confirms the fixed ones.
 
 ---
 
@@ -85,6 +112,10 @@ Open a new session, in either tool. Ask it to inspect the codebase and produce `
 
 *Review and approve that plan before proceeding to implementation.*
 
+At the start of a milestone:
+- Refresh `task.md` against the current code, and create `status.md`.
+- Write and review every change doc that the milestone depends on. Do this before the first slice plan.
+
 ### B. Implementation Session (One per slice)
 Open a fresh session for the specific slice, in whichever tool you've assigned (§1), to keep context focused and make failures easier to unwind. Leverage each tool's autonomous mode (e.g. `/goal`) to compile code, run tests, and fix errors until the slice is fully complete.
 
@@ -111,12 +142,10 @@ Use a fresh session, in the tool that did **not** implement this slice, after ev
 >
 > Independently re-run the tests, clippy, and any acceptance commands yourself — do not rely on the pasted output in `status.md`.
 >
-> Do not modify code. Report actionable findings with file and line links, precise enough that a different tool can act on them directly without asking you to clarify, and output these findings as a checklist in a markdown artifact so the next implementation session can methodically address them.
+> Do not modify code. Report actionable findings with file and line links, precise enough that a different tool can act on them directly without asking you to clarify, and write these findings as checklist items, with ids and status `Open`, in `slice-<id>-review.md` next to the slice plan. Add a new section for this round. Its title has your tool name and the date. Do not paste the findings only into chat.
 
 *Use a subsequent implementation session (same tool as the original implementer, or a new assignment per §1) to address any accepted findings.* You could use the following prompt template.
-> Review the following review comments on implementation of slice xx of Mnn-xxx. Implement what you agree, and push back on or ask for justification of the others. Before writing code, show me your implementation plan and wait for my approval. Once approved, do not stop until the fixes are implemented and all tests pass.
->
-> [Copy review comments below...]
+> Read the open items in `slice-<id>-review.md` for slice xx of Mnn-xxx. Implement what you agree, and push back on or ask for justification of the others. Before writing code, show me your implementation plan and wait for my approval. Once approved, do not stop until the fixes are implemented and all tests pass. Update the status of each item in the review file as you work: `Fixed (<sha>)`, `Rejected: <reason>` or `Deferred: <backlog link>`.
 
 ### D. Milestone Closeout Session (Read-Only)
 When all slices are complete, open a final session — ideally the tool that reviewed the majority of the milestone's slices, for a fresh audit — to verify the milestone.
@@ -149,7 +178,7 @@ Because it stays open across the whole program, periodically ask it to re-derive
 
 - **Read first:** Every session must begin by reading files from the repository.
 - **No history reliance:** Never rely on another session's conversation history. Context lives in the files.
-- **Cross-tool review:** The reviewer for a slice must be a different tool than its implementer (§1). Record both in `status.md`.
+- **Cross-tool review:** The reviewer for a slice must be a different tool than its implementer, and the reviewer of a plan must be a different tool than the plan author (§1). Record all four tools in `status.md`.
 - **Write for the other tool:** Plans and review findings must be explicit enough for a different tool to execute or act on without the author's reasoning — step-by-step, exact signatures/schemas, pseudo-code for non-trivial logic — not shorthand only the author would follow.
 - **Task vs Status:** `task.md` defines intended work; `status.md` records factual state.
 - **Evidence-based:** Update the traceability matrix only when verifiable acceptance evidence exists.
