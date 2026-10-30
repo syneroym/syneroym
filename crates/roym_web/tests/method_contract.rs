@@ -19,5 +19,7 @@ mod trust_fixtures;
 #[path = "dual_build_parity/trust_harness.rs"]
 mod trust_harness;
 
+#[path = "method_contract/contract.rs"]
+mod contract;
 #[path = "method_contract/shapes.rs"]
 mod shapes;
