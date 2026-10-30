@@ -226,6 +226,8 @@ It is the one place in the workspace where a macro removes real duplication.
 (the macro is defined in another crate, so clippy should skip it). If it
 fires, split the list into two macro calls in that service.
 
+Owner answer (2026-10-30): (a).
+
 ### Q2. Where the shared X2 code and each struct live
 
 - (a) **The owner's rule, applied one struct at a time.** X2 code lives in
@@ -248,6 +250,8 @@ the functions that read them in `src/app/<area>.rs`, avoiding extra files.
 `roymctl` and the tests send raw JSON on purpose (D-A2a-13), so no client
 uses a struct yet.
 
+Owner answer (2026-10-30): (a).
+
 ### Q3. The unknown-field rule: build the "ignore" mode now, or leave it to A2c
 
 Both services are local-only. Every A2a input uses `deny_unknown_fields`.
@@ -264,6 +268,8 @@ wire half out, A2c has to decide it again, and the check then has two
 authors. The cost is about 30 lines and one test. No wire-reachable method
 exists in A2a, so no production code uses the wire branch yet. Say so in
 the doc comment.
+
+Owner answer (2026-10-30): (a).
 
 ### Q4. How `-32602` names the bad field, and what `data` carries
 
@@ -290,6 +296,8 @@ word), missing field, unknown field, duplicate field. When no field can be
 named (for example `params` is a string or array), `data` is absent. A unit
 test in Step 3 pins the real text.
 
+Owner answer (2026-10-30): (a).
+
 ### Q5. Output structs: does every output become a struct
 
 - (a) **Every output is a named type. The wire shape does not change.** Most
@@ -307,6 +315,8 @@ wire and breaks the Hub, `roymctl` and the sibling that reads
 `contacts.list`. A2 does not rename or reshape methods. A bare array cannot
 gain a next-cursor, so M8 will want (b) the first time a list needs one.
 Doing it then costs the same as doing it now.
+
+Owner answer (2026-10-30): (a).
 
 ### Q6. A method with no input that gets unknown fields (parity scenario 2)
 
@@ -328,6 +338,8 @@ still answers with the policy text. This shows that identity claims in
 and the module count (24) stay. One assertion line changes. Record it in
 the change doc's Deviations. Without this change the plan cannot meet OF-18.
 
+Owner answer (2026-10-30): (a).
+
 ### Q7. Closed sets of words: `String` or `enum`
 
 `report.create` accepts `subject_kind` in `person|listing|message` and
@@ -344,6 +356,8 @@ accept `kind` in `direct|group` (today `list` ignores any other word and
 **Recommendation: (a).** This is what typing is for. Only the error text for
 a wrong word changes, and `conversation.list` now refuses a wrong `kind`
 instead of ignoring it. No caller sends a wrong word (section 4).
+
+Owner answer (2026-10-30): (a).
 
 ### Q8. The five caller sites in the `catalog` and `transaction` crates
 
@@ -366,6 +380,8 @@ its error-handling semantics as today (section 4 B17 to B20).
 `roym_transaction` keeps its own `sibling_call` for its calls to `catalog`
 until A2b. Add a backlog row for that (section 8).
 
+Owner answer (2026-10-30): (a).
+
 ### Q9. The Hub sends an object where the service reads a string
 
 The Hub's contact form sends `profile_envelope` as a parsed JSON object
@@ -385,6 +401,8 @@ it answers `-32602` with `data.field = "profile_envelope"`.
 everywhere else (`envelope` in `ProfileRecord`, every test). Two accepted
 shapes for one field would be a second thing to document and to test. The
 current behaviour is a Hub bug: it skips the check the form promises.
+
+Owner answer (2026-10-30): (a).
 
 ## 3. Facts checked in the code
 
@@ -572,8 +590,7 @@ changes (B2).
 
 ## 5. Decisions this plan makes
 
-These follow the recommendations in section 2. If the owner answers
-differently, the decision changes with the answer.
+These follow the owner's answers to Q1 to Q9 in section 2.
 
 - **D-A2a-1. One wrapper for every handler.** A handler is
   `async fn(host: &H, input: I) -> Reply<O>` with `type Reply<T> =
