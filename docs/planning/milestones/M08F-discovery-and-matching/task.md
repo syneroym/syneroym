@@ -32,3 +32,9 @@ The directory splits into a membership authority and an exchange. Participants p
 - Bids on one want: does a want show the bid count, and can a wanter close a want without answering each bid (Value Exchange, open question).
 - Friend timeout and cap per friend.
 - Opt-in default and rate limits for match notifications (matching change).
+- Showcase and fuel. The purpose of the showcase is to make people aware of new developments and possibilities they may not know about. It is not to push buying. Seeing new work can also lead others to make new and better offerings. The design must not use urgency, scarcity or engagement tricks. May an exchange show a collage of offerings with links to provider shops, and let providers pay for slots with **fuel**? Fuel would be a balance held at one exchange, used only for that exchange's services. It could not be sent to another participant and could not pay for goods or services. Points to check before planning:
+  - Fuel buys showcase space and delivery (for example offerer notifications). It must never change match results or their order. Promoted slots are marked and kept in a block apart from matches.
+  - How fuel is obtained. At first, the operator may grant it by hand, with no payment inside Roym.
+  - Where the balance lives (likely the exchange's member record, with one ledger row per spend), and what happens to unused fuel on leave or removal.
+  - Friend exchanges charge their own fuel, or none. Fuel is local.
+  - Keep it separate from EEPs and currency, so it does not become a second currency by accident.
