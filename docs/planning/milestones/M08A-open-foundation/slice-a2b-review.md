@@ -97,7 +97,7 @@ reply → `-32603`".
 
 ### Findings
 
-- [ ] **P1 — major.** *Where:* section 5 D-A2b-9; section 3.3 (the list of
+- [x] **P1 — major.** *Where:* section 5 D-A2b-9; section 3.3 (the list of
   already-recorded sites); Step 5b; section 7.3. Code:
   [fence.rs:50-75](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L50),
   [fence.rs:156-185](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L156),
@@ -132,9 +132,9 @@ reply → `-32603`".
   mappings line by line. If a test is cheap, write the fence ledger row
   directly through the data layer in a parity scenario and call the method
   once.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P2 — minor.** *Where:* section 4 B23; Step 5a ("Keep the order of
+- [x] **P2 — minor.** *Where:* section 4 B23; Step 5a ("Keep the order of
   the other checks"). Code:
   [quote_ops.rs:42-90](../../../../crates/roym_transaction/src/app/quote_ops.rs#L42).
   *Problem:* today `quote.set` parses `terms` late: after the certificate
@@ -152,9 +152,9 @@ reply → `-32603`".
   of the checks that run after the parse". No test asserts the old order
   (checked: no parity or e2e test sends bad terms together with another
   error).
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P3 — minor.** *Where:* section 4 B39; D-A2b-8 (`PeerStep`). Code:
+- [x] **P3 — minor.** *Where:* section 4 B39; D-A2b-8 (`PeerStep`). Code:
   [booking_ops.rs:442-458](../../../../crates/roym_transaction/src/app/booking_ops.rs#L442).
   *Problem:* the counterparty's `booking.history` returns the raw card
   data as `snapshot`. The plan parses it into `BookingProgressPayload` and
@@ -170,9 +170,9 @@ reply → `-32603`".
   today (`null` when missing). The check allows a `Value` inside an output
   struct. B39 then becomes "no change". If the owner prefers the typed
   snapshot, B39 must say that a newer peer's extra keys are dropped.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P4 — minor.** *Where:* Step 5a, Step 5b. *Problem:* Step 5a
+- [x] **P4 — minor.** *Where:* Step 5a, Step 5b. *Problem:* Step 5a
   changes `send_card_and_file` to return `SendState` and `booking_view`'s
   `writer` to `Option<BookingWriter>`. Both have callers in the files that
   Step 5b says it converts. `send_card_and_file` is called in
@@ -184,9 +184,9 @@ reply → `-32603`".
   `Some("peer")`. Step 5a does not build until all of these change. *Fix:*
   in Step 5a, say that these call sites change their types only (the
   `json!` answers stay until Step 5b), and name `progress.rs`.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P5 — minor.** *Where:* section 5 D-A2b-14; Step 2. Code:
+- [x] **P5 — minor.** *Where:* section 5 D-A2b-14; Step 2. Code:
   [payment.rs:7-60](../../../../crates/roym_web/tests/dual_build_parity/payment.rs#L7),
   [bundles.rs:116-127](../../../../crates/roym_web/tests/dual_build_parity/bundles.rs#L116).
   *Problem:* the plan finds two copies of `setup_peer_request` and one of
@@ -201,9 +201,9 @@ reply → `-32603`".
   `payment.rs` (the same params as today). Use `setup_peer_request` in
   `bundles.rs:116-127` too. The `cargo dupes` and ratchet step then
   records the real gain.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P6 — minor.** *Where:* "How this is shown to an end user"; Q4; B26;
+- [x] **P6 — minor.** *Where:* "How this is shown to an end user"; Q4; B26;
   Step 6; section 8; exit criterion 8; section 3.4. *Problem:* small fact
   errors.
   (1) The command is `roymctl roym transaction booking list`, not
@@ -225,9 +225,9 @@ reply → `-32603`".
   `QuoteTermsInput`, so nothing else changes.
   *Fix:* correct the five places that name the command, the reason in
   Step 6, the line numbers, and the key count.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P7 — minor.** *Where:* "How this is shown to an end user".
+- [x] **P7 — minor.** *Where:* "How this is shown to an end user".
   *Problem:* AGENTS.md asks for very simple words for a reader who is not
   technical, and "if an end user can see nothing new, say so in one plain
   sentence". The section says that first, then adds two bullets that are
@@ -238,9 +238,9 @@ reply → `-32603`".
   point to a short "An operator ..." bullet with the right command (P6)
   and no question id, or to the developer bullets. Drop "(Q3)" and the
   Hub wire detail.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P8 — minor.** *Where:* D-A2b-13; Q5. Code:
+- [x] **P8 — minor.** *Where:* D-A2b-13; Q5. Code:
   [booking_ops.rs:199-206](../../../../crates/roym_transaction/src/app/booking_ops.rs#L199),
   [ledger.rs:40](../../../../crates/roym_transaction/src/app/ledger.rs#L40).
   *Problem:* the author steps of `booking.history` carry `event`, a closed
@@ -250,9 +250,9 @@ reply → `-32603`".
   7.2. It stays a `String` in the output, because it is copied from the
   stored `StepRow` (stored rows keep their strings, D-A2a-10). Checked: no
   A2a shape file has an `event` key.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P9 — minor.** *Where:* D-A2b-7 ("each verify method gets its own
+- [x] **P9 — minor.** *Where:* D-A2b-7 ("each verify method gets its own
   small typed handler"). *Problem:* seven handlers would each repeat the
   same three steps: take `input.envelope`, read the clock, call one verify
   function. That is the "same shape, different names" duplication that
@@ -263,9 +263,9 @@ reply → `-32603`".
   `transaction::verify_request`, `listing::verify_envelope`, and so on.
   `payment.verify` keeps its own handler, because it picks the verify
   function by record type.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
 
-- [ ] **P10 — minor.** *Where:* Q1 (the last sentence of the
+- [x] **P10 — minor.** *Where:* Q1 (the last sentence of the
   recommendation); section 9 (the developer-guide sentence). Code:
   [area.rs:21-34](../../../../crates/roym_core/src/area.rs#L21).
   *Problem:* the plan says a wrong type inside a record type "is still
@@ -280,4 +280,4 @@ reply → `-32603`".
   field it can, which for a tagged block such as `area` is the block
   itself". Optionally pin this in one Step 7 test (`request.set` with
   `area.radius_m: "x"`), so a later change of the path is seen.
-  *Status:* Open.
+  *Status:* Fixed (957e6b30).
