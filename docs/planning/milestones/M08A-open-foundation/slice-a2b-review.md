@@ -281,3 +281,59 @@ reply → `-32603`".
   itself". Optionally pin this in one Step 7 test (`request.set` with
   `area.radius_m: "x"`), so a later change of the path is seen.
   *Status:* Fixed (957e6b30).
+
+## Plan review round 1 — fixes confirmed — Claude Opus 5.5 (Claude Code), 2026-10-30
+
+Checked `957e6b30` (the plan) and `1e3e0fe7` (this file and status.md)
+against P1 to P10, and checked every new fact the fixes added against the
+code at `1e3e0fe7`. Every item is fixed as written. No new item is open.
+
+- **P1.** Section 3.3 now lists the six fence sites F1 to F6 with the right
+  lines (`fence.rs:54`, `:66`, `:161`, `:168-181`, `fulfilment_ops.rs:346`,
+  `payment_ops.rs:380-404`) and explains the crash-recovery path. D-A2b-9
+  gives every signature and a mapping per site. The F4 note is right: the
+  fence reads the check with `if let Ok(Some(..))`, so an `Err` falls
+  through to `payment-acknowledgement-in-flight`. Step 2 adds one
+  crash-recovery shape case per method, and section 7.3 lists what stays
+  untested (F2, F4, the in-flight errors, the `-32603` branch). I checked
+  that the cases can work: `PaymentsRow` and `FulfilmentsRow` have
+  `#[serde(default)]` on every half field, so the seeded rows parse; the
+  handlers' own already-recorded checks (`payment_ops.rs:76`,
+  `fulfilment_ops.rs:72`, `check_acknowledgement_version` with an empty
+  list) let the second call reach the fence; and the fence keys do not
+  depend on the new half. `seed_row` is at `admission.rs:242` and today
+  always opens the `conversation` database, as the plan says.
+  One note for the implementer, not a finding: run the three cases in the
+  order request, acknowledgement, fulfilment, or on separate deals.
+  `payment.request` refuses with `booking-payment-acknowledged` once the
+  payment track is acknowledged (`payment_ops.rs:347`). A wrong order
+  fails loudly in Step 2, so it cannot hide a bug.
+- **P2.** B23 and the Step 5a rule now name the earlier `terms` parse.
+- **P3.** `PeerStep { seq: Option<u32>, snapshot: Value, record_id }`; B39
+  is now "no change".
+- **P4.** Step 5a names every `send_card_and_file` caller (including
+  `progress.rs:54`), `record_and_send_ack`'s new return type, and the eight
+  `booking_view` calls. The line numbers (`:282`, `:290`, `:300`, `:308`,
+  `:342`, `:386`, `:510`, `:544`) are right.
+- **P5.** D-A2b-14 keeps one copy of each helper, with the `payment.rs`
+  and `bundles.rs` copies. Passing `"after-work"` from `payment.rs` gives
+  the same params as today (the sample terms use `"after-work"`).
+- **P6.** The command is `roymctl roym transaction booking list` in every
+  place, the `roymctl` test reason is right, the lines are right, and the
+  Hub key count is 11.
+- **P7.** The end-user section is one plain sentence, with the operator
+  bullet separate and no question ids.
+- **P8.** `event` is in D-A2b-13 and section 7.2.
+- **P9.** `verify_with` is in D-A2b-7. All six verifiers it names are
+  `fn(&str, u64) -> V` (`transaction.rs:614`, `:658`, `:710`,
+  `listing.rs:505`, `booking.rs:330`, `fulfilment.rs:78`), and
+  `roym_core::clock` exists.
+- **P10.** Q1, the developer-guide sentence and a new Step 7 test say the
+  path stops at `area`. I proved it with a small program on the
+  workspace's `serde_path_to_error` version: the input of the Step 7 test
+  gives path `area` and text ``invalid type: string "x", expected u64``,
+  so `parse_value` sets `data.field = "area"`.
+
+The owner answers (all (a)) are recorded under each question, D-A2b-16 and
+D-A2b-17 are added for Q2 and Q4, and section 9 now asks for D-A2b-1 to
+D-A2b-17 in the change doc. The plan is ready for implementation.
