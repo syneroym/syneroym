@@ -1682,6 +1682,28 @@ hits and refused evidence) and a **SynOrg** tab (settings and roster) that
 drive the same JSON-RPC API. This command group and the browser Hub are
 two clients of one service; each still owns its own fan-out loop.
 
+##### Add a Roym method
+
+Today `profile` and `conversation` have a method table; the other services still read their params by hand. For services with a method table, methods use typed input and output structs in Rust:
+
+1. **Write input and output structs.** Derive `serde::Deserialize` with `#[serde(deny_unknown_fields)]` on the input struct on a local-only method; leave it off on a wire-reachable method, and list that method in the check's wire list (a nested input struct needs `deny_unknown_fields` too; the check sees only the outer type). Derive `serde::Serialize` on the output struct. If a method takes no parameters, use `NoParams`.
+2. **Add a row to the method table.** In the service's `api.rs`, add an entry to the `service_methods!` macro:
+   ```rust
+   "service.method-name": handler_fn [InputStruct => OutputStruct],
+   ```
+3. **Write the handler.** The handler takes `(&H, InputStruct)` and returns `Reply<OutputStruct>` (`Result<OutputStruct, Response>`). Return `Err(Response::invalid_params("..."))` on bad input.
+4. **Test the method contract.** Run `cargo nextest run -p syneroym-roym-web --test method_contract`. The contract test verifies that every method in the service table is typed, dispatched, and checked.
+
+##### Bad input and parameter validation
+
+When a client sends invalid parameters to a Roym method:
+
+- **Error code `-32602`.** The service answers with JSON-RPC error code `-32602` ("Invalid params").
+- **Error data.** The error object includes `data: { "field": "<field_name>" }` pointing to the first invalid, missing, or unknown field. When no field can be named, for example when `params` is not a JSON object, `data` is absent.
+- **Unknown fields.** Local-only methods refuse unknown fields with `-32602`. Wire-reachable methods ignore unknown fields so newer clients can talk to older nodes.
+- **Group alias key.** Group methods accept the group identifier under either the `conversation` key or the `group` alias key. Sending both keys in the same request is refused as a duplicate field with `-32602` (`data.field = "conversation"`).
+- **Profile envelope format.** When calling `contacts.upsert`, pass `profile_envelope` as a serialized JSON string, not a JSON object.
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]

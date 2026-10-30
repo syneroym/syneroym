@@ -1140,6 +1140,8 @@ The manifest of Roym declares six services: `web`, `profile`, `conversation`, `c
 
 A call to the `invoke` export of a service that does not come from inside the installation is answered with error `-32013`, except for four `directory` methods. `directory.search`, `directory.info` and `directory.standing` accept any caller. `directory.publish` accepts a caller whose identity the router verified. So `transaction` and `catalog` cannot be called by another node. The `status` export stays open on every service, so health checks work. Two nodes talk in two ways. They use the conversation transport of the substrate, which carries the cards (the `prekey-bundle` and `deliver` calls). They also use the four `directory` methods. Inside the installation, `web` checks the session before it forwards a call.
 
+Today `profile` and `conversation` have a method table; the other services still read their params by hand. Each method table maps RPC method names to typed input and output structs in Rust. Admission and caller permission checks run first, before the method input is parsed. If the caller is not admitted, the service refuses the call immediately (for example with `-32013` for off-node callers). Once admitted, the parameters are parsed against the method's input struct. A missing field, an invalid type, or an unknown field (on local-only methods) answers with JSON-RPC error code `-32602` and points to the offending field in `data.field`.
+
 ```mermaid
 flowchart TD
     subgraph BROWSER["Browser"]

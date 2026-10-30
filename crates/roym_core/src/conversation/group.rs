@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_signed_record::{EnvelopeError, content_digest};
 
-use super::{MessageRow, sort_key};
+use super::{MessageView, sort_key};
 
 pub const GROUP_PROFILE_CONTENT_TYPE: &str = "application/vnd.roym.group-profile+json";
 pub const MEMBERSHIP_EVENT_CONTENT_TYPE: &str = "application/vnd.roym.membership-event+json";
@@ -183,8 +183,8 @@ pub fn admission_for_new_group(is_owner: bool, admit_answer: Option<&str>) -> Gr
 
 /// Content digest of a group's message transcript. Sorts a copy of `rows` by
 /// `sort_key`.
-pub fn transcript_digest(rows: &[MessageRow]) -> Result<String, EnvelopeError> {
-    let mut sorted: Vec<&MessageRow> = rows.iter().collect();
+pub fn transcript_digest(rows: &[MessageView]) -> Result<String, EnvelopeError> {
+    let mut sorted: Vec<&MessageView> = rows.iter().collect();
     sorted.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
     let lines: Vec<Value> = sorted
         .iter()

@@ -1,0 +1,40 @@
+{
+  "kind": "group",
+  "messages": [
+    {
+      "author": "string",
+      "body": "string",
+      "body_encoding": "utf8",
+      "content_type": "application/vnd.roym.group-profile+json",
+      "conversation": "string",
+      "direction": "incoming",
+      "id": "string",
+      "last_error": "null",
+      "refused": "null",
+      "restored": "boolean",
+      "sender_timestamp_ms": "number",
+      "state": "delivered",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "visible_seq": "number"
+    },
+    {
+      "author": "string",
+      "body": "string",
+      "body_encoding": "utf8",
+      "content_type": "application/vnd.roym.membership-event+json",
+      "conversation": "string",
+      "direction": "incoming",
+      "id": "string",
+      "last_error": "null",
+      "refused": "null",
+      "restored": "boolean",
+      "sender_timestamp_ms": "number",
+      "state": "delivered",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "visible_seq": "number"
+    }
+  ],
+  "next_cursor": "null"
+}

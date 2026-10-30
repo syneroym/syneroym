@@ -3,8 +3,8 @@ use std::{fs, path::PathBuf};
 use super::*;
 use crate::conversation::{BodyEncoding, Direction, StoredState};
 
-fn make_test_row(id: &str, ts: i64, author: &str) -> MessageRow {
-    MessageRow {
+fn make_test_row(id: &str, ts: i64, author: &str) -> MessageView {
+    MessageView {
         id: id.to_string(),
         conversation: "conv-1".to_string(),
         author: author.to_string(),
@@ -15,8 +15,12 @@ fn make_test_row(id: &str, ts: i64, author: &str) -> MessageRow {
         body: Some("hello".to_string()),
         state: StoredState::Delivered,
         last_error: None,
-        deleted_at_secs: None,
         stored_at_secs: 100,
+        refused: None,
+        restored: false,
+        visible_seq: 1,
+        verified: true,
+        deleted_at_secs: None,
     }
 }
 

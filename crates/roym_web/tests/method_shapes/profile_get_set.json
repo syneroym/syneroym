@@ -1,0 +1,5 @@
+{
+  "envelope": "string",
+  "record_id": "string",
+  "verified_at_secs": "number"
+}

@@ -14,14 +14,19 @@ use syneroym_app_host::{
     types::{
         conversation::ConversationError,
         data_layer::{CollectionSchema, IndexDefinition, IndexType, RecordWriteValue},
-        proxy::CallTarget,
     },
 };
 use syneroym_roym_core::{
     admit,
     envelope::{Request, Response},
-    services, signing,
+    method::{
+        call_sibling,
+        profile::{ContactRow, ContactsListInput},
+    },
+    services,
 };
+
+use crate::api;
 
 pub const SCHEMA_VERSION: u32 = 4;
 pub const ADMISSIONS: &str = "admissions";
@@ -134,39 +139,19 @@ pub(crate) fn from_host(err: ConversationError) -> Response {
     }
 }
 
-/// One `invoke` call into the sibling `profile` service.
-pub(crate) async fn profile_call<H: AppHost>(
-    host: &H,
-    method: &str,
-    params: Value,
-) -> Result<Response, String> {
-    let req = json!({ "method": method, "params": params }).to_string();
-    let raw = host
-        .call(
-            CallTarget::Dependency(services::PROFILE.name.to_string()),
-            services::PROFILE.interface.to_string(),
-            "invoke".to_string(),
-            json!([req]).to_string(),
-            None,
-        )
-        .await
-        .map_err(|e| format!("{method}: {e:?}"))?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
-}
-
 /// Map of conversation_address -> person_did from contacts.list.
 pub(crate) async fn contacts_map<H: AppHost>(host: &H) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    if let Ok(resp) = profile_call(host, "contacts.list", json!({})).await
-        && let Some(rows) = resp.result.and_then(|v| v.as_array().cloned())
-    {
+    let rows_res = call_sibling::<_, ContactsListInput, Vec<ContactRow>>(
+        host,
+        services::PROFILE,
+        "contacts.list",
+        &ContactsListInput::default(),
+    )
+    .await;
+    if let Ok(rows) = rows_res {
         for row in rows {
-            if let (Some(addr), Some(did)) = (
-                row.get("conversation_address").and_then(Value::as_str),
-                row.get("person_did").and_then(Value::as_str),
-            ) {
-                map.insert(addr.to_string(), did.to_string());
-            }
+            map.insert(row.conversation_address, row.person_did);
         }
     }
     map
@@ -182,33 +167,6 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     if let Some(resp) = admit::require_internal(host).await {
         return resp;
     }
-    if let Some(resp) = signing::handle_certificate_verb(host, "conversation.", &req).await {
-        return resp;
-    }
 
-    match req.method.as_str() {
-        "conversation.ping" => Response::ok(json!({ "service": services::CONVERSATION.name })),
-        "conversation.open" => messages::open(host, &req).await,
-        "conversation.list" => messages::list(host, &req).await,
-        "conversation.send" => messages::send(host, &req).await,
-        "conversation.history" => messages::history(host, &req).await,
-        "conversation.changes" => messages::changes(host, &req).await,
-        "conversation.delivery-status" => messages::delivery_status(host, &req).await,
-        "conversation.outbox" => messages::outbox(host).await,
-        "conversation.retry" => messages::retry(host, &req).await,
-        "conversation.delete-message" => messages::delete_message(host, &req).await,
-        "conversation.search" => messages::search(host, &req).await,
-        "conversation.transcript-digest" => messages::transcript_digest(host, &req).await,
-        "conversation.export" => backup::export(host).await,
-        "conversation.import" => backup::import(host, &req).await,
-        "group.create" => group::create(host, &req).await,
-        "group.rename" => group::rename(host, &req).await,
-        "group.add-member" => group::add_member(host, &req).await,
-        "group.remove-member" => group::remove_member(host, &req).await,
-        "group.info" => group::info(host, &req).await,
-        "group.sync" => group::sync(host, &req).await,
-        "group.hide" => group::hide(host, &req).await,
-        "group.unhide" => group::unhide(host, &req).await,
-        other => Response::method_not_found(other),
-    }
+    api::dispatch(host, &req).await.unwrap_or_else(|| Response::method_not_found(&req.method))
 }

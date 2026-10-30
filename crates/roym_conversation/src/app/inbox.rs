@@ -12,12 +12,19 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     conversation::group::{GROUP_PROFILE_CONTENT_TYPE, MEMBERSHIP_EVENT_CONTENT_TYPE},
-    paging,
+    method::{
+        call_sibling,
+        profile::{
+            AdmissionKind, AdmitFirstContactInput, AdmitFirstContactOutput, BlockCheckOutput,
+            BlockTargetInput,
+        },
+    },
+    paging, services,
 };
 
 use super::{
     CONVERSATION_META, FIRST_CONTACT_CHARGES, ensure_charges, ensure_meta, load_admission,
-    person_did_for_address, profile_call, set_admission, set_admission_peer,
+    person_did_for_address, set_admission, set_admission_peer,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,17 +119,18 @@ pub(crate) async fn is_blocked<H: AppHost>(
     address: &str,
     person_did: Option<&str>,
 ) -> Result<bool, String> {
-    let resp =
-        profile_call(host, "block.check", json!({ "address": address, "person_did": person_did }))
-            .await?;
-    if resp.error.is_some() {
-        return Err(format!("block.check returned an error: {:?}", resp.error));
-    }
-    let blocked = resp.result.as_ref().and_then(|v| v.get("blocked")).and_then(Value::as_bool);
-    match blocked {
-        Some(v) => Ok(v),
-        None => Err("block.check: missing 'blocked' field in result".to_string()),
-    }
+    let out = call_sibling::<_, BlockTargetInput, BlockCheckOutput>(
+        host,
+        services::PROFILE,
+        "block.check",
+        &BlockTargetInput {
+            address: Some(address.to_string()),
+            person_did: person_did.map(str::to_string),
+        },
+    )
+    .await
+    .map_err(|e| format!("block.check call failed: {e}"))?;
+    Ok(out.blocked)
 }
 
 pub async fn on_message<H: AppHost>(host: &H, msg: Message) -> Result<Admission, String> {
@@ -180,31 +188,23 @@ async fn on_direct_message<H: AppHost>(
     let charge = match load_charge(host, &msg.id).await? {
         Some(c) => c,
         None => {
-            let admit = profile_call(
+            let res = call_sibling::<_, AdmitFirstContactInput, AdmitFirstContactOutput>(
                 host,
+                services::PROFILE,
                 "contacts.admit-first-contact",
-                json!({ "sender_address": msg.author, "sender_person_did": person_did }),
+                &AdmitFirstContactInput {
+                    sender_address: msg.author.clone(),
+                    sender_person_did: person_did,
+                },
             )
-            .await?;
-            if admit.error.is_some() {
-                return Err(format!(
-                    "contacts.admit-first-contact returned an error: {:?}",
-                    admit.error
-                ));
-            }
-            let res = admit
-                .result
-                .ok_or_else(|| "contacts.admit-first-contact: missing result".to_string())?;
-            let adm_str = res.get("admission").and_then(Value::as_str).ok_or_else(|| {
-                "contacts.admit-first-contact: missing 'admission' field".to_string()
-            })?;
-            let blk = res.get("blocked").and_then(Value::as_bool).unwrap_or(blocked);
-            let retry = res.get("retry_after_secs").and_then(Value::as_u64);
+            .await
+            .map_err(|e| format!("contacts.admit-first-contact failed: {e}"))?;
+            let adm_str = res.admission.as_str();
             let c = FirstContactCharge {
                 at_secs: now,
                 admission: adm_str.to_string(),
-                blocked: blk,
-                retry_after_secs: retry,
+                blocked: res.blocked,
+                retry_after_secs: res.retry_after_secs,
             };
             save_charge(host, &msg.id, &c).await?;
             c
@@ -276,20 +276,20 @@ async fn decide_group_visibility<H: AppHost>(host: &H, info: &GroupInfo) -> Resu
     if owner_blocked {
         return Ok("hidden".to_string());
     }
-    let admit = profile_call(
+    let res = call_sibling::<_, AdmitFirstContactInput, AdmitFirstContactOutput>(
         host,
+        services::PROFILE,
         "contacts.admit-first-contact",
-        json!({ "sender_address": info.owner, "sender_person_did": owner_did }),
+        &AdmitFirstContactInput {
+            sender_address: info.owner.clone(),
+            sender_person_did: owner_did,
+        },
     )
-    .await?;
-    if admit.error.is_some() {
-        return Err(format!("contacts.admit-first-contact returned an error: {:?}", admit.error));
+    .await
+    .map_err(|e| format!("contacts.admit-first-contact failed: {e}"))?;
+    if res.admission == AdmissionKind::Allow {
+        Ok("shown".to_string())
+    } else {
+        Ok("hidden".to_string())
     }
-    let res =
-        admit.result.ok_or_else(|| "contacts.admit-first-contact: missing result".to_string())?;
-    let adm = res
-        .get("admission")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "contacts.admit-first-contact: missing 'admission' field".to_string())?;
-    if adm == "allow" { Ok("shown".to_string()) } else { Ok("hidden".to_string()) }
 }

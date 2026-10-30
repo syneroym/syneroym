@@ -1,0 +1,10 @@
+[
+  {
+    "added_at_secs": "number",
+    "conversation_address": "string",
+    "display_name": "string",
+    "favourite": "boolean",
+    "from_profile_record": "null",
+    "person_did": "string"
+  }
+]

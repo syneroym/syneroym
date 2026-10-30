@@ -1,5 +1,24 @@
 import { call } from "../rpc";
 
+export function upsertParams(
+  did: string,
+  addr: string,
+  envText: string,
+): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    person_did: did.trim(),
+  };
+  const trimmedAddr = addr.trim();
+  if (trimmedAddr) {
+    params["conversation_address"] = trimmedAddr;
+  }
+  const trimmedEnv = envText.trim();
+  if (trimmedEnv) {
+    params["profile_envelope"] = trimmedEnv;
+  }
+  return params;
+}
+
 export async function renderContacts(container: HTMLElement) {
   container.replaceChildren();
   const box = document.createElement("div");
@@ -53,16 +72,16 @@ export async function renderContacts(container: HTMLElement) {
   addBtn.onclick = async () => {
     errorP.textContent = "";
     try {
-      let envObj = undefined;
-      if (envInput.value.trim()) {
-        envObj = JSON.parse(envInput.value.trim());
+      const trimmedEnv = envInput.value.trim();
+      if (trimmedEnv) {
+        try {
+          JSON.parse(trimmedEnv);
+        } catch {
+          errorP.textContent = "Profile envelope is not valid JSON";
+          return;
+        }
       }
-      const params: Record<string, unknown> = {
-        person_did: didInput.value.trim(),
-        profile_envelope: envObj,
-      };
-      const addr = addrInput.value.trim();
-      if (addr) params["conversation_address"] = addr;
+      const params = upsertParams(didInput.value, addrInput.value, envInput.value);
       await call("contacts.upsert", params);
       didInput.value = "";
       addrInput.value = "";

@@ -1,0 +1,9 @@
+[
+  {
+    "address": "string",
+    "at_secs": "number",
+    "key": "string",
+    "person_did": "null",
+    "reason": "string"
+  }
+]

@@ -1,0 +1,16 @@
+{
+  "conversations": [
+    {
+      "group": "null",
+      "id": "string",
+      "kind": "direct",
+      "last_activity_ms": "number",
+      "message_count": "number",
+      "name": "null",
+      "opened_at_secs": "number",
+      "peer_address": "string",
+      "peer_person_did": "null",
+      "restored": "boolean"
+    }
+  ]
+}

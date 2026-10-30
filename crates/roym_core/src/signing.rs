@@ -8,7 +8,6 @@
 //! mints it and the call that uses it.
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
@@ -20,9 +19,15 @@ use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
 
 use crate::{
     backup::{BUNDLE_MANIFEST_VERSION, Bundle},
-    clock,
     envelope::{Request, Response},
+    method::typed,
     record,
+};
+
+pub mod verbs;
+pub use verbs::{
+    InstallCertificateInput, InstallCertificateOutput, SigningStatusOutput,
+    install_signing_certificate, signing_status,
 };
 
 pub const CERTIFICATES: &str = "signing_certificates";
@@ -257,35 +262,8 @@ pub async fn handle_certificate_verb<H: AppHost>(
 ) -> Option<Response> {
     let suffix = req.method.strip_prefix(prefix)?;
     match suffix {
-        "signing-status" => {
-            let id = match AppSigning::signing_identity(host).await {
-                Ok(i) => i,
-                Err(e) => return Some(Response::internal_error(e.to_string())),
-            };
-            match status(host, clock::now_secs()).await {
-                Ok(s) => Some(Response::ok(json!({
-                    "signing_did": id.signing_did,
-                    "pubkey_hex": id.pubkey_hex,
-                    "owner_did": id.owner_did,
-                    "certificate": s
-                }))),
-                Err(e) => Some(Response::internal_error(e.to_string())),
-            }
-        }
-        "install-signing-certificate" => {
-            let cert = match req.params.get("certificate").and_then(|v| v.as_str()) {
-                Some(c) => c,
-                None => return Some(Response::invalid_params("certificate is required")),
-            };
-            match install(host, cert, clock::now_secs()).await {
-                Ok(s) => Some(Response::ok(json!({
-                    "master_did": s.master_did,
-                    "expires_at_secs": s.expires_at_secs
-                }))),
-                Err(CertificateError::Rejected(m)) => Some(Response::invalid_params(m)),
-                Err(e) => Some(Response::internal_error(e.to_string())),
-            }
-        }
+        "signing-status" => Some(typed(host, req, signing_status).await),
+        "install-signing-certificate" => Some(typed(host, req, install_signing_certificate).await),
         _ => None,
     }
 }
@@ -324,6 +302,15 @@ pub(crate) mod tests {
 
     use super::*;
 
+    #[derive(Debug, Clone)]
+    pub(crate) struct RecordedCall {
+        pub target: CallTarget,
+        pub interface: String,
+        pub method: String,
+        pub params: String,
+        pub options: Option<CallOptions>,
+    }
+
     /// A `#[cfg(test)]` `AppHost` stub shared across `roym_core`'s own unit
     /// tests -- `admit` extends it with a settable `CallerOrigin` rather
     /// than standing up a second stub.
@@ -339,9 +326,21 @@ pub(crate) mod tests {
         query_pages: Mutex<VecDeque<QueryResult>>,
         /// The collection and options of every `query` call, in order.
         queries: Mutex<Vec<(String, QueryOptions)>>,
+        proxy_response: Mutex<Option<Result<String, ProxyError>>>,
+        last_call: Mutex<Option<RecordedCall>>,
     }
 
     impl TestHost {
+        pub(crate) fn set_signing_id(&self, id: SigningIdentity) {
+            *self.signing_id.lock().unwrap() = Some(id);
+        }
+
+        pub(crate) fn set_proxy_response(&self, res: Result<String, ProxyError>) {
+            *self.proxy_response.lock().unwrap() = Some(res);
+        }
+        pub(crate) fn last_call(&self) -> Option<RecordedCall> {
+            self.last_call.lock().unwrap().clone()
+        }
         pub(crate) fn set_caller_origin(&self, origin: CallerOrigin) {
             *self.caller_origin.lock().unwrap() = Some(origin);
         }
@@ -635,13 +634,19 @@ pub(crate) mod tests {
     impl AppProxy for TestHost {
         async fn call(
             &self,
-            _target: CallTarget,
-            _iface: String,
-            _method: String,
-            _params: String,
-            _opts: Option<CallOptions>,
+            target: CallTarget,
+            iface: String,
+            method: String,
+            params: String,
+            opts: Option<CallOptions>,
         ) -> Result<String, ProxyError> {
-            unimplemented!()
+            *self.last_call.lock().unwrap() =
+                Some(RecordedCall { target, interface: iface, method, params, options: opts });
+            if let Some(res) = self.proxy_response.lock().unwrap().clone() {
+                res
+            } else {
+                unimplemented!()
+            }
         }
         async fn enqueue(
             &self,

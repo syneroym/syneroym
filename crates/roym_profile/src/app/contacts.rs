@@ -6,9 +6,17 @@ use syneroym_app_host::{
     AppDataLayer, AppHost,
     types::data_layer::{IndexDefinition, IndexType, RecordWriteValue},
 };
+pub use syneroym_roym_core::method::profile::ContactRow;
 use syneroym_roym_core::{
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
+    method::{
+        NoParams, Reply,
+        profile::{
+            AdmissionKind, AdmitFirstContactInput, AdmitFirstContactOutput, ContactKeyInput,
+            ContactsListInput, ResolveAddressOutput,
+        },
+    },
     paging,
     person::{ProfilePayload, is_did_key},
     record::{RECORD_PROFILE, VerifyOptions, verify_json},
@@ -17,14 +25,31 @@ use syneroym_roym_core::{
 
 use super::{BLOCKS, CONTACT_ATTEMPTS, CONTACTS, PROFILES, SETTINGS, ensure_coll};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ContactRow {
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContactUpsertInput {
     pub person_did: String,
+    pub profile_envelope: Option<String>,
     pub display_name: Option<String>,
-    pub conversation_address: String,
-    pub favourite: bool,
-    pub added_at_secs: u64,
-    pub from_profile_record: Option<String>,
+    pub conversation_address: Option<String>,
+    pub favourite: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContactUpsertOutput {
+    pub person_did: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContactRemoveOutput {
+    pub removed: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContactLimitsInput {
+    pub window_secs: u64,
+    pub max_per_window: u32,
 }
 
 pub(crate) async fn load_contact_limits<H: AppHost>(host: &H) -> Result<ContactLimits, String> {
@@ -39,9 +64,8 @@ pub(crate) async fn load_contact_limits<H: AppHost>(host: &H) -> Result<ContactL
     }
 }
 
-pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
-    let favourites_only =
-        req.params.get("favourites_only").and_then(|v| v.as_bool()).unwrap_or(false);
+pub(crate) async fn list<H: AppHost>(host: &H, input: ContactsListInput) -> Reply<Vec<ContactRow>> {
+    let favourites_only = input.favourites_only.unwrap_or(false);
     if let Err(e) = ensure_coll(
         host,
         CONTACTS,
@@ -49,37 +73,33 @@ pub(crate) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
     )
     .await
     {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let mut list: Vec<ContactRow> = match paging::query_all(host, CONTACTS, None).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     list.retain(|row| !favourites_only || row.favourite);
-    let offset = req.params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-    let limit = req.params.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let offset = input.offset.unwrap_or(0) as usize;
+    let limit = input.limit.map(|v| v as usize);
     let paged: Vec<_> = match limit {
         Some(lim) => list.into_iter().skip(offset).take(lim).collect(),
         None => list.into_iter().skip(offset).collect(),
     };
-    Response::ok(json!(paged))
+    Ok(paged)
 }
 
-pub(crate) async fn get<H: AppHost>(host: &H, req: &Request) -> Response {
-    let person_did = match req.params.get("person_did").and_then(|v| v.as_str()) {
-        Some(d) => d,
-        None => return Response::invalid_params("person_did is required"),
-    };
+pub(crate) async fn get<H: AppHost>(host: &H, input: ContactKeyInput) -> Reply<Option<ContactRow>> {
     if let Err(e) = ensure_coll(host, CONTACTS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    match AppDataLayer::get(host, CONTACTS.to_string(), person_did.to_string()).await {
+    match AppDataLayer::get(host, CONTACTS.to_string(), input.person_did).await {
         Ok(Some(row)) => match serde_json::from_slice::<ContactRow>(&row.payload) {
-            Ok(r) => Response::ok(json!(r)),
-            Err(e) => Response::internal_error(e.to_string()),
+            Ok(r) => Ok(Some(r)),
+            Err(e) => Err(Response::internal_error(e.to_string())),
         },
-        Ok(None) => Response::ok(Value::Null),
-        Err(e) => Response::internal_error(e.to_string()),
+        Ok(None) => Ok(None),
+        Err(e) => Err(Response::internal_error(e.to_string())),
     }
 }
 
@@ -135,39 +155,34 @@ async fn process_profile_envelope<H: AppHost>(
     Ok((Some(p.display_name), p.conversation_address, Some(v.record_id)))
 }
 
-pub(crate) async fn upsert<H: AppHost>(host: &H, req: &Request) -> Response {
-    let person_did = match req.params.get("person_did").and_then(|v| v.as_str()) {
-        Some(d) => d.to_string(),
-        None => return Response::invalid_params("person_did is required"),
-    };
+pub(crate) async fn upsert<H: AppHost>(
+    host: &H,
+    input: ContactUpsertInput,
+) -> Reply<ContactUpsertOutput> {
+    let person_did = input.person_did;
     if !is_did_key(&person_did) {
-        return Response::invalid_params(format!("'{person_did}' is not a did:key"));
+        return Err(Response::invalid_params(format!("'{person_did}' is not a did:key")));
     }
 
     let now = clock::now_secs();
-    let profile_env_option = req.params.get("profile_envelope").and_then(|v| v.as_str());
 
-    let (display_name, address, from_record) = match profile_env_option {
-        Some(json_str) => match process_profile_envelope(host, json_str, &person_did, now).await {
-            Ok(res) => res,
-            Err(resp) => return resp,
-        },
+    let (display_name, address, from_record) = match input.profile_envelope.as_deref() {
+        Some(json_str) => process_profile_envelope(host, json_str, &person_did, now).await?,
         None => {
-            let disp = req.params.get("display_name").and_then(|v| v.as_str()).map(String::from);
-            let addr = match req.params.get("conversation_address").and_then(|v| v.as_str()) {
-                Some(a) => a.to_string(),
+            let addr = match input.conversation_address {
+                Some(a) => a,
                 None => {
-                    return Response::invalid_params(
+                    return Err(Response::invalid_params(
                         "conversation_address is required without a profile",
-                    );
+                    ));
                 }
             };
-            (disp, addr, None)
+            (input.display_name, addr, None)
         }
     };
 
     if let Err(e) = ensure_coll(host, CONTACTS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     let existing = match AppDataLayer::get(host, CONTACTS.to_string(), person_did.clone()).await {
@@ -176,13 +191,8 @@ pub(crate) async fn upsert<H: AppHost>(host: &H, req: &Request) -> Response {
     };
 
     let existing_added_at = existing.as_ref().map(|r| r.added_at_secs);
-    // When the caller omits `favourite`, preserve the stored value.
-    // To un-star a contact the caller must send `"favourite": false` explicitly.
-    let favourite = req
-        .params
-        .get("favourite")
-        .and_then(|v| v.as_bool())
-        .unwrap_or_else(|| existing.as_ref().map(|r| r.favourite).unwrap_or(false));
+    let favourite =
+        input.favourite.unwrap_or_else(|| existing.as_ref().map(|r| r.favourite).unwrap_or(false));
 
     let row = ContactRow {
         person_did: person_did.clone(),
@@ -195,7 +205,7 @@ pub(crate) async fn upsert<H: AppHost>(host: &H, req: &Request) -> Response {
 
     let payload_bytes = match serde_json::to_vec(&row) {
         Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     if let Err(e) = AppDataLayer::put(
@@ -205,55 +215,55 @@ pub(crate) async fn upsert<H: AppHost>(host: &H, req: &Request) -> Response {
     )
     .await
     {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
 
-    Response::ok(json!({ "person_did": person_did }))
+    Ok(ContactUpsertOutput { person_did })
 }
 
-pub(crate) async fn remove<H: AppHost>(host: &H, req: &Request) -> Response {
-    let person_did = match req.params.get("person_did").and_then(|v| v.as_str()) {
-        Some(d) => d.to_string(),
-        None => return Response::invalid_params("person_did is required"),
-    };
+pub(crate) async fn remove<H: AppHost>(
+    host: &H,
+    input: ContactKeyInput,
+) -> Reply<ContactRemoveOutput> {
     if let Err(e) = ensure_coll(host, CONTACTS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    if let Err(e) = AppDataLayer::delete(host, CONTACTS.to_string(), person_did.clone()).await {
-        return Response::internal_error(e.to_string());
+    if let Err(e) = AppDataLayer::delete(host, CONTACTS.to_string(), input.person_did.clone()).await
+    {
+        return Err(Response::internal_error(e.to_string()));
     }
-    Response::ok(json!({ "removed": person_did }))
+    Ok(ContactRemoveOutput { removed: input.person_did })
 }
 
-pub(crate) async fn resolve_address<H: AppHost>(host: &H, req: &Request) -> Response {
-    let person_did = match req.params.get("person_did").and_then(|v| v.as_str()) {
-        Some(d) => d,
-        None => return Response::invalid_params("person_did is required"),
-    };
+pub(crate) async fn resolve_address<H: AppHost>(
+    host: &H,
+    input: ContactKeyInput,
+) -> Reply<ResolveAddressOutput> {
+    let person_did = input.person_did;
     if let Err(e) = ensure_coll(host, CONTACTS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    match AppDataLayer::get(host, CONTACTS.to_string(), person_did.to_string()).await {
+    match AppDataLayer::get(host, CONTACTS.to_string(), person_did.clone()).await {
         Ok(Some(row)) => match serde_json::from_slice::<ContactRow>(&row.payload) {
-            Ok(r) => Response::ok(json!({ "conversation_address": r.conversation_address })),
-            Err(e) => Response::internal_error(e.to_string()),
+            Ok(r) => Ok(ResolveAddressOutput { conversation_address: r.conversation_address }),
+            Err(e) => Err(Response::internal_error(e.to_string())),
         },
-        Ok(None) => Response::invalid_params(format!("contact '{person_did}' not found")),
-        Err(e) => Response::internal_error(e.to_string()),
+        Ok(None) => Err(Response::invalid_params(format!("contact '{person_did}' not found"))),
+        Err(e) => Err(Response::internal_error(e.to_string())),
     }
 }
 
-pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> Response {
-    let sender_person_did = req.params.get("sender_person_did").and_then(|v| v.as_str());
-    let sender_address = match req.params.get("sender_address").and_then(|v| v.as_str()) {
-        Some(a) => a,
-        None => return Response::invalid_params("sender_address is required"),
-    };
+pub(crate) async fn admit_first_contact<H: AppHost>(
+    host: &H,
+    input: AdmitFirstContactInput,
+) -> Reply<AdmitFirstContactOutput> {
+    let sender_person_did = input.sender_person_did.as_deref();
+    let sender_address = &input.sender_address;
 
     let now = clock::now_secs();
     let limits = match load_contact_limits(host).await {
         Ok(l) => l,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let key = sender_person_did
@@ -267,7 +277,7 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
     )
     .await
     {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = ensure_coll(
         host,
@@ -279,17 +289,17 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
     )
     .await
     {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     let blocked_by_key = match AppDataLayer::get(host, BLOCKS.to_string(), key.clone()).await {
         Ok(row) => row.is_some(),
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     let blocked_by_addr = if sender_person_did.is_some() {
         match AppDataLayer::get(host, BLOCKS.to_string(), format!("addr:{sender_address}")).await {
             Ok(row) => row.is_some(),
-            Err(e) => return Response::internal_error(e.to_string()),
+            Err(e) => return Err(Response::internal_error(e.to_string())),
         }
     } else {
         false
@@ -298,8 +308,7 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
 
     let floor = now.saturating_sub(limits.window_secs);
     let filter_json = json!({ "sender_key": key, "at_secs": { "$gte": floor } }).to_string();
-    // Every attempt in the window, across all pages: the oldest one sets an
-    // accurate retry_after_secs hint.
+
     let attempts = paging::filter_map(host, CONTACT_ATTEMPTS, Some(filter_json), |row| {
         let v: Value = serde_json::from_slice(&row.payload).ok()?;
         v.get("at_secs").and_then(Value::as_u64)
@@ -307,7 +316,7 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
     .await;
     let attempts = match attempts {
         Ok(a) => a,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let res = safety::admit_first_contact(blocked, &attempts, &limits, now);
@@ -316,7 +325,7 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
             let attempt_val = json!({ "sender_key": key, "at_secs": now });
             let payload = match serde_json::to_vec(&attempt_val) {
                 Ok(b) => b,
-                Err(e) => return Response::internal_error(e.to_string()),
+                Err(e) => return Err(Response::internal_error(e.to_string())),
             };
             if let Err(e) = AppDataLayer::put(
                 host,
@@ -325,48 +334,51 @@ pub(crate) async fn admit_first_contact<H: AppHost>(host: &H, req: &Request) -> 
             )
             .await
             {
-                return Response::internal_error(e.to_string());
+                return Err(Response::internal_error(e.to_string()));
             }
-            Response::ok(json!({ "admission": "allow", "blocked": res.blocked }))
+            Ok(AdmitFirstContactOutput {
+                admission: AdmissionKind::Allow,
+                blocked: res.blocked,
+                retry_after_secs: None,
+            })
         }
-        Admission::RateLimited { retry_after_secs } => Response::ok(json!({
-            "admission": "rate-limited",
-            "blocked": res.blocked,
-            "retry_after_secs": retry_after_secs
-        })),
-        Admission::Blocked => Response::ok(json!({ "admission": "blocked", "blocked": true })),
+        Admission::RateLimited { retry_after_secs } => Ok(AdmitFirstContactOutput {
+            admission: AdmissionKind::RateLimited,
+            blocked: res.blocked,
+            retry_after_secs: Some(retry_after_secs),
+        }),
+        Admission::Blocked => Ok(AdmitFirstContactOutput {
+            admission: AdmissionKind::Blocked,
+            blocked: true,
+            retry_after_secs: None,
+        }),
     }
 }
 
-pub(crate) async fn limits<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn limits<H: AppHost>(host: &H, _: NoParams) -> Reply<ContactLimits> {
     match load_contact_limits(host).await {
-        Ok(l) => Response::ok(json!(l)),
-        Err(e) => Response::internal_error(e),
+        Ok(l) => Ok(l),
+        Err(e) => Err(Response::internal_error(e)),
     }
 }
 
-pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
-    let window_secs = match req.params.get("window_secs").and_then(|v| v.as_u64()) {
-        Some(w) => w,
-        None => return Response::invalid_params("window_secs is required"),
-    };
-    let max_per_window = match req.params.get("max_per_window").and_then(|v| v.as_u64()) {
-        Some(m) => m as u32,
-        None => return Response::invalid_params("max_per_window is required"),
-    };
-
-    let limits = ContactLimits { window_secs, max_per_window };
+pub(crate) async fn set_limits<H: AppHost>(
+    host: &H,
+    input: ContactLimitsInput,
+) -> Reply<ContactLimits> {
+    let limits =
+        ContactLimits { window_secs: input.window_secs, max_per_window: input.max_per_window };
     if let Err(e) = limits.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
 
     if let Err(e) = ensure_coll(host, SETTINGS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     let payload = match serde_json::to_vec(&limits) {
         Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     if let Err(e) = AppDataLayer::put(
@@ -376,8 +388,8 @@ pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response 
     )
     .await
     {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
 
-    Response::ok(json!(limits))
+    Ok(limits)
 }

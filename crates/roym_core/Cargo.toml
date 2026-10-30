@@ -12,9 +12,11 @@ syneroym-app-host.workspace = true
 syneroym-signed-record.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 toml.workspace = true
 syneroym-identity.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

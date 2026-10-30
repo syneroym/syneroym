@@ -1,0 +1,31 @@
+{
+  "admission": {
+    "state": "shown"
+  },
+  "can_read_new_messages": "boolean",
+  "conversation_id": "string",
+  "epoch": "number",
+  "is_member": "boolean",
+  "is_owner": "boolean",
+  "key_epoch": "number",
+  "key_stored_at_ms": "number",
+  "members": [
+    {
+      "address": "string",
+      "is_owner": "boolean",
+      "person_did": "null"
+    }
+  ],
+  "name": "string",
+  "notices": {
+    "delivery": "\"Not yet delivered to every member\" means at least one member has not received it directly. Members also pass messages to each other, so a member may still receive it later.",
+    "join_boundary": "You can read messages sent after you joined. Messages from before you joined are not shared with you.",
+    "key_trust": "Each member's messages are signed with a key this installation first saw when they joined. That is a weaker check than a signed record, so messages here are never marked as verified.",
+    "owner_can_read": "The owner of this group makes and shares the group's key, so the owner can read every message sent while they own it. Adding or removing a member is shown to everyone in the group.",
+    "removed": "null",
+    "restored": "null"
+  },
+  "owner_address": "string",
+  "owner_person_did": "null",
+  "restored_only": "boolean"
+}

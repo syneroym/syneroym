@@ -1,0 +1,6 @@
+{
+  "imported": {
+    "admissions": "number",
+    "messages": "number"
+  }
+}

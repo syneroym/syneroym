@@ -8345,9 +8345,11 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "syneroym-app-host",
  "syneroym-identity",
  "syneroym-signed-record",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.8+spec-1.1.0",

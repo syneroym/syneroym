@@ -29,7 +29,12 @@ use syneroym_roym_core::{
     clock,
     conversation::Direction,
     envelope::{Request, Response},
-    fulfilment, paging,
+    fulfilment,
+    method::{
+        SiblingError, call_sibling,
+        conversation::{SendInput, SendOutput},
+    },
+    paging,
     record::Envelope,
     services,
     signing::{self, CertificateError},
@@ -492,21 +497,6 @@ pub(crate) async fn sibling_call<H: AppHost>(
     serde_json::from_str(&raw).map_err(|e| e.to_string())
 }
 
-pub(crate) async fn conversation_call<H: AppHost>(
-    host: &H,
-    method: &str,
-    params: Value,
-) -> Result<Response, String> {
-    sibling_call(
-        host,
-        services::CONVERSATION.name,
-        services::CONVERSATION.interface,
-        method,
-        params,
-    )
-    .await
-}
-
 pub(crate) async fn catalog_call<H: AppHost>(
     host: &H,
     method: &str,
@@ -573,27 +563,26 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
         Err(e) => return (String::new(), "not-sent".to_string(), Some(e.to_string())),
     };
 
-    let send_resp = conversation_call(
+    let send_resp = call_sibling::<_, SendInput, SendOutput>(
         host,
+        services::CONVERSATION,
         "conversation.send",
-        json!({ "conversation": conversation, "body": body, "content_type": CARD_CONTENT_TYPE }),
+        &SendInput {
+            conversation: conversation.to_string(),
+            body,
+            content_type: Some(CARD_CONTENT_TYPE.to_string()),
+        },
     )
     .await;
 
     let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
-        Ok(r) if r.error.is_none() => {
-            let res = r.result.unwrap_or(Value::Null);
-            let mid = res.get("message_id").and_then(Value::as_str).unwrap_or("").to_string();
-            let st = res.get("state").and_then(Value::as_str).unwrap_or("").to_string();
-            let ts =
-                res.get("sender_timestamp_ms").and_then(Value::as_i64).unwrap_or(now as i64 * 1000);
-            (mid, st, ts, None)
+        Ok(out) => (out.message_id, out.state.as_str().to_string(), out.sender_timestamp_ms, None),
+        Err(SiblingError::Refused(err)) => {
+            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(err.message))
         }
-        Ok(r) => {
-            let err_msg = r.error.map(|e| e.message).unwrap_or_else(|| "send error".to_string());
-            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(err_msg))
+        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => {
+            (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e))
         }
-        Err(e) => (String::new(), "not-sent".to_string(), now as i64 * 1000, Some(e)),
     };
 
     if !message_id.is_empty()
