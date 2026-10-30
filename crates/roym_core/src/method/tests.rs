@@ -14,7 +14,8 @@ use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
 
 use super::{
-    MethodInfo, NoParams, ParamError, Reply, SiblingError, call_sibling,
+    MethodInfo, NoParams, ParamError, Reply, SiblingError, VerifyInput, call_sibling,
+    catalog::{ListingGetOutput, SlotRow},
     check::assert_service_table,
     parse_value,
     profile::{
@@ -27,6 +28,7 @@ use crate::{
     backup::ImportInput,
     conversation::MessageView,
     envelope::{Request, Response},
+    listing::ListingStatus,
     services::PROFILE,
     signing::{
         CertificateStatus, InstallCertificateInput, install_signing_certificate, signing_status,
@@ -675,4 +677,49 @@ async fn call_sibling_with_test_host() {
     let res6: Result<Option<ProfileRecord>, _> =
         call_sibling(&host, PROFILE, "profile.get", &json!({})).await;
     assert_eq!(res6.unwrap(), None);
+}
+
+#[test]
+fn slot_row_reads_the_five_keys_the_catalog_writes() {
+    let row: SlotRow = serde_json::from_value(json!({
+        "slot_id": "slot-1",
+        "listing_id": "list-1",
+        "start_secs": 100u64,
+        "end_secs": 200u64,
+        "capacity": 3u32,
+    }))
+    .unwrap();
+    assert_eq!(row.slot_id, "slot-1");
+    assert_eq!(row.listing_id, "list-1");
+    assert_eq!(row.start_secs, 100);
+    assert_eq!(row.end_secs, 200);
+    assert_eq!(row.capacity, 3);
+}
+
+#[test]
+fn listing_get_output_keeps_the_five_keys() {
+    let out = ListingGetOutput {
+        envelope: "env-text".to_string(),
+        record_id: "rec-1".to_string(),
+        listing_id: "list-1".to_string(),
+        status: ListingStatus::Active,
+        updated_at_secs: 500,
+    };
+    let val = serde_json::to_value(&out).unwrap();
+    assert_eq!(val["envelope"], "env-text");
+    assert_eq!(val["record_id"], "rec-1");
+    assert_eq!(val["listing_id"], "list-1");
+    assert_eq!(val["status"], "active");
+    assert_eq!(val["updated_at_secs"], 500);
+
+    let back: ListingGetOutput = serde_json::from_value(val).unwrap();
+    assert_eq!(back, out);
+}
+
+#[test]
+fn verify_input_refuses_an_object_envelope() {
+    let res: Result<VerifyInput, ParamError> =
+        parse_value(&json!({ "envelope": { "inner": true } }));
+    let err = res.unwrap_err();
+    assert_eq!(err.field.as_deref(), Some("envelope"));
 }
