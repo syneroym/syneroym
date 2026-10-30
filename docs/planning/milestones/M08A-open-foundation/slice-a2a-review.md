@@ -90,7 +90,7 @@ envelope, which is what the form promises. The Playwright helper
 
 ### Findings
 
-- [ ] **P1 — major.** *Where:* section 2 Q4; section 6 Step 3, the
+- [x] **P1 — major.** *Where:* section 2 Q4; section 6 Step 3, the
   `parse_value` pseudo-code. *Problem:* `serde_path_to_error` gives
   different paths for different error kinds. For a wrong type or an unknown
   field, the path already ends with the field (`favourite`,
@@ -105,9 +105,9 @@ envelope, which is what the form promises. The Playwright helper
   Otherwise there is no field. Unit tests in Step 3: missing, unknown and
   wrong type, each at the top and nested two levels down. Remove the
   `unverified` note about `?`, but keep a test that pins the real text.
-  *Status:* Open.
+  *Status:* Fixed (2b8139af).
 
-- [ ] **P2 — major.** *Where:* section 2 Q1 (a) point 5; section 6 Step 3
+- [x] **P2 — major.** *Where:* section 2 Q1 (a) point 5; section 6 Step 3
   (`check.rs`), Step 4 (`certificate_rows`), Step 7. Code:
   [signing.rs:253-291](../../../../crates/roym_core/src/signing.rs#L253).
   *Problem:* the "dispatched but not listed" guard reads only `app.rs` and
@@ -134,9 +134,9 @@ envelope, which is what the form promises. The Playwright helper
   `"<prefix><verb>"` for a prefix that `router::route` sends to profile or
   conversation, and fails when that name is not a row of the owning
   service's table. This also catches a sibling call to a method that does
-  not exist. *Status:* Open.
+  not exist. *Status:* Fixed (2b8139af).
 
-- [ ] **P3 — major.** *Where:* section 6 Step 2 (`shape`), D-A2a-14,
+- [x] **P3 — major.** *Where:* section 6 Step 2 (`shape`), D-A2a-14,
   section 7.2 item 5. *Problem:* the shape files have two holes. (1) An
   array keeps only the shape of its first item. A history page with a
   message, a membership item and a deleted message proves only the first.
@@ -149,9 +149,9 @@ envelope, which is what the form promises. The Playwright helper
   (not `"string"`) when its key is one of `kind`, `state`, `direction`,
   `body_encoding`, `admission`, `status`, `content_type`, `subject_kind`,
   `category`, `note`, or any key under `notices`. These are closed word sets
-  or fixed texts. Every other value stays as its type name. *Status:* Open.
+  or fixed texts. Every other value stays as its type name. *Status:* Fixed (2b8139af).
 
-- [ ] **P4 — major.** *Where:* section 2 Q8, D-A2a-12, section 4, section 6
+- [x] **P4 — major.** *Where:* section 2 Q8, D-A2a-12, section 4, section 6
   Steps 4 to 6. Code:
   [roym_transaction app.rs:576-596](../../../../crates/roym_transaction/src/app.rs#L576),
   [agreement_ops.rs:480-497](../../../../crates/roym_transaction/src/app/agreement_ops.rs#L480),
@@ -173,9 +173,9 @@ envelope, which is what the form promises. The Playwright helper
   only `Transport` and `BadReply` become `Err`. `contacts_map`: any `Err`
   gives an empty map. `sync.rs`: `Refused(e)` gives
   `Response::internal_error(e.message)` as today. Add rows B17 to B20 to
-  section 4 that say "same as today" for each. *Status:* Open.
+  section 4 that say "same as today" for each. *Status:* Fixed (2b8139af).
 
-- [ ] **P5 — minor.** *Where:* section 6 Step 4; section 4; section 11.
+- [x] **P5 — minor.** *Where:* section 6 Step 4; section 4; section 11.
   Code: [signing.rs:253](../../../../crates/roym_core/src/signing.rs#L253).
   *Problem:* the certificate verbs are shared by five services. Typing
   `install-signing-certificate` with `deny_unknown_fields` changes
@@ -185,9 +185,9 @@ envelope, which is what the form promises. The Playwright helper
   `substrate/tests/common/roym.rs:522`, parity `fixtures.rs:59-60` and
   `trust_fixtures.rs:123`), so nothing breaks. *Fix:* add a row to section
   4 and a line to section 11: the other three services get the typed verbs
-  in A2a; their table rows come in A2b and A2c. *Status:* Open.
+  in A2a; their table rows come in A2b and A2c. *Status:* Fixed (2b8139af).
 
-- [ ] **P6 — minor.** *Where:* section 2 Q1, the shared types
+- [x] **P6 — minor.** *Where:* section 2 Q1, the shared types
   (`SigningStatusOutput`). Code:
   [record_signer.rs:52](../../../../crates/core/src/record_signer.rs#L52),
   [signing.rs:269](../../../../crates/roym_core/src/signing.rs#L269).
@@ -195,9 +195,9 @@ envelope, which is what the form promises. The Playwright helper
   absent. The plan lists it as `String`. That forces an `unwrap_or_default`,
   which changes `null` to `""`. The shape tests always run with an owner, so
   they would not see it. *Fix:* `owner_did: Option<String>`, with no
-  `skip_serializing_if`. *Status:* Open.
+  `skip_serializing_if`. *Status:* Fixed (2b8139af).
 
-- [ ] **P7 — minor.** *Where:* section 2 Q1 row `block.check`; D-A2a-15.
+- [x] **P7 — minor.** *Where:* section 2 Q1 row `block.check`; D-A2a-15.
   Code: [moderation.rs:174-185](../../../../crates/roym_profile/src/app/moderation.rs#L174).
   *Problem:* today the blocked answer writes `reason` and `since_secs` as
   `null` when absent, and the not-blocked answer is `{"blocked": false}`.
@@ -211,9 +211,9 @@ envelope, which is what the form promises. The Playwright helper
   Option<String>, since_secs: Option<u64> }` (no skip on these two). `None`
   writes only `blocked`. `Some` writes both keys, `null` when empty. This is
   an output type, so `flatten` does not meet `deny_unknown_fields`. Fix the
-  D-A2a-15 text to match. *Status:* Open.
+  D-A2a-15 text to match. *Status:* Fixed (2b8139af).
 
-- [ ] **P8 — minor.** *Where:* section 3.1; D-A2a-18; section 6 Step 4.
+- [x] **P8 — minor.** *Where:* section 3.1; D-A2a-18; section 6 Step 4.
   Code: [conversation.rs:118-161](../../../../crates/roym_core/src/conversation.rs#L118),
   [conversation/group.rs:65](../../../../crates/roym_core/src/conversation/group.rs#L65).
   *Problem:* section 3.1 misses `MessageRow` (with `tombstone`, `is_deleted`
@@ -227,35 +227,35 @@ envelope, which is what the form promises. The Playwright helper
   `ConversationListItem` replaces `ConversationRow`, use the host's types:
   `opened_at_secs` and `last_activity_ms` are `i64` (`created_at`,
   `last_activity_at` in the host `ConversationSummary`), not `u64`.
-  *Status:* Open.
+  *Status:* Fixed (2b8139af).
 
-- [ ] **P9 — minor.** *Where:* section 2 Q4; D-A2a-7; Step 3
+- [x] **P9 — minor.** *Where:* section 2 Q4; D-A2a-7; Step 3
   `parse_value`. *Problem:* serde's derived struct visitor also reads a JSON
   array, by position. `{"params": ["did:key:zA"]}` would parse as
   `ContactKeyInput`. Today an array means every field is absent. This is a
   new accepted wire form, not documented, and the probe does not check it.
   *Fix:* `parse_value` accepts only an object or `null`. Any other JSON type
   gives `-32602 "invalid params: expected an object"` with no `data`. Add
-  the unit test `parse_refuses_an_array`. *Status:* Open.
+  the unit test `parse_refuses_an_array`. *Status:* Fixed (2b8139af).
 
-- [ ] **P10 — minor.** *Where:* D-A2a-6. *Problem:* serde's text contains
+- [x] **P10 — minor.** *Where:* D-A2a-6. *Problem:* serde's text contains
   the bad value (`invalid type: string "<the whole value>"`). A large string,
   or a pasted certificate, is copied back into the error and into logs.
   *Fix:* cut the message to 256 bytes on a char boundary, with the same
   rule as `envelope::truncate_method`
   ([envelope.rs:71](../../../../crates/roym_core/src/envelope.rs#L71)). Add a
-  unit test with a 10 KB string. *Status:* Open.
+  unit test with a 10 KB string. *Status:* Fixed (2b8139af).
 
-- [ ] **P11 — minor.** *Where:* section 2 Q4 ("four error kinds"); D-A2a-8;
+- [x] **P11 — minor.** *Where:* section 2 Q4 ("four error kinds"); D-A2a-8;
   Step 7 test for `group.info`. *Problem:* sending both `group` and
   `conversation` is a fifth kind: serde says `duplicate field
   `conversation``, and the path is the parent. The planned helper gives no
   `data.field`, and the test checks only the code. *Fix:* treat
   `duplicate field` like `missing field` in the name rule (P1). Add it to the
   Step 3 unit tests. In Step 7, assert `data.field == "conversation"`.
-  *Status:* Open.
+  *Status:* Fixed (2b8139af).
 
-- [ ] **P12 — minor.** *Where:* section 6 Step 2 and Step 7. *Problem:*
+- [x] **P12 — minor.** *Where:* section 6 Step 2 and Step 7. *Problem:*
   `fixtures.rs` uses `super::{helpers::*, trust_fixtures}`, so a new binary
   must include `fixtures.rs`, `helpers.rs`, `trust_fixtures.rs` and
   `trust_harness.rs`. Most of their functions are unused in a small binary,
@@ -264,17 +264,17 @@ envelope, which is what the form promises. The Playwright helper
   `#[path]` modules and put `#[allow(dead_code)]` on each `mod` line.
   Simpler still: put the shape tests and the contract tests in one binary,
   `method_contract.rs`, with modules `shapes` and `contract`, so the
-  includes are written once. *Status:* Open.
+  includes are written once. *Status:* Fixed (2b8139af).
 
-- [ ] **P13 — minor.** *Where:* section 6 Step 7, the error tests; section
+- [x] **P13 — minor.** *Where:* section 6 Step 7, the error tests; section
   7.2 item 3. *Problem:* in the WASM build the parse runs inside the guest.
   OF-14's answer must be the same in both builds, but the plan sends the
   error requests "through `/rpc`" without saying which build. *Fix:* send
   each error request to both `h.wasm_http` and `h.native_http`, assert the
   two bodies are equal, then assert the code and `data.field` (the pattern
-  of parity scenario 35). *Status:* Open.
+  of parity scenario 35). *Status:* Fixed (2b8139af).
 
-- [ ] **P14 — minor.** *Where:* section 6 Steps 4, 5 and 6; section 7.4;
+- [x] **P14 — minor.** *Where:* section 6 Steps 4, 5 and 6; section 7.4;
   section 9. *Problem:* facts to correct. (a) `dual_build_parity/profile.rs`
   has 1112 lines and is recorded as 1112 in
   [oversized-test-files.txt:23](../../../../xtask/oversized-test-files.txt#L23),
@@ -291,26 +291,26 @@ envelope, which is what the form promises. The Playwright helper
   `signing.rs`. (c) name the place: a short paragraph in the section
   "SynApp 1: Roym" of the architecture doc. (d) in the Step 6 proof, run
   `mise run build:roym` first and check in the log that the roym tests ran.
-  *Status:* Open.
+  *Status:* Fixed (2b8139af).
 
-- [ ] **P15 — minor.** *Where:* section 3.3. *Problem:* the list of callers
+- [x] **P15 — minor.** *Where:* section 3.3. *Problem:* the list of callers
   does not name the demo stories and the Playwright helpers:
   `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`,
   `20-roym-setup.sh`, `lib.sh` and `crates/substrate/tests/e2e/hub-helpers.ts`.
   I checked them. The demos drive the Hub and `roymctl` (`roym enrol-signing`,
   `roym address`). `lib.sh`'s `rpc` sends `[]` by default, but only the
   greeter demo uses it. `addContact` sends no envelope. *Fix:* add them to
-  section 3.3 as "checked, no change". *Status:* Open.
+  section 3.3 as "checked, no change". *Status:* Fixed (2b8139af).
 
-- [ ] **P16 — minor.** *Where:* "How this is shown to an end user", third
+- [x] **P16 — minor.** *Where:* "How this is shown to an end user", third
   bullet. *Problem:* there is no `roymctl roym` verb that sends any method.
   A bare `curl` to `/rpc` also needs the Roym `Host:` header and a session.
   A developer cannot act on the bullet as written. *Fix:* give the full
   `curl` (with `-H "Host: <roym web host>"` and the session cookie from
   `roymctl session login`), or drop the bullet and keep the two test
-  commands. *Status:* Open.
+  commands. *Status:* Fixed (2b8139af).
 
-- [ ] **P17 — minor.** *Where:* section 6 Step 5 ("`profile.get` reads the
+- [x] **P17 — minor.** *Where:* section 6 Step 5 ("`profile.get` reads the
   stored row into `ProfileRecord`"); Step 6 (`on_message`). Code:
   [profile_ops.rs:79-82](../../../../crates/roym_profile/src/app/profile_ops.rs#L79),
   [backup.rs:76-115](../../../../crates/roym_profile/src/app/backup.rs#L76),
@@ -323,9 +323,9 @@ envelope, which is what the form promises. The Playwright helper
   *Fix:* state two rules in Step 4: structs read from storage never use
   `deny_unknown_fields`; and the stored `admission` stays the kebab-case
   word. Add a section 4 row for the row-without-`record_id` case (only a
-  hand-made bundle can make one), and keep the new `-32603`. *Status:* Open.
+  hand-made bundle can make one), and keep the new `-32603`. *Status:* Fixed (2b8139af).
 
-- [ ] **P18 — minor.** *Where:* D-A2a-3; section 6 Steps 5 and 6.
+- [x] **P18 — minor.** *Where:* D-A2a-3; section 6 Steps 5 and 6.
   *Problem:* a method's code lives in up to four places: the macro line in
   `api.rs`, a struct in `api/<area>.rs`, the handler in `app/<area>.rs`,
   and sometimes a struct in `roym_core::method`. The `api/` tree mirrors
@@ -333,6 +333,6 @@ envelope, which is what the form promises. The Playwright helper
   the macro list. Put each service-only struct in the handler's own file
   (`app/contacts.rs` and so on), next to the function that reads it. No file
   passes 800 lines this way: the largest, `app/messages.rs`, shrinks.
-  *Status:* Open.
+  *Status:* Fixed (2b8139af).
 
 Count: 0 blockers, 4 major, 14 minor.
