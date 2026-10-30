@@ -7,6 +7,7 @@ living-docs-touched:
   - docs/roym-integrated-experience-spec.md
   - docs/developer-guide.md
   - docs/planning/traceability-matrix.md
+  - docs/planning/deferred-backlog.md
 ---
 # Roym open foundation
 
@@ -186,7 +187,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 
 ## Open questions
 
-- **Typed-method check.** OF-15 needs a list of all methods. `roym_core::router` lists method prefixes, not methods. The plan decides whether each service exports its method table.
+- **Typed-method check.** Resolved by D-A2a-2 and D-A2a-17.
 
 ## Tasks
 
@@ -198,6 +199,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - [ ] The event feed: the bus (or `web`), scoped by app instance, the WebSocket path, internal subscription, catch-up.
 - [ ] Remote access setting, default bind `127.0.0.1`, `local` login by socket peer address and off when remote access is on, `delegated-key` for remote clients, the Hub CSP, the Docker deploy.
 - [ ] Typed input and output for every Roym method, the unknown-field rule, and the check test.
+  - [x] profile and conversation
 - [ ] "Build a Roym client" in the developer guide.
 
 ## Decisions
@@ -228,6 +230,24 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A1-6. Guard tests.** `roym_core` has a test that fails when a signed record or a wire value carries "provider", "consumer" or "customer". It fills every optional field and runs every variant of the role, place, audience and next-step enums. The Hub has a test for the shared notices, the labels and the card text.
 - **D-A1-7. Other names.** `NextStep::WaitForQuoteAuthor` (`"wait-for-quote-author"`). The booking helpers use `author` and `counterparty` in their names. `DealRole::as_str()` is the one source of the role name in fence ids and in the backup import message.
 - **D-A1-8. Audience value.** `OpenTo::ExistingCustomers` is now `OpenTo::PastCounterparties`, signed as `"past-counterparties"`. The Hub label is "People I have worked with before".
+- **D-A2a-1. Typed parsing runs before method handler.** The typed parameter parse runs before handler logic (such as signing certificate enrollment checks). A missing or invalid field fails with `-32602` immediately.
+- **D-A2a-2. Service method tables.** Each service exposes a method table (`api::method_table() -> Vec<MethodInfo>`) mapping method names to typed parameter and return types.
+- **D-A2a-3. Unknown fields policy.** Local-only methods reject unknown fields via `#[serde(deny_unknown_fields)]`. Wire-reachable methods ignore unknown fields to allow forward compatibility.
+- **D-A2a-4. Sibling calls.** Calls between sibling services use `roym_core::method::call_sibling::<H, I, O>` with typed input and output structs.
+- **D-A2a-5. Preserved list shapes.** Bare list responses (`contacts.list`, `block.list`, `report.list`) keep returning bare JSON arrays without premature envelope wrapping.
+- **D-A2a-6. Path-to-error formatting.** Parameter parse errors use `serde_path_to_error` to return `-32602` with `data: { "field": "<path>" }`.
+- **D-A2a-7. Missing or null params is empty object.** Missing or `Value::Null` params is parsed as `{}`. Non-object and non-null values (such as JSON arrays) are rejected with `-32602`.
+- **D-A2a-8. Group alias key.** `ConversationRef`, `GroupRenameInput`, and `GroupMemberInput` accept `#[serde(alias = "group")]`. Passing both keys in the same request yields duplicate-field `-32602` with `data.field = "conversation"`.
+- **D-A2a-9. Optional address or person_did validation in handlers.** Methods accepting either address or person_did parse both as `Option<String>` and validate in the handler when both are missing.
+- **D-A2a-10. Error message truncation.** Error messages are truncated to 256 bytes on valid UTF-8 character boundaries.
+- **D-A2a-11. Dead types replaced.** `MessageRow` is replaced by `MessageView`, `ConversationRow` by `ConversationListItem`.
+- **D-A2a-12. Number field widths.** Numeric fields retain existing cast widths (`u32` for conversation paging, `u64` for profile lists).
+- **D-A2a-13. Method contract tests.** Shape tests and contract tests reside in `crates/roym_web/tests/method_contract.rs`.
+- **D-A2a-14. Closed sets of words use enums.** Closed sets of variant words use kebab-case enums (`AdmissionKind`, `KindFilter`, `ReportSubject`, `ReportCategory`).
+- **D-A2a-15. Shared certificate verbs.** Typed certificate verbs are implemented in `roym_core::signing::verbs`.
+- **D-A2a-16. NoParams for parameterless methods.** Methods without parameters use `NoParams`, which rejects unexpected input fields with `-32602`.
+- **D-A2a-17. Integration contract test binary.** Table, dispatch, off-node refusal, and error parity tests live in `crates/roym_web/tests/method_contract/contract.rs`.
+- **D-A2a-18. Profile envelope string format.** `contacts.upsert` expects `profile_envelope` as a serialized JSON string, not a JSON object.
 
 ## Deviations
 
@@ -240,6 +260,11 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **`call-all` params type:** sketch originally used `params: list<u8>`. Corrected to `params: string` (JSON text) matching `proxy.call` (Q1 / D-OF-6).
 - **`web` instance reuse:** change doc table previously stated `web` instances are reused and keep no state. In fact each ordinary call and WebSocket event creates a new store and instance (`engine.rs:469`, `guest_stream.rs:294`, `app.rs:295`) (Q5 / D-OF-3).
 - **Dual-build parity test harness instance certificate:** `harness_with_unbound` in `crates/roym_web/tests/dual_build_parity/helpers.rs` was updated to issue and install a `SCOPE_SERVICE_INSTANCE` delegation certificate for each service on both the WASM and native endpoint registries, matching `app_host_native/tests/dual_build_parity/helpers.rs`, allowing outbound requests such as `group.add-member` to pass `check_outbound_identity`.
+- **NoParams refusal changes parity scenario 2 (B2):** `profile.policy` now rejects unexpected extra fields (`auth`), returning `-32602` with `data.field = "auth"`.
+- **Hub profile_envelope format (B1):** The Hub's object parameter was a bug and was updated to send trimmed string text.
+- **Import parameter format (B9):** Removed support for passing the bundle directly as the whole params object; callers must send `{ "bundle": ... }`.
+- **Error text changes for missing and wrong fields (B4, B5, B10):** Standardized on `-32602` with `data.field` across profile and conversation.
+- **Enums for closed word sets (B7, B8):** `conversation.list` now rejects invalid `kind` values with `-32602` instead of ignoring them.
 
 ## Close-out
 
