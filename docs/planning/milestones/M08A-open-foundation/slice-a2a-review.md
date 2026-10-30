@@ -482,7 +482,7 @@ commit content and the code path above.
 
 ### Findings
 
-- [ ] **R1 — major.** *Where:*
+- [x] **R1 — major.** *Where:*
   [contract.rs:20](../../../../crates/roym_web/tests/method_contract/contract.rs#L20)
   and [:32](../../../../crates/roym_web/tests/method_contract/contract.rs#L32);
   [check.rs:94](../../../../crates/roym_core/src/method/check.rs#L94).
@@ -506,9 +506,9 @@ commit content and the code path above.
   every test that does not test the scan a real empty temp directory in
   place of `/nonexistent`, and add `check_fails_when_the_source_dir_is_missing`.
   (4) Do the Step 7 manual proof once (add an arm, see the test fail, remove
-  it) and say so in the PR. *Status:* Open.
+  it) and say so in the PR. *Status:* Fixed (5bc5b759). Manual proof verified: adding `"profile.get" =>` to `crates/roym_profile/src/app.rs` failed `method_contract` with `hand-written match arm: "profile.get" => Some(1)` and `req.method used outside allowed method_not_found`. Removing it restored green.
 
-- [ ] **R2 — minor.** *Where:* change doc
+- [x] **R2 — minor.** *Where:* change doc
   [change.md:233-250](../../changes/roym-open-foundation/change.md#L233),
   section "Decisions"; also "Open questions" (`Resolved by D-A2a-2 and
   D-A2a-17`). *Problem:* the change doc has eighteen `D-A2a-*` decisions,
@@ -523,9 +523,9 @@ commit content and the code path above.
   D-A2a-18, same numbers and same meaning, shortened if needed, and add one
   line with the owner's answers ("Q1–Q9: option (a), 2026-10-30"). Check
   that "Resolved by D-A2a-2 and D-A2a-17" still points at the method table
-  and the test binary. *Status:* Open.
+  and the test binary. *Status:* Fixed (7f88a137).
 
-- [ ] **R3 — minor.** *Where:* change doc
+- [x] **R3 — minor.** *Where:* change doc
   [change.md:262-267](../../changes/roym-open-foundation/change.md#L262),
   section "Deviations". *Problem:* (a) Only the `helpers.rs` bullet is a real
   deviation from the plan. The other five bullets are wire changes the plan
@@ -551,9 +551,9 @@ commit content and the code path above.
   every parity scenario pass that check; no scenario asserted the old
   refusal. Production code is unchanged." "Planned wire changes (plan
   section 4)": the five current bullets, plus B21 (with `signing-status`)
-  and B22, and with (d) made exact. *Status:* Open.
+  and B22, and with (d) made exact. *Status:* Fixed (7f88a137).
 
-- [ ] **R4 — minor.** *Where:*
+- [x] **R4 — minor.** *Where:*
   [method.rs:91-97](../../../../crates/roym_core/src/method.rs#L91).
   *Problem:* the 256-byte cut applies only to `message`. `data.field` is the
   serde path, and for an unknown field the path ends with the key the client
@@ -561,9 +561,9 @@ commit content and the code path above.
   key back in `data.field`, and in any log of the response. This is the
   reflection P10 meant to stop. *Fix:* cut `field` with the same
   `truncate_utf8(.., 256)` before it goes into `ParamError`, and add the
-  unit test `unknown_field_name_in_data_is_cut_to_256_bytes`. *Status:* Open.
+  unit test `unknown_field_name_in_data_is_cut_to_256_bytes`. *Status:* Fixed (68540d14).
 
-- [ ] **R5 — minor.** *Where:*
+- [x] **R5 — minor.** *Where:*
   [tests.rs:202-208](../../../../crates/roym_core/src/method/tests.rs#L202);
   tests at [:93-200](../../../../crates/roym_core/src/method/tests.rs#L93).
   *Problem:* (a) the truncation test uses only `"x"`, a one-byte char, so
@@ -578,9 +578,9 @@ commit content and the code path above.
   assert `message.len() <= 256` and that `message` ends with a whole `€`.
   (b) For one nested case and one top-level case, assert the whole message
   with `assert_eq!` (for example `invalid params: mid.deep: missing field
-  `val_str``). *Status:* Open.
+  `val_str``). *Status:* Fixed (68540d14).
 
-- [ ] **R6 — minor.** *Where:*
+- [x] **R6 — minor.** *Where:*
   [check.rs:40-51](../../../../crates/roym_core/src/method/check.rs#L40).
   *Problem:* two ways a method slips past the OF-15/OF-18 check. (a) The "no
   `Value`" rule reads only the outer type name, so `FooOutput { data: Value }`
@@ -596,9 +596,9 @@ commit content and the code path above.
   doc comment on `assert_service_table` naming what it checks and the two
   limits above, and one sentence in the developer guide's "Add a Roym
   method" step 1: "a nested input struct needs `deny_unknown_fields` too; the
-  check sees only the outer type". No new code needed. *Status:* Open.
+  check sees only the outer type". No new code needed. *Status:* Fixed (57085dfa).
 
-- [ ] **R7 — minor.** *Where:*
+- [x] **R7 — minor.** *Where:*
   [tests.rs:601](../../../../crates/roym_core/src/method/tests.rs#L601)
   (`call_sibling_with_test_host`); `TestHost::call` in `signing.rs` tests.
   *Problem:* the test checks only how replies are read. It does not check
@@ -609,9 +609,9 @@ commit content and the code path above.
   "no profile" path (B18) depends on. *Fix:* let `TestHost` record the
   arguments of its last `call`, and assert them in this test. Add a case:
   reply `{"result": null}` read as `Option<ProfileRecord>` gives `Ok(None)`.
-  *Status:* Open.
+  *Status:* Fixed (4be328f3).
 
-- [ ] **R8 — minor.** *Where:*
+- [x] **R8 — minor.** *Where:*
   [system-architecture.md:1143](../../../system-architecture.md#L1143);
   [developer-guide.md:1687](../../../developer-guide.md#L1687), `:1689` and
   `:1702`. *Problem:* living docs state more than is true now. (a) "Each
@@ -627,9 +627,9 @@ commit content and the code path above.
   "on a local-only method; leave it off on a wire-reachable method, and list
   that method in the check's wire list". (c) Add: "When no field can be
   named, for example when `params` is not a JSON object, `data` is absent."
-  *Status:* Open.
+  *Status:* Fixed (7f88a137).
 
-- [ ] **R9 — minor.** *Where:*
+- [x] **R9 — minor.** *Where:*
   [roym_conversation app.rs:85-89](../../../../crates/roym_conversation/src/app.rs#L85)
   (`serde_json::Value`, `serde_json::Value::as_str`);
   [roym_core conversation.rs:162-163](../../../../crates/roym_core/src/conversation.rs#L162)
@@ -648,9 +648,9 @@ commit content and the code path above.
   and qualify functions by their parent module (`use std::{any, env, panic};`
   then `any::type_name`, `env::temp_dir`, `panic::catch_unwind`;
   `use syneroym_roym_profile::api;` then `api::method_table()`, with an alias
-  for the conversation one). *Status:* Open.
+  for the conversation one). *Status:* Fixed (4b9bad31).
 
-- [ ] **R10 — minor.** *Where:*
+- [x] **R10 — minor.** *Where:*
   [check.rs:20-60](../../../../crates/roym_core/src/method/check.rs#L20).
   *Problem:* the comments `// 1. Duplicate name` … `// 4 & 5. Probe unknown
   fields` … `// 7, 8, 9. Source code scan` number the problem list of the
@@ -658,9 +658,9 @@ commit content and the code path above.
   next to the plan, which gets archived ("comments explain why, not which
   plan"). *Fix:* drop the numbers. Put one doc comment on
   `assert_service_table` that lists, in words, what it checks (this can be
-  the same comment as R6). *Status:* Open.
+  the same comment as R6). *Status:* Fixed (57085dfa).
 
-- [ ] **R11 — minor.** *Where:*
+- [x] **R11 — minor.** *Where:*
   [tests.rs:308](../../../../crates/roym_core/src/method/tests.rs#L308),
   `:369`, `:386`, `:405`. *Problem:* the scan tests write files into fixed
   names under the shared system temp directory (`test_correct_table`,
@@ -670,9 +670,9 @@ commit content and the code path above.
   wrong reason. *Fix:* use `tempfile::TempDir` (already a workspace
   dependency, `tempfile = "3.10"`; add `tempfile.workspace = true` to
   `roym_core`'s `[dev-dependencies]`). The `TempDir` drop also replaces the
-  `catch_unwind` / `resume_unwind` clean-up code. *Status:* Open.
+  `catch_unwind` / `resume_unwind` clean-up code. *Status:* Fixed (465c78af).
 
-- [ ] **R12 — minor.** *Where:*
+- [x] **R12 — minor.** *Where:*
   [method.rs:81-83](../../../../crates/roym_core/src/method.rs#L81).
   *Problem:* `parse_value` clones the whole `params` before it reads it.
   For `*.import` the params hold the whole backup bundle, so each import
@@ -681,6 +681,6 @@ commit content and the code path above.
   static empty map for `null`) by reference:
   `serde_path_to_error::deserialize(params)` with `params: &Value`, and for
   `null` a `static EMPTY` or a local `Value::Object(Map::new())` that is
-  only built in that branch. Keep the existing tests green. *Status:* Open.
+  only built in that branch. Keep the existing tests green. *Status:* Fixed (68540d14).
 
-Count: 0 blockers, 1 major, 11 minor.
+Count for this round: 0 blockers, 0 open (1 major fixed, 11 minor fixed).
