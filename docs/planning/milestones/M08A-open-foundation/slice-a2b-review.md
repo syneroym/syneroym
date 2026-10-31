@@ -410,7 +410,7 @@ What was checked and found correct:
 
 ### Findings
 
-- [ ] **R1 — minor.** *Where:* change doc
+- [x] **R1 — minor.** *Where:* change doc
   [change.md:259-260](../../changes/roym-open-foundation/change.md#L259).
   *Problem:* the change doc decisions D-A2b-4 and D-A2b-5 do not match the
   implementation plan's decisions. Plan D-A2b-4 is "Existing field attributes
@@ -425,9 +425,9 @@ What was checked and found correct:
   attribute retention. *Fix:* update `change.md` decisions D-A2b-4 and D-A2b-5
   to record existing field attribute preservation and closed word sets
   (`SendState`, `BookingWriter`, `ListingStatus`, `BookingState`), matching
-  section 5 of the plan. *Status:* Open.
+  section 5 of the plan. *Status:* Fixed (f70e2b13).
 
-- [ ] **R2 — minor.** *Where:* status doc
+- [x] **R2 — minor.** *Where:* status doc
   [status.md:14](status.md#L14). *Problem:* the evidence cell reads "77 method
   shapes (14 catalog + 63 transaction)". In reality, slice A2b added 94 new
   golden shape files in `crates/roym_web/tests/method_shapes/` (25 for catalog
@@ -438,9 +438,9 @@ What was checked and found correct:
   reviewer checking file counts finds a discrepancy between the recorded 77
   shapes and the 94 new / 157 total shape files on disk. *Fix:* update the
   evidence cell in `status.md` to state "94 method shapes (25 catalog + 69
-  transaction; 157 total)". *Status:* Open.
+  transaction; 157 total)". *Status:* Fixed (f70e2b13).
 
-- [ ] **R3 — minor.** *Where:*
+- [x] **R3 — minor.** *Where:*
   [method.rs:40](../../../../crates/roym_core/src/method.rs#L40).
   *Problem:* line 40 calls `crate::clock::now_secs()`, leaving an inline
   fully-qualified path with multiple `::` instead of importing `clock` at the
@@ -448,9 +448,9 @@ What was checked and found correct:
   inline fully-qualified paths (lines with multiple ::)"). *Failure case:*
   drifts from workspace import consistency conventions. *Fix:* add
   `use crate::clock;` to the module imports of `crates/roym_core/src/method.rs`
-  and simplify line 40 to `clock::now_secs()`. *Status:* Open.
+  and simplify line 40 to `clock::now_secs()`. *Status:* Fixed (a1b0f219).
 
-- [ ] **R4 — minor.** *Where:*
+- [x] **R4 — minor.** *Where:*
   [fence.rs:53-77](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L53)
   and [:160-192](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L160).
   *Problem:* the `Ok(Some(_))` collision handling match arm bodies in
@@ -462,7 +462,7 @@ What was checked and found correct:
   collision arm concise (11 lines). *Fix:* extract the collision recovery
   bodies into named private helpers (e.g.,
   `handle_payment_request_fence_collision` and
-  `handle_payment_ack_fence_collision`). *Status:* Open.
+  `handle_payment_ack_fence_collision`). *Status:* Fixed (1f8d47b4).
 
 Count: 0 blockers, 0 major, 4 minor.
 
@@ -609,7 +609,7 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
 
 ### Findings
 
-- [ ] **R5 — major.** *Where:*
+- [x] **R5 — major.** *Where:*
   [agreement_ops.rs:411-486](../../../../crates/roym_transaction/src/app/agreement_ops.rs#L411)
   (`maybe_countersign`), from commit `e0c83c94`. *Problem:* the body was
   rewritten to reuse `sign_agreement_receipt` and `send_card_and_file`.
@@ -646,9 +646,9 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
   send fails, `decide_booking` before `person_principal`, no new
   `ensure_collections`. Either way, the fact that a countersigned card
   whose send fails is never sent again is older than A2b; add a backlog
-  row for it under §12. *Status:* Open.
+  row for it under §12. *Status:* Fixed (16465e9b).
 
-- [ ] **R6 — minor.** *Where:*
+- [x] **R6 — minor.** *Where:*
   [contract.rs:267-376](../../../../crates/roym_web/tests/method_contract/contract.rs#L267).
   *Problem:* three error cases send more than one error and pass only
   because `serde_json::Map` is sorted, so the key under test is read
@@ -669,9 +669,9 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
   slots, send full terms (reuse `valid_quote_params` from the parity
   fixtures and add one key), send `description` and `data_use_notice`
   instead of `summary`. Pin the text of case 10 with one
-  `assert_eq!` on the message. *Status:* Open.
+  `assert_eq!` on the message. *Status:* Fixed (64a389bd).
 
-- [ ] **R7 — minor.** *Where:* the ten comments `// 1. listing.get ..` to
+- [x] **R7 — minor.** *Where:* the ten comments `// 1. listing.get ..` to
   `// 10. request.set ..` in
   [contract.rs:270-358](../../../../crates/roym_web/tests/method_contract/contract.rs#L270).
   *Problem:* the comments number the list of Step 7 of the plan. The
@@ -679,9 +679,9 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
   the same finding, R10). *Failure case:* a case is added or removed and
   the numbers no longer match anything. *Fix:* drop the numbers, or split
   the cases into named test functions (for example
-  `listing_get_with_a_number_names_listing_id`). *Status:* Open.
+  `listing_get_with_a_number_names_listing_id`). *Status:* Fixed (64a389bd).
 
-- [ ] **R8 — minor.** *Where:* six "why" comments were deleted and not
+- [x] **R8 — minor.** *Where:* six "why" comments were deleted and not
   moved, beside code that is still there:
   [listing_ops.rs:501](../../../../crates/roym_catalog/src/app/listing_ops.rs#L501)
   (the host filters by status),
@@ -700,9 +700,9 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
   comment rule wants kept. A typing slice has no reason to remove them.
   *Failure case:* a later change moves `put_bytes` after the send in
   `request.set`, because nothing says the order matters. *Fix:* restore
-  the six comments from `main`. *Status:* Open.
+  the six comments from `main`. *Status:* Fixed (d58e90f5).
 
-- [ ] **R9 — minor.** *Where:*
+- [x] **R9 — minor.** *Where:*
   [shapes_transaction.rs:138-171](../../../../crates/roym_web/tests/method_contract/shapes_transaction.rs#L138)
   and [:237-270](../../../../crates/roym_web/tests/method_contract/shapes_transaction.rs#L237);
   [:183-205](../../../../crates/roym_web/tests/method_contract/shapes_transaction.rs#L183)
@@ -723,18 +723,18 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
   `setup_accepted_counterparty_quote` the quote sequence and message id
   as arguments, or add a variant that does not call `agreement.accept`,
   and reuse it. Add `impl From<AgreementRow> for AgreementView` and use
-  it in both handlers. *Status:* Open.
+  it in both handlers. *Status:* Fixed (1f8d47b4, 64a389bd).
 
-- [ ] **R10 — minor.** *Where:*
+- [x] **R10 — minor.** *Where:*
   [agreement_ops.rs:104-109](../../../../crates/roym_transaction/src/app/agreement_ops.rs#L104).
   *Problem:* `booking_opt` is `Some(booking_view)` for the quote author
   and `Some(None)` otherwise, but `booking_view` is already `None` for
   everyone else. Both branches give `Some(booking_view)`. *Failure case:*
   a reader looks for the case where the two differ, and there is none.
   *Fix:* delete `booking_opt` and write `booking: Some(booking_view)`
-  in the output. *Status:* Open.
+  in the output. *Status:* Fixed (1f8d47b4).
 
-- [ ] **R11 — minor.** *Where:*
+- [x] **R11 — minor.** *Where:*
   [transaction api.rs:53-58, :65](../../../../crates/roym_transaction/src/api.rs#L53),
   [payment_ops.rs:27](../../../../crates/roym_transaction/src/app/payment_ops.rs#L27).
   *Problem:* the handlers were renamed to the verb (`request_ops::get`,
@@ -748,9 +748,9 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
   `booking_ops::get` and does not find it. *Fix:* rename the four booking
   handlers to `get`, `list`, `start`, `cancel`; delete the `pub use` and
   import `HalfRecordedOutput` from `crate::app` in `api.rs`. *Status:*
-  Open.
+  Fixed (1f8d47b4).
 
-- [ ] **R12 — minor.** *Where:* change doc
+- [x] **R12 — minor.** *Where:* change doc
   [change.md:285-310](../../changes/roym-open-foundation/change.md#L285).
   *Problem:* the Deviations are split into "Different from the plan" and
   "Planned wire changes", as asked, and the
@@ -767,7 +767,7 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
   the B33 entry: "same as before, except that an unreadable or malformed
   `availability.get` reply is now `no-such-slot` (`quote.set`) or
   `slot-unavailable` (booking), not `-32603`". Add R5 to "Different from
-  the plan" only if the rewrite is kept. *Status:* Open.
+  the plan" only if the rewrite is kept. *Status:* Fixed (f70e2b13).
 
 Count of this round: 0 blocker, 1 major, 7 minor. Open in this file: 0
 blocker, 1 major (R5), 11 minor (R1 to R4, R6 to R12).
