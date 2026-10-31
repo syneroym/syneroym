@@ -524,7 +524,15 @@ What was checked and found correct:
   it, to avoid a second copy of the body). Say that the test first sets
   `max_per_window: 1` with `directory.set-settings`, as scenario 83 does.
   Name the new helper in the files list of Step 8.
-  *Status:* Open.
+  *Status:* Fixed (33f7e7d0). Step 8 adds `fixtures::wire_invoke_with(h,
+  svc, envelope, caller: CallerContext)`. It takes over the body of
+  `wire_invoke_as`, which now calls it, so the body is not copied. The
+  test first sets `max_per_window: 1` with `directory.set-settings`, as
+  scenario 83 does, then checks attribution, the refusal and the owner's
+  publish in four numbered steps. 7.4 notes that `fixtures.rs` (778 lines)
+  grows by about 10 to 15 lines and says where the helpers go if it would
+  pass 800. I also moved the test out of the error-test list, where it
+  had been placed above the `session.whoami` case by mistake.
 
 - **P14 — minor.** *Where:* Step 5, "Record two new shape files …
   `UPDATE_METHOD_SHAPES=1` for these two cases only".
@@ -541,4 +549,7 @@ What was checked and found correct:
   `no_synorg_shapes`), and record with a filter on that name. Then the
   Step 2 files are never written. Keep the `git diff --stat` check on
   `method_shapes/` as the proof.
-  *Status:* Open.
+  *Status:* Fixed (33f7e7d0). The two B57 cases are in their own test
+  function `no_synorg_shapes`, recorded with a filter on that name. The
+  proof is `git diff --stat` on `method_shapes/` showing only the two new
+  files. Step 2's list of test functions says that Step 5 adds it.
