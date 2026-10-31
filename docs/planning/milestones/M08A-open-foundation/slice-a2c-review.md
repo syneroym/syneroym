@@ -775,7 +775,7 @@ the only hits in changed files are older groups, such as `ping` and
   the new behaviour is wanted instead, record it under "Different from
   the plan" and as a wire change. *Status:* Fixed (1f6056ff).
 
-- [ ] **R3 — minor.** *Where:*
+- [x] **R3 — minor.** *Where:*
   [status.md:15](status.md) (A2c row) and the PR description ("How
   Tested"). *Problem:* both say "38 method shapes (35 directory + 3
   whoami; 195 total in workspace)". The real counts are 60 new files (57
@@ -789,7 +789,7 @@ the only hits in changed files are older groups, such as `ping` and
   23 files that the record does not explain. *Fix:* write "60 method
   shapes (57 directory + 3 whoami; 217 total)" in `status.md` and the PR.
   Add the missing Step 10 sections to the PR text (they can link the plan
-  sections instead of copying them). *Status:* Open. `status.md` is fixed (a1e1b10d); the PR text is not (see the fixes check below).
+  sections instead of copying them). *Status:* Fixed (a1e1b10d, PR description updated via gh pr edit 337).
 
 - [x] **R4 — minor.** *Where:* the dispatch arm of
   `directory.publish-to-source` on `main`
@@ -1015,7 +1015,7 @@ R14).
 
 ### New findings
 
-- [ ] **R13 — minor.** *Where:*
+- [x] **R13 — minor.** *Where:*
   [contract_directory.rs:86-116](../../../../crates/roym_web/tests/method_contract/contract_directory.rs#L86)
   (the `query-source` part of `directory_parameter_errors`). *Problem:* the
   R1 fix compares the raw `directory.add-source` and `directory.start-run`
@@ -1042,9 +1042,9 @@ R14).
   `one_rpc(&h, wasm, "directory.start-run", ..)`, send `query-source` and
   `merge` with that build's own `run_id`, and then compare the two
   `query-source` errors with `assert_eq!`. In `merge`, assert that both
-  `hits` and `refused` are empty. *Status:* Open.
+  `hits` and `refused` are empty. *Status:* Fixed (42b384f1).
 
-- [ ] **R14 — minor.** *Where:*
+- [x] **R14 — minor.** *Where:*
   [client_sources.rs:161-188](../../../../crates/roym_directory/src/app/client_sources.rs#L161)
   (`add_source`). *Problem:* the R2 fix put the whole read into the
   `Ok(v) =>` arm, which is now 24 lines; the limit for a match arm is
@@ -1061,4 +1061,4 @@ R14).
   beside `probe_info`, for example `fn read_probe(raw: &str, now: u64) ->
   ProbeRead` that returns `last_ok_secs`, `last_error`, the note, the
   name and the claimed issuer. The `match probe` then has two short arms.
-  *Status:* Open.
+  *Status:* Fixed (fd847057).
