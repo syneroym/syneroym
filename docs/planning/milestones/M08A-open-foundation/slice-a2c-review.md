@@ -574,3 +574,381 @@ Checked the plan at `d4e0013d`. No code was run.
   function.
 
 All 14 findings are closed. 0 open. `status.md` matches.
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code desktop), 2026-10-31
+
+Checked `git diff origin/main...HEAD` at `c61a29b7` on
+`feat/m08a-a2c-typed-methods` (PR
+[#337](https://github.com/syneroym/syneroym/pull/337), still a draft),
+against the plan, the plan review, the change doc and `AGENTS.md`. The
+implementer was Gemini 3.8 Flash. CI passed on `c61a29b7`. No code was
+changed. The full suite was not run. Only these were run:
+`cargo nextest list -p syneroym-roym-web --test method_contract` (31
+tests), `cargo nextest list -p syneroym-roym-core -p
+syneroym-roym-directory -p syneroym-roym-catalog` (242 tests), and the
+`cargo dupes` recipe of `AGENTS.md` over the changed files (nothing new:
+the only hits in changed files are older groups, such as `ping` and
+`status` in every service).
+
+**Summary:** 0 blocker, 1 major (R1), 11 minor (R2 to R12).
+
+### What was checked and found correct
+
+- **Security: exactly four methods answer over the wire (point 1).**
+  `invoke` is `admit::admit(host, api::WIRE_REACHABLE, &req.method)`, then
+  `api::dispatch`, then `method_not_found`
+  ([app.rs:200-210](../../../../crates/roym_directory/src/app.rs#L200)).
+  Admission runs before any parse and before the table lookup, so a name
+  that is not in the table also gets `-32013` off the node.
+  `WIRE_REACHABLE` is one constant
+  ([api.rs:35-40](../../../../crates/roym_directory/src/api.rs#L35)), with
+  its comment moved unchanged. The contract test builds the check's wire
+  list from it and asserts that its sorted names equal the hand list
+  `trust_fixtures::WIRE_REACHABLE_DIRECTORY_VERBS`
+  ([contract.rs:69-85](../../../../crates/roym_web/tests/method_contract/contract.rs#L69)).
+  The hand list stays written by hand, so a fifth name added to the
+  production list fails a test. `every_method_answers_off_the_node_as_its_wire_rule_says`
+  sends `{"zz": 1}` over the real wire path to all 37 rows in both builds:
+  33 answer `-32013`, the four do not, and none of their errors names
+  `zz`. The first loop of the same test still covers the four other
+  services. Scenario 118 now loops over the table and keeps the hand list
+  for the wire posture.
+- **`admit::caller` (point 1).** `admit` calls `caller` and matches on its
+  answer ([admit.rs:53-93](../../../../crates/roym_core/src/admit.rs#L53)).
+  Both hosts answer it from fields that are fixed for the whole call:
+  `HostState.invocation_origin` and `.caller` in the WASM host
+  ([capabilities_services.rs:85-100](../../../../crates/sandbox_wasm/src/host_capabilities/capabilities_services.rs#L85)),
+  and the same two fields of the per-call `NativeAppHost`
+  ([host.rs:685-698](../../../../crates/app_host_native/src/host.rs#L685)).
+  `publish` reads it first, before any outbound call
+  ([publication_ops.rs:139-144](../../../../crates/roym_directory/src/app/publication_ops.rs#L139)),
+  and then calls `resolve_published_by` and `check_rate_limit` with that
+  caller, as on `main`. `a_wire_publish_is_recorded_under_the_verified_caller`
+  proves in both builds that a wire publish is stored with
+  `published_by = did:key:zForeignSearcher`, that the second one is
+  `rate-limited`, and that the owner can still publish after it.
+- **The one allowed `admit::admit` line (point 1).** The allowance needs
+  the exact text `admit::admit(host, api::WIRE_REACHABLE, &req.method)`,
+  a file named `app.rs`, and exactly one `req.method` on the line
+  ([check.rs:185-197](../../../../crates/roym_core/src/method/check.rs#L185)).
+  The hand-written arm check (`is_match_arm`) and the string-literal check
+  run on every line on their own, so the allowance cannot hide an arm. The
+  PR text says both manual proofs of Step 8 were done (a `"directory.info"
+  =>` arm and `deny_unknown_fields` on `StandingInput` each failed the
+  table test). One older limit, not caused by A2c and not a finding: the
+  scan looks only for the text `req.method`, so a dispatch on a value
+  bound under another name (`let Request { method, .. } = &req;`) would
+  not be seen.
+- **Wire inputs and outputs (point 2).** `SearchQuery`, `WireNoParams`,
+  `PublishInput` and `StandingInput` have no `deny_unknown_fields`. The six
+  wire types in `roym_core::method::directory` derive `Serialize` and
+  `Deserialize` and never refuse unknown fields. The `#[serde(default)]`
+  fields are those of D-A2c-13; `name`, `retention_secs`, `member_count`
+  and `PublishOutput.listing_id` stay required. `PublishOutput` skips the
+  missing one of `record_id` / `withdrawn`, so both shapes are as on
+  `main` (shape files `directory_publish_published.json` and
+  `directory_publish_withdrawn.json`).
+- **The two newer-node scenarios (point 2).** Scenario 229
+  ([directory_compat.rs:8-62](../../../../crates/roym_web/tests/dual_build_parity/directory_compat.rs#L8))
+  reads a `did:key:hNewer` source that adds `ranking` to the search
+  answer, a key inside the hit, `extra` to `info` and `standing`, and
+  `receipt` to the publish answer: `query-source` stores the hit
+  (`verified: 1`, `error: null`), `check-standing` is `refreshed: true`,
+  `probe-info` has no `extra`, `publish-to-source` has no `receipt`. This
+  is C7 of plan section 3.6 and the four reads of Step 7. The search answer
+  also has no `truncated`, so it covers part of C9. Scenario 230 sends
+  `hForeignWire2` over a real wire round trip to `directory2` with no
+  SynOrg: `add-source` returns the "runs no directory" note, and
+  `probe-info` answers `null` (B57). 229 and 230 are the next free numbers;
+  `grep -c "async fn scenario_"` gives 224; 25 modules, 20 with scenarios.
+- **Remote replies (point 3).** `read_reply` is split out of
+  `call_sibling` with no change to its texts
+  ([method.rs:199-222](../../../../crates/roym_core/src/method.rs#L199)).
+  `remote_reply` maps `Refused(e)` to `Err(Response { result: None, error:
+  Some(e) })`, so code, message and `data` pass through; `BadReply` is
+  `-32603 "unreadable answer from the directory: .."`
+  ([client_sources.rs:65-77](../../../../crates/roym_directory/src/app/client_sources.rs#L65)).
+  `{"result": null}` is `Ok(None)` and is written back as `{"result":
+  null}` (unit test `read_reply_reads_a_null_result_as_none_and_keeps_error_data`,
+  scenario 230, `directory_probe_info_no_synorg.json`). The transport
+  texts are as on `main`. The `add_source` "runs no directory" branch now
+  runs (scenario 230 and `directory_add_source_no_synorg.json`, which has
+  `probe` and `last_ok_secs`). See R2 for one side effect of the new read.
+- **Handler bodies (point 4).** Every converted handler was compared with
+  `main`. Apart from R2, R4 and R11, the changes are the type changes the
+  plan asks for: the parse moves out, `return resp` becomes `return
+  Err(resp)` or `?`, `json!` becomes a struct literal with the same keys.
+  The order of the checks after the parse is unchanged in `publish`,
+  `credential.issue` (`note` is still read after the record is stored),
+  `revoke`, `suspend`, `lift`, `check_standing`, `query_source`,
+  `add_source` and `publish_to_source`. The empty-string checks of
+  D-A2c-5 keep their words, and fields with no empty check on `main`
+  (`member.remove`, `remove-source`) get none. `issuer-changed` writes no
+  `as_of_secs` and no `error`. The "why" comments stay, except R4. The
+  `open_to` comment in `build_search_filter` lost its second half, but
+  that half described the hand check that the plan deletes, so this is
+  correct.
+- **Tables (point 5).** `directory` has 37 rows with the inputs and
+  outputs of the section 5 table
+  ([api.rs:46-84](../../../../crates/roym_directory/src/api.rs#L46)).
+  `web` has its one row ([web api.rs:7-9](../../../../crates/roym_web/src/api.rs#L7));
+  `web_has_one_typed_method_of_its_own` checks it directly. The forwarder
+  keeps `params: Value`, and `forward_rpc_call`, `admit`, `handle_http`
+  and `/health` are unchanged. The greps of Step 4 and Step 5
+  (`handle_certificate_verb`, `export_signed(`, `params.get`,
+  `req.params`, `Response::ok` in `roym_directory/src`) print nothing.
+  `dual_build_parity/directory.rs` is still 1135 lines.
+- **Shapes (points 5 and 8).** 58 shape files were added in the Step 2
+  commit `21356bf3`, before any code change, and 2 (B57) in the Step 5
+  commit `f564bac4`. No later commit changes a shape file, and none of the
+  157 files of A2a and A2b changed. The cases are the ones Step 2 lists.
+- **Unit tests of Step 3 and Step 4** exist with the planned names,
+  `caller_maps_the_three_origins` and `settings_input_matches_settings_fields`
+  included. `into_settings` destructures every field with no `..`.
+- **Q4, Q6, Q7 and the living docs (point 7).** The developer guide, the
+  architecture doc and the three traceability rows no longer say that
+  `directory` and `web` are untyped, and they say what `web` does not
+  type. No over-claim was found. The requirements spec was left alone,
+  which plan section 9 allows (it says nothing about bad input). The
+  backlog row is split as Q7 (a) says (see R10 for the format), and the
+  three new and two extended rows of plan section 8 are there.
+- **Counts (point 8).** `method_contract` has 31 tests and
+  core/directory/catalog 242, as `status.md` says. The shape counts are
+  wrong (R3).
+- **Sizes, deps, layout (point 9).** No new dependency. Every changed
+  production file is under 800 lines (largest `publication_ops.rs`, 578).
+  `synorg.rs` + `synorg/tests.rs` follow the module rule. CI passed
+  clippy, `check-file-lengths` and `check-duplication`. No planning ids and
+  no line counts in code comments. No Hub or `roymctl` file changed.
+
+### Findings
+
+- [ ] **R1 — major.** *Where:*
+  [contract_directory.rs:16-98](../../../../crates/roym_web/tests/method_contract/contract_directory.rs#L16)
+  (`directory_parameter_errors`). *Problem:* all seven `/rpc` error cases
+  read only the WASM answer: `let (w, _) = post_rpc(..)`. The native
+  answer is thrown away. Plan Step 8 says "each through `post_rpc` (both
+  builds, `wasm == native`)", and exit criterion 4 says "equal in both
+  builds". So the wrong-type cases (`expires_at_secs`, `until_secs`), the
+  nested refusal (`query.open_to`), the nested ignore inside
+  `publication_limits` and the unknown key of `member.add` are proven for
+  one build only. In addition, the `query-source` case sends
+  `source: "did:key:hForeignWire"`, which was never added as a source,
+  and it does not check that "the source was not called" (B46, wire
+  change 3). The case passes for the right reason today (the parse runs
+  first), but nothing in it shows that no source call is made. *Failure
+  case:* a native-only change to how a nested `ParamError` path is built
+  (for example the native shim reads `params` through a different
+  `serde_json::Value` route) gives `data.field = "open_to"` instead of
+  `"query.open_to"` on native. This test still passes, and so does every
+  other test, because the wire tests do not send a nested input. *Fix:*
+  in every case use `let (w, n) = post_rpc(..)` and `assert_eq!(w, n)`
+  before the field asserts (the wire cases and the whoami case already do
+  this). For `query-source`, add a real source first (for example the
+  canned `did:key:hTrustValid` with `directory.add-source`), send the bad
+  `open_to`, and then show that no call was made: `directory.merge` for
+  the run has no hit (that source serves one valid hit when it is
+  called). Build `credential.issue` and `member.suspend` from
+  a valid request too (a SynOrg and a member exist), as Step 8 says, so
+  that the one bad field is the only error. *Status:* Open.
+
+- [ ] **R2 — minor.** *Where:*
+  [client_sources.rs:161-181](../../../../crates/roym_directory/src/app/client_sources.rs#L161)
+  (`add_source`). *Problem:* the probe reply is now parsed as `Value`, not
+  as `Response`. On `main`, a reply that was valid JSON but not a
+  JSON-RPC response failed `from_str::<Response>` and was stored as
+  `SourceError::Unreadable`. Now it parses as a `Value`, falls into the
+  second arm, and the source is stored as healthy: `last_ok_secs` is set
+  and `last_error` is empty. This holds for a top-level `null`, an array,
+  a string or a number, and for an object whose `error` is not an error
+  object (for example `{"error": "boom"}`). The plan (D-A2c-9) asks only
+  that `{"result": null}` be seen; it says "a JSON parse error stays
+  `SourceError::Unreadable`", which the code keeps literally but not in
+  meaning. The change is not in "Planned wire changes" or "Different from
+  the plan". *Failure case:* a hostile or broken node answers the probe
+  with `null`. On `main` the Hub shows the source as unreadable. Now it
+  shows it as reached, with no error. *Fix:* keep the `Value` read for the
+  `result` key, and refuse a reply that is not a JSON-RPC response as
+  before, for example: parse as `Value`; if it is not an object, or if
+  `serde_json::from_value::<Response>(v.clone())` fails, store
+  `Unreadable` with that error. Then no change needs to be recorded. If
+  the new behaviour is wanted instead, record it under "Different from
+  the plan" and as a wire change. *Status:* Open.
+
+- [ ] **R3 — minor.** *Where:*
+  [status.md:15](status.md) (A2c row) and the PR description ("How
+  Tested"). *Problem:* both say "38 method shapes (35 directory + 3
+  whoami; 195 total in workspace)". The real counts are 60 new files (57
+  directory + 3 whoami: 58 in `21356bf3`, 2 in `f564bac4`) and 217 in
+  total (157 + 60). `shapes_directory.rs` has 60 `assert_shape` calls.
+  The PR text also lacks most of what Step 10 asks for: the method
+  tables, the audit table of section 4, the table of section 3.6, and the
+  exact counts; its "Deviations: None" is wrong while R2 is open. This is
+  the kind of mistake A2b R2 found. *Failure case:* the next reviewer, or
+  the milestone close-out, checks the count against the folder and finds
+  23 files that the record does not explain. *Fix:* write "60 method
+  shapes (57 directory + 3 whoami; 217 total)" in `status.md` and the PR.
+  Add the missing Step 10 sections to the PR text (they can link the plan
+  sections instead of copying them). *Status:* Open.
+
+- [ ] **R4 — minor.** *Where:* the dispatch arm of
+  `directory.publish-to-source` on `main`
+  (`crates/roym_directory/src/app.rs:233-236` there), now
+  [api.rs:81](../../../../crates/roym_directory/src/api.rs#L81). *Problem:*
+  the "why" comment of that arm was deleted with the `match`: "Not
+  `publication_ops::publish` -- this fetches one of this node's own
+  catalog listings and calls `directory.publish` on a remote source;
+  `publication_ops::publish` is the inbound side that remote call lands
+  on." The doc comment of `publish_to_source` says what it does but not
+  how it differs from `publication_ops::publish`. Plan section 0 and Step 4
+  say to keep every "why" comment (A2b R8). *Failure case:* a reader of
+  the table sees two publish rows next to each other and cannot tell
+  which side of the wire each one is. *Fix:* put the comment back above
+  the `"directory.publish-to-source"` row in `api.rs` (comments are
+  allowed inside `service_methods!` in the other services), or add its
+  last sentence to the doc comment of `publish_to_source`. *Status:* Open.
+
+- [ ] **R5 — minor.** *Where:*
+  [method/tests/directory.rs:60, :73](../../../../crates/roym_core/src/method/tests/directory.rs#L60)
+  (`std::panic::catch_unwind`),
+  [trust_fixtures.rs:134](../../../../crates/roym_web/tests/dual_build_parity/trust_fixtures.rs#L134)
+  (`syneroym_roym_directory::api::method_table()`),
+  [contract.rs:93](../../../../crates/roym_web/tests/method_contract/contract.rs#L93)
+  (`syneroym_roym_core::router::route`). *Problem:* inline paths with more
+  than one `::`. The import rule of `AGENTS.md` and Step 10 forbid them
+  (A2a R9, A2b R3). *Failure case:* none at run time; the import pass of
+  Step 10 was not complete. *Fix:* `use std::panic;` and
+  `panic::catch_unwind`; `use syneroym_roym_directory::api as
+  directory_api;` and `directory_api::method_table()`; add `router` to the
+  existing `syneroym_roym_core::{..}` import in `contract.rs` and call
+  `router::route`. *Status:* Open.
+
+- [ ] **R6 — minor.** *Where:*
+  [contract_directory.rs:188, :220, :240, :263](../../../../crates/roym_web/tests/method_contract/contract_directory.rs#L188).
+  *Problem:* the comments `// 1. Set limit ..` to `// 4. Local publish ..`
+  number the list of Step 8 of the plan. Plan section 0 forbids numbered
+  comments that follow a list in the plan (A2a R10, A2b R7). *Failure
+  case:* a step is added or removed and the numbers no longer match
+  anything. *Fix:* drop the numbers and keep the words. *Status:* Open.
+
+- [ ] **R7 — minor.** *Where:*
+  [trust_harness.rs:272-343](../../../../crates/roym_web/tests/dual_build_parity/trust_harness.rs#L272)
+  (`trust_source_response`). *Problem:* the `hNewer` source is a second
+  function pasted into the middle of `trust_source_response`, behind
+  `if target == "did:key:hNewer"`. Its `"directory.publish"` arm
+  (`:298-317`) is 20 lines, above the 10-line limit for match arms. That
+  arm also re-parses the call frame by hand in an inline closure, which
+  copies the frame parsing of `inner_method` (`:254-265`), and it falls
+  back to `("l1", "r1")` with no sign that the parse failed. The doc
+  comment above the function (`:267-271`) does not mention `hNewer`.
+  *Failure case:* the frame format changes; `inner_method` is fixed, the
+  copy is not, and the fallback answers `listing_id: "l1"`. Scenario 229
+  then fails with a confusing listing-id mismatch instead of a parse
+  error. *Fix:* move the `hNewer` answers into their own
+  `fn newer_source_response(params: &Value) -> Option<Value>` and call it
+  from `canned_source_response` (`:347`) like the other two.
+  Split `inner_method` into `inner_frame(params) -> Option<Value>` and the
+  method read, and use `inner_frame` for the envelope too. Let the publish
+  arm call a small `fn published_ids(params) -> Option<(String, String)>`
+  and answer an error, not `l1`/`r1`, when it returns `None`. *Status:*
+  Open.
+
+- [ ] **R8 — minor.** *Where:*
+  [method/directory.rs:1-65](../../../../crates/roym_core/src/method/directory.rs#L1).
+  *Problem:* this file is the contract between two nodes, and it has no
+  module doc and no comment. Nothing in it says that these types must
+  never get `deny_unknown_fields`, why some fields have
+  `#[serde(default)]`, or why `name`, `retention_secs`, `member_count` and
+  `listing_id` must stay required (a default would be a false claim about
+  the remote directory, D-A2c-13). The other `method` modules have at
+  least a module line (`catalog.rs:1`). The check guards only inputs (the
+  probe), so nothing stops `deny_unknown_fields` on an output. No test
+  reads `SearchOutput` with an extra key (the client still reads search
+  answers by hand, D-A2c-10), and
+  `directory_info_output_reads_an_answer_with_only_name_and_counts` sends
+  no extra key. *Failure case:* a later change adds
+  `#[serde(deny_unknown_fields)]` to `SearchOutput` "to be strict", or
+  `#[serde(default)]` to `name`. Every test still passes. A4 then reads
+  remote search answers with it, and every newer node becomes
+  `unreadable`. *Fix:* add a module doc that states the rule in two or
+  three sentences, and a one-line comment on the required fields of
+  `DirectoryInfoOutput`. Add `"zz": 1` to the JSON of the
+  `search_output_..` and `directory_info_output_..` unit tests, so every
+  wire output is read once with an unknown key. *Status:* Open.
+
+- [ ] **R9 — minor.** *Where:* change doc
+  [change.md:281-291](../../changes/roym-open-foundation/change.md) (the
+  D-A2c lines) and `:341-342`. *Problem:* the numbers are right, but five
+  lines lose part of their meaning, and for two of them the lost part is
+  the security reason for the decision:
+  - D-A2c-7 says `publish` "passes caller DID to `resolve_published_by`".
+    It passes the `Caller`; `resolve_published_by` turns it into a DID.
+  - D-A2c-16 does not say what the check scan allows: only the exact call
+    `admit::admit(host, api::WIRE_REACHABLE, &req.method)` in `app.rs`,
+    with one `req.method` on the line.
+  - D-A2c-17 does not say that the hand list stays independent and that
+    the contract test asserts it equals `WIRE_REACHABLE`.
+  - D-A2c-13 does not say which fields stay required (`name`,
+    `retention_secs`, `member_count`, `PublishOutput.listing_id`).
+  - D-A2c-9 does not say that a result that does not parse is `-32603`,
+    or that `add_source` reads the reply as `Value`.
+  Also, B53 and B54 are listed under "Planned wire changes", but the plan
+  says neither is visible on the wire. A2a R2 / R3 and A2b R1 were the
+  same kind of finding. *Failure case:* someone reads the change doc to
+  learn why the hand list is not built from the table, finds no reason,
+  and "simplifies" it away; the fifth-method check is then gone. *Fix:*
+  add the missing half-sentence to each of the five lines, and mark B53
+  and B54 "no visible change". When R2 is decided, record it here if the
+  new behaviour stays. *Status:* Open.
+
+- [ ] **R10 — minor.** *Where:*
+  [deferred-backlog.md:647](../../deferred-backlog.md) ("Recently
+  resolved"). *Problem:* the new row has four cells (item, text, date,
+  source) and a blank line after it. Every other row in this section has
+  two cells (item, then "Resolved <date> by .."). The row also does not
+  start with "Resolved", as the others do. *Failure case:* the section
+  shows one row with a different layout, and a reader looking for the
+  date of a resolution finds it in a different place. *Fix:* write it as
+  `| **Roym's sibling boundary is untyped JSON** | Resolved 2026-10-31 by
+  PR #337: all six Roym services .. (`crates/roym_core/src/method.rs`). |`
+  and remove the blank line. *Status:* Open.
+
+- [ ] **R11 — minor.** *Where:*
+  [synorg.rs:199-204](../../../../crates/roym_directory/src/app/synorg.rs#L199),
+  [publication_ops.rs:546-552](../../../../crates/roym_directory/src/app/publication_ops.rs#L546),
+  [credential_ops.rs:330-336](../../../../crates/roym_directory/src/app/credential_ops.rs#L330),
+  [client_sources.rs:236-242](../../../../crates/roym_directory/src/app/client_sources.rs#L236),
+  [held.rs:271-278](../../../../crates/roym_directory/src/app/held.rs#L271).
+  *Problem:* each list path reads `Vec<Value>` with `paging::query_all` and
+  then runs `filter_map(serde_json::from_value(..).ok())`.
+  `paging::query_all::<_, T>` already skips a row whose payload does not
+  decode ([paging.rs:81-87](../../../../crates/roym_core/src/paging.rs#L81)),
+  so this is the same result in two steps, five times. In `memberships`
+  it is a step back: on `main` it was already
+  `paging::query_all::<_, HeldMembershipRow>`, and A2c changed it to
+  `Value` plus `filter_map` with no change in behaviour. *Failure case:*
+  none at run time. The extra code is read and copied (the next service
+  copies the two-step form), against the simplicity rule. *Fix:* read the
+  rows typed in one step, for example `let members: Vec<Member> = match
+  paging::query_all(host, MEMBERS, None).await { .. }`, and restore
+  `memberships` to its `main` form. The B49 behaviour (skip a bad row)
+  stays the same. *Status:* Open.
+
+- [ ] **R12 — minor.** *Where:*
+  [check.rs:21-22, :193](../../../../crates/roym_core/src/method/check.rs#L21)
+  and
+  [method/tests/directory.rs:37-77](../../../../crates/roym_core/src/method/tests/directory.rs#L37).
+  *Problem:* the doc comment of `assert_service_table` still says the scan
+  refuses `req.method` "outside `Response::method_not_found`", and the
+  problem text still says "req.method used outside allowed
+  method_not_found". Both are now incomplete: the `admit::admit` line is
+  allowed too. The unit test `check_allows_req_method_only_in_the_admit_call`
+  checks the two failing cases only with `catch_unwind(..).is_err()`, so
+  it would also pass if the check panicked for another reason (for
+  example a missing `api.rs` rule added later). *Failure case:* a
+  developer reads the doc, sees one allowed form, and moves the `admit`
+  call into a helper in `app.rs`; the check then reports a message that
+  names only `method_not_found`, which does not help. *Fix:* name both
+  allowed forms in the doc comment and in the message. In the unit test,
+  read the panic payload (`err.downcast_ref::<String>()`) and assert that
+  it contains `req.method used outside`. *Status:* Open.
