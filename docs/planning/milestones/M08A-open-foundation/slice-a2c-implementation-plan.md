@@ -1117,7 +1117,8 @@ you run the parity suite, the contract test or the substrate e2e tests
   `trust_harness.rs` and `helpers.rs`). If a set-up is needed twice, put it
   in one helper (A2b R9). One test function per area:
   `server_shapes`, `credential_shapes`, `client_shapes`,
-  `standing_shapes`, `whoami_shapes`. Required cases:
+  `standing_shapes`, `whoami_shapes` (Step 5 adds `no_synorg_shapes`).
+  Required cases:
   - server: `directory.ping`; `directory.settings` missing and found;
     `directory.set-settings`; `directory.info` with no SynOrg (`null`) and
     with one; `member.add`; `member.remove` found and missing;
@@ -1302,12 +1303,20 @@ you run the parity suite, the contract test or the substrate e2e tests
   Check in `target/a2c-e2e.log` that the substrate `roym_*` tests ran and
   were not skipped (they return early when `roym_artifacts_present()` is
   false). The grep prints nothing.
-- Record two new shape files on the fixed code (B57), with
-  `UPDATE_METHOD_SHAPES=1` for these two cases only: `directory.probe-info`
-  against a node with no SynOrg (`{"result": null}`) and
-  `directory.add-source` of that node (with the note). Use
-  `hForeignWire2` before `directory2` has a SynOrg, as in Step 7. Every shape file of
-  Step 2 stays unchanged.
+- Record two new shape files on the fixed code (B57):
+  `directory.probe-info` against a node with no SynOrg (`{"result":
+  null}`) and `directory.add-source` of that node (with the note). Use
+  `hForeignWire2` before `directory2` has a SynOrg, as in Step 7. Put
+  both cases in their own test function `no_synorg_shapes` in
+  `shapes_directory.rs`, not in `client_shapes`: `UPDATE_METHOD_SHAPES=1`
+  rewrites every case of each test function it runs
+  ([shapes.rs:87-97](../../../../crates/roym_web/tests/method_contract/shapes.rs#L87)),
+  so a filter on that one name writes only the two new files:
+  ```bash
+  UPDATE_METHOD_SHAPES=1 cargo nextest run -p syneroym-roym-web --test method_contract no_synorg_shapes
+  ```
+  **Proof:** `git diff --stat crates/roym_web/tests/method_shapes/` shows
+  only the two new files. Every shape file of Step 2 stays unchanged.
 
 ### Step 6 — `web`
 
@@ -1419,17 +1428,35 @@ you run the parity suite, the contract test or the substrate e2e tests
     - `directory.publish` over the wire with a valid signed envelope and
       `"zz": 1` gives `{listing_id, record_id}` (OF-18's real case: a newer
       node publishes). Reuse the envelope set-up of the `hNewer` scenario.
-  - `a_wire_publish_is_recorded_under_the_verified_caller` (Q1, B53), both
-    builds: a wire `directory.publish` through `wire_invoke_as` with
-    `foreign_searcher_caller()` (a verified DID that is not the owner),
-    then a local `directory.publications`: its `published_by` is
-    `did:key:zForeignSearcher`. Then the same caller publishes until the
-    limit refuses it with `data.admission == "rate-limited"`, and a local
-    publish by the owner after that is still accepted (the limit is keyed
-    on the caller, not the owner). Today's scenario 113 checks only a local
-    publish.
     - `session.whoami` with `{"zz": 1}` on `/rpc` gives `-32602`,
       `data.field == "zz"`, and the request `id`.
+  - `a_wire_publish_is_recorded_under_the_verified_caller` (Q1, B53), both
+    builds. Today's scenario 113 checks only a local publish.
+    1. Set a small limit first, as scenario 83 does
+       ([directory.rs:142-147](../../../../crates/roym_web/tests/dual_build_parity/directory.rs#L142)):
+       `directory.set-settings` with `publication_limits: {window_secs:
+       86400, max_per_window: 1}`. The default is 20 per day
+       ([safety.rs:61-65](../../../../crates/roym_core/src/safety.rs#L61)).
+    2. A wire `directory.publish` through the new helper
+       `fixtures::wire_invoke_with` with `foreign_searcher_caller()` (a
+       verified DID, `did:key:zForeignSearcher`, that is not the owner).
+       Then a local `directory.publications`: the row's `published_by` is
+       `did:key:zForeignSearcher`.
+    3. A second wire publish by the same caller is refused with
+       `data.admission == "rate-limited"`.
+    4. A local publish by the owner after that is accepted: the limit is
+       keyed on the caller, not the owner.
+  - New helper in
+    [fixtures.rs](../../../../crates/roym_web/tests/dual_build_parity/fixtures.rs):
+    `pub(crate) async fn wire_invoke_with(h: &Harness, svc:
+    services::Service, envelope: &Value, caller: CallerContext) -> (Value,
+    Value)`, with the body of today's `wire_invoke_as`
+    ([fixtures.rs:487-535](../../../../crates/roym_web/tests/dual_build_parity/fixtures.rs#L487)),
+    which takes an `AuthLevel` and always sends an empty `caller_did`.
+    `wire_invoke_as` then builds its anonymous caller and calls
+    `wire_invoke_with`, so the body is not copied. `wire_invoke_as` with
+    `AuthLevel::Delegated` would give `Verified("")`, which proves nothing
+    about a real DID; do not use it for this test.
   - `contract.rs` is 367 lines. Put the directory and web error tests in a
     new `method_contract/contract_directory.rs` (declared with `#[path]`).
 - **Proof:** `cargo nextest run -p syneroym-roym-web --test
@@ -1556,6 +1583,11 @@ nothing broke in the mocked shapes).
   place (D-A2c-17). `trust_fixtures.rs` shrinks by about 35 lines.
 - `contract.rs` 367 lines: the new tests go in `contract_directory.rs`
   (Step 8).
+- `dual_build_parity/fixtures.rs` 778 lines, not on the oversized list.
+  `wire_invoke_with` (Step 8) takes over the body of `wire_invoke_as`, and
+  `wire_invoke_as` shrinks to a few lines, so the file grows by about 10
+  to 15 lines. If it would pass 800, put both wire helpers in a new
+  sibling module `dual_build_parity/wire.rs` (declared with `#[path]`).
 - `roym_core/src/method/tests.rs` 725 lines, not on the oversized list:
   the new unit tests go in `method/tests/directory.rs` (Step 3).
 - `service_methods!` with 37 rows. It did not trip `too_many_lines` with 41
