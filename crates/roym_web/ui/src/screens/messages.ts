@@ -158,15 +158,13 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
   const searchBtn = text("button", "Search", "button") as HTMLButtonElement;
   const searchResults = document.createElement("div");
   searchResults.className = "search-results";
-  searchBtn.onclick = async () => {
-    const q = searchInput.value.trim();
-    searchResults.replaceChildren();
+  const fillSearch = refiller(searchResults, async (into: DocumentFragment, q: string) => {
     if (!q) return;
     try {
       const res = await call<{ matches: SearchMatch[] }>("conversation.search", { query: q, kind: "direct" });
       const hits = searchHits(res.matches, q);
       if (hits.length === 0) {
-        searchResults.appendChild(text("p", "No messages found.", "search-empty"));
+        into.appendChild(text("p", "No messages found.", "search-empty"));
         return;
       }
       for (const h of hits) {
@@ -174,12 +172,13 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
         item.className = "search-hit";
         item.appendChild(text("div", h.snippet, "snippet"));
         item.onclick = () => reloadList(h.conversation);
-        searchResults.appendChild(item);
+        into.appendChild(item);
       }
     } catch (err) {
-      searchResults.appendChild(text("p", `Search failed: ${errText(err)}`));
+      into.appendChild(text("p", `Search failed: ${errText(err)}`));
     }
-  };
+  });
+  searchBtn.onclick = () => void fillSearch(searchInput.value.trim());
   searchRow.append(searchInput, searchBtn);
   listPane.append(searchRow, searchResults);
 
@@ -258,7 +257,7 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
     try {
       await call("conversation.send", { conversation: conv.id, body });
       composeInput.value = "";
-      await loadHistory();
+      await fillHistory();
     } catch (err) {
       composeErr.textContent = `Send failed: ${errText(err)}`;
     }
@@ -323,7 +322,7 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
       catsInput.value = "";
       listingInput.value = "";
       reqForm.style.display = "none";
-      await loadHistory();
+      await fillHistory();
     } catch (err) {
       reqErr.textContent = `Could not send request: ${errText(err)}`;
     } finally {
@@ -368,16 +367,12 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
 
     for (const m of messages) {
       into.appendChild(
-        messageElement(m, cardMap, allCards, newestRequestMap, conv.id, myDid, loadHistory),
+        messageElement(m, cardMap, allCards, newestRequestMap, conv.id, myDid, fillHistory),
       );
     }
   });
 
-  async function loadHistory() {
-    await fillHistory();
-  }
-
-  await loadHistory();
+  await fillHistory();
 }
 
 export function computeNewestRequestMap(allCards: CardRow[]): Map<string, string> {

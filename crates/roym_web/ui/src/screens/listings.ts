@@ -149,11 +149,8 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
   const historyBtn = text("button", "History", "button listing-history-btn") as HTMLButtonElement;
   const historyHost = document.createElement("div");
   historyHost.className = "listing-history";
-  historyBtn.onclick = async () => {
-    if (historyHost.childElementCount > 0) {
-      historyHost.replaceChildren();
-      return;
-    }
+  const fillHistory = refiller(historyHost, async (into: DocumentFragment, show: boolean) => {
+    if (!show) return;
     try {
       const res = await call<{ history: string[] }>("listing.history", {
         listing_id: row.listing_id,
@@ -167,11 +164,18 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
         const line =
           `#${i + 1} ${env.record_id ?? ""}` +
           (env.supersedes ? ` (supersedes ${env.supersedes})` : " (first version)");
-        historyHost.appendChild(text("div", line, "history-line"));
+        into.appendChild(text("div", line, "history-line"));
       });
     } catch (err) {
-      historyHost.appendChild(text("div", `History failed: ${errText(err)}`));
+      into.appendChild(text("div", `History failed: ${errText(err)}`));
     }
+  });
+  // The button toggles. Two quick clicks are "open" then "close", and the
+  // newest wins, so a load still in flight cannot reopen what was closed.
+  let historyShown = false;
+  historyBtn.onclick = () => {
+    historyShown = !historyShown;
+    void fillHistory(historyShown);
   };
 
   const withdrawBtn = text("button", "Withdraw", "button withdraw-listing") as HTMLButtonElement;

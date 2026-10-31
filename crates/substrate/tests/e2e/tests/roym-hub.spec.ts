@@ -4,6 +4,35 @@ import {
 } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
+/**
+ * Hold every `/rpc` call to `method` instead of sending it to the node. `answer(i, result)`
+ * then replies to the i-th held call, so a test chooses the order the answers arrive in.
+ */
+async function holdRpc(page: Page, method: string) {
+  const held: { release: (result: unknown) => Promise<void> }[] = [];
+  await page.route('**/rpc', async (route) => {
+    const body = route.request().postDataJSON() as { method: string; id: number };
+    if (body.method !== method) return route.fallback();
+    held.push({
+      release: (result) =>
+        route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ jsonrpc: '2.0', id: body.id, result }),
+        }),
+    });
+  });
+  return { held, answer: (i: number, result: unknown) => held[i].release(result) };
+}
+
+/**
+ * Wait for the page to draw what a reply just set going. The reply is parsed and drawn within
+ * milliseconds, and nothing on the page says when that is done, so this is a fixed wait that is
+ * far longer than needed. A wait that is too short can only make a broken page look right.
+ */
+async function settle(page: Page) {
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 1_000)));
+}
+
 let HUB_URL: string;
 let AUTH_ORIGIN: string;
 
@@ -77,26 +106,81 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('input[type="file"]')).toBeAttached();
   });
 
-  test('2b. clicking a tab many times in a row draws its screen once', async ({ page }) => {
+  test('2b. a late first load of a tab cannot draw a second copy of its screen', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
-    // Each click starts a new load while the last one may still wait for the node.
-    // `click` waits for each click to finish, but not for the screen to be drawn.
-    for (const [tab, screen] of [
-      ['Profile', '.profile-screen'],
-      ['Messages', '.messages-screen'],
-      ['Contacts', '.contacts-screen'],
-    ] as const) {
-      const button = page.getByRole('button', { name: tab, exact: true });
-      for (let i = 0; i < 4; i++) await button.click();
-      await expect(page.locator(screen)).toHaveCount(1, { timeout: 15_000 });
-      // Give a late load time to draw a second copy before the final count.
-      await page.waitForLoadState('networkidle');
-      await expect(page.locator(screen)).toHaveCount(1);
-      await expect(page.locator('.tab-content')).toHaveCount(1);
-    }
+    // Click Contacts twice while its first call to the node is held, then answer the calls
+    // newest first. The older load finishes last, after the newer screen is already drawn.
+    const contacts = await holdRpc(page, 'contacts.list');
+    const button = page.getByRole('button', { name: 'Contacts', exact: true });
+    await button.click();
+    await button.click();
+    await expect.poll(() => contacts.held.length).toBe(2);
+
+    await contacts.answer(1, []);
+    await expect(page.locator('.contacts-screen')).toHaveCount(1);
+    await contacts.answer(0, []);
+    await settle(page);
+
+    await expect(page.locator('.contacts-screen')).toHaveCount(1);
+    await expect(page.locator('.tab-content')).toHaveCount(1);
+  });
+
+  test('2c. two overlapping list reloads in one screen draw each row once', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await openMessages(page);
+
+    // Clicking a search hit reloads the conversation list. Click it twice while the list
+    // call is held, then answer newest first, so the older reload finishes last.
+    await page.route('**/rpc', async (route) => {
+      const { method, id } = route.request().postDataJSON() as { method: string; id: number };
+      if (method !== 'conversation.search') return route.fallback();
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ jsonrpc: '2.0', id, result: { matches: [{ conversation: 'c1', body: 'hello' }] } }),
+      });
+    });
+    const list = await holdRpc(page, 'conversation.list');
+    await page.locator('.message-search-input').fill('hello');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const hit = page.locator('.search-hit').first();
+    await hit.click();
+    await hit.click();
+    await expect.poll(() => list.held.length).toBe(2);
+
+    const rows = [{ id: 'c1', peer_address: 'peer-address', last_activity_ms: 0, message_count: 0 }];
+    await list.answer(1, { conversations: rows });
+    await expect(page.locator('.conversation-item')).toHaveCount(1);
+    await list.answer(0, { conversations: rows });
+    await settle(page);
+
+    await expect(page.locator('.conversation-item')).toHaveCount(1);
+  });
+
+  test('2d. two quick clicks on Search list each hit once', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await openMessages(page);
+
+    const search = await holdRpc(page, 'conversation.search');
+    await page.locator('.message-search-input').fill('hello');
+    const button = page.getByRole('button', { name: 'Search', exact: true });
+    await button.click();
+    await button.click();
+    await expect.poll(() => search.held.length).toBe(2);
+
+    const matches = { matches: [{ conversation: 'c1', body: 'hello there' }] };
+    await search.answer(1, matches);
+    await expect(page.locator('.search-hit')).toHaveCount(1);
+    await search.answer(0, matches);
+    await settle(page);
+
+    await expect(page.locator('.search-hit')).toHaveCount(1);
   });
 
   test('3. card gallery: seven known types and the unknown fallback render', async ({ page }) => {
