@@ -637,7 +637,7 @@ async fn scenario_109_no_wire_reachable_method_calls_a_sibling_parity() {
 #[tokio::test]
 async fn scenario_118_exactly_four_directory_verbs_are_wire_reachable_parity() {
     let h = harness().await;
-    for &method in ALL_DIRECTORY_VERBS {
+    for method in &all_directory_verbs() {
         // Every listed verb must be a real dispatch arm, not a stale or
         // mistyped name: a local call must not answer method-not-found.
         let (lw, ln) = h.local_invoke(services::DIRECTORY, &env(method, json!({}))).await;
@@ -645,12 +645,12 @@ async fn scenario_118_exactly_four_directory_verbs_are_wire_reachable_parity() {
             assert_ne!(
                 v["error"]["code"].as_i64(),
                 Some(-32601),
-                "{label} {method} is in ALL_DIRECTORY_VERBS but the dispatch does not know it: {v}"
+                "{label} {method} is in directory table but dispatch does not know it: {v}"
             );
         }
 
         let (w, n) = h.wire_invoke(services::DIRECTORY, &env(method, json!({}))).await;
-        let reachable = WIRE_REACHABLE_DIRECTORY_VERBS.contains(&method);
+        let reachable = WIRE_REACHABLE_DIRECTORY_VERBS.contains(&method.as_str());
         for (label, v) in [("wasm", &w), ("native", &n)] {
             let code = v["error"]["code"].as_i64();
             if reachable {

@@ -128,52 +128,11 @@ pub(crate) async fn dir2_enrol_signing(h: &Harness) {
     assert!(inat["result"].is_object(), "dir2 install-signing-certificate native: {inat}");
 }
 
-/// Every arm of `directory`'s `invoke` dispatch, maintained by hand:
-/// nothing links this list to the `match` in `app.rs` at compile time.
-/// Scenario 118 asserts each of these dispatches locally (a typo or a
-/// removed verb fails there) and has exactly the wire posture below -- a
-/// verb *added* to `app.rs` and not added here is simply untested, the
-/// risk this shape accepts. A real guarantee would need `invoke` to
-/// dispatch through a `const` table the test could import.
-pub(crate) const ALL_DIRECTORY_VERBS: &[&str] = &[
-    "directory.ping",
-    "directory.settings",
-    "directory.set-settings",
-    "directory.info",
-    "member.add",
-    "member.remove",
-    "member.list",
-    "directory.publish",
-    "directory.unpublish",
-    "directory.publications",
-    "directory.search",
-    "directory.limits",
-    "directory.set-limits",
-    "directory.reindex",
-    "directory.export",
-    "directory.import",
-    "directory.add-source",
-    "directory.probe-info",
-    "directory.remove-source",
-    "directory.sources",
-    "directory.start-run",
-    "directory.query-source",
-    "directory.merge",
-    "directory.run-envelope",
-    "directory.publish-to-source",
-    "credential.issue",
-    "credential.list",
-    "revocation.issue",
-    "revocation.list",
-    "member.suspend",
-    "member.lift",
-    "member.decisions",
-    "directory.standing",
-    "directory.check-standing",
-    "directory.memberships",
-    "directory.signing-status",
-    "directory.install-signing-certificate",
-];
+/// Every method of `directory`'s method table, so a new row is tested here at
+/// once.
+pub(crate) fn all_directory_verbs() -> Vec<String> {
+    syneroym_roym_directory::api::method_table().into_iter().map(|m| m.name.to_string()).collect()
+}
 
 /// The whole security claim of this slice: exactly these four verbs
 /// answer anything other than `-32013` over the wire.
