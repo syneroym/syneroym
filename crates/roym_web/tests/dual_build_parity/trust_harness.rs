@@ -248,10 +248,10 @@ fn canned_hit(target: &str) -> Value {
     })
 }
 
-/// The `method` of the JSON-RPC frame a `directory.*` proxy call carries:
-/// `params` is `[ "<json>" ]` (possibly still a JSON string of that array),
-/// and the frame inside names the verb.
-fn inner_method(params: &Value) -> Option<String> {
+/// The JSON-RPC frame a `directory.*` proxy call carries: `params` is
+/// `[ "<json>" ]` (possibly still a JSON string of that array), and the
+/// element inside is the JSON-RPC request frame.
+fn inner_frame(params: &Value) -> Option<Value> {
     let parsed;
     let array = match params {
         Value::String(s) => {
@@ -260,8 +260,62 @@ fn inner_method(params: &Value) -> Option<String> {
         }
         other => other,
     };
-    let frame: Value = serde_json::from_str(array.get(0)?.as_str()?).ok()?;
+    serde_json::from_str(array.get(0)?.as_str()?).ok()
+}
+
+fn inner_method(params: &Value) -> Option<String> {
+    let frame = inner_frame(params)?;
     frame.get("method")?.as_str().map(str::to_string)
+}
+
+fn published_ids(params: &Value) -> Option<(String, String)> {
+    let frame = inner_frame(params)?;
+    let env_str = frame.get("params")?.get("envelope")?.as_str()?;
+    let env = Envelope::from_json(env_str).ok()?;
+    let lid = env.payload.get("listing_id")?.as_str()?.to_string();
+    let rid = env.record_id().ok()?;
+    Some((lid, rid))
+}
+
+fn newer_source_response(params: &Value) -> Option<Value> {
+    let method = inner_method(params)?;
+    let result = match method.as_str() {
+        "directory.info" => json!({
+            "name": "Newer Guild",
+            "retention_secs": 2_592_000u64,
+            "member_count": 10u64,
+            "issuer_did": claimed_issuer_did("did:key:hTrustValid"),
+            "extra": 1,
+        }),
+        "directory.search" => {
+            let mut hit = canned_hit("did:key:hTrustValid");
+            hit["extra_hit_field"] = json!("newer-hit-v2");
+            json!({ "hits": [hit], "ranking": "v2" })
+        }
+        "directory.standing" => json!({
+            "issuer_did": claimed_issuer_did("did:key:hTrustValid"),
+            "member_did": listing_owner_did(),
+            "evidence": canned_evidence("did:key:hTrustValid"),
+            "answered_at_secs": CANNED_ISSUED_AT_SECS,
+            "extra": 1,
+        }),
+        "directory.publish" => match published_ids(params) {
+            Some((listing_id, record_id)) => json!({
+                "listing_id": listing_id,
+                "record_id": record_id,
+                "receipt": "x",
+            }),
+            None => {
+                let error = json!({ "code": -32602, "message": "invalid publish envelope" });
+                return Some(Value::String(json!({ "error": error }).to_string()));
+            }
+        },
+        other => {
+            let error = json!({ "code": -32601, "message": format!("no such method: {other}") });
+            return Some(Value::String(json!({ "error": error }).to_string()));
+        }
+    };
+    Some(Value::String(json!({ "result": result }).to_string()))
 }
 
 /// Canned replies for `TRUST_SOURCES`, as the `Value::String` shape a real
@@ -270,59 +324,10 @@ fn inner_method(params: &Value) -> Option<String> {
 /// genuine listing with this source's evidence, `directory.standing`
 /// serves the same evidence. Anything else answers method-not-found.
 pub(crate) fn trust_source_response(target: &str, params: &Value) -> Option<Value> {
-    if !TRUST_SOURCES.contains(&target) && target != "did:key:hNewer" {
+    if !TRUST_SOURCES.contains(&target) {
         return None;
     }
     let method = inner_method(params)?;
-    if target == "did:key:hNewer" {
-        let result = match method.as_str() {
-            "directory.info" => json!({
-                "name": "Newer Guild",
-                "retention_secs": 2_592_000u64,
-                "member_count": 10u64,
-                "issuer_did": claimed_issuer_did("did:key:hTrustValid"),
-                "extra": 1,
-            }),
-            "directory.search" => {
-                let mut hit = canned_hit("did:key:hTrustValid");
-                hit["extra_hit_field"] = json!("newer-hit-v2");
-                json!({ "hits": [hit], "ranking": "v2" })
-            }
-            "directory.standing" => json!({
-                "issuer_did": claimed_issuer_did("did:key:hTrustValid"),
-                "member_did": listing_owner_did(),
-                "evidence": canned_evidence("did:key:hTrustValid"),
-                "answered_at_secs": CANNED_ISSUED_AT_SECS,
-                "extra": 1,
-            }),
-            "directory.publish" => {
-                let (listing_id, record_id) = (|| {
-                    let array = match params {
-                        Value::String(s) => serde_json::from_str::<Value>(s).ok()?,
-                        other => other.clone(),
-                    };
-                    let frame: Value = serde_json::from_str(array.get(0)?.as_str()?).ok()?;
-                    let env_str = frame.get("params")?.get("envelope")?.as_str()?;
-                    let env = Envelope::from_json(env_str).ok()?;
-                    let lid = env.payload.get("listing_id")?.as_str()?.to_string();
-                    let rid = env.record_id().ok()?;
-                    Some((lid, rid))
-                })()
-                .unwrap_or_else(|| ("l1".to_string(), "r1".to_string()));
-                json!({
-                    "listing_id": listing_id,
-                    "record_id": record_id,
-                    "receipt": "x",
-                })
-            }
-            other => {
-                let error =
-                    json!({ "code": -32601, "message": format!("no such method: {other}") });
-                return Some(Value::String(json!({ "error": error }).to_string()));
-            }
-        };
-        return Some(Value::String(json!({ "result": result }).to_string()));
-    }
     let result = match method.as_str() {
         "directory.info" => {
             json!({ "name": "Canned Guild", "issuer_did": claimed_issuer_did(target) })
@@ -343,7 +348,10 @@ pub(crate) fn trust_source_response(target: &str, params: &Value) -> Option<Valu
 }
 
 /// What both stacks' service proxies try before any real routing: the
-/// hostile forgers first, then the trust sources.
+/// hostile forgers first, the `hNewer` source, then the trust sources.
 pub(crate) fn canned_source_response(target: &str, params: &Value) -> Option<Value> {
+    if target == "did:key:hNewer" {
+        return newer_source_response(params);
+    }
     hostile_source_response(target).or_else(|| trust_source_response(target, params))
 }

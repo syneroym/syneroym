@@ -6,7 +6,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use syneroym_roym_catalog::api as catalog_api;
 use syneroym_roym_conversation::api as conversation_api;
-use syneroym_roym_core::{method::check::assert_service_table, services};
+use syneroym_roym_core::{method::check::assert_service_table, router, services};
 use syneroym_roym_directory::api as directory_api;
 use syneroym_roym_profile::api as profile_api;
 use syneroym_roym_transaction::api as transaction_api;
@@ -90,7 +90,7 @@ fn web_has_one_typed_method_of_its_own() {
     assert_eq!(table.len(), 1);
     let row = &table[0];
     assert_eq!(row.name, "session.whoami");
-    assert!(syneroym_roym_core::router::route("session.whoami").is_none());
+    assert!(router::route("session.whoami").is_none());
     assert!(!row.input.contains("serde_json::value::Value"));
     assert!(!row.output.contains("serde_json::value::Value"));
     let probe_res = (row.probe)(&json!({ "__probe__": 1 }));

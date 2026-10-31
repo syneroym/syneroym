@@ -12,6 +12,7 @@ use syneroym_identity::{
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
     substrate::{derive_did_key, resolve_did_key},
 };
+use syneroym_roym_directory::api as directory_api;
 
 use super::{fixtures::*, helpers::*};
 
@@ -131,7 +132,7 @@ pub(crate) async fn dir2_enrol_signing(h: &Harness) {
 /// Every method of `directory`'s method table, so a new row is tested here at
 /// once.
 pub(crate) fn all_directory_verbs() -> Vec<String> {
-    syneroym_roym_directory::api::method_table().into_iter().map(|m| m.name.to_string()).collect()
+    directory_api::method_table().into_iter().map(|m| m.name.to_string()).collect()
 }
 
 /// The whole security claim of this slice: exactly these four verbs
