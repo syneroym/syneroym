@@ -553,3 +553,24 @@ What was checked and found correct:
   function `no_synorg_shapes`, recorded with a filter on that name. The
   proof is `git diff --stat` on `method_shapes/` showing only the two new
   files. Step 2's list of test functions says that Step 5 adds it.
+
+## Plan review round 1 — P13 and P14 fixes confirmed — Claude Sonnet 5.5 (Claude Code desktop), 2026-10-31
+
+Checked the plan at `d4e0013d`. No code was run.
+
+- **P13 confirmed.** Step 8 names `fixtures::wire_invoke_with(h, svc,
+  envelope, caller: CallerContext)`, built from the body of
+  `wire_invoke_as`, which then calls it. `foreign_searcher_caller()` exists
+  ([helpers.rs:268](../../../../crates/roym_web/tests/dual_build_parity/helpers.rs#L268)).
+  The test sets `max_per_window: 1` first, then checks attribution, the
+  refusal and the owner's publish. `fixtures.rs` is 778 lines, as 7.4
+  says, and it is not on the oversized list; the fallback module is named.
+  One note for the implementer, not a finding: the refused second publish
+  must be a second, different listing, as in scenario 83. A repeat of the
+  same envelope could be refused for another reason.
+- **P14 confirmed.** The two B57 cases are in their own function
+  `no_synorg_shapes`, recorded with a filter on that name. The proof is
+  `git diff --stat` on `method_shapes/`. Step 2's list says Step 5 adds the
+  function.
+
+All 14 findings are closed. 0 open. `status.md` matches.
