@@ -1,4 +1,4 @@
-import { errText, field, text } from "../dom";
+import { errText, field, refiller, text } from "../dom";
 import { renderRefusedCard } from "../cards/refused";
 import {
   CARDS_NOT_IN_GROUPS_MESSAGE,
@@ -250,35 +250,58 @@ export async function renderGroups(container: HTMLElement) {
   hiddenBox.append(hiddenSummary, hiddenItems);
   leftPane.appendChild(hiddenBox);
 
-  // Two reloads can overlap (the first load and the one after "New
-  // group"). Only the newest one draws, or both would append their rows.
-  let currentListSeq = 0;
+  type GroupListLoad = { rows: GroupListItem[]; allRows: GroupListItem[] } | "signed-out" | "failed";
+
+  // Resolves to `undefined` when a newer reload replaced this one.
+  const fillGroupList = refiller(
+    groupItems,
+    async (into: DocumentFragment, selectedId?: string): Promise<GroupListLoad> => {
+      let rows: GroupListItem[] = [];
+      let allRows: GroupListItem[] = [];
+      try {
+        const res = await call<{ conversations: GroupListItem[] }>("conversation.list", { kind: "group" });
+        rows = res.conversations || [];
+        const hiddenRes = await call<{ conversations: GroupListItem[] }>("conversation.list", {
+          kind: "group",
+          include_hidden: true,
+        });
+        allRows = hiddenRes.conversations || [];
+      } catch (err) {
+        if (err instanceof RpcError && err.type === "NotSignedIn") return "signed-out";
+        into.appendChild(text("p", `Could not load: ${errText(err)}`));
+        return "failed";
+      }
+      if (rows.length === 0) {
+        into.appendChild(text("p", "No groups yet.", "conversations-empty"));
+      }
+      for (const r of rows) {
+        const row = document.createElement("div");
+        row.className = "conversation-item";
+        if (r.id === selectedId) row.classList.add("selected");
+        const label = r.group?.name || "Unnamed group";
+        row.appendChild(text("div", label, "peer-label"));
+        row.appendChild(text("div", `${r.message_count} messages`, "count-label"));
+        row.onclick = () => {
+          groupItems.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
+          row.classList.add("selected");
+          selectGroup(r.id);
+        };
+        into.appendChild(row);
+      }
+      return { rows, allRows };
+    },
+  );
 
   async function reloadGroupList(selectedId?: string) {
-    const seq = ++currentListSeq;
-    let rows: GroupListItem[] = [];
-    let allRows: GroupListItem[] = [];
-    try {
-      const res = await call<{ conversations: GroupListItem[] }>("conversation.list", { kind: "group" });
-      rows = res.conversations || [];
-      const hiddenRes = await call<{ conversations: GroupListItem[] }>("conversation.list", {
-        kind: "group",
-        include_hidden: true,
-      });
-      allRows = hiddenRes.conversations || [];
-    } catch (err) {
-      if (seq !== currentListSeq) return;
-      if (err instanceof RpcError && err.type === "NotSignedIn") {
-        renderSessionEnded(container);
-        return;
-      }
-      groupItems.replaceChildren(text("p", `Could not load: ${errText(err)}`));
-      hiddenItems.replaceChildren();
+    const loaded = await fillGroupList(selectedId);
+    if (!loaded) return;
+    if (loaded === "signed-out") {
+      renderSessionEnded(container);
       return;
     }
-    if (seq !== currentListSeq) return;
-    groupItems.replaceChildren();
     hiddenItems.replaceChildren();
+    if (loaded === "failed") return;
+    const { rows, allRows } = loaded;
 
     const hiddenList = allRows.filter(
       (r) => r.group?.admission?.state === "hidden" || r.group?.admission?.state === "refused",
@@ -307,26 +330,9 @@ export async function renderGroups(container: HTMLElement) {
     }
 
     if (rows.length === 0) {
-      groupItems.appendChild(text("p", "No groups yet.", "conversations-empty"));
       rightPane.replaceChildren();
       return;
     }
-
-    for (const r of rows) {
-      const row = document.createElement("div");
-      row.className = "conversation-item";
-      if (r.id === selectedId) row.classList.add("selected");
-      const label = r.group?.name || "Unnamed group";
-      row.appendChild(text("div", label, "peer-label"));
-      row.appendChild(text("div", `${r.message_count} messages`, "count-label"));
-      row.onclick = () => {
-        groupItems.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
-        row.classList.add("selected");
-        selectGroup(r.id);
-      };
-      groupItems.appendChild(row);
-    }
-
     const targetId = selectedId && rows.some((r) => r.id === selectedId) ? selectedId : rows[0]?.id;
     if (targetId) {
       await selectGroup(targetId);

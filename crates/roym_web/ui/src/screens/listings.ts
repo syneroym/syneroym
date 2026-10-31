@@ -13,6 +13,7 @@ import {
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
+import { refiller } from "../dom";
 import { call, RpcError } from "../rpc";
 
 interface ListingListRow {
@@ -113,24 +114,23 @@ export async function renderListings(container: HTMLElement) {
 
   box.appendChild(buildVerifyBox());
 
-  async function reload() {
-    listHost.replaceChildren();
-    listHost.appendChild(text("h3", "Your listings"));
+  const reload = refiller(listHost, async (into) => {
+    into.appendChild(text("h3", "Your listings"));
     let rows: ListingListRow[] = [];
     try {
       const res = await call<{ listings: ListingListRow[] }>("listing.list");
       rows = res.listings;
     } catch (err) {
-      listHost.appendChild(text("p", `Could not load listings: ${errText(err)}`));
+      into.appendChild(text("p", `Could not load listings: ${errText(err)}`));
       return;
     }
     if (rows.length === 0) {
-      listHost.appendChild(text("p", "No listings yet."));
+      into.appendChild(text("p", "No listings yet."));
     }
     for (const row of rows) {
-      listHost.appendChild(listingRow(row, reload));
+      into.appendChild(listingRow(row, reload));
     }
-  }
+  });
 
   await reload();
   container.appendChild(box);
@@ -149,11 +149,8 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
   const historyBtn = text("button", "History", "button listing-history-btn") as HTMLButtonElement;
   const historyHost = document.createElement("div");
   historyHost.className = "listing-history";
-  historyBtn.onclick = async () => {
-    if (historyHost.childElementCount > 0) {
-      historyHost.replaceChildren();
-      return;
-    }
+  const fillHistory = refiller(historyHost, async (into: DocumentFragment, show: boolean) => {
+    if (!show) return;
     try {
       const res = await call<{ history: string[] }>("listing.history", {
         listing_id: row.listing_id,
@@ -167,11 +164,18 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
         const line =
           `#${i + 1} ${env.record_id ?? ""}` +
           (env.supersedes ? ` (supersedes ${env.supersedes})` : " (first version)");
-        historyHost.appendChild(text("div", line, "history-line"));
+        into.appendChild(text("div", line, "history-line"));
       });
     } catch (err) {
-      historyHost.appendChild(text("div", `History failed: ${errText(err)}`));
+      into.appendChild(text("div", `History failed: ${errText(err)}`));
     }
+  });
+  // The button toggles. Two quick clicks are "open" then "close", and the
+  // newest wins, so a load still in flight cannot reopen what was closed.
+  let historyShown = false;
+  historyBtn.onclick = () => {
+    historyShown = !historyShown;
+    void fillHistory(historyShown);
   };
 
   const withdrawBtn = text("button", "Withdraw", "button withdraw-listing") as HTMLButtonElement;
@@ -472,8 +476,7 @@ function availabilityEditor(listingId: string): HTMLElement {
   const addBtn = text("button", "Add slot", "button add-slot") as HTMLButtonElement;
   const err = text("p", "", "slot-error");
 
-  async function reloadSlots() {
-    slotsHost.replaceChildren();
+  const reloadSlots = refiller(slotsHost, async (into) => {
     try {
       const res = await call<{
         slots: Array<{ slot_id: string; start_secs: number; end_secs: number; capacity: number }>;
@@ -490,12 +493,12 @@ function availabilityEditor(listingId: string): HTMLElement {
           await reloadSlots();
         };
         line.appendChild(rm);
-        slotsHost.appendChild(line);
+        into.appendChild(line);
       }
     } catch (e) {
-      slotsHost.appendChild(text("p", `Could not load slots: ${errText(e)}`));
+      into.appendChild(text("p", `Could not load slots: ${errText(e)}`));
     }
-  }
+  });
 
   addBtn.onclick = async () => {
     err.textContent = "";

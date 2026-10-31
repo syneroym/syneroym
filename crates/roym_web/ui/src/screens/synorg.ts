@@ -1,4 +1,4 @@
-import { errText, field, text } from "../dom";
+import { errText, field, refiller, text } from "../dom";
 import { call } from "../rpc";
 import { buildMembersPanel } from "./synorg_members";
 
@@ -200,8 +200,7 @@ async function buildRoster(): Promise<HTMLElement> {
   const addBtn = text("button", "Add member", "button add-member") as HTMLButtonElement;
   const status = text("p", "", "roster-status");
 
-  const reload = async () => {
-    list.replaceChildren();
+  const reload = refiller(list, async (into) => {
     try {
       const res = await call<{ members: Array<{ did: string; note: string }> }>("member.list");
       for (const m of res.members) {
@@ -224,12 +223,12 @@ async function buildRoster(): Promise<HTMLElement> {
           await reload();
         };
         line.append(rm, refusal);
-        list.appendChild(line);
+        into.appendChild(line);
       }
     } catch (err) {
-      list.appendChild(text("p", `Could not load members: ${errText(err)}`));
+      into.appendChild(text("p", `Could not load members: ${errText(err)}`));
     }
-  };
+  });
 
   addBtn.onclick = async () => {
     status.textContent = "";

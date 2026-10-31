@@ -1,6 +1,7 @@
 import { renderCard } from "./cards/render";
 import { renderRefusedCard } from "./cards/refused";
 import { runSearch } from "./directory/search";
+import { errText, text } from "./dom";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
 import { renderDirectory } from "./screens/directory";
@@ -133,38 +134,51 @@ async function renderTabs(container: HTMLElement, did: string) {
   nav.style.gap = "12px";
   nav.style.marginBottom = "16px";
 
-  const tabContainer = document.createElement("div");
+  let tabContainer = document.createElement("div");
   tabContainer.className = "tab-content";
-
-  const tabs = [
-    { name: "Profile", render: () => renderProfile(tabContainer) },
-    { name: "Contacts", render: () => renderContacts(tabContainer) },
-    { name: "Messages", render: () => renderMessages(tabContainer) },
-    { name: "Groups", render: () => renderGroups(tabContainer) },
-    { name: "Listings", render: () => renderListings(tabContainer) },
-    { name: "Directory", render: () => renderDirectory(tabContainer) },
-    { name: "Memberships", render: () => renderMemberships(tabContainer) },
-    { name: "SynOrg", render: () => renderSynOrg(tabContainer) },
-    { name: "Safety", render: () => renderSafety(tabContainer) },
-    { name: "Backup", render: () => renderBackup(tabContainer) },
-    { name: "Components", render: () => renderHome(tabContainer, did) },
-  ];
-
-  for (let i = 0; i < tabs.length; i++) {
-    const btn = document.createElement("button");
-    btn.className = "button tab-button";
-    btn.textContent = tabs[i].name;
-    btn.onclick = () => {
-      tabs[i].render();
-    };
-    nav.appendChild(btn);
-  }
-
   container.appendChild(nav);
   container.appendChild(tabContainer);
 
+  // Each tab gets its own fresh container that replaces the old one. A
+  // screen that is still loading (it awaits the node before it appends)
+  // then writes into a container that is already detached, so a quick tab
+  // click can never leave two screens in the page.
+  const show = async (render: (host: HTMLElement) => Promise<void>) => {
+    const host = document.createElement("div");
+    host.className = "tab-content";
+    tabContainer.replaceWith(host);
+    tabContainer = host;
+    try {
+      await render(host);
+    } catch (err) {
+      host.appendChild(text("p", `Could not load this tab: ${errText(err)}`, "tab-error"));
+    }
+  };
+
+  const tabs: Array<[name: string, render: (host: HTMLElement) => Promise<void>]> = [
+    ["Profile", renderProfile],
+    ["Contacts", renderContacts],
+    ["Messages", renderMessages],
+    ["Groups", renderGroups],
+    ["Listings", renderListings],
+    ["Directory", renderDirectory],
+    ["Memberships", renderMemberships],
+    ["SynOrg", renderSynOrg],
+    ["Safety", renderSafety],
+    ["Backup", renderBackup],
+    ["Components", (host) => renderHome(host, did)],
+  ];
+
+  for (const [name, render] of tabs) {
+    const btn = document.createElement("button");
+    btn.className = "button tab-button";
+    btn.textContent = name;
+    btn.onclick = () => void show(render);
+    nav.appendChild(btn);
+  }
+
   // Default to Profile tab
-  await tabs[0].render();
+  await show(tabs[0][1]);
 }
 
 async function renderLogin(container: HTMLElement) {
