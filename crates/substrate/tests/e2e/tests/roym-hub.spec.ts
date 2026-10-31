@@ -77,6 +77,28 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('input[type="file"]')).toBeAttached();
   });
 
+  test('2b. clicking a tab many times in a row draws its screen once', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    // Each click starts a new load while the last one may still wait for the node.
+    // `click` waits for each click to finish, but not for the screen to be drawn.
+    for (const [tab, screen] of [
+      ['Profile', '.profile-screen'],
+      ['Messages', '.messages-screen'],
+      ['Contacts', '.contacts-screen'],
+    ] as const) {
+      const button = page.getByRole('button', { name: tab, exact: true });
+      for (let i = 0; i < 4; i++) await button.click();
+      await expect(page.locator(screen)).toHaveCount(1, { timeout: 15_000 });
+      // Give a late load time to draw a second copy before the final count.
+      await page.waitForLoadState('networkidle');
+      await expect(page.locator(screen)).toHaveCount(1);
+      await expect(page.locator('.tab-content')).toHaveCount(1);
+    }
+  });
+
   test('3. card gallery: seven known types and the unknown fallback render', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');

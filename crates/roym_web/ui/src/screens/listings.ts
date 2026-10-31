@@ -13,6 +13,7 @@ import {
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
+import { refiller } from "../dom";
 import { call, RpcError } from "../rpc";
 
 interface ListingListRow {
@@ -113,24 +114,23 @@ export async function renderListings(container: HTMLElement) {
 
   box.appendChild(buildVerifyBox());
 
-  async function reload() {
-    listHost.replaceChildren();
-    listHost.appendChild(text("h3", "Your listings"));
+  const reload = refiller(listHost, async (into) => {
+    into.appendChild(text("h3", "Your listings"));
     let rows: ListingListRow[] = [];
     try {
       const res = await call<{ listings: ListingListRow[] }>("listing.list");
       rows = res.listings;
     } catch (err) {
-      listHost.appendChild(text("p", `Could not load listings: ${errText(err)}`));
+      into.appendChild(text("p", `Could not load listings: ${errText(err)}`));
       return;
     }
     if (rows.length === 0) {
-      listHost.appendChild(text("p", "No listings yet."));
+      into.appendChild(text("p", "No listings yet."));
     }
     for (const row of rows) {
-      listHost.appendChild(listingRow(row, reload));
+      into.appendChild(listingRow(row, reload));
     }
-  }
+  });
 
   await reload();
   container.appendChild(box);
@@ -472,8 +472,7 @@ function availabilityEditor(listingId: string): HTMLElement {
   const addBtn = text("button", "Add slot", "button add-slot") as HTMLButtonElement;
   const err = text("p", "", "slot-error");
 
-  async function reloadSlots() {
-    slotsHost.replaceChildren();
+  const reloadSlots = refiller(slotsHost, async (into) => {
     try {
       const res = await call<{
         slots: Array<{ slot_id: string; start_secs: number; end_secs: number; capacity: number }>;
@@ -490,12 +489,12 @@ function availabilityEditor(listingId: string): HTMLElement {
           await reloadSlots();
         };
         line.appendChild(rm);
-        slotsHost.appendChild(line);
+        into.appendChild(line);
       }
     } catch (e) {
-      slotsHost.appendChild(text("p", `Could not load slots: ${errText(e)}`));
+      into.appendChild(text("p", `Could not load slots: ${errText(e)}`));
     }
-  }
+  });
 
   addBtn.onclick = async () => {
     err.textContent = "";

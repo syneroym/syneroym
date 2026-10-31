@@ -1,3 +1,4 @@
+import { refiller } from "../dom";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
 import { renderCard } from "../cards/render";
@@ -187,20 +188,20 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
   listItems.className = "conversation-items";
   listPane.appendChild(listItems);
 
-  async function reloadList(select?: string) {
-    listItems.replaceChildren();
+  // Resolves to the rows when this run drew the list, else `undefined` (the
+  // load failed, or a newer run replaced this one).
+  const fillList = refiller(listItems, async (into: DocumentFragment, select?: string) => {
     let rows: ConversationRow[] = [];
     try {
       const res = await call<{ conversations: ConversationRow[] }>("conversation.list", { kind: "direct" });
       rows = res.conversations;
     } catch (err) {
-      listItems.appendChild(text("p", `Could not load: ${errText(err)}`));
-      return;
+      into.appendChild(text("p", `Could not load: ${errText(err)}`));
+      return undefined;
     }
     if (rows.length === 0) {
-      listItems.appendChild(text("p", "No conversations yet.", "conversations-empty"));
-      threadPane.replaceChildren();
-      return;
+      into.appendChild(text("p", "No conversations yet.", "conversations-empty"));
+      return rows;
     }
     for (const r of rows) {
       const row = document.createElement("div");
@@ -213,7 +214,17 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
         row.classList.add("selected");
         renderThread(threadPane, r, myDid);
       };
-      listItems.appendChild(row);
+      into.appendChild(row);
+    }
+    return rows;
+  });
+
+  async function reloadList(select?: string) {
+    const rows = await fillList(select);
+    if (!rows) return;
+    if (rows.length === 0) {
+      threadPane.replaceChildren();
+      return;
     }
     const target = select ? rows.find((r) => r.id === select) : rows[0];
     if (target) await renderThread(threadPane, target, myDid);
@@ -324,9 +335,7 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
   requestSection.appendChild(reqForm);
   pane.appendChild(requestSection);
 
-  async function loadHistory() {
-    messagesHost.replaceChildren();
-
+  const fillHistory = refiller(messagesHost, async (into: DocumentFragment) => {
     const cardMap = new Map<string, CardRow>();
     let allCards: CardRow[] = [];
     try {
@@ -353,15 +362,19 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
       });
       messages = res.messages;
     } catch (err) {
-      messagesHost.appendChild(text("p", `Could not load messages: ${errText(err)}`));
+      into.appendChild(text("p", `Could not load messages: ${errText(err)}`));
       return;
     }
 
     for (const m of messages) {
-      messagesHost.appendChild(
+      into.appendChild(
         messageElement(m, cardMap, allCards, newestRequestMap, conv.id, myDid, loadHistory),
       );
     }
+  });
+
+  async function loadHistory() {
+    await fillHistory();
   }
 
   await loadHistory();
