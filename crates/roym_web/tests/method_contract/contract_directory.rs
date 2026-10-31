@@ -6,9 +6,9 @@ use syneroym_roym_core::services;
 use super::{
     contract::post_rpc,
     fixtures::{
-        both_rpc, enrol_signing, ensure_synorg, env, full_listing_params, wire_invoke_with,
+        both_rpc, enrol_signing, ensure_synorg, env, full_listing_params, one_rpc, wire_invoke_with,
     },
-    helpers::{HttpDriver, foreign_searcher_caller, harness, owner_did},
+    helpers::{HttpDriver, foreign_searcher_caller, harness, owner_did, stripped},
     trust_fixtures::{FIXTURE_CATEGORIES, grant_owner_credential, stranger_did},
 };
 
@@ -86,23 +86,33 @@ async fn directory_parameter_errors() {
     // directory.query-source with invalid open_to in query
     let (aw, an) =
         post_rpc(&h, "directory.add-source", Some(json!({ "did": "did:key:hTrustValid" }))).await;
-    assert_eq!(aw, an);
-    assert!(aw.get("result").is_some());
+    assert_eq!(stripped(&aw), stripped(&an));
+    assert!(aw["result"]["source"]["last_ok_secs"].is_number());
+    assert!(an["result"]["source"]["last_ok_secs"].is_number());
 
-    let (rw, rn) = post_rpc(&h, "directory.start-run", None).await;
-    assert_eq!(rw, rn);
-    let run_id = rw["result"]["run_id"].as_str().unwrap();
-    let (w, n) = post_rpc(
-        &h,
-        "directory.query-source",
-        Some(json!({
-            "run_id": run_id,
-            "source": "did:key:hTrustValid",
-            "query": { "open_to": "everyone" }
-        })),
-    )
-    .await;
-    assert_eq!(w, n);
+    let mut query_errors = Vec::new();
+    for wasm in [true, false] {
+        let start = one_rpc(&h, wasm, "directory.start-run", json!({})).await;
+        let run_id = start["result"]["run_id"].as_str().unwrap();
+        let err = one_rpc(
+            &h,
+            wasm,
+            "directory.query-source",
+            json!({
+                "run_id": run_id,
+                "source": "did:key:hTrustValid",
+                "query": { "open_to": "everyone" }
+            }),
+        )
+        .await;
+        query_errors.push(err);
+
+        let m = one_rpc(&h, wasm, "directory.merge", json!({ "run_id": run_id })).await;
+        assert!(m["result"]["hits"].as_array().unwrap().is_empty());
+        assert!(m["result"]["refused"].as_array().unwrap().is_empty());
+    }
+    assert_eq!(query_errors[0], query_errors[1]);
+    let w = &query_errors[0];
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "query.open_to");
     assert_eq!(
@@ -110,10 +120,6 @@ async fn directory_parameter_errors() {
         "invalid params: query.open_to: unknown variant `everyone`, expected one of `anyone`, \
          `members`, `referral`, `past-counterparties`"
     );
-
-    let (mw, mn) = post_rpc(&h, "directory.merge", Some(json!({ "run_id": run_id }))).await;
-    assert_eq!(mw, mn);
-    assert!(mw["result"]["hits"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
