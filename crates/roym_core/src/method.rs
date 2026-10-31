@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 use syneroym_app_host::{AppHost, types::proxy::CallTarget};
 
 use crate::{
+    clock,
     envelope::{Request, Response, RpcError},
     services::Service,
 };
@@ -37,7 +38,7 @@ pub struct VerifyInput {
 
 /// Runs one record verifier on the envelope text, at the current time.
 pub fn verify_with<V>(input: VerifyInput, verify: fn(&str, u64) -> V) -> Reply<V> {
-    Ok(verify(&input.envelope, crate::clock::now_secs()))
+    Ok(verify(&input.envelope, clock::now_secs()))
 }
 
 /// Output for history methods returning an envelope chain.
