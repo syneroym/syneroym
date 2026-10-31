@@ -337,3 +337,129 @@ code at `1e3e0fe7`. Every item is fixed as written. No new item is open.
 The owner answers (all (a)) are recorded under each question, D-A2b-16 and
 D-A2b-17 are added for Q2 and Q4, and section 9 now asks for D-A2b-1 to
 D-A2b-17 in the change doc. The plan is ready for implementation.
+
+## Code review round 1 — Claude Sonnet 5.5 (Antigravity), 2026-10-31
+
+Checked against commit `7f9f088c` on `feat/m08a-a2b-typed-methods` (PR
+[#335](https://github.com/syneroym/syneroym/pull/335)), against the plan and
+`main`. Line numbers below are at `7f9f088c`. The implementer was Gemini 3.8
+Flash.
+
+What was checked and found correct:
+
+- **Method tables (OF-14, OF-15).** `catalog` dispatches 17 rows (15 catalog
+  methods plus the two certificate verbs) in `crates/roym_catalog/src/api.rs`.
+  `transaction` dispatches 41 rows (7 pings, 5 request, 6 quote, 4 agreement,
+  6 booking, 4 payment, 3 fulfilment, and 6 sync/thread/backup/certificate) in
+  `crates/roym_transaction/src/api.rs`. Both tables match section 5 of the
+  implementation plan row by row, with typed input and output structs. Every
+  input struct derives `#[serde(deny_unknown_fields)]` except stored record
+  types inside inputs (Q1 (a)).
+- **Method contract tests.** In `crates/roym_web/tests/method_contract/contract.rs`,
+  `every_catalog_method_has_typed_input_and_output` and
+  `every_transaction_method_has_typed_input_and_output` assert 17 and 41 rows
+  and invoke `assert_service_table`. The paths are built from
+  `env!("CARGO_MANIFEST_DIR")` (`../roym_catalog/src` and
+  `../roym_transaction/src`). `assert_service_table` scans all `.rs` files
+  under each directory (excluding `bindings.rs`), confirming zero
+  hand-written match arms and no `req.method` use outside
+  `Response::method_not_found`.
+- **Fences and crash recovery (D-A2b-9).** All six fence sites (F1 to F6) in
+  `payment_ops/fence.rs`, `payment_ops.rs`, and `fulfilment_ops.rs` follow the
+  exact typed outcome signatures. `claim_payment_request_fence`,
+  `claim_payment_ack_fence`, and `claim_fulfilment_fence` return
+  `FenceOutcome::Claimed` or `FenceOutcome::Answered(out)`. In
+  `ensure_*_recorded`, the crash recovery path writes the missing shared row,
+  calls `send_card_and_file` to send the deal card, and returns the real
+  `message_id` and send state. Existing rows return `AlreadyRecorded` with
+  `message_id: None`. Database failures return `-32603`
+  `Response::internal_error`.
+- **Wire changes (B23 to B39).** Check ordering in `request.set`, `quote.set`,
+  `agreement.accept`, and `quote.decline` runs input parsing before
+  certificate/owner checks (B23). In `quote.set`, `terms` is parsed upfront as
+  `QuoteTermsInput`, catching invalid fields before range or revision checks.
+- **Specific requirements (Q2, Q3, Q4, Q6).**
+  - Q2: `QuoteTermsInput` has all 13 fields of `AgreedTerms` minus
+    `quote_expires_at_secs`. `into_agreed_terms` constructs `AgreedTerms`.
+    Tested in `crates/roym_transaction/src/app/quote_ops/tests.rs` with
+    `quote_terms_input_matches_agreed_terms_fields`.
+  - Q3: Hub `screens/listings.ts` exports `verifyParams(pasted)` returning
+    `{ envelope: pasted.trim() }`. The click handler checks valid JSON display
+    and sends string text. Tested in `listings.test.ts`.
+  - Q4: `roymctl roym transaction booking list` dropped `--agreement` from
+    `BookingCommands::List` and execution. No remaining CLI references or tests
+    broken.
+  - Q6: `publish_to_source` in `crates/roym_directory/src/app/client_sources.rs`
+    calls `listing.get` via
+    `call_sibling::<_, ListingKeyInput, Option<ListingGetOutput>>` and maps
+    errors per B33. `sibling_call` and `catalog_call` were deleted from
+    `roym_transaction`.
+- **Parity harness and tests.** 24 modules, 222 scenarios (`fn scenario_`) in
+  `crates/roym_web/tests/dual_build_parity/`. Only scenario 40's assertion
+  changed to check `data.field == "payment.amount_minor"`. All 10 negative
+  validation cases in `contract.rs` test catalog and transaction error paths
+  across WASM and native.
+- **AGENTS.md standards.** All changed production and test files are <= 725
+  lines (well below the 800 line cap). No planning IDs exist in code comments
+  or test names (`check-planning-refs.py` clean). Module layout convention
+  verified across all 1010 files. All xtask gates pass. Backlog and living
+  docs updated as specified.
+
+### Findings
+
+- [ ] **R1 — minor.** *Where:* change doc
+  [change.md:259-260](../../changes/roym-open-foundation/change.md#L259).
+  *Problem:* the change doc decisions D-A2b-4 and D-A2b-5 do not match the
+  implementation plan's decisions. Plan D-A2b-4 is "Existing field attributes
+  stay" (preserving `#[serde(default)]` and explicit null rules) and D-A2b-5 is
+  "Closed sets" (Q5 (a), inputs `ListingStatus`/`BookingState` and outputs
+  `SendState`/`BookingWriter`). In the change doc, D-A2b-4 was written as "Page
+  fields repeated without flatten" (which is from D-A2a-4) and D-A2b-5 was
+  written as "Nullable and tri-state outputs" (which is from D-A2a-15 /
+  D-A2b-8). Plan D-A2b-4 and D-A2b-5 were omitted from the decision list.
+  *Failure case:* a developer comparing decisions between the plan and change
+  doc finds mismatched numbers and no record of the Q5 closed sets decision or
+  attribute retention. *Fix:* update `change.md` decisions D-A2b-4 and D-A2b-5
+  to record existing field attribute preservation and closed word sets
+  (`SendState`, `BookingWriter`, `ListingStatus`, `BookingState`), matching
+  section 5 of the plan. *Status:* Open.
+
+- [ ] **R2 — minor.** *Where:* status doc
+  [status.md:14](status.md#L14). *Problem:* the evidence cell reads "77 method
+  shapes (14 catalog + 63 transaction)". In reality, slice A2b added 94 new
+  golden shape files in `crates/roym_web/tests/method_shapes/` (25 for catalog
+  covering all 17 methods, and 69 for transaction covering all 41 methods).
+  Together with A2a's 63 shapes, the repository total is 157 shapes. The
+  recorded "77 (14 + 63)" confused A2a's 63 shapes with transaction shapes and
+  reported 14 instead of 25 catalog shapes. *Failure case:* an auditor or
+  reviewer checking file counts finds a discrepancy between the recorded 77
+  shapes and the 94 new / 157 total shape files on disk. *Fix:* update the
+  evidence cell in `status.md` to state "94 method shapes (25 catalog + 69
+  transaction; 157 total)". *Status:* Open.
+
+- [ ] **R3 — minor.** *Where:*
+  [method.rs:40](../../../../crates/roym_core/src/method.rs#L40).
+  *Problem:* line 40 calls `crate::clock::now_secs()`, leaving an inline
+  fully-qualified path with multiple `::` instead of importing `clock` at the
+  module header. This violates the AGENTS.md import rule ("proactively remove
+  inline fully-qualified paths (lines with multiple ::)"). *Failure case:*
+  drifts from workspace import consistency conventions. *Fix:* add
+  `use crate::clock;` to the module imports of `crates/roym_core/src/method.rs`
+  and simplify line 40 to `clock::now_secs()`. *Status:* Open.
+
+- [ ] **R4 — minor.** *Where:*
+  [fence.rs:53-77](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L53)
+  and [:160-192](../../../../crates/roym_transaction/src/app/payment_ops/fence.rs#L160).
+  *Problem:* the `Ok(Some(_))` collision handling match arm bodies in
+  `claim_payment_request_fence` (25 lines) and `claim_payment_ack_fence` (32
+  lines) exceed the ~10-line guideline for match arms in AGENTS.md ("Match arms
+  must not exceed ~10 lines. Extract complex match arm bodies into named helper
+  functions..."). *Failure case:* reduced readability and maintainability of
+  fence claim logic compared to `fulfilment_ops.rs:329-340`, which kept its
+  collision arm concise (11 lines). *Fix:* extract the collision recovery
+  bodies into named private helpers (e.g.,
+  `handle_payment_request_fence_collision` and
+  `handle_payment_ack_fence_collision`). *Status:* Open.
+
+Count: 0 blockers, 0 major, 4 minor.
+
