@@ -3,8 +3,10 @@
 *Reader: the developer (or AI) who implements slice A2c. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-10-31.** The owner answered Q1 to Q7 (all
-option (a)) on 2026-10-31. Section 5 and section 6 follow the answers.
+**Status: plan revised, 2026-10-31.** The owner answered Q1 to Q7 (all
+option (a)) on 2026-10-31. Plan review round 1 (P1 to P12 in
+[slice-a2c-review.md](slice-a2c-review.md)) is folded in. Section 5 and
+section 6 follow the answers.
 
 **Size and PR.** L. One PR on `feat/m08a-a2c-typed-methods`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -104,8 +106,9 @@ requests that do not, and every wire change.
 An end user sees nothing new. Every screen works as before.
 
 - A developer can run `cargo nextest run -p syneroym-roym-web --test
-  method_contract`. It lists every method of all six Roym services. It
-  shows that each has a typed input and a typed output, that a wrong or
+  method_contract`. It checks the method table of every Roym service
+  (for `web`, its one row). It shows that each method has a typed input
+  and a typed output, that a wrong or
   unknown field gets `-32602` with the field name, and that the four
   directory methods other nodes call ignore an unknown field.
 - A developer can run `cargo nextest run -p syneroym-roym-web --test
@@ -164,6 +167,7 @@ native host reads the fixed `invocation_origin` of its per-call host
 which the check forbids (OF-15).
 
 Owner answer: (a), 2026-10-31.
+
 ### Q2. `directory.set-settings`: what type the input has
 
 Today the whole `params` is read as `SynOrgSettings`
@@ -191,6 +195,7 @@ strict, with no wire change. `publication_limits` inside it stays
 inside that block is ignored.
 
 Owner answer: (a), 2026-10-31.
+
 ### Q3. The two pass-through methods
 
 `directory.probe-info` and `directory.publish-to-source` return a remote
@@ -220,6 +225,7 @@ reads search hits the same strict way (B58), so this adds no new kind of
 hole. `probe-info` is used only by `roymctl roym directory info`.
 
 Owner answer: (a), 2026-10-31.
+
 ### Q4. `web`: what typing means for the gateway
 
 `web` has one method of its own, `session.whoami`
@@ -256,6 +262,7 @@ routing rule proves every typed row routes to its service, and `web`
 forwards by the same `router::route`.
 
 Owner answer: (a), 2026-10-31.
+
 ### Q5. `SearchQuery`'s `open_to` and `booking_mode`: `String` or enum
 
 `SearchQuery` is the input of the wire-reachable `directory.search`, and
@@ -282,6 +289,7 @@ caller sends `open_to` or `booking_mode` except parity scenario 114, which
 sends a valid word.
 
 Owner answer: (a), 2026-10-31.
+
 ### Q6. The parity harness's two hand-made lists of directory methods
 
 `trust_fixtures::ALL_DIRECTORY_VERBS` (37 names) and
@@ -308,6 +316,7 @@ cap on the oversized list (1135 lines), so the change there must not add a
 line (D-A2c-17).
 
 Owner answer: (a), 2026-10-31.
+
 ### Q7. The backlog row "Roym's sibling boundary is untyped JSON, with no WIT-level contract between services"
 
 After A2c every Roym service is typed. The row
@@ -325,6 +334,7 @@ untyped JSON string. Those two parts stay true.
 a title that is false. (b) loses two real gaps.
 
 Owner answer: (a), 2026-10-31.
+
 ## 3. Facts checked in the code
 
 All paths are from the repository root. Line numbers are at `a164e09d`.
@@ -600,7 +610,7 @@ non-object `params`.
   - `directory.publish` with `{envelope}`, and passes the answer through
     (`client_sources.rs:239-265`).
 - **Parity harness** (`crates/roym_web/tests/dual_build_parity/`, 24
-  scenario modules plus `deal_fixtures`, 222 `fn scenario_`). The
+  modules, of which 19 hold scenarios, and 222 `fn scenario_`). The
   directory scenarios are in `directory.rs` (39), `trust.rs` (15),
   `trust_evidence_cap.rs` (7), `trust_sources.rs` (6), `wire_origin.rs`
   (8), `bundles.rs` (5). Every key sent is a field of the new structs.
@@ -655,7 +665,7 @@ breaks a call; that waits for G5. The table reads one row per case, with
 | C6 | An A2c node answers an older or newer client node | Same JSON as today. | Output structs reproduce today's JSON (D-A2a-15, shape files). |
 | C7 | A newer node answers with an extra top-level key or an extra key inside a hit, a standing or an info | Read; the key is ignored. | The client reads with `.get` or into types with no `deny_unknown_fields` (`SearchHit`, `MembershipEvidence`). Output structs never get `deny_unknown_fields` (D-A2c-13). For the two pass-through methods the key is dropped from the local answer (Q3). The new parity scenario with a "newer node" canned source proves all four reads (Step 8). |
 | C8 | A newer node answers with a new word in a closed set inside an answer (a new `AreaMatch` kind in a hit, a new verdict word, a new `Area` kind in `info`) | The whole answer is unreadable: the source is `unreadable`, the standing check falls back to the stored copy, `probe-info` answers `-32603`. | Older than A2c for the first two (`client_query.rs:284-295`, `held.rs:144-152`); new for `probe-info` under Q3 (a). Recorded as B58 and appended to the G5 backlog row (section 8). |
-| C9 | A remote node answers with only some keys (the `hTrunc` canned answer: `hits` and `truncated` only) | Read as today. | A2c does not change how the client half reads `directory.search` answers (D-A2c-10). The wire output structs that are read get `#[serde(default)]` where today's read has a default (D-A2c-13). |
+| C9 | A remote node answers with only some keys (the `hTrunc` canned answer: `hits` and `truncated` only; a third-party directory whose `info` has only some keys) | `directory.search`, `add-source` and `check-standing`: read as today. `probe-info` and `publish-to-source`: read strictly, but a missing key that has a natural empty value is read as empty. | A2c does not change how the client half reads `directory.search`, `directory.info` (add-source) and `directory.standing` answers (D-A2c-10). The two pass-through methods now read the whole result into a struct (Q3, D-A2c-9). The wire output structs get `#[serde(default)]` where an empty value means "not given" (D-A2c-13). An `info` without `name`, `retention_secs` or `member_count`, or a publish answer without `listing_id`, is `-32603` (B51). Every directory built from this repository sends every key, so this is a cost only for a third-party directory. |
 
 ## 4. Behaviour-change audit
 
@@ -667,7 +677,7 @@ in the change doc names one row.
 | # | What is sent today | What the service does today | After A2c | How the plan handles it |
 | --- | --- | --- | --- | --- |
 | B41 | `credential.issue` with a `note` that is not a string | Ignored (`""`), after the credential is signed and stored | `-32602`, `data.field = "note"`, before any check | The parse runs before the handler (D-A2a-1). No caller sends a non-string `note`. |
-| B42 | A missing or wrong field to a local-only directory method | `-32602` with texts such as `did is required`, `invalid settings: ..`, `invalid categories: ..`, `invalid area: ..`, `invalid scope: ..`, `until_secs must be a non-negative integer`, `expires_at_secs is required`, `run_id is required`, `bundle is required`, `invalid bundle: ..`, `invalid query: ..` (query-source) | `-32602 invalid params: <path>: <text>` with `data.field` (D-A2a-6) | Only the text changes. An **empty** string keeps its old words in the handler (D-A2c-5). No test reads the changed texts (section 3.5). |
+| B42 | A missing or wrong field to a local-only directory method | `-32602` with texts such as `did is required`, `invalid settings: ..`, `invalid categories: ..`, `invalid area: ..`, `invalid scope: ..`, `until_secs must be a non-negative integer`, `issuer_did must be a did:key` (for a value that is not a string), `expires_at_secs is required`, `run_id is required`, `bundle is required`, `invalid bundle: ..`, `invalid query: ..` (query-source) | `-32602 invalid params: <path>: <text>` with `data.field` (D-A2a-6) | Only the text changes. An **empty** string keeps its old words in the handler (D-A2c-5). A string that is not a `did:key` keeps `member_did must be a did:key` and `issuer_did must be a did:key` in the handler. No test reads the changed texts (section 3.5). |
 | B43 | A field of the wrong type that is read with `.get` (`note: 5`, `label: 5`, `reason: 5`, `rule: 5`, `member_did: 5` as a filter, `window_secs: "x"`) | Read as absent: `""`, "is required", or **no filter** (the four list methods then list every row) | `-32602`, `data.field` | No caller sends one. |
 | B44 | An unknown top-level key, to any of the 33 local-only directory methods | Ignored | `-32602`, `data.field = <key>` | No caller sends one (section 3.5). |
 | B45 | A wrong or missing field to a wire method: `directory.search` with a bad type (`invalid query: ..`); `directory.publish` with `envelope` missing or not a string (`envelope is required`); `directory.standing` with `member_did` not a string (`member_did is required`) | `-32602` with those texts | `-32602 invalid params: <path>: <text>` with `data.field`. `member_did must be a did:key` for a string that is not a `did:key` stays, in the handler. | Wire change, text only (section 3.6 C4). |
@@ -676,10 +686,13 @@ in the change doc names one row.
 | B48 | `directory.import` with the bundle as the whole `params` | Read as the bundle | `-32602 missing field `bundle`` | As A2a B9 and A2b B29. Every caller sends `{bundle}`. |
 | B49 | A list method whose stored rows include a row that does not parse into its row struct (`member.list`, `directory.publications`, `directory.sources`, `credential.list`, `revocation.list`, `member.decisions`); `directory.settings` with a stored settings row that does not parse | The row is returned as it is | Lists: the row is skipped. `directory.settings`: `-32603`. | Only a hand-made bundle can write such a row (A2b B32). A row this build wrote is written by serializing the same struct, so it reads back to the same JSON (section 3.3). |
 | B50 | `directory.info` with `params` that is not an object (an array, a string) | Answered (params are not read) | `-32602 invalid params: expected an object`, no `data` | D-A2a-7. Every caller (and every pre-A2c node) sends `{}`. Unknown keys inside an object are still ignored. |
-| B51 | `directory.probe-info` or `directory.publish-to-source`, when the remote answers | The remote `Response` unchanged | Result read into `Option<DirectoryInfoOutput>` / `PublishOutput` and written again: keys this build does not know are dropped; a result that does not parse (or a response with neither `result` nor `error`) is `-32603`. A remote **error** is unchanged. | Q3 (a). |
+| B51 | `directory.probe-info` or `directory.publish-to-source`, when the remote answers with a result | The remote `Response` unchanged | Result read into `Option<DirectoryInfoOutput>` / `PublishOutput` and written again: keys this build does not know are dropped; a result that does not parse (for example an `info` without `name`, C9) is `-32603`; a reply with no `result` key and no `error` is `-32603`. A remote **error** is unchanged, with its `data`. | Q3 (a), D-A2c-9. The read uses `method::read_reply`, the same reading code as `call_sibling`. |
 | B52 | `session.whoami` with an unknown key or with `params` that is not an object, on `/rpc` or through `invoke` | Answered (params are not read) | `-32602`, `data.field = <key>` (or no `data` for a non-object). On `/rpc` this is the first error that `web` itself writes with `data` (it already passes a callee's `data` through). | Q4 (a). Every caller sends `{}` (section 3.5). |
-| B53 | `directory.publish` from an anonymous caller | `admit` refuses it before the handler (`VerifiedOnly`). Inside, the caller is read before the input. | The same. The handler parses the input first, then reads the caller (Q1). | No visible change: an anonymous caller never reaches the handler. Listed because the order inside the handler changes. |
+| B53 | `directory.publish` from an anonymous caller | `admit` refuses it before the handler (`VerifiedOnly`). Inside, the caller is read before the input. | The same. The handler parses the input first, then reads the caller (Q1). | No visible change: an anonymous caller never reaches the handler. Listed because the order inside the handler changes, and the caller is now read by a new function. The contract test `a_wire_publish_is_recorded_under_the_verified_caller` (Step 8) proves, in both builds, that a wire publish is recorded and rate-limited under the verified caller's DID, not the owner's. |
 | B54 | Certificate verbs of `directory` | Served by `handle_certificate_verb` with the typed functions | The same functions, now as table rows | No change (A2a B21). |
+| B55 | `directory.search` over the wire with `params` absent or `null` | `-32602 invalid query: invalid type: null, expected struct SearchQuery` ([search_ops.rs:165](../../../../crates/roym_directory/src/app/search_ops.rs#L165)) | Answered as `{}`: the newest listings, as an empty query | D-A2a-7, as A2b B34. A wire change on an `Open` method: an anonymous caller now gets an answer where it got a refusal. It gets the same answer for `{}` today, so nothing new is exposed. `directory.standing` and `directory.publish` with no `params` still fail (`missing field`); only the text changes (B45). |
+| B56 | A request with two bad fields | The error of the first check in the handler's order (for example `member.suspend` with an empty `member_did` and `until_secs: "x"` says `member_did is required`) | The error of the first bad field in the order serde reads them (the JSON key order), or the handler's empty-string check if the parse passes | No caller sends two errors. The error tests send exactly one (Step 8). |
+| B57 | `directory.probe-info` against a node that runs no SynOrg (its `directory.info` answers `{"result": null}`); `directory.add-source` of that node | probe-info: `{}`, neither `result` nor `error`, because `serde` reads `"result": null` into `Option<Value>` as `None` (checked with a unit test on `Response`, 2026-10-31). add-source: the branch that writes the note "this address answered, but runs no directory" ([client_sources.rs:118-121](../../../../crates/roym_directory/src/app/client_sources.rs#L118)) never runs, for the same reason, so the Hub never shows the note ([directory.ts:186-190](../../../../crates/roym_web/ui/src/screens/directory.ts#L186)) | probe-info: `{"result": null}` (D-A2c-9). add-source: `probe` is the note, `last_ok_secs` is set as today (D-A2c-10) | A bug fix, found in plan review (P1). Both reads look at the raw `result` key. `roymctl roym directory info` prints `null` in place of an empty answer. The shape files of Step 5 and a parity scenario (Step 7) prove both. |
 
 Found while checking, not changed by A2c:
 
@@ -700,11 +713,10 @@ Found while checking, not changed by A2c:
   ([trust_fixtures.rs:130-136](../../../../crates/roym_web/tests/dual_build_parity/trust_fixtures.rs#L130)).
   Q6 replaces it with the table.
 
-(B55 to B57 are not used. The numbers jump to B58 so that "found while
-checking" rows stand apart.)
-
-No other difference was found. The parity harness keeps its 24 scenario
-modules, `deal_fixtures`, and 222 `fn scenario_` functions. Scenario 118
+No other difference was found. The parity harness keeps its 24 modules
+(19 with scenarios, and `deal_fixtures`, `fixtures`, `helpers`,
+`trust_fixtures`, `trust_harness`) and 222 `fn scenario_` functions until
+Step 7. Scenario 118
 changes its loop (Q6). No other scenario assertion changes.
 
 ### Wire changes, in one list
@@ -719,11 +731,17 @@ What another node, a client or a test can observe:
    absent (B41, B43); `max_per_window` above `u32::MAX` (B47); a whole-params
    bundle (B48); non-object `params` to `directory.info` (B50); a bad
    `open_to` / `booking_mode` inside a local `query` (B46).
+   A request with two bad fields may name a different one (B56).
 3. `directory.query-source` no longer calls the sources when its `query`
    has a bad `open_to` / `booking_mode` word (B46).
 4. The two pass-through methods drop unknown keys from a remote result, and
-   answer `-32603` for a remote result they cannot read (B51).
-5. Malformed stored rows from a hand-made bundle are skipped by list
+   answer `-32603` for a remote result they cannot read (B51, C9).
+5. A wire `directory.search` with no `params` or `null` `params` is
+   answered, as `{}` is (B55).
+6. `directory.probe-info` for a node with no SynOrg answers
+   `{"result": null}` in place of `{}`, and `directory.add-source` of such
+   a node returns its `probe` note (B57).
+7. Malformed stored rows from a hand-made bundle are skipped by list
    methods, and `directory.settings` answers `-32603` for one (B49).
 
 Not a change: every correct request and every answer of the four wire
@@ -779,7 +797,11 @@ Q5 → D-A2c-6, Q6 → D-A2c-17, Q7 → section 8.
     (D-A2c-16).
   - Types inside inputs keep their attributes: `SearchQuery` inside
     `QuerySourceInput.query` (so an unknown key inside a local `query` is
-    ignored, as before), `Area` inside `credential.issue`'s `area`,
+    ignored, as before: a misspelled filter such as `categorys` is dropped
+    and the search is wider than asked; no check looks at nested types,
+    and a strict copy of `SearchQuery` would be a second struct that must
+    stay equal to it, so A2c only says this in the developer guide,
+    section 9), `Area` inside `credential.issue`'s `area`,
     `ModerationScope` inside `member.suspend`'s `scope`,
     `PublicationLimits` and `Area` inside `SynOrgSettingsInput`.
 - **D-A2c-4. Existing attributes and `null` stay as today, field by field**
@@ -824,29 +846,53 @@ Q5 → D-A2c-6, Q6 → D-A2c-17, Q7 → section 8.
   (a)). Eight fields with the attributes of `SynOrgSettings` (`area`,
   `categories` and `publication_limits` have `#[serde(default)]`),
   `#[serde(deny_unknown_fields)]`, `fn into_settings(self) ->
-  SynOrgSettings` as a struct literal. The output is `SynOrgSettings`.
+  SynOrgSettings` that first destructures `self` completely (`let Self {
+  name, rules, .. } = self;` with every field named, no `..`) and then
+  builds a struct literal. A field added to only one of the two structs
+  then does not compile. The output is `SynOrgSettings`.
   `validate()` runs on the result, as today.
 - **D-A2c-9. The pass-through methods are typed** (Q3 (a)).
-  ```rust
-  /// One `invoke` reply from a remote directory: its result read as `O`,
-  /// or its error returned unchanged.
-  fn remote_reply<O: DeserializeOwned>(raw: &str) -> Reply<O>
-  ```
-  in `client_sources.rs`. It parses `raw` as `Response`; a parse error is
-  `-32603` with the serde text (as today); `error: Some(_)` is
-  `Err(that response)` unchanged; `result: Some(v)` is read as `O`, and a
-  read error is `-32603 "unreadable answer from the directory: {e}"`;
-  neither is `-32603`. `probe_info_verb` returns
-  `remote_reply::<Option<DirectoryInfoOutput>>`. `publish_to_source`
-  returns `remote_reply::<PublishOutput>`. Their transport errors keep
-  today's texts (`client_sources.rs:70`, `:259`). `add_source` keeps
-  reading the info answer with `.get` (D-A2c-10).
+  - **Do not parse the reply as `Response`.** `Response.result` is
+    `Option<Value>`, and serde reads `"result": null` into `None`, so a
+    directory with no SynOrg (`{"result": null}`) and a reply with no
+    result look the same (B57). `call_sibling` already reads the reply as
+    a `Value` and looks at the `result` key for this reason.
+  - In `roym_core::method`, split the reading tail of `call_sibling`
+    ([method.rs:185-201](../../../../crates/roym_core/src/method.rs#L185))
+    into
+    ```rust
+    /// Reads one `invoke` reply: an `error` is `Refused`, a `result` is read as `O`.
+    pub fn read_reply<O: DeserializeOwned>(raw: &str) -> Result<O, SiblingError>
+    ```
+    `call_sibling` calls it, with no change to its errors or texts.
+  - In `client_sources.rs`:
+    ```rust
+    /// One `invoke` reply from a remote directory: its result read as `O`,
+    /// or its error returned unchanged.
+    fn remote_reply<O: DeserializeOwned>(raw: &str) -> Reply<O>
+    ```
+    calls `method::read_reply::<O>`. `Refused(e)` is `Err(Response {
+    result: None, error: Some(e) })`, so `data` stays. `BadReply(text)` is
+    `-32603 "unreadable answer from the directory: {text}"`. (`Transport`
+    does not come from `read_reply`.)
+  - `probe_info_verb` returns `remote_reply::<Option<DirectoryInfoOutput>>`,
+    so `{"result": null}` is `Ok(None)` and the answer is
+    `{"result": null}`. `publish_to_source` returns
+    `remote_reply::<PublishOutput>`. Their transport errors keep today's
+    texts (`client_sources.rs:70`, `:259`).
+  - `add_source` keeps reading the info answer with `.get` (D-A2c-10), but
+    parses the reply as `Value`, not `Response`: `v.get("result")` is
+    `Some(Value::Null)` for "runs no directory" (the note), and the other
+    reads use `v.get("result")` in place of `resp.result.as_ref()`. A JSON
+    parse error stays `SourceError::Unreadable`. This is the fix of B57.
 - **D-A2c-10. Other client-half reads of remote answers do not change.**
   `query_source`'s read of `directory.search` (A4 moves it into the
   federated query library and can use `SearchOutput` there),
   `add_source`'s read of `directory.info`, and `handle_standing_reply`'s
   read of `directory.standing` stay as they are. Reason: no behaviour
-  change, and the A4 move. The outbound requests stay hand-built `host.call`s:
+  change (except the `null` read of B57 in `add_source`), and the A4
+  move. Section 8 records this as deferred. The outbound requests stay
+  hand-built `host.call`s:
   they target `CallTarget::Service` with options that `call_sibling` does
   not take, and A3/A4 replace the search call with `call-all`.
 - **D-A2c-11. Outputs that have more than one shape.**
@@ -879,8 +925,13 @@ Q5 → D-A2c-6, Q6 → D-A2c-17, Q7 → section 8.
   today's client reads with a default gets `#[serde(default)]` (it changes
   nothing when written): `SearchOutput` all four fields (the `hTrunc`
   answer has only two), `StandingOutput.issuer_did` and `.evidence`,
-  `DirectoryInfoOutput.issuer_did` and `.signing_did`. `Option` fields that
-  are written as `null` today have no skip.
+  `DirectoryInfoOutput.issuer_did` and `.signing_did`. Also
+  `DirectoryInfoOutput.rules`, `.area`, `.categories`, `.support_contact`
+  and `.dispute_path`: an empty value there means "not given" (C9).
+  `name`, `retention_secs` and `member_count` stay required, because a
+  default (`""`, `0`) would be a false claim about the remote directory.
+  `PublishOutput.listing_id` stays required. `Option` fields that are
+  written as `null` today have no skip.
 - **D-A2c-14. Certificate verbs, export, and two deletions.** The two
   certificate verbs are table rows (`signing_status`,
   `install_signing_certificate` from `roym_core::signing::verbs`).
@@ -925,9 +976,15 @@ Q5 → D-A2c-6, Q6 → D-A2c-17, Q7 → section 8.
   (`app.rs:68-73`). `invoke` passes `api::WIRE_REACHABLE` to
   `admit::admit`. The contract test builds the check's `wire` list from it.
   In `check.rs`, a `req.method` line in `app.rs` is also allowed when it
-  holds `admit::admit(host,` (the call that decides admission by method
-  name). Add the unit test `check_allows_req_method_in_the_admit_call` in
-  `method/tests.rs`, beside the test of the `method_not_found` line. Keep
+  holds the whole call `admit::admit(host, api::WIRE_REACHABLE,
+  &req.method)` (the call that decides admission by method name), and no
+  other `req.method`. Match the full call text, as the existing
+  `Response::method_not_found(&req.method)` allowance does, and count the
+  `req.method` uses on the line: exactly one. Add the unit test
+  `check_allows_req_method_only_in_the_admit_call` in
+  `method/tests/directory.rs` (Step 3). It shows that the call line
+  passes, that a line with the call and also `req.method.as_str()` fails,
+  and that `admit::admit(host, OTHER, &req.method)` fails. Keep
   the `admit::admit` call on one line (it is about 85 characters with
   `if let Err(resp) = ` and four spaces of indent).
 - **D-A2c-17. The parity lists** (Q6 (a)). In `trust_fixtures.rs`, replace
@@ -937,10 +994,13 @@ Q5 → D-A2c-6, Q6 → D-A2c-17, Q7 → section 8.
   pub(crate) fn all_directory_verbs() -> Vec<String>
   ```
   (the `name`s of `syneroym_roym_directory::api::method_table()`).
-  Scenario 118 changes only its loop line and the `contains` line
+  Scenario 118 changes only its loop line, the `contains` line
   (`for method in &all_directory_verbs() {`,
-  `..contains(&method.as_str())`): `directory.rs` is at its cap of 1135
-  lines and must not grow. Keep `WIRE_REACHABLE_DIRECTORY_VERBS` and its
+  `..contains(&method.as_str())`) and, in place, the text of its
+  assertion message ("is in ALL_DIRECTORY_VERBS but ..." becomes "is in
+  the directory method table but ...",
+  [directory.rs:648](../../../../crates/roym_web/tests/dual_build_parity/directory.rs#L648)):
+  `directory.rs` is at its cap of 1135 lines and must not grow. Keep `WIRE_REACHABLE_DIRECTORY_VERBS` and its
   comment. The contract test of Step 8 asserts that its sorted names equal
   the sorted names of `api::WIRE_REACHABLE`.
 - **D-A2c-18. Shapes.** `auth` joins the closed-word keys of the shape
@@ -1071,8 +1131,11 @@ you run the parity suite, the contract test or the substrate e2e tests
     `revocation.issue` new and repeated (the early return);
     `revocation.list`; `member.suspend` with and without `until_secs`;
     `member.lift`; `member.decisions`.
-  - client: `directory.add-source` (with a `probe` note and without);
-    `directory.probe-info` for a directory and for one with no SynOrg;
+  - client: `directory.add-source` with an issuer-mismatch `probe` note
+    and without a note; `directory.probe-info` for a directory. **Do not
+    record** `probe-info` or `add-source` against a node with no SynOrg
+    here: the unchanged code answers `{}` and no note, which is the bug
+    B57. Step 5 records those two shapes on the fixed code;
     `directory.remove-source` found and missing; `directory.sources`;
     `directory.start-run`; `directory.query-source` with hits, with a
     `SourceError` (an unbound source), and the `hTrunc` source;
@@ -1113,16 +1176,24 @@ you run the parity suite, the contract test or the substrate e2e tests
   Step 4 change of `build_search_filter` in the same commit: do that one
   edit here (delete the word check, push `serde_str(&v)`), so the
   workspace builds.
+- `crates/roym_core/src/method.rs`: split `read_reply` out of
+  `call_sibling` (D-A2c-9).
 - `crates/roym_core/src/admit.rs`: add `caller` (Q1) and make `admit` use
   it. Unit test: `caller_maps_the_three_origins`.
-- `crates/roym_core/src/method/check.rs`: the `admit::admit(host,`
-  allowance (D-A2c-16), with its unit test.
-- Unit tests in `method/tests.rs` (names by behaviour):
+- `crates/roym_core/src/method/check.rs`: the `admit::admit` call
+  allowance (D-A2c-16).
+- Unit tests in a new `crates/roym_core/src/method/tests/directory.rs`,
+  declared from `method/tests.rs` with `mod directory;` (`method/tests.rs`
+  is 725 lines; six more tests would take it past 800). Names by
+  behaviour:
+  `read_reply_reads_a_null_result_as_none_and_keeps_error_data`,
+  `check_allows_req_method_only_in_the_admit_call`,
   `wire_no_params_ignores_an_unknown_key`,
   `search_query_ignores_an_unknown_key_and_refuses_an_unknown_open_to_word`,
   `publish_output_writes_both_shapes_and_reads_them_back`,
   `search_output_reads_an_answer_with_only_hits_and_truncated`,
-  `standing_output_reads_an_answer_with_an_extra_key`.
+  `standing_output_reads_an_answer_with_an_extra_key`,
+  `directory_info_output_reads_an_answer_with_only_name_and_counts`.
 - **Proof:** `cargo nextest run -p syneroym-roym-core -p
   syneroym-roym-catalog` passes. `cargo build -p syneroym-roym-core
   --target wasm32-wasip2` builds.
@@ -1175,8 +1246,9 @@ you run the parity suite, the contract test or the substrate e2e tests
     `pub(crate)` where `api.rs` must name them.
 - `roym_core`: delete `handle_certificate_verb` and `export_signed`, and
   change their test and comment (D-A2c-14).
-- `synorg.rs`: the module layout is `synorg.rs` + `synorg/tests.rs`
-  (`#[cfg(test)] mod tests;`). Add the unit test
+- `synorg.rs`: there is no `synorg/` directory today. Create
+  `synorg/tests.rs` and declare it from `synorg.rs` with `#[cfg(test)] mod
+  tests;` (module layout rule: `synorg.rs` + `synorg/`). Add the unit test
   `settings_input_matches_settings_fields`: fill every field of
   `SynOrgSettingsInput`, call `into_settings`, and compare the JSON of the
   input with the JSON of the result.
@@ -1210,7 +1282,8 @@ you run the parity suite, the contract test or the substrate e2e tests
   ```
 - Handlers in `client_sources.rs`, `client_query.rs`, `client_merge.rs`
   and `held.rs` change to the typed signature. Rules as in Step 4, plus:
-  - `remote_reply` and the two pass-through methods (D-A2c-9).
+  - `remote_reply` and the two pass-through methods (D-A2c-9), and the
+    `Value` read of the probe reply in `add_source` (B57).
   - `query_source`: `refuse_source` returns `QuerySourceOutput` (it stays
     an `Ok` answer, as today). The remote `directory.search` call and its
     read do not change (D-A2c-10).
@@ -1229,6 +1302,12 @@ you run the parity suite, the contract test or the substrate e2e tests
   Check in `target/a2c-e2e.log` that the substrate `roym_*` tests ran and
   were not skipped (they return early when `roym_artifacts_present()` is
   false). The grep prints nothing.
+- Record two new shape files on the fixed code (B57), with
+  `UPDATE_METHOD_SHAPES=1` for these two cases only: `directory.probe-info`
+  against a node with no SynOrg (`{"result": null}`) and
+  `directory.add-source` of that node (with the note). Use
+  `hForeignWire2` before `directory2` has a SynOrg, as in Step 7. Every shape file of
+  Step 2 stays unchanged.
 
 ### Step 6 — `web`
 
@@ -1252,7 +1331,7 @@ you run the parity suite, the contract test or the substrate e2e tests
 
 - `trust_fixtures.rs`: `all_directory_verbs()` in place of
   `ALL_DIRECTORY_VERBS` (Q6, D-A2c-17). `directory.rs` scenario 118: the
-  two-line change of D-A2c-17, no added line. The scenario keeps its
+  three-line change of D-A2c-17, no added line. The scenario keeps its
   name.
 - `trust_harness.rs`: a canned source `did:key:hNewer` in
   `trust_source_response`, the "newer node". It answers
@@ -1266,20 +1345,28 @@ you run the parity suite, the contract test or the substrate e2e tests
   file.
 - New parity module `crates/roym_web/tests/dual_build_parity/directory_compat.rs`,
   declared in `dual_build_parity.rs` with `#[path]` like the others (not in
-  `directory.rs`, which is at its cap; 7.4). One scenario:
-  `scenario_226_a_newer_node_answer_with_unknown_keys_is_read_parity`.
+  `directory.rs`, which is at its cap; 7.4). Two scenarios. The first:
+  `scenario_229_a_newer_node_answer_with_unknown_keys_is_read_parity`.
   It adds `hNewer` as a source and checks on both builds:
   `query-source` stores the hit (`verified: 1`, `error: null`);
   `check-standing` is `refreshed: true`; `probe-info` answers with the
   known keys and without `"extra"`; `publish-to-source` answers
-  `{listing_id, record_id}` without `receipt`. Use the next free scenario
-  number (check with `grep -rho 'scenario_[0-9]*' crates/roym_web/tests |
-  sort -t_ -k2 -n | tail -1`); 226 is a placeholder. The parity count
-  becomes 223, with 25 scenario modules plus `deal_fixtures` (record both
-  in `status.md`).
+  `{listing_id, record_id}` without `receipt`. 229 is the next free
+  number (the highest today is 228: `grep -rho 'fn scenario_[0-9]*'
+  crates/roym_web/tests/dual_build_parity | sort -t_ -k2 -n | tail -1`);
+  check again before you write it.
+- A second scenario in the same module,
+  `scenario_230_a_source_with_no_synorg_is_noted_and_probes_as_null_parity`
+  (B57): add `did:key:hForeignWire2` as a source before the second
+  directory has a SynOrg (`helpers::foreign_wire_route` sends it to
+  `directory2` over a real wire round trip, so that directory's
+  `directory.info` answers `{"result": null}`), and check on both builds that `add-source` returns the "runs no directory"
+  note and `probe-info` answers `{"result": null}`.
+- The parity count becomes 224. `dual_build_parity.rs` then declares 25
+  modules (20 with scenarios). Record both in `status.md` in these words.
 - **Proof:** `cargo nextest run -p syneroym-roym-web --test
   dual_build_parity` passes. `grep -c "async fn scenario_"` over the
-  folder gives 223.
+  folder gives 224.
 
 ### Step 8 — The check test and the error tests
 
@@ -1328,6 +1415,19 @@ you run the parity suite, the contract test or the substrate e2e tests
       gives a result.
     - `directory.standing` over the wire with a valid `member_did` and
       `"zz": 1` gives a result.
+    - `directory.info` over the wire with `{"zz": 1}` gives a result.
+    - `directory.publish` over the wire with a valid signed envelope and
+      `"zz": 1` gives `{listing_id, record_id}` (OF-18's real case: a newer
+      node publishes). Reuse the envelope set-up of the `hNewer` scenario.
+  - `a_wire_publish_is_recorded_under_the_verified_caller` (Q1, B53), both
+    builds: a wire `directory.publish` through `wire_invoke_as` with
+    `foreign_searcher_caller()` (a verified DID that is not the owner),
+    then a local `directory.publications`: its `published_by` is
+    `did:key:zForeignSearcher`. Then the same caller publishes until the
+    limit refuses it with `data.admission == "rate-limited"`, and a local
+    publish by the owner after that is still accepted (the limit is keyed
+    on the caller, not the owner). Today's scenario 113 checks only a local
+    publish.
     - `session.whoami` with `{"zz": 1}` on `/rpc` gives `-32602`,
       `data.field == "zz"`, and the request `id`.
   - `contract.rs` is 367 lines. Put the directory and web error tests in a
@@ -1354,8 +1454,9 @@ you run the parity suite, the contract test or the substrate e2e tests
   inline; A2a R9, A2b R3). `moderation_ops.rs` and `standing.rs` use
   `use super::*;` today; keep that, but import every new type by name.
 - `cargo +nightly-2026-04-06 fmt --all`.
-- Ratchets: `cargo xtask check-file-lengths` (record a lower value if
-  `dual_build_parity/directory.rs` or `trust_fixtures.rs` shrank),
+- Ratchets: `cargo xtask check-file-lengths` (`dual_build_parity/directory.rs`
+  must still be 1135 lines; `trust_fixtures.rs` is not on the oversized
+  list, so its shrink records nothing),
   `cargo xtask check-duplication` (the hand list and the hand word check
   go away; record the new value if it improved).
 - `cargo xtask check-module-layout`, `cargo xtask check-dep-versions`,
@@ -1389,8 +1490,9 @@ nothing broke in the mocked shapes).
    `PublishOutput` writes both shapes and reads them back; the wire output
    types read a partial or a larger answer. `admit::caller` maps the three
    origins. The check allows the `admit::admit` line and still refuses
-   another `req.method` line. `SynOrgSettingsInput` has every field of
-   `SynOrgSettings`.
+   another `req.method` use on the same line. `read_reply` reads a `null`
+   result as `None` and keeps an error's `data`. `SynOrgSettingsInput` has
+   every field of `SynOrgSettings`.
 2. **OF-15 (Step 8).** The directory table has 37 rows, typed input and
    output, no `Value` as the outer type, a route to `directory` for each,
    the right probe answer for each of the four wire rows and the 33
@@ -1405,13 +1507,20 @@ nothing broke in the mocked shapes).
    off the node with `-32013` before the parse. Every wire row, called
    over the wire with `{"zz": 1}`, does not refuse the key. A newer node's
    answers with unknown keys are read (the `hNewer` scenario). The
-   parity scenario 118 keeps the four-name security list by hand.
-5. **No behaviour change.**
+   parity scenario 118 keeps the four-name security list by hand. A wire
+   `info` and a wire `publish` with an extra key are answered.
+5. **Q1, the caller of `directory.publish` (Step 8).** A wire publish is
+   recorded and rate-limited under the verified caller's DID, in both
+   builds; the owner's budget is untouched.
+6. **B57 (Step 5 and Step 7).** A node with no SynOrg probes as `null`, and
+   `add-source` of it returns the note.
+7. **No behaviour change.**
    - The shape files, recorded from the old code in Step 2 and passing at
      every later step. Every shape of the multi-shape methods of section
      3.3 has its own file, including issuer-changed (no `as_of_secs`).
-   - The parity harness: 222 scenarios before Step 7, 223 after, the same
-     two-build equality. Only scenario 118's loop changes.
+   - The parity harness: 222 scenarios before Step 7, 224 after, the same
+     two-build equality. Only scenario 118's loop, `contains` line and
+     message text change.
    - The substrate e2e tests for the directory and trust flows, which send
      raw JSON and read results, codes and `data` by key.
    - The Hub unit tests and the Playwright specs.
@@ -1426,8 +1535,11 @@ nothing broke in the mocked shapes).
   harness. There is no second build to run.
 - A malformed stored row from a hand-made bundle (B49). The mappings are a
   skip and a `-32603`; a test would need a hand-made signed bundle.
-- A remote answer with neither `result` nor `error`, or that is not JSON
-  (B51). A host never produces one; `remote_reply`'s branches are small.
+- A remote answer that is not JSON, or that has neither a `result` key
+  nor an `error` (B51). No directory built from this repository sends one
+  (`Response::ok(Value::Null)` is written as `{"result": null}`, which is
+  tested, B57). The branches are those of `read_reply`, which
+  `call_sibling` already uses.
 - B53 (the caller read inside `directory.publish` for an anonymous
   caller): `admit` refuses it first, and scenario 118 proves that.
 
@@ -1440,10 +1552,12 @@ nothing broke in the mocked shapes).
 - `dual_build_parity/directory.rs` is 1135 lines and on the oversized
   list at exactly that cap (`xtask/oversized-test-files.txt:21`). It must
   not get one line longer: the `hNewer` scenario goes in the new module
-  `directory_compat.rs` (Step 7), and scenario 118 changes two lines in
+  `directory_compat.rs` (Step 7), and scenario 118 changes three lines in
   place (D-A2c-17). `trust_fixtures.rs` shrinks by about 35 lines.
 - `contract.rs` 367 lines: the new tests go in `contract_directory.rs`
   (Step 8).
+- `roym_core/src/method/tests.rs` 725 lines, not on the oversized list:
+  the new unit tests go in `method/tests/directory.rs` (Step 3).
 - `service_methods!` with 37 rows. It did not trip `too_many_lines` with 41
   rows in A2b. If it does, split the table as A2b section 7.4 describes and
   record a deviation.
@@ -1468,6 +1582,8 @@ nothing broke in the mocked shapes).
 | A2b R6 (a test that sends more than one error) | the error tests | "Each request has exactly one error" (Step 8). |
 | A2b R8 (deleted why-comments) | many handlers with long comments | Section 0 rule; Step 4 rule. |
 | A2b R9 (set-up written twice) | directory shapes need sources and credentials | Step 2: one helper per set-up, reuse `trust_fixtures`. |
+| A2c P1 (a `null` result lost by a typed read) | every read of a remote reply | `read_reply`, shared with `call_sibling`; B57 fixed and tested. |
+| A2c P2 (a security read with no direct test) | the caller of `directory.publish` | The attribution test of Step 8. |
 
 ## 8. Deferred backlog
 
@@ -1502,8 +1618,18 @@ All rows are in [deferred-backlog.md](../../deferred-backlog.md).
   Target: decide in A6 or A7 (the client guide must say it). Source:
   [roym-open-foundation](../../changes/roym-open-foundation/change.md)
   "Typed methods".
+- **New row, §10: "The directory's client half reads remote answers by
+  hand".** `query_source` reads `directory.search`, `add_source` reads
+  `directory.info` and `handle_standing_reply` reads `directory.standing`
+  with `Value` and `.get`, and the outbound calls are hand-built
+  `host.call`s (D-A2c-10). Reason: A4 moves the search read into the
+  federated query library, and the calls use `CallTarget::Service`
+  options that `call_sibling` does not take. Target: A4. Source:
+  `crates/roym_directory/src/app/client_query.rs`,
+  `client_sources.rs`, `held.rs`.
 - **Resolved in code, no row needed:** the hand list `ALL_DIRECTORY_VERBS`
-  (B59), and the hand word check of `open_to` / `booking_mode`.
+  (B59), the hand word check of `open_to` / `booking_mode`, and the
+  "runs no directory" note that never showed (B57).
 - No new open `TODO` or `FIXME` marker is added.
 
 ## 9. Living docs to update at close-out
@@ -1526,11 +1652,22 @@ change docs, milestone or slice ids in these files. Link ADRs only.
   constant, which `admit::admit` also reads. In "Bad input", change
   "Wire-reachable methods ignore unknown fields so newer clients can talk
   to older nodes" to "... so that a newer node can call an older one; a
-  renamed or removed field still breaks the call".
-- [docs/system-architecture.md](../../../system-architecture.md) (around
-  line 1143): the same correction as the developer guide's first
-  sentence, and one sentence on the four wire-reachable directory methods
-  ignoring unknown fields.
+  renamed or removed field still breaks the call". Also add there: record
+  types inside an input (for example `SearchQuery` inside
+  `directory.query-source`'s `query`) ignore unknown keys, so a misspelled
+  nested key is dropped, not refused. A remote reply is read with
+  `method::read_reply` (or `call_sibling`), never by parsing it as
+  `Response`, because a `null` result would be lost.
+- [docs/system-architecture.md](../../../system-architecture.md): at
+  line 1143, the same correction as the developer guide's first sentence.
+  At line 1141 (the paragraph that names the four wire methods), one
+  sentence: these four methods ignore unknown fields, so a newer node can
+  call an older one.
+- [docs/system-requirements-spec.md](../../../system-requirements-spec.md)
+  (around line 710, "Explicit Wire Exceptions"): check, and update if
+  false. Today it names the three `Open` methods and the `VerifiedOnly`
+  one and says nothing about bad input, which stays true. If an edit is
+  made, add the file to the change doc's `living-docs-touched`.
 - [docs/planning/traceability-matrix.md](../../traceability-matrix.md) rows
   `[ROY-TYP]`, `[ROY-UNK]`, `[ROY-CHK]` (lines 91-93): "(profile,
   conversation, catalog and transaction)" becomes "(all six services;
@@ -1548,15 +1685,15 @@ change docs, milestone or slice ids in these files. Link ADRs only.
   - **Decisions:** add D-A2c-1 to D-A2c-19 with the same numbers and
     meaning as section 5, and one line with the owner's answers to Q1 to
     Q7.
-  - **Deviations:** under "Planned wire changes", add B41 to B54 (with the
-    `hNewer` scenario for B51, and Q5 for B46). Under "Different from the
-    plan", add only what the implementation really did differently.
+  - **Deviations:** under "Planned wire changes", add B41 to B57 (with the
+    `hNewer` scenario for B51, Q5 for B46, and the B57 bug fix). Under
+    "Different from the plan", add only what the implementation really did differently.
   - **`living-docs-touched`:** add any file above not yet listed.
   - `status` stays `draft` (A3 to A7 are not done).
 - [task.md](task.md): add the A2c result line under "A2".
 - [status.md](status.md): row A2c. Later steps record the PR, the
-  shape-file counts (new and total), the parity count (223) and module
-  count, and the `method_contract` result.
+  shape-file counts (new and total), the parity count (224), "25 modules
+  (20 with scenarios)", and the `method_contract` result.
 
 ## 10. Exit criteria
 
@@ -1574,25 +1711,29 @@ A2c is done when all of these are true:
    with `data.field`, equal in both builds; a wire method called over the
    wire with an unknown field answers (OF-14, OF-18).
 5. `method_contract shapes` passes with the files recorded from the
-   unchanged code, and the 157 earlier files are unchanged.
-6. The parity harness passes, with 222 scenarios plus the `hNewer`
-   scenario. Only scenario 118's loop changed.
-7. `handle_certificate_verb` and `export_signed` are gone.
+   unchanged code, the two B57 files recorded in Step 5, and the 157
+   earlier files unchanged.
+6. The parity harness passes, with 222 scenarios plus the two scenarios of
+   `directory_compat.rs` (224). Only scenario 118's loop, `contains` line
+   and message text changed.
+7. A wire `directory.publish` is recorded under the verified caller's DID,
+   in both builds (Step 8).
+8. `handle_certificate_verb` and `export_signed` are gone.
    `ALL_DIRECTORY_VERBS` is gone. `WIRE_REACHABLE` is one constant read by
    `admit` and by the check.
-8. No Hub or `roymctl` file changed.
-9. The change doc, the developer guide, the architecture doc, the
-   traceability matrix, task.md, status.md and the backlog are updated as
+9. No Hub or `roymctl` file changed.
+10. The change doc, the developer guide, the architecture doc, the
+   requirements spec (if changed), the traceability matrix, task.md, status.md and the backlog are updated as
    in sections 8 and 9.
-10. `mise run verify` passes with no `--skip`.
-11. One PR.
+11. `mise run verify` passes with no `--skip`.
+12. One PR.
 
 ## 11. What A2c does not do
 
 - No change to how the client half calls remote directories, or to how it
   reads `directory.search`, `directory.info` (add-source) and
-  `directory.standing` answers (D-A2c-10). A3 and A4 change the search
-  path.
+  `directory.standing` answers (D-A2c-10), except the `null` read of B57.
+  A3 and A4 change the search path; section 8 records the rest.
 - No merge or fan-out move. The merge types stay in `roym_directory` until
   A4.
 - No new wire-reachable method, and no change to which methods are
@@ -1607,6 +1748,7 @@ A2c is done when all of these are true:
 - No fix for B58 (a new closed word inside a remote answer). The G5 row
   records it.
 - No change to what a correct request does, or to the order of any check
-  other than B41 and B53.
+  other than B41, B53 and B56, except the B57 bug fix and B55 (a wire
+  search with no `params`).
 - No Hub or `roymctl` change. They keep sending raw JSON (D-A2a-13).
 - No new demo story.
