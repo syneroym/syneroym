@@ -17,13 +17,19 @@ async fn directory_parameter_errors() {
     let h = harness().await;
 
     // member.add with unknown key colour
-    let (w, _) =
+    let (w, n) =
         post_rpc(&h, "member.add", Some(json!({ "did": stranger_did(), "colour": "blue" }))).await;
+    assert_eq!(w, n);
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "colour");
 
+    ensure_synorg(&h).await;
+    let (add_w, add_n) = post_rpc(&h, "member.add", Some(json!({ "did": stranger_did() }))).await;
+    assert_eq!(add_w, add_n);
+    assert!(add_w.get("result").is_some());
+
     // credential.issue with expires_at_secs: "soon"
-    let (w, _) = post_rpc(
+    let (w, n) = post_rpc(
         &h,
         "credential.issue",
         Some(json!({
@@ -33,11 +39,12 @@ async fn directory_parameter_errors() {
         })),
     )
     .await;
+    assert_eq!(w, n);
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "expires_at_secs");
 
     // member.suspend with until_secs: -1
-    let (w, _) = post_rpc(
+    let (w, n) = post_rpc(
         &h,
         "member.suspend",
         Some(json!({
@@ -46,6 +53,7 @@ async fn directory_parameter_errors() {
         })),
     )
     .await;
+    assert_eq!(w, n);
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "until_secs");
 
@@ -63,29 +71,38 @@ async fn directory_parameter_errors() {
     });
     let mut bad_settings = valid_settings.clone();
     bad_settings["unknown_top"] = json!("bad");
-    let (w, _) = post_rpc(&h, "directory.set-settings", Some(bad_settings)).await;
+    let (w, n) = post_rpc(&h, "directory.set-settings", Some(bad_settings)).await;
+    assert_eq!(w, n);
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "unknown_top");
 
     let mut nested_unknown = valid_settings.clone();
     nested_unknown["publication_limits"]["unknown_nested"] = json!("accepted");
-    let (w, _) = post_rpc(&h, "directory.set-settings", Some(nested_unknown)).await;
+    let (w, n) = post_rpc(&h, "directory.set-settings", Some(nested_unknown)).await;
+    assert_eq!(w, n);
     assert!(w.get("error").is_none(), "nested unknown key should be accepted: {w}");
     assert!(w.get("result").is_some());
 
     // directory.query-source with invalid open_to in query
-    let (rw, _) = post_rpc(&h, "directory.start-run", None).await;
+    let (aw, an) =
+        post_rpc(&h, "directory.add-source", Some(json!({ "did": "did:key:hTrustValid" }))).await;
+    assert_eq!(aw, an);
+    assert!(aw.get("result").is_some());
+
+    let (rw, rn) = post_rpc(&h, "directory.start-run", None).await;
+    assert_eq!(rw, rn);
     let run_id = rw["result"]["run_id"].as_str().unwrap();
-    let (w, _) = post_rpc(
+    let (w, n) = post_rpc(
         &h,
         "directory.query-source",
         Some(json!({
             "run_id": run_id,
-            "source": "did:key:hForeignWire",
+            "source": "did:key:hTrustValid",
             "query": { "open_to": "everyone" }
         })),
     )
     .await;
+    assert_eq!(w, n);
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "query.open_to");
     assert_eq!(
@@ -93,6 +110,10 @@ async fn directory_parameter_errors() {
         "invalid params: query.open_to: unknown variant `everyone`, expected one of `anyone`, \
          `members`, `referral`, `past-counterparties`"
     );
+
+    let (mw, mn) = post_rpc(&h, "directory.merge", Some(json!({ "run_id": run_id }))).await;
+    assert_eq!(mw, mn);
+    assert!(mw["result"]["hits"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
