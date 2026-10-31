@@ -4,8 +4,27 @@
 
 use std::collections::BTreeSet;
 
+use syneroym_roym_core::method::Reply;
+
 use super::*;
-use crate::app::standing::IssuedRecordRow;
+use crate::app::{self, standing::IssuedRecordRow};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CredentialIssueInput {
+    pub member_did: String,
+    pub categories: Vec<String>,
+    pub area: Option<Vec<Area>>,
+    pub expires_at_secs: u64,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RevokeInput {
+    pub credential_record_id: String,
+    pub reason: Option<String>,
+}
 
 /// Signs `payload` as this SynOrg (the installation's owner).
 /// Returns the envelope JSON, its derived record id, and the
@@ -73,35 +92,6 @@ fn validate_categories_within_synorg(
     Ok(())
 }
 
-struct IssueParams {
-    member_did: String,
-    categories: Vec<String>,
-    area: Vec<Area>,
-    expires_at_secs: u64,
-}
-
-fn parse_issue_params(req: &Request) -> Result<IssueParams, Response> {
-    let member_did = match req.params.get("member_did").and_then(Value::as_str) {
-        Some(m) if !m.is_empty() => m.to_string(),
-        _ => return Err(Response::invalid_params("member_did is required")),
-    };
-    let categories: Vec<String> = match req.params.get("categories") {
-        Some(v) => serde_json::from_value(v.clone())
-            .map_err(|e| Response::invalid_params(format!("invalid categories: {e}")))?,
-        None => return Err(Response::invalid_params("categories is required")),
-    };
-    let area: Vec<Area> = match req.params.get("area") {
-        Some(v) if !v.is_null() => serde_json::from_value(v.clone())
-            .map_err(|e| Response::invalid_params(format!("invalid area: {e}")))?,
-        _ => vec![],
-    };
-    let expires_at_secs = match req.params.get("expires_at_secs").and_then(Value::as_u64) {
-        Some(e) => e,
-        None => return Err(Response::invalid_params("expires_at_secs is required")),
-    };
-    Ok(IssueParams { member_did, categories, area, expires_at_secs })
-}
-
 /// Upserts `MEMBERS[member_did]`, keeping its existing note and
 /// `added_at_secs` when the caller supplies neither.
 async fn upsert_member<H: AppHost>(
@@ -124,17 +114,22 @@ async fn upsert_member<H: AppHost>(
     put_json(host, MEMBERS, member_did, &member).await
 }
 
-pub(in crate::app) async fn issue<H: AppHost>(host: &H, req: &Request) -> Response {
-    let IssueParams { member_did, categories, area, expires_at_secs } =
-        match parse_issue_params(req) {
-            Ok(p) => p,
-            Err(resp) => return resp,
-        };
+pub(crate) async fn issue<H: AppHost>(
+    host: &H,
+    input: CredentialIssueInput,
+) -> Reply<app::SignedRecordOutput> {
+    if input.member_did.is_empty() {
+        return Err(Response::invalid_params("member_did is required"));
+    }
+    let member_did = input.member_did;
+    let categories = input.categories;
+    let area = input.area.unwrap_or_default();
+    let expires_at_secs = input.expires_at_secs;
 
     let settings = match synorg::load_settings(host).await {
         Ok(Some(s)) => s,
-        Ok(None) => return Response::invalid_params("this installation runs no SynOrg yet"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("this installation runs no SynOrg yet")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let normalized_categories: Vec<String> =
@@ -146,27 +141,25 @@ pub(in crate::app) async fn issue<H: AppHost>(host: &H, req: &Request) -> Respon
         scope,
     };
     if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
-    if let Err(resp) = validate_categories_within_synorg(&payload.scope.categories, &settings) {
-        return resp;
-    }
+    validate_categories_within_synorg(&payload.scope.categories, &settings)?;
 
     let now = clock::now_secs();
     if !(now < expires_at_secs && expires_at_secs <= now + membership::MAX_CREDENTIAL_LIFETIME_SECS)
     {
-        return Response::invalid_params("expires_at_secs is not a valid future expiry");
+        return Err(Response::invalid_params("expires_at_secs is not a valid future expiry"));
     }
 
     for c in [CREDENTIALS, REVOCATIONS, DECISIONS] {
         if let Err(e) = ensure_coll(host, c, &standing::issued_record_indexes()).await {
-            return Response::internal_error(e);
+            return Err(Response::internal_error(e));
         }
     }
 
     let supersedes = match current_credential_id(host, &member_did).await {
         Ok(id) => id,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let (envelope, record_id, issued_at_secs) = match sign_as_synorg(
         host,
@@ -180,7 +173,7 @@ pub(in crate::app) async fn issue<H: AppHost>(host: &H, req: &Request) -> Respon
     .await
     {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
 
     let row = IssuedRecordRow {
@@ -193,16 +186,16 @@ pub(in crate::app) async fn issue<H: AppHost>(host: &H, req: &Request) -> Respon
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, CREDENTIALS, &record_id, &row).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    let note = req.params.get("note").and_then(Value::as_str).unwrap_or_default();
+    let note = input.note.as_deref().unwrap_or_default();
     if let Err(e) = upsert_member(host, &member_did, note, now).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = standing::rebuild_for(host, &member_did).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    Response::ok(json!({ "record_id": record_id, "envelope": envelope }))
+    Ok(app::SignedRecordOutput { record_id, envelope })
 }
 
 async fn current_credential_id<H: AppHost>(
@@ -217,33 +210,35 @@ async fn current_credential_id<H: AppHost>(
     Ok(rows.into_iter().next().map(|r| r.record_id))
 }
 
-pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Response {
-    let credential_record_id = match req.params.get("credential_record_id").and_then(Value::as_str)
-    {
-        Some(c) if !c.is_empty() => c.to_string(),
-        _ => return Response::invalid_params("credential_record_id is required"),
-    };
-    let reason = req.params.get("reason").and_then(Value::as_str).unwrap_or_default().to_string();
+pub(crate) async fn revoke<H: AppHost>(
+    host: &H,
+    input: RevokeInput,
+) -> Reply<app::SignedRecordOutput> {
+    if input.credential_record_id.is_empty() {
+        return Err(Response::invalid_params("credential_record_id is required"));
+    }
+    let credential_record_id = input.credential_record_id;
+    let reason = input.reason.unwrap_or_default();
 
     for c in [CREDENTIALS, REVOCATIONS] {
         if let Err(e) = ensure_coll(host, c, &standing::issued_record_indexes()).await {
-            return Response::internal_error(e);
+            return Err(Response::internal_error(e));
         }
     }
     let row: Option<IssuedRecordRow> =
         match get_json(host, CREDENTIALS, &credential_record_id).await {
             Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
     let Some(row) = row else {
-        return Response::invalid_params("no credential with that id was issued here");
+        return Err(Response::invalid_params("no credential with that id was issued here"));
     };
 
     let about = json!({ "about": credential_record_id }).to_string();
     let existing: Vec<IssuedRecordRow> =
         match paging::query_all(host, REVOCATIONS, Some(about)).await {
             Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
     if let Some(existing) = existing.into_iter().next() {
         // Idempotent retry after a partial failure: the record already
@@ -252,11 +247,12 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
         // retry after `rewrite_listed_windows` failed leaves the member
         // looking unrevoked until someone runs `directory.reindex` by hand.
         if let Err(e) = standing::rebuild_for(host, &row.member_did).await {
-            return Response::internal_error(e);
+            return Err(Response::internal_error(e));
         }
-        return Response::ok(
-            json!({ "record_id": existing.record_id, "envelope": existing.envelope }),
-        );
+        return Ok(app::SignedRecordOutput {
+            record_id: existing.record_id,
+            envelope: existing.envelope,
+        });
     }
 
     // A credential another one of the member's credentials `supersedes`
@@ -267,17 +263,17 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
     let siblings: Vec<IssuedRecordRow> =
         match paging::query_all(host, CREDENTIALS, Some(member_filter)).await {
             Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
     if let Some(newer) = siblings.iter().find(|sib| {
         Envelope::from_json(&sib.envelope)
             .is_ok_and(|env| env.supersedes.as_deref() == Some(credential_record_id.as_str()))
     }) {
-        return Response::invalid_params(format!(
+        return Err(Response::invalid_params(format!(
             "credential '{credential_record_id}' has been replaced by '{}'; revoke the current \
              credential instead",
             newer.record_id
-        ));
+        )));
     }
 
     let payload = membership::RevocationPayload {
@@ -286,7 +282,7 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
         reason,
     };
     if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
     let (envelope, record_id, issued_at_secs) = match sign_as_synorg(
         host,
@@ -300,7 +296,7 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
     .await
     {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     let out_row = IssuedRecordRow {
         record_id: record_id.clone(),
@@ -312,12 +308,12 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
         envelope: envelope.clone(),
     };
     if let Err(e) = put_json(host, REVOCATIONS, &record_id, &out_row).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = standing::rebuild_for(host, &row.member_did).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    Response::ok(json!({ "record_id": record_id, "envelope": envelope }))
+    Ok(app::SignedRecordOutput { record_id, envelope })
 }
 
 /// Every record `collection` holds, or only one member's when the request
@@ -325,26 +321,31 @@ pub(in crate::app) async fn revoke<H: AppHost>(host: &H, req: &Request) -> Respo
 pub(in crate::app) async fn list_issued<H: AppHost>(
     host: &H,
     collection: &str,
-    req: &Request,
-) -> Response {
+    input: app::MemberFilterInput,
+) -> Reply<app::IssuedRecordsOutput> {
     if let Err(e) = ensure_coll(host, collection, &standing::issued_record_indexes()).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    let filter = req
-        .params
-        .get("member_did")
-        .and_then(Value::as_str)
-        .map(|m| json!({ "member_did": m }).to_string());
-    match paging::query_all::<_, Value>(host, collection, filter).await {
-        Ok(rows) => Response::ok(json!({ "records": rows })),
-        Err(e) => Response::internal_error(e),
-    }
+    let filter = input.member_did.as_deref().map(|m| json!({ "member_did": m }).to_string());
+    let rows: Vec<Value> = match paging::query_all(host, collection, filter).await {
+        Ok(r) => r,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    let records: Vec<IssuedRecordRow> =
+        rows.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
+    Ok(app::IssuedRecordsOutput { records })
 }
 
-pub(in crate::app) async fn list<H: AppHost>(host: &H, req: &Request) -> Response {
-    list_issued(host, CREDENTIALS, req).await
+pub(crate) async fn list<H: AppHost>(
+    host: &H,
+    input: app::MemberFilterInput,
+) -> Reply<app::IssuedRecordsOutput> {
+    list_issued(host, CREDENTIALS, input).await
 }
 
-pub(in crate::app) async fn list_revocations<H: AppHost>(host: &H, req: &Request) -> Response {
-    list_issued(host, REVOCATIONS, req).await
+pub(crate) async fn list_revocations<H: AppHost>(
+    host: &H,
+    input: app::MemberFilterInput,
+) -> Reply<app::IssuedRecordsOutput> {
+    list_issued(host, REVOCATIONS, input).await
 }

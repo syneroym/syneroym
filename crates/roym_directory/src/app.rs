@@ -30,7 +30,7 @@ use syneroym_app_host::{
     },
 };
 use syneroym_roym_core::{
-    admit::{self, WireRule},
+    admit,
     area::Area,
     clock,
     directory::{self, DIRECTORY_SCHEMA_VERSION},
@@ -41,6 +41,8 @@ use syneroym_roym_core::{
     services,
     signing::{self, CertificateError},
 };
+
+use crate::api;
 
 pub const SCHEMA_VERSION: u32 = DIRECTORY_SCHEMA_VERSION;
 
@@ -65,18 +67,33 @@ pub const NODE_STATE: &str = "node_state";
 
 pub(in crate::app) const SETTINGS_KEY: &str = "synorg";
 
-/// The four methods a foreign node may reach. `directory.search`,
-/// `directory.info` and `directory.standing` admit a stranger with no
-/// identity at all -- reading something this installation publishes on
-/// purpose (including a member's own signed evidence) costs nothing to
-/// leave open. `directory.publish` records who asked, because a
-/// publication is durable and must name a party.
-const WIRE_REACHABLE: &[(&str, WireRule)] = &[
-    ("directory.search", WireRule::Open),
-    ("directory.info", WireRule::Open),
-    ("directory.publish", WireRule::VerifiedOnly),
-    ("directory.standing", WireRule::Open),
-];
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DidInput {
+    pub did: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemberFilterInput {
+    pub member_did: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RemovedOutput {
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SignedRecordOutput {
+    pub record_id: String,
+    pub envelope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct IssuedRecordsOutput {
+    pub records: Vec<standing::IssuedRecordRow>,
+}
 
 pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     Ok(json!({
@@ -181,44 +198,15 @@ pub(in crate::app) fn serde_str<T: Serialize>(v: &T) -> String {
 }
 
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
-    let caller = match admit::admit(host, WIRE_REACHABLE, &req.method).await {
-        Ok(c) => c,
-        Err(resp) => return resp,
-    };
+    if let Err(resp) = admit::admit(host, api::WIRE_REACHABLE, &req.method).await {
+        return resp;
+    }
 
-    if let Some(resp) = signing::handle_certificate_verb(host, "directory.", &req).await {
+    if let Some(resp) = api::dispatch(host, &req).await {
         return resp;
     }
 
     match req.method.as_str() {
-        "directory.ping" => Response::ok(json!({ "service": services::DIRECTORY.name })),
-        // Server half.
-        "directory.settings" => synorg::get_settings(host).await,
-        "directory.set-settings" => synorg::set_settings(host, &req).await,
-        "directory.info" => synorg::info(host).await,
-        "member.add" => synorg::member_add(host, &req).await,
-        "member.remove" => synorg::member_remove(host, &req).await,
-        "member.list" => synorg::member_list(host).await,
-        "directory.publish" => publication_ops::publish(host, &req, caller).await,
-        "directory.unpublish" => publication_ops::unpublish(host, &req).await,
-        "directory.publications" => publication_ops::publications(host).await,
-        "directory.search" => search_ops::search(host, &req).await,
-        "directory.limits" => match publication_ops::load_publication_limits(host).await {
-            Ok(l) => Response::ok(json!(l)),
-            Err(e) => Response::internal_error(e),
-        },
-        "directory.set-limits" => publication_ops::set_limits(host, &req).await,
-        "directory.reindex" => search_ops::reindex(host).await,
-        "directory.export" => backup::export(host).await,
-        "directory.import" => backup::import(host, &req).await,
-        "credential.issue" => credential_ops::issue(host, &req).await,
-        "credential.list" => credential_ops::list(host, &req).await,
-        "revocation.issue" => credential_ops::revoke(host, &req).await,
-        "revocation.list" => credential_ops::list_revocations(host, &req).await,
-        "member.suspend" => moderation_ops::suspend(host, &req).await,
-        "member.lift" => moderation_ops::lift(host, &req).await,
-        "member.decisions" => moderation_ops::list(host, &req).await,
-        "directory.standing" => standing::standing_verb(host, &req).await,
         // Client half.
         "directory.add-source" => client_sources::add_source(host, &req).await,
         "directory.probe-info" => client_sources::probe_info_verb(host, &req).await,

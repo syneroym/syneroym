@@ -4,12 +4,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::IndexType};
 use syneroym_roym_core::{
-    admit::Caller,
+    admit::{self, Caller},
     area::Area,
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
     listing::{self, ListingStatus, ListingVerdict},
     membership::{self, ListingRef, MembershipVerdict},
+    method::{
+        NoParams, PublicationLimitsInput, Reply,
+        catalog::ListingKeyInput,
+        directory::{PublishInput, PublishOutput},
+    },
     paging,
     safety::{self, Admission, PublicationLimits},
 };
@@ -50,17 +55,28 @@ async fn require_member<H: AppHost>(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(in crate::app) struct PublicationRow {
-    pub(in crate::app) envelope: String,
-    pub(in crate::app) record_id: String,
-    pub(in crate::app) listing_id: String,
-    pub(in crate::app) issuer: String,
-    pub(in crate::app) published_by: String,
+pub(crate) struct PublicationRow {
+    pub(crate) envelope: String,
+    pub(crate) record_id: String,
+    pub(crate) listing_id: String,
+    pub(crate) issuer: String,
+    pub(crate) published_by: String,
     /// The envelope's own signed clock -- never the directory's
     /// `received_at_secs` -- so a later publish can tell whether an
     /// incoming envelope is actually newer.
-    pub(in crate::app) issued_at_secs: u64,
-    pub(in crate::app) received_at_secs: u64,
+    pub(crate) issued_at_secs: u64,
+    pub(crate) received_at_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct UnpublishOutput {
+    pub listing_id: String,
+    pub unpublished: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct PublicationsOutput {
+    pub publications: Vec<PublicationRow>,
 }
 
 const PRUNE_MARKER_KEY: &str = "prune_marker";
@@ -120,38 +136,30 @@ async fn delete_search_index_for<H: AppHost>(host: &H, listing_id: &str) -> Resu
     .map_err(|e| e.to_string())
 }
 
-pub(in crate::app) async fn publish<H: AppHost>(
-    host: &H,
-    req: &Request,
-    caller: Caller,
-) -> Response {
+pub(crate) async fn publish<H: AppHost>(host: &H, input: PublishInput) -> Reply<PublishOutput> {
+    let caller = admit::caller(host).await;
     let published_by = match resolve_published_by(caller, host).await {
         Ok(did) => did,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
-    let envelope = match req.params.get("envelope").and_then(Value::as_str) {
-        Some(e) => e.to_string(),
-        None => return Response::invalid_params("envelope is required"),
-    };
+    let envelope = input.envelope;
     let now = clock::now_secs();
     let verdict: ListingVerdict = listing::verify_envelope(&envelope, now);
     if !verdict.verified {
-        return Response::invalid_params(
+        return Err(Response::invalid_params(
             verdict.reason.unwrap_or_else(|| "not verified".to_string()),
-        );
+        ));
     }
     let (Some(payload), Some(record_id), Some(issuer), Some(issued_at_secs)) =
         (verdict.payload, verdict.record_id, verdict.issuer, verdict.issued_at_secs)
     else {
-        return Response::internal_error(
+        return Err(Response::internal_error(
             "a verified verdict carried no payload, record id or issuer",
-        );
+        ));
     };
     let supersedes = verdict.supersedes;
 
-    if let Err(resp) = validate_publishable(&payload) {
-        return resp;
-    }
+    validate_publishable(&payload)?;
 
     // A directory that has never declared itself (no `settings` row) is
     // not a SynOrg -- `directory.info` already answers `null` for it, and
@@ -161,40 +169,32 @@ pub(in crate::app) async fn publish<H: AppHost>(
     let settings = match synorg::load_settings(host).await {
         Ok(Some(s)) => s,
         Ok(None) => {
-            return Response::invalid_params("this installation runs no SynOrg yet");
+            return Err(Response::invalid_params("this installation runs no SynOrg yet"));
         }
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[idx("listing_id", IndexType::String)]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     let existing_row = match load_publication_for_listing(host, &payload.listing_id).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
-    if let Err(resp) =
-        check_not_stale(existing_row.as_ref(), &record_id, issued_at_secs, supersedes.as_deref())
-    {
-        return resp;
-    }
+    check_not_stale(existing_row.as_ref(), &record_id, issued_at_secs, supersedes.as_deref())?;
 
     if matches!(payload.status, ListingStatus::Withdrawn) {
         return withdraw_publication(host, &payload.listing_id).await;
     }
 
-    if let Err(resp) = require_member(host, &issuer, &payload, now).await {
-        return resp;
-    }
+    require_member(host, &issuer, &payload, now).await?;
 
     let limits = settings.publication_limits;
-    if let Err(resp) = check_rate_limit(host, &published_by, &limits, now).await {
-        return resp;
-    }
+    check_rate_limit(host, &published_by, &limits, now).await?;
 
     if let Err(e) = record_publication_and_prune(
         host,
@@ -206,7 +206,7 @@ pub(in crate::app) async fn publish<H: AppHost>(
     )
     .await
     {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     if let Err(e) = store_publication_and_index(
@@ -218,10 +218,14 @@ pub(in crate::app) async fn publish<H: AppHost>(
     )
     .await
     {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
-    Response::ok(json!({ "listing_id": payload.listing_id, "record_id": record_id }))
+    Ok(PublishOutput {
+        listing_id: payload.listing_id,
+        record_id: Some(record_id),
+        withdrawn: None,
+    })
 }
 
 /// A local dispatch (this node's own owner, through the Hub or
@@ -289,7 +293,7 @@ fn check_not_stale(
 
 /// Removes the stored publication and its index rows, consuming no rate
 /// budget. Called only when `payload.status` is `Withdrawn`.
-async fn withdraw_publication<H: AppHost>(host: &H, listing_id: &str) -> Response {
+async fn withdraw_publication<H: AppHost>(host: &H, listing_id: &str) -> Reply<PublishOutput> {
     if let Err(e) = AppDataLayer::delete_many(
         host,
         PUBLICATIONS.to_string(),
@@ -297,12 +301,12 @@ async fn withdraw_publication<H: AppHost>(host: &H, listing_id: &str) -> Respons
     )
     .await
     {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
     if let Err(e) = delete_search_index_for(host, listing_id).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    Response::ok(json!({ "listing_id": listing_id, "withdrawn": true }))
+    Ok(PublishOutput { listing_id: listing_id.to_string(), record_id: None, withdrawn: Some(true) })
 }
 
 /// Keyed on `published_by` -- the identity the router verified for this
@@ -506,13 +510,13 @@ async fn load_publication_for_listing<H: AppHost>(
     Ok(rows.into_iter().find(|row| row.listing_id == listing_id))
 }
 
-pub(in crate::app) async fn unpublish<H: AppHost>(host: &H, req: &Request) -> Response {
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
+pub(crate) async fn unpublish<H: AppHost>(
+    host: &H,
+    input: ListingKeyInput,
+) -> Reply<UnpublishOutput> {
+    let listing_id = input.listing_id;
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = AppDataLayer::delete_many(
         host,
@@ -521,48 +525,54 @@ pub(in crate::app) async fn unpublish<H: AppHost>(host: &H, req: &Request) -> Re
     )
     .await
     {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
     if let Err(e) = delete_search_index_for(host, &listing_id).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    Response::ok(json!({ "listing_id": listing_id, "unpublished": true }))
+    Ok(UnpublishOutput { listing_id, unpublished: true })
 }
 
-pub(in crate::app) async fn publications<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn publications<H: AppHost>(
+    host: &H,
+    _input: NoParams,
+) -> Reply<PublicationsOutput> {
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Ok(Some(settings)) = synorg::load_settings(host).await {
         let _ = prune_expired_publications(host, settings.retention_secs).await;
     }
-    match paging::query_all::<_, Value>(host, PUBLICATIONS, None).await {
-        Ok(rows) => Response::ok(json!({ "publications": rows })),
-        Err(e) => Response::internal_error(e),
-    }
+    let rows: Vec<Value> = match paging::query_all(host, PUBLICATIONS, None).await {
+        Ok(r) => r,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    let publications: Vec<PublicationRow> =
+        rows.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
+    Ok(PublicationsOutput { publications })
 }
 
-pub(in crate::app) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
-    let window_secs = match req.params.get("window_secs").and_then(Value::as_u64) {
-        Some(w) => w,
-        None => return Response::invalid_params("window_secs is required"),
-    };
-    let max_per_window = match req.params.get("max_per_window").and_then(Value::as_u64) {
-        Some(m) => m as u32,
-        None => return Response::invalid_params("max_per_window is required"),
-    };
-    let limits = PublicationLimits { window_secs, max_per_window };
+pub(crate) async fn limits<H: AppHost>(host: &H, _input: NoParams) -> Reply<PublicationLimits> {
+    load_publication_limits(host).await.map_err(Response::internal_error)
+}
+
+pub(crate) async fn set_limits<H: AppHost>(
+    host: &H,
+    input: PublicationLimitsInput,
+) -> Reply<PublicationLimits> {
+    let limits =
+        PublicationLimits { window_secs: input.window_secs, max_per_window: input.max_per_window };
     if let Err(e) = limits.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
     let mut settings = match synorg::load_settings(host).await {
         Ok(Some(s)) => s,
-        Ok(None) => return Response::invalid_params("this installation runs no SynOrg yet"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("this installation runs no SynOrg yet")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     settings.publication_limits = limits;
     if let Err(e) = put_json(host, SETTINGS, SETTINGS_KEY, &settings).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    Response::ok(json!(limits))
+    Ok(limits)
 }

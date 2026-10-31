@@ -19,8 +19,6 @@ use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
 
 use crate::{
     backup::{BUNDLE_MANIFEST_VERSION, Bundle},
-    envelope::{Request, Response},
-    method::typed,
     record,
 };
 
@@ -253,19 +251,6 @@ pub async fn ensure_collection<H: AppHost>(host: &H, name: &str) -> Result<(), S
     )
     .await
     .map_err(|e| e.to_string())
-}
-
-pub async fn handle_certificate_verb<H: AppHost>(
-    host: &H,
-    prefix: &str,
-    req: &Request,
-) -> Option<Response> {
-    let suffix = req.method.strip_prefix(prefix)?;
-    match suffix {
-        "signing-status" => Some(typed(host, req, signing_status).await),
-        "install-signing-certificate" => Some(typed(host, req, install_signing_certificate).await),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
