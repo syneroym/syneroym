@@ -133,21 +133,35 @@ async function renderTabs(container: HTMLElement, did: string) {
   nav.style.gap = "12px";
   nav.style.marginBottom = "16px";
 
-  const tabContainer = document.createElement("div");
+  // Each tab render gets its own fresh container that replaces the old one.
+  // A screen that is still loading (it awaits the node before it appends)
+  // then writes into a container that is already detached, so a quick tab
+  // click can never leave two screens in the page.
+  let tabContainer = document.createElement("div");
   tabContainer.className = "tab-content";
+  container.appendChild(nav);
+  container.appendChild(tabContainer);
+
+  const show = (render: (host: HTMLElement) => Promise<void>) => {
+    const host = document.createElement("div");
+    host.className = "tab-content";
+    tabContainer.replaceWith(host);
+    tabContainer = host;
+    return render(host);
+  };
 
   const tabs = [
-    { name: "Profile", render: () => renderProfile(tabContainer) },
-    { name: "Contacts", render: () => renderContacts(tabContainer) },
-    { name: "Messages", render: () => renderMessages(tabContainer) },
-    { name: "Groups", render: () => renderGroups(tabContainer) },
-    { name: "Listings", render: () => renderListings(tabContainer) },
-    { name: "Directory", render: () => renderDirectory(tabContainer) },
-    { name: "Memberships", render: () => renderMemberships(tabContainer) },
-    { name: "SynOrg", render: () => renderSynOrg(tabContainer) },
-    { name: "Safety", render: () => renderSafety(tabContainer) },
-    { name: "Backup", render: () => renderBackup(tabContainer) },
-    { name: "Components", render: () => renderHome(tabContainer, did) },
+    { name: "Profile", render: () => show((host) => renderProfile(host)) },
+    { name: "Contacts", render: () => show((host) => renderContacts(host)) },
+    { name: "Messages", render: () => show((host) => renderMessages(host)) },
+    { name: "Groups", render: () => show((host) => renderGroups(host)) },
+    { name: "Listings", render: () => show((host) => renderListings(host)) },
+    { name: "Directory", render: () => show((host) => renderDirectory(host)) },
+    { name: "Memberships", render: () => show((host) => renderMemberships(host)) },
+    { name: "SynOrg", render: () => show((host) => renderSynOrg(host)) },
+    { name: "Safety", render: () => show((host) => renderSafety(host)) },
+    { name: "Backup", render: () => show((host) => renderBackup(host)) },
+    { name: "Components", render: () => show((host) => renderHome(host, did)) },
   ];
 
   for (let i = 0; i < tabs.length; i++) {
@@ -159,9 +173,6 @@ async function renderTabs(container: HTMLElement, did: string) {
     };
     nav.appendChild(btn);
   }
-
-  container.appendChild(nav);
-  container.appendChild(tabContainer);
 
   // Default to Profile tab
   await tabs[0].render();
