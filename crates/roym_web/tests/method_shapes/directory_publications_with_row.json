@@ -1,0 +1,13 @@
+{
+  "publications": [
+    {
+      "envelope": "string",
+      "issued_at_secs": "number",
+      "issuer": "string",
+      "listing_id": "string",
+      "published_by": "string",
+      "received_at_secs": "number",
+      "record_id": "string"
+    }
+  ]
+}

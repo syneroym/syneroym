@@ -1,0 +1,52 @@
+{
+  "hits": [
+    {
+      "age_secs": "number",
+      "categories": [
+        "string"
+      ],
+      "conversation_address": "string",
+      "issuer": "string",
+      "listing_id": "string",
+      "record_id": "string",
+      "revocation_status": "unknown",
+      "sources": [
+        {
+          "directory": "string",
+          "membership": {
+            "credential_record_id": "string",
+            "expires_at_secs": "number",
+            "issuer": "string",
+            "revocations_checked_as_of_secs": "number",
+            "scope": {
+              "area": [],
+              "categories": [
+                "string"
+              ]
+            },
+            "state": "valid",
+            "synorg_name": "string"
+          },
+          "received_at_secs": "number",
+          "record_id": "string"
+        }
+      ],
+      "status": "active",
+      "summary": "string",
+      "title": "string",
+      "verified": "boolean",
+      "versions_differ": "boolean"
+    }
+  ],
+  "hits_truncated": "boolean",
+  "refused": [
+    {
+      "listing_id": "string",
+      "reason": "string",
+      "sources": [
+        "string"
+      ]
+    }
+  ],
+  "refused_truncated": "boolean"
+}

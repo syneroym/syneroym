@@ -1,0 +1,15 @@
+{
+  "area": [],
+  "categories": [
+    "string"
+  ],
+  "dispute_path": "string",
+  "name": "string",
+  "publication_limits": {
+    "max_per_window": "number",
+    "window_secs": "number"
+  },
+  "retention_secs": "number",
+  "rules": "string",
+  "support_contact": "string"
+}

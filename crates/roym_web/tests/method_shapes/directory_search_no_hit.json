@@ -1,0 +1,6 @@
+{
+  "answered_at_secs": "number",
+  "directory": "string",
+  "hits": [],
+  "truncated": "boolean"
+}

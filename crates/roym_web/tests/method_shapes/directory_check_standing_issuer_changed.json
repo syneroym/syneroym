@@ -1,0 +1,7 @@
+{
+  "refreshed": "boolean",
+  "verdict": {
+    "reason": "string",
+    "state": "unknown"
+  }
+}
