@@ -723,7 +723,7 @@ the only hits in changed files are older groups, such as `ping` and
 
 ### Findings
 
-- [ ] **R1 — major.** *Where:*
+- [x] **R1 — major.** *Where:*
   [contract_directory.rs:16-98](../../../../crates/roym_web/tests/method_contract/contract_directory.rs#L16)
   (`directory_parameter_errors`). *Problem:* all seven `/rpc` error cases
   read only the WASM answer: `let (w, _) = post_rpc(..)`. The native
@@ -750,9 +750,9 @@ the only hits in changed files are older groups, such as `ping` and
   the run has no hit (that source serves one valid hit when it is
   called). Build `credential.issue` and `member.suspend` from
   a valid request too (a SynOrg and a member exist), as Step 8 says, so
-  that the one bad field is the only error. *Status:* Open.
+  that the one bad field is the only error. *Status:* Fixed (0ece72ac). In every case of directory_parameter_errors, (w, n) is read via post_rpc and assert_eq!(w, n) verifies both builds produce identical results. Canned source did:key:hTrustValid is added before query-source, and directory.merge confirms 0 hits (no remote source call was made). credential.issue and member.suspend are executed with valid SynOrg and member preconditions so only the tested field fails. Proof verified: temporarily changing expected field "query.open_to" to "open_to" caused the test to fail on assert_eq!(w["error"]["data"]["field"], "open_to") with left: "query.open_to", right: "open_to", confirming the check catches differences.
 
-- [ ] **R2 — minor.** *Where:*
+- [x] **R2 — minor.** *Where:*
   [client_sources.rs:161-181](../../../../crates/roym_directory/src/app/client_sources.rs#L161)
   (`add_source`). *Problem:* the probe reply is now parsed as `Value`, not
   as `Response`. On `main`, a reply that was valid JSON but not a
@@ -773,9 +773,9 @@ the only hits in changed files are older groups, such as `ping` and
   `serde_json::from_value::<Response>(v.clone())` fails, store
   `Unreadable` with that error. Then no change needs to be recorded. If
   the new behaviour is wanted instead, record it under "Different from
-  the plan" and as a wire change. *Status:* Open.
+  the plan" and as a wire change. *Status:* Fixed (1f6056ff).
 
-- [ ] **R3 — minor.** *Where:*
+- [x] **R3 — minor.** *Where:*
   [status.md:15](status.md) (A2c row) and the PR description ("How
   Tested"). *Problem:* both say "38 method shapes (35 directory + 3
   whoami; 195 total in workspace)". The real counts are 60 new files (57
@@ -789,9 +789,9 @@ the only hits in changed files are older groups, such as `ping` and
   23 files that the record does not explain. *Fix:* write "60 method
   shapes (57 directory + 3 whoami; 217 total)" in `status.md` and the PR.
   Add the missing Step 10 sections to the PR text (they can link the plan
-  sections instead of copying them). *Status:* Open.
+  sections instead of copying them). *Status:* Fixed (a1e1b10d).
 
-- [ ] **R4 — minor.** *Where:* the dispatch arm of
+- [x] **R4 — minor.** *Where:* the dispatch arm of
   `directory.publish-to-source` on `main`
   (`crates/roym_directory/src/app.rs:233-236` there), now
   [api.rs:81](../../../../crates/roym_directory/src/api.rs#L81). *Problem:*
@@ -806,9 +806,9 @@ the only hits in changed files are older groups, such as `ping` and
   which side of the wire each one is. *Fix:* put the comment back above
   the `"directory.publish-to-source"` row in `api.rs` (comments are
   allowed inside `service_methods!` in the other services), or add its
-  last sentence to the doc comment of `publish_to_source`. *Status:* Open.
+  last sentence to the doc comment of `publish_to_source`. *Status:* Fixed (10c5fa74).
 
-- [ ] **R5 — minor.** *Where:*
+- [x] **R5 — minor.** *Where:*
   [method/tests/directory.rs:60, :73](../../../../crates/roym_core/src/method/tests/directory.rs#L60)
   (`std::panic::catch_unwind`),
   [trust_fixtures.rs:134](../../../../crates/roym_web/tests/dual_build_parity/trust_fixtures.rs#L134)
@@ -821,17 +821,17 @@ the only hits in changed files are older groups, such as `ping` and
   `panic::catch_unwind`; `use syneroym_roym_directory::api as
   directory_api;` and `directory_api::method_table()`; add `router` to the
   existing `syneroym_roym_core::{..}` import in `contract.rs` and call
-  `router::route`. *Status:* Open.
+  `router::route`. *Status:* Fixed (7ee58117, f67e0714).
 
-- [ ] **R6 — minor.** *Where:*
+- [x] **R6 — minor.** *Where:*
   [contract_directory.rs:188, :220, :240, :263](../../../../crates/roym_web/tests/method_contract/contract_directory.rs#L188).
   *Problem:* the comments `// 1. Set limit ..` to `// 4. Local publish ..`
   number the list of Step 8 of the plan. Plan section 0 forbids numbered
   comments that follow a list in the plan (A2a R10, A2b R7). *Failure
   case:* a step is added or removed and the numbers no longer match
-  anything. *Fix:* drop the numbers and keep the words. *Status:* Open.
+  anything. *Fix:* drop the numbers and keep the words. *Status:* Fixed (10c5fa74).
 
-- [ ] **R7 — minor.** *Where:*
+- [x] **R7 — minor.** *Where:*
   [trust_harness.rs:272-343](../../../../crates/roym_web/tests/dual_build_parity/trust_harness.rs#L272)
   (`trust_source_response`). *Problem:* the `hNewer` source is a second
   function pasted into the middle of `trust_source_response`, behind
@@ -850,10 +850,9 @@ the only hits in changed files are older groups, such as `ping` and
   Split `inner_method` into `inner_frame(params) -> Option<Value>` and the
   method read, and use `inner_frame` for the envelope too. Let the publish
   arm call a small `fn published_ids(params) -> Option<(String, String)>`
-  and answer an error, not `l1`/`r1`, when it returns `None`. *Status:*
-  Open.
+  and answer an error, not `l1`/`r1`, when it returns `None`. *Status:* Fixed (7ee58117).
 
-- [ ] **R8 — minor.** *Where:*
+- [x] **R8 — minor.** *Where:*
   [method/directory.rs:1-65](../../../../crates/roym_core/src/method/directory.rs#L1).
   *Problem:* this file is the contract between two nodes, and it has no
   module doc and no comment. Nothing in it says that these types must
@@ -874,9 +873,9 @@ the only hits in changed files are older groups, such as `ping` and
   three sentences, and a one-line comment on the required fields of
   `DirectoryInfoOutput`. Add `"zz": 1` to the JSON of the
   `search_output_..` and `directory_info_output_..` unit tests, so every
-  wire output is read once with an unknown key. *Status:* Open.
+  wire output is read once with an unknown key. *Status:* Fixed (f67e0714).
 
-- [ ] **R9 — minor.** *Where:* change doc
+- [x] **R9 — minor.** *Where:* change doc
   [change.md:281-291](../../changes/roym-open-foundation/change.md) (the
   D-A2c lines) and `:341-342`. *Problem:* the numbers are right, but five
   lines lose part of their meaning, and for two of them the lost part is
@@ -899,9 +898,9 @@ the only hits in changed files are older groups, such as `ping` and
   and "simplifies" it away; the fifth-method check is then gone. *Fix:*
   add the missing half-sentence to each of the five lines, and mark B53
   and B54 "no visible change". When R2 is decided, record it here if the
-  new behaviour stays. *Status:* Open.
+  new behaviour stays. *Status:* Fixed (a1e1b10d).
 
-- [ ] **R10 — minor.** *Where:*
+- [x] **R10 — minor.** *Where:*
   [deferred-backlog.md:647](../../deferred-backlog.md) ("Recently
   resolved"). *Problem:* the new row has four cells (item, text, date,
   source) and a blank line after it. Every other row in this section has
@@ -911,9 +910,9 @@ the only hits in changed files are older groups, such as `ping` and
   date of a resolution finds it in a different place. *Fix:* write it as
   `| **Roym's sibling boundary is untyped JSON** | Resolved 2026-10-31 by
   PR #337: all six Roym services .. (`crates/roym_core/src/method.rs`). |`
-  and remove the blank line. *Status:* Open.
+  and remove the blank line. *Status:* Fixed (a1e1b10d).
 
-- [ ] **R11 — minor.** *Where:*
+- [x] **R11 — minor.** *Where:*
   [synorg.rs:199-204](../../../../crates/roym_directory/src/app/synorg.rs#L199),
   [publication_ops.rs:546-552](../../../../crates/roym_directory/src/app/publication_ops.rs#L546),
   [credential_ops.rs:330-336](../../../../crates/roym_directory/src/app/credential_ops.rs#L330),
@@ -932,9 +931,9 @@ the only hits in changed files are older groups, such as `ping` and
   rows typed in one step, for example `let members: Vec<Member> = match
   paging::query_all(host, MEMBERS, None).await { .. }`, and restore
   `memberships` to its `main` form. The B49 behaviour (skip a bad row)
-  stays the same. *Status:* Open.
+  stays the same. *Status:* Fixed (1f6056ff).
 
-- [ ] **R12 — minor.** *Where:*
+- [x] **R12 — minor.** *Where:*
   [check.rs:21-22, :193](../../../../crates/roym_core/src/method/check.rs#L21)
   and
   [method/tests/directory.rs:37-77](../../../../crates/roym_core/src/method/tests/directory.rs#L37).
@@ -951,4 +950,4 @@ the only hits in changed files are older groups, such as `ping` and
   names only `method_not_found`, which does not help. *Fix:* name both
   allowed forms in the doc comment and in the message. In the unit test,
   read the panic payload (`err.downcast_ref::<String>()`) and assert that
-  it contains `req.method used outside`. *Status:* Open.
+  it contains `req.method used outside`. *Status:* Fixed (f67e0714).
