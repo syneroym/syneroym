@@ -77,9 +77,9 @@ async fn scenario_40_listing_set_float_amount_refused_parity() {
     let (w, n) = both_rpc(&h, "listing.set", params).await;
     assert_eq!(w, n);
     assert!(is_err(&w, -32602));
-    assert!(
-        w["error"]["message"].as_str().unwrap().contains("listing params"),
-        "message should report the rejected params: {w}"
+    assert_eq!(
+        w["error"]["data"]["field"], "payment.amount_minor",
+        "error data should name the rejected field: {w}"
     );
 }
 

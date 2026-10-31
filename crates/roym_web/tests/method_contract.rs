@@ -7,6 +7,9 @@
 )]
 
 #[allow(dead_code)]
+#[path = "dual_build_parity/deal_fixtures.rs"]
+mod deal_fixtures;
+#[allow(dead_code)]
 #[path = "dual_build_parity/fixtures.rs"]
 mod fixtures;
 #[allow(dead_code)]
@@ -23,3 +26,7 @@ mod trust_harness;
 mod contract;
 #[path = "method_contract/shapes.rs"]
 mod shapes;
+#[path = "method_contract/shapes_catalog.rs"]
+mod shapes_catalog;
+#[path = "method_contract/shapes_transaction.rs"]
+mod shapes_transaction;

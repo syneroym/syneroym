@@ -1,123 +1,212 @@
 //! Quote record operations: set, get, list, history, decline, store.
 
+#[cfg(test)]
+mod tests;
+
 use std::cmp::Reverse;
 
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
     clock,
-    envelope::{Request, Response},
+    envelope::Response,
+    method::{
+        self, EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
+        catalog::{SlotKeyInput, SlotRow},
+    },
     paging,
     record::{Envelope, RECORD_QUOTE},
+    services,
     signing::{self, CertificateError},
     transaction::{
-        self, AgreedTerms, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS, QUOTE_VERSION,
-        QuotePayload, RecordVerdict, RequestPayload, TimeWindow,
+        self, AgreedTerms, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS, PaymentTiming,
+        QUOTE_VERSION, QuoteLocation, QuotePayload, RecordVerdict, RequestPayload, TimeWindow,
     },
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, ListParams, QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, RecordPointerRow,
-    catalog_call, conversation_mine_filter, count_mine, ensure_collections, get_bytes, get_row,
+    AGREEMENTS, AgreementRow, ListInput, QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, RecordPointerRow,
+    SendState, conversation_mine_filter, count_mine, ensure_collections, get_bytes, get_row,
     put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
-#[derive(Debug, Deserialize)]
-struct QuoteSetParams {
-    request_record_id: String,
-    #[serde(default)]
-    quote_id: Option<String>,
-    #[serde(default)]
-    listing_id: Option<String>,
-    #[serde(default)]
-    slot_id: Option<String>,
-    expires_in_secs: u64,
-    terms: Value,
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuoteTermsInput {
+    pub scope: String,
+    pub currency: String,
+    pub amount_minor: i64,
+    pub tax_minor: i64,
+    pub fees_minor: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub payment_methods: Vec<String>,
+    pub payee: String,
+    pub payment_timing: PaymentTiming,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<TimeWindow>,
+    pub location: QuoteLocation,
+    pub cancellation_terms: String,
+    pub refund_terms: String,
+    pub dispute_path: String,
 }
 
-pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
+impl QuoteTermsInput {
+    pub fn into_agreed_terms(self, quote_expires_at_secs: u64) -> AgreedTerms {
+        AgreedTerms {
+            scope: self.scope,
+            currency: self.currency,
+            amount_minor: self.amount_minor,
+            tax_minor: self.tax_minor,
+            fees_minor: self.fees_minor,
+            payment_methods: self.payment_methods,
+            payee: self.payee,
+            payment_timing: self.payment_timing,
+            schedule: self.schedule,
+            location: self.location,
+            cancellation_terms: self.cancellation_terms,
+            refund_terms: self.refund_terms,
+            dispute_path: self.dispute_path,
+            quote_expires_at_secs,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuoteSetInput {
+    pub request_record_id: String,
+    #[serde(default)]
+    pub quote_id: Option<String>,
+    #[serde(default)]
+    pub listing_id: Option<String>,
+    #[serde(default)]
+    pub slot_id: Option<String>,
+    pub expires_in_secs: u64,
+    pub terms: QuoteTermsInput,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteSetOutput {
+    pub quote_id: String,
+    pub record_id: String,
+    pub version_count: u64,
+    pub expires_at_secs: u64,
+    pub message_id: String,
+    pub state: SendState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuoteKeyInput {
+    pub quote_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteView {
+    pub envelope: String,
+    pub record_id: String,
+    pub quote_id: String,
+    pub conversation: String,
+    pub mine: bool,
+    pub updated_at_secs: u64,
+    pub version_count: u64,
+    pub request_record_id: Option<String>,
+    pub counterparty_did: Option<String>,
+    pub declined_at_secs: Option<u64>,
+    pub decline_note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteListItem {
+    pub envelope: String,
+    pub record_id: String,
+    pub quote_id: String,
+    pub conversation: String,
+    pub mine: bool,
+    pub updated_at_secs: u64,
+    pub version_count: u64,
+    pub request_record_id: Option<String>,
+    pub counterparty_did: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteListOutput {
+    pub quotes: Vec<QuoteListItem>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuoteDeclineInput {
+    pub quote_record_id: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteDeclineOutput {
+    pub quote_record_id: String,
+    pub declined: bool,
+    pub note: Option<String>,
+}
+
+pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<QuoteSetOutput> {
     let now = clock::now_secs();
-    let (principal, owner) = match resolve_principal_and_owner(host, now).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
-    };
+    let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
-    let params: QuoteSetParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
-    if !(MIN_QUOTE_LIFETIME_SECS..=MAX_QUOTE_LIFETIME_SECS).contains(&params.expires_in_secs) {
-        return Response::invalid_params(format!(
+    if !(MIN_QUOTE_LIFETIME_SECS..=MAX_QUOTE_LIFETIME_SECS).contains(&input.expires_in_secs) {
+        return Err(Response::invalid_params(format!(
             "expires_in_secs must be between {MIN_QUOTE_LIFETIME_SECS} and \
              {MAX_QUOTE_LIFETIME_SECS}"
-        ));
+        )));
     }
 
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
+    ensure_collections(host).await.map_err(Response::internal_error)?;
 
     let (req_payload, counterparty_did) =
-        match load_verified_request(host, &params.request_record_id, now, &owner).await {
-            Ok(v) => v,
-            Err(resp) => return resp,
-        };
+        load_verified_request(host, &input.request_record_id, now, &owner).await?;
     let conversation = req_payload.conversation;
 
     let (sequence, supersedes, next_count) =
-        match resolve_quote_sequence(host, &params, &conversation, &owner).await {
-            Ok(v) => v,
-            Err(resp) => return resp,
-        };
+        resolve_quote_sequence(host, &input, &conversation, &owner).await?;
 
-    let expires_at_secs = now + params.expires_in_secs;
+    let expires_at_secs = now + input.expires_in_secs;
     let quote_id = match transaction::derive_quote_id(&conversation, &owner, sequence) {
         Ok(id) => id,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
-    let mut terms = match parse_quote_terms(params.terms, expires_at_secs) {
-        Ok(t) => t,
-        Err(resp) => return resp,
-    };
+    let mut terms = input.terms.into_agreed_terms(expires_at_secs);
 
-    if let Some(ref slot_id) = params.slot_id
-        && let Err(resp) =
-            validate_and_apply_slot(host, slot_id, params.listing_id.as_deref(), &mut terms).await
-    {
-        return resp;
+    if let Some(ref slot_id) = input.slot_id {
+        validate_and_apply_slot(host, slot_id, input.listing_id.as_deref(), &mut terms).await?;
     }
 
     let payload = QuotePayload {
         quote_id: quote_id.clone(),
         conversation: conversation.clone(),
         sequence,
-        request_record_id: params.request_record_id.clone(),
-        listing_id: params.listing_id,
-        slot_id: params.slot_id,
+        request_record_id: input.request_record_id.clone(),
+        listing_id: input.listing_id,
+        slot_id: input.slot_id,
         counterparty_did: counterparty_did.clone(),
         terms,
     };
     if let Err(e) = payload.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
 
     let signed =
-        match sign_and_store_quote(host, principal, &owner, &payload, expires_at_secs, supersedes)
-            .await
-        {
-            Ok(s) => s,
-            Err(resp) => return resp,
-        };
+        sign_and_store_quote(host, principal, &owner, &payload, expires_at_secs, supersedes)
+            .await?;
 
     let pointer = build_quote_pointer(&payload, &signed, &owner, next_count, now);
     if let Err(e) = put_row(host, QUOTES, &quote_id, &pointer).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
     let (message_id, state, send_error) = send_card_and_file(
@@ -131,18 +220,15 @@ pub(crate) async fn quote_set<H: AppHost>(host: &H, req: &Request) -> Response {
     )
     .await;
 
-    let mut out = json!({
-        "quote_id": quote_id,
-        "record_id": signed.record_id,
-        "version_count": next_count,
-        "expires_at_secs": expires_at_secs,
-        "message_id": message_id,
-        "state": state,
-    });
-    if let Some(err) = send_error {
-        out["send_error"] = json!(err);
-    }
-    Response::ok(out)
+    Ok(QuoteSetOutput {
+        quote_id,
+        record_id: signed.record_id,
+        version_count: next_count,
+        expires_at_secs,
+        message_id,
+        state,
+        send_error,
+    })
 }
 
 /// Fetches and verifies the request this quote answers, and checks the
@@ -191,7 +277,7 @@ async fn load_verified_request<H: AppHost>(
 /// quote, which record it supersedes.
 async fn resolve_quote_sequence<H: AppHost>(
     host: &H,
-    params: &QuoteSetParams,
+    params: &QuoteSetInput,
     conversation: &str,
     owner: &str,
 ) -> Result<(u32, Option<String>, u64), Response> {
@@ -222,17 +308,6 @@ async fn resolve_quote_sequence<H: AppHost>(
     }
 }
 
-/// Applies the caller-supplied expiry to the raw `terms` JSON and parses it.
-fn parse_quote_terms(terms: Value, expires_at_secs: u64) -> Result<AgreedTerms, Response> {
-    let mut terms_map = match terms {
-        Value::Object(m) => m,
-        _ => return Err(Response::invalid_params("terms must be an object")),
-    };
-    terms_map.insert("quote_expires_at_secs".to_string(), json!(expires_at_secs));
-    serde_json::from_value(Value::Object(terms_map))
-        .map_err(|e| Response::invalid_params(format!("invalid terms: {e}")))
-}
-
 async fn validate_and_apply_slot<H: AppHost>(
     host: &H,
     slot_id: &str,
@@ -243,20 +318,25 @@ async fn validate_and_apply_slot<H: AppHost>(
         Some(lid) => lid,
         None => return Err(Response::invalid_params("slot requires listing_id")),
     };
-    let slot_resp =
-        match catalog_call(host, "availability.get", json!({ "slot_id": slot_id })).await {
-            Ok(r) => r,
-            Err(e) => return Err(Response::internal_error(e)),
-        };
-    let slot = match slot_resp.result {
-        Some(Value::Object(map)) => map,
-        _ => return Err(Response::invalid_params("no-such-slot")),
+    let slot = match call_sibling::<_, SlotKeyInput, Option<SlotRow>>(
+        host,
+        services::CATALOG,
+        "availability.get",
+        &SlotKeyInput { slot_id: slot_id.to_string() },
+    )
+    .await
+    {
+        Ok(Some(s)) => s,
+        Ok(None) | Err(SiblingError::Refused(_) | SiblingError::BadReply(_)) => {
+            return Err(Response::invalid_params("no-such-slot"));
+        }
+        Err(SiblingError::Transport(e)) => return Err(Response::internal_error(e)),
     };
-    if slot.get("listing_id").and_then(Value::as_str) != Some(listing_id) {
+    if slot.listing_id != listing_id {
         return Err(Response::invalid_params("slot-not-in-listing"));
     }
-    let start_secs = slot.get("start_secs").and_then(Value::as_u64).unwrap_or(0);
-    let end_secs = slot.get("end_secs").and_then(Value::as_u64).unwrap_or(0);
+    let start_secs = slot.start_secs;
+    let end_secs = slot.end_secs;
     if let Some(ref sched) = terms.schedule
         && (sched.earliest_secs != start_secs || sched.latest_secs != end_secs)
     {
@@ -354,176 +434,146 @@ fn build_quote_pointer(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct QuoteGetParams {
-    quote_id: String,
+pub(crate) async fn get<H: AppHost>(host: &H, input: QuoteKeyInput) -> Reply<Option<QuoteView>> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
+    let pointer: Option<RecordPointerRow> = match get_row(host, QUOTES, &input.quote_id).await {
+        Ok(p) => p,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    Ok(pointer.map(|p| QuoteView {
+        envelope: p.envelope,
+        record_id: p.record_id,
+        quote_id: p.id,
+        conversation: p.conversation,
+        mine: p.mine,
+        updated_at_secs: p.updated_at_secs,
+        version_count: p.version_count,
+        request_record_id: p.request_record_id,
+        counterparty_did: p.counterparty_did,
+        declined_at_secs: p.declined_at_secs,
+        decline_note: p.decline_note,
+    }))
 }
 
-pub(crate) async fn quote_get<H: AppHost>(host: &H, req: &Request) -> Response {
-    let params: QuoteGetParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-    let pointer: Option<RecordPointerRow> = match get_row(host, QUOTES, &params.quote_id).await {
-        Ok(p) => p,
-        Err(e) => return Response::internal_error(e),
-    };
-    match pointer {
-        Some(p) => Response::ok(json!({
-            "envelope": p.envelope,
-            "record_id": p.record_id,
-            "quote_id": p.id,
-            "conversation": p.conversation,
-            "mine": p.mine,
-            "updated_at_secs": p.updated_at_secs,
-            "version_count": p.version_count,
-            "request_record_id": p.request_record_id,
-            "counterparty_did": p.counterparty_did,
-            "declined_at_secs": p.declined_at_secs,
-            "decline_note": p.decline_note,
-        })),
-        None => Response::ok(Value::Null),
-    }
-}
+pub(crate) async fn list<H: AppHost>(host: &H, input: ListInput) -> Reply<QuoteListOutput> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
 
-pub(crate) async fn quote_list<H: AppHost>(host: &H, req: &Request) -> Response {
-    let params: ListParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-
-    let filter = conversation_mine_filter(params.conversation.as_deref(), params.mine);
+    let filter = conversation_mine_filter(input.conversation.as_deref(), input.mine);
     let mut rows: Vec<RecordPointerRow> = match paging::query_all(host, QUOTES, filter).await {
         Ok(rows) => rows,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     rows.sort_by_key(|p| Reverse(p.updated_at_secs));
-    let page: Vec<Value> = rows
+    let offset = usize::try_from(input.offset).unwrap_or(usize::MAX);
+    let limit = usize::try_from(input.limit).unwrap_or(usize::MAX);
+    let page: Vec<QuoteListItem> = rows
         .into_iter()
-        .skip(params.offset)
-        .take(params.limit)
-        .map(|p| {
-            json!({
-                "envelope": p.envelope,
-                "record_id": p.record_id,
-                "quote_id": p.id,
-                "conversation": p.conversation,
-                "mine": p.mine,
-                "updated_at_secs": p.updated_at_secs,
-                "version_count": p.version_count,
-                "request_record_id": p.request_record_id,
-                "counterparty_did": p.counterparty_did,
-            })
+        .skip(offset)
+        .take(limit)
+        .map(|p| QuoteListItem {
+            envelope: p.envelope,
+            record_id: p.record_id,
+            quote_id: p.id,
+            conversation: p.conversation,
+            mine: p.mine,
+            updated_at_secs: p.updated_at_secs,
+            version_count: p.version_count,
+            request_record_id: p.request_record_id,
+            counterparty_did: p.counterparty_did,
         })
         .collect();
-    Response::ok(json!({ "quotes": page }))
+    Ok(QuoteListOutput { quotes: page })
 }
 
-#[derive(Debug, Deserialize)]
-struct QuoteHistoryParams {
-    quote_id: String,
-}
-
-pub(crate) async fn quote_history<H: AppHost>(host: &H, req: &Request) -> Response {
-    let params: QuoteHistoryParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
+pub(crate) async fn history<H: AppHost>(
+    host: &H,
+    input: QuoteKeyInput,
+) -> Reply<EnvelopeHistoryOutput> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
+    let out = match paging::envelope_history(host, QUOTE_HISTORY, "quote_id", &input.quote_id).await
+    {
+        Ok(out) => out,
+        Err(e) => return Err(Response::internal_error(e)),
     };
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-    let out =
-        match paging::envelope_history(host, QUOTE_HISTORY, "quote_id", &params.quote_id).await {
-            Ok(out) => out,
-            Err(e) => return Response::internal_error(e),
-        };
-    Response::ok(json!({ "history": out }))
+    Ok(EnvelopeHistoryOutput { history: out })
 }
 
-#[derive(Debug, Deserialize)]
-struct QuoteDeclineParams {
-    quote_record_id: String,
-    #[serde(default)]
-    note: Option<String>,
-}
-
-pub(crate) async fn quote_decline<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn decline<H: AppHost>(
+    host: &H,
+    input: QuoteDeclineInput,
+) -> Reply<QuoteDeclineOutput> {
     let now = clock::now_secs();
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(CertificateError::NoOwner) => {
-            return Response::invalid_params("this installation has no recorded owner");
+            return Err(Response::invalid_params("this installation has no recorded owner"));
         }
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
-    let params: QuoteDeclineParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
+    ensure_collections(host).await.map_err(Response::internal_error)?;
 
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-
-    let quote_envelope_bytes = match get_bytes(host, QUOTE_HISTORY, &params.quote_record_id).await {
+    let quote_envelope_bytes = match get_bytes(host, QUOTE_HISTORY, &input.quote_record_id).await {
         Ok(Some(b)) => b,
-        Ok(None) => return Response::invalid_params("no such quote"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no such quote")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let quote_envelope_str = match String::from_utf8(quote_envelope_bytes) {
         Ok(s) => s,
-        Err(e) => return Response::internal_error(e.to_string()),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
     let verdict = transaction::verify_quote(&quote_envelope_str, now);
     if !verdict.verified {
-        return Response::invalid_params(format!(
+        return Err(Response::invalid_params(format!(
             "the quote does not verify: {}",
             verdict.reason.as_deref().unwrap_or("unknown")
-        ));
+        )));
     }
     let quote_payload = match verdict.payload {
         Some(p) => p,
-        None => return Response::internal_error("missing quote payload"),
+        None => return Err(Response::internal_error("missing quote payload")),
     };
 
     if owner != quote_payload.counterparty_did {
-        return Response::invalid_params("only the counterparty can decline this quote");
+        return Err(Response::invalid_params("only the counterparty can decline this quote"));
     }
 
     if let Ok(Some(agr)) =
-        get_row::<AgreementRow, _>(host, AGREEMENTS, &params.quote_record_id).await
+        get_row::<AgreementRow, _>(host, AGREEMENTS, &input.quote_record_id).await
         && (agr.counterparty.is_some() || agr.quote_author.is_some())
     {
-        return Response::invalid_params("cannot decline a quote that has already been accepted");
+        return Err(Response::invalid_params(
+            "cannot decline a quote that has already been accepted",
+        ));
     }
 
     let mut pointer: RecordPointerRow = match get_row(host, QUOTES, &quote_payload.quote_id).await {
         Ok(Some(p)) => p,
-        Ok(None) => return Response::invalid_params("no such quote"),
-        Err(e) => return Response::internal_error(e),
+        Ok(None) => return Err(Response::invalid_params("no such quote")),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     pointer.declined_at_secs = Some(now);
-    pointer.decline_note = params.note.clone();
+    pointer.decline_note = input.note.clone();
     pointer.updated_at_secs = now;
     if let Err(e) = put_row(host, QUOTES, &quote_payload.quote_id, &pointer).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
-    Response::ok(json!({
-        "quote_record_id": params.quote_record_id,
-        "declined": true,
-        "note": params.note,
-    }))
+    Ok(QuoteDeclineOutput {
+        quote_record_id: input.quote_record_id,
+        declined: true,
+        note: input.note,
+    })
+}
+
+pub(crate) async fn verify<H: AppHost>(
+    _host: &H,
+    input: VerifyInput,
+) -> Reply<RecordVerdict<QuotePayload>> {
+    method::verify_with(input, transaction::verify_quote)
 }
 
 pub(crate) async fn store_received_quote<H: AppHost>(

@@ -1,0 +1,70 @@
+{
+  "conversation_address": "string",
+  "issued_at_secs": "number",
+  "issuer": "string",
+  "listing_id": "string",
+  "payload": {
+    "booking": {
+      "cancellation_window_secs": "number",
+      "lead_time_secs": "number",
+      "max_per_booking": "number",
+      "mode": "string"
+    },
+    "categories": [
+      "string"
+    ],
+    "conversation_address": "string",
+    "listing_id": "string",
+    "location": {
+      "address_disclosure": "string",
+      "service_area": [
+        {
+          "kind": "circle",
+          "lat_e6": "number",
+          "lon_e6": "number",
+          "radius_m": "number"
+        }
+      ],
+      "where": "at-receiver"
+    },
+    "payment": {
+      "amount_minor": "number",
+      "currency": "string",
+      "methods": [
+        "string"
+      ],
+      "model": "string",
+      "payee": "string",
+      "tax_included": "boolean"
+    },
+    "product": {
+      "condition": "string",
+      "pack_size": "number",
+      "sku": "string",
+      "unit": "string"
+    },
+    "relationship": {
+      "open_to": "string"
+    },
+    "service": {
+      "duration_secs": "number",
+      "includes": [
+        "string"
+      ]
+    },
+    "service_record": {
+      "issues_fulfilment_receipt": "boolean",
+      "retention_secs": "number",
+      "warranty_secs": "number"
+    },
+    "slug": "string",
+    "status": "active",
+    "summary": "string",
+    "title": "string"
+  },
+  "record_id": "string",
+  "revocation_status": "unknown",
+  "status": "active",
+  "supersedes": "string",
+  "verified": "boolean"
+}

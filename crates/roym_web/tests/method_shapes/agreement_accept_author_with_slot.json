@@ -1,0 +1,10 @@
+{
+  "message_id": "string",
+  "pair": {
+    "state": "complete"
+  },
+  "quote_record_id": "string",
+  "record_id": "string",
+  "role": "quote-author",
+  "state": "already-accepted"
+}

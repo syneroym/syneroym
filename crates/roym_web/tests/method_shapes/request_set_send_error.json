@@ -1,0 +1,8 @@
+{
+  "message_id": "string",
+  "record_id": "string",
+  "request_id": "string",
+  "send_error": "string",
+  "state": "not-sent",
+  "version_count": "number"
+}

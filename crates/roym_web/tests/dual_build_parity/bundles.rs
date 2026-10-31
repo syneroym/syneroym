@@ -2,7 +2,7 @@ use serde_json::json;
 use syneroym_identity::Identity;
 use syneroym_roym_core::transaction;
 
-use super::{fixtures::*, helpers::*};
+use super::{deal_fixtures::setup_peer_request, fixtures::*, helpers::*};
 
 #[tokio::test]
 async fn scenario_150_superseded_request_card_verifies_after_import_parity() {
@@ -113,18 +113,7 @@ async fn scenario_168_transaction_export_import_full_vertical_parity() {
     let conv = open_conv(&h, &peer_did()).await;
 
     // Create request, quote, and agreement
-    let (req_id, req_env) = peer_signed_request(&conv, 1, 1_000_000);
-    deliver_peer_card(
-        &h,
-        &format!("m-req-{req_id}"),
-        &conv,
-        &peer_did(),
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
-        &req_env,
-    )
-    .await;
-    both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    let (req_id, _req_env) = setup_peer_request(&h, &conv).await;
 
     let q_params = valid_quote_params(&conv, &req_id);
     let (qw, _) = both_rpc(&h, "quote.set", q_params).await;

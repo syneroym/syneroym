@@ -1,0 +1,45 @@
+{
+  "conversation": "string",
+  "counterparty": {
+    "envelope": "string",
+    "issued_at_secs": "number",
+    "issuer": "string",
+    "record_id": "string"
+  },
+  "counterparty_did": "string",
+  "pair": {
+    "state": "complete"
+  },
+  "quote_author": {
+    "envelope": "string",
+    "issued_at_secs": "number",
+    "issuer": "string",
+    "record_id": "string"
+  },
+  "quote_author_did": "string",
+  "quote_record_id": "string",
+  "terms": {
+    "amount_minor": "number",
+    "cancellation_terms": "string",
+    "currency": "string",
+    "dispute_path": "string",
+    "fees_minor": "number",
+    "location": {
+      "address": "string",
+      "where": "at-receiver"
+    },
+    "payee": "string",
+    "payment_methods": [
+      "string"
+    ],
+    "payment_timing": "after-work",
+    "quote_expires_at_secs": "number",
+    "refund_terms": "string",
+    "schedule": {
+      "earliest_secs": "number",
+      "latest_secs": "number"
+    },
+    "scope": "string",
+    "tax_minor": "number"
+  }
+}

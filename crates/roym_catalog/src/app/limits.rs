@@ -1,4 +1,24 @@
-use super::*;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use syneroym_app_host::{
+    AppDataLayer, AppHost,
+    types::data_layer::{IndexType, RecordWriteValue},
+};
+use syneroym_roym_core::{
+    envelope::Response,
+    method::{NoParams, Reply},
+    paging,
+    safety::PublicationLimits,
+};
+
+use super::{PUBLICATION_LIMITS_KEY, PUBLICATIONS, SETTINGS, ensure_coll, idx};
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationLimitsInput {
+    pub window_secs: u64,
+    pub max_per_window: u32,
+}
 
 pub(crate) async fn load_publication_limits<H: AppHost>(
     host: &H,
@@ -32,26 +52,24 @@ pub(crate) async fn publication_secs_in_window<H: AppHost>(
     .await
 }
 
-pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response {
-    let window_secs = match req.params.get("window_secs").and_then(Value::as_u64) {
-        Some(w) => w,
-        None => return Response::invalid_params("window_secs is required"),
-    };
-    let max_per_window = match req.params.get("max_per_window").and_then(Value::as_u64) {
-        Some(m) => m as u32,
-        None => return Response::invalid_params("max_per_window is required"),
-    };
-    let limits = PublicationLimits { window_secs, max_per_window };
+pub(crate) async fn limits<H: AppHost>(host: &H, _: NoParams) -> Reply<PublicationLimits> {
+    load_publication_limits(host).await.map_err(Response::internal_error)
+}
+
+pub(crate) async fn set_limits<H: AppHost>(
+    host: &H,
+    input: PublicationLimitsInput,
+) -> Reply<PublicationLimits> {
+    let limits =
+        PublicationLimits { window_secs: input.window_secs, max_per_window: input.max_per_window };
     if let Err(e) = limits.validate() {
-        return Response::invalid_params(e.to_string());
+        return Err(Response::invalid_params(e.to_string()));
     }
     if let Err(e) = ensure_coll(host, SETTINGS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    let payload = match serde_json::to_vec(&limits) {
-        Ok(b) => b,
-        Err(e) => return Response::internal_error(e.to_string()),
-    };
+    let payload =
+        serde_json::to_vec(&limits).map_err(|e| Response::internal_error(e.to_string()))?;
     if let Err(e) = AppDataLayer::put(
         host,
         SETTINGS.to_string(),
@@ -59,7 +77,7 @@ pub(crate) async fn set_limits<H: AppHost>(host: &H, req: &Request) -> Response 
     )
     .await
     {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
-    Response::ok(json!(limits))
+    Ok(limits)
 }

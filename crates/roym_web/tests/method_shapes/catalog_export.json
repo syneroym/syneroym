@@ -1,0 +1,59 @@
+{
+  "manifest": {
+    "bundle_version": "number",
+    "sections": {
+      "availability": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "listings": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      }
+    },
+    "subject_did": "string"
+  },
+  "manifest_signature": "string",
+  "sections": {
+    "availability": [
+      {
+        "id": "string",
+        "payload": {
+          "capacity": "number",
+          "end_secs": "number",
+          "listing_id": "string",
+          "slot_id": "string",
+          "start_secs": "number"
+        }
+      }
+    ],
+    "listings": [
+      {
+        "id": "string",
+        "payload": {
+          "envelope": "string",
+          "listing_id": "string",
+          "record_id": "string",
+          "slug": "string",
+          "status": "active",
+          "updated_at_secs": "number",
+          "version_count": "number"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "envelope": "string",
+          "listing_id": "string",
+          "record_id": "string",
+          "slug": "string",
+          "status": "withdrawn",
+          "updated_at_secs": "number",
+          "version_count": "number"
+        }
+      }
+    ]
+  }
+}

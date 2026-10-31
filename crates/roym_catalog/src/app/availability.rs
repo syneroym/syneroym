@@ -1,121 +1,152 @@
-use super::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
+use syneroym_roym_core::{
+    envelope::Response,
+    listing,
+    method::{
+        Reply,
+        catalog::{SlotKeyInput, SlotRow},
+    },
+    paging,
+};
+
+use super::{AVAILABILITY, ensure_availability};
 
 #[derive(Debug, Deserialize)]
-struct SlotInput {
-    start_secs: u64,
-    end_secs: u64,
-    capacity: u32,
+#[serde(deny_unknown_fields)]
+pub struct SlotInput {
+    pub start_secs: u64,
+    pub end_secs: u64,
+    pub capacity: u32,
 }
 
-pub(crate) async fn availability_set<H: AppHost>(host: &H, req: &Request) -> Response {
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
-    let slots: Vec<SlotInput> = match req.params.get("slots").cloned() {
-        Some(v) => match serde_json::from_value(v) {
-            Ok(s) => s,
-            Err(e) => return Response::invalid_params(format!("invalid slots: {e}")),
-        },
-        None => return Response::invalid_params("slots is required"),
-    };
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvailabilitySetInput {
+    pub listing_id: String,
+    pub slots: Vec<SlotInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailabilitySetOutput {
+    pub listing_id: String,
+    pub slot_ids: Vec<String>,
+}
+
+pub(crate) async fn set<H: AppHost>(
+    host: &H,
+    input: AvailabilitySetInput,
+) -> Reply<AvailabilitySetOutput> {
     if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let mut ids = Vec::new();
-    for s in slots {
+    for s in input.slots {
         if s.end_secs <= s.start_secs {
-            return Response::invalid_params("slot end_secs must be after start_secs");
+            return Err(Response::invalid_params("slot end_secs must be after start_secs"));
         }
-        let id = match listing::derive_slot_id(&listing_id, s.start_secs, s.end_secs) {
+        let id = match listing::derive_slot_id(&input.listing_id, s.start_secs, s.end_secs) {
             Ok(id) => id,
-            Err(e) => return Response::internal_error(e.to_string()),
+            Err(e) => return Err(Response::internal_error(e.to_string())),
         };
-        let row = json!({
-            "slot_id": id,
-            "listing_id": listing_id,
-            "start_secs": s.start_secs,
-            "end_secs": s.end_secs,
-            "capacity": s.capacity,
-        });
+        let row = SlotRow {
+            slot_id: id.clone(),
+            listing_id: input.listing_id.clone(),
+            start_secs: s.start_secs,
+            end_secs: s.end_secs,
+            capacity: s.capacity,
+        };
+        let payload =
+            serde_json::to_vec(&row).map_err(|e| Response::internal_error(e.to_string()))?;
         if let Err(e) = AppDataLayer::put(
             host,
             AVAILABILITY.to_string(),
-            RecordWriteValue {
-                id: id.clone(),
-                payload: serde_json::to_vec(&row).unwrap_or_default(),
-            },
+            RecordWriteValue { id: id.clone(), payload },
         )
         .await
         {
-            return Response::internal_error(e.to_string());
+            return Err(Response::internal_error(e.to_string()));
         }
         ids.push(id);
     }
-    Response::ok(json!({ "listing_id": listing_id, "slot_ids": ids }))
+    Ok(AvailabilitySetOutput { listing_id: input.listing_id, slot_ids: ids })
 }
 
-pub(crate) async fn availability_list<H: AppHost>(host: &H, req: &Request) -> Response {
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
-    let from = req.params.get("from_secs").and_then(Value::as_u64);
-    let to = req.params.get("to_secs").and_then(Value::as_u64);
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvailabilityListInput {
+    pub listing_id: String,
+    #[serde(default)]
+    pub from_secs: Option<u64>,
+    #[serde(default)]
+    pub to_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailabilityListOutput {
+    pub slots: Vec<SlotRow>,
+}
+
+pub(crate) async fn list<H: AppHost>(
+    host: &H,
+    input: AvailabilityListInput,
+) -> Reply<AvailabilityListOutput> {
     if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let rows: Vec<Value> = match paging::query_all(host, AVAILABILITY, None).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
-    let mut slots: Vec<Value> = rows
+    let mut slots: Vec<SlotRow> = rows
         .into_iter()
-        .filter(|p| p.get("listing_id").and_then(Value::as_str) == Some(listing_id.as_str()))
-        .filter(|p| {
-            let start = p.get("start_secs").and_then(Value::as_u64).unwrap_or(0);
-            from.map(|f| start >= f).unwrap_or(true) && to.map(|t| start <= t).unwrap_or(true)
+        .filter(|p| p.get("listing_id").and_then(Value::as_str) == Some(input.listing_id.as_str()))
+        .filter_map(|p| serde_json::from_value::<SlotRow>(p).ok())
+        .filter(|r| {
+            input.from_secs.is_none_or(|f| r.start_secs >= f)
+                && input.to_secs.is_none_or(|t| r.start_secs <= t)
         })
         .collect();
-    slots.sort_by_key(|p| p.get("start_secs").and_then(Value::as_u64).unwrap_or(0));
-    Response::ok(json!({ "slots": slots }))
+    slots.sort_by_key(|r| r.start_secs);
+    Ok(AvailabilityListOutput { slots })
 }
 
-pub(crate) async fn availability_remove<H: AppHost>(host: &H, req: &Request) -> Response {
-    let slot_id = match req.params.get("slot_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("slot_id is required"),
-    };
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailabilityRemoveOutput {
+    pub removed: bool,
+}
+
+pub(crate) async fn remove<H: AppHost>(
+    host: &H,
+    input: SlotKeyInput,
+) -> Reply<AvailabilityRemoveOutput> {
     if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    let existed = AppDataLayer::get(host, AVAILABILITY.to_string(), slot_id.clone())
+    let existed = AppDataLayer::get(host, AVAILABILITY.to_string(), input.slot_id.clone())
         .await
         .map(|o| o.is_some())
         .unwrap_or(false);
-    if existed && let Err(e) = AppDataLayer::delete(host, AVAILABILITY.to_string(), slot_id).await {
-        return Response::internal_error(e.to_string());
+    if existed
+        && let Err(e) = AppDataLayer::delete(host, AVAILABILITY.to_string(), input.slot_id).await
+    {
+        return Err(Response::internal_error(e.to_string()));
     }
-    Response::ok(json!({ "removed": existed }))
+    Ok(AvailabilityRemoveOutput { removed: existed })
 }
 
-pub(crate) async fn availability_get<H: AppHost>(host: &H, req: &Request) -> Response {
-    let slot_id = match req.params.get("slot_id").and_then(Value::as_str) {
-        Some(id) => id.to_string(),
-        None => return Response::invalid_params("slot_id is required"),
-    };
+pub(crate) async fn get<H: AppHost>(host: &H, input: SlotKeyInput) -> Reply<Option<SlotRow>> {
     if let Err(e) = ensure_availability(host).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    match AppDataLayer::get(host, AVAILABILITY.to_string(), slot_id).await {
+    match AppDataLayer::get(host, AVAILABILITY.to_string(), input.slot_id).await {
         Ok(Some(row)) => {
-            let val: Value = match serde_json::from_slice(&row.payload) {
-                Ok(v) => v,
-                Err(e) => return Response::internal_error(e.to_string()),
-            };
-            Response::ok(val)
+            let val: SlotRow = serde_json::from_slice(&row.payload)
+                .map_err(|e| Response::internal_error(e.to_string()))?;
+            Ok(Some(val))
         }
-        Ok(None) => Response::ok(Value::Null),
-        Err(e) => Response::internal_error(e.to_string()),
+        Ok(None) => Ok(None),
+        Err(e) => Err(Response::internal_error(e.to_string())),
     }
 }

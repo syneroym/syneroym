@@ -9,17 +9,20 @@
 //! retry that loses the race heals the row the same way a crash-recovery
 //! retry would.
 
-use serde_json::{Value, json};
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
     booking::{BookingEvent, Track},
     envelope::Response,
+    method::Reply,
     transaction::{DealRole, ReceiptHalf},
 };
 
-use super::{PAYMENTS, PaymentsRow, check_acknowledgement_version, maybe_transition_author_ack};
+use super::{
+    PAYMENTS, PaymentRequestOutput, PaymentsRow, check_acknowledgement_version,
+    maybe_transition_author_ack,
+};
 use crate::app::{
-    LEDGER, booking_ops, get_row,
+    FenceOutcome, HalfRecordedOutput, LEDGER, SendState, booking_ops, get_row,
     ledger::{LedgerKind, LedgerRow},
     put_row, send_card_and_file,
 };
@@ -30,7 +33,7 @@ pub(super) async fn claim_payment_request_fence<H: AppHost>(
     conversation: &str,
     half: &ReceiptHalf,
     now: u64,
-) -> Result<(), Response> {
+) -> Result<FenceOutcome<PaymentRequestOutput>, Response> {
     let fence_key = format!("payreq:{agreement}");
     let fence_row = LedgerRow {
         kind: LedgerKind::Fence,
@@ -46,33 +49,39 @@ pub(super) async fn claim_payment_request_fence<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     match AppDataLayer::create(host, LEDGER.to_string(), vec![fence_write]).await {
-        Ok(None) => Ok(()),
+        Ok(None) => Ok(FenceOutcome::Claimed),
         Ok(Some(_)) => {
-            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &fence_key).await
-                && let Some(existing) = &fence.half
-            {
-                return Err(ensure_payment_request_recorded(
-                    host,
-                    agreement,
-                    conversation,
-                    existing,
-                    now,
-                )
-                .await);
-            }
-            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await
-                && let Some(existing) = &py.request
-            {
-                return Err(Response::ok(json!({
-                    "record_id": existing.record_id,
-                    "message_id": Value::Null,
-                    "state": "already-recorded",
-                })));
-            }
-            Err(Response::invalid_params("payment-request-in-flight"))
+            handle_payment_request_fence_collision(host, agreement, conversation, &fence_key, now)
+                .await
         }
         Err(e) => Err(Response::internal_error(e.to_string())),
     }
+}
+
+async fn handle_payment_request_fence_collision<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    conversation: &str,
+    fence_key: &str,
+    now: u64,
+) -> Result<FenceOutcome<PaymentRequestOutput>, Response> {
+    if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, fence_key).await
+        && let Some(existing) = &fence.half
+    {
+        return ensure_payment_request_recorded(host, agreement, conversation, existing, now)
+            .await
+            .map(FenceOutcome::Answered);
+    }
+    if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await
+        && let Some(existing) = &py.request
+    {
+        return Ok(FenceOutcome::Answered(PaymentRequestOutput {
+            record_id: existing.record_id.clone(),
+            message_id: None,
+            state: SendState::AlreadyRecorded,
+        }));
+    }
+    Err(Response::invalid_params("payment-request-in-flight"))
 }
 
 async fn ensure_payment_request_recorded<H: AppHost>(
@@ -81,7 +90,7 @@ async fn ensure_payment_request_recorded<H: AppHost>(
     conversation: &str,
     half: &ReceiptHalf,
     now: u64,
-) -> Response {
+) -> Reply<PaymentRequestOutput> {
     let mut py: PaymentsRow = match get_row(host, PAYMENTS, agreement).await {
         Ok(Some(p)) => p,
         Ok(None) => PaymentsRow {
@@ -92,30 +101,30 @@ async fn ensure_payment_request_recorded<H: AppHost>(
             quote_author: Vec::new(),
             updated_at_secs: now,
         },
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     if let Some(existing) = &py.request
         && existing.record_id == half.record_id
     {
-        return Response::ok(json!({
-            "record_id": existing.record_id,
-            "message_id": Value::Null,
-            "state": "already-recorded",
-        }));
+        return Ok(PaymentRequestOutput {
+            record_id: existing.record_id.clone(),
+            message_id: None,
+            state: SendState::AlreadyRecorded,
+        });
     }
     py.request = Some(half.clone());
     py.updated_at_secs = now;
     if let Err(e) = put_row(host, PAYMENTS, agreement, &py).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let (message_id, send_state, _) =
         send_card_and_file(host, conversation, "payment-request", 1, &half.envelope, now, None)
             .await;
-    Response::ok(json!({
-        "record_id": half.record_id,
-        "message_id": message_id,
-        "state": send_state,
-    }))
+    Ok(PaymentRequestOutput {
+        record_id: half.record_id.clone(),
+        message_id: Some(message_id),
+        state: send_state,
+    })
 }
 
 pub(super) struct AckFenceClaim<'a> {
@@ -132,7 +141,7 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
     claim: AckFenceClaim<'_>,
     half: &ReceiptHalf,
     now: u64,
-) -> Result<(), Response> {
+) -> Result<FenceOutcome<HalfRecordedOutput>, Response> {
     let AckFenceClaim { agreement, conversation, role, supersedes, owner, quote_author_did } =
         claim;
     let ver_tag = supersedes.unwrap_or("first");
@@ -152,36 +161,10 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     match AppDataLayer::create(host, LEDGER.to_string(), vec![ack_fence_write]).await {
-        Ok(None) => Ok(()),
+        Ok(None) => Ok(FenceOutcome::Claimed),
         Ok(Some(_)) => {
-            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &ack_fence_key).await
-                && let Some(h) = &fence.half
-            {
-                let ctx = AckRecordCtx { agreement, conversation, role, owner, quote_author_did };
-                return Err(ensure_payment_ack_recorded(host, ctx, h, now).await);
-            }
-            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await {
-                let v = match role {
-                    DealRole::Counterparty => &py.counterparty,
-                    DealRole::QuoteAuthor => &py.quote_author,
-                };
-                if let Ok(Some(early)) = check_acknowledgement_version(supersedes, v, role) {
-                    if owner == quote_author_did {
-                        let _ = booking_ops::transition(
-                            host,
-                            agreement,
-                            BookingEvent::Half {
-                                track: Track::Payment,
-                                role: DealRole::QuoteAuthor,
-                            },
-                            now,
-                        )
-                        .await;
-                    }
-                    return Err(early);
-                }
-            }
-            Err(Response::invalid_params("payment-acknowledgement-in-flight"))
+            let ctx = AckRecordCtx { agreement, conversation, role, owner, quote_author_did };
+            handle_payment_ack_fence_collision(host, ctx, &ack_fence_key, supersedes, now).await
         }
         Err(e) => Err(Response::internal_error(e.to_string())),
     }
@@ -195,12 +178,45 @@ struct AckRecordCtx<'a> {
     quote_author_did: &'a str,
 }
 
+async fn handle_payment_ack_fence_collision<H: AppHost>(
+    host: &H,
+    ctx: AckRecordCtx<'_>,
+    ack_fence_key: &str,
+    supersedes: Option<&str>,
+    now: u64,
+) -> Result<FenceOutcome<HalfRecordedOutput>, Response> {
+    if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, ack_fence_key).await
+        && let Some(h) = &fence.half
+    {
+        return ensure_payment_ack_recorded(host, ctx, h, now).await.map(FenceOutcome::Answered);
+    }
+    if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, ctx.agreement).await {
+        let v = match ctx.role {
+            DealRole::Counterparty => &py.counterparty,
+            DealRole::QuoteAuthor => &py.quote_author,
+        };
+        if let Ok(Some(early)) = check_acknowledgement_version(supersedes, v, ctx.role) {
+            if ctx.owner == ctx.quote_author_did {
+                let _ = booking_ops::transition(
+                    host,
+                    ctx.agreement,
+                    BookingEvent::Half { track: Track::Payment, role: DealRole::QuoteAuthor },
+                    now,
+                )
+                .await;
+            }
+            return Ok(FenceOutcome::Answered(early));
+        }
+    }
+    Err(Response::invalid_params("payment-acknowledgement-in-flight"))
+}
+
 async fn ensure_payment_ack_recorded<H: AppHost>(
     host: &H,
     ctx: AckRecordCtx<'_>,
     half: &ReceiptHalf,
     now: u64,
-) -> Response {
+) -> Reply<HalfRecordedOutput> {
     let AckRecordCtx { agreement, conversation, role, owner, quote_author_did } = ctx;
     let mut py: PaymentsRow = match get_row(host, PAYMENTS, agreement).await {
         Ok(Some(p)) => p,
@@ -212,7 +228,7 @@ async fn ensure_payment_ack_recorded<H: AppHost>(
             quote_author: Vec::new(),
             updated_at_secs: now,
         },
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let versions = match role {
         DealRole::Counterparty => &mut py.counterparty,
@@ -223,19 +239,19 @@ async fn ensure_payment_ack_recorded<H: AppHost>(
         versions.push(half.clone());
         py.updated_at_secs = now;
         if let Err(e) = put_row(host, PAYMENTS, agreement, &py).await {
-            return Response::internal_error(e);
+            return Err(Response::internal_error(e));
         }
     }
 
     maybe_transition_author_ack(host, agreement, owner, quote_author_did, now).await;
 
     if already_present {
-        return Response::ok(json!({
-            "record_id": half.record_id,
-            "role": role,
-            "message_id": Value::Null,
-            "state": "already-recorded",
-        }));
+        return Ok(HalfRecordedOutput {
+            record_id: half.record_id.clone(),
+            role,
+            message_id: None,
+            state: SendState::AlreadyRecorded,
+        });
     }
     let version_count = match role {
         DealRole::Counterparty => py.counterparty.len(),
@@ -251,10 +267,10 @@ async fn ensure_payment_ack_recorded<H: AppHost>(
         Some(version_count),
     )
     .await;
-    Response::ok(json!({
-        "record_id": half.record_id,
-        "role": role,
-        "message_id": message_id,
-        "state": send_state,
-    }))
+    Ok(HalfRecordedOutput {
+        record_id: half.record_id.clone(),
+        role,
+        message_id: Some(message_id),
+        state: send_state,
+    })
 }

@@ -1,0 +1,21 @@
+{
+  "bookings": [
+    {
+      "agreement": "string",
+      "cancel_reason": "string",
+      "conflict": "null",
+      "fulfilment": "none",
+      "next": "nothing",
+      "pair": {
+        "state": "complete"
+      },
+      "payment": "none",
+      "payment_timing": "after-work",
+      "progress_record_id": "string",
+      "seq": "number",
+      "state": "cancelled",
+      "track_window_ends_at_secs": "number",
+      "writer": "self"
+    }
+  ]
+}

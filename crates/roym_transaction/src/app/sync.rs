@@ -2,16 +2,16 @@
 
 pub(crate) mod receipts;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{AppDataLayer, AppHost};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
     conversation::{Direction, group::CARDS_NOT_IN_GROUPS_MESSAGE},
-    envelope::{Request, Response},
+    envelope::Response,
     method::{
-        SiblingError, call_sibling,
+        Reply, SiblingError, call_sibling,
         conversation::{ChangesInput, ChangesOutput},
     },
     paging, services, signing,
@@ -25,10 +25,22 @@ use super::{
 };
 
 #[derive(Debug, Deserialize)]
-struct SyncParams {
-    conversation: String,
+#[serde(deny_unknown_fields)]
+pub struct SyncInput {
+    pub conversation: String,
     #[serde(default)]
-    full: bool,
+    pub full: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyncOutput {
+    pub scanned: u32,
+    pub filed: u32,
+    pub refused: u32,
+    pub unknown: u32,
+    pub countersigned: u32,
+    pub deferred: u32,
+    pub last_seq: u64,
 }
 
 #[derive(Debug, Default)]
@@ -40,37 +52,26 @@ pub(crate) struct FileCardResult {
     pub(crate) deferred: bool,
 }
 
-pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn sync<H: AppHost>(host: &H, input: SyncInput) -> Reply<SyncOutput> {
     let now = clock::now_secs();
-    let params: SyncParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
+    ensure_collections(host).await.map_err(Response::internal_error)?;
 
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
-
-    let sync_state: SyncStateRow = match get_row(host, SYNC_STATE, &params.conversation).await {
+    let sync_state: SyncStateRow = match get_row(host, SYNC_STATE, &input.conversation).await {
         Ok(Some(s)) => s,
         Ok(None) => SyncStateRow { last_seq: 0 },
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let start = if params.full { 0 } else { sync_state.last_seq };
-    let (messages, last_seq, kind) =
-        match fetch_sync_messages(host, &params.conversation, start).await {
-            Ok(m) => m,
-            Err(resp) => return resp,
-        };
+    let start = if input.full { 0 } else { sync_state.last_seq };
+    let (messages, last_seq, kind) = fetch_sync_messages(host, &input.conversation, start).await?;
     if kind.as_deref() == Some("group") {
-        return Response::invalid_params(CARDS_NOT_IN_GROUPS_MESSAGE);
+        return Err(Response::invalid_params(CARDS_NOT_IN_GROUPS_MESSAGE));
     }
 
-    let card_filter = json!({ "conversation": params.conversation }).to_string();
+    let card_filter = json!({ "conversation": input.conversation }).to_string();
     let mut card_count = match paging::count(host, CARDS, Some(card_filter)).await {
         Ok(c) => c,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let mut stats = SyncStats::default();
@@ -80,7 +81,7 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
     for m in messages {
         stats.scanned += 1;
         let vseq = m.get("visible_seq").and_then(Value::as_u64);
-        match classify_sync_message(host, &m, &params.conversation, now, &owner, card_count).await {
+        match classify_sync_message(host, &m, &input.conversation, now, &owner, card_count).await {
             Ok(SyncOutcome::Skip) => {}
             Ok(SyncOutcome::Declined) => {
                 first_declined = first_declined.or(vseq.map(|s| s.saturating_sub(1)));
@@ -93,7 +94,7 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
                 card_count += 1;
                 stats.record_filed(&file_res);
             }
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         }
     }
 
@@ -102,21 +103,21 @@ pub(crate) async fn sync<H: AppHost>(host: &H, req: &Request) -> Response {
         None => sync_state.last_seq.max(last_seq),
     };
     if let Err(e) =
-        put_row(host, SYNC_STATE, &params.conversation, &SyncStateRow { last_seq: new_last_seq })
+        put_row(host, SYNC_STATE, &input.conversation, &SyncStateRow { last_seq: new_last_seq })
             .await
     {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
-    Response::ok(json!({
-        "scanned": stats.scanned,
-        "filed": stats.filed,
-        "refused": stats.refused,
-        "unknown": stats.unknown,
-        "countersigned": stats.countersigned,
-        "deferred": stats.deferred,
-        "last_seq": new_last_seq,
-    }))
+    Ok(SyncOutput {
+        scanned: stats.scanned,
+        filed: stats.filed,
+        refused: stats.refused,
+        unknown: stats.unknown,
+        countersigned: stats.countersigned,
+        deferred: stats.deferred,
+        last_seq: new_last_seq,
+    })
 }
 
 async fn fetch_sync_messages<H: AppHost>(

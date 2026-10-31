@@ -2,50 +2,41 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use syneroym_app_host::AppHost;
-use syneroym_roym_core::{
-    clock,
-    envelope::{Request, Response},
-    paging,
-};
+use syneroym_roym_core::{clock, envelope::Response, method::Reply, paging};
 
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTES, REQUESTS, RecordPointerRow,
-    ensure_collections,
+    default_list_limit_u64, ensure_collections,
 };
 
 #[derive(Debug, Deserialize)]
-struct ThreadParams {
-    conversation: String,
-    #[serde(default = "default_thread_limit")]
-    limit: usize,
+#[serde(deny_unknown_fields)]
+pub struct ThreadInput {
+    pub conversation: String,
+    #[serde(default = "default_list_limit_u64")]
+    pub limit: u64,
     #[serde(default)]
-    cursor: usize,
+    pub cursor: u64,
 }
 
-fn default_thread_limit() -> usize {
-    200
+#[derive(Debug, Serialize)]
+pub struct ThreadOutput {
+    pub cards: Vec<CardRow>,
 }
 
-pub(crate) async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
-    let params: ThreadParams = match serde_json::from_value(req.params.clone()) {
-        Ok(p) => p,
-        Err(e) => return Response::invalid_params(format!("invalid params: {e}")),
-    };
-
-    if let Err(e) = ensure_collections(host).await {
-        return Response::internal_error(e);
-    }
+pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<ThreadOutput> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
 
     let now = clock::now_secs();
-    let filter = json!({ "conversation": params.conversation }).to_string();
+    let filter = serde_json::json!({ "conversation": input.conversation }).to_string();
 
     let quote_pointers: Vec<RecordPointerRow> =
         match paging::query_all(host, QUOTES, Some(filter.clone())).await {
             Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
     let quote_map: HashMap<String, RecordPointerRow> =
         quote_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
@@ -53,7 +44,7 @@ pub(crate) async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
     let request_pointers: Vec<RecordPointerRow> =
         match paging::query_all(host, REQUESTS, Some(filter.clone())).await {
             Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
     let request_map: HashMap<String, RecordPointerRow> =
         request_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
@@ -61,14 +52,14 @@ pub(crate) async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
     let agreement_rows: Vec<AgreementRow> =
         match paging::query_all(host, AGREEMENTS, Some(filter.clone())).await {
             Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
+            Err(e) => return Err(Response::internal_error(e)),
         };
     let agreement_map: HashMap<String, AgreementRow> =
         agreement_rows.into_iter().map(|a| (a.quote_record_id.clone(), a)).collect();
 
     let mut rows: Vec<CardRow> = match paging::query_all(host, CARDS, Some(filter.clone())).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     for row in &mut rows {
         if row.card_type == "quote" && row.verified {
@@ -120,6 +111,8 @@ pub(crate) async fn thread<H: AppHost>(host: &H, req: &Request) -> Response {
             .then_with(|| a.message_id.cmp(&b.message_id))
     });
 
-    let page: Vec<CardRow> = rows.into_iter().skip(params.cursor).take(params.limit).collect();
-    Response::ok(json!({ "cards": page }))
+    let cursor = usize::try_from(input.cursor).unwrap_or(usize::MAX);
+    let limit = usize::try_from(input.limit).unwrap_or(usize::MAX);
+    let page: Vec<CardRow> = rows.into_iter().skip(cursor).take(limit).collect();
+    Ok(ThreadOutput { cards: page })
 }

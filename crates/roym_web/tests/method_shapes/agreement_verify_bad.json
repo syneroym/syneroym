@@ -1,0 +1,5 @@
+{
+  "expired": "boolean",
+  "reason": "string",
+  "verified": "boolean"
+}

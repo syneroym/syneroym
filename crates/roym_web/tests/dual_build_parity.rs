@@ -4,6 +4,8 @@
 //! linked in via `syneroym-app-host-native` -- and asserting the results
 //! are identical across all scenarios.
 
+#[path = "dual_build_parity/deal_fixtures.rs"]
+pub(crate) mod deal_fixtures;
 #[path = "dual_build_parity/fixtures.rs"]
 pub(crate) mod fixtures;
 #[path = "dual_build_parity/helpers.rs"]

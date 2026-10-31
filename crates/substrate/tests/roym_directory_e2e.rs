@@ -389,7 +389,6 @@ async fn roym_directory_search_half_across_three_substrates() {
         .rpc_ok(
             "listing.set",
             json!({
-                "listing_id": y_listing_id,
                 "title": "Bike repair",
                 "summary": "Same-day, at your door. Now with loan bikes.",
                 "categories": ["cycling"],

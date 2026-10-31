@@ -25,6 +25,19 @@ fn is_closed_word_key(k: &str) -> bool {
             | "subject_kind"
             | "category"
             | "note"
+            | "role"
+            | "pair"
+            | "next"
+            | "payment_timing"
+            | "track"
+            | "writer"
+            | "conflict"
+            | "card_type"
+            | "revocation_status"
+            | "payment"
+            | "fulfilment"
+            | "where"
+            | "event"
     )
 }
 
@@ -67,7 +80,7 @@ pub fn shape(v: &Value) -> Value {
     shape_inner(v, None, false)
 }
 
-pub fn assert_shape(case: &str, result: &Value) {
+pub(super) fn assert_shape(case: &str, result: &Value) {
     let s = shape(result);
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/method_shapes");
     let path = dir.join(format!("{case}.json"));
@@ -84,7 +97,7 @@ pub fn assert_shape(case: &str, result: &Value) {
     }
 }
 
-async fn rpc(h: &Harness, method: &str, params: Value) -> Value {
+pub(super) async fn rpc(h: &Harness, method: &str, params: Value) -> Value {
     let req = json!({ "method": method, "params": params }).to_string().into_bytes();
     let r = h.native_http.post("/rpc", req, Some(h.caller())).await;
     let resp: Value = serde_json::from_slice(&r.body).unwrap();
@@ -94,7 +107,7 @@ async fn rpc(h: &Harness, method: &str, params: Value) -> Value {
     resp.get("result").cloned().unwrap_or(Value::Null)
 }
 
-async fn enrol_native_signing(h: &Harness, service: &str) -> (Value, Value, Value) {
+pub(super) async fn enrol_native_signing(h: &Harness, service: &str) -> (Value, Value, Value) {
     let status_m = format!("{service}.signing-status");
     let install_m = format!("{service}.install-signing-certificate");
     let unconf = rpc(h, &status_m, json!({})).await;

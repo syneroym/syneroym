@@ -5,10 +5,12 @@ use serde_json::{Map, Value};
 use syneroym_app_host::{AppHost, types::proxy::CallTarget};
 
 use crate::{
+    clock,
     envelope::{Request, Response, RpcError},
     services::Service,
 };
 
+pub mod catalog;
 pub mod check;
 pub mod conversation;
 pub mod profile;
@@ -25,6 +27,24 @@ pub struct NoParams {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingOutput {
     pub service: String,
+}
+
+/// Input for verify methods taking record envelope text.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyInput {
+    pub envelope: String,
+}
+
+/// Runs one record verifier on the envelope text, at the current time.
+pub fn verify_with<V>(input: VerifyInput, verify: fn(&str, u64) -> V) -> Reply<V> {
+    Ok(verify(&input.envelope, clock::now_secs()))
+}
+
+/// Output for history methods returning an envelope chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvelopeHistoryOutput {
+    pub history: Vec<String>,
 }
 
 /// A bad input, before it is turned into a `-32602` response.

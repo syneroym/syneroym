@@ -519,6 +519,10 @@ function availabilityEditor(listingId: string): HTMLElement {
   return wrap;
 }
 
+export function verifyParams(pasted: string): { envelope: string } {
+  return { envelope: pasted.trim() };
+}
+
 function buildVerifyBox(): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "listing-verify";
@@ -533,9 +537,8 @@ function buildVerifyBox(): HTMLElement {
 
   btn.onclick = async () => {
     out.replaceChildren();
-    let envelope: unknown;
     try {
-      envelope = JSON.parse(area.value);
+      JSON.parse(area.value);
     } catch {
       out.appendChild(text("p", "That is not valid JSON."));
       return;
@@ -547,7 +550,7 @@ function buildVerifyBox(): HTMLElement {
         issuer?: string;
         conversation_address?: string;
         status?: string;
-      }>("listing.verify", { envelope });
+      }>("listing.verify", verifyParams(area.value));
       if (res.verified) {
         out.appendChild(text("p", "Verified.", "verify-ok"));
         out.appendChild(text("div", `Issuer: ${res.issuer ?? ""}`));

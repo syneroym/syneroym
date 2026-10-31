@@ -5,30 +5,18 @@
 //! `supersedes` the last, plus unsigned availability state and the
 //! catalog-side publication limiter.
 
-use std::cmp::Reverse;
-
-use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::json;
 use syneroym_app_host::{
-    AppDataLayer, AppHost, AppSigning,
-    types::{
-        data_layer::{CollectionSchema, IndexDefinition, IndexType, Mutation, RecordWriteValue},
-        signing::{Principal, RecordDraft},
-    },
+    AppDataLayer, AppHost,
+    types::data_layer::{CollectionSchema, IndexDefinition, IndexType},
 };
 use syneroym_roym_core::{
     admit,
-    backup::{Bundle, SECTION_AVAILABILITY, SECTION_LISTINGS},
-    clock,
     envelope::{Request, Response},
-    listing::{self, ListingPayload, ListingStatus},
-    paging,
-    person::ProfilePayload,
-    record::{Envelope, RECORD_LISTING, VerifyOptions, verify_json},
-    safety::{self, Admission, PublicationLimits},
     services,
-    signing::{self, CertificateError},
 };
+
+use crate::api;
 
 /// Version 2 gave the service its first state. Version 3 renames the
 /// service-location values inside signed listings.
@@ -88,34 +76,13 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     if let Some(resp) = admit::require_internal(host).await {
         return resp;
     }
-    if let Some(resp) = signing::handle_certificate_verb(host, "catalog.", &req).await {
+    if let Some(resp) = api::dispatch(host, &req).await {
         return resp;
     }
-
-    match req.method.as_str() {
-        "listing.ping" => Response::ok(json!({ "service": services::CATALOG.name })),
-        "listing.set" => listing_ops::set_listing(host, &req).await,
-        "listing.withdraw" => listing_ops::withdraw_listing(host, &req).await,
-        "listing.get" => listing_ops::get_listing(host, &req).await,
-        "listing.list" => listing_ops::list_listings(host, &req).await,
-        "listing.history" => listing_ops::listing_history(host, &req).await,
-        "listing.verify" => listing_ops::verify_listing(host, &req).await,
-        "listing.limits" => match limits::load_publication_limits(host).await {
-            Ok(l) => Response::ok(json!(l)),
-            Err(e) => Response::internal_error(e),
-        },
-        "listing.set-limits" => limits::set_limits(host, &req).await,
-        "availability.set" => availability::availability_set(host, &req).await,
-        "availability.get" => availability::availability_get(host, &req).await,
-        "availability.list" => availability::availability_list(host, &req).await,
-        "availability.remove" => availability::availability_remove(host, &req).await,
-        "catalog.export" => backup::export(host).await,
-        "catalog.import" => backup::import(host, &req).await,
-        other => Response::method_not_found(other),
-    }
+    Response::method_not_found(&req.method)
 }
 
-mod availability;
-mod backup;
-mod limits;
-mod listing_ops;
+pub(crate) mod availability;
+pub(crate) mod backup;
+pub(crate) mod limits;
+pub(crate) mod listing_ops;
