@@ -159,24 +159,31 @@ pub(crate) async fn add_source<H: AppHost>(
     let mut info_issuer: Option<String> = None;
     match probe {
         Ok(raw) => match serde_json::from_str::<Value>(&raw) {
-            Ok(v) if v.get("result").is_some_and(Value::is_null) => {
-                last_ok_secs = Some(now);
-                probe_note = Some("this address answered, but runs no directory".to_string());
-            }
             Ok(v) => {
-                last_ok_secs = Some(now);
-                let res = v.get("result");
-                if label.is_empty() {
-                    label = res
-                        .and_then(|r| r.get("name"))
+                if !v.is_object() {
+                    last_error = Some(SourceError::Unreadable {
+                        reason: "expected JSON-RPC response object".to_string(),
+                    });
+                } else if let Err(e) = serde_json::from_value::<Response>(v.clone()) {
+                    last_error = Some(SourceError::Unreadable { reason: e.to_string() });
+                } else if v.get("result").is_some_and(Value::is_null) {
+                    last_ok_secs = Some(now);
+                    probe_note = Some("this address answered, but runs no directory".to_string());
+                } else {
+                    last_ok_secs = Some(now);
+                    let res = v.get("result");
+                    if label.is_empty() {
+                        label = res
+                            .and_then(|r| r.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                    }
+                    info_issuer = res
+                        .and_then(|r| r.get("issuer_did"))
                         .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
+                        .map(str::to_string);
                 }
-                info_issuer = res
-                    .and_then(|r| r.get("issuer_did"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
             }
             Err(e) => last_error = Some(SourceError::Unreadable { reason: e.to_string() }),
         },
@@ -233,12 +240,10 @@ pub(crate) async fn sources<H: AppHost>(host: &H, _input: NoParams) -> Reply<Sou
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
         return Err(Response::internal_error(e));
     }
-    let rows: Vec<Value> = match paging::query_all(host, SOURCES, None).await {
+    let sources: Vec<SourceRow> = match paging::query_all(host, SOURCES, None).await {
         Ok(r) => r,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    let sources: Vec<SourceRow> =
-        rows.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
     Ok(SourcesOutput { sources })
 }
 

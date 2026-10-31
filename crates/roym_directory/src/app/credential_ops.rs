@@ -327,12 +327,10 @@ pub(in crate::app) async fn list_issued<H: AppHost>(
         return Err(Response::internal_error(e));
     }
     let filter = input.member_did.as_deref().map(|m| json!({ "member_did": m }).to_string());
-    let rows: Vec<Value> = match paging::query_all(host, collection, filter).await {
+    let records: Vec<IssuedRecordRow> = match paging::query_all(host, collection, filter).await {
         Ok(r) => r,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    let records: Vec<IssuedRecordRow> =
-        rows.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
     Ok(app::IssuedRecordsOutput { records })
 }
 

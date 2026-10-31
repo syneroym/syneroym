@@ -4,7 +4,6 @@
 mod tests;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use syneroym_app_host::{AppDataLayer, AppHost, AppSigning};
 use syneroym_roym_core::{
     area::Area,
@@ -195,11 +194,9 @@ pub(crate) async fn member_list<H: AppHost>(host: &H, _input: NoParams) -> Reply
     if let Err(e) = ensure_coll(host, MEMBERS, &[]).await {
         return Err(Response::internal_error(e));
     }
-    let rows: Vec<Value> = match paging::query_all(host, MEMBERS, None).await {
+    let members: Vec<Member> = match paging::query_all(host, MEMBERS, None).await {
         Ok(v) => v,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    let members: Vec<Member> =
-        rows.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
     Ok(MemberListOutput { members })
 }

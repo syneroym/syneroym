@@ -268,14 +268,11 @@ pub(crate) async fn memberships<H: AppHost>(
         return Err(Response::internal_error(e));
     }
     let filter = input.member_did.map(|m| json!({ "member_did": m }).to_string());
-    let raw_rows: Vec<Value> = match paging::query_all(host, HELD_MEMBERSHIPS, filter).await {
+    let rows: Vec<HeldMembershipRow> = match paging::query_all(host, HELD_MEMBERSHIPS, filter).await
+    {
         Ok(v) => v,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    let rows: Vec<HeldMembershipRow> = raw_rows
-        .into_iter()
-        .filter_map(|val| serde_json::from_value::<HeldMembershipRow>(val).ok())
-        .collect();
     let now = clock::now_secs();
     let memberships: Vec<HeldMembershipView> = rows
         .into_iter()

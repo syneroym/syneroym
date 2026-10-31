@@ -543,12 +543,11 @@ pub(crate) async fn publications<H: AppHost>(
     if let Ok(Some(settings)) = synorg::load_settings(host).await {
         let _ = prune_expired_publications(host, settings.retention_secs).await;
     }
-    let rows: Vec<Value> = match paging::query_all(host, PUBLICATIONS, None).await {
+    let publications: Vec<PublicationRow> = match paging::query_all(host, PUBLICATIONS, None).await
+    {
         Ok(r) => r,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    let publications: Vec<PublicationRow> =
-        rows.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
     Ok(PublicationsOutput { publications })
 }
 
