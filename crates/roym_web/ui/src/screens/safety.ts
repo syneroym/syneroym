@@ -1,3 +1,4 @@
+import { refiller } from "../dom";
 import { call } from "../rpc";
 
 export async function renderSafety(container: HTMLElement) {
@@ -57,19 +58,18 @@ export async function renderSafety(container: HTMLElement) {
   const blockList = document.createElement("div");
   box.appendChild(blockList);
 
-  const loadBlocks = async () => {
-    blockList.replaceChildren();
+  const loadBlocks = refiller(blockList, async (into) => {
     try {
       const rows = await call<Array<{ person_did?: string; address?: string }>>("block.list");
       for (const r of rows) {
         const item = document.createElement("div");
         item.textContent = `Blocked: ${r.person_did || r.address || ""}`;
-        blockList.appendChild(item);
+        into.appendChild(item);
       }
     } catch {
-      blockList.textContent = "Could not load block list.";
+      into.textContent = "Could not load block list.";
     }
-  };
+  });
   await loadBlocks();
 
   box.appendChild(buildReportForm());
@@ -124,8 +124,7 @@ function buildReportForm(): HTMLElement {
   const list = document.createElement("div");
   list.className = "report-list";
 
-  const reload = async () => {
-    list.replaceChildren();
+  const reload = refiller(list, async (into) => {
     try {
       const rows = await call<
         Array<{ report_id: string; subject_kind: string; subject_id: string; category: string; status: string }>
@@ -144,12 +143,12 @@ function buildReportForm(): HTMLElement {
           };
           line.appendChild(wd);
         }
-        list.appendChild(line);
+        into.appendChild(line);
       }
     } catch {
-      list.textContent = "Could not load reports.";
+      into.textContent = "Could not load reports.";
     }
-  };
+  });
 
   fileBtn.onclick = async () => {
     status.textContent = "";

@@ -1,3 +1,4 @@
+import { refiller } from "../dom";
 import { call } from "../rpc";
 
 export function upsertParams(
@@ -31,19 +32,18 @@ export async function renderContacts(container: HTMLElement) {
   const listDiv = document.createElement("div");
   box.appendChild(listDiv);
 
-  const reload = async () => {
-    listDiv.replaceChildren();
+  const reload = refiller(listDiv, async (into) => {
     try {
       const contacts = await call<Array<{ person_did: string; display_name?: string; favourite?: boolean }>>("contacts.list");
       for (const c of contacts) {
         const item = document.createElement("div");
         item.textContent = `${c.display_name || c.person_did} ${c.favourite ? "★" : ""}`;
-        listDiv.appendChild(item);
+        into.appendChild(item);
       }
     } catch {
-      listDiv.textContent = "Could not load contacts.";
+      into.textContent = "Could not load contacts.";
     }
-  };
+  });
   await reload();
 
   const addHeading = document.createElement("h3");

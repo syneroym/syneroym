@@ -1,6 +1,6 @@
 import { NO_INSTANT_REMOVAL_NOTICE } from "../directory/membership";
 import { dateWords } from "../directory/words";
-import { errText, field, text } from "../dom";
+import { errText, field, refiller, text } from "../dom";
 import { call } from "../rpc";
 
 /// One row a SynOrg holds about a record it signed: `credential.list`,
@@ -74,22 +74,21 @@ export async function buildMembersPanel(synorgCategories: string[]): Promise<HTM
 
   const lists = document.createElement("div");
   lists.className = "members-lists";
-  const reload = async () => {
-    lists.replaceChildren();
+  const reload = refiller(lists, async (into) => {
     try {
       const [credentials, revocations, decisions] = await Promise.all([
         records("credential.list"),
         records("revocation.list"),
         records("member.decisions"),
       ]);
-      lists.append(
+      into.append(
         buildCredentialList(credentials, revocations, reload),
         buildDecisionList(decisions, reload),
       );
     } catch (err) {
-      lists.appendChild(text("p", `Could not load memberships: ${errText(err)}`));
+      into.appendChild(text("p", `Could not load memberships: ${errText(err)}`));
     }
-  };
+  });
 
   wrap.append(buildIssueForm(synorgCategories, reload), buildSuspendForm(reload), lists);
   await reload();

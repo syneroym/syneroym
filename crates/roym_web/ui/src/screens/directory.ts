@@ -6,7 +6,7 @@ import {
   type RefusedHit,
   type SourceOutcome,
 } from "../directory/search";
-import { errText, text } from "../dom";
+import { errText, refiller, text } from "../dom";
 import {
   checkedWords,
   ISSUER_CHANGED_CHECK_WORDS,
@@ -106,19 +106,18 @@ export async function renderDirectory(container: HTMLElement) {
 
   box.appendChild(buildSearch());
 
-  async function reloadSources() {
-    sourcesHost.replaceChildren();
-    sourcesHost.appendChild(text("h3", "Your directories"));
+  const reloadSources = refiller(sourcesHost, async (into) => {
+    into.appendChild(text("h3", "Your directories"));
     let rows: SourceRow[] = [];
     try {
       const res = await call<{ sources: SourceRow[] }>("directory.sources");
       rows = res.sources ?? [];
     } catch (err) {
-      sourcesHost.appendChild(text("p", `Could not load your directories: ${errText(err)}`));
+      into.appendChild(text("p", `Could not load your directories: ${errText(err)}`));
       return;
     }
     if (rows.length === 0) {
-      sourcesHost.appendChild(text("p", "No directories added yet.", "directory-empty"));
+      into.appendChild(text("p", "No directories added yet.", "directory-empty"));
       return;
     }
     for (const row of rows) {
@@ -146,9 +145,9 @@ export async function renderDirectory(container: HTMLElement) {
         }
       };
       line.appendChild(rm);
-      sourcesHost.appendChild(line);
+      into.appendChild(line);
     }
-  }
+  });
 
   await reloadSources();
   container.appendChild(box);
