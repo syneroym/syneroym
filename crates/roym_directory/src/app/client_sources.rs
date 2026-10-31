@@ -98,6 +98,46 @@ async fn probe_info<H: AppHost>(host: &H, did: &str) -> Result<String, ProxyErro
     .await
 }
 
+#[derive(Default)]
+struct ProbeRead {
+    last_ok_secs: Option<u64>,
+    last_error: Option<SourceError>,
+    note: Option<String>,
+    name: Option<String>,
+    claimed_issuer: Option<String>,
+}
+
+fn read_probe(raw: &str, now: u64) -> ProbeRead {
+    let v: Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return ProbeRead {
+                last_error: Some(SourceError::Unreadable { reason: e.to_string() }),
+                ..Default::default()
+            };
+        }
+    };
+    if let Err(e) = serde_json::from_value::<Response>(v.clone()) {
+        return ProbeRead {
+            last_error: Some(SourceError::Unreadable { reason: e.to_string() }),
+            ..Default::default()
+        };
+    }
+    let res = v.get("result");
+    if res.is_some_and(Value::is_null) {
+        ProbeRead {
+            last_ok_secs: Some(now),
+            note: Some("this address answered, but runs no directory".to_string()),
+            ..Default::default()
+        }
+    } else {
+        let name = res.and_then(|r| r.get("name")).and_then(Value::as_str).map(str::to_string);
+        let claimed_issuer =
+            res.and_then(|r| r.get("issuer_did")).and_then(Value::as_str).map(str::to_string);
+        ProbeRead { last_ok_secs: Some(now), last_error: None, note: None, name, claimed_issuer }
+    }
+}
+
 pub(crate) async fn probe_info_verb<H: AppHost>(
     host: &H,
     input: app::DidInput,
@@ -143,52 +183,26 @@ pub(crate) async fn add_source<H: AppHost>(
         .find(|(id, _)| id == &did)
         .and_then(|(_, v)| serde_json::from_value(v.clone()).ok());
 
+    let now = clock::now_secs();
+
     // Probe once: `directory.info` over the wire. A transport failure is
     // stored as `last_error`; a successful probe that answers `null` is
     // reported to the caller rather than silently accepted, so a person
     // does not sit waiting for results from an address that will never
     // have any.
-    let probe = probe_info(host, &did).await;
-
-    let now = clock::now_secs();
-    let requested_label = input.label.unwrap_or_default();
-    let mut last_ok_secs = None;
-    let mut last_error = None;
-    let mut probe_note: Option<String> = None;
-    let mut label = requested_label.clone();
-    let mut info_issuer: Option<String> = None;
-    match probe {
-        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
-            Ok(v) => {
-                if !v.is_object() {
-                    last_error = Some(SourceError::Unreadable {
-                        reason: "expected JSON-RPC response object".to_string(),
-                    });
-                } else if let Err(e) = serde_json::from_value::<Response>(v.clone()) {
-                    last_error = Some(SourceError::Unreadable { reason: e.to_string() });
-                } else if v.get("result").is_some_and(Value::is_null) {
-                    last_ok_secs = Some(now);
-                    probe_note = Some("this address answered, but runs no directory".to_string());
-                } else {
-                    last_ok_secs = Some(now);
-                    let res = v.get("result");
-                    if label.is_empty() {
-                        label = res
-                            .and_then(|r| r.get("name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                    }
-                    info_issuer = res
-                        .and_then(|r| r.get("issuer_did"))
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-            }
-            Err(e) => last_error = Some(SourceError::Unreadable { reason: e.to_string() }),
-        },
-        Err(_) => last_error = Some(SourceError::TimedOut),
+    let probe = match probe_info(host, &did).await {
+        Ok(raw) => read_probe(&raw, now),
+        Err(_) => ProbeRead { last_error: Some(SourceError::TimedOut), ..Default::default() },
     };
+
+    let mut label = input.label.unwrap_or_default();
+    if label.is_empty()
+        && let Some(name) = probe.name
+    {
+        label = name;
+    }
+    let mut probe_note = probe.note;
+    let info_issuer = probe.claimed_issuer;
 
     // An explicit `issuer_did` wins; failing that, re-adding an
     // already-known source keeps its existing pin (a reply never re-pins
@@ -208,8 +222,8 @@ pub(crate) async fn add_source<H: AppHost>(
         did: did.clone(),
         label,
         added_at_secs: now,
-        last_ok_secs,
-        last_error,
+        last_ok_secs: probe.last_ok_secs,
+        last_error: probe.last_error,
         issuer_did,
     };
     if let Err(e) = put_json(host, SOURCES, &did, &row).await {
