@@ -192,7 +192,17 @@ this is my view of those choices.
   separate fix, listed in section 4 as "found while checking"), or record it
   in the deferred backlog (P8). Check the serde fact first with a 5-line
   unit test.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). I confirmed the serde fact with a unit test on
+  `Response` (not kept): `{"result":null}` reads as `result: None` and
+  writes back as `{}`. D-A2c-9 now splits `read_reply` out of
+  `call_sibling`, and `remote_reply` uses it. For the dead `add_source`
+  branch I chose the fix, not a backlog row: it is a one-line change in a
+  function A2c already edits, and the Hub already shows the note. It is
+  the new audit row B57. Step 2 does not record the no-SynOrg shapes from
+  the buggy code; Step 5 records them on the fixed code, so no Step 2
+  shape file changes. Scenario 230 tests it over a real wire round trip
+  (`hForeignWire2` before `directory2` has a SynOrg). B51 and 7.3 are
+  rewritten.
 
 - **P2 — major.** *Where:* Q1, D-A2c-7, section 4 B53, section 7.2 item 1,
   Step 3 and Step 4 tests.
@@ -222,7 +232,11 @@ this is my view of those choices.
   keyed on that DID, while the owner's local budget is untouched. Add the
   test to section 7.2 item 1 and remove B53's "No visible change" as the
   only statement: say which test proves it.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). Step 8 adds
+  `a_wire_publish_is_recorded_under_the_verified_caller` in
+  `contract_directory.rs` with both assertions (attribution, and the
+  limit keyed on the caller, not the owner). It is in B53, 7.2 item 5 and
+  exit criterion 7.
 
 - **P3 — minor.** *Where:* section 3.6 C9; B51; D-A2c-13.
   *Problem:* C9 says a remote node that answers with only some keys is "read
@@ -244,7 +258,16 @@ this is my view of those choices.
   field that has a natural empty value (`rules`, `area`, `categories`,
   `support_contact`, `dispute_path`), or state the strict read as a choice
   for the owner. I suggest the second; it is one line in the plan.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb), with a different fix than suggested. C9
+  and B51 now say that `probe-info` and `publish-to-source` read
+  strictly. I did not make it an owner question. Instead, D-A2c-13 gives
+  `#[serde(default)]` to `rules`, `area`, `categories`, `support_contact`
+  and `dispute_path`, where an empty value means "not given". `name`,
+  `retention_secs`, `member_count` and `PublishOutput.listing_id` stay
+  required, because a default there (`""` or `0`) would be a false claim
+  about the remote directory. Reason: the lenient read costs nothing, and
+  the owner already chose (a) for Q3. A new unit test reads an info answer
+  that has only the required keys.
 
 - **P4 — minor.** *Where:* section 4, "Wire changes, in one list".
   *Problem:* three wire changes are not listed.
@@ -268,7 +291,11 @@ this is my view of those choices.
   sends two errors, so this is only a note.
   *Fix:* add (1) as a row or extend B50; name the two texts in B42; add (3)
   as a sentence.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). (1) is the new row B55. (2) B42 now names
+  `issuer_did must be a did:key` for a value that is not a string, and
+  says which `did:key` texts stay in the handler (`until_secs ..` was
+  already listed). (3) is the new row B56. The wire-change list has
+  items 5 and 6 for B55 and B57.
 
 - **P5 — minor.** *Where:* Step 3, section 7.4.
   [method/tests.rs](../../../../crates/roym_core/src/method/tests.rs) is 725
@@ -282,7 +309,9 @@ this is my view of those choices.
   *Fix:* put the new tests in `method/tests/directory.rs`, declared from
   `method/tests.rs` (`mod directory;`, layout rule: `foo/tests.rs` +
   `foo/tests/`). Add the file to section 7.4.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). The unit tests go in a new
+  `method/tests/directory.rs`, declared with `mod directory;`. 7.4 names
+  the file.
 
 - **P6 — minor.** *Where:* Step 7; section 3.5; status.md row; exit
   criterion 6.
@@ -299,7 +328,12 @@ this is my view of those choices.
   (`… newer_node` still matches the name). Say "25 modules (20 with
   scenarios)" after Step 7, and fix the wording in status.md when A2c is
   recorded.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). Step 7 uses 229 (and 230 for the P1
+  scenario), with the grep to check again. The plan says "24 modules (19
+  with scenarios)" before Step 7 and "25 modules (20 with scenarios)"
+  after; the parity count is now 224. I did not change the A2b row of
+  `status.md`, because it records what A2b's tool wrote at the time. The
+  A2c row will use the correct wording.
 
 - **P7 — minor.** *Where:* D-A2c-16, Step 3.
   [check.rs:185-195](../../../../crates/roym_core/src/method/check.rs#L185).
@@ -313,7 +347,12 @@ this is my view of those choices.
   The unit test should also show that another `req.method` use on a line
   that holds `admit::admit` text is not enough (for example a line with both
   the call and `req.method.as_str()`).
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). D-A2c-16 matches the whole call
+  `admit::admit(host, api::WIRE_REACHABLE, &req.method)` and requires
+  exactly one `req.method` on the line. The unit test (renamed
+  `check_allows_req_method_only_in_the_admit_call`) shows that a line
+  with the call and `req.method.as_str()` fails, and that the call with
+  another list fails.
 
 - **P8 — minor.** *Where:* section 8 (deferred backlog), D-A2c-10.
   *Problem:* the plan leaves the three client reads of remote answers
@@ -328,7 +367,10 @@ this is my view of those choices.
   Q7): "The directory's client half reads remote `search`, `info` and
   `standing` answers by hand. Target: A4 (federated query library)". Add a
   row for the "runs no directory" note if it is not fixed in A2c.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). Section 8 has a new row "The directory's
+  client half reads remote answers by hand", target A4. The `add_source`
+  branch is fixed in A2c (P1), so it needs no row; section 8 lists it
+  under "resolved in code".
 
 - **P9 — minor.** *Where:* Step 8, error tests.
   *Problem:* the end-to-end wire tests with an unknown key cover
@@ -342,7 +384,9 @@ this is my view of those choices.
   `directory.publish` with a valid signed envelope plus `"zz": 1` gives
   `{listing_id, record_id}`. The `hNewer` scenario already needs a valid
   envelope, so the set-up exists.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). Step 8 adds both cases: a wire
+  `directory.info` with `{"zz": 1}`, and a wire `directory.publish` with
+  a valid signed envelope and `"zz": 1`.
 
 - **P10 — minor.** *Where:* D-A2c-3, D-A2c-4 (`query` field),
   [client_query.rs:201-218](../../../../crates/roym_directory/src/app/client_query.rs#L201).
@@ -359,7 +403,9 @@ this is my view of those choices.
   the sentence only: a second struct that must match `SearchQuery` is the
   kind of duplicate that Q2 had to guard with a test. Do not leave it
   unsaid.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). I agree with the sentence only. D-A2c-3
+  says it, with the `categorys` example and the reason. Section 9 adds it
+  to the developer guide's "Bad input".
 
 - **P11 — minor.** *Where:* Q6/D-A2c-17, Q2/Step 4, Step 10, section 1
   (user section).
@@ -379,7 +425,12 @@ this is my view of those choices.
   tables; for `web` it checks one row. Say "checks the table of every
   service".
   *Fix:* correct the four texts.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). (1) D-A2c-17 changes the message text in
+  place, so the scenario changes three lines, not two. (2) Step 4 says
+  the `synorg/` directory is new. (3) Step 10 says `directory.rs` stays
+  at 1135 and `trust_fixtures.rs` records nothing. (4) The user section
+  says "checks the method table of every Roym service (for `web`, its one
+  row)".
 
 - **P12 — minor.** *Where:* section 9 (living docs).
   *Problem:* [system-requirements-spec.md:710](../../../system-requirements-spec.md)
@@ -392,4 +443,14 @@ this is my view of those choices.
   unknown fields" belongs at `:1141`.
   *Fix:* add the requirements line to section 9 as "check, update if
   false", and name `:1141` as the place for the new sentence.
-  *Status:* Open.
+  *Status:* Fixed (c8f181eb). Section 9 adds the requirements spec as
+  "check, update if false", and puts the new architecture sentence at
+  line 1141.
+
+### Notes on the owner-question views
+
+- **Q2.** Accepted: D-A2c-8 now makes `into_settings` destructure `self`
+  with every field named, so a field added to only one struct does not
+  compile. Fixed (c8f181eb).
+- **Q3.** The condition (P1) is met: `remote_reply` reads through
+  `read_reply`.
