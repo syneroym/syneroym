@@ -206,23 +206,5 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         return resp;
     }
 
-    match req.method.as_str() {
-        // Client half.
-        "directory.add-source" => client_sources::add_source(host, &req).await,
-        "directory.probe-info" => client_sources::probe_info_verb(host, &req).await,
-        "directory.remove-source" => client_sources::remove_source(host, &req).await,
-        "directory.sources" => client_sources::sources(host).await,
-        "directory.start-run" => client_query::start_run(host).await,
-        "directory.query-source" => client_query::query_source(host, &req).await,
-        "directory.merge" => client_merge::merge(host, &req).await,
-        "directory.run-envelope" => client_merge::run_envelope(host, &req).await,
-        "directory.check-standing" => held::check_standing(host, &req).await,
-        "directory.memberships" => held::memberships(host, &req).await,
-        // Not `publication_ops::publish` -- this fetches one of this
-        // node's own catalog listings and calls `directory.publish` on a
-        // remote source; `publication_ops::publish` is the inbound side
-        // that remote call lands on.
-        "directory.publish-to-source" => client_sources::publish_to_source(host, &req).await,
-        other => Response::method_not_found(other),
-    }
+    Response::method_not_found(&req.method)
 }

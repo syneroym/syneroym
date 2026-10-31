@@ -380,3 +380,15 @@ async fn whoami_shapes() {
     let whoami_invoke = resp.get("result").cloned().unwrap_or(Value::Null);
     assert_shape("session_whoami_invoke", &whoami_invoke);
 }
+
+#[tokio::test]
+async fn no_synorg_shapes() {
+    let h = harness().await;
+
+    let probe = rpc(&h, "directory.probe-info", json!({ "did": "did:key:hForeignWire2" })).await;
+    assert_shape("directory_probe_info_no_synorg", &probe);
+
+    let add_source =
+        rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeignWire2" })).await;
+    assert_shape("directory_add_source_no_synorg", &add_source);
+}

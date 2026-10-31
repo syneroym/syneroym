@@ -10,8 +10,9 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     directory::DEFAULT_SOURCE_TIMEOUT_MS,
-    envelope::{Request, Response},
+    envelope::Response,
     membership::{self, CheckInput, MembershipEvidence, MembershipVerdict},
+    method::Reply,
     paging, services,
 };
 
@@ -29,6 +30,38 @@ pub(in crate::app) struct HeldMembershipRow {
     pub(in crate::app) as_of_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::app) last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CheckStandingInput {
+    pub source: String,
+    pub member_did: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CheckStandingOutput {
+    pub verdict: MembershipVerdict,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_of_secs: Option<u64>,
+    pub refreshed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HeldMembershipView {
+    pub source: String,
+    pub member_did: String,
+    pub issuer_did: Option<String>,
+    pub as_of_secs: u64,
+    pub last_error: Option<String>,
+    pub verdict: MembershipVerdict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MembershipsOutput {
+    pub memberships: Vec<HeldMembershipView>,
 }
 
 fn held_key(source: &str, member_did: &str) -> String {
@@ -66,31 +99,33 @@ pub(in crate::app) async fn remember<H: AppHost>(
     put_json(host, HELD_MEMBERSHIPS, &key, &row).await
 }
 
-pub(in crate::app) async fn check_standing<H: AppHost>(host: &H, req: &Request) -> Response {
-    let source = match req.params.get("source").and_then(Value::as_str) {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => return Response::invalid_params("source is required"),
-    };
-    let member_did = match req.params.get("member_did").and_then(Value::as_str) {
-        Some(m) if !m.is_empty() => m.to_string(),
-        _ => return Response::invalid_params("member_did is required"),
-    };
-    if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
-        return Response::internal_error(e);
+pub(crate) async fn check_standing<H: AppHost>(
+    host: &H,
+    input: CheckStandingInput,
+) -> Reply<CheckStandingOutput> {
+    if input.source.is_empty() {
+        return Err(Response::invalid_params("source is required"));
     }
-    let source_row: Option<SourceRow> = match get_json(host, SOURCES, &source).await {
+    if input.member_did.is_empty() {
+        return Err(Response::invalid_params("member_did is required"));
+    }
+    if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
+        return Err(Response::internal_error(e));
+    }
+    let source_row: Option<SourceRow> = match get_json(host, SOURCES, &input.source).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let Some(source_row) = source_row else {
-        return Response::invalid_params("source is not in this person's own sources");
+        return Err(Response::invalid_params("source is not in this person's own sources"));
     };
 
-    let params = json!({ "method": "directory.standing", "params": { "member_did": member_did } })
-        .to_string();
+    let params =
+        json!({ "method": "directory.standing", "params": { "member_did": input.member_did } })
+            .to_string();
     let call_result = host
         .call(
-            CallTarget::Service(source.clone()),
+            CallTarget::Service(input.source.clone()),
             services::DIRECTORY.interface.to_string(),
             "invoke".to_string(),
             json!([params]).to_string(),
@@ -104,8 +139,14 @@ pub(in crate::app) async fn check_standing<H: AppHost>(host: &H, req: &Request) 
         )
         .await;
 
-    handle_standing_reply(host, &source, &member_did, source_row.issuer_did.as_deref(), call_result)
-        .await
+    handle_standing_reply(
+        host,
+        &input.source,
+        &input.member_did,
+        source_row.issuer_did.as_deref(),
+        call_result,
+    )
+    .await
 }
 
 async fn handle_standing_reply<H: AppHost>(
@@ -114,7 +155,7 @@ async fn handle_standing_reply<H: AppHost>(
     member_did: &str,
     pinned_issuer: Option<&str>,
     call_result: Result<String, ProxyError>,
-) -> Response {
+) -> Reply<CheckStandingOutput> {
     let raw = match call_result {
         Ok(r) => r,
         Err(e) => {
@@ -136,10 +177,12 @@ async fn handle_standing_reply<H: AppHost>(
     if let (Some(pinned), Some(claimed)) = (pinned_issuer, reply_issuer.as_deref())
         && pinned != claimed
     {
-        return Response::ok(json!({
-            "verdict": MembershipVerdict::Unknown { reason: "issuer-changed".to_string() },
-            "refreshed": false,
-        }));
+        return Ok(CheckStandingOutput {
+            verdict: MembershipVerdict::Unknown { reason: "issuer-changed".to_string() },
+            as_of_secs: None,
+            refreshed: false,
+            error: None,
+        });
     }
     let evidence: MembershipEvidence =
         match serde_json::from_value(result.get("evidence").cloned().unwrap_or(json!({}))) {
@@ -161,7 +204,7 @@ async fn handle_standing_reply<H: AppHost>(
             evidence_as_of_secs: now,
         },
     );
-    Response::ok(json!({ "verdict": verdict, "as_of_secs": now, "refreshed": true }))
+    Ok(CheckStandingOutput { verdict, as_of_secs: Some(now), refreshed: true, error: None })
 }
 
 /// The far end could not be reached or answered something this node
@@ -173,7 +216,7 @@ async fn stale_or_unknown<H: AppHost>(
     member_did: &str,
     pinned_issuer: Option<&str>,
     error: String,
-) -> Response {
+) -> Reply<CheckStandingOutput> {
     let key = held_key(source, member_did);
     let _ = ensure_coll(host, HELD_MEMBERSHIPS, &[]).await;
     let stored: Option<HeldMembershipRow> =
@@ -206,33 +249,35 @@ async fn stale_or_unknown<H: AppHost>(
             },
         )
     };
-    Response::ok(json!({
-        "verdict": verdict,
-        "as_of_secs": row.as_of_secs,
-        "refreshed": false,
-        "error": error,
-    }))
+    Ok(CheckStandingOutput {
+        verdict,
+        as_of_secs: Some(row.as_of_secs),
+        refreshed: false,
+        error: Some(error),
+    })
 }
 
 /// `directory.memberships`, params `{ member_did? }`: the held copies,
 /// each re-evaluated now from its stored evidence -- never a stored
 /// verdict, so a restore reproduces the same answer by construction.
-pub(in crate::app) async fn memberships<H: AppHost>(host: &H, req: &Request) -> Response {
+pub(crate) async fn memberships<H: AppHost>(
+    host: &H,
+    input: super::MemberFilterInput,
+) -> Reply<MembershipsOutput> {
     if let Err(e) = ensure_coll(host, HELD_MEMBERSHIPS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    let filter = req
-        .params
-        .get("member_did")
-        .and_then(Value::as_str)
-        .map(|m| json!({ "member_did": m }).to_string());
-    let rows: Vec<HeldMembershipRow> = match paging::query_all(host, HELD_MEMBERSHIPS, filter).await
-    {
+    let filter = input.member_did.map(|m| json!({ "member_did": m }).to_string());
+    let raw_rows: Vec<Value> = match paging::query_all(host, HELD_MEMBERSHIPS, filter).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
+    let rows: Vec<HeldMembershipRow> = raw_rows
+        .into_iter()
+        .filter_map(|val| serde_json::from_value::<HeldMembershipRow>(val).ok())
+        .collect();
     let now = clock::now_secs();
-    let out: Vec<Value> = rows
+    let memberships: Vec<HeldMembershipView> = rows
         .into_iter()
         .map(|row| {
             let verdict = membership::evaluate(
@@ -245,15 +290,15 @@ pub(in crate::app) async fn memberships<H: AppHost>(host: &H, req: &Request) -> 
                     evidence_as_of_secs: row.as_of_secs,
                 },
             );
-            json!({
-                "source": row.source,
-                "member_did": row.member_did,
-                "issuer_did": row.issuer_did,
-                "as_of_secs": row.as_of_secs,
-                "last_error": row.last_error,
-                "verdict": verdict,
-            })
+            HeldMembershipView {
+                source: row.source,
+                member_did: row.member_did,
+                issuer_did: row.issuer_did,
+                as_of_secs: row.as_of_secs,
+                last_error: row.last_error,
+                verdict,
+            }
         })
         .collect();
-    Response::ok(json!({ "memberships": out }))
+    Ok(MembershipsOutput { memberships })
 }
