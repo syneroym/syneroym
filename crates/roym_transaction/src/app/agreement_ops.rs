@@ -9,12 +9,16 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     booking::BookingState,
+    card::{self, CARD_CONTENT_TYPE},
     clock,
     envelope::Response,
-    method::{self, Reply, VerifyInput},
+    method::{
+        self, Reply, VerifyInput,
+        conversation::{SendInput, SendOutput},
+    },
     paging,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
-    signing,
+    services, signing,
     transaction::{
         self, AGREEMENT_RECEIPT_VERSION, AgreedTerms, AgreementReceiptPayload, DealRole, PairState,
         QuotePayload, ReceiptHalf, RecordVerdict, pair_state,
@@ -24,7 +28,7 @@ use syneroym_roym_core::{
 use super::{
     AGREEMENTS, AgreementRow, BookingWriter, QUOTE_HISTORY, SendState,
     booking_ops::{self, BookingView},
-    default_list_limit_u64, ensure_collections, get_bytes, get_row, put_row,
+    default_list_limit_u64, ensure_collections, file_own_card, get_bytes, get_row, put_row,
     resolve_principal_and_owner, send_card_and_file,
 };
 
@@ -433,53 +437,87 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
         return Ok(false);
     }
 
-    let (principal, _master) = match signing::person_principal(host, now).await {
-        Ok(res) => res,
-        Err(_) => return Ok(false),
-    };
-
-    ensure_collections(host).await?;
-
     let booking = booking_ops::decide_booking(host, row, q_payload, now).await?;
     if booking.state == BookingState::Conflict {
         return Ok(false);
     }
-
-    let half = match sign_agreement_receipt(
-        host,
-        principal,
-        &row.quote_record_id,
-        row,
-        owner,
-        DealRole::QuoteAuthor,
-    )
-    .await
-    {
-        Ok(h) => h,
-        Err(e) => return Err(format!("sign agreement receipt failed: {e:?}")),
+    let (principal, _master) = match signing::person_principal(host, now).await {
+        Ok(p) => p,
+        Err(_) => return Ok(false),
     };
 
-    let envelope_json = half.envelope.clone();
-    row.set_half(DealRole::QuoteAuthor, half);
+    let payload = AgreementReceiptPayload {
+        quote_record_id: row.quote_record_id.clone(),
+        counterparty_did: row.counterparty_did.clone(),
+        quote_author_did: row.quote_author_did.clone(),
+        role: DealRole::QuoteAuthor,
+        terms: q_payload.terms.clone(),
+    };
+    if payload.validate().is_err() {
+        return Ok(false);
+    }
+    let payload_str = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+
+    let draft = RecordDraft {
+        version: AGREEMENT_RECEIPT_VERSION,
+        record_type: RECORD_AGREEMENT_RECEIPT.to_string(),
+        subject: row.quote_record_id.clone(),
+        payload: payload_str,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+
+    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
+        Ok(json) => json,
+        Err(e) => return Err(e.to_string()),
+    };
+
+    let envelope = Envelope::from_json(&envelope_json).map_err(|e| e.to_string())?;
+    let record_id = envelope.record_id().map_err(|e| e.to_string())?;
+
+    let half = ReceiptHalf {
+        envelope: envelope_json.clone(),
+        record_id: record_id.clone(),
+        issuer: owner.to_string(),
+        issued_at_secs: envelope.issued_at_secs,
+    };
+    row.quote_author = Some(half);
     row.updated_at_secs = now;
     put_row(host, AGREEMENTS, &row.quote_record_id, &row).await?;
 
-    let (message_id, _, send_error) = send_card_and_file(
+    let body = card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &envelope_json)
+        .map_err(|e| e.to_string())?;
+
+    let send_resp = method::call_sibling::<_, SendInput, SendOutput>(
         host,
-        &row.conversation,
-        RECORD_AGREEMENT_RECEIPT,
-        AGREEMENT_RECEIPT_VERSION,
-        &envelope_json,
-        now,
-        None,
+        services::CONVERSATION,
+        "conversation.send",
+        &SendInput {
+            conversation: row.conversation.clone(),
+            body,
+            content_type: Some(CARD_CONTENT_TYPE.to_string()),
+        },
     )
     .await;
 
-    if let Some(err) = send_error {
-        return Err(err);
-    }
-    if message_id.is_empty() {
-        return Err("send countersigned agreement card returned empty message_id".to_string());
+    let (message_id, sender_timestamp_ms) = match send_resp {
+        Ok(out) => (out.message_id, out.sender_timestamp_ms),
+        Err(_) => (String::new(), now as i64 * 1000),
+    };
+
+    if !message_id.is_empty() {
+        file_own_card(
+            host,
+            &message_id,
+            &row.conversation,
+            RECORD_AGREEMENT_RECEIPT,
+            AGREEMENT_RECEIPT_VERSION,
+            &envelope_json,
+            sender_timestamp_ms,
+            now,
+            None,
+        )
+        .await?;
     }
 
     Ok(true)
