@@ -454,3 +454,91 @@ this is my view of those choices.
   compile. Fixed (c8f181eb).
 - **Q3.** The condition (P1) is met: `remote_reply` reads through
   `read_reply`.
+
+## Plan review round 1 — fixes checked — Claude Sonnet 5.5 (Claude Code desktop), 2026-10-31
+
+Checked the plan at `a3d73a2d` against the findings and the code. I could
+not run code, so I did not repeat the serde check of P1 (the plan author
+says a unit test on `Response` shows `{"result":null}` reads as `None` and
+writes back as `{}`; this agrees with my reading of serde).
+
+**Summary:** P1 to P12 are fixed in the plan, as the statuses say. Two new
+minor findings, P13 and P14, come from the new text. 0 blocker, 0 major,
+2 minor open.
+
+What was checked and found correct:
+
+- **P1.** `read_reply` is split out of `call_sibling` and keeps its
+  errors. `remote_reply` maps `Refused` to the remote error with its
+  `data`, and `BadReply` to `-32603`. `probe_info_verb` returns
+  `Option<DirectoryInfoOutput>`, so `{"result":null}` is `Ok(None)`.
+  `add_source` reads the reply as `Value`, which fixes the dead note
+  (B57). The Step 2 shapes no longer record the buggy no-SynOrg answers,
+  and Step 5 records them on the fixed code. B51, 7.3 and the wire-change
+  list match. Scenario 230 can use `did:key:hForeignWire2`: it routes to
+  `directory2` ([helpers.rs:292-296](../../../../crates/roym_web/tests/dual_build_parity/helpers.rs#L292)),
+  and `harness()` builds a new harness per test, so `directory2` has no
+  SynOrg unless the test makes one.
+- **P2.** The test `a_wire_publish_is_recorded_under_the_verified_caller`
+  is in Step 8, B53, 7.2 and the exit criteria. Scenario 83 is a model for
+  the limit part. (See P13 for the helper.)
+- **P3.** The fix adds `#[serde(default)]` to `rules`, `area`,
+  `categories`, `support_contact` and `dispute_path`, and keeps `name`,
+  `retention_secs`, `member_count` and `listing_id` required. This is the
+  first option of my finding. It is a good choice and the reason given
+  (a default would be a false claim) is right. The status row says "a
+  different fix than suggested"; it is one of the two options I listed.
+- **P4 to P12.** B55, B56, B42 and the wire-change list; the new
+  `method/tests/directory.rs`; scenario numbers 229 and 230 (the highest
+  existing is 228) and the module wording (24 modules, 19 with scenarios;
+  25 and 20 after Step 7; 224 scenarios); the whole-call allowance in
+  D-A2c-16 with its three-case test; the new backlog row; the two extra
+  wire cases; the nested-key sentence in D-A2c-3 and the developer guide;
+  the four text fixes; and the requirements-spec and `:1141` lines in
+  section 9. No stale "223", "226" or "two-line" text is left in the
+  plan.
+- **Owner-question notes.** Q2 (destructure `self`) and Q3 (condition met)
+  are as the review notes say.
+
+### New findings
+
+- **P13 — minor.** *Where:* Step 8, test
+  `a_wire_publish_is_recorded_under_the_verified_caller`.
+  [fixtures.rs:487-510](../../../../crates/roym_web/tests/dual_build_parity/fixtures.rs#L487).
+  *Problem:* the plan says to call `wire_invoke_as` "with
+  `foreign_searcher_caller()`". `wire_invoke_as` takes an `AuthLevel`, not
+  a caller. It builds its own caller with an empty `caller_did`. There is
+  no wire helper that takes a `CallerContext` (`wire_invoke` always uses
+  the owner). So the call as written does not compile, and with
+  `AuthLevel::Delegated` it would make `Verified("")`, which proves
+  nothing about a real DID. The limit part also needs a small limit
+  first: the default is 20 per day
+  ([safety.rs:61-65](../../../../crates/roym_core/src/safety.rs#L61)), so
+  "publishes until the limit refuses it" would need 21 signed listings
+  unless the test sets `max_per_window: 1` as scenario 83 does.
+  *Failure case:* the implementer writes the test as planned, finds it
+  cannot set a DID, and either adds a helper without a plan or tests with
+  an empty DID, which would pass even if `published_by` were wrong.
+  *Fix:* in Step 8, add a helper `wire_invoke_with(h, svc, env, caller:
+  CallerContext)` beside `wire_invoke_as` (and let `wire_invoke_as` call
+  it, to avoid a second copy of the body). Say that the test first sets
+  `max_per_window: 1` with `directory.set-settings`, as scenario 83 does.
+  Name the new helper in the files list of Step 8.
+  *Status:* Open.
+
+- **P14 — minor.** *Where:* Step 5, "Record two new shape files …
+  `UPDATE_METHOD_SHAPES=1` for these two cases only".
+  [shapes.rs:87-97](../../../../crates/roym_web/tests/method_contract/shapes.rs#L87).
+  *Problem:* `UPDATE_METHOD_SHAPES=1` rewrites every shape case that the
+  running test function reaches. It has no per-case switch. The plan
+  asks for "these two cases only", but the cases would sit inside
+  `client_shapes`, which also holds the Step 2 cases. The run would
+  rewrite those files too. They should come out byte-for-byte the same,
+  but the rule "every shape file of Step 2 stays unchanged" is then
+  checked only by `git diff`, and a real change would be hidden by the
+  rewrite.
+  *Fix:* put the two B57 cases in their own test function (for example
+  `no_synorg_shapes`), and record with a filter on that name. Then the
+  Step 2 files are never written. Keep the `git diff --stat` check on
+  `method_shapes/` as the proof.
+  *Status:* Open.
