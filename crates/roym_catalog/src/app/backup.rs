@@ -123,6 +123,8 @@ pub(crate) async fn import<H: AppHost>(host: &H, input: ImportInput) -> Reply<Ca
 
     let mut counts = BTreeMap::new();
     for (collection, muts) in prepared {
+        // Re-ensure the collection; indexes are added lazily on first
+        // regular write, so an import needs none of its own.
         if let Err(e) = ensure_coll(host, collection, &[]).await {
             return Err(Response::internal_error(e));
         }

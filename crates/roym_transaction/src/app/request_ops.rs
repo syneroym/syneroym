@@ -211,6 +211,10 @@ async fn sign_and_store_request<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
+    // The record is stored before the card is sent. A send that fails leaves a
+    // signed record this node holds and the peer does not, which a later `set`
+    // or a retry repairs; the reverse -- a card the peer holds and this node
+    // cannot show -- has no repair.
     if let Err(e) = put_bytes(host, REQUEST_HISTORY, &record_id, envelope_json.as_bytes()).await {
         return Err(Response::internal_error(e));
     }

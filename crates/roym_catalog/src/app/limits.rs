@@ -40,6 +40,10 @@ pub(crate) async fn publication_secs_in_window<H: AppHost>(
 ) -> Result<Vec<u64>, String> {
     ensure_coll(host, PUBLICATIONS, &[idx("at_secs", IndexType::Numeric)]).await?;
     let floor = now.saturating_sub(limits.window_secs);
+    // Filtered at the host rather than scanned and dropped in the guest.
+    // Still not an indexed scan -- the filter compiler binds the JSON
+    // path as a parameter, which SQLite will not match against an
+    // expression index -- but far fewer rows cross the host boundary.
     let filter = json!({ "at_secs": { "$gt": floor } });
     paging::filter_map(host, PUBLICATIONS, Some(filter.to_string()), |row| {
         let v: Value = serde_json::from_slice(&row.payload).ok()?;

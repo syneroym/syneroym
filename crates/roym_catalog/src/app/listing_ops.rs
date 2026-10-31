@@ -498,6 +498,8 @@ pub(crate) async fn list<H: AppHost>(
     }
     let offset = usize::try_from(input.offset.unwrap_or(0)).unwrap_or(usize::MAX);
     let limit = usize::try_from(input.limit.unwrap_or(100)).unwrap_or(usize::MAX);
+    // The host sieves by status when the caller asked for one,
+    // rather than every row crossing the boundary to be dropped here.
     let filter = input.status.map(|s| json!({ "status": s }).to_string());
 
     let mut rows: Vec<ListingRow> = match paging::query_all(host, LISTINGS, filter).await {
@@ -510,6 +512,8 @@ pub(crate) async fn list<H: AppHost>(
         .skip(offset)
         .take(limit)
         .map(|r| {
+            // The title lives inside the signed envelope; a listing row that
+            // could not be parsed still lists, with an empty title.
             let title = serde_json::from_str::<Envelope>(&r.envelope)
                 .ok()
                 .and_then(|e| e.payload.get("title").and_then(Value::as_str).map(str::to_string))
@@ -535,6 +539,10 @@ pub(crate) async fn history<H: AppHost>(
     if let Err(e) = ensure_coll(host, LISTING_HISTORY, &[]).await {
         return Err(Response::internal_error(e));
     }
+    // The history rows are keyed by record_id, so this gathers every
+    // envelope whose payload names this listing_id, oldest first. The
+    // `supersedes` chain in each payload is the exact order if a searcher
+    // needs to separate two versions minted in the same second.
     let history = match paging::envelope_history(
         host,
         LISTING_HISTORY,
