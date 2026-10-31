@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, panic};
 
 use serde_json::json;
 
@@ -57,10 +57,12 @@ fn check_allows_req_method_only_in_the_admit_call() {
          {}\nResponse::method_not_found(&req.method);\n",
     )
     .unwrap();
-    let res_extra = std::panic::catch_unwind(|| {
+    let res_extra = panic::catch_unwind(|| {
         assert_service_table(DIRECTORY, &rows, &[], temp_extra.path());
     });
-    assert!(res_extra.is_err());
+    let err_extra = res_extra.unwrap_err();
+    let msg_extra = err_extra.downcast_ref::<String>().unwrap();
+    assert!(msg_extra.contains("req.method used outside"), "got: {msg_extra}");
 
     // Failing case 2: admit::admit with a different list name
     let temp_other = tempfile::tempdir().unwrap();
@@ -70,10 +72,12 @@ fn check_allows_req_method_only_in_the_admit_call() {
          }\nResponse::method_not_found(&req.method);\n",
     )
     .unwrap();
-    let res_other = std::panic::catch_unwind(|| {
+    let res_other = panic::catch_unwind(|| {
         assert_service_table(DIRECTORY, &rows, &[], temp_other.path());
     });
-    assert!(res_other.is_err());
+    let err_other = res_other.unwrap_err();
+    let msg_other = err_other.downcast_ref::<String>().unwrap();
+    assert!(msg_other.contains("req.method used outside"), "got: {msg_other}");
 }
 
 #[test]
@@ -125,7 +129,8 @@ fn publish_output_writes_both_shapes_and_reads_them_back() {
 fn search_output_reads_an_answer_with_only_hits_and_truncated() {
     let json_trunc = json!({
         "hits": [],
-        "truncated": true
+        "truncated": true,
+        "zz": 1
     });
     let out: SearchOutput = serde_json::from_value(json_trunc).unwrap();
     assert_eq!(out.hits.len(), 0);
@@ -152,7 +157,8 @@ fn directory_info_output_reads_an_answer_with_only_name_and_counts() {
     let val = json!({
         "name": "Coop Guild",
         "retention_secs": 86400,
-        "member_count": 5
+        "member_count": 5,
+        "zz": 1
     });
     let out: DirectoryInfoOutput = serde_json::from_value(val).unwrap();
     assert_eq!(out.name, "Coop Guild");

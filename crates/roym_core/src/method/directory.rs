@@ -1,3 +1,11 @@
+//! Wire types for the directory service contract between nodes.
+//!
+//! Types in this module must never use `deny_unknown_fields`, allowing
+//! newer and older nodes to interoperate across schema additions. Fields
+//! with natural empty values use `#[serde(default)]`, while identity and
+//! sizing fields (`name`, `retention_secs`, `member_count`, `listing_id`)
+//! remain required because defaulting them would produce misleading records.
+
 use serde::{Deserialize, Serialize};
 
 use crate::{area::Area, directory::SearchHit, membership::MembershipEvidence};
@@ -9,6 +17,7 @@ pub struct PublishInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishOutput {
+    // Required field: a default listing ID would produce a false record reference.
     pub listing_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_id: Option<String>,
@@ -45,6 +54,7 @@ pub struct SearchOutput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DirectoryInfoOutput {
+    // Required fields: a default here would make a false claim about the remote directory.
     pub name: String,
     #[serde(default)]
     pub rules: String,

@@ -19,8 +19,9 @@ use crate::{method::MethodInfo, router, services::Service};
 ///   allow them.
 /// - Every method listed in `wire` exists in the method table.
 /// - Service source files under `service_src_dir` do not have hand-written
-///   match arms, inspect `req.method` outside `Response::method_not_found`, or
-///   mention unlisted method string literals.
+///   match arms, inspect `req.method` outside `Response::method_not_found` or
+///   the allowed `admit::admit` call, or mention unlisted method string
+///   literals.
 ///
 /// # Limitations
 /// - The `Value` check inspects only the outer type name; nested fields
@@ -190,7 +191,7 @@ fn check_file_lines(
                     || line.contains("admit::admit(host, api::WIRE_REACHABLE, &req.method)"));
             if !is_allowed {
                 problems.push(format!(
-                    "{}:{}: req.method used outside allowed method_not_found: {}",
+                    "{}:{}: req.method used outside allowed method_not_found or admit::admit: {}",
                     path.display(),
                     line_idx + 1,
                     trimmed
