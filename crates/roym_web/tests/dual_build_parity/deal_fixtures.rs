@@ -82,25 +82,78 @@ pub(crate) async fn setup_listing_with_slot(
     (listing_id, slot_id)
 }
 
-pub(crate) async fn setup_accepted_counterparty_quote(h: &Harness, conv: &str) -> String {
+#[allow(dead_code)]
+pub(crate) async fn setup_author_slot_quote_accepted_by_peer(
+    h: &Harness,
+    conv: &str,
+    listing_name: &str,
+) -> String {
+    let start = wall_now() + 1_000_000;
+    let end = start + 3600;
+    let (listing_id, slot_id) = setup_listing_with_slot(h, listing_name, start, end, 1).await;
+    let (peer_req_id, _) = setup_peer_request(h, conv).await;
+    let mut q_slot_params = valid_quote_params(conv, &peer_req_id);
+    q_slot_params["listing_id"] = json!(listing_id);
+    q_slot_params["slot_id"] = json!(slot_id);
+    q_slot_params["terms"]["schedule"] = json!({ "earliest_secs": start, "latest_secs": end });
+    let (_, q_slot_set_nat) = both_rpc(h, "quote.set", q_slot_params).await;
+    let q_slot_rec_id = q_slot_set_nat["result"]["record_id"].as_str().unwrap().to_string();
+
+    let (_, get_q_slot_nat) = both_rpc(
+        h,
+        "quote.get",
+        json!({ "quote_id": q_slot_set_nat["result"]["quote_id"].as_str().unwrap() }),
+    )
+    .await;
+    let env_slot =
+        Envelope::from_json(get_q_slot_nat["result"]["envelope"].as_str().unwrap()).unwrap();
+    let (agr_id, agr_env) = peer_counterparty_receipt(
+        conv,
+        &q_slot_rec_id,
+        &peer_did(),
+        &owner_did(),
+        env_slot.payload["terms"].clone(),
+        1_001_000,
+    );
+    deliver_peer_card(
+        h,
+        &format!("m-agr-{agr_id}"),
+        conv,
+        &peer_did(),
+        transaction::RECORD_AGREEMENT_RECEIPT,
+        transaction::AGREEMENT_RECEIPT_VERSION,
+        &agr_env,
+    )
+    .await;
+    both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+
+    q_slot_rec_id
+}
+
+pub(crate) async fn setup_synced_counterparty_quote(
+    h: &Harness,
+    conv: &str,
+    seq: u32,
+    msg_id: &str,
+) -> String {
     let req = both_rpc(
         h,
         "request.set",
         json!({
             "conversation": conv,
-            "description": "Prune the hedge",
+            "description": "Counterparty deal",
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
     .await
-    .0;
+    .1;
     let req_rec_id = req["result"]["record_id"].as_str().unwrap().to_string();
 
-    let (q_rec_id, q_env) = peer_signed_quote(conv, 1, &req_rec_id, &owner_did(), None, 1_000);
+    let (q_rec_id, q_env) = peer_signed_quote(conv, seq, &req_rec_id, &owner_did(), None, 1_000);
     deliver_peer_card(
         h,
-        "m-quote-157",
+        msg_id,
         conv,
         &peer_did(),
         transaction::RECORD_QUOTE,
@@ -109,6 +162,11 @@ pub(crate) async fn setup_accepted_counterparty_quote(h: &Harness, conv: &str) -
     )
     .await;
     both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    q_rec_id
+}
+
+pub(crate) async fn setup_accepted_counterparty_quote(h: &Harness, conv: &str) -> String {
+    let q_rec_id = setup_synced_counterparty_quote(h, conv, 1, "m-quote-157").await;
     both_rpc(h, "agreement.accept", json!({ "quote_record_id": q_rec_id })).await;
     q_rec_id
 }

@@ -267,20 +267,19 @@ async fn absent_params_is_accepted_for_no_params_method() {
 async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_rejected() {
     let h = harness().await;
 
-    // 1. listing.get with listing_id: 5
+    // listing.get with listing_id: 5
     let (w, _) = post_rpc(&h, "listing.get", Some(json!({ "listing_id": 5 }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "listing_id");
     assert!(w["error"]["message"].as_str().unwrap().contains("invalid type"));
 
-    // 2. availability.set with a slot having capacity: "two"
+    // availability.set with a slot having capacity: "two"
     let (w, _) = post_rpc(
         &h,
         "availability.set",
         Some(json!({
             "listing_id": "lst_test",
             "slots": [{
-                "slot_id": "s1",
                 "start_secs": 100,
                 "end_secs": 200,
                 "capacity": "two",
@@ -291,16 +290,16 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "slots[0].capacity");
 
-    // 3. availability.set with unknown slot key colour
+    // availability.set with unknown slot key colour
     let (w, _) = post_rpc(
         &h,
         "availability.set",
         Some(json!({
             "listing_id": "lst_test",
             "slots": [{
-                "slot_id": "s1",
                 "start_secs": 100,
                 "end_secs": 200,
+                "capacity": 1,
                 "colour": "blue",
             }],
         })),
@@ -309,59 +308,47 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "slots[0].colour");
 
-    // 4. listing.verify with envelope as an object
+    // listing.verify with envelope as an object
     let (w, _) =
         post_rpc(&h, "listing.verify", Some(json!({ "envelope": { "issuer": "x" } }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "envelope");
 
-    // 5. request.list with unknown key agreement
+    // request.list with unknown key agreement
     let (w, _) = post_rpc(&h, "request.list", Some(json!({ "agreement": "agr1" }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "agreement");
 
-    // 6. booking.list with agreement
+    // booking.list with agreement
     let (w, _) = post_rpc(&h, "booking.list", Some(json!({ "agreement": "agr1" }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "agreement");
 
-    // 7. quote.set with terms.quote_expires_at_secs
-    let (w, _) = post_rpc(
-        &h,
-        "quote.set",
-        Some(json!({
-            "request_record_id": "rec_req",
-            "expires_in_secs": 3600,
-            "terms": {
-                "currency": "EUR",
-                "amount_minor": 1000,
-                "payment_timing": "after-work",
-                "payment_methods": ["cash"],
-                "quote_expires_at_secs": 12345,
-            },
-        })),
-    )
-    .await;
+    // quote.set with terms.quote_expires_at_secs
+    let mut q_params = super::fixtures::valid_quote_params("c1", "rec_req");
+    q_params["terms"]["quote_expires_at_secs"] = json!(12345);
+    let (w, _) = post_rpc(&h, "quote.set", Some(q_params)).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "terms.quote_expires_at_secs");
 
-    // 8. booking.list with state: "nonsense"
+    // booking.list with state: "nonsense"
     let (w, _) = post_rpc(&h, "booking.list", Some(json!({ "state": "nonsense" }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "state");
 
-    // 9. request.list with params absent works
+    // request.list with params absent works
     let (w, _) = post_rpc(&h, "request.list", None).await;
     assert!(w.get("error").is_none(), "request.list with no params must succeed: {w}");
     assert!(w.get("result").is_some());
 
-    // 10. request.set with malformed tagged area block
+    // request.set with malformed tagged area block
     let (w, _) = post_rpc(
         &h,
         "request.set",
         Some(json!({
             "conversation": "c1",
-            "summary": "Need help",
+            "description": "Need help",
+            "data_use_notice": "standard",
             "area": {
                 "kind": "circle",
                 "lat_e6": 0,
@@ -373,4 +360,8 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     .await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "area");
+    assert_eq!(
+        w["error"]["message"].as_str().unwrap(),
+        "invalid params: area: invalid type: string \"x\", expected u64"
+    );
 }

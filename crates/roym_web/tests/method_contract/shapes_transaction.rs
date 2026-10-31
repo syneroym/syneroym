@@ -6,7 +6,8 @@ use syneroym_signed_record::Envelope;
 
 use super::{
     deal_fixtures::{
-        seed_row, setup_active_agreement, setup_listing_with_slot, setup_peer_request,
+        seed_row, setup_active_agreement, setup_author_slot_quote_accepted_by_peer,
+        setup_listing_with_slot, setup_peer_request, setup_synced_counterparty_quote,
     },
     fixtures::{
         deliver_peer_card, enrol_signing, open_conv, peer_counterparty_receipt, peer_did,
@@ -135,40 +136,8 @@ async fn deal_request_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
 }
 
 async fn deal_agreement_shapes(h: &Harness, conv: &str) {
-    let start = wall_now() + 1_000_000;
-    let end = start + 3600;
-    let (listing_id, slot_id) =
-        setup_listing_with_slot(h, "deal-slot-listing", start, end, 1).await;
-    let (peer_req_id, _) = setup_peer_request(h, conv).await;
-    let mut q_slot_params = valid_quote_params(conv, &peer_req_id);
-    q_slot_params["listing_id"] = json!(listing_id);
-    q_slot_params["slot_id"] = json!(slot_id);
-    q_slot_params["terms"]["schedule"] = json!({ "earliest_secs": start, "latest_secs": end });
-    let q_slot_set = rpc(h, "quote.set", q_slot_params).await;
-    let q_slot_rec_id = q_slot_set["record_id"].as_str().unwrap().to_string();
-
-    let get_q_slot =
-        rpc(h, "quote.get", json!({ "quote_id": q_slot_set["quote_id"].as_str().unwrap() })).await;
-    let env_slot = Envelope::from_json(get_q_slot["envelope"].as_str().unwrap()).unwrap();
-    let (agr_id, agr_env) = peer_counterparty_receipt(
-        conv,
-        &q_slot_rec_id,
-        &peer_did(),
-        &owner_did(),
-        env_slot.payload["terms"].clone(),
-        1_001_000,
-    );
-    deliver_peer_card(
-        h,
-        &format!("m-agr-{agr_id}"),
-        conv,
-        &peer_did(),
-        transaction::RECORD_AGREEMENT_RECEIPT,
-        transaction::AGREEMENT_RECEIPT_VERSION,
-        &agr_env,
-    )
-    .await;
-    rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    let q_slot_rec_id =
+        setup_author_slot_quote_accepted_by_peer(h, conv, "deal-slot-listing").await;
 
     let agr_accept_author =
         rpc(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
@@ -178,31 +147,7 @@ async fn deal_agreement_shapes(h: &Harness, conv: &str) {
         rpc(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
     assert_shape("agreement_accept_already_accepted", &agr_accept_again);
 
-    let cp_req = rpc(
-        h,
-        "request.set",
-        json!({
-            "conversation": conv,
-            "description": "Counterparty deal",
-            "categories": ["gardening"],
-            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
-        }),
-    )
-    .await;
-    let cp_req_rec_id = cp_req["record_id"].as_str().unwrap().to_string();
-    let (cp_q_rec_id, cp_q_env) =
-        peer_signed_quote(conv, 3, &cp_req_rec_id, &owner_did(), None, 1_000);
-    deliver_peer_card(
-        h,
-        "m-quote-cp",
-        conv,
-        &peer_did(),
-        transaction::RECORD_QUOTE,
-        transaction::QUOTE_VERSION,
-        &cp_q_env,
-    )
-    .await;
-    rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    let cp_q_rec_id = setup_synced_counterparty_quote(h, conv, 3, "m-quote-cp").await;
 
     let agr_accept_cp = rpc(h, "agreement.accept", json!({ "quote_record_id": cp_q_rec_id })).await;
     assert_shape("agreement_accept_counterparty", &agr_accept_cp);
@@ -213,6 +158,7 @@ async fn deal_agreement_shapes(h: &Harness, conv: &str) {
     let agr_list = rpc(h, "agreement.list", json!({})).await;
     assert_shape("agreement_list_with_rows", &agr_list);
 
+    let agr_env = agr_get["counterparty"]["envelope"].as_str().unwrap();
     let agr_ver_good = rpc(h, "agreement.verify", json!({ "envelope": agr_env })).await;
     assert_shape("agreement_verify_good", &agr_ver_good);
     let agr_ver_bad = rpc(h, "agreement.verify", json!({ "envelope": "tampered" })).await;
@@ -234,39 +180,7 @@ async fn booking_author_shapes(h: &Harness, conv: &str) -> String {
     let b_ping = rpc(h, "booking.ping", json!({})).await;
     assert_shape("booking_ping", &b_ping);
 
-    let start = wall_now() + 1_000_000;
-    let end = start + 3600;
-    let (listing_id, slot_id) = setup_listing_with_slot(h, "booking-listing", start, end, 1).await;
-    let (peer_req_id, _) = setup_peer_request(h, conv).await;
-    let mut q_slot_params = valid_quote_params(conv, &peer_req_id);
-    q_slot_params["listing_id"] = json!(listing_id);
-    q_slot_params["slot_id"] = json!(slot_id);
-    q_slot_params["terms"]["schedule"] = json!({ "earliest_secs": start, "latest_secs": end });
-    let q_slot_set = rpc(h, "quote.set", q_slot_params).await;
-    let q_slot_rec_id = q_slot_set["record_id"].as_str().unwrap().to_string();
-
-    let get_q_slot =
-        rpc(h, "quote.get", json!({ "quote_id": q_slot_set["quote_id"].as_str().unwrap() })).await;
-    let env_slot = Envelope::from_json(get_q_slot["envelope"].as_str().unwrap()).unwrap();
-    let (agr_id, agr_env) = peer_counterparty_receipt(
-        conv,
-        &q_slot_rec_id,
-        &peer_did(),
-        &owner_did(),
-        env_slot.payload["terms"].clone(),
-        1_001_000,
-    );
-    deliver_peer_card(
-        h,
-        &format!("m-agr-{agr_id}"),
-        conv,
-        &peer_did(),
-        transaction::RECORD_AGREEMENT_RECEIPT,
-        transaction::AGREEMENT_RECEIPT_VERSION,
-        &agr_env,
-    )
-    .await;
-    rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    let q_slot_rec_id = setup_author_slot_quote_accepted_by_peer(h, conv, "booking-listing").await;
     rpc(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
 
     let b_get_author = rpc(h, "booking.get", json!({ "agreement": q_slot_rec_id })).await;
@@ -290,31 +204,7 @@ async fn booking_author_shapes(h: &Harness, conv: &str) -> String {
 }
 
 async fn booking_counterparty_shapes(h: &Harness, conv: &str) {
-    let cp_req = rpc(
-        h,
-        "request.set",
-        json!({
-            "conversation": conv,
-            "description": "Counterparty deal",
-            "categories": ["gardening"],
-            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
-        }),
-    )
-    .await;
-    let cp_req_rec_id = cp_req["record_id"].as_str().unwrap().to_string();
-    let (cp_q_rec_id, cp_q_env) =
-        peer_signed_quote(conv, 2, &cp_req_rec_id, &owner_did(), None, 1_000);
-    deliver_peer_card(
-        h,
-        "m-quote-cp-book",
-        conv,
-        &peer_did(),
-        transaction::RECORD_QUOTE,
-        transaction::QUOTE_VERSION,
-        &cp_q_env,
-    )
-    .await;
-    rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    let cp_q_rec_id = setup_synced_counterparty_quote(h, conv, 2, "m-quote-cp-book").await;
     rpc(h, "agreement.accept", json!({ "quote_record_id": cp_q_rec_id })).await;
 
     let b_get_cp = rpc(h, "booking.get", json!({ "agreement": cp_q_rec_id })).await;
