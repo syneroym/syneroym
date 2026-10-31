@@ -1,6 +1,6 @@
 //! Client half: directory sources and publication to source.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
@@ -11,7 +11,7 @@ use syneroym_roym_core::{
     directory::{DEFAULT_SOURCE_TIMEOUT_MS, MAX_SOURCES, SourceError},
     envelope::Response,
     method::{
-        NoParams, Reply, SiblingError, call_sibling,
+        self, NoParams, Reply, SiblingError, call_sibling,
         catalog::{ListingGetOutput, ListingKeyInput},
         directory::{DirectoryInfoOutput, PublishOutput},
     },
@@ -65,8 +65,8 @@ pub(crate) struct PublishToSourceInput {
 
 /// One `invoke` reply from a remote directory: its result read as `O`,
 /// or its error returned unchanged.
-fn remote_reply<O: serde::de::DeserializeOwned>(raw: &str) -> Reply<O> {
-    match syneroym_roym_core::method::read_reply::<O>(raw) {
+fn remote_reply<O: DeserializeOwned>(raw: &str) -> Reply<O> {
+    match method::read_reply::<O>(raw) {
         Ok(v) => Ok(v),
         Err(SiblingError::Refused(e)) => Err(Response { result: None, error: Some(e) }),
         Err(SiblingError::BadReply(text)) => {
