@@ -3,14 +3,13 @@
 *Reader: the developer (or AI) who implements slice A2c. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-10-31.** The owner has not answered Q1 to Q7
-yet. Section 5 and section 6 follow the recommendations. If an answer is
-different, change the decision of that question and the steps that name it
-before you start.
+**Status: plan written, 2026-10-31.** The owner answered Q1 to Q7 (all
+option (a)) on 2026-10-31. Section 5 and section 6 follow the answers.
 
 **Size and PR.** L. One PR on `feat/m08a-a2c-typed-methods`, with the
 commits of section 6 in that order. The branch starts from `main` at
-`e8c7b41d` (A2b is merged, PR #335). A2c is the last part of A2. A4 needs
+`e8c7b41d` (A2b is merged, PR #335) and has `main` at `a164e09d` merged
+in (PR #336, Hub screens only). A2c is the last part of A2. A4 needs
 it (task.md section 4).
 
 ## 0. Read first, and the rules
@@ -123,8 +122,7 @@ change doc's `demo:` list keeps its current line.
 ## 2. Points for the owner
 
 Each question has the options, a recommendation and the reason. Section 5
-and section 6 follow the recommendations. The owner's answer goes under
-each question.
+and section 6 follow the owner's answers, which are under each question.
 
 Three choices are not questions, because A2a or A2b already decided them
 for every service: closed word sets in inputs are enums (D-A2a-10; Q5 is
@@ -165,8 +163,7 @@ native host reads the fixed `invocation_origin` of its per-call host
 (b) changes about 140 handlers for one user. (c) is a hand-written arm,
 which the check forbids (OF-15).
 
-Owner answer:
-
+Owner answer: (a), 2026-10-31.
 ### Q2. `directory.set-settings`: what type the input has
 
 Today the whole `params` is read as `SynOrgSettings`
@@ -193,8 +190,7 @@ strict, with no wire change. `publication_limits` inside it stays
 `PublicationLimits` (a nested type, as in D-A2b-3), so an unknown key
 inside that block is ignored.
 
-Owner answer:
-
+Owner answer: (a), 2026-10-31.
 ### Q3. The two pass-through methods
 
 `directory.probe-info` and `directory.publish-to-source` return a remote
@@ -223,8 +219,7 @@ kind, gives `-32603` until this node is upgraded. The client half already
 reads search hits the same strict way (B58), so this adds no new kind of
 hole. `probe-info` is used only by `roymctl roym directory info`.
 
-Owner answer:
-
+Owner answer: (a), 2026-10-31.
 ### Q4. `web`: what typing means for the gateway
 
 `web` has one method of its own, `session.whoami`
@@ -260,8 +255,7 @@ plainly why the rest is not a table. The forwarder is safe: the check's
 routing rule proves every typed row routes to its service, and `web`
 forwards by the same `router::route`.
 
-Owner answer:
-
+Owner answer: (a), 2026-10-31.
 ### Q5. `SearchQuery`'s `open_to` and `booking_mode`: `String` or enum
 
 `SearchQuery` is the input of the wire-reachable `directory.search`, and
@@ -287,8 +281,7 @@ call, instead of being sent to every source and refused by each (B46). No
 caller sends `open_to` or `booking_mode` except parity scenario 114, which
 sends a valid word.
 
-Owner answer:
-
+Owner answer: (a), 2026-10-31.
 ### Q6. The parity harness's two hand-made lists of directory methods
 
 `trust_fixtures::ALL_DIRECTORY_VERBS` (37 names) and
@@ -314,8 +307,7 @@ harness keeps 222 scenarios. `dual_build_parity/directory.rs` is at its
 cap on the oversized list (1135 lines), so the change there must not add a
 line (D-A2c-17).
 
-Owner answer:
-
+Owner answer: (a), 2026-10-31.
 ### Q7. The backlog row "Roym's sibling boundary is untyped JSON, with no WIT-level contract between services"
 
 After A2c every Roym service is typed. The row
@@ -332,11 +324,10 @@ untyped JSON string. Those two parts stay true.
 **Recommendation: (a).** The title then says what is still open. (c) keeps
 a title that is false. (b) loses two real gaps.
 
-Owner answer:
-
+Owner answer: (a), 2026-10-31.
 ## 3. Facts checked in the code
 
-All paths are from the repository root. Line numbers are at `e8c7b41d`.
+All paths are from the repository root. Line numbers are at `a164e09d`.
 
 ### 3.1 What A2a and A2b left for A2c
 
@@ -547,25 +538,25 @@ non-object `params`.
   :101 (the eight settings keys; `publication_limits` from the last
   `directory.settings` answer or `{window_secs, max_per_window}`),
   `directory.set-limits {window_secs, max_per_window}` :172, `member.list`
-  :206, `member.remove {did}` :217, `member.add {did, note}` :239,
-  `directory.publications` :259, `directory.unpublish {listing_id}` :271.
+  :205, `member.remove {did}` :216, `member.add {did, note}` :238,
+  `directory.publications` :258, `directory.unpublish {listing_id}` :270.
   `screens/synorg_members.ts`: `credential.list`, `revocation.list`,
-  `member.decisions` with no params :60-83, `credential.issue {member_did,
-  categories, expires_at_secs}` :141, `member.suspend {member_did, rule,
-  reason, scope?, until_secs?}` :195-209, `revocation.issue
-  {credential_record_id, reason}` :276, `member.lift {decision_record_id}`
-  :325. `screens/directory.ts`: `directory.check-standing {source,
+  `member.decisions` with no params :60-82, `credential.issue {member_did,
+  categories, expires_at_secs}` :140, `member.suspend {member_did, rule,
+  reason, scope?, until_secs?}` :192-208, `revocation.issue
+  {credential_record_id, reason}` :275, `member.lift {decision_record_id}`
+  :324. `screens/directory.ts`: `directory.check-standing {source,
   member_did}` :49, `directory.sources` :114, `directory.remove-source
-  {did}` :141, `directory.add-source {did, label?}` :183 (`label:
+  {did}` :140, `directory.add-source {did, label?}` :182 (`label:
   undefined` is dropped by `JSON.stringify`), `directory.merge {run_id}`
-  :272. `directory/search.ts`: `directory.start-run` :69,
+  :271. `directory/search.ts`: `directory.start-run` :69,
   `directory.query-source {run_id, source, query}` :96 (`query` holds only
-  `text` and `categories`, `screens/directory.ts:251-257`),
+  `text` and `categories`, `screens/directory.ts:250-256`),
   `directory.merge` :209, `directory.run-envelope {run_id, record_id}`
   :214. `screens/memberships.ts`: `directory.sources`,
   `directory.memberships`, `directory.check-standing`.
   `screens/listings.ts`: `directory.publish-to-source {source,
-  listing_id}` :216; a refusal is shown from `data.admission` and
+  listing_id}` :220; a refusal is shown from `data.admission` and
   `data.membership`. `screens/backup.ts`: `directory.export` and
   `directory.import {bundle}`. `rpc.ts` sends `params: {}` when none is
   given. **The Hub never calls `session.whoami`**: it reads the auth
@@ -741,7 +732,7 @@ methods (section 3.6), and every `data` of a refusal (`admission`,
 
 ## 5. Decisions this plan makes
 
-These follow the recommendations of Q1 to Q7. Every A2a and A2b decision
+These follow the owner's answers to Q1 to Q7. Every A2a and A2b decision
 (D-A2a-1 to D-A2a-18, D-A2b-1 to D-A2b-17) applies as it is. Each question
 has its decision: Q1 → D-A2c-7, Q2 → D-A2c-8, Q3 → D-A2c-9, Q4 → D-A2c-15,
 Q5 → D-A2c-6, Q6 → D-A2c-17, Q7 → section 8.
