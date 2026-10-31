@@ -78,6 +78,9 @@ syneroym_roym_core::service_methods! {
     "directory.run-envelope": client_merge::run_envelope [client_merge::RunEnvelopeInput => Option<client_merge::RunEnvelopeOutput>],
     "directory.check-standing": held::check_standing [held::CheckStandingInput => held::CheckStandingOutput],
     "directory.memberships": held::memberships [app::MemberFilterInput => held::MembershipsOutput],
+    // Not `publication_ops::publish` -- this fetches one of this node's own
+    // catalog listings and calls `directory.publish` on a remote source;
+    // `publication_ops::publish` is the inbound side that remote call lands on.
     "directory.publish-to-source": client_sources::publish_to_source [client_sources::PublishToSourceInput => PublishOutput],
     "directory.signing-status": signing_status [NoParams => SigningStatusOutput],
     "directory.install-signing-certificate": install_signing_certificate [InstallCertificateInput => InstallCertificateOutput],

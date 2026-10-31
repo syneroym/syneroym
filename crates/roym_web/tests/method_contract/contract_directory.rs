@@ -206,7 +206,7 @@ async fn whoami_rpc_rejects_unknown_fields() {
 async fn a_wire_publish_is_recorded_under_the_verified_caller() {
     let h = harness().await;
 
-    // 1. Set limit to 1 per window
+    // Set limit to 1 per window
     let (w, n) = both_rpc(
         &h,
         "directory.set-settings",
@@ -238,7 +238,7 @@ async fn a_wire_publish_is_recorded_under_the_verified_caller() {
             .await;
     let env1 = g1["result"]["envelope"].as_str().unwrap();
 
-    // 2. Wire publish with foreign_searcher_caller()
+    // Wire publish with foreign_searcher_caller()
     let caller = foreign_searcher_caller();
     let (pw1, pn1) = wire_invoke_with(
         &h,
@@ -258,8 +258,8 @@ async fn a_wire_publish_is_recorded_under_the_verified_caller() {
         rows.iter().find(|r| r["listing_id"] == l1["result"]["listing_id"]).expect("row present");
     assert_eq!(row["published_by"], "did:key:zForeignSearcher");
 
-    // 3. Second wire publish by the same caller is refused with data.admission ==
-    //    "rate-limited"
+    // Second wire publish by the same caller is refused with data.admission ==
+    // "rate-limited"
     let (l2, _) = post_rpc(
         &h,
         "listing.set",
@@ -281,8 +281,8 @@ async fn a_wire_publish_is_recorded_under_the_verified_caller() {
     assert_eq!(pw2, pn2);
     assert_eq!(pw2["error"]["data"]["admission"], "rate-limited");
 
-    // 4. Local publish by the owner after that is accepted: limit is keyed on
-    //    caller, not owner
+    // Local publish by the owner after that is accepted: limit is keyed on
+    // caller, not owner
     let (pw3, pn3) = post_rpc(&h, "directory.publish", Some(json!({ "envelope": env2 }))).await;
     assert_eq!(pw3, pn3);
     assert!(pw3.get("result").is_some(), "local publish by owner should succeed: {pw3}");
