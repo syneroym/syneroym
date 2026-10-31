@@ -772,3 +772,55 @@ Round 1's R1 to R4 are all kept; R1 and R2 are widened. Open in total:
 Count of this round: 0 blocker, 1 major, 7 minor. Open in this file: 0
 blocker, 1 major (R5), 11 minor (R1 to R4, R6 to R12).
 
+
+## Code review rounds 1 and 2 — fixes confirmed — Claude Opus 5.5 (Claude Code desktop), 2026-10-31
+
+Checked the fix commits `16465e9b`, `a1b0f219`, `1f8d47b4`, `d58e90f5`,
+`64a389bd`, `f70e2b13` and `85ceb769` against R1 to R12. Every item in the
+repository is fixed as written. No new item is open.
+
+- **R5.** The body of `maybe_countersign` is the same as on `main`. A diff
+  of the two functions shows only the typed `method::call_sibling` path
+  and `&row` for `put_row`. So the old outcomes are back: `Ok(false)` for
+  a payload that does not validate or a booking conflict, `Ok(true)` when
+  the send fails, `decide_booking` before `person_principal`, and no
+  `ensure_collections`. The older "a failed countersign send is never sent
+  again" gap has a row in `deferred-backlog.md` §12.
+- **R4.** The two collision arms are now `handle_payment_request_fence_collision`
+  and `handle_payment_ack_fence_collision`. The bodies moved without a
+  change in behaviour.
+- **R3, R10, R11.** `clock::now_secs()` is imported. `booking_opt` is gone
+  and the output is `Some(booking_view)`, which gives the same JSON. The
+  four booking handlers are `get`, `list`, `start` and `cancel`, and the
+  `pub use` of `HalfRecordedOutput` is gone.
+- **R8.** The plain comments in `backup.rs`, `limits.rs`, `listing_ops.rs`
+  and `request_ops.rs` are now the same as on `main`.
+- **R9.** Both shape tests call `setup_author_slot_quote_accepted_by_peer`
+  and `setup_synced_counterparty_quote` from `deal_fixtures.rs`, and
+  `setup_accepted_counterparty_quote` reuses the second one.
+  `impl From<AgreementRow> for AgreementView` is used by `agreement.get`
+  and `agreement.list`. No file under `tests/method_shapes/` changed.
+- **R6, R7.** Each error case now sends one error only: no `slot_id`, full
+  terms from `valid_quote_params`, and `description` plus
+  `data_use_notice` in `request.set`. The case for `request.set` pins
+  the full message text. The case numbers are gone.
+- **R1, R12.** D-A2b-3, D-A2b-4 and D-A2b-5 now match the plan, and the
+  B33 entry names the one changed error.
+- **R2.** `status.md` and `task.md` have the right counts.
+
+Tests run here, after `mise run build:roym` (the WASM files are newer
+than the last source change): `method_contract` 19 passed, 0 skipped
+(the 4 table tests, the error cases and all shape tests);
+`syneroym-roym-transaction` 1 passed; 11 parity scenarios on agreements,
+countersign and booking (129, 130, 151 to 157, 164, 166) passed.
+
+Two things are outside this file:
+
+- The PR text still has the old numbers ("77 shape JSON files (14 catalog
+  + 63 transaction)", "24 modules") and the old B33 text. R2 and R12 ask
+  for the same fix there.
+- The evidence cell in `status.md` names a `mise run verify` from
+  2026-10-30, before these fixes. CI on `85ceb769` is the evidence for the
+  fixed code.
+
+The code review of A2b is closed.
