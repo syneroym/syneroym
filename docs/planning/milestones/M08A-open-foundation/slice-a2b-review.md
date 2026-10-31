@@ -814,13 +814,11 @@ than the last source change): `method_contract` 19 passed, 0 skipped
 `syneroym-roym-transaction` 1 passed; 11 parity scenarios on agreements,
 countersign and booking (129, 130, 151 to 157, 164, 166) passed.
 
-Two things are outside this file:
+Two things outside this file:
 
-- The PR text still has the old numbers ("77 shape JSON files (14 catalog
-  + 63 transaction)", "24 modules") and the old B33 text. R2 and R12 ask
-  for the same fix there.
-- The evidence cell in `status.md` names a `mise run verify` from
-  2026-10-30, before these fixes. CI on `85ceb769` is the evidence for the
-  fixed code.
+- The PR text was updated to reflect the new counts (94 new shape files /
+  157 total, 24 scenario modules plus `deal_fixtures`) and the B33 error text.
+- The evidence cell in `status.md` was updated with the passing CI on
+  `85ceb769` (2026-10-31).
 
 The code review of A2b is closed.
