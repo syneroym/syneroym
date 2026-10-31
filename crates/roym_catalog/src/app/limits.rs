@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
@@ -6,19 +5,12 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     envelope::Response,
-    method::{NoParams, Reply},
+    method::{NoParams, PublicationLimitsInput, Reply},
     paging,
     safety::PublicationLimits,
 };
 
 use super::{PUBLICATION_LIMITS_KEY, PUBLICATIONS, SETTINGS, ensure_coll, idx};
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PublicationLimitsInput {
-    pub window_secs: u64,
-    pub max_per_window: u32,
-}
 
 pub(crate) async fn load_publication_limits<H: AppHost>(
     host: &H,

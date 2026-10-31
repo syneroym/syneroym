@@ -291,32 +291,12 @@ fn build_search_filter(
         and_clauses.push(json!({ "text": { "$regex": normalized } }));
     }
     // The index stores the enum's serde spelling (`past-counterparties`,
-    // not `PastCounterparties`). Round-trip the query value through the
-    // same enum so both sides speak one vocabulary; a value that is not a
-    // spelling the enum declares is refused, not silently matched to
-    // nothing.
+    // not `PastCounterparties`).
     if let Some(open_to) = &query.open_to {
-        match serde_json::from_value::<listing::OpenTo>(json!(open_to)) {
-            Ok(v) => and_clauses.push(json!({ "open_to": serde_str(&v) })),
-            Err(_) => {
-                return Err(Response::err(
-                    -32602,
-                    "open_to must be one of: anyone, members, referral, past-counterparties"
-                        .to_string(),
-                ));
-            }
-        }
+        and_clauses.push(json!({ "open_to": serde_str(open_to) }));
     }
     if let Some(booking_mode) = &query.booking_mode {
-        match serde_json::from_value::<listing::BookingMode>(json!(booking_mode)) {
-            Ok(v) => and_clauses.push(json!({ "booking_mode": serde_str(&v) })),
-            Err(_) => {
-                return Err(Response::err(
-                    -32602,
-                    "booking_mode must be one of: slots, order, enquiry".to_string(),
-                ));
-            }
-        }
+        and_clauses.push(json!({ "booking_mode": serde_str(booking_mode) }));
     }
     let geometric_query = matches!(query.area, Some(Area::Bbox { .. }) | Some(Area::Circle { .. }));
     if let Some(q_area) = &query.area

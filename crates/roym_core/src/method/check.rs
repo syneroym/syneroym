@@ -183,7 +183,11 @@ fn check_file_lines(
         }
 
         if line.contains("req.method") {
-            let is_allowed = is_app_rs && line.contains("Response::method_not_found(&req.method)");
+            let req_method_count = line.matches("req.method").count();
+            let is_allowed = is_app_rs
+                && req_method_count == 1
+                && (line.contains("Response::method_not_found(&req.method)")
+                    || line.contains("admit::admit(host, api::WIRE_REACHABLE, &req.method)"));
             if !is_allowed {
                 problems.push(format!(
                     "{}:{}: req.method used outside allowed method_not_found: {}",
