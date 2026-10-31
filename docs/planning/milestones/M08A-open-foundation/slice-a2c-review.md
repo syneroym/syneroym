@@ -775,7 +775,7 @@ the only hits in changed files are older groups, such as `ping` and
   the new behaviour is wanted instead, record it under "Different from
   the plan" and as a wire change. *Status:* Fixed (1f6056ff).
 
-- [x] **R3 — minor.** *Where:*
+- [ ] **R3 — minor.** *Where:*
   [status.md:15](status.md) (A2c row) and the PR description ("How
   Tested"). *Problem:* both say "38 method shapes (35 directory + 3
   whoami; 195 total in workspace)". The real counts are 60 new files (57
@@ -789,7 +789,7 @@ the only hits in changed files are older groups, such as `ping` and
   23 files that the record does not explain. *Fix:* write "60 method
   shapes (57 directory + 3 whoami; 217 total)" in `status.md` and the PR.
   Add the missing Step 10 sections to the PR text (they can link the plan
-  sections instead of copying them). *Status:* Fixed (a1e1b10d).
+  sections instead of copying them). *Status:* Open. `status.md` is fixed (a1e1b10d); the PR text is not (see the fixes check below).
 
 - [x] **R4 — minor.** *Where:* the dispatch arm of
   `directory.publish-to-source` on `main`
@@ -951,3 +951,114 @@ the only hits in changed files are older groups, such as `ping` and
   allowed forms in the doc comment and in the message. In the unit test,
   read the panic payload (`err.downcast_ref::<String>()`) and assert that
   it contains `req.method used outside`. *Status:* Fixed (f67e0714).
+
+## Code review round 1 — fixes checked — Claude Opus 5.5 (Claude Code desktop), 2026-10-31
+
+Checked the fix commits `0ece72ac` to `ea29e5e7` (`git diff
+b0a6dcc5..ea29e5e7`) on `feat/m08a-a2c-typed-methods`. The PR is still a
+draft. Tests run, after `mise run build:roym`:
+`cargo nextest run -p syneroym-roym-core -p syneroym-roym-directory`
+(242 passed, 0 skipped) and `cargo nextest run -p syneroym-roym-web
+--test method_contract --test dual_build_parity` (257 passed, 0 skipped).
+So "499 tests" in `status.md` is right. `directory_parameter_errors` was
+also run 20 times in a row: 20 passed (see R13 for why it can still
+fail).
+
+**Summary:** 11 of 12 confirmed fixed (R1, R2, R4 to R12). R3 is reopened:
+half of it is fixed. Two new minor findings, R13 (from the R1 fix) and
+R14 (from the R2 fix). Open now: 0 blocker, 0 major, 3 minor (R3, R13,
+R14).
+
+### Round 1 items, checked
+
+- **R1 — confirmed.** Every case of `directory_parameter_errors` now reads
+  `(w, n)` and asserts `w == n`. A SynOrg and a member exist before
+  `credential.issue` and `member.suspend`, so the bad field is the only
+  error. `query-source` now uses the added canned source
+  `did:key:hTrustValid`, and `directory.merge` shows no hit. That source
+  serves one valid hit when it is called (it is the control of scenario
+  183), so an empty `hits` list does show that no call was made. R13 is
+  about how the fix compares the two builds.
+- **R2 — confirmed.** `add_source` now refuses a reply that is not an
+  object, or that does not parse as `Response`, with
+  `SourceError::Unreadable`, as on `main`. `{"result": null}` still gives
+  the note. Behaviour is as on `main` except the B57 fix, so no
+  deviation needs to be recorded. R14 is about the shape of the new code.
+- **R3 — reopened.** `status.md` now says 60 shapes (57 directory + 3
+  whoami; 217 total), which is right. The PR description is unchanged: it
+  still says "38 new shapes recorded (35 directory + 3 whoami; 195 total
+  in workspace)", it still lacks the Step 10 sections, and it still says
+  "Deviations: None" (now true, since R2 is fixed). *Fix:* edit the PR
+  description (`gh pr edit 337 --body-file ..`) with the right counts and
+  the missing sections; keep the CLA line.
+- **R4 — confirmed.** The comment is back, above the
+  `"directory.publish-to-source"` row in `api.rs`, with the same words.
+- **R5 — confirmed.** The four inline paths are gone (`panic::catch_unwind`,
+  `directory_api::method_table()`, `router::route`).
+- **R6 — confirmed.** The numbers are gone; the words stay.
+- **R7 — confirmed.** `hNewer` has its own `newer_source_response`, called
+  first from `canned_source_response`. `inner_frame` is shared by
+  `inner_method` and `published_ids`. A publish frame that does not parse
+  now answers `-32602`, not a made-up `l1` / `r1`.
+- **R8 — confirmed.** `method/directory.rs` has a module doc with the rule,
+  and the required fields have a comment. The `search_output_..` and
+  `directory_info_output_..` unit tests now send `"zz": 1`.
+- **R9 — confirmed.** D-A2c-7, -9, -13, -16 and -17 now say the missing
+  part, and B53 and B54 say "no visible change on wire".
+- **R10 — confirmed.** The row has two cells, starts with "Resolved
+  2026-10-31 by PR #337", and the blank line is gone.
+- **R11 — confirmed.** The five list paths read typed rows in one step;
+  `memberships` is back to its `main` form.
+- **R12 — confirmed.** The doc comment and the message name both allowed
+  forms. The unit test reads the panic text and checks for `req.method
+  used outside`.
+
+### New findings
+
+- [ ] **R13 — minor.** *Where:*
+  [contract_directory.rs:86-116](../../../../crates/roym_web/tests/method_contract/contract_directory.rs#L86)
+  (the `query-source` part of `directory_parameter_errors`). *Problem:* the
+  R1 fix compares the raw `directory.add-source` and `directory.start-run`
+  answers of the two builds with `assert_eq!`. Both answers hold the guest
+  wall clock: `add-source` writes `added_at_secs` and `last_ok_secs`, and
+  `start-run` folds `now` into `run_id` (`run_{now}_{n}`). The two builds
+  run one after the other, so the two answers differ when a second ends
+  between them. The parity harness says this in so many words: "`start-run`'s
+  raw response is never compared directly across builds"
+  ([directory.rs:498-499](../../../../crates/roym_web/tests/dual_build_parity/directory.rs#L498)),
+  and "each build is driven with the run id it minted itself, never the
+  other build's" (`:519-521`). The fix also sends the WASM `run_id` to the
+  native build for `query-source` and `merge`. That only works because
+  the earlier `assert_eq!(rw, rn)` made sure both ids are the same. Last,
+  the `merge` check reads only `hits`; a call whose hit was refused would
+  also give an empty `hits`. *Failure case:* CI is slow, the WASM
+  `add-source` ends at x.999 s and the native one at (x+1).002 s.
+  `assert_eq!(aw, an)` fails, and the job is red with no code fault. The
+  20 local runs all passed, so this is rare, but it is a flaky test, and
+  the harness was written to avoid exactly this. *Fix:* compare
+  `stripped(&aw)` with `stripped(&an)` (it removes `added_at_secs`; also
+  check that `last_ok_secs` is a number in both). For the run, do as
+  scenario 102 does: `for wasm in [true, false]`, mint the run with
+  `one_rpc(&h, wasm, "directory.start-run", ..)`, send `query-source` and
+  `merge` with that build's own `run_id`, and then compare the two
+  `query-source` errors with `assert_eq!`. In `merge`, assert that both
+  `hits` and `refused` are empty. *Status:* Open.
+
+- [ ] **R14 — minor.** *Where:*
+  [client_sources.rs:161-188](../../../../crates/roym_directory/src/app/client_sources.rs#L161)
+  (`add_source`). *Problem:* the R2 fix put the whole read into the
+  `Ok(v) =>` arm, which is now 24 lines; the limit for a match arm is
+  about 10 (it was already longer than that before, and the fix made it
+  longer). The first branch, `if !v.is_object()`, is not needed:
+  `serde_json::from_value::<Response>` already fails for a value that is
+  not an object. It also changes the stored text: on `main` the reason was
+  serde's own text (for example "invalid type: null, expected struct
+  Response"); now it is "expected JSON-RPC response object". The text is
+  shown in the source's `last_error`, and no test or caller reads it.
+  *Failure case:* none at run time beyond the text change. The arm is
+  hard to read, and it is the kind of code the match-arm rule exists for.
+  *Fix:* drop the `is_object` branch, and move the read into one function
+  beside `probe_info`, for example `fn read_probe(raw: &str, now: u64) ->
+  ProbeRead` that returns `last_ok_secs`, `last_error`, the note, the
+  name and the claimed issuer. The `match probe` then has two short arms.
+  *Status:* Open.
