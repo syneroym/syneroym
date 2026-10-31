@@ -278,17 +278,17 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A2c-4. Existing attributes and null stay field by field.** Optional fields use `Option`; required fields stay non-Option.
 - **D-A2c-5. Empty string validation stays in handler.** Checks for empty strings remain in handlers with existing error messages.
 - **D-A2c-6. Closed sets.** Inputs: `SearchQuery.open_to: Option<listing::OpenTo>`, `SearchQuery.booking_mode: Option<listing::BookingMode>`. Output: `WhoamiOutput.auth: SessionAuth`.
-- **D-A2c-7. `directory.publish` reads its caller itself.** Uses `admit::caller` and passes caller DID to `resolve_published_by`.
+- **D-A2c-7. `directory.publish` reads its caller itself.** Uses `admit::caller` and passes `Caller` to `resolve_published_by`, which resolves the caller DID.
 - **D-A2c-8. `directory.set-settings` takes `SynOrgSettingsInput`.** Completely destructured into `SynOrgSettings`.
-- **D-A2c-9. Pass-through methods are typed.** Uses `method::read_reply` to preserve `null` results and pass errors through with `data`.
+- **D-A2c-9. Pass-through methods are typed.** Uses `method::read_reply` to preserve `null` results and pass errors through with `data`; unparseable results return `-32603`, and `add_source` reads the probe reply as `Value`.
 - **D-A2c-10. Other client-half reads of remote answers do not change.** Left as-is until federated query library work in A4.
 - **D-A2c-11. Multi-shape outputs.** Structured `Option` fields with skip serializing for absent keys: `PublishOutput`, `CheckStandingOutput`, `QuerySourceOutput`.
 - **D-A2c-12. Stored rows parsed into structs.** Lists skip unparseable rows; settings returns -32603.
-- **D-A2c-13. Wire output structs readable by older/newer nodes.** Derive Serialize and Deserialize without deny_unknown_fields; defaults for fields with natural empty values.
+- **D-A2c-13. Wire output structs readable by older/newer nodes.** Derive Serialize and Deserialize without deny_unknown_fields; defaults for fields with natural empty values while `name`, `retention_secs`, `member_count`, and `PublishOutput.listing_id` stay required.
 - **D-A2c-14. Certificate verbs, export, and deletions.** Certificate verbs in table; export uses `export_signed_bundle`; `handle_certificate_verb` and `export_signed` deleted.
 - **D-A2c-15. `web` has one typed method and keeps its forwarder.** `session.whoami` typed with `NoParams` and `WhoamiOutput`.
-- **D-A2c-16. One wire list and check scan.** `WIRE_REACHABLE` exported from `api.rs` and read by `admit::admit` and contract tests.
-- **D-A2c-17. Parity lists.** Driven by `all_directory_verbs()` and `WIRE_REACHABLE_DIRECTORY_VERBS`.
+- **D-A2c-16. One wire list and check scan.** `WIRE_REACHABLE` exported from `api.rs` and read by `admit::admit` and contract tests; the check scan allows only the exact call `admit::admit(host, api::WIRE_REACHABLE, &req.method)` in `app.rs` with one `req.method` on the line.
+- **D-A2c-17. Parity lists.** Driven by `all_directory_verbs()` and the hand-written `WIRE_REACHABLE_DIRECTORY_VERBS`, which the contract test asserts equals `WIRE_REACHABLE`.
 - **D-A2c-18. Shapes.** `auth` added to closed-word keys.
 - **D-A2c-19. Directory conversion in two steps.** Server half then client half.
 
@@ -338,8 +338,8 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Malformed stored rows in directory (B49):** Directory list methods skip unparseable rows; `directory.settings` returns `-32603`.
 - **Directory info parameter format (B50):** Non-object params rejected with `-32602 invalid params: expected an object`.
 - **Pass-through remote reply typing (B51):** `probe-info` and `publish-to-source` drop unknown keys from remote responses and return `-32603` on unparseable results; remote errors pass through with `data`.
-- **Publish caller attribution (B53):** Wire publish recorded and rate-limited under verified caller DID, verified by contract tests.
-- **Directory certificate verbs in table (B54):** Handled via table rows.
+- **Publish caller attribution (B53):** Wire publish recorded and rate-limited under verified caller DID, verified by contract tests (no visible change on wire).
+- **Directory certificate verbs in table (B54):** Handled via table rows (no visible change on wire).
 - **Wire search with absent/null params (B55):** `directory.search` over the wire accepts absent or `null` params, returning newest listings as `{}` does.
 - **Serde error ordering (B56):** Request with multiple errors reports the first one parsed by serde.
 - **Null SynOrg result preservation (B57):** `probe-info` preserves `{"result": null}` when remote has no SynOrg; `add-source` records the probe note. Tested in `directory_compat.rs`.
