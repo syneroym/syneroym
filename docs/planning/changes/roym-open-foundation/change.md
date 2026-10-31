@@ -255,9 +255,9 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Q1–Q6: option (a), 2026-10-30.**
 - **D-A2b-1. No new machinery.** Both services use `service_methods!`, `typed`, `parse_value`, `call_sibling` and `assert_service_table` as A2a built them. The only additions to `roym_core` are structs (D-A2b-2).
 - **D-A2b-2. Where types live.** Shared types in `roym_core::method` (`VerifyInput`, `EnvelopeHistoryOutput`); catalog shared types in `roym_core::method::catalog`; service-specific types in `crates/roym_catalog/src/app` and `crates/roym_transaction/src/app`.
-- **D-A2b-3. Record types inside inputs have no `deny_unknown_fields`.** Blocks inside inputs (`payment`, `area`, `window`, etc.) omit `deny_unknown_fields` because they also parse signed records from other nodes.
-- **D-A2b-4. Page fields repeated without flatten.** Input structs write out page fields (`limit`, `offset`, `cursor`) individually so `deny_unknown_fields` is preserved.
-- **D-A2b-5. Nullable and tri-state outputs.** Keys with null in the old code omit `skip_serializing_if`. Keys absent in the old code use `skip_serializing_if = "Option::is_none"`.
+- **D-A2b-3. Every input refuses unknown fields at its top level** (`deny_unknown_fields` on every input struct and on `SlotInput`). Record types inside inputs are not changed (Q1 (a)).
+- **D-A2b-4. Existing field attributes stay.** A field that has `#[serde(default)]` or `#[serde(default = "..")]` today keeps it, so an absent field behaves as today. An explicit `null` for a non-`Option` field stays an error, as today.
+- **D-A2b-5. Closed sets.** Inputs: `listing.list` `status: Option<ListingStatus>`, `booking.list` `state: Option<BookingState>` (D-A2a-10). Outputs: `SendState` and `BookingWriter` (Q5 (a)). The words do not change. `booking.list` compares `BookingState` values, not serialized strings.
 - **D-A2b-6. Wide numbers.** `limit`, `offset` and `cursor` are `u64` in input structs and converted with `usize::try_from(v).unwrap_or(usize::MAX)` to avoid 32/64-bit differences.
 - **D-A2b-7. Verify methods take `VerifyInput { envelope: String }`.** Sent as a string envelope.
 - **D-A2b-8. Output shapes match existing JSON.** `agreement.accept` uses `booking: Option<Option<BookingView>>` with skip so missing is omitted and null is preserved. Counterparty `BookingHistoryStep` keeps raw `Value` snapshot.
@@ -304,7 +304,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Listing limits overflow rejected (B30):** `max_per_window` above `u32::MAX` is rejected with `-32602`.
 - **Invalid enum variants rejected (B31):** Unknown listing status or booking state rejected with `-32602 unknown variant` with `data.field`.
 - **Malformed slot row handling (B32):** `availability.get` returns `-32603` on unparseable stored row; `availability.list` skips malformed rows.
-- **Sibling error mapping standardization (B33):** Sibling calls preserve `-32602` / `-32603` mapping via `call_sibling`.
+- **Sibling error mapping standardization (B33):** Sibling calls use `call_sibling`: same as before, except that an unreadable or malformed `availability.get` reply is now `no-such-slot` (`quote.set`) or `slot-unavailable` (`booking`), not `-32603`.
 - **Null or missing params accepted when all fields optional (B34):** Methods where all fields are optional accept `null` params or `{}`.
 - **Large limit/offset supported across targets (B35):** `u64` values accepted uniformly on WASM and native.
 - **Quote set rejects `quote_expires_at_secs` in terms (B36):** Overwriting terms expiry disallowed with `-32602` (`data.field = "terms.quote_expires_at_secs"`).
