@@ -1,0 +1,9 @@
+{
+  "members": [
+    {
+      "added_at_secs": "number",
+      "did": "string",
+      "note": "welcome"
+    }
+  ]
+}

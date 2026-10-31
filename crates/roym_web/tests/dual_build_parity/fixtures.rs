@@ -490,14 +490,6 @@ pub(crate) async fn wire_invoke_as(
     envelope: &Value,
     auth: AuthLevel,
 ) -> (Value, Value) {
-    let env_str = envelope.to_string();
-    let req = JsonRpcRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "invoke".to_string(),
-        params: json!([env_str]),
-        id: None,
-        idempotency_key: None,
-    };
     let anon_caller = CallerContext {
         caller_did: String::new(),
         app_instance: None,
@@ -506,6 +498,23 @@ pub(crate) async fn wire_invoke_as(
         proof: None,
         on_behalf_did: None,
     };
+    wire_invoke_with(h, svc, envelope, anon_caller).await
+}
+
+pub(crate) async fn wire_invoke_with(
+    h: &Harness,
+    svc: services::Service,
+    envelope: &Value,
+    caller: CallerContext,
+) -> (Value, Value) {
+    let env_str = envelope.to_string();
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "invoke".to_string(),
+        params: json!([env_str]),
+        id: None,
+        idempotency_key: None,
+    };
     let wasm = h
         .wasm
         .engine
@@ -513,7 +522,7 @@ pub(crate) async fn wire_invoke_as(
             &did_for_service(svc.name),
             svc.interface,
             &req,
-            Some(anon_caller.clone()),
+            Some(caller.clone()),
         )
         .await
         .expect("wasm wire invoke");
@@ -527,7 +536,7 @@ pub(crate) async fn wire_invoke_as(
             interface: svc.interface.to_string(),
             method: "invoke".to_string(),
             params: json!([env_str]),
-            caller: anon_caller,
+            caller,
         })
         .await
         .expect("native wire invoke");

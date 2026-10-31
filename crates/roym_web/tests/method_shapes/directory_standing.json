@@ -1,0 +1,12 @@
+{
+  "answered_at_secs": "number",
+  "evidence": {
+    "credentials": [
+      "string"
+    ],
+    "decisions": [],
+    "revocations": []
+  },
+  "issuer_did": "string",
+  "member_did": "string"
+}

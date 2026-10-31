@@ -6,13 +6,16 @@ use std::path::Path;
 use serde_json::{Value, json};
 use syneroym_roym_catalog::api as catalog_api;
 use syneroym_roym_conversation::api as conversation_api;
-use syneroym_roym_core::{method::check::assert_service_table, services};
+use syneroym_roym_core::{method::check::assert_service_table, router, services};
+use syneroym_roym_directory::api as directory_api;
 use syneroym_roym_profile::api as profile_api;
 use syneroym_roym_transaction::api as transaction_api;
+use syneroym_roym_web::api as web_api;
 
 use super::{
     fixtures::env,
     helpers::{Harness, HttpDriver, harness},
+    trust_fixtures,
 };
 
 #[test]
@@ -63,6 +66,43 @@ fn every_transaction_method_has_typed_input_and_output() {
     );
 }
 
+#[test]
+fn every_directory_method_has_typed_input_and_output() {
+    let table = directory_api::method_table();
+    assert_eq!(table.len(), 37);
+    let wire: Vec<&str> = directory_api::WIRE_REACHABLE.iter().map(|(n, _)| *n).collect();
+    let mut sorted_wire = wire.clone();
+    sorted_wire.sort();
+    let mut expected_wire = trust_fixtures::WIRE_REACHABLE_DIRECTORY_VERBS.to_vec();
+    expected_wire.sort();
+    assert_eq!(sorted_wire, expected_wire);
+    assert_service_table(
+        services::DIRECTORY,
+        &table,
+        &wire,
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_directory/src"),
+    );
+}
+
+#[test]
+fn web_has_one_typed_method_of_its_own() {
+    let table = web_api::method_table();
+    assert_eq!(table.len(), 1);
+    let row = &table[0];
+    assert_eq!(row.name, "session.whoami");
+    assert!(router::route("session.whoami").is_none());
+    assert!(!row.input.contains("serde_json::value::Value"));
+    assert!(!row.output.contains("serde_json::value::Value"));
+    let probe_res = (row.probe)(&json!({ "__probe__": 1 }));
+    assert!(
+        probe_res.as_ref().err().map(|e| e.message.contains("unknown field")).unwrap_or(false),
+        "probe should refuse unknown fields: {probe_res:?}"
+    );
+    // Web is not checked with assert_service_table: its one method is answered
+    // directly rather than routed to a sibling, and its forwarder inspects
+    // req.method.
+}
+
 #[tokio::test]
 async fn every_listed_method_is_dispatched() {
     let h = harness().await;
@@ -72,6 +112,7 @@ async fn every_listed_method_is_dispatched() {
         (services::CONVERSATION, conversation_api::method_table()),
         (services::CATALOG, catalog_api::method_table()),
         (services::TRANSACTION, transaction_api::method_table()),
+        (services::DIRECTORY, directory_api::method_table()),
     ];
     for (service, table) in tables {
         for row in table {
@@ -101,7 +142,7 @@ async fn every_listed_method_is_dispatched() {
 }
 
 #[tokio::test]
-async fn every_listed_method_is_refused_off_the_node_before_parsing() {
+async fn every_method_answers_off_the_node_as_its_wire_rule_says() {
     let h = harness().await;
 
     let tables = [
@@ -126,9 +167,42 @@ async fn every_listed_method_is_refused_off_the_node_before_parsing() {
             );
         }
     }
+
+    let wire_names: Vec<&str> = directory_api::WIRE_REACHABLE.iter().map(|(n, _)| *n).collect();
+    for row in directory_api::method_table() {
+        let (wasm_res, native_res) =
+            h.wire_invoke(services::DIRECTORY, &env(&row.name, json!({ "zz": 1 }))).await;
+        if wire_names.contains(&row.name.as_str()) {
+            for (label, res) in [("wasm", &wasm_res), ("native", &native_res)] {
+                assert_ne!(
+                    res["error"]["code"], -32013,
+                    "wire method {} {label} must not refuse off-node with -32013: {res}",
+                    row.name
+                );
+                if let Some(err) = res.get("error") {
+                    assert_ne!(
+                        err["data"]["field"], "zz",
+                        "wire method {} {label} error data.field must not be zz: {res}",
+                        row.name
+                    );
+                }
+            }
+        } else {
+            assert_eq!(
+                wasm_res["error"]["code"], -32013,
+                "directory method {} wasm must refuse off-node with -32013, got {wasm_res}",
+                row.name
+            );
+            assert_eq!(
+                native_res["error"]["code"], -32013,
+                "directory method {} native must refuse off-node with -32013, got {native_res}",
+                row.name
+            );
+        }
+    }
 }
 
-async fn post_rpc(h: &Harness, method: &str, params: Option<Value>) -> (Value, Value) {
+pub(super) async fn post_rpc(h: &Harness, method: &str, params: Option<Value>) -> (Value, Value) {
     let body = match params {
         Some(p) => json!({ "method": method, "params": p }).to_string().into_bytes(),
         None => json!({ "method": method }).to_string().into_bytes(),

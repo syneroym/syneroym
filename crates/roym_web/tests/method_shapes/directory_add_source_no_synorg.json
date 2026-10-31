@@ -1,0 +1,9 @@
+{
+  "probe": "string",
+  "source": {
+    "added_at_secs": "number",
+    "did": "string",
+    "label": "string",
+    "last_ok_secs": "number"
+  }
+}

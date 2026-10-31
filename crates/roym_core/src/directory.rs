@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{area::Area, safety::PublicationLimits};
+use crate::{area::Area, listing, safety::PublicationLimits};
 
 /// New `credentials`/`revocations`/`moderation_decisions`/
 /// `held_memberships` bundle sections and `SourceRow::issuer_did` /
@@ -176,9 +176,9 @@ pub struct SearchQuery {
     #[serde(default)]
     pub area: Option<Area>,
     #[serde(default)]
-    pub open_to: Option<String>,
+    pub open_to: Option<listing::OpenTo>,
     #[serde(default)]
-    pub booking_mode: Option<String>,
+    pub booking_mode: Option<listing::BookingMode>,
     #[serde(default)]
     pub limit: Option<u32>,
 }

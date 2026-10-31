@@ -50,6 +50,16 @@ pub enum Caller {
     Anonymous,
 }
 
+/// Who is on the other end of this guest call. The same answer `admit`
+/// reads; the host fixes it for the whole call.
+pub async fn caller<H: AppHost>(host: &H) -> Caller {
+    match AppInvocation::caller(host).await {
+        CallerOrigin::Internal => Caller::Internal,
+        CallerOrigin::Verified(did) => Caller::Verified(did),
+        CallerOrigin::Anonymous => Caller::Anonymous,
+    }
+}
+
 /// `Ok(caller)` admits. `Err(response)` is the refusal to return unchanged,
 /// with the same code and the same wording `require_internal` uses -- a
 /// stranger learns only that this method is not theirs to call.
@@ -58,8 +68,9 @@ pub async fn admit<H: AppHost>(
     exceptions: &[(&str, WireRule)],
     method: &str,
 ) -> Result<Caller, Response> {
-    match AppInvocation::caller(host).await {
-        CallerOrigin::Internal => Ok(Caller::Internal),
+    let who = caller(host).await;
+    match who {
+        Caller::Internal => Ok(Caller::Internal),
         origin => {
             let refused = || {
                 Err(Response::err(
@@ -71,11 +82,11 @@ pub async fn admit<H: AppHost>(
                 return refused();
             };
             match (rule, origin) {
-                (WireRule::Open, CallerOrigin::Verified(did)) => Ok(Caller::Verified(did)),
-                (WireRule::Open, CallerOrigin::Anonymous) => Ok(Caller::Anonymous),
-                (WireRule::VerifiedOnly, CallerOrigin::Verified(did)) => Ok(Caller::Verified(did)),
-                (WireRule::VerifiedOnly, CallerOrigin::Anonymous) => refused(),
-                (_, CallerOrigin::Internal) => unreachable!("handled above"),
+                (WireRule::Open, Caller::Verified(did)) => Ok(Caller::Verified(did)),
+                (WireRule::Open, Caller::Anonymous) => Ok(Caller::Anonymous),
+                (WireRule::VerifiedOnly, Caller::Verified(did)) => Ok(Caller::Verified(did)),
+                (WireRule::VerifiedOnly, Caller::Anonymous) => refused(),
+                (_, Caller::Internal) => unreachable!("handled above"),
             }
         }
     }
@@ -161,5 +172,17 @@ mod tests {
         let a = admit(&host, TABLE, "directory.publish").await.unwrap_err();
         let b = admit(&host, TABLE, "directory.unpublish").await.unwrap_err();
         assert_eq!(a, b);
+    }
+
+    #[tokio::test]
+    async fn caller_maps_the_three_origins() {
+        let host = TestHost::default();
+        assert_eq!(caller(&host).await, Caller::Internal);
+
+        host.set_caller_origin(CallerOrigin::Verified("did:key:zCaller".to_string()));
+        assert_eq!(caller(&host).await, Caller::Verified("did:key:zCaller".to_string()));
+
+        host.set_caller_origin(CallerOrigin::Anonymous);
+        assert_eq!(caller(&host).await, Caller::Anonymous);
     }
 }

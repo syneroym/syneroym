@@ -2,28 +2,85 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     clock,
     directory::{MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS, MAX_SEARCH_RESULTS},
-    envelope::{Request, Response},
+    envelope::Response,
+    membership::MembershipVerdict,
+    method::Reply,
     paging,
 };
 
 use super::{SEARCH_RUNS, client_query::SearchRunRow, ensure_coll, search_runs_indexes};
 
-pub(in crate::app) async fn merge<H: AppHost>(host: &H, req: &Request) -> Response {
-    let run_id = match req.params.get("run_id").and_then(Value::as_str) {
-        Some(r) => r.to_string(),
-        None => return Response::invalid_params("run_id is required"),
-    };
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RunInput {
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RunEnvelopeInput {
+    pub run_id: String,
+    pub record_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RunEnvelopeOutput {
+    pub envelope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct HitSource {
+    pub directory: String,
+    pub record_id: String,
+    pub received_at_secs: u64,
+    pub membership: Option<MembershipVerdict>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MergedHit {
+    pub listing_id: String,
+    pub record_id: String,
+    pub issuer: String,
+    pub title: String,
+    pub summary: String,
+    pub categories: Vec<String>,
+    pub conversation_address: String,
+    pub status: String,
+    pub verified: bool,
+    pub revocation_status: String,
+    pub age_secs: u64,
+    pub sources: Vec<HitSource>,
+    pub versions_differ: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RefusedHit {
+    pub listing_id: String,
+    pub reason: String,
+    pub sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MergeOutput {
+    pub hits: Vec<MergedHit>,
+    pub hits_truncated: bool,
+    pub refused: Vec<RefusedHit>,
+    pub refused_truncated: bool,
+}
+
+pub(crate) async fn merge<H: AppHost>(host: &H, input: RunInput) -> Reply<MergeOutput> {
     if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    let (verified_rows, refused_rows) = match load_run_rows(host, &run_id).await {
+    let (verified_rows, refused_rows) = match load_run_rows(host, &input.run_id).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let by_source = dedupe_and_cap_verified(verified_rows);
@@ -38,12 +95,7 @@ pub(in crate::app) async fn merge<H: AppHost>(host: &H, req: &Request) -> Respon
     let refused_candidates = candidates_by_listing(&refused_by_source, &refused_seen);
     let refused = build_refused(refused_order, refused_candidates);
 
-    Response::ok(json!({
-        "hits": hits,
-        "hits_truncated": merge_truncated,
-        "refused": refused,
-        "refused_truncated": refused_truncated,
-    }))
+    Ok(MergeOutput { hits, hits_truncated: merge_truncated, refused, refused_truncated })
 }
 
 /// Loads every `search_runs` row for `run_id`, split into verified and
@@ -197,7 +249,7 @@ fn build_hits(
     order: Vec<String>,
     mut candidates_by_listing: BTreeMap<String, Vec<&SearchRunRow>>,
     now: u64,
-) -> Vec<Value> {
+) -> Vec<MergedHit> {
     order
         .into_iter()
         .filter_map(|listing_id| {
@@ -208,34 +260,32 @@ fn build_hits(
                 b.issued_at_secs.cmp(&a.issued_at_secs).then(a.record_id.cmp(&b.record_id))
             });
             let winner = *candidates.first()?;
-            let source_list: Vec<Value> = candidates
+            let sources: Vec<HitSource> = candidates
                 .iter()
-                .map(|r| {
-                    json!({
-                        "directory": r.source,
-                        "record_id": r.record_id,
-                        "received_at_secs": r.received_at_secs,
-                        "membership": r.membership,
-                    })
+                .map(|r| HitSource {
+                    directory: r.source.clone(),
+                    record_id: r.record_id.clone(),
+                    received_at_secs: r.received_at_secs,
+                    membership: r.membership.clone(),
                 })
                 .collect();
             let distinct_record_ids: BTreeSet<&str> =
                 candidates.iter().map(|r| r.record_id.as_str()).collect();
-            Some(json!({
-                "listing_id": winner.listing_id,
-                "record_id": winner.record_id,
-                "issuer": winner.issuer,
-                "title": winner.title,
-                "summary": winner.summary,
-                "categories": winner.categories,
-                "conversation_address": winner.conversation_address,
-                "status": winner.status,
-                "verified": true,
-                "revocation_status": winner.revocation_status,
-                "age_secs": now.saturating_sub(winner.issued_at_secs),
-                "sources": source_list,
-                "versions_differ": distinct_record_ids.len() > 1,
-            }))
+            Some(MergedHit {
+                listing_id: winner.listing_id.clone(),
+                record_id: winner.record_id.clone(),
+                issuer: winner.issuer.clone(),
+                title: winner.title.clone(),
+                summary: winner.summary.clone(),
+                categories: winner.categories.clone(),
+                conversation_address: winner.conversation_address.clone(),
+                status: winner.status.clone(),
+                verified: true,
+                revocation_status: winner.revocation_status.clone(),
+                age_secs: now.saturating_sub(winner.issued_at_secs),
+                sources,
+                versions_differ: distinct_record_ids.len() > 1,
+            })
         })
         .collect()
 }
@@ -243,32 +293,27 @@ fn build_hits(
 fn build_refused(
     refused_order: Vec<String>,
     mut refused_candidates: BTreeMap<String, Vec<&SearchRunRow>>,
-) -> Vec<Value> {
+) -> Vec<RefusedHit> {
     refused_order
         .into_iter()
         .filter_map(|listing_id| {
             let rows = refused_candidates.remove(&listing_id)?;
-            let sources: Vec<Value> = rows.iter().map(|r| json!(r.source)).collect();
-            Some(json!({
-                "listing_id": listing_id,
-                "reason": rows.first().and_then(|r| r.reason.clone()).unwrap_or_default(),
-                "sources": sources,
-            }))
+            let sources: Vec<String> = rows.iter().map(|r| r.source.clone()).collect();
+            Some(RefusedHit {
+                listing_id,
+                reason: rows.first().and_then(|r| r.reason.clone()).unwrap_or_default(),
+                sources,
+            })
         })
         .collect()
 }
 
-pub(in crate::app) async fn run_envelope<H: AppHost>(host: &H, req: &Request) -> Response {
-    let run_id = match req.params.get("run_id").and_then(Value::as_str) {
-        Some(r) => r,
-        None => return Response::invalid_params("run_id is required"),
-    };
-    let record_id = match req.params.get("record_id").and_then(Value::as_str) {
-        Some(r) => r,
-        None => return Response::invalid_params("record_id is required"),
-    };
+pub(crate) async fn run_envelope<H: AppHost>(
+    host: &H,
+    input: RunEnvelopeInput,
+) -> Reply<Option<RunEnvelopeOutput>> {
     if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     // Filtered on the `run_id` field at the host -- one run's rows, not
     // the whole collection. Only a *verified* row is accepted: its
@@ -277,17 +322,20 @@ pub(in crate::app) async fn run_envelope<H: AppHost>(host: &H, req: &Request) ->
     // refused row's `record_id` is whatever the source claimed,
     // unverified, so a hostile source could set one to collide with a
     // genuine record -- excluded here rather than trusted to sort last.
-    let rows: Vec<SearchRunRow> =
-        match paging::query_all(host, SEARCH_RUNS, Some(json!({ "run_id": run_id }).to_string()))
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return Response::internal_error(e),
-        };
+    let rows: Vec<SearchRunRow> = match paging::query_all(
+        host,
+        SEARCH_RUNS,
+        Some(json!({ "run_id": input.run_id }).to_string()),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
     for row in rows {
-        if !row.refused && row.record_id == record_id {
-            return Response::ok(json!({ "envelope": row.envelope }));
+        if !row.refused && row.record_id == input.record_id {
+            return Ok(Some(RunEnvelopeOutput { envelope: row.envelope }));
         }
     }
-    Response::ok(Value::Null)
+    Ok(None)
 }

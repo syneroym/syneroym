@@ -5,7 +5,8 @@ use syneroym_roym_core::{
     backup::{Bundle, ImportInput},
     listing::ListingVerdict,
     method::{
-        EnvelopeHistoryOutput, MethodInfo, NoParams, PingOutput, Reply, VerifyInput,
+        EnvelopeHistoryOutput, MethodInfo, NoParams, PingOutput, PublicationLimitsInput, Reply,
+        VerifyInput,
         catalog::{ListingGetOutput, ListingKeyInput, SlotKeyInput, SlotRow},
     },
     safety::PublicationLimits,
@@ -31,7 +32,7 @@ syneroym_roym_core::service_methods! {
     "listing.history": listing_ops::history [ListingKeyInput => EnvelopeHistoryOutput],
     "listing.verify": listing_ops::verify [VerifyInput => ListingVerdict],
     "listing.limits": limits::limits [NoParams => PublicationLimits],
-    "listing.set-limits": limits::set_limits [limits::PublicationLimitsInput => PublicationLimits],
+    "listing.set-limits": limits::set_limits [PublicationLimitsInput => PublicationLimits],
     "availability.set": availability::set [availability::AvailabilitySetInput => availability::AvailabilitySetOutput],
     "availability.get": availability::get [SlotKeyInput => Option<SlotRow>],
     "availability.list": availability::list [availability::AvailabilityListInput => availability::AvailabilityListOutput],

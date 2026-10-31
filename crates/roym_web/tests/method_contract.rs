@@ -24,9 +24,13 @@ mod trust_harness;
 
 #[path = "method_contract/contract.rs"]
 mod contract;
+#[path = "method_contract/contract_directory.rs"]
+mod contract_directory;
 #[path = "method_contract/shapes.rs"]
 mod shapes;
 #[path = "method_contract/shapes_catalog.rs"]
 mod shapes_catalog;
+#[path = "method_contract/shapes_directory.rs"]
+mod shapes_directory;
 #[path = "method_contract/shapes_transaction.rs"]
 mod shapes_transaction;

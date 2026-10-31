@@ -59,6 +59,7 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 - Criteria: OF-14, OF-15, OF-18.
 - A2a result: 24 methods of profile and 24 methods of conversation have typed input and output structs. Method tables exported and verified by method_contract.rs (OF-14, OF-15, OF-18). Parity harness keeps 24 modules and 222 scenarios.
 - A2b result: 17 methods of catalog and 41 methods of transaction have typed input and output structs. Method tables exported and verified by method_contract.rs (OF-14, OF-15, OF-18). Parity harness has 24 scenario modules plus `deal_fixtures`, 222 scenarios. Fences F1 to F6 mapped to typed outcomes. Sibling calls migrated to call_sibling.
+- A2c result: 37 methods of directory and 1 method of web (session.whoami) have typed input and output structs. Method tables exported and verified by method_contract.rs (OF-14, OF-15, OF-18). Parity harness has 25 modules (20 scenario modules) and 224 scenarios. Unknown fields accepted on wire-reachable methods and refused on local-only methods. Verified wire caller attribution on directory.publish.
 
 ### A3 — Batched outbound call (M)
 

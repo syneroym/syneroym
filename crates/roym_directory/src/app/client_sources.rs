@@ -1,6 +1,6 @@
 //! Client half: directory sources and publication to source.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
@@ -9,30 +9,71 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     directory::{DEFAULT_SOURCE_TIMEOUT_MS, MAX_SOURCES, SourceError},
-    envelope::{Request, Response},
+    envelope::Response,
     method::{
-        SiblingError, call_sibling,
+        self, NoParams, Reply, SiblingError, call_sibling,
         catalog::{ListingGetOutput, ListingKeyInput},
+        directory::{DirectoryInfoOutput, PublishOutput},
     },
     paging, person, services,
 };
 
 use super::{SOURCES, ensure_coll, put_json};
+use crate::app;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(in crate::app) struct SourceRow {
-    pub(in crate::app) did: String,
-    pub(in crate::app) label: String,
-    pub(in crate::app) added_at_secs: u64,
+pub(crate) struct SourceRow {
+    pub(crate) did: String,
+    pub(crate) label: String,
+    pub(crate) added_at_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::app) last_ok_secs: Option<u64>,
+    pub(crate) last_ok_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::app) last_error: Option<SourceError>,
+    pub(crate) last_error: Option<SourceError>,
     /// Trust on first use, pinned once and never changed by a
     /// later reply. Absent until this node learns it (from an explicit
     /// `issuer_did` parameter, or from `directory.info`'s own field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::app) issuer_did: Option<String>,
+    pub(crate) issuer_did: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AddSourceInput {
+    pub did: String,
+    pub label: Option<String>,
+    pub issuer_did: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct AddSourceOutput {
+    pub source: SourceRow,
+    pub probe: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SourcesOutput {
+    pub sources: Vec<SourceRow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublishToSourceInput {
+    pub source: String,
+    pub listing_id: String,
+}
+
+/// One `invoke` reply from a remote directory: its result read as `O`,
+/// or its error returned unchanged.
+fn remote_reply<O: DeserializeOwned>(raw: &str) -> Reply<O> {
+    match method::read_reply::<O>(raw) {
+        Ok(v) => Ok(v),
+        Err(SiblingError::Refused(e)) => Err(Response { result: None, error: Some(e) }),
+        Err(SiblingError::BadReply(text)) => {
+            Err(Response::internal_error(format!("unreadable answer from the directory: {text}")))
+        }
+        Err(SiblingError::Transport(text)) => Err(Response::internal_error(text)),
+    }
 }
 
 /// One `directory.info` call at a chosen address, over the wire, with no
@@ -57,90 +98,111 @@ async fn probe_info<H: AppHost>(host: &H, did: &str) -> Result<String, ProxyErro
     .await
 }
 
-pub(in crate::app) async fn probe_info_verb<H: AppHost>(host: &H, req: &Request) -> Response {
-    let did = match req.params.get("did").and_then(Value::as_str) {
-        Some(d) if !d.is_empty() => d.to_string(),
-        _ => return Response::invalid_params("did is required"),
+#[derive(Default)]
+struct ProbeRead {
+    last_ok_secs: Option<u64>,
+    last_error: Option<SourceError>,
+    note: Option<String>,
+    name: Option<String>,
+    claimed_issuer: Option<String>,
+}
+
+fn read_probe(raw: &str, now: u64) -> ProbeRead {
+    let v: Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return ProbeRead {
+                last_error: Some(SourceError::Unreadable { reason: e.to_string() }),
+                ..Default::default()
+            };
+        }
     };
-    match probe_info(host, &did).await {
-        Ok(raw) => match serde_json::from_str::<Response>(&raw) {
-            Ok(resp) => resp,
-            Err(e) => Response::internal_error(e.to_string()),
-        },
-        Err(e) => Response::internal_error(format!("{e:?}")),
+    if let Err(e) = serde_json::from_value::<Response>(v.clone()) {
+        return ProbeRead {
+            last_error: Some(SourceError::Unreadable { reason: e.to_string() }),
+            ..Default::default()
+        };
+    }
+    let res = v.get("result");
+    if res.is_some_and(Value::is_null) {
+        ProbeRead {
+            last_ok_secs: Some(now),
+            note: Some("this address answered, but runs no directory".to_string()),
+            ..Default::default()
+        }
+    } else {
+        let name = res.and_then(|r| r.get("name")).and_then(Value::as_str).map(str::to_string);
+        let claimed_issuer =
+            res.and_then(|r| r.get("issuer_did")).and_then(Value::as_str).map(str::to_string);
+        ProbeRead { last_ok_secs: Some(now), last_error: None, note: None, name, claimed_issuer }
     }
 }
 
-pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> Response {
-    let did = match req.params.get("did").and_then(Value::as_str) {
-        Some(d) if !d.is_empty() => d.to_string(),
-        _ => return Response::invalid_params("did is required"),
-    };
-    let explicit_issuer = match req.params.get("issuer_did") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(s)) if person::is_did_key(s) => Some(s.clone()),
-        Some(_) => return Response::invalid_params("issuer_did must be a did:key"),
+pub(crate) async fn probe_info_verb<H: AppHost>(
+    host: &H,
+    input: app::DidInput,
+) -> Reply<Option<DirectoryInfoOutput>> {
+    if input.did.is_empty() {
+        return Err(Response::invalid_params("did is required"));
+    }
+    match probe_info(host, &input.did).await {
+        Ok(raw) => remote_reply::<Option<DirectoryInfoOutput>>(&raw),
+        Err(e) => Err(Response::internal_error(format!("{e:?}"))),
+    }
+}
+
+pub(crate) async fn add_source<H: AppHost>(
+    host: &H,
+    input: AddSourceInput,
+) -> Reply<AddSourceOutput> {
+    if input.did.is_empty() {
+        return Err(Response::invalid_params("did is required"));
+    }
+    let did = input.did;
+    let explicit_issuer = match input.issuer_did {
+        None => None,
+        Some(s) if person::is_did_key(&s) => Some(s),
+        Some(_) => return Err(Response::invalid_params("issuer_did must be a did:key")),
     };
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let existing: Vec<(String, Value)> = match paging::query_all_with_ids(host, SOURCES, None).await
     {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let already_present = existing.iter().any(|(id, _)| id == &did);
     if !already_present && existing.len() >= MAX_SOURCES {
-        return Response::invalid_params(format!("at most {MAX_SOURCES} sources may be added"));
+        return Err(Response::invalid_params(format!(
+            "at most {MAX_SOURCES} sources may be added"
+        )));
     }
     let existing_row: Option<SourceRow> = existing
         .iter()
         .find(|(id, _)| id == &did)
         .and_then(|(_, v)| serde_json::from_value(v.clone()).ok());
 
+    let now = clock::now_secs();
+
     // Probe once: `directory.info` over the wire. A transport failure is
     // stored as `last_error`; a successful probe that answers `null` is
     // reported to the caller rather than silently accepted, so a person
     // does not sit waiting for results from an address that will never
     // have any.
-    let probe = probe_info(host, &did).await;
-
-    let now = clock::now_secs();
-    let requested_label =
-        req.params.get("label").and_then(Value::as_str).unwrap_or_default().to_string();
-    let mut last_ok_secs = None;
-    let mut last_error = None;
-    let mut probe_note: Option<String> = None;
-    let mut label = requested_label.clone();
-    let mut info_issuer: Option<String> = None;
-    match probe {
-        Ok(raw) => match serde_json::from_str::<Response>(&raw) {
-            Ok(resp) if resp.result.as_ref().is_some_and(Value::is_null) => {
-                last_ok_secs = Some(now);
-                probe_note = Some("this address answered, but runs no directory".to_string());
-            }
-            Ok(resp) => {
-                last_ok_secs = Some(now);
-                if label.is_empty() {
-                    label = resp
-                        .result
-                        .as_ref()
-                        .and_then(|r| r.get("name"))
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                }
-                info_issuer = resp
-                    .result
-                    .as_ref()
-                    .and_then(|r| r.get("issuer_did"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-            }
-            Err(e) => last_error = Some(SourceError::Unreadable { reason: e.to_string() }),
-        },
-        Err(_) => last_error = Some(SourceError::TimedOut),
+    let probe = match probe_info(host, &did).await {
+        Ok(raw) => read_probe(&raw, now),
+        Err(_) => ProbeRead { last_error: Some(SourceError::TimedOut), ..Default::default() },
     };
+
+    let mut label = input.label.unwrap_or_default();
+    if label.is_empty()
+        && let Some(name) = probe.name
+    {
+        label = name;
+    }
+    let mut probe_note = probe.note;
+    let info_issuer = probe.claimed_issuer;
 
     // An explicit `issuer_did` wins; failing that, re-adding an
     // already-known source keeps its existing pin (a reply never re-pins
@@ -160,42 +222,43 @@ pub(in crate::app) async fn add_source<H: AppHost>(host: &H, req: &Request) -> R
         did: did.clone(),
         label,
         added_at_secs: now,
-        last_ok_secs,
-        last_error,
+        last_ok_secs: probe.last_ok_secs,
+        last_error: probe.last_error,
         issuer_did,
     };
     if let Err(e) = put_json(host, SOURCES, &did, &row).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    Response::ok(json!({ "source": row, "probe": probe_note }))
+    Ok(AddSourceOutput { source: row, probe: probe_note })
 }
 
-pub(in crate::app) async fn remove_source<H: AppHost>(host: &H, req: &Request) -> Response {
-    let did = match req.params.get("did").and_then(Value::as_str) {
-        Some(d) => d.to_string(),
-        None => return Response::invalid_params("did is required"),
-    };
+pub(crate) async fn remove_source<H: AppHost>(
+    host: &H,
+    input: app::DidInput,
+) -> Reply<app::RemovedOutput> {
+    let did = input.did;
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let existed = AppDataLayer::get(host, SOURCES.to_string(), did.clone())
         .await
         .map(|o| o.is_some())
         .unwrap_or(false);
     if existed && let Err(e) = AppDataLayer::delete(host, SOURCES.to_string(), did).await {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
-    Response::ok(json!({ "removed": existed }))
+    Ok(app::RemovedOutput { removed: existed })
 }
 
-pub(in crate::app) async fn sources<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn sources<H: AppHost>(host: &H, _input: NoParams) -> Reply<SourcesOutput> {
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    match paging::query_all::<_, Value>(host, SOURCES, None).await {
-        Ok(rows) => Response::ok(json!({ "sources": rows })),
-        Err(e) => Response::internal_error(e),
-    }
+    let sources: Vec<SourceRow> = match paging::query_all(host, SOURCES, None).await {
+        Ok(r) => r,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
+    Ok(SourcesOutput { sources })
 }
 
 /// Push one of this installation's own listings to a directory. The
@@ -208,15 +271,12 @@ pub(in crate::app) async fn sources<H: AppHost>(host: &H) -> Response {
 /// nothing beyond one outbound call. The caller is already this node's
 /// own owner (the verb is local-only), and the envelope comes from the
 /// local catalog, so there is no third party to protect here.
-pub(in crate::app) async fn publish_to_source<H: AppHost>(host: &H, req: &Request) -> Response {
-    let source = match req.params.get("source").and_then(Value::as_str) {
-        Some(s) => s.to_string(),
-        None => return Response::invalid_params("source is required"),
-    };
-    let listing_id = match req.params.get("listing_id").and_then(Value::as_str) {
-        Some(l) => l.to_string(),
-        None => return Response::invalid_params("listing_id is required"),
-    };
+pub(crate) async fn publish_to_source<H: AppHost>(
+    host: &H,
+    input: PublishToSourceInput,
+) -> Reply<PublishOutput> {
+    let source = input.source;
+    let listing_id = input.listing_id;
 
     let got = call_sibling::<_, ListingKeyInput, Option<ListingGetOutput>>(
         host,
@@ -228,10 +288,10 @@ pub(in crate::app) async fn publish_to_source<H: AppHost>(host: &H, req: &Reques
     let listing = match got {
         Ok(Some(l)) => l,
         Ok(None) | Err(SiblingError::Refused(_)) => {
-            return Response::invalid_params("no such listing on this installation");
+            return Err(Response::invalid_params("no such listing on this installation"));
         }
         Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => {
-            return Response::internal_error(e);
+            return Err(Response::internal_error(e));
         }
     };
     let envelope = listing.envelope;
@@ -256,11 +316,10 @@ pub(in crate::app) async fn publish_to_source<H: AppHost>(host: &H, req: &Reques
     {
         Ok(r) => r,
         Err(e) => {
-            return Response::internal_error(format!("directory.publish at '{source}': {e:?}"));
+            return Err(Response::internal_error(format!(
+                "directory.publish at '{source}': {e:?}"
+            )));
         }
     };
-    match serde_json::from_str::<Response>(&raw) {
-        Ok(r) => r,
-        Err(e) => Response::internal_error(e.to_string()),
-    }
+    remote_reply::<PublishOutput>(&raw)
 }

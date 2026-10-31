@@ -1684,13 +1684,14 @@ two clients of one service; each still owns its own fan-out loop.
 
 ##### Add a Roym method
 
-Today `profile`, `conversation`, `catalog` and `transaction` have a method table; the other services (`directory`, `web`) still read their params by hand. For services with a method table, methods use typed input and output structs in Rust:
+Every Roym service has a method table in its `api.rs`. `web` lists only its own `session.whoami` and forwards every other method, with its `params` unchanged, to the service that owns it. Methods use typed input and output structs in Rust:
 
-1. **Write input and output structs.** Derive `serde::Deserialize` with `#[serde(deny_unknown_fields)]` on the input struct on a local-only method; leave it off on a wire-reachable method, and list that method in the check's wire list (a nested input struct needs `deny_unknown_fields` too; the check sees only the outer type). A record type inside an input (for example a listing's `payment` block) has no `deny_unknown_fields`, because it also parses signed records from other nodes; an unknown key inside it is ignored and not signed. Derive `serde::Serialize` on the output struct. If a method takes no parameters, use `NoParams`.
+1. **Write input and output structs.** Derive `serde::Deserialize` with `#[serde(deny_unknown_fields)]` on the input struct on a local-only method; leave it off on a wire-reachable method, and list that method in the check's wire list (a nested input struct needs `deny_unknown_fields` too; the check sees only the outer type). A wire-reachable method's input and output types go in `roym_core::method::directory` (or the module of their service there), because the other node reads them. A wire method with no params uses `WireNoParams`, not `NoParams`. An output that another node reads never has `deny_unknown_fields`. A record type inside an input (for example a listing's `payment` block) has no `deny_unknown_fields`, because it also parses signed records from other nodes; an unknown key inside it is ignored and not signed. Derive `serde::Serialize` on the output struct. If a local method takes no parameters, use `NoParams`.
 2. **Add a row to the method table.** In the service's `api.rs`, add an entry to the `service_methods!` macro:
    ```rust
    "service.method-name": handler_fn [InputStruct => OutputStruct],
    ```
+   The wire list is the service's `WIRE_REACHABLE` constant, which `admit::admit` also reads.
 3. **Write the handler.** The handler takes `(&H, InputStruct)` and returns `Reply<OutputStruct>` (`Result<OutputStruct, Response>`). Return `Err(Response::invalid_params("..."))` on bad input.
 4. **Test the method contract.** Run `cargo nextest run -p syneroym-roym-web --test method_contract`. The contract test verifies that every method in the service table is typed, dispatched, and checked.
 
@@ -1700,7 +1701,7 @@ When a client sends invalid parameters to a Roym method:
 
 - **Error code `-32602`.** The service answers with JSON-RPC error code `-32602` ("Invalid params").
 - **Error data.** The error object includes `data: { "field": "<field_name>" }` pointing to the first invalid, missing, or unknown field. When no field can be named, for example when `params` is not a JSON object, `data` is absent.
-- **Unknown fields.** Local-only methods refuse unknown fields with `-32602`. Wire-reachable methods ignore unknown fields so newer clients can talk to older nodes.
+- **Unknown fields.** Local-only methods refuse unknown fields with `-32602`. Wire-reachable methods ignore unknown fields so that a newer node can call an older one; a renamed or removed field still breaks the call. Record types inside an input (for example `SearchQuery` inside `directory.query-source`'s `query`) ignore unknown keys, so a misspelled nested key is dropped, not refused. A remote reply is read with `method::read_reply` (or `call_sibling`), never by parsing it as `Response`, because a `null` result would be lost.
 - **Nested blocks.** A wrong type inside a nested block is refused with `-32602`; `data.field` names the deepest field it can, which for a tagged block such as `area` is the block itself.
 - **Group alias key.** Group methods accept the group identifier under either the `conversation` key or the `group` alias key. Sending both keys in the same request is refused as a duplicate field with `-32602` (`data.field = "conversation"`).
 - **Profile envelope format.** When calling `contacts.upsert`, pass `profile_envelope` as a serialized JSON string, not a JSON object.
