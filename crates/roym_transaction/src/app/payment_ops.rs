@@ -20,11 +20,10 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRef, AgreementRow, BookingRow, FenceOutcome, PAYMENTS, PROGRESS,
-    PaymentsRow, ProgressRow, SendState, booking_ops, get_row, ledger::load_booking, put_row,
-    resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRef, AgreementRow, BookingRow, FenceOutcome, HalfRecordedOutput, PAYMENTS,
+    PROGRESS, PaymentsRow, ProgressRow, SendState, booking_ops, get_row, ledger::load_booking,
+    put_row, resolve_principal_and_owner, send_card_and_file,
 };
-pub use crate::app::HalfRecordedOutput;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

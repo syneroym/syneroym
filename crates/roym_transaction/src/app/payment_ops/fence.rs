@@ -51,32 +51,37 @@ pub(super) async fn claim_payment_request_fence<H: AppHost>(
     match AppDataLayer::create(host, LEDGER.to_string(), vec![fence_write]).await {
         Ok(None) => Ok(FenceOutcome::Claimed),
         Ok(Some(_)) => {
-            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &fence_key).await
-                && let Some(existing) = &fence.half
-            {
-                return ensure_payment_request_recorded(
-                    host,
-                    agreement,
-                    conversation,
-                    existing,
-                    now,
-                )
+            handle_payment_request_fence_collision(host, agreement, conversation, &fence_key, now)
                 .await
-                .map(FenceOutcome::Answered);
-            }
-            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await
-                && let Some(existing) = &py.request
-            {
-                return Ok(FenceOutcome::Answered(PaymentRequestOutput {
-                    record_id: existing.record_id.clone(),
-                    message_id: None,
-                    state: SendState::AlreadyRecorded,
-                }));
-            }
-            Err(Response::invalid_params("payment-request-in-flight"))
         }
         Err(e) => Err(Response::internal_error(e.to_string())),
     }
+}
+
+async fn handle_payment_request_fence_collision<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    conversation: &str,
+    fence_key: &str,
+    now: u64,
+) -> Result<FenceOutcome<PaymentRequestOutput>, Response> {
+    if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, fence_key).await
+        && let Some(existing) = &fence.half
+    {
+        return ensure_payment_request_recorded(host, agreement, conversation, existing, now)
+            .await
+            .map(FenceOutcome::Answered);
+    }
+    if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await
+        && let Some(existing) = &py.request
+    {
+        return Ok(FenceOutcome::Answered(PaymentRequestOutput {
+            record_id: existing.record_id.clone(),
+            message_id: None,
+            state: SendState::AlreadyRecorded,
+        }));
+    }
+    Err(Response::invalid_params("payment-request-in-flight"))
 }
 
 async fn ensure_payment_request_recorded<H: AppHost>(
@@ -158,36 +163,8 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
     match AppDataLayer::create(host, LEDGER.to_string(), vec![ack_fence_write]).await {
         Ok(None) => Ok(FenceOutcome::Claimed),
         Ok(Some(_)) => {
-            if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &ack_fence_key).await
-                && let Some(h) = &fence.half
-            {
-                let ctx = AckRecordCtx { agreement, conversation, role, owner, quote_author_did };
-                return ensure_payment_ack_recorded(host, ctx, h, now)
-                    .await
-                    .map(FenceOutcome::Answered);
-            }
-            if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, agreement).await {
-                let v = match role {
-                    DealRole::Counterparty => &py.counterparty,
-                    DealRole::QuoteAuthor => &py.quote_author,
-                };
-                if let Ok(Some(early)) = check_acknowledgement_version(supersedes, v, role) {
-                    if owner == quote_author_did {
-                        let _ = booking_ops::transition(
-                            host,
-                            agreement,
-                            BookingEvent::Half {
-                                track: Track::Payment,
-                                role: DealRole::QuoteAuthor,
-                            },
-                            now,
-                        )
-                        .await;
-                    }
-                    return Ok(FenceOutcome::Answered(early));
-                }
-            }
-            Err(Response::invalid_params("payment-acknowledgement-in-flight"))
+            let ctx = AckRecordCtx { agreement, conversation, role, owner, quote_author_did };
+            handle_payment_ack_fence_collision(host, ctx, &ack_fence_key, supersedes, now).await
         }
         Err(e) => Err(Response::internal_error(e.to_string())),
     }
@@ -199,6 +176,39 @@ struct AckRecordCtx<'a> {
     role: DealRole,
     owner: &'a str,
     quote_author_did: &'a str,
+}
+
+async fn handle_payment_ack_fence_collision<H: AppHost>(
+    host: &H,
+    ctx: AckRecordCtx<'_>,
+    ack_fence_key: &str,
+    supersedes: Option<&str>,
+    now: u64,
+) -> Result<FenceOutcome<HalfRecordedOutput>, Response> {
+    if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, ack_fence_key).await
+        && let Some(h) = &fence.half
+    {
+        return ensure_payment_ack_recorded(host, ctx, h, now).await.map(FenceOutcome::Answered);
+    }
+    if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, ctx.agreement).await {
+        let v = match ctx.role {
+            DealRole::Counterparty => &py.counterparty,
+            DealRole::QuoteAuthor => &py.quote_author,
+        };
+        if let Ok(Some(early)) = check_acknowledgement_version(supersedes, v, ctx.role) {
+            if ctx.owner == ctx.quote_author_did {
+                let _ = booking_ops::transition(
+                    host,
+                    ctx.agreement,
+                    BookingEvent::Half { track: Track::Payment, role: DealRole::QuoteAuthor },
+                    now,
+                )
+                .await;
+            }
+            return Ok(FenceOutcome::Answered(early));
+        }
+    }
+    Err(Response::invalid_params("payment-acknowledgement-in-flight"))
 }
 
 async fn ensure_payment_ack_recorded<H: AppHost>(

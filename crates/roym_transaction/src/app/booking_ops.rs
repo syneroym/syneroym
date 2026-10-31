@@ -323,7 +323,7 @@ pub(crate) async fn verify<H: AppHost>(
     method::verify_with(input, booking::verify_booking_progress)
 }
 
-pub(crate) async fn booking_get<H: AppHost>(host: &H, input: AgreementRef) -> Reply<BookingView> {
+pub(crate) async fn get<H: AppHost>(host: &H, input: AgreementRef) -> Reply<BookingView> {
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
@@ -384,7 +384,7 @@ pub(crate) async fn booking_get<H: AppHost>(host: &H, input: AgreementRef) -> Re
     }
 }
 
-pub(crate) async fn booking_start<H: AppHost>(host: &H, input: AgreementRef) -> Reply<BookingView> {
+pub(crate) async fn start<H: AppHost>(host: &H, input: AgreementRef) -> Reply<BookingView> {
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
@@ -412,10 +412,7 @@ pub(crate) async fn booking_start<H: AppHost>(host: &H, input: AgreementRef) -> 
     ))
 }
 
-pub(crate) async fn booking_cancel<H: AppHost>(
-    host: &H,
-    input: BookingCancelInput,
-) -> Reply<BookingView> {
+pub(crate) async fn cancel<H: AppHost>(host: &H, input: BookingCancelInput) -> Reply<BookingView> {
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
@@ -512,7 +509,7 @@ pub(crate) async fn history<H: AppHost>(
     }
 }
 
-pub(crate) async fn booking_list<H: AppHost>(
+pub(crate) async fn list<H: AppHost>(
     host: &H,
     input: BookingListInput,
 ) -> Reply<BookingListOutput> {

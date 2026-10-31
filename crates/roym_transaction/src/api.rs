@@ -15,8 +15,8 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AgreementRef, ListInput, agreement_ops, backup, booking_ops, fulfilment_ops, payment_ops,
-    quote_ops, request_ops, sync, thread,
+    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, booking_ops,
+    fulfilment_ops, payment_ops, quote_ops, request_ops, sync, thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -50,19 +50,19 @@ syneroym_roym_core::service_methods! {
     "agreement.list": agreement_ops::list [agreement_ops::AgreementListInput => agreement_ops::AgreementListOutput],
     "agreement.verify": agreement_ops::verify [VerifyInput => RecordVerdict<AgreementReceiptPayload>],
 
-    "booking.get": booking_ops::booking_get [AgreementRef => booking_ops::BookingView],
-    "booking.list": booking_ops::booking_list [booking_ops::BookingListInput => booking_ops::BookingListOutput],
-    "booking.start": booking_ops::booking_start [AgreementRef => booking_ops::BookingView],
-    "booking.cancel": booking_ops::booking_cancel [booking_ops::BookingCancelInput => booking_ops::BookingView],
+    "booking.get": booking_ops::get [AgreementRef => booking_ops::BookingView],
+    "booking.list": booking_ops::list [booking_ops::BookingListInput => booking_ops::BookingListOutput],
+    "booking.start": booking_ops::start [AgreementRef => booking_ops::BookingView],
+    "booking.cancel": booking_ops::cancel [booking_ops::BookingCancelInput => booking_ops::BookingView],
     "booking.history": booking_ops::history [AgreementRef => booking_ops::BookingHistoryOutput],
     "booking.verify": booking_ops::verify [VerifyInput => RecordVerdict<BookingProgressPayload>],
 
     "payment.request": payment_ops::request [payment_ops::PaymentRequestInput => payment_ops::PaymentRequestOutput],
-    "payment.acknowledge": payment_ops::acknowledge [payment_ops::PaymentAckInput => payment_ops::HalfRecordedOutput],
+    "payment.acknowledge": payment_ops::acknowledge [payment_ops::PaymentAckInput => HalfRecordedOutput],
     "payment.get": payment_ops::get [AgreementRef => payment_ops::PaymentGetOutput],
     "payment.verify": payment_ops::verify [VerifyInput => payment_ops::PaymentVerdict],
 
-    "fulfilment.sign": fulfilment_ops::sign [AgreementRef => payment_ops::HalfRecordedOutput],
+    "fulfilment.sign": fulfilment_ops::sign [AgreementRef => HalfRecordedOutput],
     "fulfilment.get": fulfilment_ops::get [AgreementRef => fulfilment_ops::FulfilmentGetOutput],
     "fulfilment.verify": fulfilment_ops::verify [VerifyInput => RecordVerdict<FulfilmentReceiptPayload>],
 

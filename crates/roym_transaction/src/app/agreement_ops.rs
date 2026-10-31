@@ -64,6 +64,22 @@ pub struct AgreementView {
     pub terms: AgreedTerms,
 }
 
+impl From<AgreementRow> for AgreementView {
+    fn from(r: AgreementRow) -> Self {
+        let pair = pair_state(r.counterparty.as_ref(), r.quote_author.as_ref());
+        Self {
+            quote_record_id: r.quote_record_id,
+            conversation: r.conversation,
+            counterparty_did: r.counterparty_did,
+            quote_author_did: r.quote_author_did,
+            counterparty: r.counterparty,
+            quote_author: r.quote_author,
+            pair,
+            terms: r.terms,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgreementListInput {
@@ -110,7 +126,6 @@ pub(crate) async fn accept<H: AppHost>(
     } else {
         None
     };
-    let booking_opt = if role == DealRole::QuoteAuthor { Some(booking_view) } else { Some(None) };
 
     let half =
         sign_agreement_receipt(host, principal, &input.quote_record_id, &row, &owner, role).await?;
@@ -140,7 +155,7 @@ pub(crate) async fn accept<H: AppHost>(
         role,
         record_id,
         pair,
-        booking: booking_opt,
+        booking: Some(booking_view),
         message_id,
         state,
         send_error,
@@ -318,19 +333,7 @@ pub(crate) async fn get<H: AppHost>(
         Ok(r) => r,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    Ok(row.map(|r| {
-        let pair = pair_state(r.counterparty.as_ref(), r.quote_author.as_ref());
-        AgreementView {
-            quote_record_id: r.quote_record_id,
-            conversation: r.conversation,
-            counterparty_did: r.counterparty_did,
-            quote_author_did: r.quote_author_did,
-            counterparty: r.counterparty,
-            quote_author: r.quote_author,
-            pair,
-            terms: r.terms,
-        }
-    }))
+    Ok(row.map(AgreementView::from))
 }
 
 pub(crate) async fn list<H: AppHost>(
@@ -348,24 +351,8 @@ pub(crate) async fn list<H: AppHost>(
     rows.sort_by_key(|a| Reverse(a.updated_at_secs));
     let offset = usize::try_from(input.offset).unwrap_or(usize::MAX);
     let limit = usize::try_from(input.limit).unwrap_or(usize::MAX);
-    let page: Vec<AgreementView> = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|r| {
-            let pair = pair_state(r.counterparty.as_ref(), r.quote_author.as_ref());
-            AgreementView {
-                quote_record_id: r.quote_record_id,
-                conversation: r.conversation,
-                counterparty_did: r.counterparty_did,
-                quote_author_did: r.quote_author_did,
-                counterparty: r.counterparty,
-                quote_author: r.quote_author,
-                pair,
-                terms: r.terms,
-            }
-        })
-        .collect();
+    let page: Vec<AgreementView> =
+        rows.into_iter().skip(offset).take(limit).map(AgreementView::from).collect();
     Ok(AgreementListOutput { agreements: page })
 }
 
