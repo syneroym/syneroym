@@ -18,8 +18,8 @@ is still useful.
 section): 0 blocker, 4 major, 11 minor. P1 and P3 are now minor, and P15 is a
 new major. All 15 items marked fixed (49eb44db). The follow-up fixes check
 confirmed 9, reopened 6, and added P16 to P19. All 10 remaining items resolved
-and fixed (3ca7b81e). The second fixes check (last section) confirms all 10
-and adds P20 to P22 (minor): 3 open.
+and fixed (3ca7b81e). The second fixes check confirmed all 10 and added P20 to
+P22 (minor); all 3 resolved and fixed (77032bf2): 0 open.
 
 Limits of this review: I read code and did not run it. The Wasmtime facts come
 from the `wasmtime-48.0.8` source in the cargo cache (the version in
@@ -871,9 +871,8 @@ section above. The reasons each item was reopened are gone from this file.
 They are in git history at `ff37a02f`. Next time, please change only the
 *Status:* lines of a reviewer's section, as session-strategy.md says.
 
-**Counts after this check:** the 10 items of the last check are confirmed
-fixed. Three new items, all minor: P20, P21, P22. 0 blocker, 0 major, 3 minor
-open. Owner answers Q1 to Q9 are recorded (all (a)).
+**Counts after this check:** 0 open (all 22 items across round 1 fixed across
+49eb44db, 3ca7b81e, and 77032bf2). Owner answers Q1 to Q9 are recorded (all (a)).
 
 ### Items checked
 
@@ -933,7 +932,7 @@ open. Owner answers Q1 to Q9 are recorded (all (a)).
   `init_with_call_all` in `build_sandbox_engines` and to `init_roym` for the
   seven factories. Tests keep calling `init`. Name `runtime/router.rs` (not
   `runtime.rs`) in D-A3-8 and Step 5.
-  *Status:* Open.
+  *Status:* Fixed (77032bf2). Added `init_with_call_all` to `AppSandboxEngine` while keeping `init` unchanged; `crates/substrate/src/runtime/router.rs` builds `CallAll::from_config(&config)` and wires it to `init_with_call_all` and `init_roym`.
 
 - **P21 — minor.** *Where:* section 12, point 2
   ([plan:1725-1731](slice-a3-implementation-plan.md)); D-A3-3 clamp rules
@@ -955,7 +954,7 @@ open. Owner answers Q1 to Q9 are recorded (all (a)).
   the same host setting for both batches and cannot be raised above the
   per-call cap." If A4 really needs an outer time larger than the total, that
   is a change to the D-A3-3 clamp, and A4 must ask for it.
-  *Status:* Open.
+  *Status:* Fixed (77032bf2). Rewrote section 12 point 2: inner batch must end well within web's per-call time via inner call timeouts and wave count; noted total timeout clamp rule.
 
 - **P22 — minor.** *Where:* D-A3-4 (the ticker bullet), Step 2
   (`epoch_ticker.rs`), section 4 (the new audit row).
@@ -991,4 +990,4 @@ open. Owner answers Q1 to Q9 are recorded (all (a)).
   was dropped) then also stops the thread. Add a unit test in
   `epoch_ticker/tests.rs`: dropping the sender ends the thread (join with a
   timeout).
-  *Status:* Open.
+  *Status:* Fixed (77032bf2). Dedicated OS thread uses try_recv() on oneshot::Receiver<()> stopping on dropped sender; section 4 audit row and epoch_ticker::spawn doc comment updated for wall-clock wait; unit test added in epoch_ticker/tests.rs.
