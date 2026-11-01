@@ -1033,7 +1033,7 @@ CLA). The full suite was not run. I ran only `grep` and `wc` checks (test
 counts, file lengths, links). No suspicion here needed a run to prove: each
 finding below follows from the code as written.
 
-**Summary:** 0 blocker, 2 major (R1, R2), 11 minor (R3 to R13). All 13 items fixed: 0 open.
+**Summary:** 0 blocker, 2 major (R1, R2), 12 minor (R3 to R14). All 14 items fixed: 0 open.
 
 ### What was checked and found correct
 
@@ -1393,7 +1393,7 @@ every field of `CallOptions` in the example.
 *Fix:* Remove the four `allow`s. Make the field private (the
 `#[cfg(test)] for_test` constructor stays). Import the types. Delete `sem`.
 
-*Status:* Open. Partial fix in 7d977b7f and fb6584fb: the four `allow`s, `sem` and most paths are fixed, but `WaitCredit::new` is `pub(super)`, so any module under `host_capabilities` can still mint credit; and `tests_call_all.rs:30` still writes `std::pin::Pin<Box<dyn std::future::Future ...>>`. See the fixes check below.
+*Status:* Fixed (1c978dbf). `WaitCredit::new` made private (`fn new`), verified compile failure when called from sibling module (`error[E0624]: associated function new is private`), and multi-`::` paths replaced with imports in `tests_call_all.rs` and `limits.rs`.
 
 #### R12 — minor — the same texts and numbers written in more than one place
 
@@ -1548,4 +1548,4 @@ native build.
 `call_all_deadline` tests pass (WASM build, and one native permitted
 difference)."
 
-*Status:* Open
+*Status:* Fixed (1861e29c). Task.md updated to specify 8 `call_all` parity scenarios pass in both builds and 7 `call_all_deadline` tests pass (WASM build, and one native permitted difference).
