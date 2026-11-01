@@ -18,7 +18,8 @@ is still useful.
 section): 0 blocker, 4 major, 11 minor. P1 and P3 are now minor, and P15 is a
 new major. All 15 items marked fixed (49eb44db). The follow-up fixes check
 confirmed 9, reopened 6, and added P16 to P19. All 10 remaining items resolved
-and fixed (3ca7b81e): 0 open.
+and fixed (3ca7b81e). The second fixes check (last section) confirms all 10
+and adds P20 to P22 (minor): 3 open.
 
 Limits of this review: I read code and did not run it. The Wasmtime facts come
 from the `wasmtime-48.0.8` source in the cargo cache (the version in
@@ -858,3 +859,136 @@ views above are unchanged.
   set in D-A3-5 and D-A3-9. Single constructor `CallAll::from_config(&SubstrateConfig)` named.
   Section 12 point 2 updated: outer per-call time must exceed inner total plus callee's work.
   Added line to `task.md` under A4: "- Read section 12 of the A3 plan first."
+
+## Plan review round 1 — second fixes check — Claude Opus 5.5 (Claude Code desktop), 2026-11-01
+
+Checked the fix commit `3ca7b81e` (closed by `bc5cab6e`) against the plan at
+`bc5cab6e`. Plan line numbers below are at that commit. The code has not
+changed since `5f34e93c`.
+
+A note on the record: the fix session rewrote the text of the "fixes checked"
+section above. The reasons each item was reopened are gone from this file.
+They are in git history at `ff37a02f`. Next time, please change only the
+*Status:* lines of a reviewer's section, as session-strategy.md says.
+
+**Counts after this check:** the 10 items of the last check are confirmed
+fixed. Three new items, all minor: P20, P21, P22. 0 blocker, 0 major, 3 minor
+open. Owner answers Q1 to Q9 are recorded (all (a)).
+
+### Items checked
+
+- **P2 — confirmed.** One `CallAll::from_config(&config)` reaches the engine
+  and the seven native factories. D-A3-8, Step 3 and Step 5 now agree. The
+  parity config override in Step 6 is paid for by the `StubProxy` move. The
+  cost and the place of the wiring are wrong in the plan (P20).
+- **P3 — confirmed.** `CALL_CANCEL_GRACE` is in both spawn sites, and section
+  3.3 reads correctly.
+- **P4 — confirmed.** The pool test is in the router test, which has real local
+  WASM callees, with `max_concurrent_instances = 6`. To hold slots, the test
+  needs callees that do not end at once. `spin-for` (P15) gives that.
+- **P7 — confirmed.** The WIT comment, Step 4 and the 7.1 tests agree on which
+  refusals start with `call-all busy:`.
+- **P14 — confirmed.** `ProxyCallAllSeq` exists in Step 6, and the two-batch
+  test uses it.
+- **P15 — confirmed.** The test is in the router test, with the `spin-for`
+  export and at least 4 workers.
+- **P16 — confirmed.** The old D-A3-4 block is gone and the test is renamed.
+  One small remnant: section 7.1 still lists `only_call_all_gives_credit` as a
+  test name, but its text says the rule is checked at compile time and needs no
+  test. Drop the name from the list, or turn it into a note. Not reopened.
+- **P17 — confirmed.** The ticker moves to its own OS thread, and there is a
+  2-worker test. Two points that follow from this change are P22.
+- **P18 — confirmed.** `join_next_with_id` and `task_to_slot` handle a panicked
+  task, and a test covers it. One small point: the comment "on Elapsed, set is
+  dropped" is not exact. `set` is declared outside the timed block, so it is
+  dropped when `call_all` returns, a moment later. The answer is the same.
+- **P19 — confirmed.** `MIN_BATCH_ALLOWANCE` is 1 s, the constructor is named,
+  and task.md A4 points to section 12. Section 12 point 2 has a new problem
+  (P21).
+
+### New findings
+
+- **P20 — minor.** *Where:* D-A3-8 ("builds it once in `runtime.rs`"), Step 3
+  (`AppSandboxEngine::init(&config, call_all: CallAll)`), Step 5 (file list).
+  [init.rs:166](../../../../crates/sandbox_wasm/src/engine/init.rs#L166),
+  [runtime/router.rs:167](../../../../crates/substrate/src/runtime/router.rs#L167),
+  [runtime/router.rs:495](../../../../crates/substrate/src/runtime/router.rs#L495).
+  *Problem:* the plan adds an argument to `AppSandboxEngine::init`. That
+  function has 73 callers: one in production, and the rest in tests, benches
+  and `smoke-tests`. Among them are 4 in `crates/router/tests/proxy_dispatch.rs`,
+  which is on the oversized list and must not grow, and about 45 in
+  `control_plane` tests. Steps 3 and 5 do not name them, and the size note in
+  section 7.6 does not count them. Also, the wiring is not in `runtime.rs`. The
+  engine is built in `build_sandbox_engines`
+  ([runtime/router.rs:495](../../../../crates/substrate/src/runtime/router.rs#L495)),
+  and the native Roym factories in `init_roym`, called from
+  [runtime/router.rs:167](../../../../crates/substrate/src/runtime/router.rs#L167).
+  *Failure case:* Step 3 stops building until 73 call sites are edited. If
+  rustfmt wraps any of those calls onto more lines, the `proxy_dispatch.rs` cap
+  fails, in a step that was meant to touch config only.
+  *Fix:* keep the signature of `init`. Add
+  `AppSandboxEngine::init_with_call_all(config, call_all)`, and make `init`
+  call it with `CallAll::from_config(config)`. The production path in
+  `runtime/router.rs` builds one `CallAll`, passes it to
+  `init_with_call_all` in `build_sandbox_engines` and to `init_roym` for the
+  seven factories. Tests keep calling `init`. Name `runtime/router.rs` (not
+  `runtime.rs`) in D-A3-8 and Step 5.
+  *Status:* Open.
+
+- **P21 — minor.** *Where:* section 12, point 2
+  ([plan:1725-1731](slice-a3-implementation-plan.md)); D-A3-3 clamp rules
+  ([plan:724](slice-a3-implementation-plan.md)).
+  *Problem:* point 2 offers two ways out. The first is "`call_all_max_call_timeout_ms`
+  is configured to exceed the total plus work". D-A3-3 cuts
+  `max_call_timeout` to `total_timeout`, so this cannot be configured. The
+  outer batch in `web` and the inner batch in `directory` are on the same node
+  and read the same config. The second way says "A4 passes an inner total well
+  below 10 s". A guest cannot pass a total. The total is set by the host. The
+  guest sets only the per-call times. So neither option can be done as
+  written.
+  *Failure case:* A4 sets the config the first way. The clamp cuts it back with
+  a warning, and the search is still cut by `web`'s per-call time.
+  *Fix:* rewrite point 2: "The inner batch must end, and `directory` must merge
+  and answer, well within `web`'s per-call time. The guest controls this only
+  through the per-call times of the inner calls and how many waves they need.
+  For example, 8 sources at 2 s each in one wave end in about 2 s. The total is
+  the same host setting for both batches and cannot be raised above the
+  per-call cap." If A4 really needs an outer time larger than the total, that
+  is a change to the D-A3-3 clamp, and A4 must ask for it.
+  *Status:* Open.
+
+- **P22 — minor.** *Where:* D-A3-4 (the ticker bullet), Step 2
+  (`epoch_ticker.rs`), section 4 (the new audit row).
+  [epoch_ticker.rs:12-33](../../../../crates/sandbox_wasm/src/engine/epoch_ticker.rs#L12).
+  *Problem:* two consequences of moving the ticker to an OS thread are not
+  written down.
+  1. **A behaviour change for every guest.** Today, when the runtime is
+     saturated, the ticker task is starved too, so the epoch stops. A guest
+     loses no budget while it waits for a worker. With an OS thread, the epoch
+     keeps moving. A guest whose task waits for a free worker, for example after
+     a host call completed, now uses its 5 s budget during that wait. On a busy
+     node more guests are stopped by the deadline than today. This is closer to
+     the documented "wall-clock" limit, but it changes what an existing guest
+     sees, and the audit row lists only the benefit. The doc comment of
+     `epoch_ticker::spawn` ("The epoch only counts time the ticker could see")
+     becomes false.
+  2. **The stop condition.** The plan says "an atomic stop flag or shutdown
+     receiver". Today the ticker is a task, so it ends when its runtime ends,
+     even if no stop signal is sent (as in every `#[tokio::test]`). A thread does
+     not end with the runtime. If it waits for a flag that nothing sets, it lives
+     on and keeps a clone of the Wasmtime `Engine` alive, together with the
+     pooling allocator's address-space reservation.
+  *Failure case:* (1) A node under CPU load: a guest's host call completes,
+  but its task waits 1 s for a worker. Today that second is free. After A3 it
+  counts against the guest's 5 s. (2) A future change uses an `AtomicBool` that
+  only `shutdown` sets. Every engine built in a test leaves a ticker thread
+  running.
+  *Fix:* (1) Add the change to the section 4 audit row: "a guest that waits
+  for a worker now uses its budget during the wait", and rewrite the doc
+  comment of `epoch_ticker::spawn`. (2) Keep the existing
+  `oneshot::Receiver<()>`. In the loop, call `try_recv()` after each tick and
+  stop on anything but `Err(TryRecvError::Empty)`. A dropped sender (the engine
+  was dropped) then also stops the thread. Add a unit test in
+  `epoch_ticker/tests.rs`: dropping the sender ends the thread (join with a
+  timeout).
+  *Status:* Open.
