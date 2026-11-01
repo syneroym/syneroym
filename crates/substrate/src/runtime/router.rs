@@ -364,16 +364,17 @@ async fn build_route_handler_deps(
     let app_registry = replay_persisted_bindings(registry).await?;
     let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
 
-    let (app_sandbox_engine, podman_sandbox_engine, websocket_senders) = build_sandbox_engines(
-        config,
-        registry,
-        &key_store,
-        &storage_provider,
-        &blob_provider,
-        &messaging_broker,
-        &logical_resolver,
-    )
-    .await?;
+    let (app_sandbox_engine, podman_sandbox_engine, websocket_senders, call_all) =
+        build_sandbox_engines(
+            config,
+            registry,
+            &key_store,
+            &storage_provider,
+            &blob_provider,
+            &messaging_broker,
+            &logical_resolver,
+        )
+        .await?;
 
     // Shared with `ControlPlaneService`, which registers/deregisters
     // per-deployment native services (data-layer/vault/app-config/
@@ -451,6 +452,7 @@ async fn build_route_handler_deps(
         websocket_senders.clone(),
         assets.clone(),
         record_signer,
+        call_all,
     );
 
     #[cfg(feature = "auth")]
@@ -491,9 +493,15 @@ async fn build_sandbox_engines(
     blob_provider: &Arc<dyn BlobProvider>,
     messaging_broker: &Arc<MqttBroker>,
     logical_resolver: &Arc<LogicalResolver>,
-) -> anyhow::Result<(Arc<AppSandboxEngine>, Arc<ContainerEngine>, Arc<WebSocketSenders>)> {
+) -> anyhow::Result<(
+    Arc<AppSandboxEngine>,
+    Arc<ContainerEngine>,
+    Arc<WebSocketSenders>,
+    syneroym_sandbox_wasm::CallAll,
+)> {
+    let call_all = syneroym_sandbox_wasm::CallAll::from_config(config);
     let app_sandbox_engine = Arc::new(
-        AppSandboxEngine::init(
+        AppSandboxEngine::init_with_call_all(
             config,
             registry.get_all_endpoints(),
             key_store.clone(),
@@ -502,6 +510,7 @@ async fn build_sandbox_engines(
             messaging_broker.clone(),
             registry.clone(),
             logical_resolver.clone(),
+            call_all.clone(),
         )
         .await?,
     );
@@ -529,7 +538,7 @@ async fn build_sandbox_engines(
         Some(storage_provider.clone()),
     ));
 
-    Ok((app_sandbox_engine, podman_sandbox_engine, websocket_senders))
+    Ok((app_sandbox_engine, podman_sandbox_engine, websocket_senders, call_all))
 }
 
 /// Constructs the `ConversationService` with its full config derived from

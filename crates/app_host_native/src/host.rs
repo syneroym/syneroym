@@ -21,7 +21,7 @@ use syneroym_app_host::{
         http::FrameKind,
         invocation::CallerOrigin,
         messaging::MessagingError,
-        proxy::{CallOptions, CallTarget, ProxyError},
+        proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
         vault::VaultError,
     },
@@ -607,6 +607,17 @@ impl AppProxy for NativeAppHost {
         )
         .await
         .map_err(convert::proxy_error_out)
+    }
+
+    async fn call_all(
+        &self,
+        calls: Vec<CallRequest>,
+    ) -> Result<Vec<Result<String, ProxyError>>, ProxyError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        let host_calls = calls.into_iter().map(convert::call_request_in).collect();
+        let results =
+            HostProxy::call_all(&mut *state, host_calls).await.map_err(convert::proxy_error_out)?;
+        Ok(results.into_iter().map(|r| r.map_err(convert::proxy_error_out)).collect())
     }
 
     async fn enqueue(

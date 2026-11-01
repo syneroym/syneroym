@@ -18,6 +18,7 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::MqttBroker;
 use syneroym_rpc::NativeDispatchRegistry;
+use syneroym_sandbox_wasm::CallAll;
 
 /// Handles the supervisor role (and any future post-router role that must
 /// act as a first-class dispatch target on this same node) needs, but
@@ -67,6 +68,8 @@ pub(super) struct SharedNodeHandles {
     assets: AssetRegistry,
     #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     record_signer: Arc<NodeRecordSigner>,
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
+    call_all: CallAll,
 }
 
 impl SharedNodeHandles {
@@ -85,6 +88,7 @@ impl SharedNodeHandles {
         websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
         assets: AssetRegistry,
         record_signer: Arc<NodeRecordSigner>,
+        call_all: CallAll,
     ) -> Self {
         Self {
             key_store,
@@ -100,6 +104,7 @@ impl SharedNodeHandles {
             websocket_senders,
             assets,
             record_signer,
+            call_all,
         }
     }
 
@@ -166,5 +171,10 @@ impl SharedNodeHandles {
     #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     pub(super) fn record_signer(&self) -> &Arc<NodeRecordSigner> {
         &self.record_signer
+    }
+
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
+    pub(super) fn call_all(&self) -> &CallAll {
+        &self.call_all
     }
 }

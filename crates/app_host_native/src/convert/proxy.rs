@@ -19,6 +19,16 @@ pub(crate) fn call_options_in(v: GuestCallOptions) -> HostCallOptions {
     }
 }
 
+pub(crate) fn call_request_in(v: GuestCallRequest) -> HostCallRequest {
+    HostCallRequest {
+        target: call_target_in(v.target),
+        interface: v.interface,
+        method: v.method,
+        params: v.params,
+        options: v.options.map(call_options_in),
+    }
+}
+
 // ---- proxy: out (host -> guest) ----
 
 pub(crate) fn callee_error_out(v: HostCalleeError) -> GuestCalleeError {

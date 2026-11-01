@@ -153,7 +153,8 @@ async fn init_roym_web(
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
         false,
-    );
+    )
+    .with_call_all(shared.call_all().clone());
     let f = factory.clone();
     let f_http = factory.clone();
     let web = Arc::new(syneroym_roym_web::native::NativeWeb::new(
@@ -223,7 +224,8 @@ async fn init_roym_profile(
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
         false,
-    );
+    )
+    .with_call_all(shared.call_all().clone());
     let f = factory.clone();
     let profile = Arc::new(syneroym_roym_profile::native::NativeProfile::new(
         roym_dispatch_id(services::PROFILE.name),
@@ -267,7 +269,8 @@ async fn init_roym_conversation(
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
         true,
-    );
+    )
+    .with_call_all(shared.call_all().clone());
     let f = factory.clone();
     let conv = Arc::new(syneroym_roym_conversation::native::NativeConversation::new(
         roym_dispatch_id(services::CONVERSATION.name),
@@ -312,7 +315,8 @@ async fn init_roym_catalog(
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
         false,
-    );
+    )
+    .with_call_all(shared.call_all().clone());
     let f = factory.clone();
     let cat = Arc::new(syneroym_roym_catalog::native::NativeCatalog::new(
         roym_dispatch_id(services::CATALOG.name),
@@ -353,7 +357,8 @@ async fn init_roym_transaction(
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
         false,
-    );
+    )
+    .with_call_all(shared.call_all().clone());
     let f = factory.clone();
     let tx = Arc::new(syneroym_roym_transaction::native::NativeTransaction::new(
         roym_dispatch_id(services::TRANSACTION.name),
@@ -394,7 +399,8 @@ async fn init_roym_directory(
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
         false,
-    );
+    )
+    .with_call_all(shared.call_all().clone());
     let f = factory.clone();
     let dir = Arc::new(syneroym_roym_directory::native::NativeDirectory::new(
         roym_dispatch_id(services::DIRECTORY.name),

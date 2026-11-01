@@ -23,7 +23,7 @@ use syneroym_rpc::{
     ConversationNotifier, NotifyOutcome, ServiceProxy, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{
-    HostState, InvocationOrigin, MessagingContext, StreamContext, empty_service_proxy,
+    CallAll, HostState, InvocationOrigin, MessagingContext, StreamContext, empty_service_proxy,
 };
 use tokio::sync::{OnceCell, RwLock};
 
@@ -69,6 +69,7 @@ pub struct NativeHostFactory {
     fdae_policy_generation: AtomicU64,
     record_signer: OnceLock<Arc<NodeRecordSigner>>,
     declares_conversation_sink: bool,
+    call_all: OnceLock<CallAll>,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -117,6 +118,7 @@ impl NativeHostFactory {
             fdae_policy_generation: AtomicU64::new(0),
             record_signer: OnceLock::new(),
             declares_conversation_sink,
+            call_all: OnceLock::new(),
         });
         // The factory registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
@@ -139,6 +141,13 @@ impl NativeHostFactory {
         self.fdae_policy_generation.fetch_add(1, Ordering::SeqCst);
         let mut guard = self.fdae_policy.write().await;
         *guard = None;
+    }
+
+    /// Attaches the shared `CallAll` configuration and waiter pool.
+    #[must_use]
+    pub fn with_call_all(self: Arc<Self>, call_all: CallAll) -> Arc<Self> {
+        let _ = self.call_all.set(call_all);
+        self
     }
 
     pub fn set_record_signer(&self, signer: Arc<NodeRecordSigner>) {
@@ -300,6 +309,7 @@ impl NativeHostFactory {
             app_instance,
             self.logical_resolver.clone(),
         )
+        .with_call_all(self.call_all.get().cloned().unwrap_or_default())
         .with_conversation(Arc::downgrade(&self.conversation) as Weak<dyn ConversationHost>)
         .with_websocket_senders(self.websocket_senders.clone())
         .with_record_signer(self.record_signer.get().cloned())

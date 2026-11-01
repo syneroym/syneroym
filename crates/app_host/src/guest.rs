@@ -381,6 +381,13 @@ impl AppProxy for GuestHost {
         px::call(&target, &interface, &method, &params, options.as_ref())
     }
 
+    async fn call_all(
+        &self,
+        calls: Vec<CallRequest>,
+    ) -> Result<Vec<Result<String, ProxyError>>, ProxyError> {
+        px::call_all(&calls)
+    }
+
     async fn enqueue(
         &self,
         target: CallTarget,

@@ -27,7 +27,7 @@ pub mod conversation {
 
 pub mod proxy {
     pub use syneroym_wit_interfaces::proxy::syneroym::proxy::proxy::{
-        CallOptions, CallTarget, CalleeError, ProxyError,
+        CallOptions, CallRequest, CallTarget, CalleeError, ProxyError,
     };
 }
 

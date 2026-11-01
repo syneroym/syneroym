@@ -277,7 +277,7 @@ pub(crate) mod tests {
             http::FrameKind,
             invocation::CallerOrigin,
             messaging::MessagingError,
-            proxy::{CallOptions, CallTarget, ProxyError},
+            proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
             signing::{RecordDraft, SigningError, SigningIdentity},
             vault::VaultError,
         },
@@ -633,6 +633,13 @@ pub(crate) mod tests {
                 unimplemented!()
             }
         }
+        async fn call_all(
+            &self,
+            _calls: Vec<CallRequest>,
+        ) -> Result<Vec<Result<String, ProxyError>>, ProxyError> {
+            unimplemented!()
+        }
+
         async fn enqueue(
             &self,
             _target: CallTarget,
