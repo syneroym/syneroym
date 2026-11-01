@@ -1393,7 +1393,7 @@ every field of `CallOptions` in the example.
 *Fix:* Remove the four `allow`s. Make the field private (the
 `#[cfg(test)] for_test` constructor stays). Import the types. Delete `sem`.
 
-*Status:* Fixed (7d977b7f)
+*Status:* Open. Partial fix in 7d977b7f and fb6584fb: the four `allow`s, `sem` and most paths are fixed, but `WaitCredit::new` is `pub(super)`, so any module under `host_capabilities` can still mint credit; and `tests_call_all.rs:30` still writes `std::pin::Pin<Box<dyn std::future::Future ...>>`. See the fixes check below.
 
 #### R12 — minor — the same texts and numbers written in more than one place
 
@@ -1455,3 +1455,97 @@ the classification, or change the plan text to match the test and rely on
 `classify_real_epoch_interrupt_trap`.
 
 *Status:* Fixed (7215b727)
+
+## Code review round 1 — fixes checked — Claude Opus 5.5 (Claude Code), 2026-11-01
+
+Checked the fix commits `8749b34d`, `fb6584fb`, `7d977b7f`, `1c722c66` and
+`7215b727` (closed by `39fb8a22`) against R1 to R13. Line numbers are at
+`39fb8a22`. No code was changed. Nothing was run except `grep` counts. CI
+run [41311732895](https://github.com/syneroym/syneroym/actions/runs/41311732895)
+on `39fb8a22` was still running when this check was written, so it is not
+yet proof that the suite passes.
+
+**Counts after this check:** 12 of 13 confirmed. R11 is back to Open. One
+new minor item, R14. **2 open** (R11, R14).
+
+### Items checked
+
+- **R1 — confirmed.** The architecture table has the six real keys, units
+  and defaults, including the 5 s default per-call row. The guide says 15 s
+  and names the 5 s default. The two bullets are merged into one.
+- **R2 — confirmed.** Every file and test cited for OF-3, OF-4, OF-5 and
+  OF-17 now exists. All five `[PRX-BAT]` links resolve. The PR text was
+  updated (I did not re-read it).
+- **R3 — confirmed.** `task.md` now says 8 + 7. But see R14.
+- **R4 — confirmed.** `the_wait_allowance_shrinks_the_total_time_and_runs_out`
+  now runs a 1.2 s batch, then a 2.5 s call under about 1.8 s of allowance,
+  and asserts `timed-out` in less than 2.2 s. Without `.min(allowance)` the
+  call returns `Ok("slept")` after 2.5 s, so the test fails. The third batch
+  is still refused.
+- **R5 — confirmed.** `sleep` returns its `tag`, so the order test now fails
+  under a finish-order bug. The time test asserts `last_request.timeout ==
+  Some(300 ms)` for a 60 s request. The total-time test has a finished, a
+  running and a queued entry with `max_concurrency: 1`.
+- **R6 — confirmed.** `every_production_factory_in_runtime_is_wired_with_call_all`
+  in `crates/substrate/src/runtime/tests.rs` requires exactly 7
+  `NativeHostFactory::new(` and as many `.with_call_all(`. It counts only:
+  a site that passes `CallAll::default()` would still pass. That is weaker
+  than an `Arc::ptr_eq` check but enough for the drift R6 named. (The proof
+  text in R6's status reads "expected exactly 7 ... found 7"; the message of
+  a real failure would say a number other than 7.)
+- **R7 — confirmed.** `from_config` clamps `total_timeout` up to
+  `MIN_BATCH_ALLOWANCE` with a warning. `MIN_BATCH_ALLOWANCE` moved to
+  `call_all_limits.rs`. `total_timeout_below_min_batch_allowance_clamped`
+  covers 800 ms, and the zero case now expects 1 s.
+- **R8 — confirmed.** D-A3-3 names `CallAll::from_config`. The four
+  differences are under Deviations.
+- **R9 — confirmed.** D-A3-8 now says the permit does not prevent exhaustion
+  by local WASM callees. D-A3-15, the deviation and the backlog row say the
+  check is by type. The zero-credit deviation gives the correctness reason.
+  The backlog row says #339. The `demo:` change is recorded.
+- **R10 — confirmed.** The spec says the ticker runs on its own thread on
+  wall-clock time. The guide example writes every `CallOptions` field.
+- **R11 — Open (partial).** The four `allow(dead_code)`s, the unused `sem`
+  and the production inline paths are fixed. Two points remain:
+  - `WaitCredit::new` is `pub(super)`
+    (`capabilities_call_all.rs:27`). `pub(super)` makes it callable from
+    the whole `host_capabilities` module, so `capabilities_proxy.rs` or any
+    other host file can still mint credit. That is the same reach the old
+    `pub(super)` field had. Its only caller is `capabilities_call_all.rs:218`.
+    *Fix:* make `new` private (`fn new`).
+  - `tests_call_all.rs:30` still writes
+    `std::pin::Pin<Box<dyn std::future::Future<...>>>`. *Fix:* import `Pin`
+    and `Future`.
+- **R12 — confirmed.** `call` builds its two refusals with
+  `CallAllRefusal::into_proxy_error` (no metric). `CallAllLimits::default`
+  and the default semaphore read the `pub const fn` defaults of
+  `syneroym-core`. The fixture has one outcomes helper and uses
+  `into_call_request`.
+- **R13 — confirmed.** `a_mutant_batch_answer_is_detected` now runs the batch
+  through a `BatchMutant` driver on the native build and asserts it differs
+  from the WASM answer, the same pattern as `Mutant` in `data_layer.rs`. The
+  waiter test now aborts a running batch task and asserts the permit comes
+  back. The plan text of `credit_buys_back_the_wait_and_no_more` now points
+  at `classify_real_epoch_interrupt_trap` for the classification.
+
+Counts: `grep` finds 184 test functions in `crates/sandbox_wasm` (183 + the
+new clamp test) and 86 in `crates/app_host_native`, as `status.md` says.
+
+### New findings
+
+#### R14 — minor — task.md says all 15 parity scenarios run in both builds
+
+*Where:* `docs/planning/milestones/M08A-open-foundation/task.md:69`
+("Parity harness passes 15 scenarios (8 `call_all` and 7
+`call_all_deadline`) in both builds").
+
+*Problem:* Only the 8 tests of `call_all.rs` compare both builds. Six of
+the 7 deadline tests run the WASM build only, on purpose (plan 7.3). The
+seventh, `the_native_build_has_no_deadline_for_a_slow_batch`, runs only the
+native build.
+
+*Fix:* "8 `call_all` parity scenarios pass in both builds; 7
+`call_all_deadline` tests pass (WASM build, and one native permitted
+difference)."
+
+*Status:* Open
