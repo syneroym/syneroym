@@ -595,7 +595,7 @@ its call kind:
 | A guest with zero credit pays one extra call of a small closure at the deadline | Only when the guest is stopped. | No cost on the hot path. |
 | `proxy.call`, `enqueue`, `saga.step` give no credit | Unchanged (D-OF-1) | A single `proxy.call` can still wait 30 s with no credit. The backlog row stays. |
 | `classify_call_failure` finds `Trap::Interrupt` (Q6 (a)) | A real deadline is now `Deadline`, not `Other`. | Effect by caller: the ABAC after-step error becomes `BudgetExceeded` (`QuotaExceeded` to the caller) in place of `Trap` (`Internal`); a guest HTTP request that runs out of time is `BudgetExceeded` in place of `Trap`, both 500; `execute_wasm_vals` treats `Deadline` and `Other` the same. The existing test of this function uses made-up text. A real-trap case is added. |
-| The epoch ticker runs on a dedicated OS thread (`std::thread::spawn` with `sleep(EPOCH_TICK_MS)`) instead of `tokio::spawn` | Ticker advances every 100 ms regardless of worker thread CPU saturation. Sleep for one tick after each tick; missed ticks are not made up. | Prevents concurrent CPU-bound local WASM targets from starving the runtime clock and delaying deadline expiration (P17). Deadlines fire on time even when all tokio workers are busy. |
+| The epoch ticker runs on a dedicated OS thread (`std::thread::spawn` with `sleep(EPOCH_TICK_MS)`) instead of `tokio::spawn` | Ticker advances every 100 ms regardless of worker thread CPU saturation. Sleep for one tick after each tick; missed ticks are not made up. A guest that waits for a worker thread now uses its budget during the wait, matching true wall-clock time. | Prevents concurrent CPU-bound local WASM targets from starving the runtime clock and delaying deadline expiration (P17, P22). Deadlines fire on time even when all tokio workers are busy. |
 
 **Native build.** `AppProxy` gets `call_all`. A native app that does not call
 it is not affected. No epoch deadline exists natively, so no deadline
@@ -811,14 +811,17 @@ pub(crate) fn arm_epoch_deadline(store: &mut Store<HostState>, ticks: u64) {
   WaitCredit(Duration)` that only `capabilities_call_all.rs` can construct.
   One unit test verifies that both production construction sites call
   `with_call_all` (P2 fix: see D-A3-8 below).
-- **Dedicated OS thread for the epoch ticker (P17).** `epoch_ticker::spawn`
+- **Dedicated OS thread for the epoch ticker (P17, P22).** `epoch_ticker::spawn`
   runs on its own OS thread (`std::thread::Builder::new().name("wasm-epoch-ticker".into()).spawn(...)`
-  with a `std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS))` loop and
-  an atomic stop flag or shutdown channel), not on the tokio runtime. This
-  ensures the ticker is immune to tokio worker starvation when up to
+  with a `std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS))` loop).
+  After each tick, it calls `shutdown_rx.try_recv()` and stops on any result
+  other than `Err(TryRecvError::Empty)`. A dropped sender (when `AppSandboxEngine`
+  is dropped) stops the thread, preventing thread or engine leaks in tests and
+  production (P22 fix). The ticker is immune to tokio worker starvation when up to
   `max_concurrency` local WASM callees execute CPU-bound work concurrently
   in parallel tasks. Sleep is executed after each tick without catching up
-  on missed ticks.
+  on missed ticks. A guest waiting for a worker thread now uses its budget
+  during that wait, matching true wall-clock time (P22).
 
 **D-A3-5. The run (pseudo-code).** In
 `crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs` (new, a
@@ -965,10 +968,12 @@ The waiter semaphore and the limits are **shared across both builds**.
 `CallAll::from_config(&SubstrateConfig)` (a public function in
 `syneroym-sandbox-wasm`) builds one `CallAll` value from the configured
 limits and one shared `Arc<Semaphore>`. The substrate runtime builds it once
-in `runtime.rs` (`let call_all = CallAll::from_config(&config);`) and passes
-it to `AppSandboxEngine::init(&config, call_all.clone())` (a new argument on
-`init`) and to every `NativeHostFactory` through `with_call_all`. Every
-`HostState` on the node therefore uses the same limits and the same permit
+in `crates/substrate/src/runtime/router.rs` (`let call_all = CallAll::from_config(&config);`),
+passes it to `AppSandboxEngine::init_with_call_all(&config, call_all.clone())`
+in `build_sandbox_engines`, and passes it to `init_roym` for every `NativeHostFactory`
+through `with_call_all` (P2, P20 fix). `AppSandboxEngine::init(config)` keeps its
+existing signature unchanged for tests, delegating to `init_with_call_all(config, CallAll::from_config(config))`.
+Every `HostState` on the node therefore uses the same limits and the same permit
 pool, so an operator's config change affects both builds equally and the
 waiter count is one number for the whole node (P2 fix; OF-5). A native waiter
 holds no instance pool slot, so a shared pool slightly over-constrains
@@ -1116,11 +1121,13 @@ tests green.
 - `crates/sandbox_wasm/src/engine.rs`: replace lines 569-570 as in D-A3-4.
   Fix `classify_call_failure` (D-A3-15).
 - `crates/sandbox_wasm/src/engine/epoch_ticker.rs`: rewrite ticker spawn to
-  run on its own OS thread (`std::thread::spawn` with `sleep(EPOCH_TICK_MS)`
-  loop and an atomic stop flag or shutdown receiver) instead of `tokio::spawn`
-  on the runtime (P17). Sleep is executed after each tick; missed ticks are
-  not made up. This prevents concurrent CPU-bound WASM guests from starving the
-  ticker task.
+  run on its own OS thread (`std::thread::Builder::new().name("wasm-epoch-ticker".into()).spawn(...)`)
+  with a `sleep(EPOCH_TICK_MS)` loop. After each tick, it calls `shutdown_rx.try_recv()`
+  and stops on any result other than `Err(TryRecvError::Empty)`. Dropping the sender
+  stops the thread, preventing thread or engine leaks in tests and production (P22 fix).
+  Update doc comment: the epoch advances on wall-clock time independently of worker thread
+  load; guests waiting for worker threads use budget during the wait. Unit test in
+  `epoch_ticker/tests.rs`: dropping the sender ends the ticker thread within a timeout (P22 fix).
 - `crates/sandbox_wasm/src/stream.rs`: replace line 188 as in D-A3-4.
 - `crates/sandbox_wasm/src/engine/tests.rs`: the test of
   `classify_call_failure` (lines 824-852) moves to a new
@@ -1178,9 +1185,11 @@ Step 7 runs the production path with a real guest).
   `CallAllLimits::default()`), and clamps with warnings (D-A3-3).
   Add `pub fn from_config(config: &SubstrateConfig) -> CallAll` that builds one
   `Arc<Semaphore>` with the configured permit count and the resolved limits
-  (P2, P19). `AppSandboxEngine::init(&config, call_all: CallAll)` receives the
-  single shared `CallAll` built by the caller and stores it on the engine
-  (`call_all`, beside `abac_instance_permits`).
+  (P2, P19). Add `AppSandboxEngine::init_with_call_all(&config, call_all: CallAll)`,
+  storing `call_all` on the engine beside `abac_instance_permits`. Keep `init(&config)`
+  unchanged (it calls `init_with_call_all(config, CallAll::from_config(config))`),
+  so its 73 test and benchmark callers need no edits and `proxy_dispatch.rs` line count
+  is untouched (P20 fix).
   `build_store_and_instantiate` calls
   `.with_call_all(self.call_all.clone())`
   next to `with_conversation`
@@ -1236,13 +1245,14 @@ Commit: `feat(sandbox-wasm): add proxy call-all host function`.
 - `crates/app_host_native/src/factory.rs`: `with_call_all`. The factory
   receives the shared `CallAll` from the caller; it does not build its own.
 - `crates/roym_core/src/signing.rs`: the test host's `call_all`.
-- `crates/substrate/src/runtime.rs`, `crates/substrate/src/runtime/roym.rs` (six sites) and
+- `crates/substrate/src/runtime/router.rs` (`build_sandbox_engines` and `init_roym`),
+  `crates/substrate/src/runtime/roym.rs` (six sites) and
   `crates/substrate/src/runtime/dual_build_fixture.rs` (one site): the
   substrate runtime builds one `let call_all = CallAll::from_config(&config);`
-  and passes it to `AppSandboxEngine::init(&config, call_all.clone())` and
-  to every `NativeHostFactory` through `with_call_all`. These sites ensure the
-  single shared limits and semaphore reach both WASM and native builds from one
-  construction (P2 fix; D-A3-8).
+  and passes it to `AppSandboxEngine::init_with_call_all(&config, call_all.clone())` in
+  `build_sandbox_engines` and to every `NativeHostFactory` via `init_roym` through `with_call_all`.
+  These sites ensure the single shared limits and semaphore reach both WASM and native builds
+  from one construction without touching the 73 callers of `init` (P2, P20 fix; D-A3-8).
 - Build every WASM guest: `mise run build:test-components` and
   `mise run build:roym`. All Roym services must compile as components. This
   is the proof that the one source tree still builds both ways.
@@ -1392,9 +1402,9 @@ one reason to fail. Names:
   one guest call; the second gets the rest; the third is refused).
 - `a_refused_batch_gives_no_credit_and_a_timed_out_batch_does_give_it`
   (D-A3-4: credit on error and timeout).
-- `only_call_all_gives_credit` (compile-time rule: `WaitCredit` is a private token
-  constructible only in `capabilities_call_all.rs`, so no other host function can call
-  `credit`; P16 fix).
+- Note on credit callers: `WaitCredit` is a private token constructible only in
+  `capabilities_call_all.rs`, guaranteeing at compile time that no other host function
+  calls `credit` (no runtime test needed; P16 fix).
 - `a_callee_that_cannot_get_a_pool_slot_is_one_failed_entry` (Q9: scripted
   error `callee` -32603 for one entry; the others answer).
 - `every_exit_path_preserves_input_order_and_cardinality` (P14: all-ok,
@@ -1723,12 +1733,15 @@ The WIT shape of `call-all` is complete for A4, but A4 must resolve these design
    (which gets wait credit), or ensure the whole search stays below `web`'s
    own 5 s budget. A4 must test the slow-source case end to end.
 2. **Timeout hierarchy and permits:** If `web` forwards via `call-all`, the
-   outer per-call time must be larger than the inner total plus the callee's own
-   work (either `call_all_max_call_timeout_ms` is configured to exceed the total
-   plus work, or A4 passes an inner total well below 10 s so `directory` has time
-   to merge results and reply). Also, each search will hold two waiter permits on
-   the node (one for `web`, one for `directory`), reducing concurrent searches to
-   2 at the default limit of 4.
+   inner batch must end, and `directory` must merge and answer, well within
+   `web`'s per-call time. The guest controls this only through the per-call
+   times of the inner calls and how many waves they need. For example, 8 sources
+   at 2 s each in one wave end in about 2 s. The total is the same host setting
+   for both batches and cannot be raised above the per-call cap (D-A3-3 clamp
+   cuts `max_call_timeout` to `total_timeout`; if A4 needs an outer time larger
+   than the total, it must request a change to the clamp). Also, each search
+   will hold two waiter permits on the node (one for `web`, one for `directory`),
+   reducing concurrent searches to 2 at the default limit of 4 (P21 fix).
 3. **Headroom check:** The existing host-side check
    `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch`
    ([directory.rs:65-72](../../../../crates/roym_core/src/directory.rs#L65))
