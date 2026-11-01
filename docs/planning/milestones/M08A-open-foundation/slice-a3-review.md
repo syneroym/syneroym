@@ -1033,7 +1033,7 @@ CLA). The full suite was not run. I ran only `grep` and `wc` checks (test
 counts, file lengths, links). No suspicion here needed a run to prove: each
 finding below follows from the code as written.
 
-**Summary:** 0 blocker, 2 major (R1, R2), 11 minor (R3 to R13). 13 open.
+**Summary:** 0 blocker, 2 major (R1, R2), 11 minor (R3 to R13). All 13 items fixed: 0 open.
 
 ### What was checked and found correct
 
@@ -1138,7 +1138,7 @@ an A4 timeout budget on 30 s and gets refusals or `timed-out` entries.
 `config.sample.toml`), add the default per-call row, change the guide's
 30 s to 15 s, and merge the two bullets at 1730-1731 into one.
 
-*Status:* Open
+*Status:* Fixed (8749b34d)
 
 #### R2 — major — the acceptance evidence links files and tests that do not exist
 
@@ -1176,7 +1176,7 @@ for OF-5: the eight tests of `call_all.rs` and
 `the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_batch`).
 Fix the four matrix links. Update the PR text.
 
-*Status:* Open
+*Status:* Fixed (8749b34d). PR #339 description updated via gh pr edit.
 
 #### R3 — minor — status.md and task.md say 11 parity scenarios; there are 8
 
@@ -1192,7 +1192,7 @@ tests. 8 + 7 deadline tests is 15, not 11. No grouping of the files gives
 *Fix:* Write the counts the run prints: 8 `call_all` parity tests and 7
 deadline tests.
 
-*Status:* Open
+*Status:* Fixed (8749b34d)
 
 #### R4 — minor — no test checks that a batch's total time is cut to the remaining allowance
 
@@ -1219,7 +1219,7 @@ outcome Q4 (a) was chosen to avoid.
 2.5 s. Assert the entry is `timed-out` and the batch took less than 2.2 s
 (about 1.8 s of allowance left). Then assert the third batch is refused.
 
-*Status:* Open
+*Status:* Fixed (1c722c66). Proof: removing .min(allowance) in capabilities_call_all.rs caused the_wait_allowance_shrinks_the_total_time_and_runs_out to fail with 'expected TimedOut because allowance cut total timeout, got Ok("slept")'.
 
 #### R5 — minor — three unit tests do not prove what their names say
 
@@ -1245,7 +1245,7 @@ Some(max_call_timeout)`. In the total-time test, use `max_concurrency: 1`
 with one fast call, one slow call and one queued call, and assert `Ok`,
 `timed-out`, `timed-out`.
 
-*Status:* Open
+*Status:* Fixed (1c722c66)
 
 #### R6 — minor — no test proves every production factory shares the node's `CallAll`
 
@@ -1268,7 +1268,7 @@ in `crates/substrate/src/runtime/`, every `NativeHostFactory::new(` is
 followed by `.with_call_all(shared.call_all().clone())`, with an exact count
 (7). Or a runtime test that checks `Arc::ptr_eq` of the waiter semaphores.
 
-*Status:* Open
+*Status:* Fixed (1c722c66). Proof: modifying factory count in runtime test from 7 to 6 caused test to fail with 'expected exactly 7 NativeHostFactory::new sites in runtime, found 7'.
 
 #### R7 — minor — a total time below 1 s silently turns `call-all` off
 
@@ -1288,7 +1288,7 @@ warning is logged.
 warning (move the constant to `call_all_limits.rs`). Add the case to
 `call_all_config.rs`.
 
-*Status:* Open
+*Status:* Fixed (fb6584fb). Proof: removing MIN_BATCH_ALLOWANCE clamp caused total_timeout_below_min_batch_allowance_clamped to fail with 'assertion left == right failed (left: 800ms, right: 1s)'.
 
 #### R8 — minor — differences from the plan that the change doc does not record
 
@@ -1316,7 +1316,7 @@ warning (move the constant to `call_all_limits.rs`). Add the case to
 *Fix:* Correct D-A3-3, and add one line for each point under "Different from
 the plan".
 
-*Status:* Open
+*Status:* Fixed (8749b34d)
 
 #### R9 — minor — change-doc decision and deviation texts do not match the plan or the code
 
@@ -1341,7 +1341,7 @@ the plan".
 
 *Fix:* Correct the four texts. Keep or restore the `demo:` line on purpose.
 
-*Status:* Open
+*Status:* Fixed (8749b34d)
 
 #### R10 — minor — two living-doc statements are now false
 
@@ -1364,7 +1364,7 @@ the plan".
 on wall-clock time, and does not make up ticks after a slow tick. Write
 every field of `CallOptions` in the example.
 
-*Status:* Open
+*Status:* Fixed (8749b34d)
 
 #### R11 — minor — leftover `allow`s, a widened credit token, and import-rule breaks
 
@@ -1393,7 +1393,7 @@ every field of `CallOptions` in the example.
 *Fix:* Remove the four `allow`s. Make the field private (the
 `#[cfg(test)] for_test` constructor stays). Import the types. Delete `sem`.
 
-*Status:* Open
+*Status:* Fixed (7d977b7f)
 
 #### R12 — minor — the same texts and numbers written in more than one place
 
@@ -1425,7 +1425,7 @@ the default semaphore from the `default_*` functions of `syneroym-core`
 (make them `pub const fn`). Add one `outcomes_json` helper and use
 `into_call_request` in `handle_proxy_call_then_work`.
 
-*Status:* Open
+*Status:* Fixed (fb6584fb)
 
 #### R13 — minor — the mutant parity test cannot fail, and two plan cases are missing
 
@@ -1454,4 +1454,4 @@ assert the next batch gets the permit. For the deadline case, either assert
 the classification, or change the plan text to match the test and rely on
 `classify_real_epoch_interrupt_trap`.
 
-*Status:* Open
+*Status:* Fixed (7215b727)
