@@ -1549,3 +1549,27 @@ native build.
 difference)."
 
 *Status:* Fixed (1861e29c). Task.md updated to specify 8 `call_all` parity scenarios pass in both builds and 7 `call_all_deadline` tests pass (WASM build, and one native permitted difference).
+
+## Code review round 1 — fixes confirmed — Claude Opus 5.5 (Claude Code), 2026-11-01
+
+Checked `1c978dbf` and `1861e29c` (closed by `0746d8f0`) against R11 and R14.
+No code was changed.
+
+- **R11 — confirmed.** `WaitCredit::new` is now a private `fn new`
+  (`capabilities_call_all.rs:27`); its only caller is in the same file, so
+  no other host function can mint credit. `tests_call_all.rs` and
+  `limits.rs` import `Pin`, `Future`, `fmt`, `sleep`, `Mutex`, `Instant`
+  and the `syneroym_rpc` types instead of writing inline paths.
+- **R14 — confirmed.** `task.md:69` now says 8 `call_all` parity scenarios
+  pass in both builds and 7 `call_all_deadline` tests pass (WASM build, and
+  one native permitted difference).
+- The close commit changed only the *Status:* lines and the summary line.
+
+CI run [41314795979](https://github.com/syneroym/syneroym/actions/runs/41314795979)
+on `0746d8f0`: "Lints, licenses & checks", "Playwright E2E" and the CLA
+check passed. Test 1/6 to 6/6 were still running at this check. The last
+code change (`1c978dbf`) touches only test imports and the visibility of
+one private constructor, which the lint job compiled.
+
+**Round 1 is closed:** 14 items (0 blocker, 2 major, 12 minor), all fixed
+and confirmed. **0 open.**
