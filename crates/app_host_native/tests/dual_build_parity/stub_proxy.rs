@@ -5,6 +5,7 @@ use std::{
 
 use serde_json::{Value, json};
 use syneroym_rpc::{ProxyError, ProxyRequest, ServiceProxy};
+use tokio::time;
 
 #[derive(Debug, Default)]
 pub(crate) struct StubProxy {
@@ -49,7 +50,7 @@ impl ServiceProxy for StubProxy {
             ("scripted", "echo") => Ok(request.params),
             ("scripted", "sleep") => {
                 let ms = request.params.get("ms").and_then(Value::as_u64).unwrap_or(0);
-                tokio::time::sleep(Duration::from_millis(ms)).await;
+                time::sleep(Duration::from_millis(ms)).await;
                 Ok(json!("slept"))
             }
             ("scripted", "fail") => Err(ProxyError::Callee {

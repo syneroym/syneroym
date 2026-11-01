@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 
 use dashmap::DashMap;
 use serde_json::{Value, json};
@@ -27,6 +27,7 @@ use syneroym_sandbox_wasm::AppSandboxEngine;
 use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
 };
+use tokio::time;
 
 #[derive(Debug, Default)]
 pub struct NoopControlPlane;
@@ -44,7 +45,7 @@ pub struct SleeperService;
 #[async_trait::async_trait]
 impl NativeService for SleeperService {
     async fn dispatch(&self, _invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        time::sleep(Duration::from_secs(5)).await;
         Ok(NativeResponse { payload: Value::Null })
     }
 }

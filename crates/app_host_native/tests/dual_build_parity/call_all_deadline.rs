@@ -5,6 +5,7 @@ use std::{
 
 use serde_json::{Value, json};
 use syneroym_core::config::{AppSandboxRole, SubstrateConfig};
+use tokio::time;
 
 use super::helpers::*;
 
@@ -224,7 +225,7 @@ async fn slow_batches_do_not_fill_the_instance_pool() {
 
     // Wait a short time for all 4 batches to acquire waiter permits and begin
     // waiting.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    time::sleep(Duration::from_millis(300)).await;
 
     // While 4 batches are waiting, a plain run (read-config) answers Ok within 1 s.
     let echo_req = json!({

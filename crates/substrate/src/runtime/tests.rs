@@ -1,6 +1,6 @@
 #![allow(clippy::cognitive_complexity)]
 
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
 use syneroym_app_orchestration::{AppScope, ServiceId, TopologyEpoch, TopologyMode};
 use syneroym_core::storage::MockStorage;
@@ -85,20 +85,20 @@ async fn an_unreadable_persisted_binding_is_skipped_not_fatal() {
 
 #[test]
 fn every_production_factory_in_runtime_is_wired_with_call_all() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_dir = manifest_dir.join("src").join("runtime");
 
     let mut factory_new_count = 0;
     let mut with_call_all_count = 0;
 
-    let entries = std::fs::read_dir(&runtime_dir).expect("read runtime dir");
+    let entries = fs::read_dir(&runtime_dir).expect("read runtime dir");
     for entry in entries {
         let entry = entry.expect("dir entry");
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "rs")
             && path.file_name().and_then(|n| n.to_str()) != Some("tests.rs")
         {
-            let content = std::fs::read_to_string(&path).expect("read file");
+            let content = fs::read_to_string(&path).expect("read file");
             factory_new_count += content.matches("NativeHostFactory::new(").count();
             with_call_all_count += content.matches(".with_call_all(").count();
         }

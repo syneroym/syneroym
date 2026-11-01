@@ -10,6 +10,7 @@ use syneroym_wit_interfaces::host::syneroym::proxy::proxy::{self, CallRequest};
 use tokio::{
     sync::OwnedSemaphorePermit,
     task::{Id as TaskId, JoinSet},
+    time,
 };
 use tracing::Instrument;
 
@@ -105,7 +106,7 @@ fn spawn_call(
     let p = Arc::clone(proxy);
     let handle = set.spawn(
         async move {
-            let r = tokio::time::timeout(timeout + CALL_CANCEL_GRACE, p.invoke(req)).await;
+            let r = time::timeout(timeout + CALL_CANCEL_GRACE, p.invoke(req)).await;
             let outcome = match r {
                 Ok(Ok(val)) => Ok(val),
                 Ok(Err(rpc_err)) => Err(capabilities_proxy::map_proxy_error(rpc_err)),
@@ -208,7 +209,7 @@ impl HostState {
             spawn_call(&mut set, &mut task_to_slot, &service_proxy, item);
         }
 
-        let _ = tokio::time::timeout(
+        let _ = time::timeout(
             total,
             drain_batch(&mut set, &mut task_to_slot, &mut pending, &service_proxy, &mut slots),
         )

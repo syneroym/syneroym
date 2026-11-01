@@ -1,8 +1,8 @@
 //! The clock that every guest call's epoch deadline is measured against.
 
-use std::{thread, time::Duration};
+use std::{io, thread, time::Duration};
 
-use tokio::sync::oneshot;
+use tokio::sync::oneshot::{self, error::TryRecvError};
 
 use super::EPOCH_TICK_MS;
 
@@ -18,12 +18,12 @@ use super::EPOCH_TICK_MS;
 pub(super) fn spawn(
     mut tick: impl FnMut() + Send + 'static,
     mut shutdown_rx: oneshot::Receiver<()>,
-) -> std::io::Result<thread::JoinHandle<()>> {
+) -> io::Result<thread::JoinHandle<()>> {
     thread::Builder::new().name("wasm-epoch-ticker".into()).spawn(move || {
         loop {
             thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
             tick();
-            if shutdown_rx.try_recv() != Err(oneshot::error::TryRecvError::Empty) {
+            if shutdown_rx.try_recv() != Err(TryRecvError::Empty) {
                 break;
             }
         }

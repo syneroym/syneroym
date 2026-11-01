@@ -8,7 +8,10 @@
 //! as the self-proxy target for the router-side ingress-(ii)
 //! integration test.
 
-use std::time::{Duration, Instant};
+use std::{
+    hint,
+    time::{Duration, Instant},
+};
 
 use bindings::{
     exports::{
@@ -144,7 +147,7 @@ impl TestDriverGuest for ProxyTestComponent {
         let start = Instant::now();
         let target = Duration::from_millis(ms as u64);
         while start.elapsed() < target {
-            core::hint::black_box(());
+            hint::black_box(());
         }
     }
 }

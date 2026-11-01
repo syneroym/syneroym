@@ -1,3 +1,5 @@
+use std::hint;
+
 use super::*;
 
 #[expect(clippy::too_many_lines, reason = "dispatch table matching all test-component RPC routes")]
@@ -564,7 +566,7 @@ async fn handle_proxy_call_all_then_spin<H: AppHost>(
     let requests = calls.into_iter().map(FixtureCall::into_call_request).collect();
     let _ = host.call_all(requests).await;
     loop {
-        core::hint::black_box(());
+        hint::black_box(());
     }
 }
 
@@ -577,7 +579,7 @@ async fn handle_proxy_call_then_work<H: AppHost>(
     let mut acc: u64 = 0;
     for i in 0..10_000_000 {
         acc = acc.wrapping_add(i);
-        core::hint::black_box(acc);
+        hint::black_box(acc);
     }
     match res {
         Ok(v) => Ok(json!({ "result": v, "acc": acc })),
