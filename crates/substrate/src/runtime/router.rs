@@ -34,7 +34,7 @@ use syneroym_rpc::{
     NativeHttpService, ServiceProxy, WebSocketSenders,
 };
 use syneroym_sandbox_podman::ContainerEngine;
-use syneroym_sandbox_wasm::AppSandboxEngine;
+use syneroym_sandbox_wasm::{AppSandboxEngine, CallAll};
 use tracing::{debug, warn};
 
 #[cfg(feature = "auth")]
@@ -493,13 +493,8 @@ async fn build_sandbox_engines(
     blob_provider: &Arc<dyn BlobProvider>,
     messaging_broker: &Arc<MqttBroker>,
     logical_resolver: &Arc<LogicalResolver>,
-) -> anyhow::Result<(
-    Arc<AppSandboxEngine>,
-    Arc<ContainerEngine>,
-    Arc<WebSocketSenders>,
-    syneroym_sandbox_wasm::CallAll,
-)> {
-    let call_all = syneroym_sandbox_wasm::CallAll::from_config(config);
+) -> anyhow::Result<(Arc<AppSandboxEngine>, Arc<ContainerEngine>, Arc<WebSocketSenders>, CallAll)> {
+    let call_all = CallAll::from_config(config);
     let app_sandbox_engine = Arc::new(
         AppSandboxEngine::init_with_call_all(
             config,

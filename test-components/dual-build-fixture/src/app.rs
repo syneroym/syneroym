@@ -13,7 +13,7 @@ use syneroym_app_host::{
         data_layer::{CollectionSchema, Mutation, QueryOptions, RecordWriteValue},
         http::{CallerAuth, FrameKind, HttpRequest, HttpResponse},
         invocation::CallerOrigin,
-        proxy::{CallOptions, CallTarget},
+        proxy::{CallOptions, CallRequest, CallTarget},
         signing::{Principal, RecordDraft},
     },
 };
@@ -272,12 +272,12 @@ pub struct FixtureCall {
 }
 
 impl FixtureCall {
-    pub fn into_call_request(self) -> syneroym_app_host::types::proxy::CallRequest {
+    pub fn into_call_request(self) -> CallRequest {
         let target = match self.kind.as_str() {
             "dependency" => CallTarget::Dependency(self.name),
             _ => CallTarget::Service(self.name),
         };
-        syneroym_app_host::types::proxy::CallRequest {
+        CallRequest {
             target,
             interface: self.interface,
             method: self.method,

@@ -8,6 +8,8 @@
 //! as the self-proxy target for the router-side ingress-(ii)
 //! integration test.
 
+use std::time::{Duration, Instant};
+
 use bindings::{
     exports::{
         syneroym::data_layer::authorizer::{
@@ -139,8 +141,8 @@ impl TestDriverGuest for ProxyTestComponent {
     }
 
     fn spin_for(ms: u32) {
-        let start = std::time::Instant::now();
-        let target = std::time::Duration::from_millis(ms as u64);
+        let start = Instant::now();
+        let target = Duration::from_millis(ms as u64);
         while start.elapsed() < target {
             core::hint::black_box(());
         }

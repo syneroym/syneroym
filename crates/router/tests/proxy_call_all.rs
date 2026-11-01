@@ -1,10 +1,45 @@
 #![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::time::{Duration, Instant};
+
 use serde_json::{Value, json};
 use syneroym_core::test_constants;
+use syneroym_router::RouteHandler;
 
 mod proxy_harness;
 use proxy_harness::*;
+
+async fn dispatch_single_peer_call(
+    route_handler: &RouteHandler,
+    kind: &str,
+    service: &str,
+    interface: &str,
+    method: &str,
+    params: &str,
+) -> Value {
+    let single_body = json_rpc_body(
+        "call-peer",
+        json!({
+            "service": service,
+            "interface": interface,
+            "method": method,
+            "params": params,
+            "target-kind": kind,
+        }),
+    );
+    serde_json::from_slice(
+        &route_handler
+            .dispatch_json_rpc_once(
+                &call_peer_pipeline(),
+                &call_peer_preamble(),
+                None,
+                &single_body,
+            )
+            .await
+            .unwrap(),
+    )
+    .unwrap()
+}
 
 #[tokio::test]
 async fn batch_of_mixed_calls_through_proxy_matches_single_call_answers() {
@@ -66,77 +101,38 @@ async fn batch_of_mixed_calls_through_proxy_matches_single_call_answers() {
     assert!(results[4]["ok"].as_str().unwrap().contains("Hello, World!"));
     assert!(results[5]["ok"].as_str().unwrap().contains("Hello, World!"));
 
-    let single_body = json_rpc_body(
-        "call-peer",
-        json!({
-            "service": "proxy-callee",
-            "interface": test_constants::GREETER_INTERFACE_NAME,
-            "method": "greet",
-            "params": "[\"World\"]",
-            "target-kind": "service",
-        }),
-    );
-    let single_res: Value = serde_json::from_slice(
-        &route_handler
-            .dispatch_json_rpc_once(
-                &call_peer_pipeline(),
-                &call_peer_preamble(),
-                None,
-                &single_body,
-            )
-            .await
-            .unwrap(),
+    let single_greet = dispatch_single_peer_call(
+        &route_handler,
+        "service",
+        "proxy-callee",
+        test_constants::GREETER_INTERFACE_NAME,
+        "greet",
+        "[\"World\"]",
     )
-    .unwrap();
-    assert_eq!(results[0]["ok"], single_res["result"]);
+    .await;
+    assert_eq!(results[0]["ok"], single_greet["result"]);
 
-    let single_body = json_rpc_body(
-        "call-peer",
-        json!({
-            "service": "nonexistent-svc",
-            "interface": test_constants::GREETER_INTERFACE_NAME,
-            "method": "greet",
-            "params": "[\"World\"]",
-            "target-kind": "service",
-        }),
-    );
-    let single_res: Value = serde_json::from_slice(
-        &route_handler
-            .dispatch_json_rpc_once(
-                &call_peer_pipeline(),
-                &call_peer_preamble(),
-                None,
-                &single_body,
-            )
-            .await
-            .unwrap(),
+    let single_missing = dispatch_single_peer_call(
+        &route_handler,
+        "service",
+        "nonexistent-svc",
+        test_constants::GREETER_INTERFACE_NAME,
+        "greet",
+        "[\"World\"]",
     )
-    .unwrap();
-    assert!(single_res["error"]["message"].as_str().unwrap().contains("ServiceNotFound"));
+    .await;
+    assert!(single_missing["error"]["message"].as_str().unwrap().contains("ServiceNotFound"));
 
-    let single_body = json_rpc_body(
-        "call-peer",
-        json!({
-            "service": "some-other-svc",
-            "interface": "data-layer",
-            "method": "get",
-            "params": "{}",
-            "target-kind": "service",
-        }),
-    );
-    let single_res: Value = serde_json::from_slice(
-        &route_handler
-            .dispatch_json_rpc_once(
-                &call_peer_pipeline(),
-                &call_peer_preamble(),
-                None,
-                &single_body,
-            )
-            .await
-            .unwrap(),
+    let single_denied = dispatch_single_peer_call(
+        &route_handler,
+        "service",
+        "some-other-svc",
+        "data-layer",
+        "get",
+        "{}",
     )
-    .unwrap();
-    assert!(single_res["error"]["message"].as_str().unwrap().contains("PermissionDenied"));
+    .await;
+    assert!(single_denied["error"]["message"].as_str().unwrap().contains("PermissionDenied"));
 }
 
 #[tokio::test]
@@ -234,7 +230,7 @@ async fn local_wasm_callees_execute_in_parallel_via_joinset() {
     ]);
 
     let body = json_rpc_body("call-peers", json!({ "calls": calls }));
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let response_bytes = route_handler
         .dispatch_json_rpc_once(&call_peer_pipeline(), &call_peer_preamble(), None, &body)
         .await
@@ -249,12 +245,12 @@ async fn local_wasm_callees_execute_in_parallel_via_joinset() {
     assert!(results[1]["ok"].is_string());
 
     assert!(
-        elapsed < std::time::Duration::from_millis(3600),
+        elapsed < Duration::from_millis(3600),
         "expected parallel execution in ~2s, but took {:?}",
         elapsed
     );
     assert!(
-        elapsed >= std::time::Duration::from_millis(1800),
+        elapsed >= Duration::from_millis(1800),
         "expected execution to take at least 1.8s, took {:?}",
         elapsed
     );
@@ -357,7 +353,7 @@ async fn epoch_ticker_on_dedicated_thread_prevents_clock_starvation() {
     ]);
 
     let body = json_rpc_body("call-peers", json!({ "calls": calls }));
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let response_bytes = route_handler
         .dispatch_json_rpc_once(&call_peer_pipeline(), &call_peer_preamble(), None, &body)
         .await
@@ -366,15 +362,11 @@ async fn epoch_ticker_on_dedicated_thread_prevents_clock_starvation() {
 
     let response: Value = serde_json::from_slice(&response_bytes).unwrap();
     assert!(
-        elapsed < std::time::Duration::from_millis(3500),
+        elapsed < Duration::from_millis(3500),
         "expected epoch interrupt within 3.5s, took {:?}",
         elapsed
     );
-    assert!(
-        elapsed >= std::time::Duration::from_millis(800),
-        "expected at least 800ms, took {:?}",
-        elapsed
-    );
+    assert!(elapsed >= Duration::from_millis(800), "expected at least 800ms, took {:?}", elapsed);
 
     let results = response["result"].as_array().expect("results array");
     assert_eq!(results.len(), 2);
