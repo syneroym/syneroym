@@ -29,6 +29,8 @@ mod catalog;
 mod conversation;
 #[path = "dual_build_parity/directory.rs"]
 mod directory;
+#[path = "dual_build_parity/directory_compat.rs"]
+mod directory_compat;
 #[path = "dual_build_parity/fulfilment.rs"]
 mod fulfilment;
 #[path = "dual_build_parity/group.rs"]

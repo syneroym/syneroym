@@ -1,0 +1,24 @@
+{
+  "answered_at_secs": "number",
+  "directory": "string",
+  "hits": [
+    {
+      "area_match": {
+        "kind": "not-queried"
+      },
+      "envelope": "string",
+      "issued_at_secs": "number",
+      "listing_id": "string",
+      "membership": {
+        "credentials": [
+          "string"
+        ],
+        "decisions": [],
+        "revocations": []
+      },
+      "received_at_secs": "number",
+      "record_id": "string"
+    }
+  ],
+  "truncated": "boolean"
+}

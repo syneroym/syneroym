@@ -1,0 +1,15 @@
+{
+  "imported": {
+    "credentials": "number",
+    "held_memberships": "number",
+    "members": "number",
+    "moderation_decisions": "number",
+    "publication_log": "number",
+    "publications": "number",
+    "revocations": "number",
+    "settings": "number",
+    "sources": "number"
+  },
+  "reindexed": "number",
+  "standing": "number"
+}

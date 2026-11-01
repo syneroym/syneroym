@@ -13,6 +13,7 @@ use crate::{
 pub mod catalog;
 pub mod check;
 pub mod conversation;
+pub mod directory;
 pub mod profile;
 #[cfg(test)]
 mod tests;
@@ -23,6 +24,19 @@ pub type Reply<T> = Result<T, Response>;
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NoParams {}
+
+/// An empty input that ignores unknown fields, for wire-reachable methods
+/// that take no parameters (such as `directory.info`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireNoParams {}
+
+/// Publication rate limits input for catalog and directory services.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationLimitsInput {
+    pub window_secs: u64,
+    pub max_per_window: u32,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingOutput {
@@ -182,7 +196,13 @@ pub async fn call_sibling<H: AppHost, I: Serialize, O: DeserializeOwned>(
         .await
         .map_err(|e| SiblingError::Transport(format!("{method}: {e:?}")))?;
 
-    let raw_val: Value = serde_json::from_str(&raw)
+    read_reply(&raw)
+}
+
+/// Reads one `invoke` reply: an `error` is `Refused`, a `result` is read as
+/// `O`.
+pub fn read_reply<O: DeserializeOwned>(raw: &str) -> Result<O, SiblingError> {
+    let raw_val: Value = serde_json::from_str(raw)
         .map_err(|e| SiblingError::BadReply(format!("invalid JSON-RPC response: {e}")))?;
 
     if let Some(err_val) = raw_val.get("error")

@@ -229,9 +229,9 @@ mod tests {
 
     #[test]
     fn every_certificate_mounted_service_routes_under_its_own_name() {
-        // `handle_certificate_verb` is mounted on these five; each must
-        // have a routable `<name>.signing-status`, or `roym enrol-signing`
-        // cannot reach it.
+        // The five services list their certificate verbs in their method
+        // tables; each must have a routable `<name>.signing-status`, or
+        // `roym enrol-signing` cannot reach it.
         let expected = ["profile", "catalog", "conversation", "transaction", "directory"];
         for name in expected {
             let method = format!("{name}.signing-status");

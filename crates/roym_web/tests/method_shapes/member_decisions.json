@@ -1,0 +1,21 @@
+{
+  "records": [
+    {
+      "about": "string",
+      "envelope": "string",
+      "is_membership_scope": "boolean",
+      "issued_at_secs": "number",
+      "member_did": "string",
+      "record_id": "string",
+      "until_secs": "number"
+    },
+    {
+      "about": "string",
+      "envelope": "string",
+      "is_membership_scope": "boolean",
+      "issued_at_secs": "number",
+      "member_did": "string",
+      "record_id": "string"
+    }
+  ]
+}

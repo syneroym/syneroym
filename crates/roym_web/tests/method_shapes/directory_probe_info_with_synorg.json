@@ -1,0 +1,14 @@
+{
+  "area": [],
+  "categories": [
+    "string"
+  ],
+  "dispute_path": "string",
+  "issuer_did": "string",
+  "member_count": "number",
+  "name": "string",
+  "retention_secs": "number",
+  "rules": "string",
+  "signing_did": "string",
+  "support_contact": "string"
+}

@@ -36,6 +36,8 @@ use crate::{
     },
 };
 
+mod directory;
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DeepTest {

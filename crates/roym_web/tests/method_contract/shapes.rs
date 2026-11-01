@@ -38,6 +38,7 @@ fn is_closed_word_key(k: &str) -> bool {
             | "fulfilment"
             | "where"
             | "event"
+            | "auth"
     )
 }
 

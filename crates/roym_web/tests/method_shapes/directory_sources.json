@@ -1,0 +1,25 @@
+{
+  "sources": [
+    {
+      "added_at_secs": "number",
+      "did": "string",
+      "issuer_did": "string",
+      "label": "string",
+      "last_ok_secs": "number"
+    },
+    {
+      "added_at_secs": "number",
+      "did": "string",
+      "label": "string",
+      "last_error": {
+        "kind": "timed-out"
+      }
+    },
+    {
+      "added_at_secs": "number",
+      "did": "string",
+      "label": "string",
+      "last_ok_secs": "number"
+    }
+  ]
+}

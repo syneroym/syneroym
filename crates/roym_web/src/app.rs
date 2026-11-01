@@ -1,6 +1,6 @@
 //! Web entrypoint service application logic, target-independent.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppHost, AppSigning,
@@ -12,10 +12,48 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     admit,
     envelope::{self, Request, Response},
+    method::{self, NoParams},
     router, services,
 };
 
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// The one method `web` answers itself; every other method is forwarded.
+pub const WHOAMI: &str = "session.whoami";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionAuth {
+    Delegated,
+    Ucan,
+    SelfAsserted,
+    Anonymous,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WhoamiOutput {
+    pub did: Option<String>,
+    pub auth: SessionAuth,
+    pub app_instance: Option<String>,
+}
+
+fn whoami(caller: Option<&CallerIdentity>) -> WhoamiOutput {
+    match caller {
+        Some(caller) => {
+            let auth = match caller.auth {
+                CallerAuth::Delegated => SessionAuth::Delegated,
+                CallerAuth::Ucan => SessionAuth::Ucan,
+                CallerAuth::SelfAsserted => SessionAuth::SelfAsserted,
+            };
+            WhoamiOutput {
+                did: Some(caller.did.clone()),
+                auth,
+                app_instance: caller.app_instance.clone(),
+            }
+        }
+        None => WhoamiOutput { did: None, auth: SessionAuth::Anonymous, app_instance: None },
+    }
+}
 
 pub async fn status<H: AppHost>(_host: &H) -> Result<String, String> {
     Ok(json!({
@@ -127,8 +165,8 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
         }
     };
 
-    if method == "session.whoami" {
-        return Ok(handle_whoami_rpc(id, request.caller.as_ref()));
+    if method == WHOAMI {
+        return Ok(handle_whoami_rpc(id, &rpc_req.params, request.caller.as_ref()));
     }
 
     let admitted = admit(host, &method, request.caller.as_ref()).await;
@@ -148,25 +186,19 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
     Ok(forward_rpc_call(host, &service, method, rpc_req.params, id).await)
 }
 
-fn handle_whoami_rpc(id: Option<Value>, caller: Option<&CallerIdentity>) -> HttpResponse {
-    let result = if let Some(caller) = caller {
-        let auth_str = match caller.auth {
-            CallerAuth::Delegated => "delegated",
-            CallerAuth::Ucan => "ucan",
-            CallerAuth::SelfAsserted => "self-asserted",
-        };
-        json!({
-            "did": caller.did,
-            "auth": auth_str,
-            "app_instance": caller.app_instance,
-        })
-    } else {
-        json!({
-            "did": Value::Null,
-            "auth": "anonymous",
-            "app_instance": Value::Null,
-        })
-    };
+fn handle_whoami_rpc(
+    id: Option<Value>,
+    params: &Value,
+    caller: Option<&CallerIdentity>,
+) -> HttpResponse {
+    if let Err(err) = method::parse_value::<NoParams>(params) {
+        let resp = err.into_response();
+        let err_val = resp.error.and_then(|e| serde_json::to_value(e).ok());
+        let resp_val = json_rpc_response(id, None, err_val);
+        return json_http_response(&resp_val);
+    }
+    let output = whoami(caller);
+    let result = serde_json::to_value(output).unwrap_or(Value::Null);
     let resp_val = json_rpc_response(id, Some(result), None);
     json_http_response(&resp_val)
 }
@@ -240,12 +272,15 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         return resp;
     }
 
-    if req.method == "session.whoami" {
-        return Response::ok(json!({
-            "did": Value::Null,
-            "auth": "anonymous",
-            "app_instance": Value::Null,
-        }));
+    if req.method == WHOAMI {
+        if let Err(err) = method::parse_value::<NoParams>(&req.params) {
+            return err.into_response();
+        }
+        let output = whoami(None);
+        return match serde_json::to_value(output) {
+            Ok(v) => Response::ok(v),
+            Err(e) => Response::internal_error(e.to_string()),
+        };
     }
 
     match admit(host, &req.method, None).await {

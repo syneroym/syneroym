@@ -12,9 +12,10 @@ use syneroym_roym_core::{
         DEFAULT_SOURCE_TIMEOUT_MS, MAX_CLIENT_CONCURRENCY, MAX_REFUSED_RESULTS,
         MAX_STORED_PER_SOURCE, RUN_RETENTION_SECS, SearchHit, SearchQuery, SourceError,
     },
-    envelope::{Request, Response},
+    envelope::Response,
     listing::{self, ListingStatus, ListingVerdict},
     membership::{CheckInput, ListingRef, MembershipVerdict, evaluate},
+    method::{NoParams, Reply},
     paging, services,
 };
 
@@ -22,6 +23,31 @@ use super::{
     RUNS, SEARCH_RUNS, SOURCES, client_sources::SourceRow, ensure_coll, get_json, held, put_json,
     search_runs_indexes, serde_str,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StartRunOutput {
+    pub run_id: String,
+    pub sources: Vec<String>,
+    pub max_concurrency: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct QuerySourceInput {
+    pub run_id: String,
+    pub source: String,
+    #[serde(default)]
+    pub query: SearchQuery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct QuerySourceOutput {
+    pub source: String,
+    pub verified: u32,
+    pub refused: u32,
+    pub truncated: bool,
+    pub error: Option<SourceError>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RunRow {
@@ -65,15 +91,15 @@ pub(in crate::app) struct SearchRunRow {
     pub(in crate::app) refused: bool,
 }
 
-pub(in crate::app) async fn start_run<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn start_run<H: AppHost>(host: &H, _input: NoParams) -> Reply<StartRunOutput> {
     if let Err(e) = ensure_coll(host, RUNS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = ensure_coll(host, SOURCES, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     let now = clock::now_secs();
     let run_floor = now.saturating_sub(RUN_RETENTION_SECS);
@@ -84,7 +110,7 @@ pub(in crate::app) async fn start_run<H: AppHost>(host: &H) -> Response {
     )
     .await
     {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
     // The per-hit rows carry a full signed envelope each. Prune them on
     // the same schedule as the run rows above -- nothing else ever
@@ -97,42 +123,39 @@ pub(in crate::app) async fn start_run<H: AppHost>(host: &H) -> Response {
     )
     .await
     {
-        return Response::internal_error(e.to_string());
+        return Err(Response::internal_error(e.to_string()));
     }
     let mut source_dids = match paging::filter_map(host, SOURCES, None, |row| Some(row.id)).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     source_dids.sort();
     let existing_runs = match paging::count(host, RUNS, None).await {
         Ok(n) => n,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let run_id = format!("run_{now}_{existing_runs}");
     let run = RunRow { at_secs: now, sources: source_dids.clone() };
     if let Err(e) = put_json(host, RUNS, &run_id, &run).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
-    Response::ok(
-        json!({ "run_id": run_id, "sources": source_dids, "max_concurrency": MAX_CLIENT_CONCURRENCY }),
-    )
+    Ok(StartRunOutput { run_id, sources: source_dids, max_concurrency: MAX_CLIENT_CONCURRENCY })
 }
 
-pub(in crate::app) async fn query_source<H: AppHost>(host: &H, req: &Request) -> Response {
-    let (run_id, source, query) = match parse_query_source_params(req) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let source_row = match validate_run_and_source(host, &run_id, &source).await {
+pub(crate) async fn query_source<H: AppHost>(
+    host: &H,
+    input: QuerySourceInput,
+) -> Reply<QuerySourceOutput> {
+    let source_row = match validate_run_and_source(host, &input.run_id, &input.source).await {
         Ok(row) => row,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     let pinned_issuer = source_row.issuer_did.clone();
 
-    let params = json!({ "method": "directory.search", "params": query }).to_string();
+    let params = json!({ "method": "directory.search", "params": input.query }).to_string();
     let call_result = host
         .call(
-            CallTarget::Service(source.clone()),
+            CallTarget::Service(input.source.clone()),
             services::DIRECTORY.interface.to_string(),
             "invoke".to_string(),
             json!([params]).to_string(),
@@ -147,13 +170,14 @@ pub(in crate::app) async fn query_source<H: AppHost>(host: &H, req: &Request) ->
         .await;
 
     if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
 
-    let (hits, source_truncated) = match parse_source_response(host, &source, call_result).await {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let (hits, source_truncated) =
+        match parse_source_response(host, &input.source, call_result).await {
+            Ok(v) => v,
+            Err(output) => return Ok(output),
+        };
 
     let now = clock::now_secs();
     let mut verified_count = 0u32;
@@ -166,8 +190,8 @@ pub(in crate::app) async fn query_source<H: AppHost>(host: &H, req: &Request) ->
             }
             if store_verified_hit(
                 host,
-                &run_id,
-                &source,
+                &input.run_id,
+                &input.source,
                 pinned_issuer.as_deref(),
                 hit,
                 verdict,
@@ -181,40 +205,21 @@ pub(in crate::app) async fn query_source<H: AppHost>(host: &H, req: &Request) ->
             if refused_count >= MAX_REFUSED_RESULTS {
                 continue;
             }
-            if store_refused_hit(host, &run_id, &source, hit, verdict, now).await {
+            if store_refused_hit(host, &input.run_id, &input.source, hit, verdict, now).await {
                 refused_count += 1;
             }
         }
     }
 
-    mark_source_ok(host, &source, now).await;
+    mark_source_ok(host, &input.source, now).await;
 
-    Response::ok(json!({
-        "source": source,
-        "verified": verified_count,
-        "refused": refused_count,
-        "truncated": source_truncated,
-        "error": Value::Null,
-    }))
-}
-
-fn parse_query_source_params(req: &Request) -> Result<(String, String, SearchQuery), Response> {
-    let run_id = match req.params.get("run_id").and_then(Value::as_str) {
-        Some(r) => r.to_string(),
-        None => return Err(Response::invalid_params("run_id is required")),
-    };
-    let source = match req.params.get("source").and_then(Value::as_str) {
-        Some(s) => s.to_string(),
-        None => return Err(Response::invalid_params("source is required")),
-    };
-    let query: SearchQuery = match req.params.get("query").cloned() {
-        Some(v) => match serde_json::from_value(v) {
-            Ok(q) => q,
-            Err(e) => return Err(Response::invalid_params(format!("invalid query: {e}"))),
-        },
-        None => SearchQuery::default(),
-    };
-    Ok((run_id, source, query))
+    Ok(QuerySourceOutput {
+        source: input.source,
+        verified: verified_count,
+        refused: refused_count,
+        truncated: source_truncated,
+        error: None,
+    })
 }
 
 /// Checks that `run_id` names a run this node minted, that `source` was
@@ -247,12 +252,12 @@ async fn validate_run_and_source<H: AppHost>(
 /// Turns the raw host-proxied reply into the verified `hits` this node
 /// will check, plus the source's own truncation flag -- or, on any
 /// failure to reach or parse the source, a fully-formed zero-hit
-/// `Response` via `refuse_source`.
+/// `QuerySourceOutput` via `refuse_source`.
 async fn parse_source_response<H: AppHost>(
     host: &H,
     source: &str,
     call_result: Result<String, ProxyError>,
-) -> Result<(Vec<SearchHit>, bool), Response> {
+) -> Result<(Vec<SearchHit>, bool), QuerySourceOutput> {
     let raw = match call_result {
         Ok(r) => r,
         Err(e) => return Err(refuse_source(host, source, map_proxy_error(&e)).await),
@@ -305,11 +310,19 @@ async fn parse_source_response<H: AppHost>(
 /// Records `error` against `source` and builds the zero-hit response
 /// shape every early-refusal path in `query_source` shares (an unreached
 /// source, an unparsable reply, a JSON-RPC error, or unreadable `hits`).
-async fn refuse_source<H: AppHost>(host: &H, source: &str, error: SourceError) -> Response {
+async fn refuse_source<H: AppHost>(
+    host: &H,
+    source: &str,
+    error: SourceError,
+) -> QuerySourceOutput {
     record_source_error(host, source, &error).await;
-    Response::ok(
-        json!({ "source": source, "verified": 0, "refused": 0, "truncated": false, "error": error }),
-    )
+    QuerySourceOutput {
+        source: source.to_string(),
+        verified: 0,
+        refused: 0,
+        truncated: false,
+        error: Some(error),
+    }
 }
 
 /// Stores one already-verified hit as a `search_runs` row and reports

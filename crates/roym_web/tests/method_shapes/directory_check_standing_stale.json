@@ -1,0 +1,9 @@
+{
+  "as_of_secs": "number",
+  "error": "string",
+  "refreshed": "boolean",
+  "verdict": {
+    "reason": "string",
+    "state": "unknown"
+  }
+}

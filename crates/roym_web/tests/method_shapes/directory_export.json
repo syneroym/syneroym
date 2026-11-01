@@ -1,0 +1,113 @@
+{
+  "manifest": {
+    "bundle_version": "number",
+    "sections": {
+      "credentials": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "held_memberships": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "members": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "moderation_decisions": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "publication_log": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "publications": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "revocations": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "sources": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "synorg": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      }
+    },
+    "subject_did": "string"
+  },
+  "manifest_signature": "string",
+  "sections": {
+    "credentials": [
+      {
+        "id": "string",
+        "payload": {
+          "about": "string",
+          "envelope": "string",
+          "is_membership_scope": "boolean",
+          "issued_at_secs": "number",
+          "member_did": "string",
+          "record_id": "string"
+        }
+      }
+    ],
+    "held_memberships": [],
+    "members": [
+      {
+        "id": "string",
+        "payload": {
+          "added_at_secs": "number",
+          "did": "string",
+          "note": ""
+        }
+      }
+    ],
+    "moderation_decisions": [],
+    "publication_log": [
+      {
+        "id": "string",
+        "payload": {
+          "at_secs": "number",
+          "published_by": "string"
+        }
+      }
+    ],
+    "publications": [],
+    "revocations": [],
+    "sources": [],
+    "synorg": [
+      {
+        "id": "string",
+        "payload": {
+          "area": [],
+          "categories": [
+            "string"
+          ],
+          "dispute_path": "string",
+          "name": "string",
+          "publication_limits": {
+            "max_per_window": "number",
+            "window_secs": "number"
+          },
+          "retention_secs": "number",
+          "rules": "string",
+          "support_contact": "string"
+        }
+      }
+    ]
+  }
+}

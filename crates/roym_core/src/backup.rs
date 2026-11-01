@@ -314,26 +314,6 @@ pub async fn export_signed_bundle<H: AppHost>(
     Ok(bundle)
 }
 
-/// The answer to every service's `export` verb: `sections` as a bundle
-/// signed by the person. A service with no signing certificate refuses
-/// with `signing-not-enrolled`, the same words on every service, so a
-/// caller can tell "enrol first" apart from a real failure.
-pub async fn export_signed<H: AppHost>(
-    host: &H,
-    subject_did: String,
-    schema_version: u32,
-    sections: BTreeMap<String, Vec<Value>>,
-    now_secs: u64,
-) -> Response {
-    match export_signed_bundle(host, subject_did, schema_version, sections, now_secs).await {
-        Ok(bundle) => match serde_json::to_value(&bundle) {
-            Ok(v) => Response::ok(v),
-            Err(e) => Response::internal_error(e.to_string()),
-        },
-        Err(resp) => resp,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -536,8 +516,9 @@ mod tests {
     async fn export_without_a_certificate_is_signing_not_enrolled() {
         let host = TestHost::default();
         let resp =
-            export_signed(&host, "did:key:zOwner".to_string(), 1, BTreeMap::new(), 1000).await;
-        assert_eq!(resp, Response::invalid_params("signing-not-enrolled"));
+            export_signed_bundle(&host, "did:key:zOwner".to_string(), 1, BTreeMap::new(), 1000)
+                .await;
+        assert_eq!(resp, Err(Response::invalid_params("signing-not-enrolled")));
     }
 
     #[test]

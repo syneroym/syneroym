@@ -6,29 +6,34 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use syneroym_roym_core::method::{
+    Reply,
+    directory::{StandingInput, StandingOutput},
+};
+
 use super::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(in crate::app) struct IssuedRecordRow {
-    pub(in crate::app) record_id: String,
-    pub(in crate::app) member_did: String,
+pub(crate) struct IssuedRecordRow {
+    pub(crate) record_id: String,
+    pub(crate) member_did: String,
     /// `credential_record_id` for a revocation, the superseded decision's
     /// `record_id` for a lift; empty otherwise (a credential, or a suspend
     /// decision).
     #[serde(default)]
-    pub(in crate::app) about: String,
-    pub(in crate::app) issued_at_secs: u64,
+    pub(crate) about: String,
+    pub(crate) issued_at_secs: u64,
     /// A suspend decision's `until_secs` (`None` = until lifted). Absent
     /// for every other record type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::app) until_secs: Option<u64>,
+    pub(crate) until_secs: Option<u64>,
     /// A suspend decision whose scope is `Membership`, not one `Listing`.
     /// False for every other record type. `applies(Membership, _)` is
     /// always true, so an active one of these makes every other
     /// suspension -- active or not -- redundant to `evaluate`.
     #[serde(default)]
-    pub(in crate::app) is_membership_scope: bool,
-    pub(in crate::app) envelope: String,
+    pub(crate) is_membership_scope: bool,
+    pub(crate) envelope: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -245,23 +250,25 @@ pub(in crate::app) async fn load<H: AppHost>(
         .unwrap_or_default())
 }
 
-pub(in crate::app) async fn standing_verb<H: AppHost>(host: &H, req: &Request) -> Response {
-    let member_did = match req.params.get("member_did").and_then(Value::as_str) {
-        Some(m) if person::is_did_key(m) => m.to_string(),
-        Some(_) => return Response::invalid_params("member_did must be a did:key"),
-        None => return Response::invalid_params("member_did is required"),
-    };
+pub(crate) async fn standing_verb<H: AppHost>(
+    host: &H,
+    input: StandingInput,
+) -> Reply<StandingOutput> {
+    if !person::is_did_key(&input.member_did) {
+        return Err(Response::invalid_params("member_did must be a did:key"));
+    }
+    let member_did = input.member_did;
     let issuer = issuer_did(host).await;
     let evidence = match load(host, &member_did).await {
         Ok(e) => e,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
-    Response::ok(json!({
-        "issuer_did": issuer,
-        "member_did": member_did,
-        "evidence": evidence,
-        "answered_at_secs": clock::now_secs(),
-    }))
+    Ok(StandingOutput {
+        issuer_did: issuer,
+        member_did,
+        evidence,
+        answered_at_secs: clock::now_secs(),
+    })
 }
 
 /// The directory judging its own member: the owner is the

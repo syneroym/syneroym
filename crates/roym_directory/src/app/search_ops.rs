@@ -12,9 +12,10 @@ use syneroym_roym_core::{
         AreaMatch, MAX_CATEGORIES, MAX_HITS_PER_QUERY, MAX_QUERY_TEXT_LEN, SearchHit, SearchQuery,
         category_tokens, normalize_category, normalize_text,
     },
-    envelope::{Request, Response},
+    envelope::Response,
     listing::{self, ListingStatus},
     membership::{self, CheckInput, ListingRef, MembershipEvidence, MembershipVerdict},
+    method::{NoParams, Reply, directory::SearchOutput},
     paging::{self, Pages},
 };
 
@@ -23,6 +24,12 @@ use super::{
     publication_ops::{self, PublicationRow},
     put_json, search_index_indexes, serde_str, standing, synorg,
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ReindexOutput {
+    pub rebuilt: u64,
+    pub standing: u64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(in crate::app) struct SearchIndexRow {
@@ -161,20 +168,16 @@ fn area_match_precedence(m: &AreaMatch) -> u8 {
     }
 }
 
-pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Response {
-    let query: SearchQuery = match serde_json::from_value(req.params.clone()) {
-        Ok(q) => q,
-        Err(e) => return Response::invalid_params(format!("invalid query: {e}")),
-    };
+pub(crate) async fn search<H: AppHost>(host: &H, query: SearchQuery) -> Reply<SearchOutput> {
     let normalized_text = match validate_search_query(&query) {
         Ok(v) => v,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
     if let Err(e) = ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
-        return Response::internal_error(e);
+        return Err(Response::internal_error(e));
     }
     // Rate-gated by the stored marker (see `prune_expired_publications`),
     // so an anonymous stranger looping this verb pays one indexed marker
@@ -188,7 +191,7 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
     let own_issuer = issuer_did(host).await;
     let filter = match build_search_filter(&query, normalized_text.as_deref(), now) {
         Ok(f) => f,
-        Err(resp) => return resp,
+        Err(resp) => return Err(resp),
     };
 
     // The ceiling counts *distinct listings*, not index rows: one listing
@@ -197,13 +200,13 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
     let ceiling = (MAX_HITS_PER_QUERY as usize) * 4;
     let (candidates, truncated) = match collect_search_candidates(host, &filter, ceiling).await {
         Ok(v) => v,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
 
     let by_listing = refine_by_listing(candidates, query.area.as_ref());
     let standing = match standing_by_issuer(host, by_listing.values()).await {
         Ok(s) => s,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     let mut hits: Vec<(SearchIndexRow, AreaMatch)> = by_listing
         .into_values()
@@ -220,12 +223,7 @@ pub(in crate::app) async fn search<H: AppHost>(host: &H, req: &Request) -> Respo
         Ok(id) => id.signing_did,
         Err(_) => String::new(),
     };
-    Response::ok(json!({
-        "hits": out,
-        "truncated": truncated,
-        "directory": directory_did,
-        "answered_at_secs": now,
-    }))
+    Ok(SearchOutput { hits: out, truncated, directory: directory_did, answered_at_secs: now })
 }
 
 /// This is the one query shape an anonymous stranger controls end to
@@ -291,32 +289,12 @@ fn build_search_filter(
         and_clauses.push(json!({ "text": { "$regex": normalized } }));
     }
     // The index stores the enum's serde spelling (`past-counterparties`,
-    // not `PastCounterparties`). Round-trip the query value through the
-    // same enum so both sides speak one vocabulary; a value that is not a
-    // spelling the enum declares is refused, not silently matched to
-    // nothing.
+    // not `PastCounterparties`).
     if let Some(open_to) = &query.open_to {
-        match serde_json::from_value::<listing::OpenTo>(json!(open_to)) {
-            Ok(v) => and_clauses.push(json!({ "open_to": serde_str(&v) })),
-            Err(_) => {
-                return Err(Response::err(
-                    -32602,
-                    "open_to must be one of: anyone, members, referral, past-counterparties"
-                        .to_string(),
-                ));
-            }
-        }
+        and_clauses.push(json!({ "open_to": serde_str(open_to) }));
     }
     if let Some(booking_mode) = &query.booking_mode {
-        match serde_json::from_value::<listing::BookingMode>(json!(booking_mode)) {
-            Ok(v) => and_clauses.push(json!({ "booking_mode": serde_str(&v) })),
-            Err(_) => {
-                return Err(Response::err(
-                    -32602,
-                    "booking_mode must be one of: slots, order, enquiry".to_string(),
-                ));
-            }
-        }
+        and_clauses.push(json!({ "booking_mode": serde_str(booking_mode) }));
     }
     let geometric_query = matches!(query.area, Some(Area::Bbox { .. }) | Some(Area::Circle { .. }));
     if let Some(q_area) = &query.area
@@ -526,14 +504,14 @@ async fn hits_with_envelopes<H: AppHost>(
     out
 }
 
-pub(in crate::app) async fn reindex<H: AppHost>(host: &H) -> Response {
+pub(crate) async fn reindex<H: AppHost>(host: &H, _input: NoParams) -> Reply<ReindexOutput> {
     let standing_rebuilt = match standing::rebuild_all(host).await {
         Ok(n) => n,
-        Err(e) => return Response::internal_error(e),
+        Err(e) => return Err(Response::internal_error(e)),
     };
     match rebuild_search_index(host).await {
-        Ok(rebuilt) => Response::ok(json!({ "rebuilt": rebuilt, "standing": standing_rebuilt })),
-        Err(e) => Response::internal_error(e),
+        Ok(rebuilt) => Ok(ReindexOutput { rebuilt, standing: standing_rebuilt }),
+        Err(e) => Err(Response::internal_error(e)),
     }
 }
 

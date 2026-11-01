@@ -1,0 +1,7 @@
+{
+  "error": "null",
+  "refused": "number",
+  "source": "string",
+  "truncated": "boolean",
+  "verified": "number"
+}

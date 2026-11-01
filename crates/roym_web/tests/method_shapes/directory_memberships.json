@@ -1,0 +1,36 @@
+{
+  "memberships": [
+    {
+      "as_of_secs": "number",
+      "issuer_did": "null",
+      "last_error": "string",
+      "member_did": "string",
+      "source": "string",
+      "verdict": {
+        "reason": "string",
+        "state": "unknown"
+      }
+    },
+    {
+      "as_of_secs": "number",
+      "issuer_did": "string",
+      "last_error": "null",
+      "member_did": "string",
+      "source": "string",
+      "verdict": {
+        "credential_record_id": "string",
+        "expires_at_secs": "number",
+        "issuer": "string",
+        "revocations_checked_as_of_secs": "number",
+        "scope": {
+          "area": [],
+          "categories": [
+            "string"
+          ]
+        },
+        "state": "valid",
+        "synorg_name": "string"
+      }
+    }
+  ]
+}
