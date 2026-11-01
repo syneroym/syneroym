@@ -32,6 +32,31 @@ interface test-driver {
         target-kind: string,
         idempotency-key: string,
     ) -> result<_, string>;
+
+    record peer-call {
+        kind: string,
+        service: string,
+        %interface: string,
+        method: string,
+        params: string,
+        timeout-ms: option<u32>,
+        idempotency-key: option<string>,
+    }
+
+    /// Originates a batch of Universal Proxy calls at
+    /// `syneroym:proxy/proxy::call-all`. Each tuple is
+    /// `(kind, service, interface, method, params)`.
+    call-peers: func(
+        calls: list<tuple<string, string, string, string, string>>,
+    ) -> result<list<result<string, string>>, string>;
+
+    /// Originates a batch of Universal Proxy calls with per-call options.
+    call-peers-full: func(
+        calls: list<peer-call>,
+    ) -> result<list<result<string, string>>, string>;
+
+    /// Loops in guest WASM code for `ms` milliseconds.
+    spin-for: func(ms: u32);
 }
 
 world proxy-test {

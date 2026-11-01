@@ -13,7 +13,6 @@
 
 use std::{
     fs,
-    path::Path,
     sync::{Arc, Weak},
 };
 
@@ -25,7 +24,6 @@ use syneroym_app_orchestration::{
 };
 use syneroym_control_plane::SynSvcNativeService;
 use syneroym_core::{
-    config::{AppSandboxRole, RolesConfig, StorageConfig, SubstrateConfig},
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     storage::MockStorage,
@@ -39,183 +37,15 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{Policy, parse_and_validate};
 use syneroym_identity::Identity;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
-use syneroym_router::{
-    AdaptationStage, EncryptionStage, RouteHandler, RouteHandlerDeps, RoutePipeline, RoutePreamble,
-    ServiceStage, TransportStage,
-};
+use syneroym_router::{RouteHandler, RouteHandlerDeps};
 use syneroym_rpc::{
-    Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeInvocation,
-    NativeResponse, NativeService, ResourceUri, RowAuthorizer, RpcResult,
+    Ability, AuthLevel, CallerContext, Capability, NativeDispatchRegistry, NativeService,
+    ResourceUri, RowAuthorizer,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
-use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
-    ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
-};
 
-#[derive(Debug, Default)]
-struct NoopControlPlane;
-
-#[async_trait::async_trait]
-impl NativeService for NoopControlPlane {
-    async fn dispatch(&self, _invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        Ok(NativeResponse { payload: Value::Null })
-    }
-}
-
-/// A `SubstrateConfig` whose `app_sandbox` role reserves a small,
-/// test-proportionate footprint instead of the production-scale fallback
-/// (`AppSandboxEngine::init`'s no-role branch). Investigated in depth as
-/// part of the `guest_self_proxy_put_attributes_...` flake (see
-/// `docs/planning/deferred-backlog.md`, "`crates/router` integration tests
-/// are flaky..."); the root cause of that specific trap was never confirmed,
-/// but this file's real fixtures (`proxy-test`/`greeter`) were measured at
-/// exactly 3 core-module instantiations each (`wasm-tools print ... | grep
-/// -c '(core module'`), so `max_core_instances_per_component`/
-/// `max_memories_per_component`/`max_tables_per_component` below are set to
-/// 4 -- one slot of headroom over the measured need, validated against
-/// `AppSandboxEngine`'s `a_component_at_the_configured_per_component_
-/// resource_max_still_instantiates` unit test, not an unvalidated guess.
-/// Deliberately narrower than `AppSandboxRole::default()`'s own per-component
-/// fields (100 each, chosen to reproduce Wasmtime's pool-wide default
-/// unchanged for any config that doesn't know its own component shape) --
-/// this test file does know its shape, so it uses it.
-fn test_substrate_config(db_dir: &Path) -> SubstrateConfig {
-    SubstrateConfig {
-        storage: StorageConfig { db_dir: db_dir.to_path_buf(), ..Default::default() },
-        roles: RolesConfig {
-            app_sandbox: Some(AppSandboxRole {
-                max_concurrent_instances: 4,
-                memory_limit: "16Mi".to_string(),
-                default_max_memory_bytes: Some(16 * 1024 * 1024),
-                max_core_instances_per_component: 4,
-                max_memories_per_component: 4,
-                max_tables_per_component: 4,
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
-
-fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
-    DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
-        ServiceType::Wasm(WasmManifest {
-            source: ArtifactSource::Binary(bytes),
-            hash: None,
-            interfaces: vec![],
-        }),
-    )
-}
-
-/// Builds a `RouteHandler` (mirroring `native_dispatch_identity.rs`'s own
-/// helper) with two WASM components deployed onto the shared
-/// `AppSandboxEngine`/`EndpointRegistry`: `proxy-caller` (the `proxy-test`
-/// fixture, importing `syneroym:proxy/proxy`) and `proxy-callee` (`greeter`).
-/// Returns `None` if either wasm artifact hasn't been built.
-async fn test_route_handler_with_proxy_components() -> Option<RouteHandler> {
-    let proxy_test_bytes = fs::read(test_constants::proxy_test_wasm_path()).ok()?;
-    let greeter_bytes = fs::read(test_constants::greeter_wasm_path()).ok()?;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let config = test_substrate_config(temp_dir.path());
-    let key_store = Arc::new(KeyStore::new());
-    let storage_provider = Arc::new(SqliteStorageProvider::new(temp_dir.path(), false).unwrap());
-    let blob_provider: Arc<dyn BlobProvider> =
-        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
-    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
-    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-
-    let app_sandbox_engine = Arc::new(
-        AppSandboxEngine::init(
-            &config,
-            vec![],
-            key_store.clone(),
-            storage_provider.clone(),
-            blob_provider.clone(),
-            messaging_broker.clone(),
-            registry.clone(),
-            syneroym_app_orchestration::empty_resolver(),
-        )
-        .await
-        .unwrap(),
-    );
-    app_sandbox_engine.self_weak.set(Arc::downgrade(&app_sandbox_engine)).unwrap();
-    app_sandbox_engine.websocket_senders.set(syneroym_rpc::WebSocketSenders::new()).unwrap();
-
-    app_sandbox_engine
-        .deploy_wasm("proxy-caller", &wasm_deploy_manifest(proxy_test_bytes))
-        .await
-        .unwrap();
-    app_sandbox_engine
-        .deploy_wasm("proxy-callee", &wasm_deploy_manifest(greeter_bytes))
-        .await
-        .unwrap();
-
-    // `AppSandboxEngine::deploy_wasm` compiles/caches the component and runs
-    // lifecycle hooks, but registering the interface->endpoint mapping is
-    // `ControlPlaneService`'s job in production; done directly here since
-    // this test doesn't exercise the control plane.
-    registry
-        .register(
-            "proxy-caller".to_string(),
-            test_constants::PROXY_TEST_DRIVER_INTERFACE.to_string(),
-            SubstrateEndpoint::WasmChannel { service_id: "proxy-caller".to_string() },
-        )
-        .await
-        .unwrap();
-    registry
-        .register(
-            "proxy-callee".to_string(),
-            test_constants::GREETER_INTERFACE_NAME.to_string(),
-            SubstrateEndpoint::WasmChannel { service_id: "proxy-callee".to_string() },
-        )
-        .await
-        .unwrap();
-
-    let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
-    let deps = RouteHandlerDeps {
-        logical_resolver: syneroym_app_orchestration::empty_resolver(),
-        key_store,
-        storage_provider,
-        app_sandbox_engine,
-        messaging_broker,
-        native_dispatch: NativeDispatchRegistry::default(),
-        native_http: Arc::new(DashMap::new()),
-        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
-        http_routes,
-        assets: Arc::new(DashMap::new()),
-        sse_permits: Arc::new(DashMap::new()),
-        control_plane_service: Arc::new(NoopControlPlane),
-        control_plane: None,
-        session_revocation: None,
-    };
-
-    Some(
-        RouteHandler::init(
-            "test-orchestrator".to_string(),
-            &config,
-            registry,
-            [9u8; 32],
-            None,
-            deps,
-        )
-        .await
-        .unwrap(),
-    )
-}
+mod proxy_harness;
+use proxy_harness::*;
 
 /// Same as `test_route_handler_with_proxy_components`, but `proxy-caller` is
 /// deployed as part of app instance `"app-1"`, with a declared dependency
@@ -335,24 +165,6 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
         .unwrap(),
         logical_resolver,
     ))
-}
-
-fn call_peer_pipeline() -> RoutePipeline {
-    RoutePipeline {
-        encryption: EncryptionStage::None,
-        transport: TransportStage::Binary,
-        adaptation: AdaptationStage::JsonRpcToWasm,
-        service: ServiceStage::WasmComponent { service_id: "proxy-caller".to_string() },
-    }
-}
-
-fn call_peer_preamble() -> RoutePreamble {
-    RoutePreamble::binary_json_rpc("proxy-caller", test_constants::PROXY_TEST_DRIVER_INTERFACE)
-}
-
-fn json_rpc_body(method: &str, params: Value) -> Vec<u8> {
-    serde_json::to_vec(&json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1}))
-        .unwrap()
 }
 
 /// Guest-to-guest, same node: `proxy-caller` calls `proxy-callee`'s
