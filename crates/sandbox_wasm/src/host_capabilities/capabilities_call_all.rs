@@ -24,7 +24,7 @@ pub struct WaitCredit(Duration);
 
 impl WaitCredit {
     #[must_use]
-    pub(super) fn new(d: Duration) -> Self {
+    fn new(d: Duration) -> Self {
         Self(d)
     }
 

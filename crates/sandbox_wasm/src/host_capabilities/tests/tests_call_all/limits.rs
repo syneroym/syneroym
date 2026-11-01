@@ -1,8 +1,12 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use syneroym_rpc::ProxyError as RpcProxyError;
 use syneroym_wit_interfaces::host::syneroym::proxy::proxy;
+use tokio::{sync::Mutex, time::sleep};
 
 use super::{ScriptedProxy, req, test_host};
 use crate::{
@@ -109,7 +113,7 @@ async fn the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_bat
         if call_all.waiters.available_permits() == 0 {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(call_all.waiters.available_permits(), 0);
 
@@ -125,7 +129,7 @@ async fn the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_bat
         if call_all.waiters.available_permits() == 1 {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(call_all.waiters.available_permits(), 1);
 
@@ -143,7 +147,7 @@ async fn a_nested_batch_at_the_waiter_limit_is_refused_and_does_not_hang() {
     let limits = CallAllLimits::default();
     let shared_call_all = CallAll::new(limits, 1);
 
-    let host2 = Arc::new(tokio::sync::Mutex::new(
+    let host2 = Arc::new(Mutex::new(
         test_host("svc2", &proxy, false, temp_dir.path(), None, None)
             .with_call_all(shared_call_all.clone()),
     ));
@@ -155,7 +159,7 @@ async fn a_nested_batch_at_the_waiter_limit_is_refused_and_does_not_hang() {
             let mut guard = h.lock().await;
             let calls = vec![req("svc2", "echo", json!("nested"), None)];
             match proxy::Host::call_all(&mut *guard, calls).await {
-                Ok(_) => Ok(serde_json::Value::String("nested_ok".to_string())),
+                Ok(_) => Ok(Value::String("nested_ok".to_string())),
                 Err(e) => Err(RpcProxyError::Internal(format!("nested refused: {e:?}"))),
             }
         })
@@ -197,7 +201,7 @@ async fn the_wait_allowance_shrinks_the_total_time_and_runs_out() {
     assert_eq!(res1.len(), 1);
     assert_eq!(res1[0].as_deref().unwrap(), "slept");
 
-    let started2 = std::time::Instant::now();
+    let started2 = Instant::now();
     let res2 = proxy::Host::call_all(
         &mut host,
         vec![req("svc", "sleep", json!({"ms": 2500}), Some(2500))],

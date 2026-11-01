@@ -1,5 +1,8 @@
 use std::{
+    fmt,
+    future::Future,
     path::Path,
+    pin::Pin,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -10,14 +13,18 @@ use std::{
 use serde_json::{Value, json};
 use syneroym_app_orchestration::{
     AppInstanceId, AppRegistry, LogicalResolver, LogicalServiceName, ServiceId, StaticInventory,
-    TopologyEpoch, TopologyKey, TopologyMode,
+    TopologyEntry, TopologyEpoch, TopologyKey, TopologyMode,
 };
 use syneroym_data_db::SqliteStorageProvider;
 use syneroym_data_keystore::KeyStore;
-use syneroym_rpc::{CallerContext, ProxyError as RpcProxyError, ProxyRequest, ServiceProxy};
+use syneroym_rpc::{
+    CallerContext, ProxyError as RpcProxyError, ProxyRequest, QueuedCall, SagaBegin, SagaInfo,
+    SagaState, SagaStepRequest, ServiceProxy, empty_row_authorizer,
+};
 use syneroym_wit_interfaces::host::syneroym::proxy::proxy::{
     self, CallOptions, CallRequest, CallTarget,
 };
+use tokio::time::sleep;
 
 use crate::host_capabilities::{
     CallAll, CallAllLimits, HostState,
@@ -27,9 +34,8 @@ use crate::host_capabilities::{
 mod limits;
 
 type NestedHook = Box<
-    dyn Fn() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<Value, RpcProxyError>> + Send + 'static>,
-        > + Send
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<Value, RpcProxyError>> + Send + 'static>>
+        + Send
         + Sync,
 >;
 
@@ -43,8 +49,8 @@ pub(super) struct ScriptedProxy {
     pub(super) nested_hook: Mutex<Option<Arc<NestedHook>>>,
 }
 
-impl std::fmt::Debug for ScriptedProxy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ScriptedProxy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ScriptedProxy")
             .field("invoke_count", &self.invoke_count.load(Ordering::SeqCst))
             .field("in_flight", &self.in_flight.load(Ordering::SeqCst))
@@ -89,7 +95,7 @@ impl ServiceProxy for ScriptedProxy {
             "echo" => Ok(request.params),
             "sleep" => {
                 let ms = request.params.get("ms").and_then(Value::as_u64).unwrap_or(0);
-                tokio::time::sleep(Duration::from_millis(ms)).await;
+                sleep(Duration::from_millis(ms)).await;
                 if let Some(tag) = request.params.get("tag").and_then(Value::as_str) {
                     Ok(Value::String(tag.to_string()))
                 } else {
@@ -113,15 +119,15 @@ impl ServiceProxy for ScriptedProxy {
         res
     }
 
-    async fn enqueue(&self, _call: syneroym_rpc::QueuedCall) -> Result<(), RpcProxyError> {
+    async fn enqueue(&self, _call: QueuedCall) -> Result<(), RpcProxyError> {
         Ok(())
     }
 
-    async fn saga_begin(&self, _req: syneroym_rpc::SagaBegin) -> Result<String, RpcProxyError> {
+    async fn saga_begin(&self, _req: SagaBegin) -> Result<String, RpcProxyError> {
         Ok("saga-1".to_string())
     }
 
-    async fn saga_step(&self, _req: syneroym_rpc::SagaStepRequest) -> Result<Value, RpcProxyError> {
+    async fn saga_step(&self, _req: SagaStepRequest) -> Result<Value, RpcProxyError> {
         Ok(Value::Null)
     }
 
@@ -141,11 +147,11 @@ impl ServiceProxy for ScriptedProxy {
         &self,
         _service_id: &str,
         _saga_id: &str,
-    ) -> Result<syneroym_rpc::SagaInfo, RpcProxyError> {
-        Ok(syneroym_rpc::SagaInfo {
+    ) -> Result<SagaInfo, RpcProxyError> {
+        Ok(SagaInfo {
             saga_id: "saga-1".to_string(),
             name: "test".to_string(),
-            state: syneroym_rpc::SagaState::Open,
+            state: SagaState::Open,
             steps: 0,
             compensated_steps: 0,
             created_at: 0,
@@ -155,8 +161,8 @@ impl ServiceProxy for ScriptedProxy {
     }
 }
 
-fn dependency_topology_entry(members: Vec<&str>) -> syneroym_app_orchestration::TopologyEntry {
-    syneroym_app_orchestration::TopologyEntry {
+fn dependency_topology_entry(members: Vec<&str>) -> TopologyEntry {
+    TopologyEntry {
         mode: if members.len() > 1 { TopologyMode::Redundant } else { TopologyMode::Singleton },
         members: members.into_iter().map(ServiceId::new).collect(),
         sharding_strategy: None,
@@ -189,7 +195,7 @@ pub(super) fn test_host(
         Arc::downgrade(proxy) as Weak<dyn ServiceProxy>,
         None,
         read_only,
-        syneroym_rpc::empty_row_authorizer(),
+        empty_row_authorizer(),
         app_instance_id,
         res,
     )
@@ -405,7 +411,7 @@ async fn the_total_time_ends_the_batch_and_cancels_running_calls() {
         if proxy.dropped.load(Ordering::SeqCst) {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        sleep(Duration::from_millis(10)).await;
     }
     assert!(proxy.dropped.load(Ordering::SeqCst));
 }
