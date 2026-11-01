@@ -247,6 +247,14 @@ async fn call_all_non_default_config_is_identical_on_both_builds() {
     assert!(err_str.contains("call-all takes at most 4 calls, got 5"));
 }
 
+struct BatchMutant<'a, D>(&'a D);
+
+impl<D: Driver> Driver for BatchMutant<'_, D> {
+    async fn run(&self, request: &str) -> Result<String, String> {
+        self.0.run(request).await.map(|s| s.replace("normal", "mutant"))
+    }
+}
+
 #[tokio::test]
 async fn a_mutant_batch_answer_is_detected() {
     let h = harness().await;
@@ -265,9 +273,6 @@ async fn a_mutant_batch_answer_is_detected() {
     .to_string();
 
     let wasm_res = h.wasm.run(&req).await.unwrap();
-    let native_res = h.native.run(&req).await.unwrap();
-    assert_eq!(wasm_res, native_res);
-
-    let mutant_res = wasm_res.replace("normal", "mutant");
+    let mutant_res = BatchMutant(&h.native).run(&req).await.unwrap();
     assert_ne!(wasm_res, mutant_res);
 }

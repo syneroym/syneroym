@@ -1461,8 +1461,8 @@ total limit. Time is measured with `Instant`, with the margins of the spike.
   the same 6 s call: `Ok`, and the elapsed time is at least 6 s).
 - `credit_buys_back_the_wait_and_no_more` (`ProxyCallAllThenSpin` with a
   6 s call: the guest is stopped by `Trap::Interrupt` after between
-  `6 s + 5 s - 1 tick` and `6 s + 5 s + 1 s`, and `classify_call_failure`
-  calls it a `Deadline`).
+  `6 s + 5 s - 1 tick` and `6 s + 5 s + 1 s`; unit test
+  `classify_real_epoch_interrupt_trap` verifies classification as `Deadline`).
 - `a_guest_that_spins_is_stopped_on_time_when_it_never_used_call_all` (the
   zero-credit path of section 3.4, on the production callback).
 - `two_batches_in_one_wasm_guest_call_accumulate_credit` (P14: real guest call

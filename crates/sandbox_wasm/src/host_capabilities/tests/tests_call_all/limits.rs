@@ -90,17 +90,44 @@ async fn refusal_texts_follow_wit_contract() {
 async fn the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_batch() {
     let proxy = Arc::new(ScriptedProxy::default());
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut host = test_host("svc", &proxy, false, temp_dir.path(), None, None);
     let limits = CallAllLimits::default();
     let call_all = CallAll::new(limits, 1);
-    host = host.with_call_all(call_all.clone());
+    let mut host = test_host("svc", &proxy, false, temp_dir.path(), None, None)
+        .with_call_all(call_all.clone());
 
-    let permit = call_all.waiters.clone().try_acquire_owned().unwrap();
+    let mut host_in_task = test_host("svc", &proxy, false, temp_dir.path(), None, None)
+        .with_call_all(call_all.clone());
+    let handle = tokio::spawn(async move {
+        let _ = proxy::Host::call_all(
+            &mut host_in_task,
+            vec![req("svc", "sleep", json!({"ms": 5000}), None)],
+        )
+        .await;
+    });
+
+    for _ in 0..50 {
+        if call_all.waiters.available_permits() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(call_all.waiters.available_permits(), 0);
+
     let err = proxy::Host::call_all(&mut host, vec![req("svc", "echo", json!("1"), None)])
         .await
         .unwrap_err();
     assert!(matches!(err, proxy::ProxyError::Internal(_)));
-    drop(permit);
+
+    handle.abort();
+    let _ = handle.await;
+
+    for _ in 0..50 {
+        if call_all.waiters.available_permits() == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(call_all.waiters.available_permits(), 1);
 
     let res =
         proxy::Host::call_all(&mut host, vec![req("svc", "echo", json!("1"), None)]).await.unwrap();
