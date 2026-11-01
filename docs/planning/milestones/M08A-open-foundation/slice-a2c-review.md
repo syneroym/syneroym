@@ -1062,3 +1062,73 @@ R14).
   ProbeRead` that returns `last_ok_secs`, `last_error`, the note, the
   name and the claimed issuer. The `match probe` then has two short arms.
   *Status:* Fixed (fd847057).
+
+## Code review round 1 — second fixes check — Claude Opus 5.5 (Claude Code desktop), 2026-11-01
+
+Checked `git diff bbdbb790..d1c3fe1a` (commits `fd847057`, `42b384f1`,
+`d1c3fe1a`) and the PR description. Tests run, after `mise run
+build:roym`: `cargo nextest run -p syneroym-roym-directory` (9 passed),
+`cargo nextest run -p syneroym-roym-web --test method_contract --test
+dual_build_parity` (257 passed, 0 skipped), `directory_parameter_errors`
+10 times in a row (10 passed), and `cargo clippy -q -p
+syneroym-roym-directory -p syneroym-roym-web --all-targets -- -D
+warnings` (clean).
+
+**Summary:** R3, R13 and R14 are confirmed fixed. Two new minor findings,
+R15 and R16, both small. Open now: 0 blocker, 0 major, 2 minor.
+
+### Items checked
+
+- **R3 — confirmed.** The PR description now says "60 method shapes (57
+  directory + 3 whoami; 217 total in workspace)" and has a "Method Tables
+  and Audit" section. The CLA line is still there. R16 is about the two
+  links in that new section.
+- **R13 — confirmed.** `add-source` is compared with `stripped()`, which
+  removes both `added_at_secs` and `last_ok_secs`
+  ([helpers.rs:121, :173](../../../../crates/roym_web/tests/dual_build_parity/helpers.rs#L121)),
+  and `last_ok_secs` is checked to be a number in both builds. Each build
+  now mints its own run with `one_rpc` and uses its own `run_id` for
+  `query-source` and `merge`. The two `query-source` errors are compared
+  with `assert_eq!`, and `merge` checks that both `hits` and `refused` are
+  empty in each build.
+- **R14 — confirmed.** The read is now `read_probe(raw, now) -> ProbeRead`
+  ([client_sources.rs:101-139](../../../../crates/roym_directory/src/app/client_sources.rs#L101)),
+  and `add_source` has a two-arm `match`. The `is_object` branch is gone,
+  so a reply that is not an object again gets serde's own text. The paths
+  give the same results as before: a JSON error and a reply that is not a
+  `Response` are `Unreadable`, `{"result": null}` gives the note and
+  `last_ok_secs`, a normal answer gives the name and the claimed issuer,
+  a transport error is `TimedOut`. An empty requested label still takes
+  the name. R15 is about one line the refactor moved.
+
+### New findings
+
+- [ ] **R15 — minor.** *Where:*
+  [client_sources.rs:186-196](../../../../crates/roym_directory/src/app/client_sources.rs#L186)
+  (`add_source`). *Problem:* `let now = clock::now_secs();` now runs
+  before `probe_info`, not after it as on `main` (`client_sources.rs:106,
+  :108` there). The probe is a network call with a 2 s timeout, so
+  `added_at_secs` and `last_ok_secs` now hold the time the probe started,
+  not the time the answer came back. A typing slice should not move it
+  (plan section 11: no change to what a correct request does), and no
+  doc records it. *Failure case:* a source answers after 1.9 s; on `main`
+  `last_ok_secs` is the time of the answer, now it is up to 2 s earlier.
+  No test or caller depends on this today, so the effect is small. *Fix:*
+  read the clock after the call, as before: `let reply =
+  probe_info(host, &did).await; let now = clock::now_secs(); let probe =
+  match reply { .. };`. *Status:* Open.
+
+- [ ] **R16 — minor.** *Where:* the PR description, section "Method
+  Tables and Audit". *Problem:* the two links point to sections that do
+  not exist under those names. "Plan Section 3.6 (Table of directory
+  methods)" links `#36-table-of-the-directory-methods`, but plan section
+  3.6 is "Older and newer nodes", and the method tables are under section
+  5 ("Method tables"). "Plan Section 4 (Audit of every directory verb)"
+  links `#4-audit-of-every-directory-verb`, but section 4 is
+  "Behaviour-change audit". Both anchors open the top of the plan. The
+  table of section 3.6 (older and newer nodes), which Step 10 asks for,
+  is not linked. *Failure case:* a reviewer clicks a link and lands at the
+  top of an 1800-line plan. *Fix:* link `#method-tables` (section 5),
+  `#4-behaviour-change-audit` (section 4) and
+  `#36-older-and-newer-nodes-requests-and-answers-in-both-directions`
+  (section 3.6), with those titles. *Status:* Open.
