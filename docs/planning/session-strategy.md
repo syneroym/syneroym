@@ -83,6 +83,10 @@ Each slice has one review file, `slice-<id>-review.md`, next to its plan. The fi
 - The fix session changes the status of each item as it works.
 - A later reviewer checks only the open items, and confirms the fixed ones.
 
+### Prompt templates
+
+[prompt-templates.md](prompt-templates.md) has one prompt for each step: milestone start, slice plan, plan review, plan fix, implementation, code review, code fix, slice close, milestone close and change doc. Fill in the values at the top of a template and send it. It also lists the default tool for each step.
+
 ---
 
 ## 4. The Session Workflow Rhythm
