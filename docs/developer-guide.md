@@ -600,8 +600,11 @@ let requests = vec![
         method: "search".to_string(),
         params: query_json.clone(),
         options: Some(CallOptions {
+            protocol: None,
+            idempotent: false,
             timeout_ms: Some(3000),
-            ..Default::default()
+            routing_key: None,
+            idempotency_key: None,
         }),
     },
     CallRequest {
@@ -610,8 +613,11 @@ let requests = vec![
         method: "search".to_string(),
         params: query_json,
         options: Some(CallOptions {
+            protocol: None,
+            idempotent: false,
             timeout_ms: Some(3000),
-            ..Default::default()
+            routing_key: None,
+            idempotency_key: None,
         }),
     },
 ];
@@ -627,7 +633,7 @@ for (idx, outcome) in outcomes.into_iter().enumerate() {
 
 Key semantics:
 - **Input order preserved:** Outcomes are returned in the exact order of the input list.
-- **Bounded limits:** The host caps batches (defaults: at most 16 calls per batch, at most 8 calls in flight concurrently, per-call timeout capped at 10s, total batch timeout capped at 30s). A batch exceeding 16 calls is refused immediately with `proxy-error::unsupported-target`.
+- **Bounded limits:** The host caps batches (defaults: at most 16 calls per batch, at most 8 calls in flight concurrently, per-call timeout defaults to 5s and is capped at 10s, total batch timeout capped at 15s). A batch exceeding 16 calls is refused immediately with `proxy-error::unsupported-target`.
 - **Node-wide waiter limit:** At most 4 guest instances across the entire node may wait in `call-all` simultaneously. If the node waiter limit is reached, `call-all` refuses immediately with `call-all busy`.
 - **Epoch deadline credit:** Time spent waiting inside `call-all` is credited toward the guest's epoch deadline (up to one total batch timeout allowance per guest call). A slow batch does not exhaust the guest's 5s execution budget. By contrast, a plain `call` still counts all elapsed wall time against the budget.
 

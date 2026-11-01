@@ -742,11 +742,12 @@ A deploy of a WASM service calls the guest's `init()` when the service has no da
 | Service-to-service call | 30 seconds | Default of the proxy. A request can set its own time. |
 | Size of a call queued in the durable outbox | 256 KiB | Fixed in the router |
 | One guest call, own time (time waiting in `call-all` is not counted, up to a cap) | 5 seconds | `[roles.app_sandbox] dispatch_epoch_timeout_secs` |
-| Batched proxy calls per batch | 16 | `[roles.app_sandbox] proxy_call_all_max_calls` |
-| Batched proxy call concurrency | 8 | `[roles.app_sandbox] proxy_call_all_concurrency` |
-| Batched proxy per-call time limit | 10 seconds | `[roles.app_sandbox] proxy_call_all_per_call_timeout_secs` |
-| Batched proxy total batch time limit | 30 seconds | `[roles.app_sandbox] proxy_call_all_total_timeout_secs` |
-| Batched proxy concurrent node waiters | 4 | `[roles.app_sandbox] proxy_call_all_max_waiters` |
+| Batched proxy calls per batch | 16 | `[roles.app_sandbox] call_all_max_calls` |
+| Batched proxy call concurrency | 8 | `[roles.app_sandbox] call_all_max_concurrency` |
+| Batched proxy default per-call time limit | 5000 ms (5 s) | `[roles.app_sandbox] call_all_default_call_timeout_ms` |
+| Batched proxy maximum per-call time limit | 10000 ms (10 s) | `[roles.app_sandbox] call_all_max_call_timeout_ms` |
+| Batched proxy total batch time limit | 15000 ms (15 s) | `[roles.app_sandbox] call_all_total_timeout_ms` |
+| Batched proxy concurrent node waiters | 4 | `[roles.app_sandbox] call_all_max_waiting_guests` |
 | Wait for peers to confirm the close of an Iroh endpoint at shutdown | 3 seconds | Fixed in the router (`ENDPOINT_CLOSE_LIMIT`) |
 | One `init()` or `migrate()` hook | 30 seconds | `[roles.app_sandbox] lifecycle_hook_epoch_timeout_secs` |
 | Replicas of one service | 16 | Checked when the manifest is validated |
@@ -1727,8 +1728,7 @@ flowchart TD
     - The guest's `WasiCtx` is empty: no preopened directories, no environment variables, and no sockets.
     - The linker holds only WASI and the Syneroym host interfaces. A guest reaches the world through these.
 - **Calls between services.** A guest's outbound call goes through the Universal Proxy.
-    - A guest may call a declared interface of another service via single `call` or batched `call-all`. The host runs calls in a batch concurrently up to the configured concurrency cap, returning answers in input order. Each call in a batch is subject to the same target and capability checks as a single call, and every limit is host-configured.
-    - A guest may call a declared interface of another service. The callee decides whether to admit the caller (see Layer 2 [access control](#substrate-internal-architecture)).
+    - A guest may call a declared interface of another service via single `call` or batched `call-all`. The host runs calls in a batch concurrently up to the configured concurrency cap, returning answers in input order. Each call in a batch is subject to the same target and capability checks as a single call, and every limit is host-configured. The callee decides whether to admit the caller (see Layer 2 [access control](#substrate-internal-architecture)).
     - A guest may call a native capability (`data-layer`, `vault`, `app-config`, `blob-store`, `messaging`, `http-native`, `conversation`, `signing`) only on its own service. The proxy refuses the same call on another service.
     - A guest may never reach the node-level interfaces `orchestrator` and `security` through the proxy.
 - **Row policy.** FDAE filters the rows a caller may see, and can remove fields and run a per-row check. See [FND-IAM](#fnd-iam-access-control).
