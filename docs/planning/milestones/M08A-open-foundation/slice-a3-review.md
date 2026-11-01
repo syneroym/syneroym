@@ -1573,3 +1573,7 @@ one private constructor, which the lint job compiled.
 
 **Round 1 is closed:** 14 items (0 blocker, 2 major, 12 minor), all fixed
 and confirmed. **0 open.**
+
+CI follow-up: run [41316183573](https://github.com/syneroym/syneroym/actions/runs/41316183573)
+on `3cd7a30` (the head after this confirmation, a docs-only commit on top of
+`0746d8f0`) passed every job: Lints, Test 1/6 to 6/6, Playwright E2E and CLA.
