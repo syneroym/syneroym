@@ -153,20 +153,41 @@ async fn the_wait_allowance_shrinks_the_total_time_and_runs_out() {
     let proxy = Arc::new(ScriptedProxy::default());
     let temp_dir = tempfile::tempdir().unwrap();
     let limits = CallAllLimits {
-        total_timeout: Duration::from_millis(2500),
-        default_call_timeout: Duration::from_millis(2000),
-        max_call_timeout: Duration::from_millis(2000),
+        total_timeout: Duration::from_millis(3000),
+        default_call_timeout: Duration::from_millis(3000),
+        max_call_timeout: Duration::from_millis(3000),
         ..Default::default()
     };
     let mut host = test_host("svc", &proxy, false, temp_dir.path(), None, None)
         .with_call_all(CallAll::new(limits, 4));
 
-    let res1 =
-        proxy::Host::call_all(&mut host, vec![req("svc", "sleep", json!({"ms": 1600}), None)])
-            .await
-            .unwrap();
+    let res1 = proxy::Host::call_all(
+        &mut host,
+        vec![req("svc", "sleep", json!({"ms": 1200}), Some(3000))],
+    )
+    .await
+    .unwrap();
     assert_eq!(res1.len(), 1);
     assert_eq!(res1[0].as_deref().unwrap(), "slept");
+
+    let started2 = std::time::Instant::now();
+    let res2 = proxy::Host::call_all(
+        &mut host,
+        vec![req("svc", "sleep", json!({"ms": 2500}), Some(2500))],
+    )
+    .await
+    .unwrap();
+    let elapsed2 = started2.elapsed();
+    assert_eq!(res2.len(), 1);
+    assert!(
+        matches!(res2[0], Err(proxy::ProxyError::TimedOut)),
+        "expected TimedOut because allowance cut total timeout, got {:?}",
+        res2[0]
+    );
+    assert!(
+        elapsed2 < Duration::from_millis(2200),
+        "batch took {elapsed2:?}, expected < 2.2s due to allowance cut"
+    );
 
     let allowance = host.epoch.allowance();
     assert!(allowance < Duration::from_secs(1));

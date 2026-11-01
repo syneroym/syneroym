@@ -90,7 +90,11 @@ impl ServiceProxy for ScriptedProxy {
             "sleep" => {
                 let ms = request.params.get("ms").and_then(Value::as_u64).unwrap_or(0);
                 tokio::time::sleep(Duration::from_millis(ms)).await;
-                Ok(Value::String("slept".to_string()))
+                if let Some(tag) = request.params.get("tag").and_then(Value::as_str) {
+                    Ok(Value::String(tag.to_string()))
+                } else {
+                    Ok(Value::String("slept".to_string()))
+                }
             }
             "fail" => Err(RpcProxyError::Callee {
                 code: -32000,
@@ -254,15 +258,15 @@ async fn results_come_back_in_input_order_whatever_the_finish_order() {
     let mut host = test_host("svc", &proxy, false, temp_dir.path(), None, None);
 
     let calls = vec![
-        req("svc", "sleep", json!({"ms": 50}), None),
-        req("svc", "sleep", json!({"ms": 20}), None),
-        req("svc", "sleep", json!({"ms": 5}), None),
+        req("svc", "sleep", json!({"ms": 50, "tag": "call-1-50ms"}), None),
+        req("svc", "sleep", json!({"ms": 20, "tag": "call-2-20ms"}), None),
+        req("svc", "sleep", json!({"ms": 5, "tag": "call-3-5ms"}), None),
     ];
     let res = proxy::Host::call_all(&mut host, calls).await.unwrap();
     assert_eq!(res.len(), 3);
-    assert_eq!(res[0].as_deref().unwrap(), "slept");
-    assert_eq!(res[1].as_deref().unwrap(), "slept");
-    assert_eq!(res[2].as_deref().unwrap(), "slept");
+    assert_eq!(res[0].as_deref().unwrap(), "call-1-50ms");
+    assert_eq!(res[1].as_deref().unwrap(), "call-2-20ms");
+    assert_eq!(res[2].as_deref().unwrap(), "call-3-5ms");
 }
 
 #[tokio::test]
@@ -332,6 +336,19 @@ async fn a_call_gets_its_own_time_and_the_host_caps_a_larger_request() {
     assert_eq!(limits.call_timeout(Some(60_000)), Duration::from_millis(300));
     assert_eq!(limits.call_timeout(None), Duration::from_millis(100));
     assert_eq!(limits.call_timeout(Some(200)), Duration::from_millis(200));
+
+    let proxy = Arc::new(ScriptedProxy::default());
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mut host = test_host("svc", &proxy, false, temp_dir.path(), None, None);
+    host = host.with_call_all(CallAll::new(limits, 4));
+
+    let calls = vec![req("svc", "echo", json!("ok"), Some(60_000))];
+    let res = proxy::Host::call_all(&mut host, calls).await.unwrap();
+    assert_eq!(res.len(), 1);
+    assert_eq!(res[0].as_deref().unwrap(), "ok");
+
+    let last_req = proxy.last_request.lock().unwrap().clone().expect("must have invoked proxy");
+    assert_eq!(last_req.timeout, Some(Duration::from_millis(300)));
 }
 
 #[tokio::test]
@@ -365,6 +382,7 @@ async fn the_total_time_ends_the_batch_and_cancels_running_calls() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut host = test_host("svc", &proxy, false, temp_dir.path(), None, None);
     let limits = CallAllLimits {
+        max_concurrency: 1,
         default_call_timeout: Duration::from_millis(5000),
         max_call_timeout: Duration::from_millis(5000),
         total_timeout: Duration::from_millis(1100),
@@ -373,13 +391,15 @@ async fn the_total_time_ends_the_batch_and_cancels_running_calls() {
     host = host.with_call_all(CallAll::new(limits, 4));
 
     let calls = vec![
+        req("svc", "sleep", json!({"ms": 50, "tag": "fast"}), None),
         req("svc", "sleep", json!({"ms": 5000}), None),
         req("svc", "sleep", json!({"ms": 5000}), None),
     ];
     let res = proxy::Host::call_all(&mut host, calls).await.unwrap();
-    assert_eq!(res.len(), 2);
-    assert!(matches!(res[0], Err(proxy::ProxyError::TimedOut)));
+    assert_eq!(res.len(), 3);
+    assert_eq!(res[0].as_deref().unwrap(), "fast");
     assert!(matches!(res[1], Err(proxy::ProxyError::TimedOut)));
+    assert!(matches!(res[2], Err(proxy::ProxyError::TimedOut)));
 
     for _ in 0..50 {
         if proxy.dropped.load(Ordering::SeqCst) {
