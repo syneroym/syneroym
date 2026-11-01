@@ -66,6 +66,7 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 - X3. `call-all` in the WIT, the host implementation with a maximum target count, a concurrency cap per guest instance, per-call and total limits, the deadline extension proved in S0 (or the fallback), and the native shim.
 - Parity test: the same scenario in both builds.
 - Criteria: OF-3, OF-4, OF-5, OF-17.
+- A3 result: `call-all` added to `syneroym:proxy` and `AppProxy`. Host dispatches up to 16 calls with concurrency limit 8, total/per-call timeouts, and shared node waiter limit 4. Guest wait time in `call-all` is credited toward the epoch deadline. Real epoch deadline traps classified as `Deadline`. Parity harness passes 11 scenarios in both builds. Real router passes batch, cancellation, pool exhaustion, and dedicated OS ticker starvation tests.
 
 ### A4 — Federated query library and one search call (M)
 

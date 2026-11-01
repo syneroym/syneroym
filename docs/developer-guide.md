@@ -567,21 +567,69 @@ policy schema itself.
 
 #### Calling Another Service from a WASM Component (Universal Proxy)
 A deployed WASM component reaches another service — local or on another node —
-through the `syneroym:proxy/proxy` WIT import (M04A Slice A1), without knowing
-where the target actually lives:
+through the `syneroym:proxy/proxy` WIT import, without knowing where the target
+actually lives:
 ```wit
 import syneroym:proxy/proxy@0.1.0;
-// call(service, interface, method, params, options) -> result<string, proxy-error>
+// call: func(target: call-target, interface: string, method: string, params: string, options: option<call-options>) -> result<string, proxy-error>;
+// call-all: func(calls: list<call-request>) -> result<list<result<string, proxy-error>>, proxy-error>;
 ```
-`service` is the target's DID (or a registry alias), `interface` is a WIT
-interface name the target registered at deploy time, and `params`/the success
-value are JSON text — the callee binds them against its real WIT signature, so
-the call is typed at the dispatch boundary even though the wire is JSON-RPC.
-Set `options.idempotent = true` only for calls safe to retry on transport
-failure; a callee-returned error is never retried. A component cannot use this
-import to reach *another* service's native capabilities (`data-layer`, `vault`,
-`app-config`, `blob-store`, `messaging`) — that's refused with
+`target` is `call-target::service(did)` or `call-target::dependency(name)`,
+`interface` is a WIT interface name the target registered at deploy time, and
+`params`/the success value are JSON text — the callee binds them against its real
+WIT signature, so the call is typed at the dispatch boundary even though the wire
+is JSON-RPC. Set `options.idempotent = true` only for calls safe to retry on
+transport failure; a callee-returned error is never retried. A component cannot
+use this import to reach *another* service's native capabilities (`data-layer`,
+`vault`, `app-config`, `blob-store`, `messaging`) — that's refused with
 `permission-denied` — only its own, via its regular host imports.
+
+##### Batched Outbound Calls (`call-all`)
+When a component must fan out to multiple services (for example, querying several
+directories during federated search), calling `proxy.call` sequentially can hit
+the guest's 5s epoch deadline, because a plain `call` counts all elapsed
+wall-clock wait time against the budget.
+
+`proxy.call-all` accepts a list of `call-request` records and dispatches them
+concurrently on the host:
+```rust
+let requests = vec![
+    CallRequest {
+        target: CallTarget::Service("did:key:dir-a".to_string()),
+        interface: "directory".to_string(),
+        method: "search".to_string(),
+        params: query_json.clone(),
+        options: Some(CallOptions {
+            timeout_ms: Some(3000),
+            ..Default::default()
+        }),
+    },
+    CallRequest {
+        target: CallTarget::Service("did:key:dir-b".to_string()),
+        interface: "directory".to_string(),
+        method: "search".to_string(),
+        params: query_json,
+        options: Some(CallOptions {
+            timeout_ms: Some(3000),
+            ..Default::default()
+        }),
+    },
+];
+
+let outcomes = proxy::call_all(&requests)?;
+for (idx, outcome) in outcomes.into_iter().enumerate() {
+    match outcome {
+        Ok(reply_json) => { /* process reply */ }
+        Err(err) => { /* individual call timed out or failed */ }
+    }
+}
+```
+
+Key semantics:
+- **Input order preserved:** Outcomes are returned in the exact order of the input list.
+- **Bounded limits:** The host caps batches (defaults: at most 16 calls per batch, at most 8 calls in flight concurrently, per-call timeout capped at 10s, total batch timeout capped at 30s). A batch exceeding 16 calls is refused immediately with `proxy-error::unsupported-target`.
+- **Node-wide waiter limit:** At most 4 guest instances across the entire node may wait in `call-all` simultaneously. If the node waiter limit is reached, `call-all` refuses immediately with `call-all busy`.
+- **Epoch deadline credit:** Time spent waiting inside `call-all` is credited toward the guest's epoch deadline (up to one total batch timeout allowance per guest call). A slow batch does not exhaust the guest's 5s execution budget. By contrast, a plain `call` still counts all elapsed wall time against the budget.
 
 #### Deploy a TCP Service (Passthrough)
 ```bash
