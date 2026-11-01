@@ -257,11 +257,12 @@ impl AppSandboxEngine {
                 .as_ref()
                 .map(|r| r.max_sse_subscribers_per_service)
                 .unwrap_or(100),
+            call_all: CallAll::default(),
         };
 
         app_engine.warm_up_wasm_endpoints(endpoints).await;
         let engine = app_engine.engine.clone();
-        epoch_ticker::spawn(move || engine.increment_epoch(), shutdown_rx);
+        epoch_ticker::spawn(move || engine.increment_epoch(), shutdown_rx)?;
 
         Ok(app_engine)
     }
