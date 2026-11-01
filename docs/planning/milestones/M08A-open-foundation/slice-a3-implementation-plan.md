@@ -1737,7 +1737,7 @@ The WIT shape of `call-all` is complete for A4, but A4 must resolve these design
    `web`'s per-call time. The guest controls this only through the per-call
    times of the inner calls and how many waves they need. For example, 8 sources
    at 2 s each in one wave end in about 2 s. The total is the same host setting
-   for both batches and cannot be raised above the per-call cap (D-A3-3 clamp
+   for both batches, and the per-call cap cannot be raised above it (D-A3-3 clamp
    cuts `max_call_timeout` to `total_timeout`; if A4 needs an outer time larger
    than the total, it must request a change to the clamp). Also, each search
    will hold two waiter permits on the node (one for `web`, one for `directory`),

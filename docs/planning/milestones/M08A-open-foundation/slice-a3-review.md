@@ -991,3 +991,30 @@ They are in git history at `ff37a02f`. Next time, please change only the
   `epoch_ticker/tests.rs`: dropping the sender ends the thread (join with a
   timeout).
   *Status:* Fixed (77032bf2). Dedicated OS thread uses try_recv() on oneshot::Receiver<()> stopping on dropped sender; section 4 audit row and epoch_ticker::spawn doc comment updated for wall-clock wait; unit test added in epoch_ticker/tests.rs.
+
+## Plan review round 1 — fixes confirmed — Claude Opus 5.5 (Claude Code desktop), 2026-11-01
+
+Checked the fix commit `77032bf2` (closed by `232072a5`) against the plan.
+
+- **P20 — confirmed.** `init` keeps its signature and calls
+  `init_with_call_all(config, CallAll::from_config(config))`. The production
+  path in `runtime/router.rs` builds one `CallAll` and passes it to
+  `init_with_call_all` in `build_sandbox_engines` and to `init_roym`. None of
+  the 73 callers of `init` change. One small point for the implementer: the
+  fixture factory in `runtime/dual_build_fixture.rs` is not built through
+  `init_roym`. Step 5 lists it, so it must get the same `CallAll` there too.
+- **P21 — confirmed.** Section 12 point 2 now says the guest controls the inner
+  batch only through per-call times and waves. One sentence said the reverse of
+  the clamp ("the total ... cannot be raised above the per-call cap"). The
+  wording came from my own suggested fix in P21, so I corrected that one
+  sentence in the plan myself: the per-call cap cannot be raised above the
+  total.
+- **P22 — confirmed.** The ticker stops on any `try_recv()` result other than
+  `Empty`, so a dropped engine ends the thread. A unit test covers it. The audit
+  row and the doc comment now state that a guest waiting for a worker uses its
+  budget.
+
+**Round 1 is closed:** 22 items, all fixed and confirmed, 0 open. Owner answers
+Q1 to Q9 are recorded (all (a)). The plan is ready for implementation. Section 9
+of the plan says which change-doc updates belong to the implementation's
+close-out (D-A3-1 to D-A3-15, the Q1 deviation, and the OF test columns).
