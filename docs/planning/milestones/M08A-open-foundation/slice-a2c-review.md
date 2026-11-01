@@ -1103,7 +1103,7 @@ R15 and R16, both small. Open now: 0 blocker, 0 major, 2 minor.
 
 ### New findings
 
-- [ ] **R15 — minor.** *Where:*
+- [x] **R15 — minor.** *Where:*
   [client_sources.rs:186-196](../../../../crates/roym_directory/src/app/client_sources.rs#L186)
   (`add_source`). *Problem:* `let now = clock::now_secs();` now runs
   before `probe_info`, not after it as on `main` (`client_sources.rs:106,
@@ -1116,9 +1116,9 @@ R15 and R16, both small. Open now: 0 blocker, 0 major, 2 minor.
   No test or caller depends on this today, so the effect is small. *Fix:*
   read the clock after the call, as before: `let reply =
   probe_info(host, &did).await; let now = clock::now_secs(); let probe =
-  match reply { .. };`. *Status:* Open.
+  match reply { .. };`. *Status:* Fixed (ce439da9).
 
-- [ ] **R16 — minor.** *Where:* the PR description, section "Method
+- [x] **R16 — minor.** *Where:* the PR description, section "Method
   Tables and Audit". *Problem:* the two links point to sections that do
   not exist under those names. "Plan Section 3.6 (Table of directory
   methods)" links `#36-table-of-the-directory-methods`, but plan section
@@ -1131,4 +1131,23 @@ R15 and R16, both small. Open now: 0 blocker, 0 major, 2 minor.
   top of an 1800-line plan. *Fix:* link `#method-tables` (section 5),
   `#4-behaviour-change-audit` (section 4) and
   `#36-older-and-newer-nodes-requests-and-answers-in-both-directions`
-  (section 3.6), with those titles. *Status:* Open.
+  (section 3.6), with those titles. *Status:* Fixed (PR description updated via gh pr edit 337).
+
+## Code review round 1 — R15 and R16 confirmed — Claude Opus 5.5 (Claude Code desktop), 2026-11-01
+
+Checked the uncommitted working tree on top of `90dfda83`, and the PR
+description.
+
+- **R15 — confirmed.** `add_source` calls `probe_info` first, then reads
+  `clock::now_secs()`, then passes `now` to `read_probe`, as on `main`.
+  The comment above the probe stays. After `mise run build:roym`,
+  `client_shapes`, `no_synorg_shapes`, `directory_parameter_errors` and
+  scenarios 229 and 230 pass. `cargo clippy -q -p syneroym-roym-directory
+  --all-targets -- -D warnings` is clean.
+- **R16 — confirmed.** The PR links `#method-tables` (section 5),
+  `#4-behaviour-change-audit` (section 4) and
+  `#36-older-and-newer-nodes-requests-and-answers-in-both-directions`
+  (section 3.6), each with the right title. All three anchors match
+  headings in the plan. The CLA line is still there.
+
+All findings R1 to R16 are closed. 0 open. `status.md` matches.
