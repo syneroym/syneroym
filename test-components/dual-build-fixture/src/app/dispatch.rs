@@ -536,22 +536,23 @@ pub(super) async fn dispatch<H: AppHost>(
     }
 }
 
+fn outcomes_json<E: fmt::Debug>(outcomes: Vec<Result<String, E>>) -> Vec<serde_json::Value> {
+    outcomes
+        .into_iter()
+        .map(|r| match r {
+            Ok(text) => json!({ "ok": text }),
+            Err(e) => json!({ "err": fmt_err(e) }),
+        })
+        .collect()
+}
+
 async fn handle_proxy_call_all<H: AppHost>(
     host: &H,
     calls: Vec<FixtureCall>,
 ) -> Result<serde_json::Value, String> {
     let requests = calls.into_iter().map(FixtureCall::into_call_request).collect();
     match host.call_all(requests).await {
-        Ok(outcomes) => {
-            let items: Vec<serde_json::Value> = outcomes
-                .into_iter()
-                .map(|r| match r {
-                    Ok(text) => json!({ "ok": text }),
-                    Err(e) => json!({ "err": fmt_err(e) }),
-                })
-                .collect();
-            Ok(json!({ "outcomes": items }))
-        }
+        Ok(outcomes) => Ok(json!({ "outcomes": outcomes_json(outcomes) })),
         Err(e) => Ok(json!({ "refused": fmt_err(e) })),
     }
 }
@@ -571,18 +572,8 @@ async fn handle_proxy_call_then_work<H: AppHost>(
     host: &H,
     call: FixtureCall,
 ) -> Result<serde_json::Value, String> {
-    let target = match call.kind.as_str() {
-        "dependency" => CallTarget::Dependency(call.name),
-        _ => CallTarget::Service(call.name),
-    };
-    let options = call.timeout_ms.map(|t| CallOptions {
-        protocol: None,
-        idempotent: false,
-        timeout_ms: Some(t),
-        routing_key: None,
-        idempotency_key: None,
-    });
-    let res = host.call(target, call.interface, call.method, call.params, options).await;
+    let req = call.into_call_request();
+    let res = host.call(req.target, req.interface, req.method, req.params, req.options).await;
     let mut acc: u64 = 0;
     for i in 0..10_000_000 {
         acc = acc.wrapping_add(i);
@@ -603,14 +594,7 @@ async fn handle_proxy_call_all_seq<H: AppHost>(
         let requests = calls.into_iter().map(FixtureCall::into_call_request).collect();
         match host.call_all(requests).await {
             Ok(outcomes) => {
-                let items: Vec<serde_json::Value> = outcomes
-                    .into_iter()
-                    .map(|r| match r {
-                        Ok(text) => json!({ "ok": text }),
-                        Err(e) => json!({ "err": fmt_err(e) }),
-                    })
-                    .collect();
-                all_batch_results.push(json!({ "outcomes": items }));
+                all_batch_results.push(json!({ "outcomes": outcomes_json(outcomes) }));
             }
             Err(e) => {
                 all_batch_results.push(json!({ "refused": fmt_err(e) }));

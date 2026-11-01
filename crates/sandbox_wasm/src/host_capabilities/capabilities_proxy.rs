@@ -1,4 +1,4 @@
-use super::*;
+use super::{capabilities_call_all::CallAllRefusal, *};
 
 /// Ceiling on a guest-supplied idempotency key. It travels on every
 /// attempt and becomes part of a primary key on the receiving node, so it
@@ -181,14 +181,12 @@ impl proxy::Host for HostState {
         // deliberately contained by keeping stage 4 out of the query-planner
         // business.
         if self.read_only {
-            return Err(proxy::ProxyError::Internal(
-                "stage-4 after-step instances may not originate proxy calls".to_string(),
-            ));
+            return Err(CallAllRefusal::ReadOnly.into_proxy_error());
         }
         let service_proxy = self
             .service_proxy
             .upgrade()
-            .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
+            .ok_or_else(|| CallAllRefusal::ProxyUnavailable.into_proxy_error())?;
 
         let timeout =
             options.as_ref().and_then(|o| o.timeout_ms).map(|ms| Duration::from_millis(ms.into()));

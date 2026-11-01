@@ -628,7 +628,7 @@ impl HostState {
 }
 
 mod call_all_limits;
-pub use call_all_limits::{CallAll, CallAllLimits};
+pub use call_all_limits::{CallAll, CallAllLimits, MIN_BATCH_ALLOWANCE};
 mod capabilities_blob;
 mod capabilities_call_all;
 pub(crate) use capabilities_call_all::WaitCredit;

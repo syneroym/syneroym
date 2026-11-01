@@ -12,15 +12,19 @@ use tracing::Instrument;
 
 use super::*;
 
-pub(super) const MIN_BATCH_ALLOWANCE: Duration = Duration::from_secs(1);
 pub(super) const CALL_CANCEL_GRACE: Duration = Duration::from_millis(250);
 
 /// Proof token certifying that wait credit was measured and granted exclusively
 /// by the batched call execution path.
 #[derive(Clone, Copy, Debug)]
-pub struct WaitCredit(pub(super) Duration);
+pub struct WaitCredit(Duration);
 
 impl WaitCredit {
+    #[must_use]
+    pub(super) fn new(d: Duration) -> Self {
+        Self(d)
+    }
+
     /// Returns the credited duration.
     #[must_use]
     pub(crate) fn duration(&self) -> Duration {
@@ -208,7 +212,7 @@ impl HostState {
         .await;
 
         let elapsed = started.elapsed();
-        self.epoch.credit(WaitCredit(elapsed));
+        self.epoch.credit(WaitCredit::new(elapsed));
         metrics::histogram!("substrate.proxy.call_all.duration_ms")
             .record(elapsed.as_millis() as f64);
 

@@ -33,7 +33,18 @@ fn zero_values_clamped_to_one() {
     assert_eq!(call_all.limits.max_concurrency, 1);
     assert_eq!(call_all.limits.default_call_timeout, Duration::from_millis(1));
     assert_eq!(call_all.limits.max_call_timeout, Duration::from_millis(1));
-    assert_eq!(call_all.limits.total_timeout, Duration::from_millis(1));
+    assert_eq!(call_all.limits.total_timeout, Duration::from_millis(1000));
+}
+
+#[test]
+fn total_timeout_below_min_batch_allowance_clamped() {
+    let mut config = SubstrateConfig::default();
+    config.roles.app_sandbox = Some(AppSandboxRole::default());
+    let sandbox = config.roles.app_sandbox.as_mut().unwrap();
+    sandbox.call_all_total_timeout_ms = 800;
+
+    let call_all = CallAll::from_config(&config);
+    assert_eq!(call_all.limits.total_timeout, Duration::from_millis(1000));
 }
 
 #[test]

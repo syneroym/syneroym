@@ -3,7 +3,11 @@ use std::{
     time::Duration,
 };
 
+use syneroym_core::config::{SubstrateConfig, sandbox};
 use tokio::sync::Semaphore;
+
+/// Minimum remaining wait allowance required to begin a batch.
+pub const MIN_BATCH_ALLOWANCE: Duration = Duration::from_secs(1);
 
 /// Limits applied to batched outbound calls (`call-all`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,11 +27,13 @@ pub struct CallAllLimits {
 impl Default for CallAllLimits {
     fn default() -> Self {
         Self {
-            max_calls: 16,
-            max_concurrency: 8,
-            default_call_timeout: Duration::from_millis(5000),
-            max_call_timeout: Duration::from_millis(10000),
-            total_timeout: Duration::from_millis(15000),
+            max_calls: sandbox::default_call_all_max_calls(),
+            max_concurrency: sandbox::default_call_all_max_concurrency(),
+            default_call_timeout: Duration::from_millis(
+                sandbox::default_call_all_default_call_timeout_ms(),
+            ),
+            max_call_timeout: Duration::from_millis(sandbox::default_call_all_max_call_timeout_ms()),
+            total_timeout: Duration::from_millis(sandbox::default_call_all_total_timeout_ms()),
         }
     }
 }
@@ -47,7 +53,9 @@ impl CallAllLimits {
 static DEFAULT_WAITERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 fn default_waiters_semaphore() -> Arc<Semaphore> {
-    DEFAULT_WAITERS.get_or_init(|| Arc::new(Semaphore::new(4))).clone()
+    DEFAULT_WAITERS
+        .get_or_init(|| Arc::new(Semaphore::new(sandbox::default_call_all_max_waiting_guests())))
+        .clone()
 }
 
 /// Node-wide state and configuration for `call-all` batch execution.
@@ -57,7 +65,6 @@ pub struct CallAll {
     pub limits: CallAllLimits,
     /// Semaphore bounding the number of guests waiting in `call-all`
     /// concurrently.
-    #[allow(dead_code)]
     pub(crate) waiters: Arc<Semaphore>,
 }
 
@@ -72,7 +79,7 @@ impl CallAll {
     /// configuration, clamping invalid values (zeros and out-of-order
     /// bounds) with warnings.
     #[must_use]
-    pub fn from_config(config: &syneroym_core::config::SubstrateConfig) -> Self {
+    pub fn from_config(config: &SubstrateConfig) -> Self {
         let Some(sandbox) = &config.roles.app_sandbox else {
             return Self::default();
         };
@@ -89,9 +96,15 @@ impl CallAll {
             max_concurrency = 1;
         }
 
-        let total_timeout = Duration::from_millis(sandbox.call_all_total_timeout_ms.max(1));
-        if sandbox.call_all_total_timeout_ms == 0 {
-            tracing::warn!("call_all_total_timeout_ms is 0; clamping to 1 ms");
+        let mut total_timeout = Duration::from_millis(sandbox.call_all_total_timeout_ms);
+        if total_timeout < MIN_BATCH_ALLOWANCE {
+            tracing::warn!(
+                "call_all_total_timeout_ms ({:?}) is below minimum batch allowance ({:?}); \
+                 clamping to minimum batch allowance",
+                total_timeout,
+                MIN_BATCH_ALLOWANCE
+            );
+            total_timeout = MIN_BATCH_ALLOWANCE;
         }
 
         let mut max_call_timeout =

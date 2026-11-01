@@ -94,27 +94,27 @@ const fn default_max_sse_subscribers_per_service() -> u32 {
     100
 }
 
-const fn default_call_all_max_calls() -> usize {
+pub const fn default_call_all_max_calls() -> usize {
     16
 }
 
-const fn default_call_all_max_concurrency() -> usize {
+pub const fn default_call_all_max_concurrency() -> usize {
     8
 }
 
-const fn default_call_all_default_call_timeout_ms() -> u64 {
+pub const fn default_call_all_default_call_timeout_ms() -> u64 {
     5000
 }
 
-const fn default_call_all_max_call_timeout_ms() -> u64 {
+pub const fn default_call_all_max_call_timeout_ms() -> u64 {
     10000
 }
 
-const fn default_call_all_total_timeout_ms() -> u64 {
+pub const fn default_call_all_total_timeout_ms() -> u64 {
     15000
 }
 
-const fn default_call_all_max_waiting_guests() -> usize {
+pub const fn default_call_all_max_waiting_guests() -> usize {
     4
 }
 
