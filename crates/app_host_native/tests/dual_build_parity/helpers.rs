@@ -45,7 +45,7 @@ pub(crate) use syneroym_rpc::{
     JsonRpcRequest, NativeHttpService, NativeInvocation, ProxyError, ProxyRequest, ServiceProxy,
     SessionContext, WebSocketSenders,
 };
-pub(crate) use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
+pub(crate) use syneroym_sandbox_wasm::{AppSandboxEngine, CallAll, GuestHttpOutcome};
 pub(crate) use syneroym_test_dual_build_fixture::native::{FIXTURE_INTERFACE, NativeFixture};
 pub(crate) use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::orchestrator::{
     ArtifactSource, DeployManifest, ServiceConfig, ServiceType, WasmManifest,
@@ -643,7 +643,7 @@ pub(crate) async fn build_wasm_stack(
     let conversation =
         test_conversation_service(storage_provider.clone(), key_store.clone(), registry.clone());
 
-    let call_all = syneroym_sandbox_wasm::CallAll::from_config(&config);
+    let call_all = CallAll::from_config(&config);
     let engine = Arc::new(
         AppSandboxEngine::init_with_call_all(
             &config,
@@ -715,7 +715,7 @@ pub(crate) async fn build_native_stack(
 
     let ws_senders = WebSocketSenders::new();
     let cfg = config.unwrap_or_default();
-    let call_all = syneroym_sandbox_wasm::CallAll::from_config(&cfg);
+    let call_all = CallAll::from_config(&cfg);
     let factory = NativeHostFactory::new(
         SERVICE_ID.to_string(),
         key_store,

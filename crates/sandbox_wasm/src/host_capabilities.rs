@@ -77,7 +77,10 @@ use wasmtime::{StoreLimits, StoreLimitsBuilder, component::Resource};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
 use zeroize::Zeroizing;
 
-use crate::{engine::AppSandboxEngine, stream::StreamContext};
+use crate::{
+    engine::{AppSandboxEngine, EpochBudget},
+    stream::StreamContext,
+};
 
 /// Bundles the messaging-specific pieces of `HostState`: the broker every
 /// service shares, and a weak handle back to the owning `AppSandboxEngine`
@@ -396,7 +399,7 @@ pub struct HostState {
     /// (every existing `HostState::new` call site, all of them tests).
     pub record_signer: Option<Arc<NodeRecordSigner>>,
     /// Tracks execution time and wait credit for epoch deadline callbacks.
-    pub(crate) epoch: crate::engine::EpochBudget,
+    pub(crate) epoch: EpochBudget,
     /// Limits and waiters for batched outbound calls.
     pub(crate) call_all: CallAll,
 }
@@ -462,7 +465,7 @@ impl HostState {
             conversation: empty_conversation_host(),
             websocket_senders: WebSocketSenders::new(),
             record_signer: None,
-            epoch: crate::engine::EpochBudget::new(CallAllLimits::default().total_timeout),
+            epoch: EpochBudget::new(CallAllLimits::default().total_timeout),
             call_all: CallAll::default(),
         }
     }
@@ -509,7 +512,7 @@ impl HostState {
     /// budget's credit cap from the resolved limits.
     #[must_use]
     pub fn with_call_all(mut self, call_all: CallAll) -> Self {
-        self.epoch = crate::engine::EpochBudget::new(call_all.limits.total_timeout);
+        self.epoch = EpochBudget::new(call_all.limits.total_timeout);
         self.call_all = call_all;
         self
     }

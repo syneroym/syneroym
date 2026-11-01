@@ -7,7 +7,10 @@ use std::{
 use serde_json::Value;
 use syneroym_rpc::{ProxyRequest, ServiceProxy};
 use syneroym_wit_interfaces::host::syneroym::proxy::proxy::{self, CallRequest};
-use tokio::task::{Id as TaskId, JoinSet};
+use tokio::{
+    sync::OwnedSemaphorePermit,
+    task::{Id as TaskId, JoinSet},
+};
 use tracing::Instrument;
 
 use super::*;
@@ -84,7 +87,7 @@ pub(super) fn record_refusal(refusal: CallAllRefusal) -> proxy::ProxyError {
 }
 
 struct WaiterGuard {
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl Drop for WaiterGuard {

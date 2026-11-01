@@ -1,11 +1,14 @@
 use std::{sync::Arc, time::Duration};
 
 use serde_json::json;
+use syneroym_rpc::ProxyError as RpcProxyError;
 use syneroym_wit_interfaces::host::syneroym::proxy::proxy;
-use tokio::sync::Semaphore;
 
 use super::{ScriptedProxy, req, test_host};
-use crate::host_capabilities::{CallAll, CallAllLimits, tests::test_service_proxy};
+use crate::{
+    engine::EpochBudget,
+    host_capabilities::{CallAll, CallAllLimits, tests::test_service_proxy},
+};
 
 #[tokio::test]
 async fn a_read_only_instance_cannot_run_a_batch() {
@@ -63,7 +66,6 @@ async fn refusal_texts_follow_wit_contract() {
     assert_eq!(msg2, "proxy unavailable");
 
     let mut host3 = test_host("svc", &proxy, false, temp_dir.path(), None, None);
-    let sem = Arc::new(Semaphore::new(0));
     host3.call_all = CallAll::new(CallAllLimits::default(), 0);
     let err3 = proxy::Host::call_all(&mut host3, vec![req("svc", "echo", json!("1"), None)])
         .await
@@ -72,10 +74,9 @@ async fn refusal_texts_follow_wit_contract() {
         panic!("expected Internal, got {err3:?}");
     };
     assert!(msg3.starts_with("call-all busy:"));
-    drop(sem);
 
     let mut host4 = test_host("svc", &proxy, false, temp_dir.path(), None, None);
-    host4.epoch = crate::engine::EpochBudget::new(Duration::from_millis(500));
+    host4.epoch = EpochBudget::new(Duration::from_millis(500));
     let err4 = proxy::Host::call_all(&mut host4, vec![req("svc", "echo", json!("1"), None)])
         .await
         .unwrap_err();
@@ -128,7 +129,7 @@ async fn a_nested_batch_at_the_waiter_limit_is_refused_and_does_not_hang() {
             let calls = vec![req("svc2", "echo", json!("nested"), None)];
             match proxy::Host::call_all(&mut *guard, calls).await {
                 Ok(_) => Ok(serde_json::Value::String("nested_ok".to_string())),
-                Err(e) => Err(syneroym_rpc::ProxyError::Internal(format!("nested refused: {e:?}"))),
+                Err(e) => Err(RpcProxyError::Internal(format!("nested refused: {e:?}"))),
             }
         })
     })));
@@ -213,7 +214,7 @@ async fn allowance_below_min_batch_allowance_refuses() {
     let proxy = Arc::new(ScriptedProxy::default());
     let temp_dir = tempfile::tempdir().unwrap();
     let mut host = test_host("svc", &proxy, false, temp_dir.path(), None, None);
-    host.epoch = crate::engine::EpochBudget::new(Duration::from_millis(999));
+    host.epoch = EpochBudget::new(Duration::from_millis(999));
 
     let err = proxy::Host::call_all(&mut host, vec![req("svc", "echo", json!("1"), None)])
         .await

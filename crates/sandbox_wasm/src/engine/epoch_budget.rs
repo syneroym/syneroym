@@ -12,7 +12,6 @@ pub(crate) struct EpochBudget {
     started: Instant,
     budget: Duration,
     credited: Duration,
-    #[allow(dead_code)]
     credit_cap: Duration,
 }
 
@@ -38,14 +37,12 @@ impl EpochBudget {
 
     /// Computes the remaining credit allowance available for outbound batches
     /// during this guest call.
-    #[allow(dead_code)]
     pub(crate) fn allowance(&self) -> Duration {
         self.credit_cap.saturating_sub(self.credited)
     }
 
     /// Credits the elapsed wait time of a finished outbound batch against
     /// this guest call's epoch deadline, capped by the remaining allowance.
-    #[allow(dead_code)]
     pub(crate) fn credit(&mut self, token: WaitCredit) {
         let max_additional = self.allowance();
         let add = token.duration().min(max_additional);
