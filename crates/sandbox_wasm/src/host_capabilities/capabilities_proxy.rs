@@ -8,7 +8,7 @@ pub(crate) const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
 
 /// Maps the proxy's transport-agnostic `syneroym_rpc::ProxyError` onto the
 /// guest-facing `syneroym:proxy/proxy::proxy-error` WIT variant.
-fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
+pub(super) fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
     match e {
         RpcProxyError::ServiceNotFound(s) => proxy::ProxyError::ServiceNotFound(s),
         RpcProxyError::UnsupportedProtocol(s) => proxy::ProxyError::UnsupportedProtocol(s),
@@ -29,6 +29,136 @@ fn map_proxy_error(e: RpcProxyError) -> proxy::ProxyError {
             data: None,
         }),
         RpcProxyError::Internal(s) => proxy::ProxyError::Internal(s),
+    }
+}
+
+/// Mirrors the dispatch-boundary convention (a string result comes back raw,
+/// not JSON-quoted) so guest code doesn't have to strip quotes.
+pub(crate) fn reply_text(value: Value) -> String {
+    match value {
+        Value::String(s) => s,
+        other => other.to_string(),
+    }
+}
+
+impl HostState {
+    pub(crate) fn resolve_target(
+        &self,
+        target: CallTarget,
+        routing_key: Option<&str>,
+    ) -> Result<String, proxy::ProxyError> {
+        match target {
+            CallTarget::Service(service) => Ok(service),
+            CallTarget::Dependency(name) => {
+                let app_instance_id = self.app_instance_id.as_deref().ok_or_else(|| {
+                    proxy::ProxyError::DependencyNotBound(format!(
+                        "component '{}' was not deployed as part of an app instance, so it has no \
+                         declared dependency '{name}'",
+                        self.component_id
+                    ))
+                })?;
+                let topology_key = TopologyKey::local(
+                    // This string came out of a `service_app_context` row,
+                    // not out of the guest. A corrupted row is a
+                    // substrate-side fault, so it maps to `Internal`, not to
+                    // the guest-facing "you are not bound".
+                    AppInstanceId::try_new(app_instance_id).map_err(|e| {
+                        proxy::ProxyError::Internal(format!(
+                            "stored app context for '{}' is unreadable: {e}",
+                            self.component_id
+                        ))
+                    })?,
+                    LogicalServiceName::try_new(&name).map_err(|e| {
+                        proxy::ProxyError::DependencyNotBound(format!(
+                            "invalid dependency name: {e}"
+                        ))
+                    })?,
+                );
+                self.logical_resolver
+                    .resolve(&topology_key, routing_key.map(str::as_bytes))
+                    .map_err(|e| {
+                        proxy::ProxyError::DependencyNotBound(format!(
+                            "dependency '{name}' of '{}' is not bound: {e}",
+                            self.component_id
+                        ))
+                    })
+                    .map(|resolved| resolved.to_string())
+            }
+        }
+    }
+
+    pub(crate) fn proxy_request(
+        &self,
+        call: CallRequest,
+        timeout: Option<Duration>,
+    ) -> Result<ProxyRequest, proxy::ProxyError> {
+        let params: Value = if call.params.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&call.params)
+                .map_err(|e| proxy::ProxyError::Internal(format!("params must be JSON: {e}")))?
+        };
+
+        let (protocol_tag, idempotent, timeout_ms, routing_key, idempotency_key) =
+            match &call.options {
+                Some(o) => (
+                    o.protocol.as_deref(),
+                    o.idempotent,
+                    o.timeout_ms,
+                    o.routing_key.clone(),
+                    o.idempotency_key.clone(),
+                ),
+                None => (None, false, None, None, None),
+            };
+        let protocol =
+            ProxyProtocol::parse(protocol_tag).map_err(proxy::ProxyError::UnsupportedProtocol)?;
+
+        // ADR-0021 §2: the host supplies `app_instance_id`, the guest
+        // supplies only the declared name. Resolution happens here, before
+        // the `ProxyRequest` exists, so a guest never holds the resolved DID
+        // and cannot snapshot it past a re-push.
+        let target_service = self.resolve_target(call.target, routing_key.as_deref())?;
+
+        // A guest proxying into its **own** service's
+        // native `data-layer` forwards this invocation's real `HostState.
+        // caller` (router-verified, or `service_system` if none reached
+        // this guest -- see `prepare_wasm_execution`), so the receiving
+        // `SynSvcNativeService::resolve_query_auth` sees who is actually
+        // asking instead of always synthesizing `service_system` -- the
+        // same-service exception (`ProxyRouter::check_native_capability_
+        // gate`) already restricts this to the guest's own data, so this
+        // cannot escalate to another service's rights.
+        //
+        // A genuine cross-service call still acts as itself: it does NOT
+        // inherit the identity of whoever invoked *this* guest (no U->X
+        // delegation exists in the current model), so a proxied call to a
+        // *different* service cannot be used to escalate to the original
+        // caller's rights. Real cross-service caller-delegation via UCAN is
+        // not yet built. The self-proxy caller-forwarding rule is evaluated
+        // against the *resolved* target: a component that reaches its own
+        // service through a declared dependency name is still the same
+        // service, so it still forwards its real caller.
+        let caller = if target_service == self.component_id {
+            self.caller.clone()
+        } else {
+            CallerContext::service_system(&self.component_id)
+        };
+
+        let final_timeout =
+            timeout.or_else(|| timeout_ms.map(|ms| Duration::from_millis(ms.into())));
+
+        Ok(ProxyRequest {
+            target_service,
+            interface: call.interface,
+            method: call.method,
+            params,
+            caller,
+            origin: CallOrigin::Guest { service_id: self.component_id.clone() },
+            protocol,
+            idempotent,
+            idempotency_key,
+            timeout: final_timeout,
+        })
     }
 }
 
@@ -60,113 +190,22 @@ impl proxy::Host for HostState {
             .upgrade()
             .ok_or_else(|| proxy::ProxyError::Internal("proxy unavailable".to_string()))?;
 
-        let params: Value = if params.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(&params)
-                .map_err(|e| proxy::ProxyError::Internal(format!("params must be JSON: {e}")))?
-        };
-
-        let (protocol_tag, idempotent, timeout_ms, routing_key, idempotency_key) = match &options {
-            Some(o) => (
-                o.protocol.as_deref(),
-                o.idempotent,
-                o.timeout_ms,
-                o.routing_key.clone(),
-                o.idempotency_key.clone(),
-            ),
-            None => (None, false, None, None, None),
-        };
-        let protocol =
-            ProxyProtocol::parse(protocol_tag).map_err(proxy::ProxyError::UnsupportedProtocol)?;
-
-        // ADR-0021 §2: the host supplies `app_instance_id`, the guest
-        // supplies only the declared name. Resolution happens here, before
-        // the `ProxyRequest` exists, so a guest never holds the resolved DID
-        // and cannot snapshot it past a re-push.
-        let target_service = match target {
-            CallTarget::Service(service) => service,
-            CallTarget::Dependency(name) => {
-                let app_instance_id = self.app_instance_id.as_deref().ok_or_else(|| {
-                    proxy::ProxyError::DependencyNotBound(format!(
-                        "component '{}' was not deployed as part of an app instance, so it has no \
-                         declared dependency '{name}'",
-                        self.component_id
-                    ))
-                })?;
-                let topology_key = TopologyKey::local(
-                    // This string came out of a `service_app_context` row,
-                    // not out of the guest. A corrupted row is a
-                    // substrate-side fault, so it maps to `Internal`, not to
-                    // the guest-facing "you are not bound".
-                    AppInstanceId::try_new(app_instance_id).map_err(|e| {
-                        proxy::ProxyError::Internal(format!(
-                            "stored app context for '{}' is unreadable: {e}",
-                            self.component_id
-                        ))
-                    })?,
-                    LogicalServiceName::try_new(&name).map_err(|e| {
-                        proxy::ProxyError::DependencyNotBound(format!(
-                            "invalid dependency name: {e}"
-                        ))
-                    })?,
-                );
-                self.logical_resolver
-                    .resolve(&topology_key, routing_key.as_deref().map(str::as_bytes))
-                    .map_err(|e| {
-                        proxy::ProxyError::DependencyNotBound(format!(
-                            "dependency '{name}' of '{}' is not bound: {e}",
-                            self.component_id
-                        ))
-                    })?
-                    .to_string()
-            }
-        };
-
-        // A guest proxying into its **own** service's
-        // native `data-layer` forwards this invocation's real `HostState.
-        // caller` (router-verified, or `service_system` if none reached
-        // this guest -- see `prepare_wasm_execution`), so the receiving
-        // `SynSvcNativeService::resolve_query_auth` sees who is actually
-        // asking instead of always synthesizing `service_system` -- the
-        // same-service exception (`ProxyRouter::check_native_capability_
-        // gate`) already restricts this to the guest's own data, so this
-        // cannot escalate to another service's rights.
-        //
-        // A genuine cross-service call still acts as itself: it does NOT
-        // inherit the identity of whoever invoked *this* guest (no U->X
-        // delegation exists in the current model), so a proxied call to a
-        // *different* service cannot be used to escalate to the original
-        // caller's rights. Real cross-service caller-delegation via UCAN is
-        // not yet built. The self-proxy caller-forwarding rule is evaluated
-        // against the *resolved* target: a component that reaches its own
-        // service through a declared dependency name is still the same
-        // service, so it still forwards its real caller.
-        let caller = if target_service == self.component_id {
-            self.caller.clone()
-        } else {
-            CallerContext::service_system(&self.component_id)
-        };
-        let req = ProxyRequest {
-            target_service,
-            interface,
-            method,
-            params,
-            caller,
-            origin: CallOrigin::Guest { service_id: self.component_id.clone() },
-            protocol,
-            idempotent,
-            idempotency_key,
-            timeout: timeout_ms.map(|ms| Duration::from_millis(ms.into())),
-        };
+        let timeout =
+            options.as_ref().and_then(|o| o.timeout_ms).map(|ms| Duration::from_millis(ms.into()));
+        let call_req = CallRequest { target, interface, method, params, options };
+        let req = self.proxy_request(call_req, timeout)?;
 
         let value = service_proxy.invoke(req).await.map_err(map_proxy_error)?;
         // Mirrors the dispatch-boundary convention (a string result comes back raw,
         // not JSON-quoted) so guest code doesn't have to strip quotes.
-        Ok(match value {
-            Value::String(s) => s,
-            other => other.to_string(),
-        })
+        Ok(reply_text(value))
+    }
+
+    async fn call_all(
+        &mut self,
+        calls: Vec<CallRequest>,
+    ) -> Result<Vec<Result<String, proxy::ProxyError>>, proxy::ProxyError> {
+        self.execute_call_all(calls).await
     }
 
     /// Hands a call to this service's durable outbox.

@@ -58,7 +58,7 @@ use syneroym_wit_interfaces::{
         host::context::Host,
         messaging::host_api::{self, MessagingError},
         proxy::{
-            proxy::{self, CallOptions, CallTarget, CalleeError},
+            proxy::{self, CallOptions, CallRequest, CallTarget, CalleeError},
             saga::{self, SagaState as WitSagaState, SagaStatus},
         },
         vault::vault::{self, VaultError},

@@ -35,11 +35,10 @@ impl Default for CallAllLimits {
 impl CallAllLimits {
     /// Computes the effective timeout for an individual call within a batch.
     #[must_use]
-    pub fn call_timeout(&self, requested: Option<u64>) -> Duration {
+    pub fn call_timeout(&self, requested: Option<u32>) -> Duration {
         match requested {
-            Some(ms) => {
-                Duration::from_millis(ms).clamp(Duration::from_millis(1), self.max_call_timeout)
-            }
+            Some(ms) => Duration::from_millis(u64::from(ms))
+                .clamp(Duration::from_millis(1), self.max_call_timeout),
             None => self.default_call_timeout,
         }
     }

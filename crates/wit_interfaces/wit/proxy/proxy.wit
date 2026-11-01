@@ -51,7 +51,8 @@ interface proxy {
         /// for calls that are safe to repeat; a callee-returned error is
         /// never retried. Defaults to false.
         idempotent: bool,
-        /// Per-call deadline; defaults to the host's 30s budget.
+        /// Per-call deadline; defaults to the host's 30s budget (in a
+        /// `call-all` batch, defaults to the host's configured default).
         timeout-ms: option<u32>,
         /// Selection key for a multi-member dependency: rendezvous hashing
         /// for `redundant`, required for `sharded`, ignored for
@@ -81,6 +82,44 @@ interface proxy {
         params: string,
         options: option<call-options>,
     ) -> result<string, proxy-error>;
+
+    /// One call of a `call-all` batch. The five arguments of `call`.
+    record call-request {
+        target: call-target,
+        %interface: string,
+        method: string,
+        params: string,
+        options: option<call-options>,
+    }
+
+    /// Runs the calls at the same time and returns one result per call,
+    /// in the order of `calls`.
+    ///
+    /// Each call is checked and sent exactly as `call` does. An empty list
+    /// returns `Ok([])` with no call started.
+    ///
+    /// Limits (all set by the host; the guest cannot raise them):
+    /// - The host refuses a list longer than its maximum with
+    ///   `Err(unsupported-target("call-all takes at most N calls, got M"))`.
+    ///   No call runs.
+    /// - The host runs at most a fixed number of calls at once per guest
+    ///   instance and queues the rest.
+    /// - Each call has a time limit. `options.timeout-ms` sets it, but the
+    ///   host caps it. The default when `options` is absent or
+    ///   `timeout-ms` is absent is the host's configured default (not
+    ///   `call`'s 30 s). The time limits the whole call including retries;
+    ///   for `call`, it limits each attempt.
+    /// - The whole batch has a total time limit set by the host.
+    ///
+    /// A call that cannot finish in time has the result `timed-out`.
+    ///
+    /// A refused batch returns an `Err`. A refusal because the node has
+    /// too many waiting guests, or because this guest call has no wait time
+    /// left, is `internal` with a text that starts with `call-all busy:`.
+    /// A read-only instance and a missing proxy give the same `internal` text
+    /// as `call`.
+    call-all: func(calls: list<call-request>)
+        -> result<list<result<string, proxy-error>>, proxy-error>;
 
     /// Fire-and-forget delivery that survives an unreachable target and a
     /// restart of this substrate. The call is attempted immediately; only
