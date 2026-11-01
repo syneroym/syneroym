@@ -183,14 +183,14 @@ pub(crate) async fn add_source<H: AppHost>(
         .find(|(id, _)| id == &did)
         .and_then(|(_, v)| serde_json::from_value(v.clone()).ok());
 
-    let now = clock::now_secs();
-
     // Probe once: `directory.info` over the wire. A transport failure is
     // stored as `last_error`; a successful probe that answers `null` is
     // reported to the caller rather than silently accepted, so a person
     // does not sit waiting for results from an address that will never
     // have any.
-    let probe = match probe_info(host, &did).await {
+    let reply = probe_info(host, &did).await;
+    let now = clock::now_secs();
+    let probe = match reply {
         Ok(raw) => read_probe(&raw, now),
         Err(_) => ProbeRead { last_error: Some(SourceError::TimedOut), ..Default::default() },
     };
