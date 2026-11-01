@@ -823,4 +823,5 @@ async fn fdae_policy_unparseable_in_storage_resolves_none_not_error() {
     assert!(app_engine.fdae_policies.get("svc-bad").unwrap().is_none());
 }
 
+mod call_all_config;
 mod classify;

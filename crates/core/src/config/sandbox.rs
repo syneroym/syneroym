@@ -94,6 +94,30 @@ const fn default_max_sse_subscribers_per_service() -> u32 {
     100
 }
 
+const fn default_call_all_max_calls() -> usize {
+    16
+}
+
+const fn default_call_all_max_concurrency() -> usize {
+    8
+}
+
+const fn default_call_all_default_call_timeout_ms() -> u64 {
+    5000
+}
+
+const fn default_call_all_max_call_timeout_ms() -> u64 {
+    10000
+}
+
+const fn default_call_all_total_timeout_ms() -> u64 {
+    15000
+}
+
+const fn default_call_all_max_waiting_guests() -> usize {
+    4
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSandboxRole {
@@ -129,6 +153,26 @@ pub struct AppSandboxRole {
     /// a request, so a generous budget doesn't trade away the same
     /// protection the tighter dispatch budget buys.
     pub lifecycle_hook_epoch_timeout_secs: u64,
+    /// Maximum number of calls allowed in one batched outbound call
+    /// (`call-all`).
+    #[serde(default = "default_call_all_max_calls")]
+    pub call_all_max_calls: usize,
+    /// Maximum number of calls running concurrently for one guest instance.
+    #[serde(default = "default_call_all_max_concurrency")]
+    pub call_all_max_concurrency: usize,
+    /// Default per-call timeout in milliseconds when unspecified by caller.
+    #[serde(default = "default_call_all_default_call_timeout_ms")]
+    pub call_all_default_call_timeout_ms: u64,
+    /// Maximum allowed timeout in milliseconds for an individual call.
+    #[serde(default = "default_call_all_max_call_timeout_ms")]
+    pub call_all_max_call_timeout_ms: u64,
+    /// Total timeout in milliseconds for the entire batch and credit cap.
+    #[serde(default = "default_call_all_total_timeout_ms")]
+    pub call_all_total_timeout_ms: u64,
+    /// Maximum number of guests that may wait in a batch on the node
+    /// concurrently.
+    #[serde(default = "default_call_all_max_waiting_guests")]
+    pub call_all_max_waiting_guests: usize,
     /// Fuel ceiling for one stage-4 ABAC after-step invocation (ADR-0017 §7's
     /// "fuel-metered"). Deliberately a small fraction of
     /// `default_max_instructions`: the after-step runs once per read on the
@@ -408,6 +452,12 @@ impl Default for AppSandboxRole {
             default_max_memory_bytes: Some(256 * 1024 * 1024),
             dispatch_epoch_timeout_secs: default_dispatch_epoch_timeout_secs(),
             lifecycle_hook_epoch_timeout_secs: default_lifecycle_hook_epoch_timeout_secs(),
+            call_all_max_calls: default_call_all_max_calls(),
+            call_all_max_concurrency: default_call_all_max_concurrency(),
+            call_all_default_call_timeout_ms: default_call_all_default_call_timeout_ms(),
+            call_all_max_call_timeout_ms: default_call_all_max_call_timeout_ms(),
+            call_all_total_timeout_ms: default_call_all_total_timeout_ms(),
+            call_all_max_waiting_guests: default_call_all_max_waiting_guests(),
             abac_max_instructions: default_abac_max_instructions(),
             abac_epoch_timeout_secs: default_abac_epoch_timeout_secs(),
             max_concurrent_guest_http_per_service: default_max_concurrent_guest_http_per_service(),

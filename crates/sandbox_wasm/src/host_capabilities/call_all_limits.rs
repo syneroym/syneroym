@@ -69,6 +69,88 @@ impl Default for CallAll {
 }
 
 impl CallAll {
+    /// Resolves `call-all` limits and semaphore capacity from the substrate
+    /// configuration, clamping invalid values (zeros and out-of-order
+    /// bounds) with warnings.
+    #[must_use]
+    pub fn from_config(config: &syneroym_core::config::SubstrateConfig) -> Self {
+        let Some(sandbox) = &config.roles.app_sandbox else {
+            return Self::default();
+        };
+
+        let mut max_calls = sandbox.call_all_max_calls;
+        if max_calls == 0 {
+            tracing::warn!("call_all_max_calls is 0; clamping to 1");
+            max_calls = 1;
+        }
+
+        let mut max_concurrency = sandbox.call_all_max_concurrency;
+        if max_concurrency == 0 {
+            tracing::warn!("call_all_max_concurrency is 0; clamping to 1");
+            max_concurrency = 1;
+        }
+
+        let total_timeout = Duration::from_millis(sandbox.call_all_total_timeout_ms.max(1));
+        if sandbox.call_all_total_timeout_ms == 0 {
+            tracing::warn!("call_all_total_timeout_ms is 0; clamping to 1 ms");
+        }
+
+        let mut max_call_timeout =
+            Duration::from_millis(sandbox.call_all_max_call_timeout_ms.max(1));
+        if sandbox.call_all_max_call_timeout_ms == 0 {
+            tracing::warn!("call_all_max_call_timeout_ms is 0; clamping to 1 ms");
+        }
+        if max_call_timeout > total_timeout {
+            tracing::warn!(
+                "call_all_max_call_timeout_ms ({:?}) exceeds total timeout ({:?}); clamping to \
+                 total timeout",
+                max_call_timeout,
+                total_timeout
+            );
+            max_call_timeout = total_timeout;
+        }
+
+        let mut default_call_timeout =
+            Duration::from_millis(sandbox.call_all_default_call_timeout_ms.max(1));
+        if sandbox.call_all_default_call_timeout_ms == 0 {
+            tracing::warn!("call_all_default_call_timeout_ms is 0; clamping to 1 ms");
+        }
+        if default_call_timeout > max_call_timeout {
+            tracing::warn!(
+                "call_all_default_call_timeout_ms ({:?}) exceeds max call timeout ({:?}); \
+                 clamping to max call timeout",
+                default_call_timeout,
+                max_call_timeout
+            );
+            default_call_timeout = max_call_timeout;
+        }
+
+        let max_allowed_waiters =
+            (sandbox.max_concurrent_instances.saturating_sub(1) as usize).max(1);
+        let mut max_waiting_guests = sandbox.call_all_max_waiting_guests;
+        if max_waiting_guests == 0 {
+            tracing::warn!("call_all_max_waiting_guests is 0; clamping to 1");
+            max_waiting_guests = 1;
+        }
+        if max_waiting_guests > max_allowed_waiters {
+            tracing::warn!(
+                "call_all_max_waiting_guests ({max_waiting_guests}) exceeds max_instances - 1; \
+                 clamping to {max_allowed_waiters}"
+            );
+            max_waiting_guests = max_allowed_waiters;
+        }
+
+        let limits = CallAllLimits {
+            max_calls,
+            max_concurrency,
+            default_call_timeout,
+            max_call_timeout,
+            total_timeout,
+        };
+
+        Self::new(limits, max_waiting_guests)
+    }
+
     /// Creates a new `CallAll` with custom limits and waiter capacity.
     #[must_use]
     pub fn new(limits: CallAllLimits, max_waiting_guests: usize) -> Self {
