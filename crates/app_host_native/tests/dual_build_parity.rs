@@ -10,6 +10,8 @@ pub(crate) mod helpers;
 
 #[path = "dual_build_parity/call_all.rs"]
 mod call_all;
+#[path = "dual_build_parity/call_all_deadline.rs"]
+mod call_all_deadline;
 #[path = "dual_build_parity/conversation.rs"]
 mod conversation;
 #[path = "dual_build_parity/data_layer.rs"]

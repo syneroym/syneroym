@@ -93,7 +93,7 @@ impl WasmDriver {
             .engine
             .execute_wasm_json(SERVICE_ID, FIXTURE_INTERFACE, &req, Some(caller))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("{e:?}"))?;
         match result {
             Value::String(s) => Ok(s),
             other => Err(format!("expected a string result, got {other:?}")),
