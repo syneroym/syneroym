@@ -394,9 +394,9 @@ Every line below was read on `main` at `54993066`.
 - A keyed failure is recorded as a dead letter inside `invoke`
   ([router.rs:18](../../../../crates/router/src/proxy/router.rs#L18), `record_failed_call`).
   In a batch, the per-call time bounds the whole call, retries included. A
-  call that the batch's outer task is dropped before `record_failed_call`
-  runs is not dead-lettered; its claim stays in flight until its window ends.
-  A call with a 250 ms grace on the outer task timer does reach
+  call that the batch's timer cuts before `record_failed_call` runs is not
+  dead-lettered; its claim stays in flight until its window ends. A call with
+  a 250 ms grace on the outer task timer (`CALL_CANCEL_GRACE`) does reach
   `record_failed_call` if its single attempt times out on its own (D-A3-5,
   D-A3-6). A `call` through the single-call path still dead-letters as
   before.
@@ -595,6 +595,7 @@ its call kind:
 | A guest with zero credit pays one extra call of a small closure at the deadline | Only when the guest is stopped. | No cost on the hot path. |
 | `proxy.call`, `enqueue`, `saga.step` give no credit | Unchanged (D-OF-1) | A single `proxy.call` can still wait 30 s with no credit. The backlog row stays. |
 | `classify_call_failure` finds `Trap::Interrupt` (Q6 (a)) | A real deadline is now `Deadline`, not `Other`. | Effect by caller: the ABAC after-step error becomes `BudgetExceeded` (`QuotaExceeded` to the caller) in place of `Trap` (`Internal`); a guest HTTP request that runs out of time is `BudgetExceeded` in place of `Trap`, both 500; `execute_wasm_vals` treats `Deadline` and `Other` the same. The existing test of this function uses made-up text. A real-trap case is added. |
+| The epoch ticker runs on a dedicated OS thread (`std::thread::spawn` with `sleep(EPOCH_TICK_MS)`) instead of `tokio::spawn` | Ticker advances every 100 ms regardless of worker thread CPU saturation. Sleep for one tick after each tick; missed ticks are not made up. | Prevents concurrent CPU-bound local WASM targets from starving the runtime clock and delaying deadline expiration (P17). Deadlines fire on time even when all tokio workers are busy. |
 
 **Native build.** `AppProxy` gets `call_all`. A native app that does not call
 it is not affected. No epoch deadline exists natively, so no deadline
@@ -642,10 +643,11 @@ proxy`, right after `call`:
     ///
     /// A call that cannot finish in time has the result `timed-out`.
     ///
-    /// A refused batch (too many calls, node waiter limit reached, this
-    /// guest call has no wait time left) returns an `Err`. Every refusal
-    /// that is not `unsupported-target` uses `internal` with a text that
-    /// starts with `call-all busy:`.
+    /// A refused batch returns an `Err`. A refusal because the node has
+    /// too many waiting guests, or because this guest call has no wait time
+    /// left, is `internal` with a text that starts with `call-all busy:`.
+    /// A read-only instance and a missing proxy give the same `internal` text
+    /// as `call`.
     call-all: func(calls: list<call-request>)
         -> result<list<result<string, proxy-error>>, proxy-error>;
 ```
@@ -809,43 +811,23 @@ pub(crate) fn arm_epoch_deadline(store: &mut Store<HostState>, ticks: u64) {
   WaitCredit(Duration)` that only `capabilities_call_all.rs` can construct.
   One unit test verifies that both production construction sites call
   `with_call_all` (P2 fix: see D-A3-8 below).
-- **Zero credit interrupts at once.** This is the line that makes the
-  deadline of every guest that does not use `call-all` exactly what it is
-  today (section 3.4, last fact). Credit is also the only case where the
-  callback must compute anything.
-- **Own time.** It is the wall clock, because `Engine::current_epoch` is not
-  public (D-OF-1). `Continue(n)` sets the new deadline to the **current**
-  epoch plus `n`, so the callback returns the budget left, not the wait.
-  Own time can pass the budget by less than one tick (rounding up). That is
-  accepted.
-- **Wiring.** `build_store_and_instantiate` replaces
-  `store.epoch_deadline_trap(); store.set_epoch_deadline(ticks)`
-  ([engine.rs:569-570](../../../../crates/sandbox_wasm/src/engine.rs#L569))
-  with:
-
-  ```rust
-  store.epoch_deadline_callback(|ctx| Ok(ctx.data().epoch.on_deadline(Instant::now())));
-  arm_epoch_deadline(&mut store, epoch_deadline_ticks);
-  ```
-
-  `call_resource_method` replaces `store.set_epoch_deadline(ticks)`
-  ([stream.rs:188](../../../../crates/sandbox_wasm/src/stream.rs#L188)) with
-  `arm_epoch_deadline(store, ticks)`. After that no production code calls
-  `set_epoch_deadline` itself. A unit test greps the source for it, as the
-  A2 check does for `req.params` (Step 2).
-- `HostState` gets `pub(crate) epoch: EpochBudget`, set to `unarmed()` in
-  `HostState::new`.
-- **Credit on every exit.** `call_all` calls `credit` once, after the batch
-  ends, with the time from the first started call to the end, whatever the
-  end was (all done, some timed out, total limit). A refusal before any
-  wait gives no credit. **No other host function calls `credit`.** A unit
-  test greps the source for `epoch.credit(` and expects one match.
+- **Dedicated OS thread for the epoch ticker (P17).** `epoch_ticker::spawn`
+  runs on its own OS thread (`std::thread::Builder::new().name("wasm-epoch-ticker".into()).spawn(...)`
+  with a `std::thread::sleep(Duration::from_millis(EPOCH_TICK_MS))` loop and
+  an atomic stop flag or shutdown channel), not on the tokio runtime. This
+  ensures the ticker is immune to tokio worker starvation when up to
+  `max_concurrency` local WASM callees execute CPU-bound work concurrently
+  in parallel tasks. Sleep is executed after each tick without catching up
+  on missed ticks.
 
 **D-A3-5. The run (pseudo-code).** In
 `crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs` (new, a
 sibling of `capabilities_proxy.rs`, declared in `host_capabilities.rs`):
 
 ```rust
+const MIN_BATCH_ALLOWANCE: Duration = Duration::from_secs(1);
+const CALL_CANCEL_GRACE: Duration = Duration::from_millis(250);
+
 async fn call_all(&mut self, calls: Vec<CallRequest>)
     -> Result<Vec<Result<String, proxy::ProxyError>>, proxy::ProxyError>
 {
@@ -861,7 +843,7 @@ async fn call_all(&mut self, calls: Vec<CallRequest>)
     let total = limits.total_timeout.min(allowance);
     // 1. Build every request first, with `&self` only. A failure is that
     //    call's result. It never takes a concurrency slot.
-    let mut slots: Vec<Option<Result<String, ProxyError>>> = vec![None; n];
+    let mut slots: Vec<Option<Result<String, ProxyError>>> = vec![None; calls.len()];
     let mut runnable = Vec::new();
     for (i, call) in calls.into_iter().enumerate() {
         let timeout = limits.call_timeout(call.options.timeout_ms);
@@ -874,27 +856,44 @@ async fn call_all(&mut self, calls: Vec<CallRequest>)
     //    `JoinSet` aborts leftover tasks when dropped (total time ends).
     let started = Instant::now();
     let mut set = tokio::task::JoinSet::new();
+    let mut task_to_slot = std::collections::HashMap::new();
     let mut pending = runnable.into_iter().peekable();
-    // Seed with the first wave.
-    while set.len() < limits.max_concurrency {
-        let Some((i, req, timeout)) = pending.next() else { break };
-        let proxy = Arc::clone(&service_proxy);
-        set.spawn(async move {
-            let r = tokio::time::timeout(timeout, proxy.invoke(req)).await;
+    // Helper to spawn one call into the set and track its task id.
+    let mut spawn_next = |set: &mut tokio::task::JoinSet<(usize, Result<Value, ProxyError>)>,
+                          task_to_slot: &mut std::collections::HashMap<tokio::task::Id, usize>,
+                          proxy: &Arc<dyn ServiceProxy>,
+                          (i, req, timeout): (usize, ProxyRequest, Duration)| {
+        let p = Arc::clone(proxy);
+        let handle = set.spawn(async move {
+            let r = tokio::time::timeout(timeout + CALL_CANCEL_GRACE, p.invoke(req)).await;
             (i, flatten(r))    // Elapsed -> Err(TimedOut); Ok(Err(e)) -> map_proxy_error
         }.instrument(Span::current()));
+        task_to_slot.insert(handle.id(), i);
+    };
+    // Seed with the first wave.
+    while set.len() < limits.max_concurrency {
+        let Some(item) = pending.next() else { break };
+        spawn_next(&mut set, &mut task_to_slot, &service_proxy, item);
     }
     // 3. Fill the slots as calls finish, until the total time ends.
     let _ = tokio::time::timeout(total, async {
-        while let Some(Ok((i, r))) = set.join_next().await {
-            slots[i] = Some(r);
+        while let Some(res) = set.join_next_with_id().await {
+            match res {
+                Ok((_id, (i, r))) => {
+                    task_to_slot.remove(&_id);
+                    slots[i] = Some(r);
+                }
+                Err(join_err) => {
+                    let id = join_err.id();
+                    if let Some(idx) = task_to_slot.remove(&id) {
+                        tracing::warn!(task_id = ?id, error = ?join_err, "call-all host task failed");
+                        slots[idx] = Some(Err(ProxyError::Internal("call-all: call failed in the host".to_string())));
+                    }
+                }
+            }
             // Start the next queued call.
-            if let Some((j, req, timeout)) = pending.next() {
-                let proxy = Arc::clone(&service_proxy);
-                set.spawn(async move {
-                    let r = tokio::time::timeout(timeout, proxy.invoke(req)).await;
-                    (j, flatten(r))
-                }.instrument(Span::current()));
+            if let Some(item) = pending.next() {
+                spawn_next(&mut set, &mut task_to_slot, &service_proxy, item);
             }
         }
     }).await;                  // on Elapsed, set is dropped: tasks are aborted
@@ -913,16 +912,24 @@ async fn call_all(&mut self, calls: Vec<CallRequest>)
   its original index.
 - Each task gets the current tracing span (`.instrument(Span::current())`),
   so logs keep the guest's context.
-- `MIN_BATCH_ALLOWANCE` is a constant, for example one second (or the
-  default per-call time). A tiny allowance refuses instead of starting calls
+- `MIN_BATCH_ALLOWANCE` is a constant set to 1 second (`const
+  MIN_BATCH_ALLOWANCE: Duration = Duration::from_secs(1);`, P19 fix). An
+  allowance below this refuses with `AllowanceUsed` instead of starting calls
   that cancel almost immediately (P8 fix). The refusal text and metric label
   are the same as the zero-allowance case.
 - The per-call timeout bounds the whole call, retries included. A call that
   the batch's timers cut is not retried further and is not dead-lettered; its
-  claim stays in flight until its window ends. A grace of 250 ms is added
-  to the per-call outer timer (the task), so that a single-attempt call whose
-  one attempt times out on its own still reaches `record_failed_call` inside
-  `invoke` before the task is collected (P3 fix).
+  claim stays in flight until its window ends. The constant `CALL_CANCEL_GRACE`
+  (`Duration::from_millis(250)`) is added to the per-call outer timer (the task)
+  in both spawn sites (`timeout + CALL_CANCEL_GRACE`), so that a single-attempt
+  call whose one attempt times out on its own still reaches `record_failed_call`
+  inside `invoke` before the task is collected (P3 fix).
+- Host panics and cancellations are tracked via `set.join_next_with_id()` and
+  `task_to_slot`. If a task panics in the host (`Err(join_err)`), the slot for
+  that call receives `Err(internal("call-all: call failed in the host"))`,
+  a warning is logged, and the loop starts the next queued call and continues.
+  It does not abort the batch or report running/queued calls as `timed-out`
+  (P18 fix).
 - The per-call timeout wraps `invoke` because the remote path applies the
   timeout for each attempt, and the trait promises no deadline (section 3.3).
 - `reply_text` is the same function `call` uses (step 9).
@@ -958,13 +965,14 @@ The waiter semaphore and the limits are **shared across both builds**.
 `CallAll::from_config(&SubstrateConfig)` (a public function in
 `syneroym-sandbox-wasm`) builds one `CallAll` value from the configured
 limits and one shared `Arc<Semaphore>`. The substrate runtime builds it once
-in `runtime.rs` and passes the same value to every `NativeHostFactory` and
-to the WASM engine through `with_call_all`. Every `HostState` on the node
-therefore uses the same limits and the same permit pool, so an operator's
-config change affects both builds equally and the waiter count is one
-number for the whole node (P2 fix; OF-5). A native waiter holds no instance
-pool slot, so a shared pool slightly over-constrains native batches — that
-is accepted, because both builds obey one number.
+in `runtime.rs` (`let call_all = CallAll::from_config(&config);`) and passes
+it to `AppSandboxEngine::init(&config, call_all.clone())` (a new argument on
+`init`) and to every `NativeHostFactory` through `with_call_all`. Every
+`HostState` on the node therefore uses the same limits and the same permit
+pool, so an operator's config change affects both builds equally and the
+waiter count is one number for the whole node (P2 fix; OF-5). A native waiter
+holds no instance pool slot, so a shared pool slightly over-constrains
+native batches — that is accepted, because both builds obey one number.
 
 The default `CallAll` in `HostState::new` uses a static shared semaphore
 (a `once_cell` or `OnceLock`) with the default number of permits. This means
@@ -984,12 +992,12 @@ A batch of 8 local WASM targets holds 1 + 8 = 9 of 10 slots while the first
 wave runs. Two such batches exceed the pool. The permit guarantees a bound
 on waiters, and (when all targets are remote) a bound on pool slots. It does
 not prevent pool exhaustion from local targets. This is the known case of Q9
-(a), and a test shows it (section 7.3, P4 fix).
+(a), and a test shows it (section 7.4, P4 fix).
 
 **D-A3-9. The wait allowance (Q4 (a)).** The total time of a batch is
 `min(total_timeout, epoch.allowance())`. If the allowance is below
-`MIN_BATCH_ALLOWANCE` (a constant, for example one second or the default
-per-call time), the batch is refused: `internal("call-all busy: this guest
+`MIN_BATCH_ALLOWANCE` (`const MIN_BATCH_ALLOWANCE: Duration = Duration::from_secs(1);`,
+P19), the batch is refused: `internal("call-all busy: this guest
 call has no wait time left in call-all")`. A zero allowance and a tiny
 allowance both use the same text and metric label. So in one guest call,
 the waits in all batches add up to at most `total_timeout`, and every one of
@@ -1022,9 +1030,13 @@ the callee can hit is the instance pool (Q9). It fails at once.
   timeout, a closed connection), the batch `JoinSet` is dropped with it.
   The tasks it holds are aborted. An aborted local WASM callee keeps running
   on its worker thread until its next `await` point or its own deadline, but
-  the batch answers on time. A remote call stops waiting after its abort, but
-  the request that was already sent is not recalled, so the target may still
-  do its work. The waiter permit is released when the batch future is dropped.
+  the batch answers on time. A batch of local CPU-bound targets can hold up to
+  `max_concurrency` worker threads for up to 5 s per callee; running the epoch
+  ticker on a dedicated OS thread ensures that deadlines continue advancing
+  regardless of worker thread saturation (P17). A remote call stops waiting
+  after its abort, but the request that was already sent is not recalled, so
+  the target may still do its work. The waiter permit is released when the batch
+  future is dropped.
 - If the service is stopped while a batch runs, the batch is not cancelled
   and ends by its total time at the latest (Q7 (a)).
 - The native build has no epoch deadline. A guest that waits in a batch
@@ -1103,6 +1115,12 @@ tests green.
   `host_capabilities/call_all_limits.rs`), and the config in Step 3.
 - `crates/sandbox_wasm/src/engine.rs`: replace lines 569-570 as in D-A3-4.
   Fix `classify_call_failure` (D-A3-15).
+- `crates/sandbox_wasm/src/engine/epoch_ticker.rs`: rewrite ticker spawn to
+  run on its own OS thread (`std::thread::spawn` with `sleep(EPOCH_TICK_MS)`
+  loop and an atomic stop flag or shutdown receiver) instead of `tokio::spawn`
+  on the runtime (P17). Sleep is executed after each tick; missed ticks are
+  not made up. This prevents concurrent CPU-bound WASM guests from starving the
+  ticker task.
 - `crates/sandbox_wasm/src/stream.rs`: replace line 188 as in D-A3-4.
 - `crates/sandbox_wasm/src/engine/tests.rs`: the test of
   `classify_call_failure` (lines 824-852) moves to a new
@@ -1116,7 +1134,7 @@ tests green.
 
 **Unit tests** (`epoch_budget/tests.rs`, pure, no clock, no guest):
 
-- `an_unarmed_budget_interrupts`.
+- `a_budget_that_was_never_armed_interrupts` (P16).
 - `zero_credit_interrupts_at_the_deadline_even_when_own_time_is_below_budget`
   (own time 450 ms of 500 ms, credit zero: `Interrupt`). This is the test of
   section 3.4's last fact.
@@ -1126,6 +1144,9 @@ tests green.
 - `credit_is_capped` (credit past the cap is cut) and
   `allowance_is_the_cap_minus_the_credit`.
 - `arm_resets_credit_and_start`.
+- Note on credit callers: `credit` takes a private token `WaitCredit(Duration)`
+  constructible only in `capabilities_call_all.rs`. Enforced at compile time
+  by Rust type privacy; no source grep test is needed (P16).
 - `no_production_code_sets_an_epoch_deadline_itself`: reads only non-test
   files under `src/` (exclude files under any `tests/` directory and any
   `#[cfg(test)]` module path). Checks that `set_epoch_deadline` appears only
@@ -1155,10 +1176,11 @@ Step 7 runs the production path with a real guest).
 - `crates/sandbox_wasm/src/engine/init.rs`: `SandboxTuning` gets the six
   values. `resolve_sandbox_tuning` copies them (and the `else` branch uses
   `CallAllLimits::default()`), and clamps with warnings (D-A3-3).
-  Add `pub fn from_tuning(tuning: &SandboxTuning) -> CallAll` (or
-  `CallAll::from_config`) that builds one `Arc<Semaphore>` with the configured
-  permit count and the resolved limits. `init` calls it once and stores the
-  result on the engine (`call_all`, beside `abac_instance_permits`).
+  Add `pub fn from_config(config: &SubstrateConfig) -> CallAll` that builds one
+  `Arc<Semaphore>` with the configured permit count and the resolved limits
+  (P2, P19). `AppSandboxEngine::init(&config, call_all: CallAll)` receives the
+  single shared `CallAll` built by the caller and stores it on the engine
+  (`call_all`, beside `abac_instance_permits`).
   `build_store_and_instantiate` calls
   `.with_call_all(self.call_all.clone())`
   next to `with_conversation`
@@ -1188,10 +1210,13 @@ Commit: `feat(sandbox-wasm): configure call-all limits`.
   against `main` line by line before you commit (A2b R5).
 - `capabilities_call_all.rs` (new): `call_all` (D-A3-5, D-A3-6, D-A3-8,
   D-A3-9, D-A3-13), the small `CallAllRefusal` enum with one function
-  that gives its text and its metric label (so a refusal text is written
-  once and tested), the `pub(super) struct WaitCredit(Duration)` token that
-  only this file can construct (so `credit` is a type rule, not a text
-  rule), and the `MIN_BATCH_ALLOWANCE` constant.
+  that gives its text and its metric label. A refusal for too many waiters or
+  exhausted allowance starts with `call-all busy:`; read-only instance and
+  missing proxy use the same `internal` texts as `call` (P7 fix).
+  `const MIN_BATCH_ALLOWANCE: Duration = Duration::from_secs(1);` (P19 fix)
+  and `const CALL_CANCEL_GRACE: Duration = Duration::from_millis(250);` (P3 fix).
+  The `pub(super) struct WaitCredit(Duration)` token that only this file can
+  construct enforces credit caller rules at compile time (P16 fix).
 - `host_capabilities.rs`: `mod capabilities_call_all;`.
 - No `futures-util` addition: the run loop uses `tokio::task::JoinSet` from
   `tokio` (already a dependency).
@@ -1211,12 +1236,13 @@ Commit: `feat(sandbox-wasm): add proxy call-all host function`.
 - `crates/app_host_native/src/factory.rs`: `with_call_all`. The factory
   receives the shared `CallAll` from the caller; it does not build its own.
 - `crates/roym_core/src/signing.rs`: the test host's `call_all`.
-- `crates/substrate/src/runtime/roym.rs` (six sites) and
+- `crates/substrate/src/runtime.rs`, `crates/substrate/src/runtime/roym.rs` (six sites) and
   `crates/substrate/src/runtime/dual_build_fixture.rs` (one site): the
-  substrate runtime builds one `CallAll::from_config(&config)` and passes it
-  to every `NativeHostFactory` through `with_call_all`. These seven sites
-  are added in this step so the shared limits and semaphore reach both builds
-  (P2 fix; D-A3-8).
+  substrate runtime builds one `let call_all = CallAll::from_config(&config);`
+  and passes it to `AppSandboxEngine::init(&config, call_all.clone())` and
+  to every `NativeHostFactory` through `with_call_all`. These sites ensure the
+  single shared limits and semaphore reach both WASM and native builds from one
+  construction (P2 fix; D-A3-8).
 - Build every WASM guest: `mise run build:test-components` and
   `mise run build:roym`. All Roym services must compile as components. This
   is the proof that the one source tree still builds both ways.
@@ -1233,6 +1259,9 @@ Commit: `feat(app-host): add call-all to the dual-build shim`.
   verb `ProxyCallAllThenSpin { calls }` runs the batch, then loops in guest
   code until it is stopped. A third, `ProxyCallThenWork { call }`, makes one
   plain `proxy.call` and then runs a short loop (the control, section 7.3).
+  A fourth verb `ProxyCallAllSeq { batches: Vec<Vec<Call>> }` runs multiple
+  batches in order within a single guest call, returning an array of outcomes
+  per batch (P14 fix; needed by `two_batches_in_one_wasm_guest_call_accumulate_credit`).
   The dispatch table already has `#[expect(clippy::too_many_lines)]`; it
   does not change the suppression count.
 - `crates/app_host_native/tests/dual_build_parity/stub_proxy.rs` (new): moves
@@ -1244,6 +1273,12 @@ Commit: `feat(app-host): add call-all to the dual-build shim`.
   (`dropped`). `helpers.rs` re-exports it (`pub(crate) use`), so every
   caller of `StubProxy` keeps its path. `helpers.rs` shrinks by about 14
   lines, so lower its entry in `xtask/oversized-test-files.txt`.
+- Non-default config plumbing (P2 fix): `call_all_non_default_config_is_identical_on_both_builds`
+  needs non-default limits to reach both WASM and native parity stacks.
+  `build_wasm_stack` and `build_native_stack` in `helpers.rs` take an optional
+  config override (`config: Option<SubstrateConfig>`), paid for by the lines
+  freed by the `StubProxy` move, keeping `helpers.rs` below its recorded line
+  cap.
 - `crates/app_host_native/tests/dual_build_parity/call_all.rs` (new) and the
   `#[path]` line in `dual_build_parity.rs`: the parity scenarios (section
   7.2).
@@ -1274,8 +1309,14 @@ Commit: `test(app-host-native): call-all epoch credit and waiters`.
 - `test-components/proxy-test/wit/world.wit` and `src/lib.rs`: a driver
   function `call-peers` that takes a list of `(kind, service, interface,
   method, params)` and returns each result as text (the `{e:?}` of an error,
-  as `call-peer` does). The component is built by `build:test-components`.
-- `crates/router/tests/proxy_call_all.rs` (new): section 7.4.
+  as `call-peer` does). Also an export `spin-for: func(ms: u32)` that loops in
+  guest WASM code for a given number of milliseconds, used as a CPU-bound local
+  callee target (P15 fix, P17 fix). The component is built by `build:test-components`.
+- `crates/router/tests/proxy_call_all.rs` (new): section 7.4. Runs tests on the
+  real router with local WASM components, including parallel local execution on
+  a multi-thread runtime with >= 4 worker threads (P15), bounded pool exhaustion
+  with `max_concurrent_instances = 6` (P4), and epoch ticker starvation immunity
+  on a 2-worker runtime (P17).
 
 Commit: `test(router): call-all through the real proxy router`.
 
@@ -1333,8 +1374,15 @@ one reason to fail. Names:
   service, a `dependency` target, a routing key and an idempotency key, the
   `ProxyRequest` that `call` sends and the one a batch of one sends are
   equal, except `timeout`. This is the behavioural half of D-A3-2.)
-- `a_read_only_instance_cannot_run_a_batch` (same text as `call`).
-- `a_missing_proxy_is_refused_with_the_text_of_call`.
+- `a_read_only_instance_cannot_run_a_batch` (same text as `call`:
+  `"stage-4 after-step instances may not originate proxy calls"`; P7 fix).
+- `a_missing_proxy_is_refused_with_the_text_of_call` (`"proxy unavailable"`; P7 fix).
+- `refusal_texts_follow_wit_contract` (P7 fix: waiter limit and allowance exhaustion
+  refusals start with `"call-all busy:"`; read-only instance and missing proxy use
+  their existing `internal` texts identical to `call`).
+- `host_call_panic_is_recorded_as_internal_error_and_does_not_abort_batch` (P18 fix:
+  scripted proxy panics on one call; that call's slot gets `Err(Internal("call-all: call failed in the host"))`,
+  the remaining calls finish and keep their results, no calls are spuriously marked `timed-out`).
 - `the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_batch`
   (also after the batch future is dropped).
 - `a_nested_batch_at_the_waiter_limit_is_refused_and_does_not_hang` (the
@@ -1344,7 +1392,9 @@ one reason to fail. Names:
   one guest call; the second gets the rest; the third is refused).
 - `a_refused_batch_gives_no_credit_and_a_timed_out_batch_does_give_it`
   (D-A3-4: credit on error and timeout).
-- `only_call_all_gives_credit` (D-A3-4: a source grep of `epoch.credit(`).
+- `only_call_all_gives_credit` (compile-time rule: `WaitCredit` is a private token
+  constructible only in `capabilities_call_all.rs`, so no other host function can call
+  `credit`; P16 fix).
 - `a_callee_that_cannot_get_a_pool_slot_is_one_failed_entry` (Q9: scripted
   error `callee` -32603 for one entry; the others answer).
 - `every_exit_path_preserves_input_order_and_cardinality` (P14: all-ok,
@@ -1406,14 +1456,8 @@ total limit. Time is measured with `Instant`, with the margins of the spike.
 - `a_guest_that_spins_is_stopped_on_time_when_it_never_used_call_all` (the
   zero-credit path of section 3.4, on the production callback).
 - `two_batches_in_one_wasm_guest_call_accumulate_credit` (P14: real guest call
-  runs two consecutive batches; second gets remaining allowance, credited
-  time accumulates, third is refused).
-- `local_wasm_callees_execute_in_parallel_via_joinset` (P15: fixture verb
-  computes CPU work for 2 s; two calls finish in ~2 s not 4 s; total timeout
-  aborts tasks on time).
-- `local_wasm_callees_pool_exhaustion_is_bounded` (P4, P14: small pool of 6
-  instances; local WASM targets exhaust pool with `callee` -32603, while
-  unrelated call recovers once batch ends).
+  uses `ProxyCallAllSeq` to run two consecutive batches; second gets remaining
+  allowance, credited time accumulates, third is refused).
 - `a_stream_chunk_gets_a_fresh_credit` is **not** added. The chunk path is
   the same `arm_epoch_deadline`. The unit test `arm_resets_credit_and_start`
   and the grep test cover it. State this in the PR.
@@ -1454,6 +1498,19 @@ A real `RouteHandler` and `ProxyRouter`, with `proxy-test` as the caller and
 - a batch of 17: refused.
 - a keyed call in a batch timing out within grace: records a dead letter via
   `record_failed_call` (P3, P14).
+- `local_wasm_callees_execute_in_parallel_via_joinset` (P15 fix): runs on a
+  multi-thread runtime with >= 4 worker threads; two local WASM calls to
+  `spin-for(2000)` execute concurrently in parallel `JoinSet` tasks, finishing
+  in ~2 s instead of ~4 s; total timeout aborts tasks on time.
+- `local_wasm_callees_pool_exhaustion_is_bounded` (P4 fix): router harness
+  configured with `max_concurrent_instances = 6`; local WASM targets exhaust
+  the instance pool returning `callee` -32603 for excess calls, while an
+  unrelated call succeeds once the batch completes and releases pool slots.
+- `epoch_ticker_on_dedicated_thread_prevents_clock_starvation` (P17 fix): on a
+  runtime configured with 2 workers, two local callees spin endlessly in WASM;
+  both are stopped by `Trap::Interrupt` within budget plus margin, not by fuel
+  exhaustion, proving that the dedicated ticker OS thread advances epochs even
+  when all tokio worker threads are saturated.
 
 The test also checks that the entries equal what a single `call-peer` gives
 for each, so a difference between `call` and `call-all` fails here.
@@ -1485,7 +1542,7 @@ for each, so a difference between `call` and `call-all` fails here.
 | Earlier finding | The risk in A3 | What this plan does |
 | --- | --- | --- |
 | A2c R1 (an error test that reads only one build) | the parity tests compare one build | Every parity scenario runs both builds and compares the full answer. The mutant test proves the comparison compares something. |
-| A2a R1 (a check that silently does nothing) | the two greps (`set_epoch_deadline`, `epoch.credit(`); a stale WASM | The greps read the tree from `CARGO_MANIFEST_DIR` and count matches (a count of zero fails). Section 0: rebuild WASM before every run; check the e2e log. |
+| A2a R1 (a check that silently does nothing) | the deadline scan (`set_epoch_deadline`); a stale WASM | The scan reads the tree from `CARGO_MANIFEST_DIR` and counts matches (a count of zero fails). `WaitCredit` is a private token constructed only in `capabilities_call_all.rs`, enforced at compile time (P16). Section 0: rebuild WASM before every run; check the e2e log. |
 | A2b R5 (a behaviour change hidden in a rewrite) | the split of `call` | D-A3-2: `call` keeps its check order. The reviewer reads the diff of `call` against `main`. The test `each_call_is_built_like_a_single_call` fixes the request. |
 | A2b R8 (deleted why-comments) | `call` has long comments | Step 4: keep every why-comment beside code that stays. |
 | A2a R2, R3; A2b R1, R12 (change doc decisions and deviations) | 15 new decisions | Section 9: D-A3-1 to D-A3-15 with the same numbers and meaning; real deviations in their own list. |
@@ -1666,11 +1723,12 @@ The WIT shape of `call-all` is complete for A4, but A4 must resolve these design
    (which gets wait credit), or ensure the whole search stays below `web`'s
    own 5 s budget. A4 must test the slow-source case end to end.
 2. **Timeout hierarchy and permits:** If `web` forwards via `call-all`, the
-   inner total timeout must stay below the outer per-call cap (either
-   `call_all_max_call_timeout_ms` is configured to match the total, or A4
-   passes an inner total below 10 s). Also, each search will hold two waiter
-   permits on the node (one for `web`, one for `directory`), reducing
-   concurrent searches to 2 at the default limit of 4.
+   outer per-call time must be larger than the inner total plus the callee's own
+   work (either `call_all_max_call_timeout_ms` is configured to exceed the total
+   plus work, or A4 passes an inner total well below 10 s so `directory` has time
+   to merge results and reply). Also, each search will hold two waiter permits on
+   the node (one for `web`, one for `directory`), reducing concurrent searches to
+   2 at the default limit of 4.
 3. **Headroom check:** The existing host-side check
    `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch`
    ([directory.rs:65-72](../../../../crates/roym_core/src/directory.rs#L65))

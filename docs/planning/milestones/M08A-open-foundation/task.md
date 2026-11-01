@@ -69,6 +69,7 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 
 ### A4 — Federated query library and one search call (M)
 
+- Read section 12 of the A3 plan first.
 - New crate `crates/roym_federated_query`, package `syneroym-roym-federated-query`. Move merging and duplicate removal out of `roym_directory`. The directory's client half keeps the source list and calls the library.
 - One search method. The Hub and `roymctl` stop running their own loops. Remove `window.RoymDirectory`'s `ignoreConcurrency` hook if nothing needs it.
 - Criteria: OF-6, OF-7.
