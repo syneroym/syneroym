@@ -1018,3 +1018,440 @@ Checked the fix commit `77032bf2` (closed by `232072a5`) against the plan.
 Q1 to Q9 are recorded (all (a)). The plan is ready for implementation. Section 9
 of the plan says which change-doc updates belong to the implementation's
 close-out (D-A3-1 to D-A3-15, the Q1 deviation, and the OF test columns).
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code), 2026-11-01
+
+Checked `git diff origin/main...HEAD` at `ebf57bd5` on
+`feat/m08a-a3-call-all` (PR
+[#339](https://github.com/syneroym/syneroym/pull/339), still a draft),
+against the plan, the plan review rounds above, the code review rounds of
+A2a, A2b and A2c, the change doc and `AGENTS.md`. The implementer was
+Gemini 3.8 Flash. No code was changed. CI run
+[41304854581](https://github.com/syneroym/syneroym/actions/runs/41304854581)
+on `ebf57bd5` passed every job (Lints, Test 1/6 to 6/6, Playwright E2E,
+CLA). The full suite was not run. I ran only `grep` and `wc` checks (test
+counts, file lengths, links). No suspicion here needed a run to prove: each
+finding below follows from the code as written.
+
+**Summary:** 0 blocker, 2 major (R1, R2), 11 minor (R3 to R13). 13 open.
+
+### What was checked and found correct
+
+- **`call` keeps its check order (D-A3-2, A2b R5).** Read the body of
+  `proxy::Host::call` against `main` line by line. The order is still:
+  read-only, upgrade, params JSON, options and protocol tag, target
+  (dependency resolution), caller, request, `invoke`, reply text. The
+  dependency branch kept both of its "why" comments (the ADR-0021 §2 note
+  and the "corrupted row is `Internal`" note). The timeout of `call` is the
+  guest's own `timeout-ms` or `None` (30 s), as before.
+- **One request builder, one `invoke`.** `call_all` builds every entry with
+  the same `HostState::proxy_request` and sends it through the same
+  `ServiceProxy::invoke`. `CallOrigin::Guest` is set in only one place. No
+  check of caller, target, native-capability gate or fence is written twice.
+  `each_call_is_built_like_a_single_call` compares the two `ProxyRequest`s
+  for a service target, the own service and a dependency with routing and
+  idempotency keys.
+- **The run (D-A3-5).** The order of refusals matches the plan: read-only,
+  empty list, too many calls, proxy gone, allowance below
+  `MIN_BATCH_ALLOWANCE`, then `try_acquire_owned` on the waiter semaphore.
+  Calls run in `JoinSet` tasks, at most `max_concurrency` at once, each
+  with `timeout + CALL_CANCEL_GRACE` (250 ms). A panicked task gives
+  `internal("call-all: call failed in the host")` for its slot only, and the
+  loop starts the next queued call. Slots keep the input order. The
+  `JoinSet` is dropped when `execute_call_all` returns, so leftover tasks
+  are aborted. Credit is given once, after the batch. No router code uses a
+  `task_local`, so nothing is lost by running calls in new tasks.
+- **The WIT (D-A3-1).** `call-request` and `call-all` match the plan text
+  exactly. The `timeout-ms` comment is updated. No existing type changed.
+  `test-components/saga-test/wit/deps/proxy/proxy.wit` is not in the diff.
+- **The epoch budget (D-A3-4).** `on_deadline` interrupts at once when the
+  credit is zero, so a guest that never uses `call-all` stops at the same
+  epoch event as with the old trap. `build_store_and_instantiate` installs
+  the callback and calls `arm_epoch_deadline`. `call_resource_method` calls
+  `arm_epoch_deadline`. `no_production_code_sets_an_epoch_deadline_itself`
+  counts exact matches per file, so a forgotten site fails.
+  `with_call_all` rebuilds the budget with the configured cap.
+- **The ticker (P17, P22).** It runs on a named OS thread. It stops on any
+  `try_recv` result other than `Empty`, so dropping the engine ends it.
+  `dropping_the_sender_ends_the_ticker_thread` proves that.
+- **Deadline classification (D-A3-15).** `Trap::Interrupt` is checked by
+  type before the text checks. `classify_real_epoch_interrupt_trap` uses a
+  real spinning guest.
+- **Config (D-A3-3).** Six fields with the plan's defaults, `serde(default)`
+  each, in `AppSandboxRole::default()` and in `config.sample.toml`. The
+  clamp rules are the plan's rules (but see R8 for where they live).
+- **One `CallAll` for the node (D-A3-8, P2, P20).** `build_sandbox_engines`
+  builds it once and passes it to `init_with_call_all`. It goes through
+  `SharedNodeHandles` to all six Roym factories and the fixture factory. I
+  listed every production `NativeHostFactory::new` call: there are exactly
+  these seven. `init` keeps its signature.
+- **The native shim (D-A3-14).** `AppProxy::call_all` in the trait, the
+  WASM guest, the native host (one lock for the whole batch, as `call`) and
+  the `roym_core` test host. `call_request_in` converts every field.
+- **Tests exist for every name in plan sections 7.1 to 7.4.** 23 unit tests
+  in `tests_call_all.rs` and `tests_call_all/limits.rs`, 9 in
+  `epoch_budget/tests.rs`, 7 in `call_all_config.rs`, 3 in `classify.rs`,
+  3 in `epoch_ticker/tests.rs`, 8 parity tests in `call_all.rs`, 7 in
+  `call_all_deadline.rs`, 6 router tests in `proxy_call_all.rs`. The parity
+  test `call_all_results_in_input_order_are_the_same` does prove the order
+  (its fast echo would land at index 0 under a finish-order bug).
+- **Counts.** `grep` finds 183 test functions in `crates/sandbox_wasm` and
+  86 in `crates/app_host_native`, as `status.md` says. `verify.rs` has 15
+  gates. The deadline file has 7 tests and the router file 6. (The parity
+  count is wrong: R3.)
+- **Sizes and ratchets.** The three oversized entries went down to the real
+  counts (842, 983, 827). `proxy_harness/mod.rs` is a move (the lines left
+  `proxy_dispatch.rs`), with `#![allow(dead_code)]` on the module only. No
+  new `too_many_lines` suppression. No planning id in code or test names.
+- **No Roym service changed.** No file of the six Roym service crates is in
+  the diff. Only the `roym_core` test host changed, as the plan allows.
+- **Backlog.** The six new rows of plan section 8 are there, the two rows
+  are narrowed and appended, and the classification row moved to "Recently
+  resolved" (but see R9 for its text).
+
+### Findings
+
+#### R1 — major — the architecture limits table and the developer guide give wrong config names and values
+
+*Where:* `docs/system-architecture.md:745-749`; `docs/developer-guide.md:630`;
+also `docs/system-architecture.md:1730-1731`.
+
+*Problem:* The table names keys that do not exist:
+`proxy_call_all_max_calls`, `proxy_call_all_concurrency`,
+`proxy_call_all_per_call_timeout_secs`,
+`proxy_call_all_total_timeout_secs`, `proxy_call_all_max_waiters`. The real
+keys are `call_all_max_calls`, `call_all_max_concurrency`,
+`call_all_default_call_timeout_ms`, `call_all_max_call_timeout_ms`,
+`call_all_total_timeout_ms`, `call_all_max_waiting_guests` (milliseconds,
+not seconds). The table says the total limit is 30 s; it is 15 s. It has no
+row for the 5 s default per-call time. The developer guide also says "total
+batch timeout capped at 30s". At 1730-1731 the new bullet repeats the next
+bullet's first sentence ("A guest may call a declared interface of another
+service").
+
+*Failure case:* An operator copies `proxy_call_all_total_timeout_secs = 20`
+from the architecture doc. `AppSandboxRole` has no `deny_unknown_fields`,
+so the key is silently ignored, and the node keeps 15 s. A developer plans
+an A4 timeout budget on 30 s and gets refusals or `timed-out` entries.
+
+*Fix:* Use the six real names, units and defaults (copy them from
+`config.sample.toml`), add the default per-call row, change the guide's
+30 s to 15 s, and merge the two bullets at 1730-1731 into one.
+
+*Status:* Open
+
+#### R2 — major — the acceptance evidence links files and tests that do not exist
+
+*Where:* `docs/planning/changes/roym-open-foundation/change.md:71,72,75`;
+`docs/planning/traceability-matrix.md:94`; the PR #339 text.
+
+*Problem:* The Test column and the matrix row cite names that are not in
+the tree:
+
+- files `epoch_call_all.rs` (real: `dual_build_parity/call_all_deadline.rs`),
+  `dual_build_call_all.rs` (real: `dual_build_parity/call_all.rs`),
+  `host_capabilities/capabilities_epoch.rs` (real:
+  `engine/epoch_budget.rs`) and
+  `host_capabilities/capabilities_call_all/tests_call_all.rs` (real:
+  `host_capabilities/tests/tests_call_all.rs`). Four of the five links in
+  `[PRX-BAT]` are broken.
+- tests `zero_credit_interrupts_at_once`,
+  `scenarios_201_to_206_call_all_parity`,
+  `scenarios_207_to_211_call_all_refusals_and_order_parity`,
+  `call_all_fixture_mutation_fails_parity` and
+  `waiters_are_bounded_by_the_semaphore`. None exists.
+
+The PR text repeats the wrong paths. It also leaves out what plan Step 10
+and section 7.3 ask it to state: the section 4 audit in short form, and why
+`a_stream_chunk_gets_a_fresh_credit` is not added.
+
+*Failure case:* A reader who checks OF-4 or OF-5 cannot find the proof. This
+is the A2b R2 / A2c R3 kind of finding that plan section 7.7 promised to
+avoid.
+
+*Fix:* Replace each cited name with the real file and test (for OF-4:
+`zero_credit_interrupts_at_the_deadline_even_when_own_time_is_below_budget`;
+for OF-5: the eight tests of `call_all.rs` and
+`the_native_build_has_no_deadline_for_a_slow_batch`; for OF-17:
+`the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_batch`).
+Fix the four matrix links. Update the PR text.
+
+*Status:* Open
+
+#### R3 — minor — status.md and task.md say 11 parity scenarios; there are 8
+
+*Where:* `docs/planning/milestones/M08A-open-foundation/status.md:16`
+("dual-build parity 11 call_all scenarios");
+`docs/planning/milestones/M08A-open-foundation/task.md:69` ("Parity harness
+passes 11 scenarios").
+
+*Problem:* `crates/app_host_native/tests/dual_build_parity/call_all.rs` has 8
+tests. 8 + 7 deadline tests is 15, not 11. No grouping of the files gives
+11.
+
+*Fix:* Write the counts the run prints: 8 `call_all` parity tests and 7
+deadline tests.
+
+*Status:* Open
+
+#### R4 — minor — no test checks that a batch's total time is cut to the remaining allowance
+
+*Where:* `crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs:181`
+(`limits.total_timeout.min(allowance)`);
+`crates/sandbox_wasm/src/host_capabilities/tests/tests_call_all/limits.rs:151`;
+`crates/app_host_native/tests/dual_build_parity/call_all_deadline.rs`
+(`two_batches_in_one_wasm_guest_call_accumulate_credit`).
+
+*Problem:* D-A3-9 (owner answer Q4 (a)) says a batch may only wait as long as
+the credit left. If `.min(allowance)` is deleted, every test stays green.
+`the_wait_allowance_shrinks_the_total_time_and_runs_out` runs one 1.6 s
+batch, then sees a refusal: it never runs a batch that is cut. The deadline
+test's second batch sleeps 7.5 s under an 8 s allowance, so it ends before
+any cut.
+
+*Failure case:* A later change drops the `min`. A guest with 8 s of credit
+left runs a batch that waits 15 s. Only 8 s is credited, so the guest is
+stopped right after the batch returns and loses all results. That is the
+outcome Q4 (a) was chosen to avoid.
+
+*Fix:* In the unit test: cap 3 s, `max_call_timeout` 3 s; a first batch of
+1.2 s; then a second batch with one call that sleeps 2.5 s and asks for
+2.5 s. Assert the entry is `timed-out` and the batch took less than 2.2 s
+(about 1.8 s of allowance left). Then assert the third batch is refused.
+
+*Status:* Open
+
+#### R5 — minor — three unit tests do not prove what their names say
+
+*Where:* `crates/sandbox_wasm/src/host_capabilities/tests/tests_call_all.rs:251,325,363`.
+
+*Problem:*
+
+- `results_come_back_in_input_order_whatever_the_finish_order`: all three
+  calls return `"slept"`, so the test passes even if results come back in
+  finish order. OF-3 cites it.
+- `a_call_gets_its_own_time_and_the_host_caps_a_larger_request` tests only
+  `CallAllLimits::call_timeout`. It does not check that the batch puts the
+  cut value into `ProxyRequest.timeout`, which is what D-A3-6 says.
+- `the_total_time_ends_the_batch_and_cancels_running_calls`: plan 7.1 says
+  "finished entries keep their result" and "not-started entries are
+  `timed-out`". The test has only two unfinished calls. It has no finished
+  entry and no queued entry.
+
+*Fix:* Give `sleep` a distinct answer (for example, return its params after
+the sleep) and assert each index. In the timeout test, send `timeout_ms:
+Some(60_000)` through `call_all` and assert `last_request.timeout ==
+Some(max_call_timeout)`. In the total-time test, use `max_concurrency: 1`
+with one fast call, one slow call and one queued call, and assert `Ok`,
+`timed-out`, `timed-out`.
+
+*Status:* Open
+
+#### R6 — minor — no test proves every production factory shares the node's `CallAll`
+
+*Where:* `crates/substrate/src/runtime/roym.rs` (six `.with_call_all`
+sites), `crates/substrate/src/runtime/dual_build_fixture.rs:68`,
+`crates/app_host_native/src/factory.rs:312`.
+
+*Problem:* D-A3-4 says "One unit test verifies that both production
+construction sites call `with_call_all`". No such test exists. A factory
+without `with_call_all` falls back to `CallAll::default()`, which has the
+built-in limits and the static 4-permit semaphore.
+
+*Failure case:* A seventh Roym service is added and its `init_roym_*` copy
+drops `.with_call_all(...)`. That service ignores the operator's limits and
+has its own 4 waiters. The node then has up to 8 waiters, not one number for
+the node (P2, OF-5). Nothing fails.
+
+*Fix:* A test in the style of `no_production_code_sets_an_epoch_deadline_itself`:
+in `crates/substrate/src/runtime/`, every `NativeHostFactory::new(` is
+followed by `.with_call_all(shared.call_all().clone())`, with an exact count
+(7). Or a runtime test that checks `Arc::ptr_eq` of the waiter semaphores.
+
+*Status:* Open
+
+#### R7 — minor — a total time below 1 s silently turns `call-all` off
+
+*Where:* `crates/sandbox_wasm/src/host_capabilities/call_all_limits.rs:174`;
+`capabilities_call_all.rs:15,166`.
+
+*Problem:* The credit cap is `total_timeout`, so the allowance of a new guest
+call is `total_timeout`. `from_config` clamps a zero to 1 ms but accepts any
+value below `MIN_BATCH_ALLOWANCE` (1 s).
+
+*Failure case:* An operator sets `call_all_total_timeout_ms = 800` for a
+fast LAN. Every batch on the node is refused with "call-all busy: this guest
+call has no wait time left in call-all", which names the wrong cause. No
+warning is logged.
+
+*Fix:* Clamp `total_timeout` to at least `MIN_BATCH_ALLOWANCE`, with a
+warning (move the constant to `call_all_limits.rs`). Add the case to
+`call_all_config.rs`.
+
+*Status:* Open
+
+#### R8 — minor — differences from the plan that the change doc does not record
+
+*Where:* `docs/planning/changes/roym-open-foundation/change.md:302` and
+"Deviations".
+
+*Problem:*
+
+- D-A3-3 and Step 3 put the clamps in `resolve_sandbox_tuning` and the six
+  values in `SandboxTuning`. The code clamps in `CallAll::from_config`
+  (`call_all_limits.rs:157`), and `SandboxTuning` is unchanged. The change
+  doc's D-A3-3 still says "Clamped in `resolve_sandbox_tuning`", which is
+  false.
+- `WasmDriver::run` now returns `format!("{e:?}")` instead of
+  `e.to_string()` for every parity scenario
+  (`dual_build_parity/helpers.rs:96`). This changes the error text all 24
+  parity modules compare.
+- The router harness gained new code, not only moved code:
+  `SleeperService`, `test_route_handler_with_outbox`,
+  `test_route_handler_with_config`. `proxy-test` gained `call-peers-full`
+  and the `peer-call` record, which the plan does not name.
+- `NativeHostFactory::with_call_all` stores into a `OnceLock` and silently
+  ignores a second call.
+
+*Fix:* Correct D-A3-3, and add one line for each point under "Different from
+the plan".
+
+*Status:* Open
+
+#### R9 — minor — change-doc decision and deviation texts do not match the plan or the code
+
+*Where:* `change.md:307` (D-A3-8), `:314` (D-A3-15), `:333`, `:11`
+(`demo:`); `docs/planning/deferred-backlog.md:653`.
+
+*Problem:*
+
+- D-A3-8 says the semaphore "prevents slow batches from exhausting the
+  pooling allocator". The plan says the opposite for local targets: the
+  permit bounds waiters, and does not prevent exhaustion by local WASM
+  callees (Q9).
+- D-A3-15, the deviation and the backlog row say the check uses the "root
+  cause `wasm trap: interrupt`". The code checks the type only
+  (`engine.rs:373`).
+- The deviation calls zero-credit interrupt an "optimization ... avoiding
+  arithmetic overhead". Its reason is correctness: the guest stops at the
+  same moment as with the old trap (plan section 3.4, last fact).
+- The backlog row says "PR #338". The PR is #339.
+- The plan says the `demo:` line "keeps its current line"; it was rewritten.
+  The new text is fine, but it is a change.
+
+*Fix:* Correct the four texts. Keep or restore the `demo:` line on purpose.
+
+*Status:* Open
+
+#### R10 — minor — two living-doc statements are now false
+
+*Where:* `docs/system-requirements-spec.md:945`;
+`docs/developer-guide.md:604,614`.
+
+*Problem:*
+
+- The spec still says "The ticker does not make up ticks it missed while the
+  runtime was blocked, so a call that just started is never ended by a burst
+  of late ticks." The ticker is now an OS thread. A blocked runtime does not
+  stop it, and a guest that waits for a worker thread uses its budget
+  (plan audit row, P22).
+- The guide's example writes `CallOptions { timeout_ms: Some(3000),
+  ..Default::default() }`. The generated `CallOptions` derives only
+  `Serialize` and `Deserialize` (`crates/wit_interfaces/src/proxy.rs:9`),
+  so the example does not compile.
+
+*Fix:* Rewrite the spec sentence: the ticker runs on its own thread, ticks
+on wall-clock time, and does not make up ticks after a slow tick. Write
+every field of `CallOptions` in the example.
+
+*Status:* Open
+
+#### R11 — minor — leftover `allow`s, a widened credit token, and import-rule breaks
+
+*Where:* `crates/sandbox_wasm/src/engine/epoch_budget.rs:15,41,48`;
+`crates/sandbox_wasm/src/host_capabilities/call_all_limits.rs:142`;
+`capabilities_call_all.rs:21,83`; `host_capabilities.rs:399,465,512`;
+`call_all_limits.rs:157`; `tests_call_all/limits.rs:66`.
+
+*Problem:*
+
+- `#[allow(dead_code)]` stays on `credit_cap`, `allowance`, `credit` and
+  `CallAll::waiters`. All four are used now. The `allow` will hide them when
+  they really become dead.
+- `WaitCredit(pub(super) Duration)`: the field is visible to all of
+  `host_capabilities`, so any sibling host function can mint credit. The
+  plan's rule is that only `capabilities_call_all.rs` constructs it (P16).
+- Inline multi-`::` paths, against the import rule:
+  `crate::engine::EpochBudget` (three times), `syneroym_core::config::SubstrateConfig`,
+  `tokio::sync::OwnedSemaphorePermit`, and in the tests
+  `crate::engine::EpochBudget::new`, `syneroym_rpc::ProxyError::Internal`,
+  `syneroym_sandbox_wasm::CallAll::from_config`,
+  `std::pin::Pin<Box<dyn std::future::Future ...>>`.
+- `refusal_texts_follow_wit_contract` creates `let sem =
+  Arc::new(Semaphore::new(0))` and never uses it.
+
+*Fix:* Remove the four `allow`s. Make the field private (the
+`#[cfg(test)] for_test` constructor stays). Import the types. Delete `sem`.
+
+*Status:* Open
+
+#### R12 — minor — the same texts and numbers written in more than one place
+
+*Where:* `capabilities_proxy.rs` (`call`) and `capabilities_call_all.rs:49-52`;
+`crates/core/src/config/sandbox.rs:97-119`, `call_all_limits.rs:106-114,132`;
+`test-components/dual-build-fixture/src/app/dispatch.rs:539,570,597`,
+`app.rs:275`.
+
+*Problem:*
+
+- The WIT promises that the read-only and proxy-gone refusals of `call-all`
+  have "the same `internal` text as `call`". The two texts are written twice.
+  Only a literal-text test keeps them equal.
+- The six defaults are written in `sandbox.rs`, again in
+  `CallAllLimits::default`, and the waiter count a third time as
+  `Semaphore::new(4)`.
+- In the fixture, the outcomes-to-JSON map is written in both
+  `handle_proxy_call_all` and `handle_proxy_call_all_seq`, and the
+  `CallOptions` build in both `FixtureCall::into_call_request` and
+  `handle_proxy_call_then_work`.
+
+*Failure case:* An edit to the read-only text in `call` leaves `call-all`
+with the old text. The WIT contract then breaks for any guest that matches
+the text.
+
+*Fix:* Make `call` build its two refusals from `CallAllRefusal` (through
+`into_proxy_error`, without the metric). Build `CallAllLimits::default` and
+the default semaphore from the `default_*` functions of `syneroym-core`
+(make them `pub const fn`). Add one `outcomes_json` helper and use
+`into_call_request` in `handle_proxy_call_then_work`.
+
+*Status:* Open
+
+#### R13 — minor — the mutant parity test cannot fail, and two plan cases are missing
+
+*Where:* `crates/app_host_native/tests/dual_build_parity/call_all.rs:251`;
+`tests_call_all/limits.rs`
+(`the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_batch`);
+`call_all_deadline.rs` (`credit_buys_back_the_wait_and_no_more`).
+
+*Problem:*
+
+- `a_mutant_batch_answer_is_detected` replaces `"normal"` with `"mutant"` in
+  a string, then asserts the two strings differ. That is always true. It
+  runs no driver and no comparison. Plan 7.2 asks for the `Mutant` driver
+  pattern of `helpers.rs`.
+- Plan 7.1 says the waiter test also checks that the permit is released
+  "after the batch future is dropped". The test only checks a batch that
+  ends normally.
+- Plan 7.3 says `credit_buys_back_the_wait_and_no_more` checks that
+  `classify_call_failure` calls the stop a `Deadline`. The test only checks
+  that the error text has "interrupt" or "deadline".
+
+*Fix:* Run the batch through a `Mutant`-style driver that changes the batch
+answer, and assert the parity comparison fails. Or delete the test and its
+claim. In the waiter test, start a slow batch in a task, abort the task, and
+assert the next batch gets the permit. For the deadline case, either assert
+the classification, or change the plan text to match the test and rely on
+`classify_real_epoch_interrupt_trap`.
+
+*Status:* Open
