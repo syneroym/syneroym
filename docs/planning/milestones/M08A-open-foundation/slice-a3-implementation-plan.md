@@ -4,9 +4,9 @@
 planning conversation. This plan is meant to stand alone.*
 
 **Status: plan reviewed 2026-11-01. Owner answered Q1 (a), Q2 (a), Q3 (a)
-on 2026-11-01. Q4–Q9 are still open; sections 5 and 6 follow the
-recommendations for them. Plan review round 1 findings P1–P15: all folded
-in (see slice-a3-review.md for statuses).**
+on 2026-11-01, and Q4 (a) to Q9 (a) on 2026-11-01. Sections 5 and 6 follow
+these answers. Plan review round 1: findings P1–P15 were folded in; the
+fixes check reopened six and added P16–P19 (see slice-a3-review.md).**
 
 **Size and PR.** M. One PR on `feat/m08a-a3-call-all`, with the commits of
 section 6 in that order. The branch starts from `main` at `54993066` (A2 is
@@ -212,7 +212,7 @@ the result by stopping the guest. With (a) the guest gets an answer it can
 act on, and the wall time of one guest call stays at 20 s with the first
 values. The cost is a few lines in the check order (section 5, D-A3-9).
 
-*Answer:* —
+Owner answer: (a), with `MIN_BATCH_ALLOWANCE` (review P8), 2026-11-01.
 
 ### Q5. What limits how many guests can wait in batches at once?
 
@@ -240,7 +240,7 @@ solves. (c) is a second table to keep for a case that no code reaches in
 A3. No Roym service calls `call-all` yet, and only A4's client search and
 M08F's exchange will. A row in the backlog records (c).
 
-*Answer:* —
+Owner answer: (a), keeping the default of 4 waiters. The arithmetic is the real one (D-A3-8), and the local-target case is tested (review P4), 2026-11-01.
 
 ### Q6. Does A3 fix the deadline classification?
 
@@ -268,7 +268,7 @@ stopped later must also prove the stop is classified as a deadline. The
 changed ABAC error is the intended meaning, and the audit (section 4) lists
 it.
 
-*Answer:* —
+Owner answer: (a), 2026-11-01.
 
 ### Q7. What if the guest's service is stopped while a batch runs?
 
@@ -284,7 +284,7 @@ running until it ends or reaches the total limit (15 s).
 (backlog line 43). (b) is a new mechanism for all calls. It is not a
 `call-all` problem.
 
-*Answer:* —
+Owner answer: (a), 2026-11-01.
 
 ### Q8. Metrics and logs for refused and timed-out calls now, or later?
 
@@ -299,7 +299,7 @@ use the same style. An operator who sees the waiter limit reached needs a
 signal to raise it, and the gauge lets them see active permits before
 refusals occur.
 
-*Answer:* —
+Owner answer: (a), with the `.waiting` gauge (review P9), 2026-11-01.
 
 ### Q9. Local WASM targets can run out of instance-pool slots in a batch
 
@@ -319,7 +319,7 @@ that cannot get a slot fails at instantiation, and the call ends as a
 several calls at the same time. (b) couples two limits. Test it (section 7)
 so the failure is known and bounded.
 
-*Answer:* —
+Owner answer: (a), with a test of the local-target pool failure (review P4), 2026-11-01.
 
 ## 3. Facts checked in the code
 
