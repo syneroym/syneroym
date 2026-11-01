@@ -1,4 +1,4 @@
-crates/app_host_native/tests/dual_build_parity/helpers.rs 869
+crates/app_host_native/tests/dual_build_parity/helpers.rs 842
 crates/app_orchestration/src/models/tests.rs 886
 crates/app_orchestration/src/resolver/tests.rs 881
 crates/app_supervisor/src/service/tests/bindings.rs 996

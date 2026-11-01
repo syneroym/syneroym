@@ -99,7 +99,7 @@ async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
         key_store.clone(),
         endpoint_registry.clone(),
     );
-    let stub = Arc::new(StubProxy);
+    let stub = Arc::new(StubProxy::default());
     let factory = NativeHostFactory::new(
         SERVICE_ID.to_string(),
         key_store,

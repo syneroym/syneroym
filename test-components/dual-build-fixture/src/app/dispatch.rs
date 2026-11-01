@@ -429,6 +429,12 @@ pub(super) async fn dispatch<H: AppHost>(
                 Err(e) => Ok(json!({ "error": fmt_err(e) })),
             }
         }
+        Request::ProxyCallAll { calls } => handle_proxy_call_all(host, calls).await,
+        Request::ProxyCallAllThenSpin { calls } => {
+            handle_proxy_call_all_then_spin(host, calls).await
+        }
+        Request::ProxyCallThenWork { call } => handle_proxy_call_then_work(host, call).await,
+        Request::ProxyCallAllSeq { batches } => handle_proxy_call_all_seq(host, batches).await,
         Request::ReadConfig { key } => {
             let value = AppAppConfig::get(host, key).await.map_err(fmt_err)?;
             Ok(json!({ "value": value }))
@@ -528,4 +534,88 @@ pub(super) async fn dispatch<H: AppHost>(
             Ok(arm)
         }
     }
+}
+
+async fn handle_proxy_call_all<H: AppHost>(
+    host: &H,
+    calls: Vec<FixtureCall>,
+) -> Result<serde_json::Value, String> {
+    let requests = calls.into_iter().map(FixtureCall::into_call_request).collect();
+    match host.call_all(requests).await {
+        Ok(outcomes) => {
+            let items: Vec<serde_json::Value> = outcomes
+                .into_iter()
+                .map(|r| match r {
+                    Ok(text) => json!({ "ok": text }),
+                    Err(e) => json!({ "err": fmt_err(e) }),
+                })
+                .collect();
+            Ok(json!({ "outcomes": items }))
+        }
+        Err(e) => Ok(json!({ "refused": fmt_err(e) })),
+    }
+}
+
+async fn handle_proxy_call_all_then_spin<H: AppHost>(
+    host: &H,
+    calls: Vec<FixtureCall>,
+) -> Result<serde_json::Value, String> {
+    let requests = calls.into_iter().map(FixtureCall::into_call_request).collect();
+    let _ = host.call_all(requests).await;
+    loop {
+        core::hint::black_box(());
+    }
+}
+
+async fn handle_proxy_call_then_work<H: AppHost>(
+    host: &H,
+    call: FixtureCall,
+) -> Result<serde_json::Value, String> {
+    let target = match call.kind.as_str() {
+        "dependency" => CallTarget::Dependency(call.name),
+        _ => CallTarget::Service(call.name),
+    };
+    let options = call.timeout_ms.map(|t| CallOptions {
+        protocol: None,
+        idempotent: false,
+        timeout_ms: Some(t),
+        routing_key: None,
+        idempotency_key: None,
+    });
+    let res = host.call(target, call.interface, call.method, call.params, options).await;
+    let mut acc: u64 = 0;
+    for i in 0..10_000_000 {
+        acc = acc.wrapping_add(i);
+        core::hint::black_box(acc);
+    }
+    match res {
+        Ok(v) => Ok(json!({ "result": v, "acc": acc })),
+        Err(e) => Ok(json!({ "error": fmt_err(e), "acc": acc })),
+    }
+}
+
+async fn handle_proxy_call_all_seq<H: AppHost>(
+    host: &H,
+    batches: Vec<Vec<FixtureCall>>,
+) -> Result<serde_json::Value, String> {
+    let mut all_batch_results = Vec::with_capacity(batches.len());
+    for calls in batches {
+        let requests = calls.into_iter().map(FixtureCall::into_call_request).collect();
+        match host.call_all(requests).await {
+            Ok(outcomes) => {
+                let items: Vec<serde_json::Value> = outcomes
+                    .into_iter()
+                    .map(|r| match r {
+                        Ok(text) => json!({ "ok": text }),
+                        Err(e) => json!({ "err": fmt_err(e) }),
+                    })
+                    .collect();
+                all_batch_results.push(json!({ "outcomes": items }));
+            }
+            Err(e) => {
+                all_batch_results.push(json!({ "refused": fmt_err(e) }));
+            }
+        }
+    }
+    Ok(json!({ "batches": all_batch_results }))
 }

@@ -252,22 +252,9 @@ impl ServiceProxy for PeerProxy {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct StubProxy;
-
-#[async_trait::async_trait]
-impl ServiceProxy for StubProxy {
-    async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
-        if request.interface == "greeter" && request.method == "greet" {
-            Ok(json!({"greeting": "hello from stub"}))
-        } else {
-            Err(ProxyError::UnsupportedTarget(format!(
-                "StubProxy has no handler for {}.{}",
-                request.interface, request.method
-            )))
-        }
-    }
-}
+#[path = "stub_proxy.rs"]
+mod stub_proxy;
+pub(crate) use stub_proxy::StubProxy;
 
 pub(crate) trait HttpDriver {
     async fn get(&self, path: &str, caller: Option<CallerContext>) -> HttpResponse;
@@ -456,6 +443,10 @@ impl Drop for Harness {
 /// test would be worse than a build failure, not equivalent to one. Build
 /// it with `mise run build:test-components`.
 pub(crate) async fn harness() -> Harness {
+    harness_with_config(None).await
+}
+
+pub(crate) async fn harness_with_config(custom_config: Option<SubstrateConfig>) -> Harness {
     let wasm_bytes = fs::read(test_constants::dual_build_fixture_wasm_path()).unwrap_or_else(|e| {
         panic!(
             "dual_build_parity: WASM artifact not found ({e}) -- run `mise run \
@@ -467,7 +458,7 @@ pub(crate) async fn harness() -> Harness {
     let wasm_dir = tempfile::tempdir().unwrap();
     let native_dir = tempfile::tempdir().unwrap();
 
-    let stub_proxy = Arc::new(StubProxy);
+    let stub_proxy = Arc::new(StubProxy::default());
     let node_identity = Arc::new(Identity::generate().unwrap());
     let master_identity = Arc::new(Identity::generate().unwrap());
     let clock = RecordClock::Fixed(1_800_000_000);
@@ -479,6 +470,7 @@ pub(crate) async fn harness() -> Harness {
         node_identity.clone(),
         &master_identity,
         clock,
+        custom_config.clone(),
     )
     .await;
     let (
@@ -494,6 +486,7 @@ pub(crate) async fn harness() -> Harness {
         node_identity.clone(),
         &master_identity,
         clock,
+        custom_config,
     )
     .await;
 
@@ -576,36 +569,7 @@ pub(crate) async fn install_outbound_identity(
     registry.set_owner(service_id.to_string(), derive_did_key(&master.public_key())).await.unwrap();
 }
 
-pub(crate) async fn build_wasm_stack(
-    dir: &Path,
-    wasm_bytes: &[u8],
-    stub_proxy: &Arc<StubProxy>,
-    node_identity: Arc<Identity>,
-    master: &Identity,
-    clock: RecordClock,
-) -> (Arc<AppSandboxEngine>, Arc<ConversationService>, Arc<WebSocketSenders>) {
-    let mut config = SubstrateConfig {
-        app_local_data_dir: dir.join("data"),
-        app_data_dir: dir.join("user_data"),
-        app_cache_dir: dir.join("cache"),
-        app_log_dir: dir.join("logs"),
-        profile: "full".to_string(),
-        ..SubstrateConfig::default()
-    };
-    config.resolve_paths();
-
-    let key_store = Arc::new(KeyStore::new());
-    key_store.inject_kek([0x42; 32]).expect("inject kek");
-    let storage_provider: Arc<dyn StorageProvider> =
-        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, true).unwrap());
-    let blob_provider: Arc<dyn BlobProvider> =
-        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
-    // `MqttBroker::new` opens no listener, so a second in-process instance
-    // per stack costs nothing and binds no port.
-    let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
-    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
-    install_outbound_identity(&registry, SERVICE_ID, master).await;
-
+async fn setup_app_topology(registry: &EndpointRegistry) -> Arc<LogicalResolver> {
     let app_instance = AppInstanceId::new("test-app");
     let sibling_name = LogicalServiceName::new("sibling");
     let inventory = Arc::new(StaticInventory::new());
@@ -620,12 +584,14 @@ pub(crate) async fn build_wasm_stack(
             not_after: None,
         },
     );
-    let resolver = Arc::new(LogicalResolver::new(inventory));
     registry
         .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
         .await
         .unwrap();
+    Arc::new(LogicalResolver::new(inventory))
+}
 
+async fn seed_test_config(storage_provider: &Arc<dyn StorageProvider>, key_store: &Arc<KeyStore>) {
     storage_provider
         .save_config_generation(
             SERVICE_ID,
@@ -634,18 +600,52 @@ pub(crate) async fn build_wasm_stack(
         .await
         .unwrap();
     storage_provider
-        .open_service_db(SERVICE_ID, &key_store)
+        .open_service_db(SERVICE_ID, key_store)
         .await
         .unwrap()
         .write_secret("known", b"top-secret")
         .await
         .unwrap();
+}
+
+pub(crate) async fn build_wasm_stack(
+    dir: &Path,
+    wasm_bytes: &[u8],
+    stub_proxy: &Arc<StubProxy>,
+    node_identity: Arc<Identity>,
+    master: &Identity,
+    clock: RecordClock,
+    config: Option<SubstrateConfig>,
+) -> (Arc<AppSandboxEngine>, Arc<ConversationService>, Arc<WebSocketSenders>) {
+    let mut config = config.unwrap_or_default();
+    config.app_local_data_dir = dir.join("data");
+    config.app_data_dir = dir.join("user_data");
+    config.app_cache_dir = dir.join("cache");
+    config.app_log_dir = dir.join("logs");
+    config.profile = "full".to_string();
+    config.resolve_paths();
+
+    let key_store = Arc::new(KeyStore::new());
+    key_store.inject_kek([0x42; 32]).expect("inject kek");
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, true).unwrap());
+    let blob_provider: Arc<dyn BlobProvider> =
+        Arc::new(ObjectStoreBlobProvider::in_memory(u64::MAX, None));
+    // `MqttBroker::new` opens no listener, so a second in-process instance
+    // per stack costs nothing and binds no port.
+    let broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
+    let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
+    install_outbound_identity(&registry, SERVICE_ID, master).await;
+
+    let resolver = setup_app_topology(&registry).await;
+    seed_test_config(&storage_provider, &key_store).await;
 
     let conversation =
         test_conversation_service(storage_provider.clone(), key_store.clone(), registry.clone());
 
+    let call_all = syneroym_sandbox_wasm::CallAll::from_config(&config);
     let engine = Arc::new(
-        AppSandboxEngine::init(
+        AppSandboxEngine::init_with_call_all(
             &config,
             vec![],
             key_store,
@@ -654,6 +654,7 @@ pub(crate) async fn build_wasm_stack(
             broker,
             registry.clone(),
             resolver,
+            call_all,
         )
         .await
         .unwrap(),
@@ -691,6 +692,7 @@ pub(crate) async fn build_native_stack(
     node_identity: Arc<Identity>,
     master: &Identity,
     clock: RecordClock,
+    config: Option<SubstrateConfig>,
 ) -> NativeStack {
     let key_store = Arc::new(KeyStore::new());
     key_store.inject_kek([0x42; 32]).expect("inject kek");
@@ -702,40 +704,8 @@ pub(crate) async fn build_native_stack(
     let endpoint_registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
     install_outbound_identity(&endpoint_registry, SERVICE_ID, master).await;
 
-    let app_instance = AppInstanceId::new("test-app");
-    let sibling_name = LogicalServiceName::new("sibling");
-    let inventory = Arc::new(StaticInventory::new());
-    inventory.register(
-        TopologyKey::local(app_instance.clone(), sibling_name),
-        TopologyEntry {
-            mode: TopologyMode::Singleton,
-            members: vec![ServiceId::new("did:key:zSiblingMember")],
-            sharding_strategy: None,
-            epoch: TopologyEpoch(1),
-            cache_ttl: Duration::from_secs(60),
-            not_after: None,
-        },
-    );
-    let resolver = Arc::new(LogicalResolver::new(inventory));
-    endpoint_registry
-        .set_app_context(SERVICE_ID.to_string(), app_instance.to_string(), "self".to_string())
-        .await
-        .unwrap();
-
-    storage_provider
-        .save_config_generation(
-            SERVICE_ID,
-            r#"{"greeting":"hello","db.host":"x","db.port":"5432"}"#,
-        )
-        .await
-        .unwrap();
-    storage_provider
-        .open_service_db(SERVICE_ID, &key_store)
-        .await
-        .unwrap()
-        .write_secret("known", b"top-secret")
-        .await
-        .unwrap();
+    let resolver = setup_app_topology(&endpoint_registry).await;
+    seed_test_config(&storage_provider, &key_store).await;
 
     let conversation = test_conversation_service(
         storage_provider.clone(),
@@ -744,6 +714,8 @@ pub(crate) async fn build_native_stack(
     );
 
     let ws_senders = WebSocketSenders::new();
+    let cfg = config.unwrap_or_default();
+    let call_all = syneroym_sandbox_wasm::CallAll::from_config(&cfg);
     let factory = NativeHostFactory::new(
         SERVICE_ID.to_string(),
         key_store,
@@ -755,7 +727,8 @@ pub(crate) async fn build_native_stack(
         conversation.clone(),
         ws_senders.clone(),
         true,
-    );
+    )
+    .with_call_all(call_all);
     let f = factory.clone();
     let f_http = factory.clone();
     let fixture = Arc::new(NativeFixture::new(

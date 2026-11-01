@@ -4,6 +4,7 @@
 use core::fmt;
 
 use serde_json::json;
+pub use syneroym_app_host::AppProxy;
 use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobWriter, AppConversation, AppDataLayer, AppHost,
     AppInvocation, AppWebSocket,
@@ -208,6 +209,18 @@ pub enum Request {
     ProxyEnqueueEmptyKey {
         name: String,
     },
+    ProxyCallAll {
+        calls: Vec<FixtureCall>,
+    },
+    ProxyCallAllThenSpin {
+        calls: Vec<FixtureCall>,
+    },
+    ProxyCallThenWork {
+        call: FixtureCall,
+    },
+    ProxyCallAllSeq {
+        batches: Vec<Vec<FixtureCall>>,
+    },
     ReadConfig {
         key: String,
     },
@@ -244,6 +257,40 @@ pub enum Request {
     /// rule is that a trait with only one of its two implementations
     /// exercised is how the native build becomes second-class.
     CallerOrigin,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FixtureCall {
+    pub kind: String,
+    pub name: String,
+    pub interface: String,
+    pub method: String,
+    pub params: String,
+    #[serde(default, alias = "timeout_ms")]
+    pub timeout_ms: Option<u32>,
+}
+
+impl FixtureCall {
+    pub fn into_call_request(self) -> syneroym_app_host::types::proxy::CallRequest {
+        let target = match self.kind.as_str() {
+            "dependency" => CallTarget::Dependency(self.name),
+            _ => CallTarget::Service(self.name),
+        };
+        syneroym_app_host::types::proxy::CallRequest {
+            target,
+            interface: self.interface,
+            method: self.method,
+            params: self.params,
+            options: self.timeout_ms.map(|t| CallOptions {
+                protocol: None,
+                idempotent: false,
+                timeout_ms: Some(t),
+                routing_key: None,
+                idempotency_key: None,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize)]

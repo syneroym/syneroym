@@ -39,7 +39,7 @@ use crate::{
         http::FrameKind,
         invocation::CallerOrigin,
         messaging::MessagingError,
-        proxy::{CallOptions, CallTarget, ProxyError},
+        proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
         vault::VaultError,
     },
