@@ -14,7 +14,9 @@ written by Claude Sonnet 5.5, the same model as this review. So there is no
 model independence here, as in the A2b plan review. A review by another tool
 is still useful.
 
-**Summary:** 0 blocker, 5 major, 9 minor.
+**Summary:** 0 blocker, 5 major, 9 minor. After the second check (the next
+section): 0 blocker, 4 major, 11 minor. P1 and P3 are now minor, and P15 is a
+new major.
 
 Limits of this review: I read code and did not run it. The Wasmtime facts come
 from the `wasmtime-48.0.8` source in the cargo cache (the version in
@@ -136,8 +138,9 @@ question. This is my view of those recommendations.
   calls that cannot finish (P8).
 - **Q5 (one node-wide permit, option a). Agree with (a) over (b) and (c), but
   the plan's reason is not enough.** "At least 6 of 10 slots stay free" is true
-  only when a waiter holds one slot. It does not (P4). Keep (a). Lower the
-  default, and add the test that shows the real local case.
+  only when a waiter holds one slot. It does not (P4). Keep (a) and the
+  default of 4. (The first pass said "lower the default"; the second check
+  withdraws that, see P4.) Fix the arithmetic, and test the local case.
 - **Q6 (fix the classification, option a). Agree.** I checked every consumer
   (see above). The ABAC error change from `Internal` to `QuotaExceeded` is the
   one effect that a caller can see, and it is the meaning the code comments
@@ -154,7 +157,7 @@ question. This is my view of those recommendations.
 
 ### Findings
 
-- **P1 — major.** *Where:* D-A3-4 (`EpochBudget::unarmed`, `arm`,
+- **P1 — minor** (major in the first pass; see the second check). *Where:* D-A3-4 (`EpochBudget::unarmed`, `arm`,
   `allowance`), D-A3-5 (the `allowance.is_zero()` refusal), D-A3-14 (native
   shim), section 7.1.
   [factory.rs:273-298](../../../../crates/app_host_native/src/factory.rs#L273),
@@ -206,13 +209,23 @@ question. This is my view of those recommendations.
   `syneroym-sandbox-wasm`. The engine takes it in `init`. The substrate runtime
   builds it once and passes the same value to every `NativeHostFactory` through
   `with_call_all` (seven call sites; add them to Step 5). Then the native build
-  and the WASM build share both the limits and the waiter pool. Add a parity
+  and the WASM build share both the limits and the waiter pool. A native
+  waiter holds no pool slot, so a shared pool lets native batches refuse WASM
+  ones. I still recommend one shared pool: both builds then give the same
+  answers, and the operator sets one number. Add a parity
   scenario with a non-default config on both builds (`call_all_max_calls = 4`,
   a 5th call refused). Keep "no epoch deadline natively" as the only permitted
   difference.
+  *Second check, added:* the default must fail closed. Step 2 gives
+  `HostState::new` a default `CallAll`. If that default makes a new semaphore
+  for each `HostState`, a construction site that forgets `with_call_all` has
+  no waiter limit, and nothing fails. Make the default share one static
+  semaphore, or add a test that both production construction sites
+  (`build_store_and_instantiate` and `NativeHostFactory::build_host_state`)
+  call `with_call_all`.
   *Status:* Open.
 
-- **P3 — major.** *Where:* D-A3-5 (per-call `tokio::time::timeout` around
+- **P3 — minor** (major in the first pass; see the second check). *Where:* D-A3-5 (per-call `tokio::time::timeout` around
   `invoke`), D-A3-6, section 3.3 ("A keyed failure is recorded as a dead letter
   inside `invoke`. That also holds for a call in a batch."), section 7.1.
   [router.rs:225-286](../../../../crates/router/src/proxy/router.rs#L225),
@@ -235,15 +248,27 @@ question. This is my view of those recommendations.
   *Failure case:* a guest sends a batch with `idempotency-key` set and a 2 s
   per-call time to a node that is down. `call` would write a dead letter after
   its attempts. The batch writes none, and an operator sees no failed call.
-  *Fix:* wrap each call in `timeout + CALL_CANCEL_GRACE` (a fixed constant, for
-  example 250 ms), so the router's own timeout fires first and `invoke` returns
-  `Err(Timeout)` and records the dead letter. The outer timer then only guards a
-  `ServiceProxy` that ignores `req.timeout` (the case the plan names). Say in
-  D-A3-5 that a call cancelled by the batch total is not dead-lettered and its
-  claim stays in flight, and correct the sentence in section 3.3. Add a router
-  test (Step 8, with the real `ProxyRouter`): a keyed batch entry that times out
-  leaves one dead letter, as `call` does. Use the helpers of
-  [dead_letter.rs](../../../../crates/router/src/proxy/tests/dead_letter.rs).
+  *Fix (changed in the second check):* a grace on the outer timer (for example
+  `timeout + 250 ms`) is not enough on its own. A remote call that is
+  retry-eligible (`idempotent`, or keyed) keeps going after its first attempt
+  times out: it sleeps a backoff and tries again
+  ([router.rs:467-489](../../../../crates/router/src/proxy/router.rs#L467)). So
+  the outer timer still cuts it before `record_failed_call`. Choose one rule
+  and write it down:
+  - (recommended) In a batch, the per-call time bounds the whole call,
+    retries included. A call that the batch's timers cut is not retried
+    further and is not dead-lettered; its claim stays in flight until its
+    window ends. Add the grace anyway, so a call whose single attempt times
+    out on its own still reaches `record_failed_call`. Correct the sentence
+    in section 3.3 to match. Say it in the WIT doc comment (P7).
+  - Or refuse `idempotency-key` in `call-all`: a batch is for fan-out reads,
+    and keyed delivery belongs to `call` and `enqueue`. This is simpler, but
+    it is a rule the owner must accept.
+  Test the chosen rule in the router test (Step 8, real `ProxyRouter`, helpers
+  of [dead_letter.rs](../../../../crates/router/src/proxy/tests/dead_letter.rs)).
+  Why minor now: neither A3 nor A4 sends a keyed batch. A4's sources send
+  `idempotent: true` with no key, and the outcome of an unkeyed call that
+  times out is the same either way (`timed-out`, nothing recorded).
   *Status:* Open.
 
 - **P4 — major.** *Where:* Q5 reasoning ("at least 6 slots stay free"), Q9,
@@ -267,22 +292,30 @@ question. This is my view of those recommendations.
   So the claim in the backlog row ("a test that other calls still run while the
   limit is reached") is not shown for the real case, and plan section 8 closes
   that row.
-  *Failure case:* four Hub searches arrive. Four `web` instances (the guest HTTP
-  limit per service is 4) and four directory waiters hold 8 of 10 slots. Each
-  directory also runs its loopback source: the pool is full. A conversation
-  delivery or a data-layer write that needs an ABAC after-step instance now
-  fails at instantiation, with a `QuotaExceeded`, for up to 15 s.
-  *Fix:* three parts. (1) Write the arithmetic in section 2 (Q5) for the real
-  case: slots held by one search = the caller chain + 1 waiter + the local
-  targets. (2) Lower the default `call_all_max_waiting_guests` to 2, and clamp
-  it so that `waiters * 2 <= max_concurrent_instances - STREAM_INSTANCE_POOL_HEADROOM`.
-  This is the owner's call; I recommend 2 because it keeps at least 4 slots for
-  everything else when each search holds 3. (3) Replace the test with one that
-  uses real local WASM callees: a small pool (`max_concurrent_instances` of 6),
-  the limit of waiters reached with batches of local `greeter` calls, and an
-  unrelated plain call that must still run, with the exact result (it either
-  works or fails with a named error; say which). Keep the cheap scripted test
-  for the permit itself. Do not close the backlog row; narrow it (P13).
+  *Failure case (changed in the second check; the plan's own numbers):* Q9
+  says a batch of 8 local WASM targets holds 9 slots. Two such batches are
+  inside the waiter limit of 4, and they need 18 of the 10 slots. While they
+  run, an unrelated conversation delivery, or a data-layer write that needs an
+  ABAC after-step instance, fails at instantiation (the after-step's error is
+  `QuotaExceeded`) for up to 15 s. The 4-of-10 claim in Q5 does not hold. In
+  the Roym search flow each search also holds the `web` slot and the loopback
+  slot, so one search holds 3 slots, not 1.
+  *Fix (changed in the second check):* the first pass recommended lowering the
+  default to 2. I withdraw that. M08F's exchange runs batches for many remote
+  participants, and its targets are remote (one slot per waiter), so a limit of
+  2 would refuse exchange searches for no gain. Instead:
+  (1) Write the real arithmetic in Q5: slots held by one batch = the waiter + its
+  local WASM targets in flight, plus any caller that waits for it with a plain
+  `call`. State what the permit does guarantee (a bound on waiters, and so on
+  slots when targets are remote) and what it does not (local targets).
+  (2) Keep Q9 (a), but test the failure so it is known and bounded: a small pool
+  (`max_concurrent_instances` of 6), batches of real local `greeter` calls
+  that fill it, an unrelated plain call that fails with the named pool error,
+  and the same call working after the batches end. Keep the cheap scripted
+  test for the permit itself.
+  (3) Do not close the backlog row. Narrow it to the local-target case (P13).
+  A later weight for local targets needs the router's endpoint lookup, so it
+  is out of scope for A3.
   *Status:* Open.
 
 - **P5 — major.** *Where:* section 1 ("A4 does"), Q3 reasoning, D-A3-6, D-A3-10,
@@ -488,7 +521,113 @@ question. This is my view of those recommendations.
   4. A non-default config on both builds (P2).
   5. A keyed batch entry that times out leaves one dead letter (P3).
   6. Real local WASM callees at a small pool (P4).
-  7. `call-all` on a `Dependency` target with a `routing-key` in the router test
-     (section 7.4 has no dependency target that resolves).
+  7. *Withdrawn in the second check.* (It asked for a resolving `Dependency`
+     target with a `routing-key` in the router test. The unit test
+     `each_call_is_built_like_a_single_call` already compares the request of a
+     dependency target with a routing key against `call`. The router adds no
+     check of its own for dependencies, so the item adds nothing.)
   *Fix:* add them to sections 7.1 to 7.4, or say which one is left out and why.
+  *Status:* Open.
+
+## Plan review round 1 — second check — Claude Opus 5.5 (Claude Code desktop), 2026-11-01
+
+The owner asked a second model to check round 1 and to add, remove or change
+items. Checked against `feat/m08a-a3-call-all` at `7c3d82af`, which merges
+`main` at `9bb08b7b`. That merge changes only planning docs
+(`prompt-templates.md`, `session-strategy.md`), so every code line cited above
+is still correct. No item had been fixed yet, so I re-checked every item
+against the code.
+
+**Counts after this check:** 0 blocker, 4 major (P2, P4, P5, P15), 11 minor
+(P1, P3, P6 to P14). All open.
+
+### What changed in round 1
+
+- **P1, major to minor.** The fact is right: the plan gives `unarmed()` no
+  cap, and the native build never arms. But the plan's own unit tests in Step 4
+  and the first parity scenario in Step 6 fail at once, so it cannot ship.
+  It is a gap in the plan text, not a hidden fault. The fix stays.
+- **P2, fix extended.** The default `CallAll` in `HostState::new` must fail
+  closed (no private semaphore per `HostState`). The text now also says why
+  one shared waiter pool is still the right choice for both builds.
+- **P3, major to minor, fix changed.** The first fix (a grace on the outer
+  timer) does not cover a retry-eligible remote call, which keeps retrying
+  past its first timeout. The item now asks the plan to choose one rule:
+  the per-call time bounds retries too, and a call cut by the batch is not
+  dead-lettered (recommended), or `call-all` refuses `idempotency-key`. It is
+  minor because neither A3 nor A4 sends a keyed batch.
+- **P4, failure case and fix changed.** The first failure case needed four
+  parallel Hub searches. The new one uses the plan's own Q9 numbers. The first
+  fix (lower the default to 2) is withdrawn: it would refuse M08F exchange
+  searches, whose targets are remote and hold no local slot. The item now asks
+  for honest arithmetic, a test of the local failure, and a narrowed backlog
+  row. The Q5 view above is changed to match.
+- **P14, item 7 withdrawn.** The unit test `each_call_is_built_like_a_single_call`
+  already covers a dependency target with a routing key, and the router adds
+  no dependency check of its own.
+- **Unchanged after re-checking:** P2 (facts), P5, P6, P7, P8, P9, P10, P11,
+  P12, P13, and the views on Q1 to Q4 and Q6 to Q9.
+
+### Also checked and found correct
+
+- **"Per guest instance" is the same as "per batch".** A guest makes one host
+  call at a time, and `call_all` holds `&mut HostState` while it runs. So one
+  instance never has two batches in flight, and `max_concurrency` per batch is
+  the OF-17 limit per instance.
+- **Recursion across nodes ends.** A batch that calls a service which runs a
+  batch again, across two nodes, takes one permit per level on each node, and
+  each level runs inside the outer per-call time. It is refused or timed out.
+  It never hangs.
+- **Proxy metrics by reuse.** `substrate.proxy.calls` is counted inside the
+  router ([router.rs:513](../../../../crates/router/src/proxy/router.rs#L513)),
+  so every call in a batch is counted like a single call with no new code.
+- **No task-local state on the call path.** `router`, `sandbox_wasm` and `rpc`
+  use no `task_local!`. This matters for P15: the calls of a batch can move to
+  their own tasks.
+
+### New findings
+
+- **P15 — major.** *Where:* D-A3-5 (`stream::iter(..).buffer_unordered(..)`
+  inside the host function), D-A3-12, section 1 ("runs them at the same
+  time"), OF-3, section 7.
+  [router.rs:281-284](../../../../crates/router/src/proxy/router.rs#L281),
+  [execute.rs:129](../../../../crates/sandbox_wasm/src/engine/execute.rs#L129),
+  [init.rs:291-293](../../../../crates/sandbox_wasm/src/engine/init.rs#L291).
+  *Problem:* `buffer_unordered` runs every call of the batch inside the
+  guest's own task. That gives real concurrency only to calls that wait on
+  I/O, such as remote calls. A local WASM target is run inline: the router
+  awaits `execute_wasm_json` directly (no `spawn`), and Wasmtime runs the
+  callee's WASM inside the poll of that future. The engine configures no epoch
+  `Yield` and no fuel yield (D-OF-1: "no `Yield`"). So a callee that computes
+  (verifies signatures, merges, builds JSON) runs until it awaits a host call,
+  ends, or reaches its own 5 s deadline. While it runs:
+  1. no other call of the batch is polled, so CPU work of local targets runs
+     one at a time, not "at the same time" (OF-3);
+  2. the per-call and total timers cannot fire, because tokio checks a timer
+     only when its task is polled;
+  3. the worker thread is blocked.
+  A single `call` also runs its callee inline, but it has one callee. A batch
+  of up to 16 adds their CPU time together, and the time limits that the plan
+  promises do not hold for it.
+  *Failure case:* a batch of 8 local WASM targets that each compute for 4 s.
+  They run one after another: 32 s. The 15 s total never fires in between.
+  The wait is credited only up to the 15 s cap, so the guest's own time is now
+  far past 5 s and it is stopped as soon as it returns to its code. All 8
+  results are lost, and a tokio worker thread was blocked for 32 s. The
+  scripted-proxy tests cannot show this, because the scripted proxy only
+  sleeps.
+  *Fix:* run each call as its own task. Use a `tokio::task::JoinSet`, keep at
+  most `max_concurrency` tasks in it, and collect with `join_next` inside the
+  total `timeout`. When the total time ends or the batch future is dropped, the
+  `JoinSet` is dropped and aborts the tasks that are left. Do not use
+  `tokio::spawn` with plain `JoinHandle`s: dropping a `JoinHandle` does not
+  abort its task. The request is owned and the proxy is an
+  `Arc<dyn ServiceProxy>`, so each call can move into its task. Give each task
+  the current tracing span (`.instrument(Span::current())`), so logs keep the
+  guest's context. Add to D-A3-12: an aborted local callee that is inside WASM
+  keeps running on its thread until its next await or its own deadline, but
+  the batch answers on time. Add a WASM-engine test, with a fixture verb that
+  computes for a given time: two local callees of 2 s each finish together in
+  about 2 s, not 4 s, and a batch total of 1 s ends the batch on time. The
+  same code serves the native build, so OF-5 holds.
   *Status:* Open.
