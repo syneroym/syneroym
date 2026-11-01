@@ -16,7 +16,8 @@ is still useful.
 
 **Summary:** 0 blocker, 5 major, 9 minor. After the second check (the next
 section): 0 blocker, 4 major, 11 minor. P1 and P3 are now minor, and P15 is a
-new major. All 15 items fixed (49eb44db).
+new major. All 15 items marked fixed (49eb44db). The fixes check (last section)
+confirms 9, reopens 6, and adds P16 to P19: 10 open.
 
 Limits of this review: I read code and did not run it. The Wasmtime facts come
 from the `wasmtime-48.0.8` source in the cargo cache (the version in
@@ -182,7 +183,7 @@ question. This is my view of those recommendations.
   and `with_call_all_sets_the_credit_cap`. Say in D-A3-12 that the native build
   still counts credit and enforces the allowance (it is the same code), and only
   skips the epoch callback.
-  *Status:* Fixed (49eb44db). `EpochBudget::new(credit_cap)` sets the cap
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. `EpochBudget::new(credit_cap)` sets the cap
   at construction from limits, `arm` resets start and credited only,
   `HostState::new` uses default limits, `with_call_all` updates the budget,
   and native allowance behavior is documented in D-A3-12. Step 2 and
@@ -227,7 +228,7 @@ question. This is my view of those recommendations.
   semaphore, or add a test that both production construction sites
   (`build_store_and_instantiate` and `NativeHostFactory::build_host_state`)
   call `with_call_all`.
-  *Status:* Fixed (49eb44db). `CallAll::from_config(&SubstrateConfig)` builds
+  *Status:* Open (reopened in the fixes check below). Earlier: Fixed (49eb44db). `CallAll::from_config(&SubstrateConfig)` builds
   one shared limits and waiter `Arc<Semaphore>`; runtime passes it to all 7
   `NativeHostFactory` sites and WASM engine via `with_call_all`; default uses
   static shared semaphore; non-default parity scenario added in section 7.2.
@@ -276,7 +277,7 @@ question. This is my view of those recommendations.
   Why minor now: neither A3 nor A4 sends a keyed batch. A4's sources send
   `idempotent: true` with no key, and the outcome of an unkeyed call that
   times out is the same either way (`timed-out`, nothing recorded).
-  *Status:* Fixed (49eb44db). In a batch, the per-call time bounds the whole
+  *Status:* Open (reopened in the fixes check below). Earlier: Fixed (49eb44db). In a batch, the per-call time bounds the whole
   call, retries included, without dead-lettering if cut by the batch timer.
   A 250 ms grace on the outer task timer ensures a single-attempt timeout
   still reaches `record_failed_call` in `invoke`. Documented in section 3.3,
@@ -327,7 +328,7 @@ question. This is my view of those recommendations.
   (3) Do not close the backlog row. Narrow it to the local-target case (P13).
   A later weight for local targets needs the router's endpoint lookup, so it
   is out of scope for A3.
-  *Status:* Fixed (49eb44db). Real arithmetic documented in Q5 reasoning,
+  *Status:* Open (reopened in the fixes check below). Earlier: Fixed (49eb44db). Real arithmetic documented in Q5 reasoning,
   D-A3-8, and D-A3-11; pool exhaustion with local WASM targets tested in
   section 7.3 (`local_wasm_callees_pool_exhaustion_is_bounded`); backlog
   row kept open and narrowed to local callees and caller instances (section 8).
@@ -368,7 +369,7 @@ question. This is my view of those recommendations.
   host-side check `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch`
   ([directory.rs:65-72](../../../../crates/roym_core/src/directory.rs#L65))
   stays true or is replaced, not dropped silently. Do not change the WIT.
-  *Status:* Fixed (49eb44db). Section 12 "What A4 must decide" added with
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. Section 12 "What A4 must decide" added with
   the three decisions: `web` forwarding vs. search duration and slow-source
   testing, timeout hierarchy and double permit holding, and headroom check
   preservation. WIT left unchanged.
@@ -405,7 +406,7 @@ question. This is my view of those recommendations.
   exclude `tests` files and `#[cfg(test)]`, require the match count to be
   exactly the expected one, and add the check that `arm_epoch_deadline(` appears
   in both `engine.rs` and `stream.rs`.
-  *Status:* Fixed (49eb44db). `WaitCredit(Duration)` private token defined
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. `WaitCredit(Duration)` private token defined
   in `capabilities_call_all.rs` ensures only `call_all` can invoke `credit`.
   Step 2 grep test updated to filter out non-test files under `src/` and verify
   both `set_epoch_deadline` in `epoch_budget.rs` and `arm_epoch_deadline` in
@@ -438,7 +439,7 @@ question. This is my view of those recommendations.
   `const` in `capabilities_call_all.rs` and test the text of each, so a change to
   the prefix fails a test. Reword the `saga-test` sentences in sections 4 and
   7.2 to what the test shows.
-  *Status:* Fixed (49eb44db). Full WIT doc comment written into D-A3-1, refusal
+  *Status:* Open (reopened in the fixes check below). Earlier: Fixed (49eb44db). Full WIT doc comment written into D-A3-1, refusal
   constants and prefix convention established in Step 4, `call-options` comment
   updated, and `saga-test` text in section 4 and 7.2 reworded to reflect linking
   against the extended host interface.
@@ -454,7 +455,7 @@ question. This is my view of those recommendations.
   one second, or the default per-call time). Same refusal text and metric label
   as "allowance used". Add the case to
   `the_wait_allowance_shrinks_the_total_time_and_runs_out`.
-  *Status:* Fixed (49eb44db). `MIN_BATCH_ALLOWANCE` constant added to
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. `MIN_BATCH_ALLOWANCE` constant added to
   `capabilities_call_all.rs`, D-A3-5, and D-A3-9, refusing allowances below
   threshold with `AllowanceUsed`. Test added in section 7.1.
 
@@ -466,7 +467,7 @@ question. This is my view of those recommendations.
   in use.
   *Fix:* fix the count in Q8. Add a gauge `substrate.proxy.call_all.waiting`
   (permits in use, updated when a permit is taken and when it is released).
-  *Status:* Fixed (49eb44db). Q8 aligned to five counters, one histogram, and
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. Q8 aligned to five counters, one histogram, and
   one gauge. `substrate.proxy.call_all.waiting` gauge added to D-A3-13.
 
 - **P10 — minor.** *Where:* section 1 ("The guest cannot raise any limit"),
@@ -489,7 +490,7 @@ question. This is my view of those recommendations.
   it becomes `Err(internal("call-all response too large"))`. If the owner does
   not want either now, record both as backlog rows with a trigger, and say so in
   section 11.
-  *Status:* Fixed (49eb44db). Added both as new deferred backlog rows in
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. Added both as new deferred backlog rows in
   section 8 with defined triggers, and recorded in section 11.
 
 - **P11 — minor.** *Where:* Step 2 (the `engine/tests.rs` bullet), Step 3, section
@@ -505,7 +506,7 @@ question. This is my view of those recommendations.
   holds for any helper that builds a `SandboxTuning`.
   *Fix:* say in Step 2 and Step 3 that the two literals get the new field, and
   that the final line count of `engine/tests.rs` is recorded after both edits.
-  *Status:* Fixed (49eb44db). Step 2 and Step 3 updated to state that the two
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. Step 2 and Step 3 updated to state that the two
   `AppSandboxEngine` literals receive the new field and the final line count
   is recorded after both steps.
 
@@ -524,7 +525,7 @@ question. This is my view of those recommendations.
   *Fix:* in section 9, reword the architecture row to "One guest call, own time
   (time waiting in `call-all` is not counted, up to a cap)" and check the two
   developer-guide sentences. Refer to the heading, not the line number.
-  *Status:* Fixed (49eb44db). Section 9 updated to reword architecture limits
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. Section 9 updated to reword architecture limits
   table row to own execution time and check developer guide 5s budget references.
 
 - **P13 — minor.** *Where:* section 8 (deferred backlog).
@@ -537,7 +538,7 @@ question. This is my view of those recommendations.
   *Fix:* keep the row, rewrite it to the part that is open (per-service or
   per-caller share; slots held by callers and local callees), and add the P10
   rows if they are not built.
-  *Status:* Fixed (49eb44db). Section 8 keeps "Slow `call-all` waits can hold
+  *Status:* Fixed (49eb44db), confirmed in the fixes check below. Section 8 keeps "Slow `call-all` waits can hold
   every guest instance slot" open, narrowed to local WASM callees and caller
   slots; adds the two P10 backlog rows.
 
@@ -560,7 +561,7 @@ question. This is my view of those recommendations.
      dependency target with a routing key against `call`. The router adds no
      check of its own for dependencies, so the item adds nothing.)
   *Fix:* add them to sections 7.1 to 7.4, or say which one is left out and why.
-  *Status:* Fixed (49eb44db). All missing test cases added to sections 7.1, 7.2,
+  *Status:* Open (reopened in the fixes check below). Earlier: Fixed (49eb44db). All missing test cases added to sections 7.1, 7.2,
   7.3, and 7.4 (exit path cardinality/order, two batches accumulating credit in
   real guest, never-armed HostState, non-default config parity, keyed batch
   timeout with grace, local WASM callee pool exhaustion).
@@ -575,7 +576,7 @@ is still correct. No item had been fixed yet, so I re-checked every item
 against the code.
 
 **Counts after this check:** 0 blocker, 4 major (P2, P4, P5, P15), 11 minor
-(P1, P3, P6 to P14). All 15 fixed (49eb44db).
+(P1, P3, P6 to P14). All 15 marked fixed (49eb44db); see the fixes check.
 
 ### What changed in round 1
 
@@ -666,7 +667,210 @@ against the code.
   computes for a given time: two local callees of 2 s each finish together in
   about 2 s, not 4 s, and a batch total of 1 s ends the batch on time. The
   same code serves the native build, so OF-5 holds.
-  *Status:* Fixed (49eb44db). D-A3-5 rewritten with `tokio::task::JoinSet`
+  *Status:* Open (reopened in the fixes check below). Earlier: Fixed (49eb44db). D-A3-5 rewritten with `tokio::task::JoinSet`
   running each call in its own task instrumented with current span, aborting on
   drop/timeout. D-A3-12 updated for aborted callee thread behavior. Parallelism
   test with CPU-bound local WASM targets added to section 7.3.
+
+## Plan review round 1 — fixes checked — Claude Opus 5.5 (Claude Code desktop), 2026-11-01
+
+Checked the fix commit `49eb44db` (and `e3776048`, which closes the round)
+against the plan at `e3776048`. Plan line numbers below are at that commit.
+The code has not changed since `5f34e93c`, so the code links above still hold.
+I checked every item marked Fixed, then read the changed parts of the plan for
+new items.
+
+**Counts after this check:** 10 open. Reopened: P2, P4, P15 (major), P3, P7,
+P14 (minor). New: P17 (major), P16, P18, P19 (minor). So 4 major and 6 minor
+are open. Confirmed fixed: P1, P5, P6, P8, P9, P10, P11, P12, P13. P1 and P6
+leave old text behind, which P16 covers. P5 leaves two small points, which P19
+covers.
+
+Owner answers: Q1, Q2 and Q3 are answered (a). Q4 to Q9 are still open. My
+views above are unchanged.
+
+### Items checked
+
+- **P1 — confirmed.** `EpochBudget::new(credit_cap)`, `arm` without a cap,
+  `with_call_all` rebuilds the budget, and two unit tests (plan D-A3-4, Step 2).
+  The old text that says `unarmed()` is still there (P16).
+- **P2 — reopened.** D-A3-8 says the substrate runtime builds one `CallAll`
+  and gives the same value to the engine and to every native factory. Step 3
+  says the opposite: `init` builds its own with `from_tuning` and stores it on
+  the engine ([plan:1158](slice-a3-implementation-plan.md)). Then the WASM
+  engine and the native factories hold two different semaphores, which is the
+  fault P2 is about. Fix: one construction only. Either the runtime builds
+  `CallAll::from_config(&config)` and passes it into `AppSandboxEngine::init`
+  (a new argument), or `init` builds it and the engine exposes
+  `pub fn call_all(&self) -> CallAll`, which the runtime passes to the seven
+  factories. Pick one and make D-A3-8, Step 3 and Step 5 say the same thing.
+  Second point: `call_all_non_default_config_is_identical_on_both_builds`
+  needs both parity stacks to get a non-default config. Today
+  `build_wasm_stack` takes none, and `helpers.rs` is on the oversized list.
+  Step 6 must say how the config reaches both stacks (for example a
+  parameter, paid for by the lines that the `StubProxy` move frees).
+- **P3 — reopened.** The text adds a 250 ms grace, but the pseudo-code in
+  D-A3-5 does not have it. Both `spawn` blocks still call
+  `tokio::time::timeout(timeout, proxy.invoke(req))`
+  ([plan:883](slice-a3-implementation-plan.md), `:895`). An implementer copies
+  the code. Fix: use one named constant `CALL_CANCEL_GRACE` in the code
+  (`timeout + CALL_CANCEL_GRACE`) and name it in the text. Also rewrite the
+  sentence at [plan:397](slice-a3-implementation-plan.md) ("A call that the
+  batch's outer task is dropped before…"), which is not a complete sentence:
+  "A call that the batch's timer cuts before `record_failed_call` runs is not
+  dead-lettered."
+- **P4 — reopened.** The arithmetic and the backlog row are fixed. The test is
+  not runnable where the plan puts it. `local_wasm_callees_pool_exhaustion_is_bounded`
+  is in `dual_build_parity/call_all_deadline.rs`
+  ([plan:1414](slice-a3-implementation-plan.md)). That harness gives the WASM
+  engine `StubProxy` as its `ServiceProxy`
+  ([helpers.rs:254-270](../../../../crates/app_host_native/tests/dual_build_parity/helpers.rs#L254)),
+  so no call of a batch ever reaches a local WASM component, and no pool slot
+  is used. Fix: move the test to `crates/router/tests/proxy_call_all.rs`
+  (Step 8). It has the real `ProxyRouter` and engine, with `greeter` as a local
+  WASM target. Set `max_concurrent_instances` to 6 in that harness's config for
+  this test.
+- **P5 — confirmed.** Section 12 "What A4 must decide" has the three points.
+  Two small points remain (P19).
+- **P6 — confirmed.** `WaitCredit` is a type rule, and the deadline scan has
+  exact counts and both `arm_epoch_deadline` sites. The old grep text remains
+  in three places (P16).
+- **P7 — reopened.** The new WIT comment says: "Every refusal that is not
+  `unsupported-target` uses `internal` with a text that starts with
+  `call-all busy:`" ([plan:648](slice-a3-implementation-plan.md)). The plan's
+  own table says a read-only instance and a missing proxy return the same text
+  as `call` ([plan:670-671](slice-a3-implementation-plan.md)): "stage-4
+  after-step instances may not originate proxy calls" and "proxy unavailable".
+  Neither starts with `call-all busy:`. The contract text is false, and a guest
+  that trusts it reads those two as real faults, or the reverse. Fix: "A
+  refusal because the node has too many waiting guests, or because this guest
+  call has no wait time left, is `internal` with a text that starts with
+  `call-all busy:`. A read-only instance and a missing proxy give the same
+  `internal` text as `call`." Add the read-only and missing-proxy texts to the
+  refusal-text test.
+- **P8 — confirmed.** One choice is left open, the value of the constant
+  (P19).
+- **P9, P10, P11, P12, P13 — confirmed.** The gauge, the five counters, the
+  two backlog rows, the struct-literal note, the living-docs wording and the
+  narrowed backlog row are all in the plan.
+- **P14 — reopened.** `two_batches_in_one_wasm_guest_call_accumulate_credit`
+  ([plan:1408](slice-a3-implementation-plan.md)) needs a fixture verb that runs
+  two or three batches in one guest call. Step 6 adds only `ProxyCallAll`,
+  `ProxyCallAllThenSpin` and `ProxyCallThenWork`. Fix: add a verb, for example
+  `ProxyCallAllSeq { batches: Vec<Vec<Call>> }`, that runs the batches in order
+  and returns one answer per batch. The other new tests have what they need,
+  except the two of P4 and P15.
+- **P15 — reopened.** The `JoinSet` design is right. The test
+  `local_wasm_callees_execute_in_parallel_via_joinset`
+  ([plan:1411](slice-a3-implementation-plan.md)) has the same problem as P4:
+  in the parity harness no local WASM callee exists. It also needs a target
+  that computes for a set time, and no fixture has one (`greeter` only answers,
+  and the Step 6 verbs run in the caller). Fix: move it to the router test
+  (Step 8), and add an export to `proxy-test` that loops for a given number of
+  milliseconds (`spin-for: func(ms: u32)`), to use as the local target. Run that
+  test on a multi-thread runtime with at least 4 workers, or the two callees
+  cannot run at the same time.
+
+### New findings
+
+- **P16 — minor.** *Where:* D-A3-4 ([plan:812-842](slice-a3-implementation-plan.md)),
+  Step 2 unit tests ([plan:1119](slice-a3-implementation-plan.md)), section
+  7.1 ([plan:1347](slice-a3-implementation-plan.md)), section 7.7
+  ([plan:1488](slice-a3-implementation-plan.md)).
+  *Problem:* the fix added a new block of bullets to D-A3-4 and left the old
+  block after it. The plan now says each of these twice: "Zero credit
+  interrupts at once", "Own time", "Wiring", "`HostState` gets ...
+  `epoch`", "Credit on every exit". The old copies contradict the new ones:
+  `HostState` is "set to `unarmed()`", and "a unit test greps the source for
+  `epoch.credit(` and expects one match". The test list still has
+  `an_unarmed_budget_interrupts` and `only_call_all_gives_credit` ("a source
+  grep of `epoch.credit(`"), and the table in 7.7 still names that grep.
+  *Failure case:* an implementer follows the second block, writes
+  `unarmed()` and a text grep, and P1 and P6 come back.
+  *Fix:* delete the old block (lines 812 to 842). Rename the unit test to
+  `a_budget_that_was_never_armed_interrupts`. Replace
+  `only_call_all_gives_credit` with a compile-level note: `WaitCredit` cannot
+  be built outside `capabilities_call_all.rs`, so no test is needed. Update the
+  7.7 row to name the deadline scan only.
+  *Status:* Open.
+
+- **P17 — major.** *Where:* D-A3-5 (the `JoinSet`), D-A3-12, section 7.3.
+  [epoch_ticker.rs:19-33](../../../../crates/sandbox_wasm/src/engine/epoch_ticker.rs#L19),
+  [main.rs:175-179](../../../../crates/substrate/src/main.rs#L175),
+  [sandbox.rs:407](../../../../crates/core/src/config/sandbox.rs#L407).
+  *Problem:* the P15 fix is right, and it creates a new risk. The epoch ticker
+  is a `tokio::spawn` task on the same multi-thread runtime as everything else.
+  The runtime uses the default worker count, one per CPU core (the
+  `worker_threads(4)` line is commented out). A WASM guest that computes keeps
+  its worker thread until it awaits. Before the fix, one guest call could keep
+  only one worker busy, because its local callees ran inline. After the fix,
+  one batch can keep up to `max_concurrency` (8) workers busy with local WASM
+  callees, and 4 waiting guests can keep 32 busy. When every worker runs WASM,
+  the ticker task never runs. Then the epoch never advances, so no epoch
+  deadline fires, and no tokio timer fires either (the per-call and total
+  timers of the batch, the gateway, the router). The callees then stop only
+  when they run out of fuel (`default_max_instructions`, 10^10 instructions,
+  several seconds each) or when they finish. The same stall was possible
+  before, but it needed many separate requests. Now one guest call can cause it.
+  *Failure case:* a node on a 4-core machine. A buggy guest service runs one
+  batch of 8 calls to its own `spin`-like method, which is a local WASM target.
+  Four callees start on the four workers and loop. The ticker stops, so the 5 s
+  deadline never comes. The whole node, including the gateway and every other
+  app, does not answer until fuel ends the four callees, and then the next four
+  start.
+  *Fix:* run the epoch ticker on its own OS thread
+  (`std::thread::spawn` with a `sleep(EPOCH_TICK_MS)` loop and a stop flag),
+  not on the runtime. Then deadlines fire however busy the workers are, and a
+  spinning callee is stopped after its 5 s budget. This is the setup the S0
+  spike already uses for this reason ("The epoch ticker runs on a separate
+  worker thread so that a spinning guest does not starve the clock",
+  [epoch_wait_credit.rs:9-12](../../../../crates/sandbox_wasm/tests/epoch_wait_credit.rs#L9)).
+  Keep the "missed ticks are not made up" rule: sleep for one tick after each
+  tick, do not catch up. Workers are still busy for up to 5 s per callee, so
+  also say in D-A3-12 that a batch of local CPU-bound targets can hold up to
+  `max_concurrency` workers. Add this to the behaviour-change audit (section 4,
+  "The epoch deadline" table), because the ticker change affects every guest.
+  Test: on a runtime with 2 workers, run two local callees that spin with no
+  end. Both must be stopped by `Trap::Interrupt` within budget plus a margin,
+  not by fuel.
+  *Status:* Open.
+
+- **P18 — minor.** *Where:* D-A3-5, step 3 of the pseudo-code
+  ([plan:889](slice-a3-implementation-plan.md)).
+  *Problem:* `while let Some(Ok((i, r))) = set.join_next().await` stops at the
+  first `Err(JoinError)`, which is a task that panicked. The loop then ends
+  early: the calls still running are aborted when the set is dropped, the
+  queued calls never start, and all of them are reported as `timed-out`. Also,
+  a `JoinError` does not say which index the task had, so the panicked call's
+  own entry is `timed-out` too, which is false.
+  *Failure case:* one callee path panics in the host (for example an
+  `unwrap` in a native service). Fifteen other calls of the batch are reported
+  `timed-out` at once, although nothing timed out.
+  *Fix:* keep a map from task id to index (`set.spawn` returns an
+  `AbortHandle` with `id()`, and `join_next_with_id` returns the id), and
+  handle `Some(Err(e))`: set that index to `Err(internal("call-all: call
+  failed in the host"))`, log `e`, start the next queued call, and continue.
+  Add a unit test with a scripted proxy that panics on one call.
+  *Status:* Open.
+
+- **P19 — minor.** *Where:* D-A3-5 and D-A3-9 (`MIN_BATCH_ALLOWANCE`,
+  [plan:916](slice-a3-implementation-plan.md), `:991`), Step 3
+  ([plan:1158](slice-a3-implementation-plan.md), "`from_tuning` ... (or
+  `CallAll::from_config`)"), section 12 point 2
+  ([plan:1670](slice-a3-implementation-plan.md)), task.md A4.
+  *Problem:* the plan leaves choices to the implementer that it should make
+  itself. (1) `MIN_BATCH_ALLOWANCE` is "for example one second (or the default
+  per-call time)". The two give different behaviour: with 5 s, a second batch
+  after a 10.5 s first batch is refused; with 1 s, it runs. (2) The name and
+  the input of the constructor are open (see P2). (3) Section 12 says the outer
+  cap can be "configured to match the total". But an outer per-call time equal
+  to the inner total cuts the search when the inner batch ends, before the
+  callee merges and answers. It must be larger than the inner total plus the
+  callee's own work. (4) P5 asked for one line in task.md A4 that points to
+  section 12. task.md did not change.
+  *Fix:* set `MIN_BATCH_ALLOWANCE = 1 s` (my view: a batch of 1 s is still
+  useful for local and nearby targets). Name one constructor. In section 12,
+  write "the outer per-call time must be larger than the inner total plus the
+  callee's own work". Add to task.md A4: "Read section 12 of the A3 plan
+  first."
+  *Status:* Open.
