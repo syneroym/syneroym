@@ -536,12 +536,15 @@ keeps it testable with a three-method fake.
 
 To prevent a hostile or large source from exhausting guest memory, the library
 enforces two guards (P1):
-1. `text.len()` is checked against `MAX_SEARCH_REPLY_BYTES = 6 * 1024 * 1024` (6 MiB)
-   **before** JSON parsing. The cap is derived from the honest limits:
-   `MAX_HITS_PER_QUERY` (50) × (`MAX_PAYLOAD_BYTES` (64 KiB) + 16 KiB envelope
-   and membership overhead) × 1.25 JSON escaping factor ≈ 5 MiB, plus 1 MiB margin
-   = 6 MiB (P1). A reply over the cap becomes `error: Unreadable { reason: "reply too large" }`
-   with no parse.
+1. `text.len()` is checked against `MAX_SEARCH_REPLY_BYTES = 8 * 1024 * 1024` (8 MiB)
+   **before** JSON parsing. The cap is derived from the theoretical maximum reply:
+   `MAX_HITS_PER_QUERY` (50) × (`MAX_PAYLOAD_BYTES` (64 KiB) + evidence bound from
+   `MAX_EVIDENCE_CREDENTIALS` (4 credentials × ~3.5 KiB) + `MAX_EVIDENCE_DECISIONS`
+   (8 decisions × ~3.5 KiB, with `MAX_REASON_LEN` 2 048 and `MAX_RULE_LEN` 256) + ~1 KiB
+   envelope wrapper ≈ 107 KiB raw per hit) × 1.15 JSON escaping factor ≈ 6.0 MiB, plus
+   a 2 MiB safety margin = 8 MiB (P1). An honest reply with 50 maximum-evidence hits
+   fits under 8 MiB (tested in §7.1); a reply over 8 MiB becomes
+   `error: Unreadable { reason: "reply too large" }` with no parse.
 2. Replies are taken by value (`into_iter`) and each reply string is dropped as
    soon as its hits are read, avoiding keeping all 8 raw responses in memory.
 
@@ -569,8 +572,6 @@ pub struct Gathered {
     /// Membership evidence of every counted verified hit under the per-source
     /// cap, in order. The caller remembers them.
     pub evidence: Vec<HeldEvidence>,
-    /// Refusal message if the whole batch was refused by call-all (P3).
-    pub refusal: Option<String>,
 }
 
 pub struct Page {            // Serialize + Deserialize, no deny_unknown_fields
@@ -635,7 +636,7 @@ empty page (`call_all([])` is `Ok([])`, but `find` returns before calling).
 | `Ok` with a JSON-RPC `error` and no `result` | `error: Refused { code, message }` |
 | `Ok` with a `result` whose `hits` cannot be read | `error: Unreadable` |
 | `Ok` with a good `result` | no error; `truncated` from `result.truncated` |
-| The **outer** `Err` (`Internal` or `UnsupportedTarget`) | every source: `error: NotStarted`; error text in `Gathered.refusal` (P3) |
+| The **outer** `Err` (`Internal` or `UnsupportedTarget`) | every source: `error: NotStarted` (P3, P17) |
 
 **D-A4-6. Checking is unchanged.** For each source, in the order the source
 returned: parse the reply into `SearchOutput` (D-A4-16, P12), truncate to 40
@@ -763,7 +764,7 @@ canned source `hTwoVersions`: answers `directory.info` with a name, and
 `directory.search` with two genuine signed versions of one listing in one reply.
 For the oversized reply test (P1, P16), add canned source `hOversized`: answers
 `directory.info` with a name, and `directory.search` with a payload exceeding
-`MAX_SEARCH_REPLY_BYTES` (6 MiB). Confirm `trust_harness.rs` stays under
+`MAX_SEARCH_REPLY_BYTES` (8 MiB). Confirm `trust_harness.rs` stays under
 800 lines (P5).
 
 **D-A4-15. Equivalence before deletion.** Step 4's test
@@ -830,19 +831,20 @@ Behaviour does not change; nothing calls it yet.
 1. `gather.rs`: build the `CallRequest` list (D-A4-4), check `text.len() <=
    MAX_SEARCH_REPLY_BYTES` before parsing (P1), parse `SearchOutput` (D-A4-16,
    P12), map results to per-source replies and map outer `Err` to `NotStarted`
-   with error text in `Gathered.refusal` (D-A4-5, P3). Drop each reply text
-   as soon as parsed (`into_iter`, P1). `verify.rs`: the check and the caps
-   (D-A4-6) producing `Row`s, `BTreeMap<String, String>` for page envelopes,
-   and `HeldEvidence` for counted verified hits under the cap (P4). `lib.rs`:
-   `find`, `Gathered`, `Page`, `SourceReport`, `HeldEvidence`, `FindError`.
+   (D-A4-5, P3, P17). Drop each reply text as soon as parsed (`into_iter`, P1).
+   `verify.rs`: the check and the caps (D-A4-6) producing `Row`s,
+   `BTreeMap<String, String>` for page envelopes, and `HeldEvidence` for
+   counted verified hits under the cap (P4). `lib.rs`: `find`, `Gathered`,
+   `Page`, `SourceReport`, `HeldEvidence`, `FindError`.
 2. Move `map_proxy_error` and `parse_source_response` logic here. Leave the
    old copies in `client_query.rs` until Step 7. (A short-lived copy is
    acceptable only because Step 7 deletes it; the duplication gate is
    checked at the end.)
 3. Unit tests with a fake `AppProxy` (section 7.1): request bytes, outcome
-   mapping, caps, truncation before checking, oversized replies (P1), typed
-   `SearchOutput` parsing (P12), outer refusal for `Internal` and
-   `UnsupportedTarget` (P3), evidence collected only under cap (P4).
+   mapping, caps, truncation before checking, oversized replies and 50
+   maximum-evidence hits (P1), typed `SearchOutput` parsing (P12), outer
+   refusal for `Internal` and `UnsupportedTarget` (mapping every source to
+   `NotStarted`, P3, P17), evidence collected only under cap (P4).
 
 Check: library tests pass; `cargo clippy -p syneroym-roym-federated-query`
 is clean; `cargo build --target wasm32-wasip2 -p
@@ -984,6 +986,9 @@ scripted `Result<String, ProxyError>` entries (or an outer `Err`). A
 - `a_reply_that_is_not_json_rpc_is_unreadable` / `a_json_rpc_error_is_refused`
   / `hits_that_do_not_parse_are_unreadable`
 - `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others` (P1)
+- `fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read` (builds a reply of
+  50 hits with maximum payload and maximum credential/decision evidence and asserts it
+  fits under `MAX_SEARCH_REPLY_BYTES` and is read, P1)
 - `a_truncated_flag_that_is_not_a_boolean_is_unreadable` (P12)
 - `the_result_truncated_flag_is_reported_per_source`
 - `a_source_with_no_hits_still_reports_truncated`
@@ -1014,7 +1019,7 @@ one build is the A2c R1 mistake.
   8 sources with 40 genuine signed listings each, worst case for checking time,
   clean of oversized replies, P2, P5, P10)
 - `find_marks_an_oversized_reply_unreadable_and_keeps_the_others` (with canned
-  source `hOversized` returning a reply exceeding the 6 MiB cap, P1, P16)
+  source `hOversized` returning a reply exceeding the 8 MiB cap, P1, P16)
 - `run_envelope_returns_the_signed_bytes_of_a_page_record` (replaces the
   scenario 117/98 assertions at directory.rs :923)
 - `run_envelope_does_not_find_a_record_that_is_not_on_the_page` (W4)
@@ -1094,10 +1099,11 @@ cargo xtask check-file-lengths && cargo xtask check-lint-suppressions
   is already cut at 40 before checking, P2).
 - **Memory risk during lowering (unverified).** Host lowering writes all 8
   replies into guest memory before guest code runs. The library caps JSON
-  parsing at `MAX_SEARCH_REPLY_BYTES` = 6 MiB (derived from 50 max hits ×
-  (64 KiB payload + 16 KiB envelope/membership overhead) × 1.25 JSON escape
-  factor ≈ 5 MiB + margin, P1), but `call-all` has no host-side per-reply size
-  cap yet. A backlog row tracks this for when `call-all` is next opened (P1).
+  parsing at `MAX_SEARCH_REPLY_BYTES` = 8 MiB (derived from 50 max hits ×
+  (64 KiB payload + 42 KiB maximum credential/decision evidence + envelope
+  overhead) × 1.15 JSON escape factor ≈ 6.0 MiB + 2 MiB margin, P1), but
+  `call-all` has no host-side per-reply size cap yet. A backlog row tracks
+  this for when `call-all` is next opened (P1).
 - **Config risk.** If an operator sets `call_all_max_concurrency` below 8,
   the search takes two waves. Add a comment to `config.sample.toml` next to
   `call_all_max_concurrency`: keep it at 8 or more while a person may add 8
@@ -1263,7 +1269,8 @@ A4 is done when all of these are true:
 9. A whole-batch refusal gives `not-started` for every source for both `Internal`
    and `UnsupportedTarget` refusals (library test, P3), and `not-started` never
    writes `last_error` (directory unit test).
-10. `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others` and
+10. `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others`,
+    `fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read`, and
     `find_marks_an_oversized_reply_unreadable_and_keeps_the_others` pass (P1).
     `directory.rs` (parity) is lowered in the oversized list, the duplication
     baseline is correct, and `helpers.rs` did not grow.
