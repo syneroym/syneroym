@@ -64,7 +64,8 @@ pub(super) async fn init_dual_build_fixture(
         shared.conversation().clone(),
         shared.websocket_senders().clone(),
         true,
-    );
+    )
+    .with_call_all(shared.call_all().clone());
     factory.set_record_signer(shared.record_signer().clone());
     let f = factory.clone();
     let f_http = factory.clone();

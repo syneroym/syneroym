@@ -241,3 +241,18 @@ fn no_mailbox_section_means_no_mailbox() {
     let config = toml::from_str::<SubstrateConfig>("").unwrap();
     assert_eq!(config.roles.mailbox, None);
 }
+
+#[test]
+fn app_sandbox_call_all_defaults_when_absent() {
+    let toml = r#"
+[roles.app_sandbox]
+"#;
+    let config = toml::from_str::<SubstrateConfig>(toml).unwrap();
+    let sandbox = config.roles.app_sandbox.unwrap();
+    assert_eq!(sandbox.call_all_max_calls, 16);
+    assert_eq!(sandbox.call_all_max_concurrency, 8);
+    assert_eq!(sandbox.call_all_default_call_timeout_ms, 5000);
+    assert_eq!(sandbox.call_all_max_call_timeout_ms, 10000);
+    assert_eq!(sandbox.call_all_total_timeout_ms, 15000);
+    assert_eq!(sandbox.call_all_max_waiting_guests, 4);
+}

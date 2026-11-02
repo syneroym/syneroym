@@ -1,35 +1,33 @@
 //! The clock that every guest call's epoch deadline is measured against.
 
-use std::time::Duration;
+use std::{io, thread, time::Duration};
 
-use tokio::{
-    sync::oneshot,
-    time::{self, MissedTickBehavior},
-};
+use tokio::sync::oneshot::{self, error::TryRecvError};
 
 use super::EPOCH_TICK_MS;
 
-/// Spawns the task that calls `tick` every `EPOCH_TICK_MS` until
-/// `shutdown_rx` fires.
+/// Spawns a dedicated OS thread that calls `tick` every `EPOCH_TICK_MS` until
+/// `shutdown_rx` receives a signal or the sender is dropped.
 ///
-/// A deadline is the epoch at the start of a call plus a number of ticks.
-/// When the runtime was blocked, the ticks it missed are not made up later:
-/// a burst of them would end a call that just started, as soon as it awaits
-/// a host call. The epoch only counts time the ticker could see.
+/// Running the ticker on a dedicated OS thread ensures that the epoch advances
+/// on wall-clock time independently of Tokio worker thread saturation. Guests
+/// waiting for a worker thread now use their budget during that wait, matching
+/// true wall-clock time.
+///
+/// Sleep is executed after each tick without catching up on missed ticks.
 pub(super) fn spawn(
     mut tick: impl FnMut() + Send + 'static,
     mut shutdown_rx: oneshot::Receiver<()>,
-) {
-    tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_millis(EPOCH_TICK_MS));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+) -> io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new().name("wasm-epoch-ticker".into()).spawn(move || {
         loop {
-            tokio::select! {
-                _ = interval.tick() => tick(),
-                _ = &mut shutdown_rx => break,
+            thread::sleep(Duration::from_millis(EPOCH_TICK_MS));
+            tick();
+            if shutdown_rx.try_recv() != Err(TryRecvError::Empty) {
+                break;
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

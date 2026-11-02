@@ -24,8 +24,9 @@ use syneroym_app_host::types::{
     },
     messaging::MessagingError as GuestMessagingError,
     proxy::{
-        CallOptions as GuestCallOptions, CallTarget as GuestCallTarget,
-        CalleeError as GuestCalleeError, ProxyError as GuestProxyError,
+        CallOptions as GuestCallOptions, CallRequest as GuestCallRequest,
+        CallTarget as GuestCallTarget, CalleeError as GuestCalleeError,
+        ProxyError as GuestProxyError,
     },
     signing::{
         Principal as GuestPrincipal, RecordDraft as GuestRecordDraft,
@@ -59,8 +60,9 @@ use syneroym_wit_interfaces::{
         },
         messaging::host_api::MessagingError as HostMessagingError,
         proxy::proxy::{
-            CallOptions as HostCallOptions, CallTarget as HostCallTarget,
-            CalleeError as HostCalleeError, ProxyError as HostProxyError,
+            CallOptions as HostCallOptions, CallRequest as HostCallRequest,
+            CallTarget as HostCallTarget, CalleeError as HostCalleeError,
+            ProxyError as HostProxyError,
         },
         vault::vault::VaultError as HostVaultError,
     },

@@ -39,7 +39,7 @@ use crate::{
         http::FrameKind,
         invocation::CallerOrigin,
         messaging::MessagingError,
-        proxy::{CallOptions, CallTarget, ProxyError},
+        proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
         vault::VaultError,
     },
@@ -379,6 +379,13 @@ impl AppProxy for GuestHost {
         options: Option<CallOptions>,
     ) -> Result<String, ProxyError> {
         px::call(&target, &interface, &method, &params, options.as_ref())
+    }
+
+    async fn call_all(
+        &self,
+        calls: Vec<CallRequest>,
+    ) -> Result<Vec<Result<String, ProxyError>>, ProxyError> {
+        px::call_all(&calls)
     }
 
     async fn enqueue(

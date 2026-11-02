@@ -150,6 +150,19 @@ dispatch_epoch_timeout_secs = 5
 # hook, run once per deploy; larger than dispatch_epoch_timeout_secs since
 # this does real one-time work (e.g. opening the service's encrypted DB)
 lifecycle_hook_epoch_timeout_secs = 30
+# Batched outbound call limits (`call-all`)
+# Maximum number of calls in one batch
+call_all_max_calls = 16
+# Maximum number of calls running concurrently for one guest instance
+call_all_max_concurrency = 8
+# Default per-call timeout in milliseconds when unspecified
+call_all_default_call_timeout_ms = 5000
+# Maximum timeout in milliseconds an individual call can request
+call_all_max_call_timeout_ms = 10000
+# Total timeout in milliseconds for the entire batch and wait credit cap
+call_all_total_timeout_ms = 15000
+# Maximum number of guests waiting in call-all on the node concurrently
+call_all_max_waiting_guests = 4
 
 # Service Registry: allows services to be discovered within the ecosystem
 [roles.community_registry]

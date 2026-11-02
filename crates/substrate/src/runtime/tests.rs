@@ -1,6 +1,6 @@
 #![allow(clippy::cognitive_complexity)]
 
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
 use syneroym_app_orchestration::{AppScope, ServiceId, TopologyEpoch, TopologyMode};
 use syneroym_core::storage::MockStorage;
@@ -81,4 +81,35 @@ async fn an_unreadable_persisted_binding_is_skipped_not_fatal() {
         "the well-formed row alongside the corrupt ones must still replay"
     );
     assert_eq!(app_registry.list(&AppScope::Local(AppInstanceId::new("app-1"))).len(), 1);
+}
+
+#[test]
+fn every_production_factory_in_runtime_is_wired_with_call_all() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let runtime_dir = manifest_dir.join("src").join("runtime");
+
+    let mut factory_new_count = 0;
+    let mut with_call_all_count = 0;
+
+    let entries = fs::read_dir(&runtime_dir).expect("read runtime dir");
+    for entry in entries {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "rs")
+            && path.file_name().and_then(|n| n.to_str()) != Some("tests.rs")
+        {
+            let content = fs::read_to_string(&path).expect("read file");
+            factory_new_count += content.matches("NativeHostFactory::new(").count();
+            with_call_all_count += content.matches(".with_call_all(").count();
+        }
+    }
+
+    assert_eq!(
+        factory_new_count, 7,
+        "expected exactly 7 NativeHostFactory::new sites in runtime, found {factory_new_count}"
+    );
+    assert_eq!(
+        with_call_all_count, factory_new_count,
+        "every NativeHostFactory::new site in runtime must be followed by .with_call_all"
+    );
 }

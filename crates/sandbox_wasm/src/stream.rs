@@ -26,7 +26,10 @@ use wasmtime::{
     component::{Instance, ResourceAny, Val},
 };
 
-use crate::{engine::AppSandboxEngine, host_capabilities::HostState};
+use crate::{
+    engine::{AppSandboxEngine, arm_epoch_deadline},
+    host_capabilities::HostState,
+};
 
 /// WIT-package-qualified name of the `stream-types` interface, matching how
 /// `AppSandboxEngine::deliver_message` names `guest-api` (the short interface
@@ -185,7 +188,7 @@ async fn call_resource_method(
     method_name: &str,
     extra_args: &[Val],
 ) -> Result<Vec<Val>> {
-    store.set_epoch_deadline(epoch_deadline_ticks);
+    arm_epoch_deadline(store, epoch_deadline_ticks);
     if let Some(instructions) = max_instructions {
         store.set_fuel(instructions)?;
     }

@@ -8,10 +8,19 @@
 //! as the self-proxy target for the router-side ingress-(ii)
 //! integration test.
 
+use std::{
+    hint,
+    time::{Duration, Instant},
+};
+
 use bindings::{
     exports::{
-        syneroym::data_layer::authorizer::{AuthContext, CandidateRow, Guest as AuthorizerGuest, RowDecision},
-        syneroym_test::proxy_test::test_driver::Guest as TestDriverGuest,
+        syneroym::data_layer::authorizer::{
+            AuthContext, CandidateRow, Guest as AuthorizerGuest, RowDecision,
+        },
+        syneroym_test::proxy_test::test_driver::{
+            Guest as TestDriverGuest, PeerCall,
+        },
     },
     syneroym::proxy::proxy,
 };
@@ -74,6 +83,72 @@ impl TestDriverGuest for ProxyTestComponent {
         };
         proxy::enqueue(&target, &interface, &method, &params, Some(&options))
             .map_err(|e| format!("{e:?}"))
+    }
+
+    fn call_peers(
+        calls: Vec<(String, String, String, String, String)>,
+    ) -> Result<Vec<Result<String, String>>, String> {
+        let full_calls = calls
+            .into_iter()
+            .map(|(kind, service, interface, method, params)| PeerCall {
+                kind,
+                service,
+                interface,
+                method,
+                params,
+                timeout_ms: None,
+                idempotency_key: None,
+            })
+            .collect();
+        Self::call_peers_full(full_calls)
+    }
+
+    fn call_peers_full(
+        calls: Vec<PeerCall>,
+    ) -> Result<Vec<Result<String, String>>, String> {
+        let requests: Vec<proxy::CallRequest> = calls
+            .into_iter()
+            .map(|call| {
+                let target = match call.kind.as_str() {
+                    "dependency" => proxy::CallTarget::Dependency(call.service),
+                    _ => proxy::CallTarget::Service(call.service),
+                };
+                let options = if call.timeout_ms.is_some() || call.idempotency_key.is_some() {
+                    Some(proxy::CallOptions {
+                        protocol: None,
+                        idempotent: false,
+                        timeout_ms: call.timeout_ms,
+                        routing_key: None,
+                        idempotency_key: call.idempotency_key,
+                    })
+                } else {
+                    None
+                };
+                proxy::CallRequest {
+                    target,
+                    interface: call.interface,
+                    method: call.method,
+                    params: call.params,
+                    options,
+                }
+            })
+            .collect();
+
+        match proxy::call_all(&requests) {
+            Ok(results) => Ok(results
+                .into_iter()
+                .map(|r| r.map_err(|e| format!("{e:?}")))
+                .collect()),
+            Err(e) => Err(format!("{e:?}")),
+        }
+    }
+
+    fn spin_for(ms: u32) {
+        let start = Instant::now();
+        let target = Duration::from_millis(ms as u64);
+        while start.elapsed() < target {
+            hint::black_box(());
+        }
     }
 }
 

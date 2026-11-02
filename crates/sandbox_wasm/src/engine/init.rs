@@ -173,6 +173,33 @@ impl AppSandboxEngine {
         endpoint_registry: EndpointRegistry,
         logical_resolver: Arc<LogicalResolver>,
     ) -> anyhow::Result<Self> {
+        let call_all = CallAll::from_config(config);
+        Self::init_with_call_all(
+            config,
+            endpoints,
+            key_store,
+            storage_provider,
+            blob_provider,
+            messaging_broker,
+            endpoint_registry,
+            logical_resolver,
+            call_all,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn init_with_call_all(
+        config: &SubstrateConfig,
+        endpoints: Vec<(String, String, SubstrateEndpoint)>,
+        key_store: Arc<KeyStore>,
+        storage_provider: Arc<dyn StorageProvider>,
+        blob_provider: Arc<dyn BlobProvider>,
+        messaging_broker: Arc<MqttBroker>,
+        endpoint_registry: EndpointRegistry,
+        logical_resolver: Arc<LogicalResolver>,
+        call_all: CallAll,
+    ) -> anyhow::Result<Self> {
         let component_dir = config.storage.blobs_dir.join("app_sandbox");
 
         // Ensure blobs directory exists
@@ -257,11 +284,12 @@ impl AppSandboxEngine {
                 .as_ref()
                 .map(|r| r.max_sse_subscribers_per_service)
                 .unwrap_or(100),
+            call_all,
         };
 
         app_engine.warm_up_wasm_endpoints(endpoints).await;
         let engine = app_engine.engine.clone();
-        epoch_ticker::spawn(move || engine.increment_epoch(), shutdown_rx);
+        epoch_ticker::spawn(move || engine.increment_epoch(), shutdown_rx)?;
 
         Ok(app_engine)
     }

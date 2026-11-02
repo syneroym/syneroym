@@ -73,7 +73,7 @@ use wasmtime_wasi::p2;
 
 use crate::{
     conversions,
-    host_capabilities::{self, HostState, InvocationOrigin, MessagingContext},
+    host_capabilities::{self, CallAll, HostState, InvocationOrigin, MessagingContext},
     http,
     stream::{self, GuestStreamCursor, GuestStreamSink, StreamContext, StreamRegistry},
 };
@@ -274,6 +274,8 @@ pub struct AppSandboxEngine {
     pub(crate) guest_websocket_permits: Arc<DashMap<String, Arc<Semaphore>>>,
     pub(crate) max_concurrent_websockets_per_service: u32,
     pub(crate) max_sse_subscribers_per_service: u32,
+    /// Limits and shared waiter semaphore for `call-all` batched calls.
+    pub(crate) call_all: CallAll,
 }
 
 /// Per-instantiation differences from an ordinary dispatch call. Bundled
@@ -367,6 +369,9 @@ pub(crate) enum CallFailure {
 pub(crate) fn classify_call_failure(e: &wasmtime::Error) -> CallFailure {
     if let Some(Trap::OutOfFuel) = e.downcast_ref::<Trap>() {
         return CallFailure::OutOfFuel;
+    }
+    if let Some(Trap::Interrupt) = e.downcast_ref::<Trap>() {
+        return CallFailure::Deadline;
     }
     let err_str = e.root_cause().to_string();
     if err_str.contains("all fuel consumed") || err_str.contains("out of fuel") {
@@ -558,7 +563,8 @@ impl AppSandboxEngine {
         .with_conversation(conversation)
         .with_websocket_senders(self.websocket_senders())
         .with_record_signer(self.record_signer.get().cloned())
-        .with_invocation_origin(opts.invocation_origin);
+        .with_invocation_origin(opts.invocation_origin)
+        .with_call_all(self.call_all.clone());
 
         debug!("created wasi ctx and host state");
 
@@ -566,8 +572,8 @@ impl AppSandboxEngine {
         let mut store = Store::new(&self.engine, host_state);
 
         store.limiter(|state| state);
-        store.epoch_deadline_trap();
-        store.set_epoch_deadline(epoch_deadline_ticks);
+        store.epoch_deadline_callback(|ctx| Ok(ctx.data().epoch.on_deadline(Instant::now())));
+        arm_epoch_deadline(&mut store, epoch_deadline_ticks);
 
         if let Some(instructions) = opts.fuel_override.or(max_instructions) {
             store.set_fuel(instructions)?;
@@ -648,6 +654,8 @@ impl AppSandboxEngine {
 }
 
 mod auth;
+mod epoch_budget;
+pub(crate) use epoch_budget::{EpochBudget, arm_epoch_deadline};
 mod epoch_ticker;
 mod execute;
 mod guest_http;

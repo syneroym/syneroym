@@ -66,9 +66,11 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 - X3. `call-all` in the WIT, the host implementation with a maximum target count, a concurrency cap per guest instance, per-call and total limits, the deadline extension proved in S0 (or the fallback), and the native shim.
 - Parity test: the same scenario in both builds.
 - Criteria: OF-3, OF-4, OF-5, OF-17.
+- A3 result: `call-all` added to `syneroym:proxy` and `AppProxy`. Host dispatches up to 16 calls with concurrency limit 8, total/per-call timeouts, and shared node waiter limit 4. Guest wait time in `call-all` is credited toward the epoch deadline. Real epoch deadline traps classified as `Deadline`. 8 `call_all` parity scenarios pass in both builds; 7 `call_all_deadline` tests pass (WASM build, and one native permitted difference). Router tests pass on the real proxy router: a mixed batch that matches single calls, the 16-call maximum, a keyed call that times out and is dead-lettered, parallel local callees, instance-pool exhaustion, and the ticker under busy workers.
 
 ### A4 — Federated query library and one search call (M)
 
+- Read section 12 of the A3 plan first.
 - New crate `crates/roym_federated_query`, package `syneroym-roym-federated-query`. Move merging and duplicate removal out of `roym_directory`. The directory's client half keeps the source list and calls the library.
 - One search method. The Hub and `roymctl` stop running their own loops. Remove `window.RoymDirectory`'s `ignoreConcurrency` hook if nothing needs it.
 - Criteria: OF-6, OF-7.

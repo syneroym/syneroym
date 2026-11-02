@@ -9,7 +9,7 @@ living-docs-touched:
   - docs/planning/traceability-matrix.md
   - docs/planning/deferred-backlog.md
 demo:
-  - none: internal typed method contracts and error responses
+  - none: internal typed method contracts, proxy call-all batching, and dual-build shim capability without new direct UI/CLI
 ---
 # Roym open foundation
 
@@ -67,12 +67,12 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 | OF-1 | No Roym wire field, enum value, method name or card label says "provider" or "consumer". A role in one deal is named by what the party does in it (for example `giver` and `receiver` of a commitment, or `quote_author`). | |
 | OF-2 | The Hub and the user docs say "participant", or a deal role, everywhere. | |
 | **Batched call and federated query** | | |
-| OF-3 | A guest can send one call to many targets in a single host call. The host runs the calls at the same time, each with its own time limit, and returns one result per target in the input order. | |
-| OF-4 | The time the guest waits inside the batched call does not count against its epoch deadline. The batched call has its own total limit, set by the host. If the spike shows this cannot be done, the fallback in [Batched outbound call](#batched-outbound-call) replaces this criterion and changes OF-6, and the change doc records both as deviations. | |
-| OF-5 | The same scenario gives the same result in the native build and in the WASM build. | |
+| OF-3 | A guest can send one call to many targets in a single host call. The host runs the calls at the same time, each with its own time limit, and returns one result per target in the input order. | `host_capabilities/tests/tests_call_all.rs`: `results_come_back_in_input_order_whatever_the_finish_order`, `a_call_gets_its_own_time_and_the_host_caps_a_larger_request`, `a_failed_call_does_not_change_the_other_entries`. `proxy_call_all.rs`: `batch_of_mixed_calls_through_proxy_matches_single_call_answers`, `local_wasm_callees_execute_in_parallel_via_joinset`. |
+| OF-4 | The time the guest waits inside the batched call does not count against its epoch deadline. The batched call has its own total limit, set by the host. If the spike shows this cannot be done, the fallback in [Batched outbound call](#batched-outbound-call) replaces this criterion and changes OF-6, and the change doc records both as deviations. | `dual_build_parity/call_all_deadline.rs`: `a_batch_that_waits_past_the_budget_does_not_stop_the_guest`, `credit_buys_back_the_wait_and_no_more`, `a_guest_that_spins_is_stopped_on_time_when_it_never_used_call_all`, `two_batches_in_one_wasm_guest_call_accumulate_credit`. `engine/epoch_budget/tests.rs`: `zero_credit_interrupts_at_the_deadline_even_when_own_time_is_below_budget`, `arm_resets_credit_and_start`. |
+| OF-5 | The same scenario gives the same result in the native build and in the WASM build. | `dual_build_parity/call_all.rs` (eight parity tests) and `the_native_build_has_no_deadline_for_a_slow_batch` in `dual_build_parity/call_all_deadline.rs`. |
 | OF-6 | A search over three directories, one of them too slow, returns the results of the two others and names the slow one, in one client call. With the fallback: in one `search.start` call, one `search.done` event and one `search.results` call. | |
 | OF-7 | Merging results from many sources and removing duplicates is done only by the federated query library. The Hub and `roymctl` hold no merge logic. Each service still verifies the records it receives, with the same `roym_core` verification functions as today. | |
-| OF-17 | A batched call with more targets than the host maximum is refused before any call is made. The host runs at most a fixed number of outbound calls at once for one guest instance, and queues the rest. | |
+| OF-17 | A batched call with more targets than the host maximum is refused before any call is made. The host runs at most a fixed number of outbound calls at once for one guest instance, and queues the rest. | `host_capabilities/tests/tests_call_all.rs`: `a_batch_over_the_maximum_is_refused_before_any_call`, `at_most_the_concurrency_limit_run_at_once_and_the_rest_wait`. `host_capabilities/tests/tests_call_all/limits.rs`: `the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_batch`. `dual_build_parity/call_all_deadline.rs`: `slow_batches_do_not_fill_the_instance_pool`. `proxy_call_all.rs`: `batch_over_the_maximum_is_refused`, `local_wasm_callees_pool_exhaustion_is_bounded`. |
 | **Event feed** | | |
 | OF-8 | A client opens the event feed with its login session. When a message, a card, a booking or a delivery state changes on the node, the client gets an event within 1 s. The event names what changed and a cursor. It carries no message content. | |
 | OF-9 | A client that reconnects with its last cursor gets every event after that cursor, or is told the cursor is too old and it must reload. | |
@@ -101,13 +101,18 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 Today a guest calls one target at a time through `syneroym:proxy`. The new call, roughly:
 
 ```wit
-record call-request { target: call-target, method: string, params: string }
-record call-outcome { target-index: u32, result: result<string, proxy-error> }
+record call-request {
+    target: call-target,
+    %interface: string,
+    method: string,
+    params: string,
+    options: option<call-options>,
+}
 
-/// Runs the calls at the same time, up to the host's concurrency cap.
-/// Each call has `per-call-timeout-ms`. Returns when all have answered or
-/// timed out, or when the host's total limit ends.
-call-all: func(calls: list<call-request>, per-call-timeout-ms: u32) -> list<call-outcome>;
+/// Runs the calls at the same time and returns one result per call,
+/// in the order of `calls`.
+call-all: func(calls: list<call-request>)
+    -> result<list<result<string, proxy-error>>, proxy-error>;
 ```
 
 The exact names are set in the slice plan. The rules:
@@ -196,7 +201,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - [x] M08A spike: the epoch-deadline callback for `call-all`, and the event feed's home. Write both results here.
 - [ ] Write the M08A slice plans.
 - [x] Participant rename across Roym crates, the Hub, `roymctl`, docs.
-- [ ] `call-all` with its limits, the deadline extension (or the fallback), and the native shim.
+- [x] `call-all` with its limits, the deadline extension (or the fallback), and the native shim.
 - [ ] The federated query library. Move merging and duplicate removal into it. One search method.
 - [ ] The event feed: the bus (or `web`), scoped by app instance, the WebSocket path, internal subscription, catch-up.
 - [ ] Remote access setting, default bind `127.0.0.1`, `local` login by socket peer address and off when remote access is on, `delegated-key` for remote clients, the Hub CSP, the Docker deploy.
@@ -291,6 +296,22 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A2c-17. Parity lists.** Driven by `all_directory_verbs()` and the hand-written `WIRE_REACHABLE_DIRECTORY_VERBS`, which the contract test asserts equals `WIRE_REACHABLE`.
 - **D-A2c-18. Shapes.** `auth` added to closed-word keys.
 - **D-A2c-19. Directory conversion in two steps.** Server half then client half.
+- **Q1–Q9: option (a), 2026-11-01.**
+- **D-A3-1. The WIT.** `proxy.wit` adds `record call-request { target: call-target, %interface: string, method: string, params: string, options: option<call-options> }` and `call-all: func(calls: list<call-request>) -> result<list<result<string, proxy-error>>, proxy-error>`. Results are in input order. An empty batch returns `Ok([])` with no call started.
+- **D-A3-2. One request builder, one `invoke`.** `proxy::Host::call` split into `proxy_request`, `resolve_target`, and `reply_text`. `call_all` reuses the same request building, validation, and `ServiceProxy::invoke` execution.
+- **D-A3-3. Limits and where they are set.** Six fields in `AppSandboxRole`: `call_all_max_calls` (16), `call_all_max_concurrency` (8), `call_all_default_call_timeout_ms` (5000), `call_all_max_call_timeout_ms` (10000), `call_all_total_timeout_ms` (15000), `call_all_max_waiting_guests` (4). Clamped in `CallAll::from_config` into `CallAllLimits`.
+- **D-A3-4. The epoch budget in production.** `EpochBudget` tracks start time, budget, credited wait time, and cap. Zero credit interrupts immediately on deadline. The dedicated OS thread for the epoch ticker ensures deadlines advance regardless of worker thread saturation.
+- **D-A3-5. The run.** Calls spawned in `tokio::task::JoinSet` tasks up to `max_concurrency`. Tasks wrapped in `timeout + CALL_CANCEL_GRACE` (250 ms) so timeouts can record dead letters before task abort.
+- **D-A3-6. Time of one call.** Clamped to `[1 ms, max_call_timeout]`. Bounds the whole call including retries.
+- **D-A3-7. Order and duplicates.** Results in input order; duplicate targets run as independent calls; duplicate idempotency keys hit the dedup fence.
+- **D-A3-8. Waiters.** Shared node-wide `Arc<Semaphore>` bounded below pool size bounds waiters and prevents pool exhaustion when targets are remote, but does not prevent exhaustion from local WASM callees.
+- **D-A3-9. The wait allowance.** Batch total time bounded by remaining allowance; refused if allowance < 1 s (`MIN_BATCH_ALLOWANCE`).
+- **D-A3-10. Nested calls.** Nested calls run in separate instances and separate stores with their own credit and concurrency limits; recursion depth bounded by the waiter permit limit.
+- **D-A3-11. Target calling own instance or service.** Callee runs in a fresh instance; caller's concurrency limit counts only outbound calls; fails gracefully on instance pool exhaustion.
+- **D-A3-12. Guest cancellation and stop.** Dropping batch future aborts `JoinSet` tasks and releases waiter permit; native build counts credit and checks allowance identically but has no epoch deadline interruption.
+- **D-A3-13. Metrics and logs.** Emits `substrate.proxy.call_all.batches`, `.calls`, `.refused`, `.timed_out`, `.duration_ms`, and `.waiting`.
+- **D-A3-14. The native shim.** `AppProxy::call_all` added to dual-build shim; native host runs the same `HostState::call_all` logic with shared limits.
+- **D-A3-15. Deadline classification.** `classify_call_failure` checks `Trap::Interrupt` and classifies as `Deadline`.
 
 ## Deviations
 
@@ -307,6 +328,15 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 
 - **Dual-build parity test harness instance certificate:** The `roym_web` parity harness did not install a service-instance certificate, unlike a real deploy (`deploy/commit.rs`). The shape test needs a successful `group.add-member`, whose host-side prekey fetch runs `check_outbound_identity` and refuses without one. The harness now installs one per service on both builds. This also lets outbox delivery in every parity scenario pass that check; no scenario asserted the old refusal. Production code is unchanged.
 - **Substrate directory E2E test `listing.set` parameter:** In `crates/substrate/tests/roym_directory_e2e.rs:392`, the test previously passed `"listing_id": y_listing_id` to `listing.set`. The old untyped handler silently ignored unknown fields, but typed `SetListingInput` enforces `#[serde(deny_unknown_fields)]`. The redundant parameter was removed to match the method contract.
+- **`call-all` WIT differs from sketch:** WIT uses five-field `call-request` (`target`, `%interface`, `method`, `params`, `options`), outer `result<..., proxy-error>`, results in input order without `target-index`, and no batch-level `per-call-timeout-ms` (uses per-call `options.timeout_ms` capped by host).
+- **Waiter limit and wait allowance:** Node-wide waiter permit limit via `Arc<Semaphore>` bounded below pool size; wait allowance bounds total credited wait time in one guest call across all batches.
+- **Zero-credit callback correctness:** Epoch deadline callback interrupts immediately if credited wait time is zero, ensuring guests that never use `call-all` stop at the exact same moment as with the old trap.
+- **Deadline trap classification fix:** `classify_call_failure` checks for `Trap::Interrupt` to correctly identify epoch timeouts.
+- **Dedicated OS thread for epoch ticker:** Epoch ticker runs on a dedicated OS thread rather than a cooperative Tokio async task, ensuring epoch advances even when Tokio worker threads are saturated by CPU-bound WASM guest execution.
+- **`WasmDriver::run` error formatting:** Returns `format!("{e:?}")` instead of `e.to_string()` across all parity scenarios.
+- **Router harness and test component additions:** `SleeperService`, `test_route_handler_with_outbox`, `test_route_handler_with_config` added to router test harness; `call-peers-full` and `peer-call` added to `proxy-test`.
+- **`NativeHostFactory::with_call_all`:** Stores into `OnceLock` and silently ignores a duplicate call.
+- **Demo close-out:** Front matter `demo:` describes internal typed method contracts, proxy call-all batching, and dual-build shim capability.
 
 ### Planned wire changes (plan section 4)
 

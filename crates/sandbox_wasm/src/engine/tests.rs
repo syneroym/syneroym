@@ -577,6 +577,7 @@ async fn test_wasm_quotas() {
         instantiations: AtomicU64::new(0),
         guest_http_permits: Arc::new(DashMap::new()),
         max_concurrent_guest_http_per_service: 4,
+        call_all: CallAll::default(),
     };
 
     // Cache the test component
@@ -724,6 +725,7 @@ fn test_app_engine(storage_provider: Arc<dyn StorageProvider>) -> AppSandboxEngi
         instantiations: AtomicU64::new(0),
         guest_http_permits: Arc::new(DashMap::new()),
         max_concurrent_guest_http_per_service: 4,
+        call_all: CallAll::default(),
     }
 }
 
@@ -821,32 +823,5 @@ async fn fdae_policy_unparseable_in_storage_resolves_none_not_error() {
     assert!(app_engine.fdae_policies.get("svc-bad").unwrap().is_none());
 }
 
-/// Pins `classify_call_failure`'s taxonomy: the downcast
-/// `Trap::OutOfFuel` and the two fuel substrings both
-/// classify as `OutOfFuel`, memory/epoch substrings classify as
-/// expected, and an unrelated error falls through to `Other`. Without
-/// this test the fuel-detail regression that prompted it went
-/// unnoticed.
-#[test]
-fn classify_call_failure_matches_taxonomy() {
-    let fuel_trap = wasmtime::Error::from(Trap::OutOfFuel);
-    assert!(matches!(classify_call_failure(&fuel_trap), CallFailure::OutOfFuel));
-
-    let fuel_string = wasmtime::Error::msg("all fuel consumed by WebAssembly code");
-    assert!(matches!(classify_call_failure(&fuel_string), CallFailure::OutOfFuel));
-
-    let fuel_string_alt = wasmtime::Error::msg("trap: out of fuel");
-    assert!(matches!(classify_call_failure(&fuel_string_alt), CallFailure::OutOfFuel));
-
-    let memory_string = wasmtime::Error::msg("instance exceeded its memory limits");
-    assert!(matches!(classify_call_failure(&memory_string), CallFailure::MemoryFault));
-
-    let memory_string_alt = wasmtime::Error::msg("host trap: MemoryFault");
-    assert!(matches!(classify_call_failure(&memory_string_alt), CallFailure::MemoryFault));
-
-    let epoch_string = wasmtime::Error::msg("epoch deadline reached while executing");
-    assert!(matches!(classify_call_failure(&epoch_string), CallFailure::Deadline));
-
-    let other = wasmtime::Error::msg("some unrelated wasm trap");
-    assert!(matches!(classify_call_failure(&other), CallFailure::Other));
-}
+mod call_all_config;
+mod classify;

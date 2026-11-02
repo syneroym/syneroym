@@ -30,7 +30,7 @@ use types::{
     http::FrameKind,
     invocation::CallerOrigin,
     messaging::MessagingError,
-    proxy::{CallOptions, CallTarget, ProxyError},
+    proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
     signing::{Principal, RecordDraft, SigningError, SigningIdentity},
     vault::VaultError,
 };
@@ -79,6 +79,11 @@ pub trait AppProxy {
         params: String,
         options: Option<CallOptions>,
     ) -> impl Future<Output = Result<String, ProxyError>> + Send;
+
+    fn call_all(
+        &self,
+        calls: Vec<CallRequest>,
+    ) -> impl Future<Output = Result<Vec<Result<String, ProxyError>>, ProxyError>> + Send;
 
     fn enqueue(
         &self,

@@ -58,7 +58,7 @@ use syneroym_wit_interfaces::{
         host::context::Host,
         messaging::host_api::{self, MessagingError},
         proxy::{
-            proxy::{self, CallOptions, CallTarget, CalleeError},
+            proxy::{self, CallOptions, CallRequest, CallTarget, CalleeError},
             saga::{self, SagaState as WitSagaState, SagaStatus},
         },
         vault::vault::{self, VaultError},
@@ -77,7 +77,10 @@ use wasmtime::{StoreLimits, StoreLimitsBuilder, component::Resource};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
 use zeroize::Zeroizing;
 
-use crate::{engine::AppSandboxEngine, stream::StreamContext};
+use crate::{
+    engine::{AppSandboxEngine, EpochBudget},
+    stream::StreamContext,
+};
 
 /// Bundles the messaging-specific pieces of `HostState`: the broker every
 /// service shares, and a weak handle back to the owning `AppSandboxEngine`
@@ -395,6 +398,10 @@ pub struct HostState {
     /// and `None` is the honest state for a node that never wired one
     /// (every existing `HostState::new` call site, all of them tests).
     pub record_signer: Option<Arc<NodeRecordSigner>>,
+    /// Tracks execution time and wait credit for epoch deadline callbacks.
+    pub(crate) epoch: EpochBudget,
+    /// Limits and waiters for batched outbound calls.
+    pub(crate) call_all: CallAll,
 }
 
 impl Debug for HostState {
@@ -458,6 +465,8 @@ impl HostState {
             conversation: empty_conversation_host(),
             websocket_senders: WebSocketSenders::new(),
             record_signer: None,
+            epoch: EpochBudget::new(CallAllLimits::default().total_timeout),
+            call_all: CallAll::default(),
         }
     }
 
@@ -496,6 +505,15 @@ impl HostState {
         websocket_senders: Arc<syneroym_rpc::WebSocketSenders>,
     ) -> Self {
         self.websocket_senders = websocket_senders;
+        self
+    }
+
+    /// Sets [`Self::call_all`] after construction, rebuilding the epoch
+    /// budget's credit cap from the resolved limits.
+    #[must_use]
+    pub fn with_call_all(mut self, call_all: CallAll) -> Self {
+        self.epoch = EpochBudget::new(call_all.limits.total_timeout);
+        self.call_all = call_all;
         self
     }
 
@@ -612,7 +630,11 @@ impl HostState {
     }
 }
 
+mod call_all_limits;
+pub use call_all_limits::{CallAll, CallAllLimits, MIN_BATCH_ALLOWANCE};
 mod capabilities_blob;
+mod capabilities_call_all;
+pub(crate) use capabilities_call_all::WaitCredit;
 mod capabilities_messaging;
 mod capabilities_proxy;
 #[cfg(test)]
