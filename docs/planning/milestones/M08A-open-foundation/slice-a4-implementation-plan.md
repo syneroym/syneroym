@@ -9,8 +9,10 @@ planning conversation. This plan is meant to stand alone.*
 commits of section 6 in that order. The branch starts from `main` at
 `2f043276` (A3 is merged). A4 adds one crate, changes the `directory`
 service, the Hub, `roymctl`, the tests that drive the old search loop and one
-list in `xtask` (the allowed dependencies of Roym crates). It changes no other
-Roym service and no substrate code.
+list in `xtask` (the allowed dependencies of Roym crates). No `src/` change outside
+`roym_directory`, `roym_core`, the new crate, the Hub UI and `roymctl`. The
+substrate test files and the sample-config comment change as listed in
+Step 6 and §9 (P24).
 
 ## 0. Read first, and the rules
 
@@ -367,7 +369,10 @@ All links are to `main` at `2f043276`.
   [runtime/roym.rs:157](../../../../crates/substrate/src/runtime/roym.rs#L157)
   for the six native Roym services, and defaults to `CallAll::default()`
   otherwise ([factory.rs:312](../../../../crates/app_host_native/src/factory.rs#L312)).
-  The `roym_web` parity harness uses the defaults on both builds
+  The `roym_web` parity harness uses the `call-all` defaults on both builds,
+  but overrides the WASM dispatch epoch to 120 s (`dispatch_epoch_timeout_secs: 120`
+  at [helpers.rs:1072](../../../../crates/roym_web/tests/dual_build_parity/helpers.rs#L1072))
+  so CI host load does not trip the normal 5 s deadline (P19).
   (`AppSandboxEngine::init` at
   [helpers.rs:1109](../../../../crates/roym_web/tests/dual_build_parity/helpers.rs#L1109)
   for WASM; the native factories take the default).
@@ -707,39 +712,54 @@ test is rewritten as `find_time_fits_the_real_sandbox_defaults`:
 
 ```text
 waves = ceil(MAX_SOURCES / call_all_max_concurrency)
+wave_time = DEFAULT_SOURCE_TIMEOUT_MS + 250 // CALL_CANCEL_GRACE
 assert  MAX_SOURCES <= call_all_max_calls
 assert  DEFAULT_SOURCE_TIMEOUT_MS <= call_all_max_call_timeout_ms
-assert  waves * DEFAULT_SOURCE_TIMEOUT_MS <= call_all_total_timeout_ms
-assert  waves * DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS
+assert  waves * wave_time <= call_all_total_timeout_ms
+assert  waves * wave_time + DISPATCH_HEADROOM_MS
             < dispatch_epoch_timeout_secs * 1000
 ```
 
-It reads the real `AppSandboxRole::default()`. A second test (Step 5)
-**measures** the ceiling scenario on the WASM build: the wall time of the whole
-`directory.find` call when all 8 sources answer at once without delay (with
-40 genuine signed listings each, the worst case for checking time, P2, P10),
-minus nothing. Assert it is below `DISPATCH_HEADROOM_MS` and print it (P10).
-Run the Step 9 20-run loop on this scenario and record the worst value in the
-PR text.
+It reads the real `AppSandboxRole::default()`. In the shared parity run, the
+ceiling test (`find_ceiling_run_of_eight_sources_fits_the_dispatch_budget`)
+checks correctness only (all 8 sources `ok`, 20 verified per source, the
+merged page) and prints the measured wall time. To protect against CI
+wall-clock flakiness under parallel load and the 120 s harness epoch (P19),
+the headroom bound check is placed in an isolated measurement test
+(`find_ceiling_measure_fits_dispatch_headroom`, marked `#[ignore]`). It
+measures the wall time of the whole `directory.find` call on the WASM build
+when all 8 sources answer at once without delay with 40 genuine signed
+listings carrying full membership evidence (4 credentials, 4 revocations,
+8 decisions), full evidence writes via `held::remember`, and realistic
+maximum payload sizes, minus nothing (P18). Step 5 (4) and Step 9 run this
+test isolated (`cargo nextest run -p syneroym-roym-web --test dual_build_parity -- --run-ignored only -j 1`),
+assert wall time is below `DISPATCH_HEADROOM_MS`, run 20 times in a loop,
+and record the worst value in the PR description (P10, P19).
 
 **D-A4-12. Clients.** The Hub gets `findListings(query)` in `search.ts`:
 one `call("directory.find", {query})` and a mapping from `outcome.error?.kind`
 to the existing `SourceOutcomeKind`. A thrown `RpcError` with code 503 (the
 `web` door is full) becomes a page-level notice: "This installation could not
-start the search. Press Search to try again." (P3, P11).
-Hub string contracts (P11):
+start the search. Press Search to try again." (P3, P11). Any other thrown
+error (such as `-32602` for an invalid query field, `-32603` for `TooManySources`
+or data errors, or an HTTP 500 when `web` or `directory` traps) clears
+`Searching...`, shows one page-level error line: "The search failed: <message>.
+Press Search to try again.", and re-enables the Search button (P20).
+Hub string contracts (P11, P20):
 - While waiting: `Searching...`
 - Final line: `N directories searched` (or `You have not added any directories to search.`)
 - Refusal notice: `This installation could not start the search. Press Search to try again.`
+- Failure notice: `The search failed: <message>. Press Search to try again.`
 - Help text in `screens/directory.ts` removes "one directory at a time in turn"
 - The per-DID line map (`sourceLines`) and retry line map are removed.
 
 `runSearch`, `startRun`, `queryOneSource`, `RunSearchOptions`,
 `ignoreConcurrency`, `SearchProgress`, `refreshPartial` and `window.RoymDirectory`
 are removed. `roymctl` makes one `rpc_call("directory.find", {query})` and
-prints the same lines. Its semaphore, `JoinSet`, retry and the two
-`too_many_arguments` allows are removed. Neither client imports the structs
-(D-A2a-13).
+prints the same lines. On error from `rpc_call`, `roymctl` prints the error
+to stderr and exits with a non-zero code (P20). Its semaphore, `JoinSet`, retry
+and the two `too_many_arguments` allows are removed. Neither client imports
+the structs (D-A2a-13).
 
 **D-A4-13. Tests move in a safe order (Steps 4 to 7).** First `find` is added
 beside the old verbs, with an equivalence test that runs both paths on the
@@ -755,17 +775,23 @@ immediately with a normal info response (P5). Both proxies call that function
 at the top of `invoke`; adding `.await` does not change the line count of
 `helpers.rs`. The host cuts the search call at 2 s, so the outcome is `timed-out`.
 The test asserts the other sources' hits, the `timed-out` outcome for the slow
-DID, and that the whole call took under 4 s, on both builds.
+DID, and that the whole call ended before `hSlow`'s 5 s sleep (so the caller
+did not wait for the slow source), without asserting a rigid 4 s wall-clock
+bound (P19), on both builds.
 
 For the ceiling scenario, add 8 canned sources `hCeiling1..8` in `trust_harness.rs`
-(P5). Each answers `directory.info` with a name, and `directory.search` with 40
-genuine signed listings built once. For scenario 116 replacement (P6, P16), add
-canned source `hTwoVersions`: answers `directory.info` with a name, and
-`directory.search` with two genuine signed versions of one listing in one reply.
-For the oversized reply test (P1, P16), add canned source `hOversized`: answers
-`directory.info` with a name, and `directory.search` with a payload exceeding
-`MAX_SEARCH_REPLY_BYTES` (8 MiB). Confirm `trust_harness.rs` stays under
-800 lines (P5).
+(P5, P18). Each answers `directory.info` with an `issuer_did` (a test SynOrg key,
+as `trust_harness` does for `hTrustValid`) so `add-source` pins the issuer (P18).
+Each answers `directory.search` with 40 genuine signed listings built once, each
+carrying maximum evidence signed by that issuer: 4 valid credentials, 4 revocations,
+and 8 decisions, with maximum field lengths (P18). A shared builder helper is used
+for this and for the 50-hit size test (§7.1) so both follow the real limits (P18).
+For scenario 116 replacement (P6, P16), add canned source `hTwoVersions`: answers
+`directory.info` with a name, and `directory.search` with two genuine signed
+versions of one listing in one reply. For the oversized reply test (P1, P16), add
+canned source `hOversized`: answers `directory.info` with a name, and
+`directory.search` with a payload exceeding `MAX_SEARCH_REPLY_BYTES` (8 MiB).
+Confirm `trust_harness.rs` stays under 800 lines (P5).
 
 **D-A4-15. Equivalence before deletion.** Step 4's test
 `find_gives_the_page_the_old_loop_gave` drives the old loop
@@ -882,37 +908,48 @@ syneroym-roym-federated-query` builds (the library is part of the
 1. `trust_harness::canned_source_response` becomes `async fn`; add
    `did:key:hSlow` (D-A4-14, P5). Add `.await` at its two call sites. Confirm
    `helpers.rs` has the same line count (`cargo xtask check-file-lengths`).
-   Add `hCeiling1..8`, `hTwoVersions` (P6, P16), and `hOversized` (P1, P16)
-   canned sources to `trust_harness.rs`.
-2. Scenarios in `directory_find.rs`: the slow source (OF-6), the whole batch
-   refused (needs a way to refuse: see section 7.2), the oversized reply with
-   `hOversized` (P1), and the ceiling (8 sources, 40 genuine hits each, clean
-   of oversized replies, P1, P2, P5).
+   Add `hCeiling1..8` (with pinned issuer and full membership evidence, P18),
+   `hTwoVersions` (P6, P16), and `hOversized` (P1, P16) canned sources to
+   `trust_harness.rs`.
+2. Scenarios in `directory_find.rs`: the slow source (OF-6, asserting finished
+   before `hSlow`'s 5 s sleep, P19), the whole batch refused (needs a way to
+   refuse: see section 7.2), the oversized reply with `hOversized` (P1), and the
+   ceiling correctness scenario (8 sources, 40 genuine hits each with full
+   evidence, clean of oversized replies, asserting correctness and printing time,
+   P1, P2, P5, P18, P19). Add isolated measurement test
+   `find_ceiling_measure_fits_dispatch_headroom` marked `#[ignore]` (P19).
 3. Rewrite `directory_source_timeout_and_concurrency_fit_the_real_sandbox_defaults`
-   as `find_time_fits_the_real_sandbox_defaults` (D-A4-11). Remove
-   `MAX_CLIENT_CONCURRENCY` from its imports; note that the old test's second
-   assertion (`MAX_CLIENT_CONCURRENCY < admission limit`) is dropped on purpose
-   because client concurrency is now 1 (P8).
+   as `find_time_fits_the_real_sandbox_defaults` (D-A4-11). Count a wave as
+   `DEFAULT_SOURCE_TIMEOUT_MS + 250` (cancel grace, `CALL_CANCEL_GRACE`, P19).
+   Remove `MAX_CLIENT_CONCURRENCY` from its imports; note that the old test's
+   second assertion (`MAX_CLIENT_CONCURRENCY < admission limit`) is dropped on
+   purpose because client concurrency is now 1 (P8).
 4. Measure the wall time of the whole `directory.find` call in the ceiling
-   scenario on the WASM build (P10). Record the measured time in the PR description.
-   If it is above 60 % of `DISPATCH_HEADROOM_MS`, apply the fallback in
-   section 7.6 before going on.
+   scenario on the WASM build via the isolated measurement test
+   (`cargo nextest run -p syneroym-roym-web --test dual_build_parity -- --run-ignored only -j 1`,
+   P10, P19). Record the measured time in the PR description. If it is above
+   60 % of `DISPATCH_HEADROOM_MS`, apply the fallback in section 7.6 before going on.
 
 ### Step 6 — Move the clients and test helpers to `find`
 
-1. Hub: `search.ts` (D-A4-12), `screens/directory.ts` (one call, one redraw,
-   exact string contracts from D-A4-12, help text update, P11), `main.ts`
-   (remove `RoymDirectory`), `search.test.ts` (new tests, section 7.4).
-2. `roymctl`: `find.rs` (D-A4-12). Keep the output text. Add a unit test for
-   the printing functions with a canned `find` reply (section 7.4).
+1. Hub: `search.ts` (D-A4-12, handles 503 and non-503 errors, P20),
+   `screens/directory.ts` (one call, one redraw, exact string contracts from
+   D-A4-12 including error notices, help text update, P11, P20), `main.ts`
+   (remove `RoymDirectory`), `search.test.ts` (new tests including non-503
+   failure handling, section 7.4, P20).
+2. `roymctl`: `find.rs` (D-A4-12). Keep the output text; on RPC error, print
+   error to stderr and exit non-zero (P20). Add a unit test for printing
+   functions and error handling with a canned `find` reply (section 7.4, P20).
 3. `fixtures.rs`: `fan_out_one` calls `directory.find` once, splits `run_id`
    off the reply, asserts `directory.sources` equals `sources`, and returns
-   `(run_id, page)` (P7). `roym_flow.rs`: `run_client_loop` calls `directory.find`
-   and returns `(run_id, page)` similarly (P7).
+   `(run_id, page)` keeping the `{"result": …}` wrapper expected by call sites
+   (P7). `roym_flow.rs`: `run_client_loop` calls `directory.find` and returns
+   `(run_id, page)` similarly (P7).
 4. Rewrite parity scenarios 97, 101, 119, 120 and `directory_compat.rs` onto
    `find`. Move the `contract_directory.rs` cases (W3).
-5. Hub e2e: case 22 reworded (one call; the hit stays; unreachable sources
-   are reported), case 23 kept, case 23b deleted
+5. Hub e2e: rename case 22 ("the results view shows the loopback hit and names
+   the unreachable sources", P21), case 23 checks that the new start notice text
+   is absent from the whole page and keeps the 503 check (P21), case 23b deleted
    ([roym-hub.spec.ts:830](../../../../crates/substrate/tests/e2e/tests/roym-hub.spec.ts#L830)).
    The old verbs still exist, so a failure in this step shows only client or
    helper errors.
@@ -942,8 +979,14 @@ syneroym-roym-federated-query` builds (the library is part of the
 ### Step 8 — Docs and close-out
 
 Section 9. Backlog (section 8). Change doc: tick the task, fill the Test
-column of OF-6 and OF-7, add D-A4-1 to D-A4-16 and the owner's answers, add
-deviations. `task.md` result line. `status.md` row.
+column of OF-6 and OF-7, update counts in the OF-14, OF-15 and OF-18 Test
+columns from the real files after Step 7 (count shape files with
+`ls crates/roym_web/tests/method_shapes | wc -l`, P23), rewrite the Scope line
+to state the three-call form is removed (P22), add D-A4-1 to D-A4-16 and the
+owner's answers, add deviations. Update `AGENTS.md` (Architecture) sentence on
+`CallTarget::Service` to name the federated query library (P22). Update
+`system-architecture.md:1353` for one `find` call, all sources queried at once,
+no Hub retry (P22). `task.md` result line. `status.md` row.
 
 ### Step 9 — Finish
 
@@ -952,9 +995,10 @@ deviations. `task.md` result line. `status.md` row.
 - `cargo dupes report` over the diff (the library keeps one copy of the merge
   and of the error mapping; the Step 3 copies in `client_query.rs` are gone).
 - `mise run verify` as a background job, no `--skip`.
-- Run the new parity file, the ceiling scenario, and Hub case 22/23 20 times.
-  The slow-source test uses wall-clock bounds, so check it is not flaky
-  (exit criterion 13). Record worst ceiling measure in PR text (P10).
+- Run the new parity file, Hub cases 22 and 23, and the isolated ceiling
+  measure test (`find_ceiling_measure_fits_dispatch_headroom`, `--run-ignored only -j 1`)
+  20 times. Assert the isolated measure fits within `DISPATCH_HEADROOM_MS`, and
+  record worst ceiling measure in PR text (P10, P19).
 - Open the PR (CLA line verbatim).
 
 ## 7. Tests
@@ -987,8 +1031,9 @@ scripted `Result<String, ProxyError>` entries (or an outer `Err`). A
   / `hits_that_do_not_parse_are_unreadable`
 - `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others` (P1)
 - `fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read` (builds a reply of
-  50 hits with maximum payload and maximum credential/decision evidence and asserts it
-  fits under `MAX_SEARCH_REPLY_BYTES` and is read, P1)
+  50 hits with maximum payload and full evidence — 4 credentials, 4 revocations,
+  8 decisions at maximum lengths — and asserts it fits under `MAX_SEARCH_REPLY_BYTES`
+  and is read, P1, P18)
 - `a_truncated_flag_that_is_not_a_boolean_is_unreadable` (P12)
 - `the_result_truncated_flag_is_reported_per_source`
 - `a_source_with_no_hits_still_reports_truncated`
@@ -1012,12 +1057,17 @@ one build is the A2c R1 mistake.
 - `find_gives_the_page_the_old_loop_gave` (D-A4-15; deleted in Step 7)
 - `find_over_one_source_matches_the_native_and_wasm_builds` (replaces 97)
 - `find_with_no_sources_is_an_empty_page_with_a_run_id` (replaces 101)
-- `find_names_the_slow_source_and_keeps_the_other_hits` (OF-6)
+- `find_names_the_slow_source_and_keeps_the_other_hits` (OF-6, asserts call
+  finishes before `hSlow`'s 5 s sleep and slow source is timed-out, P19)
 - `find_marks_an_unreachable_source_not_found_and_keeps_the_others`
 - `find_refuses_an_invalid_query_field_with_the_field_name` (W3)
-- `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` (the measure:
-  8 sources with 40 genuine signed listings each, worst case for checking time,
-  clean of oversized replies, P2, P5, P10)
+- `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` (ceiling correctness
+  scenario: 8 sources with 40 genuine signed listings each carrying full
+  membership evidence and writes, clean of oversized replies, asserts correctness
+  and prints wall time, P2, P5, P18, P19)
+- `find_ceiling_measure_fits_dispatch_headroom` (isolated measurement test marked
+  `#[ignore]`: runs ceiling scenario alone, asserts wall time fits under
+  `DISPATCH_HEADROOM_MS`, P10, P18, P19)
 - `find_marks_an_oversized_reply_unreadable_and_keeps_the_others` (with canned
   source `hOversized` returning a reply exceeding the 8 MiB cap, P1, P16)
 - `run_envelope_returns_the_signed_bytes_of_a_page_record` (replaces the
@@ -1046,6 +1096,9 @@ the trust files (through `fan_out`). 106b gets the new verb list.
   cover 8 sources, 6 of them unreachable and fast; no real slow remote
   directory exists in the e2e harness).
 - The waiter-limit refusal through the full stack (above), if too costly.
+- The `web` → `directory` chain under the real 5 s epoch with a source that
+  waits its full 2 s (the parity harness overrides WASM dispatch epoch to
+  120 s to prevent CI load timeouts, P19).
 - A node with `call_all_max_concurrency` below 8 (documented, section 7.6).
 - Verification cost on a slow machine (the measure is on the CI machine).
 
@@ -1053,13 +1106,17 @@ the trust files (through `fan_out`). 106b gets the new verb list.
 
 - Hub, vitest `search.test.ts`: `findListings_maps_each_error_kind_to_an_outcome`,
   `findListings_turns_an_http_503_into_a_busy_notice`,
+  `findListings_turns_any_other_failure_into_a_page_error` (P20),
   `findListings_with_no_sources_returns_no_outcomes`,
   `findListings_sends_one_request`.
-- Hub e2e: case 22 (one call; the loopback hit stays; unreachable sources are
-  listed), case 23 (8 sources, no 503, no "busy" text).
+- Hub e2e: case 22 ("the results view shows the loopback hit and names the
+  unreachable sources", reworded from per-source progress, P21), case 23
+  (8 sources, no 503, and checks absence of new start notice text from the
+  page, P21).
 - `roymctl`: unit tests for the printing of a canned `find` reply: a failed
   source note, a truncated note, the membership lines, the refused block, the
-  all-`not-started` case. The existing argument-parsing test stays.
+  all-`not-started` case, and error exit non-zero on failure (P20). The existing
+  argument-parsing test stays.
 - `roym_directory_e2e.rs` and `roym_trust_e2e.rs` go through `run_client_loop`
   and stay in place.
 
@@ -1087,12 +1144,15 @@ cargo xtask check-file-lengths && cargo xtask check-lint-suppressions
 - `helpers.rs` must not grow (3.7). `fixtures.rs` shrinks.
 - `roym-hub.spec.ts` shrinks (case 23b out).
 - **Checking time (unverified).** 8 sources × 40 hits is 320 `verify_envelope`
-  calls plus the page's row writes in one guest call with 5 s of own time. The
-  worst case for checking time is 40 genuine hits per source (all verified, 20
-  kept and 20 dropped, P2), not 20 valid + 20 refused. If the measure in Step 5
-  is above 60 % of `DISPATCH_HEADROOM_MS`, the fallbacks in order are: (1')
-  verify refused-looking envelopes cheaply first (a forged envelope usually fails
-  at its JSON parse, so cost is mostly genuine signature checks, P2); (2) lower
+  calls plus membership checks and evidence writes in one guest call with 5 s
+  of own time. The worst case for checking time is 40 genuine hits per source
+  (all verified, 20 kept and 20 dropped, P2), carrying maximum membership evidence
+  with pinned issuers (P18). If the measure in Step 5 is above 60 % of
+  `DISPATCH_HEADROOM_MS`, the fallbacks in order are: (1') verify refused-looking
+  envelopes cheaply first (a forged envelope usually fails at its JSON parse, so
+  cost is mostly genuine signature checks, P2); (1'') compute membership verdicts
+  only for rows that survive `dedupe_and_cap_verified` (at most 10 per source,
+  up to 80 total, saving up to 80 membership evaluations, P18); (2) lower
   `MAX_STORED_PER_SOURCE` + `MAX_REFUSED_RESULTS`; (3) raise
   `DISPATCH_HEADROOM_MS` and lower `DEFAULT_SOURCE_TIMEOUT_MS`. (The previous
   fallback (1) to stop after both caps are full saved nothing because the list
@@ -1198,8 +1258,10 @@ or milestone and slice ids in these files. Link ADRs only.
   - The `roymctl` section: check the `find` description.
   - Grep for `start-run`, `query-source`, `directory.merge` and `max_concurrency`.
 - [docs/system-architecture.md](../../../system-architecture.md): grep for
-  `directory`, `fan-out`, `merge`. Add the library to the crate list if the
-  file has one. Update the search flow if it names the three verbs.
+  `directory`, `fan-out`, `merge`. Update :1353 to describe one call to
+  `directory.find` with the node asking all sources at once up to
+  `call_all_max_concurrency` and no Hub retry (P22). Add the library to the
+  crate list if the file has one. Update the search flow if it names the three verbs.
 - [docs/system-requirements-spec.md](../../../system-requirements-spec.md)
   (:1300-1302, discovery): check that "clients query directories" still
   reads right.
@@ -1215,12 +1277,20 @@ or milestone and slice ids in these files. Link ADRs only.
   call. Use the next free id. Evidence: the tests of section 7.
 - [crates/substrate/config.sample.toml](../../../../crates/substrate/config.sample.toml):
   the comment next to `call_all_max_concurrency` (:157).
+- `AGENTS.md` (Architecture): update sentence on `CallTarget::Service` to name
+  the federated query library ("`directory`, through the federated query library
+  it links, …", P22).
 - Change doc [roym-open-foundation](../../changes/roym-open-foundation/change.md):
+  - **Scope:** rewrite line :51 ("The three-call form stays only if a client
+    still needs live progress...") to state the three-call form is removed (P22).
   - **Tasks:** tick "The federated query library. Move merging and duplicate
     removal into it. One search method." and the line that holds "Write the
     M08A slice plans" only when all slice plans exist (not A4's job).
   - **Acceptance criteria:** fill the Test column of OF-6 and OF-7 with the
-    tests of section 7.
+    tests of section 7. Update counts in the OF-14, OF-15 and OF-18 Test columns
+    from the real files after Step 7 (count shape files with
+    `ls crates/roym_web/tests/method_shapes | wc -l`, 141 methods, 35 directory
+    rows, 137 local-only rows, P23).
   - **Design, "Federated query library":** replace the paragraph with the
     real API (D-A4-3 to D-A4-6, D-A4-16): the outcome kinds are `error: null`,
     `not-found`, `timed-out`, `not-started`, `refused`, `unreadable` (the
@@ -1263,20 +1333,24 @@ A4 is done when all of these are true:
 7. `directory.run-envelope` returns the signed bytes of a page record,
    byte-identical (the e2e check passes).
 8. `find_time_fits_the_real_sandbox_defaults` passes against the real
-   defaults, and the ceiling measure (wall time of the whole `directory.find`
-   call on WASM with 8 sources answering 40 genuine hits each without delay)
-   is below `DISPATCH_HEADROOM_MS` (P2, P10).
+   defaults (counting wave time with 250 ms cancel grace, P19), the parity
+   ceiling correctness test passes, and the isolated ceiling measure
+   (`find_ceiling_measure_fits_dispatch_headroom`, measuring wall time on WASM
+   with 8 sources answering 40 genuine hits each with full membership evidence
+   and writes minus nothing) is below `DISPATCH_HEADROOM_MS` (P2, P10, P18, P19).
 9. A whole-batch refusal gives `not-started` for every source for both `Internal`
    and `UnsupportedTarget` refusals (library test, P3), and `not-started` never
    writes `last_error` (directory unit test).
 10. `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others`,
     `fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read`, and
-    `find_marks_an_oversized_reply_unreadable_and_keeps_the_others` pass (P1).
+    `find_marks_an_oversized_reply_unreadable_and_keeps_the_others` pass (P1, P18).
     `directory.rs` (parity) is lowered in the oversized list, the duplication
     baseline is correct, and `helpers.rs` did not grow.
 11. The change doc, developer guide, spec, traceability matrix, sample config,
     `task.md`, `status.md` and the backlog are updated as in sections 8 and 9.
-12. No Roym service other than `directory` changed. No substrate crate changed.
+12. No `src/` change outside `roym_directory`, `roym_core`, the new crate,
+    the Hub UI and `roymctl`. The substrate test files and the sample-config
+    comment change as listed in Step 6 and §9 (P24).
 13. The new parity file and Hub cases 22 and 23 ran 20 times in a row with no
     failure.
 14. `mise run verify` passes with no `--skip`.
