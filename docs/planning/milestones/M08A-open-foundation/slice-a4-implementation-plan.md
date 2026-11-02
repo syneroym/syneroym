@@ -10,9 +10,9 @@ commits of section 6 in that order. The branch starts from `main` at
 `2f043276` (A3 is merged). A4 adds one crate, changes the `directory`
 service, the Hub, `roymctl`, the tests that drive the old search loop and one
 list in `xtask` (the allowed dependencies of Roym crates). No `src/` change outside
-`roym_directory`, `roym_core`, the new crate, the Hub UI and `roymctl`. The
-substrate test files and the sample-config comment change as listed in
-Step 6 and §9 (P24).
+`roym_directory`, `roym_core`, the new crate, the Hub UI, `roymctl` and the
+`check-roym-deps` list in `xtask/src/main.rs`. The substrate test files and the
+sample-config comment change as listed in Step 6 and §9 (P24).
 
 ## 0. Read first, and the rules
 
@@ -732,7 +732,7 @@ when all 8 sources answer at once without delay with 40 genuine signed
 listings carrying full membership evidence (4 credentials, 4 revocations,
 8 decisions), full evidence writes via `held::remember`, and realistic
 maximum payload sizes, minus nothing (P18). Step 5 (4) and Step 9 run this
-test isolated (`cargo nextest run -p syneroym-roym-web --test dual_build_parity -- --run-ignored only -j 1`),
+test isolated (`cargo nextest run -p syneroym-roym-web --test dual_build_parity --run-ignored only -j 1 find_ceiling_measure_fits_dispatch_headroom`),
 assert wall time is below `DISPATCH_HEADROOM_MS`, run 20 times in a loop,
 and record the worst value in the PR description (P10, P19).
 
@@ -783,9 +783,13 @@ For the ceiling scenario, add 8 canned sources `hCeiling1..8` in `trust_harness.
 (P5, P18). Each answers `directory.info` with an `issuer_did` (a test SynOrg key,
 as `trust_harness` does for `hTrustValid`) so `add-source` pins the issuer (P18).
 Each answers `directory.search` with 40 genuine signed listings built once, each
-carrying maximum evidence signed by that issuer: 4 valid credentials, 4 revocations,
-and 8 decisions, with maximum field lengths (P18). A shared builder helper is used
-for this and for the 50-hit size test (§7.1) so both follow the real limits (P18).
+carrying maximum evidence signed by that issuer: 4 valid credentials, 4 revocations
+that are validly signed but name another `credential_record_id` (so all 4 are
+checked and none matches), and 8 decisions that are validly signed but not an active
+suspension of this listing (for example lifted, expired or for another listing), so
+`evaluate` reaches the end with `Valid` (P18). Assert this `Valid` verdict in the
+ceiling correctness test, so a builder mistake fails it (P18). A shared builder helper
+is used for this and for the 50-hit size test (§7.1) so both follow the real limits (P18).
 For scenario 116 replacement (P6, P16), add canned source `hTwoVersions`: answers
 `directory.info` with a name, and `directory.search` with two genuine signed
 versions of one listing in one reply. For the oversized reply test (P1, P16), add
@@ -915,8 +919,8 @@ syneroym-roym-federated-query` builds (the library is part of the
    before `hSlow`'s 5 s sleep, P19), the whole batch refused (needs a way to
    refuse: see section 7.2), the oversized reply with `hOversized` (P1), and the
    ceiling correctness scenario (8 sources, 40 genuine hits each with full
-   evidence, clean of oversized replies, asserting correctness and printing time,
-   P1, P2, P5, P18, P19). Add isolated measurement test
+   evidence, clean of oversized replies, asserting correctness, `Valid` membership
+   verdicts, and printing time, P1, P2, P5, P18, P19). Add isolated measurement test
    `find_ceiling_measure_fits_dispatch_headroom` marked `#[ignore]` (P19).
 3. Rewrite `directory_source_timeout_and_concurrency_fit_the_real_sandbox_defaults`
    as `find_time_fits_the_real_sandbox_defaults` (D-A4-11). Count a wave as
@@ -926,7 +930,7 @@ syneroym-roym-federated-query` builds (the library is part of the
    purpose because client concurrency is now 1 (P8).
 4. Measure the wall time of the whole `directory.find` call in the ceiling
    scenario on the WASM build via the isolated measurement test
-   (`cargo nextest run -p syneroym-roym-web --test dual_build_parity -- --run-ignored only -j 1`,
+   (`cargo nextest run -p syneroym-roym-web --test dual_build_parity --run-ignored only -j 1 find_ceiling_measure_fits_dispatch_headroom`,
    P10, P19). Record the measured time in the PR description. If it is above
    60 % of `DISPATCH_HEADROOM_MS`, apply the fallback in section 7.6 before going on.
 
@@ -996,7 +1000,7 @@ no Hub retry (P22). `task.md` result line. `status.md` row.
   and of the error mapping; the Step 3 copies in `client_query.rs` are gone).
 - `mise run verify` as a background job, no `--skip`.
 - Run the new parity file, Hub cases 22 and 23, and the isolated ceiling
-  measure test (`find_ceiling_measure_fits_dispatch_headroom`, `--run-ignored only -j 1`)
+  measure test (`cargo nextest run -p syneroym-roym-web --test dual_build_parity --run-ignored only -j 1 find_ceiling_measure_fits_dispatch_headroom`)
   20 times. Assert the isolated measure fits within `DISPATCH_HEADROOM_MS`, and
   record worst ceiling measure in PR text (P10, P19).
 - Open the PR (CLA line verbatim).
@@ -1064,7 +1068,7 @@ one build is the A2c R1 mistake.
 - `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` (ceiling correctness
   scenario: 8 sources with 40 genuine signed listings each carrying full
   membership evidence and writes, clean of oversized replies, asserts correctness
-  and prints wall time, P2, P5, P18, P19)
+  and `Valid` membership verdicts, and prints wall time, P2, P5, P18, P19)
 - `find_ceiling_measure_fits_dispatch_headroom` (isolated measurement test marked
   `#[ignore]`: runs ceiling scenario alone, asserts wall time fits under
   `DISPATCH_HEADROOM_MS`, P10, P18, P19)
@@ -1152,7 +1156,8 @@ cargo xtask check-file-lengths && cargo xtask check-lint-suppressions
   envelopes cheaply first (a forged envelope usually fails at its JSON parse, so
   cost is mostly genuine signature checks, P2); (1'') compute membership verdicts
   only for rows that survive `dedupe_and_cap_verified` (at most 10 per source,
-  up to 80 total, saving up to 80 membership evaluations, P18); (2) lower
+  up to 80 total, saving up to 80 membership evaluations, P18; if applied, rerun the
+  equivalence test (D-A4-15) before the old verbs are deleted); (2) lower
   `MAX_STORED_PER_SOURCE` + `MAX_REFUSED_RESULTS`; (3) raise
   `DISPATCH_HEADROOM_MS` and lower `DEFAULT_SOURCE_TIMEOUT_MS`. (The previous
   fallback (1) to stop after both caps are full saved nothing because the list
@@ -1349,8 +1354,9 @@ A4 is done when all of these are true:
 11. The change doc, developer guide, spec, traceability matrix, sample config,
     `task.md`, `status.md` and the backlog are updated as in sections 8 and 9.
 12. No `src/` change outside `roym_directory`, `roym_core`, the new crate,
-    the Hub UI and `roymctl`. The substrate test files and the sample-config
-    comment change as listed in Step 6 and §9 (P24).
+    the Hub UI, `roymctl` and the `check-roym-deps` list in `xtask/src/main.rs`.
+    The substrate test files and the sample-config comment change as listed in
+    Step 6 and §9 (P24).
 13. The new parity file and Hub cases 22 and 23 ran 20 times in a row with no
     failure.
 14. `mise run verify` passes with no `--skip`.
