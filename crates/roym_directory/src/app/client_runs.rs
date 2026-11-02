@@ -44,8 +44,6 @@ pub(crate) struct RunEnvelopeRow {
     pub(crate) record_id: String,
     pub(crate) envelope: String,
     pub(crate) at_secs: u64,
-    #[serde(default)]
-    pub(crate) refused: bool,
 }
 
 pub(crate) async fn begin_run<H: AppHost>(host: &H) -> Reply<(String, u64)> {
@@ -142,7 +140,6 @@ pub(crate) async fn persist_find_results<H: AppHost>(
             record_id: record_id.clone(),
             envelope: envelope.clone(),
             at_secs: now,
-            refused: false,
         };
         let key = format!("{run_id}#{record_id}");
         let _ = put_json(host, SEARCH_RUNS, &key, &row).await;
@@ -167,7 +164,7 @@ pub(crate) async fn run_envelope<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e)),
     };
     for row in rows {
-        if !row.refused && row.record_id == input.record_id {
+        if row.record_id == input.record_id {
             return Ok(Some(RunEnvelopeOutput { envelope: row.envelope }));
         }
     }

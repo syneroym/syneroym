@@ -94,12 +94,8 @@ pub fn merge_rows(verified: Vec<Row>, refused: Vec<Row>, now_secs: u64) -> Merge
 /// arbitrary JSON, so nothing stops it returning two genuinely-signed
 /// versions of one listing in a single answer; an honest directory's
 /// own `search()` collapsing to one hit per listing narrows this but
-/// does not close it. It also covers the case that reliably occurs
-/// even against a well-behaved source: a client calling
-/// `query-source` more than once for the same `(run_id, source)`,
-/// e.g. a retry, storing a different version each time. Then sort by
-/// (issued_at desc, listing_id asc) and take at most
-/// `MAX_HITS_PER_SOURCE`.
+/// does not close it. Then sort by (issued_at desc, listing_id asc) and take
+/// at most `MAX_HITS_PER_SOURCE`.
 fn dedupe_and_cap_verified(verified_rows: Vec<Row>) -> BTreeMap<String, Vec<Row>> {
     let mut by_source: BTreeMap<String, BTreeMap<String, Row>> = BTreeMap::new();
     for row in verified_rows {

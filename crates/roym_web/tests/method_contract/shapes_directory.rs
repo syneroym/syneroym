@@ -251,55 +251,11 @@ async fn client_shapes() {
     let sources = rpc(&h, "directory.sources", json!({})).await;
     assert_shape("directory_sources", &sources);
 
-    let start = rpc(&h, "directory.start-run", json!({})).await;
-    assert_shape("directory_start_run", &start);
-    let run_id = start["run_id"].as_str().unwrap().to_string();
-
-    let qs_hits = rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
-    )
-    .await;
-    assert_shape("directory_query_source_with_hits", &qs_hits);
-
-    let qs_err = rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:zUnbound", "query": {} }),
-    )
-    .await;
-    assert_shape("directory_query_source_error", &qs_err);
-
-    let qs_trunc = rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hTrunc", "query": {} }),
-    )
-    .await;
-    assert_shape("directory_query_source_htrunc", &qs_trunc);
-
-    rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForge1", "query": {} }),
-    )
-    .await;
-
-    let merged = rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
-    assert_shape("directory_merge", &merged);
-
     let find_hits = rpc(&h, "directory.find", json!({})).await;
     assert_shape("directory_find_with_hits", &find_hits);
-    assert_eq!(shape(&find_hits["hits"]), shape(&merged["hits"]));
-    assert_eq!(shape(&find_hits["refused"]), shape(&merged["refused"]));
-    assert_eq!(shape(&find_hits["hits_truncated"]), shape(&merged["hits_truncated"]));
-    assert_eq!(shape(&find_hits["refused_truncated"]), shape(&merged["refused_truncated"]));
-    assert_eq!(shape(&find_hits["outcomes"][0]), shape(&qs_hits));
-    assert_eq!(shape(&find_hits["outcomes"][2]), shape(&qs_trunc));
-    assert_eq!(shape(&find_hits["outcomes"][3]), shape(&qs_err));
+    let run_id = find_hits["run_id"].as_str().unwrap().to_string();
+    let rec_id = find_hits["hits"][0]["record_id"].as_str().unwrap();
 
-    let rec_id = merged["hits"][0]["record_id"].as_str().unwrap();
     let env_found =
         rpc(&h, "directory.run-envelope", json!({ "run_id": run_id, "record_id": rec_id })).await;
     assert_shape("directory_run_envelope_found", &env_found);

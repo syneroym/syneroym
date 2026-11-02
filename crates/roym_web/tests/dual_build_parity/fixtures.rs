@@ -633,12 +633,8 @@ pub(crate) async fn publish_listing_to_primary(h: &Harness, slug: &str, title: &
     e
 }
 
-/// One build's full fan-out: mint a run, drive one `query-source` per
-/// source, merge. Returns `(run_id, merged)`. Each build must mint and use
-/// its *own* run id -- `start-run` folds the guest's own wall clock into
-/// the id (`run_{secs}_{n}`), and the two builds' clocks are unsynchronized
-/// (permitted difference 7), so a run id minted on one build is not
-/// guaranteed to exist on the other.
+/// One build's full fan-out: drive one `directory.find` call and return
+/// `(run_id, find_reply)`. Each build mints and uses its own run id.
 pub(crate) async fn fan_out_one(h: &Harness, wasm: bool, sources: &[&str]) -> (String, Value) {
     let sources_reply = one_rpc(h, wasm, "directory.sources", json!({})).await;
     let actual_sources: Vec<&str> = sources_reply["result"]["sources"]

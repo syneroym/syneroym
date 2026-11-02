@@ -261,7 +261,7 @@ pub(crate) fn dir2_owner_caller() -> CallerContext {
     custom_caller(&trust_fixtures::dir2_owner_did())
 }
 
-/// The identity a fan-out `query-source` / `publish-to-source` call
+/// The identity a fan-out `find` / `publish-to-source` call
 /// presents to a *foreign* directory over the wire -- deliberately not
 /// this node's own owner, so a directory's publication limiter (keyed on
 /// the verified connection identity) sees a distinct party.

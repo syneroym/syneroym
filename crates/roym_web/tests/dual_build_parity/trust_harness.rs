@@ -19,7 +19,7 @@ use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::{fixtures::peer_identity, helpers::owner_identity, trust_fixtures::dir2_owner_did};
 
-/// How many forged hits a hostile fake source returns per `query-source`.
+/// How many forged hits a hostile fake source returns per query.
 pub(crate) const HOSTILE_SOURCE_FORGERIES: usize = 15;
 
 /// A few shapes a forged envelope can take, cycled across a hostile
@@ -43,10 +43,9 @@ pub(crate) const FORGED_ENVELOPE_SHAPES: &[&str] = &[
 /// forgeries -- its own `directory.publish` verifies every envelope at
 /// the door -- so a canned page is the only way to drive "a source that
 /// returns nothing but forgeries" or "a source that had more matches
-/// than it would return". The searcher's own verification in
-/// `query-source`, not the source, is what must reject a forgery.
-/// Returned as the `Value::String` shape both real directory calls
-/// produce, so the two builds see byte-identical input.
+/// The searcher's own verification in `directory.find`, not the source, is
+/// what must reject a forgery. Returned as the `Value::String` shape both
+/// real directory calls produce, so the two builds see byte-identical input.
 pub(crate) fn hostile_source_response(target: &str) -> Option<Value> {
     if target == "did:key:hTrunc" {
         return Some(Value::String(

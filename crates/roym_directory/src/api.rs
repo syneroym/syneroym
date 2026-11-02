@@ -22,8 +22,8 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    self, backup, client_find, client_merge, client_query, client_runs, client_sources,
-    credential_ops, held, moderation_ops, publication_ops, search_ops, standing, synorg,
+    self, backup, client_find, client_runs, client_sources, credential_ops, held, moderation_ops,
+    publication_ops, search_ops, standing, synorg,
 };
 
 /// The four methods a foreign node may reach. `directory.search`,
@@ -72,9 +72,6 @@ syneroym_roym_core::service_methods! {
     "directory.probe-info": client_sources::probe_info_verb [app::DidInput => Option<DirectoryInfoOutput>],
     "directory.remove-source": client_sources::remove_source [app::DidInput => app::RemovedOutput],
     "directory.sources": client_sources::sources [NoParams => client_sources::SourcesOutput],
-    "directory.start-run": client_query::start_run [NoParams => client_query::StartRunOutput],
-    "directory.query-source": client_query::query_source [client_query::QuerySourceInput => client_query::QuerySourceOutput],
-    "directory.merge": client_merge::merge [client_merge::RunInput => client_merge::MergeOutput],
     "directory.find": client_find::find [client_find::FindInput => client_find::FindOutput],
     "directory.run-envelope": client_runs::run_envelope [client_runs::RunEnvelopeInput => Option<client_runs::RunEnvelopeOutput>],
     "directory.check-standing": held::check_standing [held::CheckStandingInput => held::CheckStandingOutput],

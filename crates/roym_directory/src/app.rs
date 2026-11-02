@@ -10,8 +10,6 @@
 
 pub mod backup;
 pub mod client_find;
-pub mod client_merge;
-pub mod client_query;
 pub mod client_runs;
 pub mod client_sources;
 pub mod credential_ops;
@@ -123,8 +121,8 @@ pub(in crate::app) fn idx(field: &str, ty: IndexType) -> IndexDefinition {
 }
 
 /// `search_runs` rows are per-run working state. `run_id` is the filter
-/// `merge` and `run-envelope` narrow on; `at_secs` is the field
-/// `start-run` prunes by. Both halves of the service that touch this
+/// `run-envelope` narrows on; `at_secs` is the field
+/// `begin_run` prunes by. Both halves of the service that touch this
 /// collection create it with the same indexes.
 pub(in crate::app) fn search_runs_indexes() -> [IndexDefinition; 2] {
     [idx("run_id", IndexType::String), idx("at_secs", IndexType::Numeric)]

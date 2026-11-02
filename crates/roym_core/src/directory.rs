@@ -43,32 +43,21 @@ pub const MAX_HITS_PER_QUERY: u32 = 50;
 /// Refused hits are carried and capped separately, so a directory serving
 /// forgeries crowds nothing out.
 pub const MAX_REFUSED_RESULTS: u32 = 20;
-/// Directories one person may add, and therefore the number of
-/// `query-source` calls one run makes. It bounds no single dispatch.
+/// Directories one person may add, and therefore the maximum number of
+/// calls one `directory.find` fan-out makes.
 pub const MAX_SOURCES: usize = 8;
-/// How many of those calls may be in flight at once. Derived from
-/// `max_concurrent_guest_http_per_service` (default 4), not chosen: one
-/// below it, so a search cannot consume every admission permit this
-/// service has and stall the rest of the Hub. `start-run` returns this
-/// value so the client does not carry its own copy.
-///
-/// The relationship to the real node default is asserted host-side, in
-/// `roym_web`'s `dual_build_parity` binary, which can import the actual
-/// `AppSandboxRole` defaults -- this guest crate cannot depend on the
-/// substrate config crate, so the check cannot live here.
-pub const MAX_CLIENT_CONCURRENCY: usize = 3;
-/// Verified hits one `query-source` call stores. Twice the per-source
-/// share, because the round-robin skips a listing another source already
-/// contributed, so a source can be asked for more than its share's worth
-/// of rows before it has contributed its share.
+/// Verified hits stored per source in memory before merging. Twice the
+/// per-source share, because the round-robin skips a listing another source
+/// already contributed, so a source can be asked for more than its share's
+/// worth of rows before it has contributed its share.
 pub const MAX_STORED_PER_SOURCE: u32 = 2 * MAX_HITS_PER_SOURCE;
-/// Per-source deadline for the one proxy call `directory.query-source`
-/// makes. Derived from the guest dispatch epoch, not chosen: the dispatch
-/// traps after `dispatch_epoch_timeout_secs` of wall clock -- 5s by
-/// default -- and that budget is spent while waiting on the call. The
+/// Per-source deadline for each parallel source call `directory.find`
+/// makes via `call-all`. Derived from the guest dispatch epoch, not chosen: the
+/// dispatch traps after `dispatch_epoch_timeout_secs` of wall clock -- 5s by
+/// default -- and that budget is spent while waiting on the calls. The
 /// `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch` relationship
-/// is asserted host-side (see `MAX_CLIENT_CONCURRENCY`), against the real
-/// `AppSandboxRole` default rather than a literal copied here.
+/// is asserted host-side, against the real `AppSandboxRole` default rather
+/// than a literal copied here.
 pub const DEFAULT_SOURCE_TIMEOUT_MS: u32 = 1_700;
 /// Headroom the host-side assertion reserves for verifying a full page of
 /// envelopes and writing the run rows.
@@ -211,10 +200,10 @@ pub enum AreaMatch {
 }
 
 /// Why one source contributed nothing. `NotStarted` is the node's own
-/// refusal to begin the call -- a 503 from guest-HTTP admission -- and is
-/// deliberately not folded into `TimedOut`: one says this installation was
-/// busy, the other says that directory did not answer, and only the
-/// second is the directory's fault.
+/// refusal to begin the call -- e.g. a refusal from `call-all` batch
+/// admission or node concurrency limits -- and is deliberately not folded
+/// into `TimedOut`: one says this installation was busy, the other says that
+/// directory did not answer, and only the second is the directory's fault.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SourceError {
@@ -358,8 +347,7 @@ mod tests {
     }
 
     // `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < dispatch epoch`
-    // and `MAX_CLIENT_CONCURRENCY < max_concurrent_guest_http_per_service`
-    // are asserted in `roym_web/tests/dual_build_parity.rs`, which links
-    // the real `AppSandboxRole` defaults. A copy of those literals here
+    // is asserted in `roym_web/tests/dual_build_parity/directory.rs`, which
+    // links the real `AppSandboxRole` defaults. A copy of those literals here
     // would pass even after the node default moved.
 }
