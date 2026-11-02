@@ -752,7 +752,7 @@ that number.
 by Claude Sonnet 5.5, and round 1 and its checks were done by the same
 model. So this is the first review of this plan by another model.
 
-**Summary:** 0 blocker, 2 major, 5 minor (P18 to P24). All 7 are Fixed (53e4e239).
+**Summary:** 0 blocker, 2 major, 5 minor (P18 to P24). After the fixes check: 4 Fixed (53e4e239), 3 reopened as minor (P18, P19, P24).
 
 ### Earlier items checked
 
@@ -916,7 +916,7 @@ exact cost is `unverified`: I did not run it.
    needs no verdict, so B7 is unchanged. This needs an equivalence check of
    its own, because it changes the order of work.
 
-*Status:* Fixed (53e4e239). Updated D-A4-14 to give hCeiling1..8 pinned issuers and 40 hits carrying full membership evidence (4 credentials, 4 revocations, 8 decisions); shared builder with 50-hit size test; clarified ceiling measure scope in D-A4-11 and Exit Criterion 8; added fallback (1'') to §7.6 to defer membership checks past dedupe_and_cap_verified.
+*Status:* Open. Reopened in the round 3 fixes check: the evidence builder can stop `evaluate` early, and fallback (1'') has no equivalence check. See the fixes check below. Partial fix in 53e4e239: Updated D-A4-14 to give hCeiling1..8 pinned issuers and 40 hits carrying full membership evidence (4 credentials, 4 revocations, 8 decisions); shared builder with 50-hit size test; clarified ceiling measure scope in D-A4-11 and Exit Criterion 8; added fallback (1'') to §7.6 to defer membership checks past dedupe_and_cap_verified.
 
 #### P19 — The ceiling assertion is a wall-clock bound in the shared parity run, under a 120 s epoch (major)
 
@@ -971,7 +971,7 @@ anything. Or a real trap at 5 s is never seen, because the harness allows
    header and exit criterion 12, see P24) or write 250 with a comment that
    names the constant.
 
-*Status:* Fixed (53e4e239). Corrected §3.2 to note WASM parity harness 120 s dispatch epoch override; separated ceiling parity correctness test (printing time) from isolated measurement test find_ceiling_measure_fits_dispatch_headroom (#[ignore]) run in Step 5 (4) and Step 9; updated OF-6 to assert completion before 5 s sleep rather than rigid 4 s; added 5 s epoch chain to §7.3; counted 250 ms cancel grace in D-A4-11 and Exit Criterion 8.
+*Status:* Open. Reopened in the round 3 fixes check: the nextest command for the isolated measure is wrong. See the fixes check below. Partial fix in 53e4e239: Corrected §3.2 to note WASM parity harness 120 s dispatch epoch override; separated ceiling parity correctness test (printing time) from isolated measurement test find_ceiling_measure_fits_dispatch_headroom (#[ignore]) run in Step 5 (4) and Step 9; updated OF-6 to assert completion before 5 s sleep rather than rigid 4 s; added 5 s epoch chain to §7.3; counted 250 ms cancel grace in D-A4-11 and Exit Criterion 8.
 
 #### P20 — The Hub and `roymctl` have no words for a failure of the one call that is not a 503 (minor)
 
@@ -1094,5 +1094,90 @@ false, or an implementer avoids a needed test change to keep it true.
 substrate test files and the sample-config comment change as listed in
 Step 6 and §9."
 
-*Status:* Fixed (53e4e239). Reworded header and Exit Criterion 12 to specify no src/ changes outside roym_directory, roym_core, the new crate, Hub UI, and roymctl, listing test and config updates.
+*Status:* Open. Reopened in the round 3 fixes check: the new wording leaves out the `xtask/src/main.rs` change. See the fixes check below. Partial fix in 53e4e239: Reworded header and Exit Criterion 12 to specify no src/ changes outside roym_directory, roym_core, the new crate, Hub UI, and roymctl, listing test and config updates.
 
+
+## Plan review round 3 — fixes checked — Claude Opus 5.5, 2026-11-02
+
+Checked the fixer's commit 53e4e239 (and 3a7ca051, which only sets the
+statuses and the `status.md` row) against the plan on
+`feat/m08a-a4-federated-query`. `git pull` said "Already up to date". I read
+the plan diff and the code each fix relies on. I ran nothing except
+`cargo nextest run --help`, to check the command in P19.
+
+**Confirmed Fixed.**
+- **P20.** D-A4-12 now says what any non-503 error does: it clears
+  "Searching...", shows "The search failed: <message>. Press Search to try
+  again." and enables the button again. The string is in the string list.
+  `findListings_turns_any_other_failure_into_a_page_error` is in §7.4.
+  `roymctl` prints the error and exits non-zero, with a test.
+- **P21.** Step 6 (5) and §7.4 rename case 22. Case 23 checks that the new
+  start notice is absent from the whole page and keeps the `503` check.
+- **P22.** §9 names `system-architecture.md:1353` and what it must say. Step 8
+  and §9 rewrite the change doc's Scope line and the `AGENTS.md` sentence.
+- **P23.** Step 8 and §9 update the OF-14, OF-15 and OF-18 counts. The
+  numbers given (141 methods, 35 directory rows, 137 local-only rows) are
+  right: 143 − 3 + 1 and 139 − 3 + 1.
+- **P7 note.** Step 6 (3) now keeps the `{"result": …}` wrapper.
+- **P1 note.** The 50-hit size test now has 4 revocations.
+
+**P18 reopened (residual, minor).** The ceiling sources are now pinned, the
+hits carry full evidence and the measure covers the checks and the writes.
+Two things remain:
+- "4 valid credentials, 4 revocations, 8 decisions" does not make `evaluate`
+  do all its checks. `find_revocation` stops at the first revocation that
+  names the chosen credential
+  ([membership.rs:401-405](../../../../crates/roym_core/src/membership.rs#L401)),
+  and `evaluate` then returns `Revoked` and checks no decision
+  ([membership.rs:512-519](../../../../crates/roym_core/src/membership.rs#L512)).
+  An active suspension also returns before the expiry and scope checks. So a
+  builder that revokes the member's own credential measures 1 revocation and
+  0 decisions, not 4 and 8.
+- Fallback (1'') changes when verdicts are computed. The round 3 fix asked
+  for an equivalence check of its own if it is used. §7.6 does not say so.
+  Its text "saving up to 80 membership evaluations" is right (160 → 80).
+
+*Fix:* in D-A4-14, say that the 4 revocations are valid but name another
+`credential_record_id` (so all 4 are checked and none matches), and the 8
+decisions are valid but not an active suspension of this listing (for
+example lifted, expired or for another listing), so `evaluate` reaches the
+end with `Valid`. Assert that verdict in the ceiling correctness test, so a
+builder mistake fails it. In §7.6 (1''), add: "if applied, rerun the
+equivalence test (D-A4-15) before the old verbs are deleted".
+
+**P19 reopened (residual, minor).** §3.2, the OF-6 bound, §7.3 and the
+cancel grace are fixed. The isolated measure is now an `#[ignore]` test. But
+its command is wrong in three places (D-A4-11, Step 5 (4), Step 9):
+
+```text
+cargo nextest run -p syneroym-roym-web --test dual_build_parity -- --run-ignored only -j 1
+```
+
+`--run-ignored` and `-j` are nextest options (cargo-nextest 0.9.143,
+`cargo nextest run --help`). After `--`, nextest reads test-binary
+arguments in the libtest style, so these two are not applied as meant. The
+command also names no test, so it runs every ignored test in the binary.
+
+*Fix:* write it as
+
+```bash
+cargo nextest run -p syneroym-roym-web --test dual_build_parity --run-ignored only -j 1 find_ceiling_measure_fits_dispatch_headroom
+```
+
+in all three places.
+
+**P24 reopened (residual, minor).** The header and exit criterion 12 now say
+"No `src/` change outside `roym_directory`, `roym_core`, the new crate, the
+Hub UI and `roymctl`". Step 2 changes `xtask/src/main.rs` (the
+`target_independent` list of `check-roym-deps`), and the header names that
+change itself one sentence earlier. So exit criterion 12 is false as written.
+
+*Fix:* add "and the `check-roym-deps` list in `xtask/src/main.rs`" to the
+header and to exit criterion 12.
+
+### New findings
+
+None.
+
+**Counts.** Round 3 has 7 items: 0 blocker, 2 major, 5 minor. P20 to P23
+are Fixed. P18, P19 and P24 are Open, each as a minor residual. **3 open.**
