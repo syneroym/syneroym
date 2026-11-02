@@ -8381,6 +8381,7 @@ dependencies = [
  "syneroym-identity",
  "syneroym-roym-core",
  "syneroym-signed-record",
+ "thiserror 2.0.21",
  "tokio",
  "z32",
 ]
