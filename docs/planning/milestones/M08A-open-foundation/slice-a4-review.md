@@ -18,9 +18,8 @@ plan. So there is **no model independence** in this round, as in the A3 plan
 review. The title above and the `status.md` row name the model that did the
 work. A review by another model is still useful.
 
-**Summary:** 0 blocker, 1 major, 15 minor. After the fixes check: all 16 are
-Fixed (20728d2f). After the closing check (last section): P3, P15 and P16
-confirmed, P1 reopened (residual, minor), P17 added (minor). 2 open.
+**Summary:** 0 blocker, 1 major, 16 minor. After the closing check: all 17 are
+Fixed (60f3282c).
 
 Limits of this review: I read code and did not run it. The memory finding (P1)
 rests on the sizes in the code (16 MiB frame, memory quota) and on how a
@@ -187,7 +186,7 @@ rest in section 7.6, and add a backlog row "`call-all` has no per-reply size
 cap" with target "when `call-all` is next opened". The plan says no change to
 `call-all`, so the row is right.
 
-*Status:* Open (reopened in the closing check below; was Fixed 20728d2f, partial). Derived MAX_SEARCH_REPLY_BYTES = 6 MiB (50 hits × (64 KiB payload + 16 KiB envelope/membership overhead) × 1.25 JSON escape factor ≈ 5 MiB + margin) in D-A4-3, D-A4-5, and §7.6; isolated oversized reply to canned source hOversized and separate test in §7.2, keeping ceiling run clean for time measurement.
+*Status:* Fixed (60f3282c). Reopened in closing check; now fixed. Derived MAX_SEARCH_REPLY_BYTES = 8 MiB from theoretical maximum reply (50 hits × (64 KiB payload + 42 KiB evidence bound from MAX_EVIDENCE_CREDENTIALS / MAX_EVIDENCE_DECISIONS / limits + ~1 KiB envelope) × 1.15 escape factor ≈ 6.0 MiB + 2 MiB safety margin = 8 MiB) in D-A4-3, D-A4-5, D-A4-14, Step 5, §7.2, and §7.6; added fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read test in §7.1 and Exit Criterion 10.
 
 #### P2 — Fallback (1) in section 7.6 saves nothing (minor)
 
@@ -709,4 +708,4 @@ wrong.
 field with its first reader. Or name the reader in the plan (for example, the
 library test asserts it) and say it is kept for the future logging row.
 
-*Status:* Open
+*Status:* Fixed (60f3282c). Removed dead refusal field from Gathered in D-A4-3, updated D-A4-5 and Step 3 to map outer Err to not-started without holding refusal text; library unit test checks outcomes only.
