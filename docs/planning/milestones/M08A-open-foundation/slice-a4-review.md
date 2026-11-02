@@ -736,3 +736,349 @@ about the outcome `not-started` and the host metric.
 **Counts.** 17 items: 0 blocker, 1 major, 16 minor. All 17 are Fixed.
 **0 open.**
 
+## Plan review round 3 — Claude Opus 5.5, 2026-11-02
+
+Checked against the code on `feat/m08a-a4-federated-query` at `765fc91d`
+(main checkout, not a worktree; `git pull` said "Already up to date"). The
+branch adds only planning docs on top of `main` at `2f043276`, so the code
+links in the plan are at the same commit. I read code and the plan. I ran
+nothing.
+
+**Round number.** The sections above are round 1 and three checks of its
+fixes. The prompt for this review calls it round 3, so this section uses
+that number.
+
+**Who reviewed.** This round runs on Claude Opus 5.5. The plan was written
+by Claude Sonnet 5.5, and round 1 and its checks were done by the same
+model. So this is the first review of this plan by another model.
+
+**Summary:** 0 blocker, 2 major, 5 minor (P18 to P24). 7 open.
+
+### Earlier items checked
+
+All 17 items of round 1 are marked Fixed. I checked each one against the
+plan text as it is now.
+
+- **P1 to P17: confirmed Fixed.** The size cap, its sum, `hOversized`, the
+  two library tests, the neutral Hub line, the host metric instead of a
+  guest log, the `BTreeMap` of page envelopes, the canned sources, the
+  permit text, the run-id backlog row, the measure definition, the Hub
+  strings, D-A4-16 and B10, the stale-comment `rg` scan, the test layout,
+  the owner dates and the removal of `Gathered.refusal` are all in the plan.
+  I redid the P1 sum: 107 KiB × 50 × 1.15 is about 6.0 MiB. With the 4
+  revocations that a hit may also carry
+  ([membership.rs:401](../../../../crates/roym_core/src/membership.rs#L401))
+  it is about 6.8 MiB, still under 8 MiB.
+- **Two notes on fixed items (not reopened).**
+  - P1: the final check asked to put revocations into the "maximum
+    evidence" reply of
+    `fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read`.
+    §7.1 still says "maximum credential/decision evidence". P18 below needs
+    the same full evidence, so its fix covers this.
+  - P7: Step 6 (3) says `fan_out_one` returns `(run_id, page)`. The call
+    sites read `mw["result"]["hits"]` (for example
+    [directory.rs:467](../../../../crates/roym_web/tests/dual_build_parity/directory.rs#L467),
+    [trust_sources.rs:24](../../../../crates/roym_web/tests/dual_build_parity/trust_sources.rs#L24)).
+    The implementer must keep the `{"result": …}` wrapper in the returned
+    value, or §3.6's "Call sites keep working" is false.
+
+### What was checked and found correct
+
+- **The harness reaches the canned sources through `call-all`.** The WASM
+  host runs each `call-all` entry through `ServiceProxy::invoke`
+  ([capabilities_call_all.rs:100-117](../../../../crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs#L100)),
+  so `canned_source_response` at the top of both harness proxies
+  ([helpers.rs:787, :872](../../../../crates/roym_web/tests/dual_build_parity/helpers.rs#L787))
+  sees every batch entry. Each entry is cut at its timeout plus
+  `CALL_CANCEL_GRACE`, so `hSlow` (5 s) ends as `TimedOut` at about 2.25 s.
+  The native shim calls the same `HostProxy::call_all`
+  ([host.rs:612](../../../../crates/app_host_native/src/host.rs#L612)).
+- **The native host lock.** Native `call_all` holds the host-state mutex for
+  the whole batch. That state is built per caller
+  ([host.rs:83](../../../../crates/app_host_native/src/host.rs#L83)), so a
+  loopback source (the node's own directory) does not wait on it. The old
+  `call` held the same lock for 2 s.
+- **Both builds have `call_all`.** The guest side calls `px::call_all`
+  ([guest.rs:384](../../../../crates/app_host/src/guest.rs#L384)), and the
+  `directory` bindings already have the A3 WIT. The library needs only
+  `syneroym-app-host`, which is on `check-roym-deps`' list
+  ([xtask/src/main.rs:185](../../../../xtask/src/main.rs#L185)).
+- **The request bytes (W8).** `QuerySourceInput.query` is already the typed
+  `SearchQuery`
+  ([client_query.rs:36-41](../../../../crates/roym_directory/src/app/client_query.rs#L36)),
+  so `find` re-serializing a typed `FindInput.query` sends the same bytes.
+- **Access control.** `web` routes every `directory.` method as
+  `MethodAuth::Owner`
+  ([router.rs:47](../../../../crates/roym_core/src/router.rs#L47)), so
+  `directory.find` needs no new row. `find` asks only registered sources,
+  as `validate_run_and_source` made `query-source` do. Page rows hold only
+  verified records, so `run-envelope` no longer needs the `!refused` check
+  after Step 7.
+- **`run-envelope` during Step 4.** It filters `search_runs` by the
+  `run_id` field and then compares `record_id`
+  ([client_merge.rs:311-340](../../../../crates/roym_directory/src/app/client_merge.rs#L311)).
+  So it finds both the old `{run_id}#{source}#{record_id}` rows and the new
+  `{run_id}#{record_id}` rows. Old rows all have `envelope`, so
+  `RunEnvelopeRow` parses them.
+- **The merge does not order by the membership verdict.** It only copies it
+  into `HitSource`
+  ([client_merge.rs:269](../../../../crates/roym_directory/src/app/client_merge.rs#L269)).
+  P18 uses this.
+- **No client-side timeout cuts a 2 s call.** The Hub's `call`
+  ([rpc.ts:23](../../../../crates/roym_web/ui/src/rpc.ts#L23)), `roymctl`'s
+  `rpc_call` and the gateway set none for `/rpc`.
+- **Old-verb callers.** `rg` over the workspace (without `docs/`) finds the
+  old verbs only in files that §3.6, Step 6 and Step 7 list.
+- **Links.** The spot-checked `file:line` links (constants in
+  `roym_core/directory.rs`, `client_sources.rs:176`, `runtime/roym.rs:157`,
+  `factory.rs:312`, `engine.rs:314`, the root `Cargo.toml` rows,
+  `config.sample.toml:157`, Hub e2e :763/:796/:830, `search.ts`, `find.rs`,
+  the oversized list) are right. Line counts in §3.7 are right.
+- **Change doc for each criterion and decision.** OF-6 and OF-7 and every
+  decision the plan cites are in
+  [roym-open-foundation](../../changes/roym-open-foundation/change.md).
+  `task.md` names no other change doc for A4. I found none.
+
+### Owner questions — reviewer view
+
+The owner answered (a) to all six. I do not answer for the owner. These are
+my views.
+
+- **Q1.** Agree with (a).
+- **Q2.** Agree with (a). But note: the parity harness runs the WASM build
+  with a 120 s dispatch epoch, not 5 s (see P19). So no test in the plan
+  runs the `web` → `directory` chain with a 2 s wait under the real 5 s
+  epoch. The risk that (a) accepts is therefore not tested at all, not only
+  "tested at the defaults". The plan should say so in §7.3.
+- **Q3.** Agree with (a).
+- **Q4.** Agree with (a). The Hub also needs words for a failure of the one
+  call that is not a 503 (P20).
+- **Q5.** Agree with (a).
+- **Q6.** Agree with (a) as an owner exception, recorded in the change doc.
+
+### New findings
+
+#### P18 — The ceiling scenario is not the worst case for own time: it skips membership checks, evidence writes and large replies (major)
+
+*Where:* D-A4-11, D-A4-14 (`hCeiling1..8`), Step 5 (4), §7.6 "Checking
+time", exit criterion 8.
+
+*Problem.* The plan calls the ceiling scenario "the worst case for checking
+time" and makes its time an exit criterion. It is not the worst case:
+
+- `membership::evaluate` returns at once when the source has no pinned
+  issuer
+  ([membership.rs:490](../../../../crates/roym_core/src/membership.rs#L490)).
+  `hCeiling1..8` answer `directory.info` "with a name" only, so
+  `add-source` pins no issuer, and no membership check runs. With a pinned
+  issuer, `evaluate` checks the signature of up to 4 credentials
+  ([membership.rs:496](../../../../crates/roym_core/src/membership.rs#L496),
+  `verify_credential` → `record::verify_json`), then up to 4 revocations and
+  up to 8 decisions. That is up to 16 signature checks for each counted
+  verified hit, and there are up to 8 × 20 = 160 counted hits: up to 2 560
+  signature checks, besides the 320 listing checks the plan counts.
+- `held::remember` runs once for each counted hit. With empty evidence and
+  no row it only does `ensure_coll` and `get`
+  ([held.rs:75-96](../../../../crates/roym_directory/src/app/held.rs#L75)).
+  With evidence it also writes the whole evidence (up to about 42 KiB or
+  more) each time: up to 160 writes. The ceiling hits carry no evidence.
+- Parsing cost grows with reply size. The cap is 8 MiB per reply, not per
+  find. The ceiling replies are 40 small listings.
+
+Before A4, each source's checks ran in its own guest call with its own 5 s.
+After A4, all 8 sources' checks share one guest call's 5 s
+(`DISPATCH_HEADROOM_MS` = 1 500 ms of it is the planned allowance). The
+measure, as defined, cannot show whether the real worst case fits.
+
+*Failure case.* A person adds 8 honest SynOrg directories, each with a
+pinned issuer. Their members carry full evidence (4 credentials, 4
+revocations, 8 decisions). Each directory returns 40 such hits. The guest's
+own time passes 5 s, the `directory` call traps, and the whole `find` fails.
+The person gets no result from any directory. The ceiling test passed in CI,
+because its hits had no evidence and its sources had no pinned issuer. The
+exact cost is `unverified`: I did not run it.
+
+*Fix.*
+1. In D-A4-14, make `hCeiling1..8` pinned: `directory.info` returns an
+   `issuer_did` (a test SynOrg key, as `trust_harness` does for
+   `hTrustValid`). Each of the 40 hits carries the maximum evidence signed by
+   that issuer: 4 valid credentials (so `evaluate` goes on to the revocation
+   and decision checks), 4 revocations, 8 decisions, at the maximum field
+   lengths. Use one builder for this and for the 50-hit size test (§7.1), so
+   both follow the limits.
+2. Say in D-A4-11 and exit criterion 8 that the measure includes the
+   membership checks, the evidence writes and replies close to the largest
+   honest size.
+3. Add a fallback to §7.6, before (2): compute the membership verdict only
+   for rows that survive `dedupe_and_cap_verified` (at most 10 per source,
+   so at most 80, not 160). The merge copies the verdict and does not order
+   by it (`client_merge.rs:269`). `held::remember` stores raw evidence and
+   needs no verdict, so B7 is unchanged. This needs an equivalence check of
+   its own, because it changes the order of work.
+
+#### P19 — The ceiling assertion is a wall-clock bound in the shared parity run, under a 120 s epoch (major)
+
+*Where:* D-A4-11 (second test), D-A4-14 (OF-6 "under 4 s"), Step 5 (4),
+§3.2 last bullet, §7.3, exit criteria 8 and 13.
+
+*Problem.*
+- The parity harness sets `dispatch_epoch_timeout_secs: 120` for the WASM
+  build
+  ([helpers.rs:1072-1082](../../../../crates/roym_web/tests/dual_build_parity/helpers.rs#L1072)).
+  Its own comment says why: on a busy CI host, normal work passes 5 s of
+  wall time. §3.2 says the harness "uses the defaults on both builds". That
+  is true for the `call-all` limits only.
+- The plan asserts that the ceiling `find` takes less than 1 500 ms of wall
+  time, inside this harness. Parity tests run 4 at a time locally and 2 in
+  CI, beside other test binaries
+  ([.config/nextest.toml:47-51](../../../../.config/nextest.toml#L47)).
+  A wall-clock bound of 1.5 s on 320+ signature checks and up to 240 data
+  calls will fail on a loaded machine. Exit criterion 13 runs it 20 times,
+  but on the developer's machine, not under CI load.
+- The OF-6 test asserts "under 4 s". That leaves 1.75 s over the 2.25 s
+  wave for `web`, `directory` and the checks of two sources. It has the same
+  risk, smaller.
+- Because of the 120 s epoch, no parity test can show a trap of `web` or
+  `directory` at 5 s. The plan's only real-epoch runs are the substrate e2e
+  and the Hub e2e, whose extra sources are bogus DIDs.
+- The static test in D-A4-11 uses `DEFAULT_SOURCE_TIMEOUT_MS` for one wave.
+  A wave really lasts up to 2 000 + 250 ms (`CALL_CANCEL_GRACE`).
+
+*Failure case.* CI fails now and then on
+`find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` with 1 6xx ms.
+Someone raises the bound or marks it flaky, and the measure stops meaning
+anything. Or a real trap at 5 s is never seen, because the harness allows
+120 s.
+
+*Fix.*
+1. Correct §3.2: the harness overrides the dispatch epoch to 120 s.
+2. In the shared parity run, the ceiling test checks correctness only (every
+   source `ok`, 20 verified per source, the page) and prints the wall time.
+   Move the 60 % / `DISPATCH_HEADROOM_MS` check to a measurement that runs
+   alone: an `#[ignore]` test run in Step 5 (4) and Step 9 with
+   `--run-ignored only -j 1`, its worst value written in the PR text. Change
+   exit criterion 8 to match.
+3. In the OF-6 test, assert the property itself: the call ended before
+   `hSlow`'s 5 s sleep (so it did not wait for the slow source), and the
+   slow source is `timed-out`. Do not use 4 s.
+4. Add to §7.3 "Not tested": the `web` → `directory` chain under the real
+   5 s epoch with a source that waits its full 2 s.
+5. In the static test, count a wave as `DEFAULT_SOURCE_TIMEOUT_MS` plus the
+   cancel grace. `CALL_CANCEL_GRACE` is `pub(super)` in `sandbox_wasm`. Either
+   make it `pub` (a one-line change in a substrate crate: list it in the
+   header and exit criterion 12, see P24) or write 250 with a comment that
+   names the constant.
+
+#### P20 — The Hub and `roymctl` have no words for a failure of the one call that is not a 503 (minor)
+
+*Where:* D-A4-12, Step 6 (1) and (2), §7.4.
+
+*Problem.* Before A4, a thrown error from one `query-source` became one
+source's `unreadable` line
+([search.ts:118-128](../../../../crates/roym_web/ui/src/directory/search.ts#L118)),
+and the page still drew. After A4 there is one call. D-A4-12 says what a 503
+does. It does not say what these do:
+- `-32602` from `directory.find` for an invalid query field (W3);
+- `-32603` (`TooManySources`, or a data-layer error in `begin_run`);
+- an HTTP 500 or other error when `web` or `directory` traps at 5 s (the
+  Q2 risk).
+
+*Failure case.* The person searches, `directory` traps, and the page stays at
+"Searching..." with the button disabled, or shows a raw "HTTP error 500".
+
+*Fix.* In D-A4-12: any other thrown error clears "Searching...", shows one
+page-level line ("The search failed: <message>. Press Search to try again."),
+and enables the button again. Add the vitest case
+`findListings_turns_any_other_failure_into_a_page_error`. For `roymctl`: say
+that it prints the error and exits non-zero, and add a unit test for it.
+
+#### P21 — Hub case 23's negative check no longer matches any Hub text (minor)
+
+*Where:* §3.6 (case 23: "keep"), Step 6 (5), §7.4.
+
+*Problem.* Case 23 checks that `.search-source-errors` does not contain
+`this installation was busy`
+([roym-hub.spec.ts:820-823](../../../../crates/substrate/tests/e2e/tests/roym-hub.spec.ts#L820)).
+After A4 the busy text is "This installation could not start the search…"
+(D-A4-12), and it is a page-level notice, not a source line. The old check
+passes whatever happens. That is the A2a R1 kind of mistake. Case 22's title
+also says "fills in per source", which is no longer true.
+
+*Failure case.* A full search returns all `not-started` (for example the
+waiter limit is full), the neutral notice shows, and case 23 still passes.
+
+*Fix.* In Step 6 (5): case 23 checks that the new notice text is absent from
+the whole page, and keeps the `503` check. Rename case 22 ("the results view
+shows the loopback hit and names the unreachable sources").
+
+#### P22 — Living-doc statements that become false and that the plan's greps do not find (minor)
+
+*Where:* §9.
+
+*Problem.*
+- [system-architecture.md:1353](../../../system-architecture.md) describes
+  the old loop in words, not by method name: "The Hub starts a search run …
+  For each directory the Hub asks the node to send `directory.search`. The
+  node reports a limit of 3 requests at the same time, and the Hub follows
+  it … the Hub retries that directory once." All of this is false after A4.
+  §9 asks to grep for `directory`, `fan-out` and `merge`; the first matches
+  hundreds of lines and the other two do not match this paragraph.
+- The change doc's Scope says "The three-call form stays only if a client
+  still needs live progress (see Open questions)"
+  ([change.md:51](../../changes/roym-open-foundation/change.md)). The Open
+  questions section has no such question, and A4 removes the three-call
+  form. Step 8 does not list this line.
+- `AGENTS.md` (Architecture) says "`directory` is also the only service
+  holding `CallTarget::Service` in its own source". After A4 the fan-out's
+  `CallTarget::Service` is in the federated query library, a crate any Roym
+  service could link.
+
+*Failure case.* The architecture doc keeps describing a limit of 3 and a Hub
+retry that no longer exist.
+
+*Fix.* In §9, name `system-architecture.md:1353` and say what it must say
+(one call to `directory.find`; the node asks all sources at once, up to
+`call_all_max_concurrency`; no Hub retry). In Step 8, rewrite the Scope line
+of the change doc. Update the `AGENTS.md` sentence to name the library
+("`directory`, through the federated query library it links, …").
+
+#### P23 — The change doc's counts for OF-14, OF-15 and OF-18 become false (minor)
+
+*Where:* §9 (change doc), Step 8.
+
+*Problem.* The Test column of OF-14 says "all 143 methods" and "the 217
+shape files"; OF-15 says "(24 + 24 + 17 + 41 + 37 rows)"; OF-18 says "139
+local-only rows refuse"
+([change.md:85-87](../../changes/roym-open-foundation/change.md)). A4
+removes 3 directory methods and adds 1 (37 → 35 rows, 143 → 141 methods,
+139 → 137 local-only rows). It deletes 5 shape files
+(`directory_start_run`, `directory_query_source_{error,htrunc,with_hits}`,
+`directory_merge`) and adds the `directory_find_*` files. §9 lists only OF-6
+and OF-7. Wrong counts in the change doc were found in A2b, A2c and A3.
+
+*Failure case.* The change doc says 143 methods and 217 shapes after A4.
+
+*Fix.* In §9 and Step 8: update the counts in the OF-14, OF-15 and OF-18
+Test column from the real files after Step 7 (count the shape files with
+`ls crates/roym_web/tests/method_shapes | wc -l`).
+
+#### P24 — "No substrate code changes" contradicts the steps (minor)
+
+*Where:* Header ("It changes no other Roym service and no substrate
+code"), exit criterion 12.
+
+*Problem.* Step 6 changes `crates/substrate/tests/common/roym_flow.rs` and
+`crates/substrate/tests/e2e/tests/roym-hub.spec.ts`; Step 7 and §3.6 change
+`roym_directory_e2e.rs`; §9 changes `crates/substrate/config.sample.toml`.
+The Hub (`crates/roym_web/ui`) is built into the `web` component, so `web`'s
+build changes too. P19's fix may touch `sandbox_wasm`. Exit criterion 12,
+"No substrate crate changed", cannot be true as written.
+
+*Failure case.* A reviewer of the PR checks exit criterion 12 and finds it
+false, or an implementer avoids a needed test change to keep it true.
+
+*Fix.* Reword the header and exit criterion 12: "No `src/` change outside
+`roym_directory`, `roym_core`, the new crate, the Hub UI and `roymctl`. The
+substrate test files and the sample-config comment change as listed in
+Step 6 and §9."
+
