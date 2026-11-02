@@ -51,28 +51,11 @@ pub fn hits(result: &Value) -> Vec<Value> {
 }
 
 /// Drive the searcher client loop the way `roymctl roym directory find` and
-/// the Hub do: `start-run`, one `query-source` per source (respecting
-/// `max_concurrency`), then `merge`. Returns `(run_id, merge_result)`.
+/// the Hub do: `directory.find`. Returns `(run_id, merge_result)`.
 pub async fn run_client_loop(node: &Node, query: Value) -> (String, Value) {
-    let start = node.rpc_ok("directory.start-run", json!({})).await;
-    let run_id = start["run_id"].as_str().unwrap().to_string();
-    let sources: Vec<String> = start["sources"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    let max_concurrency = start["max_concurrency"].as_u64().unwrap_or(1).max(1) as usize;
-    for chunk in sources.chunks(max_concurrency) {
-        for source in chunk {
-            let _ = node
-                .rpc(
-                    "directory.query-source",
-                    json!({ "run_id": run_id, "source": source, "query": query }),
-                )
-                .await;
-        }
-    }
-    let merged = node.rpc_ok("directory.merge", json!({ "run_id": run_id })).await;
-    (run_id, merged)
+    let find_res = node.rpc_ok("directory.find", json!({ "query": query })).await;
+    let run_id = find_res["run_id"].as_str().unwrap().to_string();
+    (run_id, find_res)
 }
 
 pub async fn listing_envelope(node: &Node, listing_id: &str) -> String {

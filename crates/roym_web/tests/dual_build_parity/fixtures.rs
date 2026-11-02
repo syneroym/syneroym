@@ -640,19 +640,21 @@ pub(crate) async fn publish_listing_to_primary(h: &Harness, slug: &str, title: &
 /// (permitted difference 7), so a run id minted on one build is not
 /// guaranteed to exist on the other.
 pub(crate) async fn fan_out_one(h: &Harness, wasm: bool, sources: &[&str]) -> (String, Value) {
-    let start = one_rpc(h, wasm, "directory.start-run", json!({})).await;
-    let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
+    let sources_reply = one_rpc(h, wasm, "directory.sources", json!({})).await;
+    let actual_sources: Vec<&str> = sources_reply["result"]["sources"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|s| s["did"].as_str()).collect())
+        .unwrap_or_default();
     for did in sources {
-        one_rpc(
-            h,
-            wasm,
-            "directory.query-source",
-            json!({ "run_id": run_id, "source": did, "query": {} }),
-        )
-        .await;
+        assert!(actual_sources.contains(did), "source {did} must be registered");
     }
-    let merged = one_rpc(h, wasm, "directory.merge", json!({ "run_id": run_id })).await;
-    (run_id, merged)
+
+    let mut find_res = one_rpc(h, wasm, "directory.find", json!({})).await;
+    let run_id = find_res["result"]["run_id"].as_str().unwrap().to_string();
+    if let Some(res_obj) = find_res.get_mut("result").and_then(Value::as_object_mut) {
+        res_obj.remove("run_id");
+    }
+    (run_id, find_res)
 }
 
 /// Adds the sources, then runs `fan_out_one` on each build. Returns each

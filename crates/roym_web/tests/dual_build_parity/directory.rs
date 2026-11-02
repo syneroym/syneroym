@@ -494,22 +494,15 @@ async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity()
 #[tokio::test]
 async fn scenario_101_a_run_with_zero_sources_succeeds_with_zero_hits_parity() {
     let h = harness().await;
-    // Per build, minting each build's own run id (the id folds in the
-    // guest's own wall clock) -- `start-run`'s raw response is never
-    // compared directly across builds for that reason.
-    let start_w = one_rpc(&h, true, "directory.start-run", json!({})).await;
-    let start_n = one_rpc(&h, false, "directory.start-run", json!({})).await;
-    assert_eq!(start_w["result"]["sources"], json!([]));
-    assert_eq!(start_n["result"]["sources"], json!([]));
-    assert_eq!(start_w["result"]["max_concurrency"], start_n["result"]["max_concurrency"]);
-    let run_w = start_w["result"]["run_id"].as_str().unwrap().to_string();
-    let run_n = start_n["result"]["run_id"].as_str().unwrap().to_string();
-
-    let mw = one_rpc(&h, true, "directory.merge", json!({ "run_id": run_w })).await;
-    let mn = one_rpc(&h, false, "directory.merge", json!({ "run_id": run_n })).await;
-    assert_eq!(stripped(&mw), stripped(&mn));
-    assert_eq!(mw["result"]["hits"], json!([]));
-    assert!(mw["result"].get("error").is_none());
+    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+    assert_eq!(fw["result"]["hits"], json!([]));
+    assert_eq!(fw["result"]["outcomes"], json!([]));
+    assert!(fw["result"].get("error").is_none());
 }
 
 #[tokio::test]
@@ -1060,25 +1053,22 @@ async fn scenario_120_a_source_that_truncates_says_so_per_source_parity() {
 
     // `did:key:hTrunc` answers with no hits but `truncated: true` -- the
     // "500 listings, wanted rows hashed late, zero results" case. The flag
-    // must ride the `query-source` reply, since a zero-row source writes
-    // no run rows for `merge` to carry it on.
+    // must reach the `directory.find` outcomes.
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hTrunc" })).await;
-    for wasm in [true, false] {
-        let start = one_rpc(&h, wasm, "directory.start-run", json!({})).await;
-        let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
-        let reply = one_rpc(
-            &h,
-            wasm,
-            "directory.query-source",
-            json!({ "run_id": run_id, "source": "did:key:hTrunc", "query": {} }),
-        )
-        .await;
-        assert_eq!(reply["result"]["verified"], 0, "{reply}");
-        assert_eq!(
-            reply["result"]["truncated"], true,
-            "the directory's truncated flag must reach the per-source reply: {reply}"
-        );
-    }
+    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    let outcome = outcomes.iter().find(|o| o["source"] == "did:key:hTrunc").unwrap();
+    assert_eq!(outcome["verified"], 0, "{fw}");
+    assert_eq!(
+        outcome["truncated"], true,
+        "the directory's truncated flag must reach the per-source outcome: {fw}"
+    );
 }
 
 #[tokio::test]
