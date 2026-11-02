@@ -752,7 +752,7 @@ that number.
 by Claude Sonnet 5.5, and round 1 and its checks were done by the same
 model. So this is the first review of this plan by another model.
 
-**Summary:** 0 blocker, 2 major, 5 minor (P18 to P24). After the fixes check: 4 Fixed (53e4e239), 3 reopened as minor (P18, P19, P24).
+**Summary:** 0 blocker, 2 major, 5 minor (P18 to P24). All 7 are Fixed (bc90050e).
 
 ### Earlier items checked
 
@@ -916,7 +916,7 @@ exact cost is `unverified`: I did not run it.
    needs no verdict, so B7 is unchanged. This needs an equivalence check of
    its own, because it changes the order of work.
 
-*Status:* Open. Reopened in the round 3 fixes check: the evidence builder can stop `evaluate` early, and fallback (1'') has no equivalence check. See the fixes check below. Partial fix in 53e4e239: Updated D-A4-14 to give hCeiling1..8 pinned issuers and 40 hits carrying full membership evidence (4 credentials, 4 revocations, 8 decisions); shared builder with 50-hit size test; clarified ceiling measure scope in D-A4-11 and Exit Criterion 8; added fallback (1'') to §7.6 to defer membership checks past dedupe_and_cap_verified.
+*Status:* Fixed (bc90050e). Reopened in round 3 fixes check; fixed (bc90050e): D-A4-14 specifies revocations name another credential_record_id and decisions are non-suspending so evaluate reaches Valid; asserted Valid in ceiling correctness test; §7.6 (1'') adds rerun of equivalence test (D-A4-15) if applied.
 
 #### P19 — The ceiling assertion is a wall-clock bound in the shared parity run, under a 120 s epoch (major)
 
@@ -971,7 +971,7 @@ anything. Or a real trap at 5 s is never seen, because the harness allows
    header and exit criterion 12, see P24) or write 250 with a comment that
    names the constant.
 
-*Status:* Open. Reopened in the round 3 fixes check: the nextest command for the isolated measure is wrong. See the fixes check below. Partial fix in 53e4e239: Corrected §3.2 to note WASM parity harness 120 s dispatch epoch override; separated ceiling parity correctness test (printing time) from isolated measurement test find_ceiling_measure_fits_dispatch_headroom (#[ignore]) run in Step 5 (4) and Step 9; updated OF-6 to assert completion before 5 s sleep rather than rigid 4 s; added 5 s epoch chain to §7.3; counted 250 ms cancel grace in D-A4-11 and Exit Criterion 8.
+*Status:* Fixed (bc90050e). Reopened in round 3 fixes check; fixed (bc90050e): corrected isolated nextest command to 'cargo nextest run -p syneroym-roym-web --test dual_build_parity --run-ignored only -j 1 find_ceiling_measure_fits_dispatch_headroom' in D-A4-11, Step 5 (4), and Step 9.
 
 #### P20 — The Hub and `roymctl` have no words for a failure of the one call that is not a 503 (minor)
 
@@ -1094,7 +1094,7 @@ false, or an implementer avoids a needed test change to keep it true.
 substrate test files and the sample-config comment change as listed in
 Step 6 and §9."
 
-*Status:* Open. Reopened in the round 3 fixes check: the new wording leaves out the `xtask/src/main.rs` change. See the fixes check below. Partial fix in 53e4e239: Reworded header and Exit Criterion 12 to specify no src/ changes outside roym_directory, roym_core, the new crate, Hub UI, and roymctl, listing test and config updates.
+*Status:* Fixed (bc90050e). Reopened in round 3 fixes check; fixed (bc90050e): added 'and the check-roym-deps list in xtask/src/main.rs' to header and exit criterion 12.
 
 
 ## Plan review round 3 — fixes checked — Claude Opus 5.5, 2026-11-02
@@ -1179,5 +1179,4 @@ header and to exit criterion 12.
 
 None.
 
-**Counts.** Round 3 has 7 items: 0 blocker, 2 major, 5 minor. P20 to P23
-are Fixed. P18, P19 and P24 are Open, each as a minor residual. **3 open.**
+**Counts.** Round 3 has 7 items: 0 blocker, 2 major, 5 minor. All 7 are Fixed (bc90050e). **0 open.**
