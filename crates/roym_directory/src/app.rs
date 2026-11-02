@@ -9,8 +9,10 @@
 //! verified.
 
 pub mod backup;
+pub mod client_find;
 pub mod client_merge;
 pub mod client_query;
+pub mod client_runs;
 pub mod client_sources;
 pub mod credential_ops;
 pub mod held;

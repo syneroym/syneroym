@@ -22,8 +22,8 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    self, backup, client_merge, client_query, client_sources, credential_ops, held, moderation_ops,
-    publication_ops, search_ops, standing, synorg,
+    self, backup, client_find, client_merge, client_query, client_runs, client_sources,
+    credential_ops, held, moderation_ops, publication_ops, search_ops, standing, synorg,
 };
 
 /// The four methods a foreign node may reach. `directory.search`,
@@ -75,7 +75,8 @@ syneroym_roym_core::service_methods! {
     "directory.start-run": client_query::start_run [NoParams => client_query::StartRunOutput],
     "directory.query-source": client_query::query_source [client_query::QuerySourceInput => client_query::QuerySourceOutput],
     "directory.merge": client_merge::merge [client_merge::RunInput => client_merge::MergeOutput],
-    "directory.run-envelope": client_merge::run_envelope [client_merge::RunEnvelopeInput => Option<client_merge::RunEnvelopeOutput>],
+    "directory.find": client_find::find [client_find::FindInput => client_find::FindOutput],
+    "directory.run-envelope": client_runs::run_envelope [client_runs::RunEnvelopeInput => Option<client_runs::RunEnvelopeOutput>],
     "directory.check-standing": held::check_standing [held::CheckStandingInput => held::CheckStandingOutput],
     "directory.memberships": held::memberships [app::MemberFilterInput => held::MembershipsOutput],
     // Not `publication_ops::publish` -- this fetches one of this node's own

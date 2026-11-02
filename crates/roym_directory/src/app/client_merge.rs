@@ -14,18 +14,6 @@ pub(crate) struct RunInput {
     pub run_id: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RunEnvelopeInput {
-    pub run_id: String,
-    pub record_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct RunEnvelopeOutput {
-    pub envelope: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct MergeOutput {
     pub hits: Vec<MergedHit>,
@@ -96,36 +84,4 @@ async fn load_run_rows<H: AppHost>(
         }
     }
     Ok((verified_rows, refused_rows))
-}
-
-pub(crate) async fn run_envelope<H: AppHost>(
-    host: &H,
-    input: RunEnvelopeInput,
-) -> Reply<Option<RunEnvelopeOutput>> {
-    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
-        return Err(Response::internal_error(e));
-    }
-    // Filtered on the `run_id` field at the host -- one run's rows, not
-    // the whole collection. Only a *verified* row is accepted: its
-    // `record_id` is content-derived from the envelope, so any surviving
-    // verified row for `record_id` carries the identical signed bytes. A
-    // refused row's `record_id` is whatever the source claimed,
-    // unverified, so a hostile source could set one to collide with a
-    // genuine record -- excluded here rather than trusted to sort last.
-    let rows: Vec<SearchRunRow> = match paging::query_all(
-        host,
-        SEARCH_RUNS,
-        Some(json!({ "run_id": input.run_id }).to_string()),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return Err(Response::internal_error(e)),
-    };
-    for row in rows {
-        if !row.refused && row.record_id == input.record_id {
-            return Ok(Some(RunEnvelopeOutput { envelope: row.envelope }));
-        }
-    }
-    Ok(None)
 }

@@ -20,8 +20,10 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    RUNS, SEARCH_RUNS, SOURCES, client_sources::SourceRow, ensure_coll, get_json, held, put_json,
-    search_runs_indexes, serde_str,
+    RUNS, SEARCH_RUNS, SOURCES,
+    client_runs::{mark_source_ok, record_source_error},
+    client_sources::SourceRow,
+    ensure_coll, get_json, held, put_json, search_runs_indexes, serde_str,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -435,34 +437,4 @@ fn map_proxy_error(e: &ProxyError) -> SourceError {
         }
         other => SourceError::Refused { code: -32603, message: format!("{other:?}") },
     }
-}
-
-/// Loads `source`'s `sources` row, defaulting to a fresh one keyed on
-/// `source` and stamped `added_at_secs: now` when it has none yet.
-/// Shared by the success path (`mark_source_ok`) and the failure path
-/// (`record_source_error`), which otherwise differ only in which field
-/// they then set.
-async fn load_source_row_or_default<H: AppHost>(host: &H, source: &str, now: u64) -> SourceRow {
-    get_json(host, SOURCES, source).await.ok().flatten().unwrap_or(SourceRow {
-        did: source.to_string(),
-        label: String::new(),
-        added_at_secs: now,
-        last_ok_secs: None,
-        last_error: None,
-        issuer_did: None,
-    })
-}
-
-async fn mark_source_ok<H: AppHost>(host: &H, source: &str, now: u64) {
-    let mut row = load_source_row_or_default(host, source, now).await;
-    row.last_ok_secs = Some(now);
-    row.last_error = None;
-    let _ = put_json(host, SOURCES, source, &row).await;
-}
-
-async fn record_source_error<H: AppHost>(host: &H, source: &str, error: &SourceError) {
-    let now = clock::now_secs();
-    let mut row = load_source_row_or_default(host, source, now).await;
-    row.last_error = Some(error.clone());
-    let _ = put_json(host, SOURCES, source, &row).await;
 }

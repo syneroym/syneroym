@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use super::{
     fixtures::{ensure_dir2_synorg, ensure_synorg, full_listing_params, peer_did},
     helpers::{Driver, Harness, HttpDriver, harness, owner_did},
-    shapes::{assert_shape, enrol_native_signing, rpc},
+    shapes::{assert_shape, enrol_native_signing, rpc, shape},
     trust_fixtures::{FIXTURE_CATEGORIES, fixture_credential_expires_at_secs, stranger_did},
 };
 
@@ -218,6 +218,9 @@ async fn client_shapes() {
     let envelope = get_res["envelope"].as_str().unwrap().to_string();
     let _ = rpc(&h, "directory.publish", json!({ "envelope": envelope })).await;
 
+    let find_empty = rpc(&h, "directory.find", json!({})).await;
+    assert_shape("directory_find_empty", &find_empty);
+
     let add_clean = rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
     assert_shape("directory_add_source_without_note", &add_clean);
 
@@ -285,6 +288,16 @@ async fn client_shapes() {
 
     let merged = rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
     assert_shape("directory_merge", &merged);
+
+    let find_hits = rpc(&h, "directory.find", json!({})).await;
+    assert_shape("directory_find_with_hits", &find_hits);
+    assert_eq!(shape(&find_hits["hits"]), shape(&merged["hits"]));
+    assert_eq!(shape(&find_hits["refused"]), shape(&merged["refused"]));
+    assert_eq!(shape(&find_hits["hits_truncated"]), shape(&merged["hits_truncated"]));
+    assert_eq!(shape(&find_hits["refused_truncated"]), shape(&merged["refused_truncated"]));
+    assert_eq!(shape(&find_hits["outcomes"][0]), shape(&qs_hits));
+    assert_eq!(shape(&find_hits["outcomes"][2]), shape(&qs_trunc));
+    assert_eq!(shape(&find_hits["outcomes"][3]), shape(&qs_err));
 
     let rec_id = merged["hits"][0]["record_id"].as_str().unwrap();
     let env_found =

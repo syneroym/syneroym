@@ -1,0 +1,8 @@
+{
+  "hits": [],
+  "hits_truncated": "boolean",
+  "outcomes": [],
+  "refused": [],
+  "refused_truncated": "boolean",
+  "run_id": "string"
+}
