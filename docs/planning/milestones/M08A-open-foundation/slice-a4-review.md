@@ -18,9 +18,8 @@ plan. So there is **no model independence** in this round, as in the A3 plan
 review. The title above and the `status.md` row name the model that did the
 work. A review by another model is still useful.
 
-**Summary:** 0 blocker, 1 major, 13 minor. After the fixes check (next
-section): 12 confirmed Fixed, P1 and P3 reopened, P15 and P16 added (minor).
-4 open.
+**Summary:** 0 blocker, 1 major, 15 minor. After the fixes check: all 16 are
+Fixed (20728d2f).
 
 Limits of this review: I read code and did not run it. The memory finding (P1)
 rests on the sizes in the code (16 MiB frame, memory quota) and on how a
@@ -187,7 +186,7 @@ rest in section 7.6, and add a backlog row "`call-all` has no per-reply size
 cap" with target "when `call-all` is next opened". The plan says no change to
 `call-all`, so the row is right.
 
-*Status:* Open (reopened in the fixes check below; was Fixed 6b47137b, partial). Added MAX_SEARCH_REPLY_BYTES length check before parse, replies dropped by value via into_iter in D-A4-3/D-A4-5, unit and ceiling tests in 7.1/7.2, residual host lowering risk in 7.6, and backlog row in Section 8.
+*Status:* Fixed (20728d2f). Derived MAX_SEARCH_REPLY_BYTES = 6 MiB (50 hits × (64 KiB payload + 16 KiB envelope/membership overhead) × 1.25 JSON escape factor ≈ 5 MiB + margin) in D-A4-3, D-A4-5, and §7.6; isolated oversized reply to canned source hOversized and separate test in §7.2, keeping ceiling run clean for time measurement.
 
 #### P2 — Fallback (1) in section 7.6 saves nothing (minor)
 
@@ -240,7 +239,7 @@ could not start the search. Press Search to try again." (3) Correct the Q4 text.
 (4) The test `a_refused_batch_marks_every_source_not_started` runs for both an
 `Internal` and an `UnsupportedTarget` refusal.
 
-*Status:* Open (reopened in the fixes check below; was Fixed 6b47137b, partial). Outer refusals map to NotStarted with error text in Gathered.refusal; directory logs refusal at warn in D-A4-8; Hub shows neutral start message in D-A4-10/D-A4-12; test a_refused_batch_marks_every_source_not_started covers Internal and UnsupportedTarget in 7.1.
+*Status:* Fixed (20728d2f). Removed warn! from guest crates (D-A4-8, D-A4-10, Step 4); batch refusal cause is observed via host metric substrate.proxy.call_all.refused{reason} (D-A3-13); added backlog row in §8 for guest logging interface.
 
 #### P4 — The library's `Row` has no envelope, but the page needs the envelopes; the scope of evidence is not stated (minor)
 
@@ -620,7 +619,7 @@ said it. If the owner has not answered, put the lines back to "not yet
 answered". Q2's line also adds a decision the owner may not have made (the
 startup-warning backlog row); confirm it.
 
-*Status:* Open
+*Status:* Fixed (20728d2f). Corrected owner answer dates from 2026-11-01 to 2026-11-02 across plan header, Q1–Q6, and status.md.
 
 #### P16 — Two gaps left by the fixes (minor)
 
@@ -643,4 +642,4 @@ does not know that the canned source exists, or where.
 false/ignored)", and say it is a wire-reading change of remote answers.
 (b) Add `hTwoVersions` to D-A4-14 and to Step 5 next to `hCeiling1..8`.
 
-*Status:* Open
+*Status:* Fixed (20728d2f). Added B10 in §4 audit table for typed search reply wire-reading change (D-A4-16); defined canned sources hTwoVersions (P6) and hOversized (P1) in D-A4-14 and Step 5 alongside hCeiling1..8.
