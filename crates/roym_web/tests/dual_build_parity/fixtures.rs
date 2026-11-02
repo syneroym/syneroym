@@ -644,6 +644,11 @@ pub(crate) async fn fan_out_one(h: &Harness, wasm: bool, sources: &[&str]) -> (S
     for did in sources {
         assert!(actual_sources.contains(did), "source {did} must be registered");
     }
+    assert_eq!(
+        actual_sources.len(),
+        sources.len(),
+        "directory sources must match requested sources"
+    );
 
     let mut find_res = one_rpc(h, wasm, "directory.find", json!({})).await;
     let run_id = find_res["result"]["run_id"].as_str().unwrap().to_string();
@@ -656,6 +661,14 @@ pub(crate) async fn fan_out_one(h: &Harness, wasm: bool, sources: &[&str]) -> (S
 /// Adds the sources, then runs `fan_out_one` on each build. Returns each
 /// build's run id and merged response.
 pub(crate) async fn fan_out(h: &Harness, sources: &[&str]) -> (String, String, Value, Value) {
+    let (sw, _) = both_rpc(h, "directory.sources", json!({})).await;
+    if let Some(list) = sw["result"]["sources"].as_array() {
+        for s in list.iter().filter_map(|s| s["did"].as_str()) {
+            if !sources.contains(&s) {
+                both_rpc(h, "directory.remove-source", json!({ "did": s })).await;
+            }
+        }
+    }
     for did in sources {
         both_rpc(h, "directory.add-source", json!({ "did": did })).await;
     }

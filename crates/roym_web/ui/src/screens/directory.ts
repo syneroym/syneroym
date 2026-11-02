@@ -256,7 +256,7 @@ function buildSearch(): HTMLElement {
       }
       progress.textContent =
         res.outcomes.length === 0
-          ? "You have not added any directories to search."
+          ? "You have not added any directories. Add one above, or reach a listing owner by a direct link."
           : `${res.outcomes.length} directories searched.`;
       results.replaceChildren();
       refusedHost.replaceChildren();
