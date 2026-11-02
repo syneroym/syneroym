@@ -3,7 +3,7 @@
 *Reader: the developer (or AI) who implements slice A4. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan reviewed 2026-11-02. The owner answered (a) to Q1–Q6 on 2026-11-01.**
+**Status: plan reviewed 2026-11-02. The owner answered (a) to Q1–Q6 on 2026-11-02.**
 
 **Size and PR.** M. One PR on `feat/m08a-a4-federated-query`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -165,7 +165,7 @@ nodes call it. The new client-half method needs another name.
 **Recommendation: (a).** The CLI word and the method word are the same, and a
 third client learns one word.
 
-Owner answer: (a), 2026-11-01
+Owner answer: (a), 2026-11-02
 
 ### Q2. How does `web` carry a search that takes about two seconds?
 
@@ -197,9 +197,11 @@ search, and the relationship is tested. The risk is an operator who sets
 about 4 s plus checking, and `web` may be stopped. Section 7.6 covers this:
 the sample config gets a comment, and a backlog row records it.
 
-Owner answer: (a), 2026-11-01. The sample-config comment guards this today;
+Owner answer: (a), 2026-11-02. The sample-config comment guards this today;
 a backlog row records adding a substrate startup warning when
 `call_all_max_concurrency < MAX_SOURCES`.
+
+### Q3. What does the node keep of a run?
 
 Today every verified hit of every source is stored as a row with its full
 signed envelope, up to 20 per source
@@ -222,7 +224,7 @@ checks the bytes are the ones the listing owner signed.
 than (b), and the wire method does not change. (c) removes a method the e2e
 test uses to prove "the bytes are byte-identical". That is outside this slice.
 
-Owner answer: (a), 2026-11-01. The library carries envelopes to the page step
+Owner answer: (a), 2026-11-02. The library carries envelopes to the page step
 via a `BTreeMap<record_id, envelope>` beside the rows (P4).
 
 ### Q4. What does `find` return when the node refuses the whole batch?
@@ -238,17 +240,18 @@ call"), because the node's own door refuses the HTTP call.
   `not-started`. There are no hits. The Hub shows one neutral line
   "This installation could not start the search. Press Search to try again."
   when every outcome is `not-started` (P3). No source row is marked as failed
-  (the directory is not at fault). The directory logs the outer refusal at
-  `warn` (P3).
+  (the directory is not at fault). The cause is observed host-side via
+  `substrate.proxy.call_all.refused` (P3).
 - (b) Answer with a JSON-RPC error and no page.
 
 **Recommendation: (a).** `not-started` already exists, already means "the
 node did this, not the directory", and the Hub and `roymctl` already have
 words for it. (b) adds an error code that every client must learn.
 
-Owner answer: (a), 2026-11-01. All outer refusals (`Internal` and
-`UnsupportedTarget`, P3) map to `not-started`. The directory logs the outer
-refusal once at `warn`, and the Hub shows a neutral start notice.
+Owner answer: (a), 2026-11-02. All outer refusals (`Internal` and
+`UnsupportedTarget`, P3) map to `not-started`. The Hub shows a neutral start
+notice; the cause is observed via the host metric `substrate.proxy.call_all.refused`
+(P3).
 
 ### Q5. Does the library work for other wire methods now?
 
@@ -264,7 +267,7 @@ nodes. Their wire methods are different from `directory.search`.
 second user usually has the wrong parameters. The library's seams are small
 (the request builder and the row type), so a later change is local.
 
-Owner answer: (a), 2026-11-01
+Owner answer: (a), 2026-11-02
 
 ### Q6. Does A4 add a demo story?
 
@@ -281,7 +284,7 @@ end-to-end tests (cases 22 and 23) already do this with the Playwright suite.
 that is about discovery. The change doc's `demo:` line already says `none` for
 the internal contracts; A4 adds to its reason.
 
-Owner answer: (a), 2026-11-01. `demo: none` is approved as an owner exception
+Owner answer: (a), 2026-11-02. `demo: none` is approved as an owner exception
 with the updated reason (recorded in change doc Deviations, P11).
 
 All links are to `main` at `2f043276`.
@@ -486,6 +489,7 @@ Every change below is listed. Everything not listed stays the same.
 | B7 | Evidence is remembered for each counted verified hit under the per-source cap in order, exactly as today's `store_verified_hit` loop does (P4). Hits over the cap are checked and dropped with no evidence kept. |
 | B8 | The run row has no `sources` list. `RUNS` exists only for the id and retention pruning (P9). Run ids are not unique under concurrent finds (backlog row). |
 | B9 | Refused hits are not stored. Nothing reads them after the merge. |
+| B10 | A search reply whose `truncated`, `directory` or `answered_at_secs` has the wrong type is `unreadable` (before: read as false/ignored), a wire-reading change of remote answers (D-A4-16, P16). |
 
 ### Stays the same
 
@@ -532,9 +536,12 @@ keeps it testable with a three-method fake.
 
 To prevent a hostile or large source from exhausting guest memory, the library
 enforces two guards (P1):
-1. `text.len()` is checked against `MAX_SEARCH_REPLY_BYTES = 1024 * 1024` (1 MiB)
-   **before** JSON parsing. A reply over the cap becomes `error: Unreadable` with
-   no parse.
+1. `text.len()` is checked against `MAX_SEARCH_REPLY_BYTES = 6 * 1024 * 1024` (6 MiB)
+   **before** JSON parsing. The cap is derived from the honest limits:
+   `MAX_HITS_PER_QUERY` (50) × (`MAX_PAYLOAD_BYTES` (64 KiB) + 16 KiB envelope
+   and membership overhead) × 1.25 JSON escaping factor ≈ 5 MiB, plus 1 MiB margin
+   = 6 MiB (P1). A reply over the cap becomes `error: Unreadable { reason: "reply too large" }`
+   with no parse.
 2. Replies are taken by value (`into_iter`) and each reply string is dropped as
    soon as its hits are read, avoiding keeping all 8 raw responses in memory.
 
@@ -658,9 +665,9 @@ existing parity scenarios (98, 102c, 102d, 119) prove the result is the same
    pruning; run ids are not unique under concurrent finds (P9).
 2. Read the sources: `SourceRow`s, sorted by DID, as `federated_query::Source`
    (`did`, `issuer_did` as `pinned_issuer`).
-3. `federated_query::find(host, &sources, &query, now_secs)`. If
-   `gathered.refusal` is `Some(msg)`, log once at `warn!("find batch refused: {msg}")`
-   (P3).
+3. `federated_query::find(host, &sources, &query, now_secs)`. Outer
+   batch refusals are mapped to `not-started` without guest logging; the cause is
+   observed host-side via `substrate.proxy.call_all.refused{reason}` (P3).
 4. For each report: `mark_source_ok` when there is no error; `record_source_error`
    when there is an error **other than** `NotStarted`.
 5. For each `HeldEvidence` in order: `held::remember` (P4, best effort, as today).
@@ -681,10 +688,11 @@ unchanged. The row struct has no `deny_unknown_fields`, so an older row from
 a developer's database still parses. Older rows are pruned within the hour.
 
 **D-A4-10. `NotStarted` stays, as a unit variant.** It is now produced by the
-library when the batch is refused. The directory logs the outer refusal text
-at `warn` once per `find` (P3). The Hub shows the neutral line "This installation
+library when the batch is refused. The Hub shows the neutral line "This installation
 could not start the search. Press Search to try again." when every outcome is
-`not-started` (P3). `record_source_error` is never called for it: the choice is
+`not-started` (P3). The batch refusal cause is observed host-side via
+`substrate.proxy.call_all.refused{reason}` (D-A3-13, P3); guest instances cannot
+emit logs. `record_source_error` is never called for it: the choice is
 one small pure function in `client_runs.rs`, `errors_to_record(outcomes)`,
 which skips `NotStarted`, and a unit test fixes it (case 23b checks the same
 rule in a browser today and is deleted).
@@ -750,7 +758,12 @@ DID, and that the whole call took under 4 s, on both builds.
 
 For the ceiling scenario, add 8 canned sources `hCeiling1..8` in `trust_harness.rs`
 (P5). Each answers `directory.info` with a name, and `directory.search` with 40
-genuine signed listings built once. Confirm `trust_harness.rs` stays under
+genuine signed listings built once. For scenario 116 replacement (P6, P16), add
+canned source `hTwoVersions`: answers `directory.info` with a name, and
+`directory.search` with two genuine signed versions of one listing in one reply.
+For the oversized reply test (P1, P16), add canned source `hOversized`: answers
+`directory.info` with a name, and `directory.search` with a payload exceeding
+`MAX_SEARCH_REPLY_BYTES` (6 MiB). Confirm `trust_harness.rs` stays under
 800 lines (P5).
 
 **D-A4-15. Equivalence before deletion.** Step 4's test
@@ -842,8 +855,8 @@ syneroym-roym-federated-query` builds (the library is part of the
    `"directory.find": client_find::find [client_find::FindInput =>
    client_find::FindOutput]` to [api.rs](../../../../crates/roym_directory/src/api.rs).
    Keep the old rows. `begin_run` is `start_run` without the output; `RUNS`
-   exists only for the id and retention pruning (P9). If `gathered.refusal`
-   is `Some(msg)`, log once at `warn` (P3).
+   exists only for the id and retention pruning (P9). Outer batch refusal
+   causes are observed host-side via `substrate.proxy.call_all.refused{reason}` (P3).
 2. `run_envelope` reads `RunEnvelopeRow`. For this step the old verbs still
    write full `SearchRunRow`s: `RunEnvelopeRow` ignores their extra fields,
    and the `refused: true` rows that old `query-source` writes carry the
@@ -867,10 +880,12 @@ syneroym-roym-federated-query` builds (the library is part of the
 1. `trust_harness::canned_source_response` becomes `async fn`; add
    `did:key:hSlow` (D-A4-14, P5). Add `.await` at its two call sites. Confirm
    `helpers.rs` has the same line count (`cargo xtask check-file-lengths`).
-   Add `hCeiling1..8` canned sources to `trust_harness.rs` (P5).
+   Add `hCeiling1..8`, `hTwoVersions` (P6, P16), and `hOversized` (P1, P16)
+   canned sources to `trust_harness.rs`.
 2. Scenarios in `directory_find.rs`: the slow source (OF-6), the whole batch
-   refused (needs a way to refuse: see section 7.2), and the ceiling
-   (8 sources, 40 genuine hits each, P2, P5).
+   refused (needs a way to refuse: see section 7.2), the oversized reply with
+   `hOversized` (P1), and the ceiling (8 sources, 40 genuine hits each, clean
+   of oversized replies, P1, P2, P5).
 3. Rewrite `directory_source_timeout_and_concurrency_fit_the_real_sandbox_defaults`
    as `find_time_fits_the_real_sandbox_defaults` (D-A4-11). Remove
    `MAX_CLIENT_CONCURRENCY` from its imports; note that the old test's second
@@ -997,7 +1012,9 @@ one build is the A2c R1 mistake.
 - `find_refuses_an_invalid_query_field_with_the_field_name` (W3)
 - `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` (the measure:
   8 sources with 40 genuine signed listings each, worst case for checking time,
-  and one oversized reply, P1, P2, P5, P10)
+  clean of oversized replies, P2, P5, P10)
+- `find_marks_an_oversized_reply_unreadable_and_keeps_the_others` (with canned
+  source `hOversized` returning a reply exceeding the 6 MiB cap, P1, P16)
 - `run_envelope_returns_the_signed_bytes_of_a_page_record` (replaces the
   scenario 117/98 assertions at directory.rs :923)
 - `run_envelope_does_not_find_a_record_that_is_not_on_the_page` (W4)
@@ -1077,9 +1094,10 @@ cargo xtask check-file-lengths && cargo xtask check-lint-suppressions
   is already cut at 40 before checking, P2).
 - **Memory risk during lowering (unverified).** Host lowering writes all 8
   replies into guest memory before guest code runs. The library caps JSON
-  parsing at `MAX_SEARCH_REPLY_BYTES` = 1 MiB (P1), but `call-all` has no host-side
-  per-reply size cap yet. A backlog row tracks this for when `call-all` is next
-  opened (P1).
+  parsing at `MAX_SEARCH_REPLY_BYTES` = 6 MiB (derived from 50 max hits ×
+  (64 KiB payload + 16 KiB envelope/membership overhead) × 1.25 JSON escape
+  factor ≈ 5 MiB + margin, P1), but `call-all` has no host-side per-reply size
+  cap yet. A backlog row tracks this for when `call-all` is next opened (P1).
 - **Config risk.** If an operator sets `call_all_max_concurrency` below 8,
   the search takes two waves. Add a comment to `config.sample.toml` next to
   `call_all_max_concurrency`: keep it at 8 or more while a person may add 8
@@ -1149,6 +1167,10 @@ All rows are in [deferred-backlog.md](../../deferred-backlog.md).
     two finds starting in the same second count existing runs and mint the
     same id. Target: when a second client starts finds or fast concurrent finds
     occur (P9).
+  - "**The node has no guest logging interface**": guest instances cannot emit
+    log lines to node logs or tracing. Batch refusal causes are visible host-side
+    via `substrate.proxy.call_all.refused{reason}` (D-A3-13). Target: when
+    host-to-guest logging is designed (P3).
   - "**A search has no partial result for a slow directory beyond its 2 s**"
     is not needed: D-OF-5 already covers it.
 - No new open `TODO` or `FIXME` marker is added.
@@ -1241,7 +1263,8 @@ A4 is done when all of these are true:
 9. A whole-batch refusal gives `not-started` for every source for both `Internal`
    and `UnsupportedTarget` refusals (library test, P3), and `not-started` never
    writes `last_error` (directory unit test).
-10. `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others` passes (P1).
+10. `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others` and
+    `find_marks_an_oversized_reply_unreadable_and_keeps_the_others` pass (P1).
     `directory.rs` (parity) is lowered in the oversized list, the duplication
     baseline is correct, and `helpers.rs` did not grow.
 11. The change doc, developer guide, spec, traceability matrix, sample config,
