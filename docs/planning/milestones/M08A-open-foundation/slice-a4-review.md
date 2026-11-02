@@ -18,7 +18,7 @@ plan. So there is **no model independence** in this round, as in the A3 plan
 review. The title above and the `status.md` row name the model that did the
 work. A review by another model is still useful.
 
-**Summary:** 0 blocker, 1 major, 13 minor. All 14 are Open.
+**Summary:** 0 blocker, 1 major, 13 minor. All 14 are Fixed (6b47137b).
 
 Limits of this review: I read code and did not run it. The memory finding (P1)
 rests on the sizes in the code (16 MiB frame, memory quota) and on how a
@@ -185,7 +185,7 @@ rest in section 7.6, and add a backlog row "`call-all` has no per-reply size
 cap" with target "when `call-all` is next opened". The plan says no change to
 `call-all`, so the row is right.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Added MAX_SEARCH_REPLY_BYTES length check before parse, replies dropped by value via into_iter in D-A4-3/D-A4-5, unit and ceiling tests in 7.1/7.2, residual host lowering risk in 7.6, and backlog row in Section 8.
 
 #### P2 — Fallback (1) in section 7.6 saves nothing (minor)
 
@@ -209,7 +209,7 @@ measure should be taken with 40 *genuine* hits per source, the worst case, not
 not the worst case for time: the worst case is 40 valid hits (20 count, 20 are
 checked and dropped).
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Removed invalid fallback (1) and added (1') verify refused-looking envelopes cheaply first in 7.6; ceiling scenario measure updated to use 40 genuine hits per source in 7.2 and 7.6.
 
 #### P3 — Every outer `Err` becomes `not-started` and "busy", and nothing is logged (minor)
 
@@ -238,7 +238,7 @@ could not start the search. Press Search to try again." (3) Correct the Q4 text.
 (4) The test `a_refused_batch_marks_every_source_not_started` runs for both an
 `Internal` and an `UnsupportedTarget` refusal.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Outer refusals map to NotStarted with error text in Gathered.refusal; directory logs refusal at warn in D-A4-8; Hub shows neutral start message in D-A4-10/D-A4-12; test a_refused_batch_marks_every_source_not_started covers Internal and UnsupportedTarget in 7.1.
 
 #### P4 — The library's `Row` has no envelope, but the page needs the envelopes; the scope of evidence is not stated (minor)
 
@@ -271,7 +271,7 @@ let `held::remember` run for each) or change B7 to name the edge case. The first
 is simpler to prove equal. A test:
 `evidence_of_a_hit_over_the_cap_is_not_kept`.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Library keeps BTreeMap<record_id, envelope> beside rows for page_envelopes; evidence collected only for counted verified hits under cap in order in D-A4-3, B7, and Step 3; unit test evidence_of_a_hit_over_the_cap_is_not_kept added in 7.1.
 
 #### P5 — The slow-source fake sleeps on every call, including the add-source probe; the ceiling scenario needs 8 sources that can be added (minor)
 
@@ -299,7 +299,7 @@ answering `directory.search` with 40 genuine signed listings built once in
 `trust_harness.rs`, and `directory.info` with a name). Check that
 `trust_harness.rs` stays under 800 lines (it is 357).
 
-*Status:* Open
+*Status:* Fixed (6b47137b). In D-A4-14, hSlow sleeps only when method is directory.search and answers directory.info normally; added 8 canned ceiling sources hCeiling1..8 in trust_harness.rs in Step 5.
 
 #### P6 — The replacement for scenario 116 cannot use the hostile fakes (minor)
 
@@ -321,7 +321,7 @@ already sign canned listings). Assert that the page has one hit with the newer
 `record_id` and `versions_differ == false`, and that the source's
 `verified` count is 2.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Replaced scenario 116 with canned source hTwoVersions returning two genuine signed versions in one answer with verified count 2 and versions_differ == false in 7.2.
 
 #### P7 — `fan_out_one` now returns more than a merge result, and `find` asks every registered source (minor)
 
@@ -347,7 +347,7 @@ whether `outcomes` is compared across builds (it should be). The helper asserts
 that the list from `directory.sources` equals the `sources` argument, so a
 mismatch fails loudly. Do the same in `run_client_loop` for the substrate e2e.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). In Step 6, fan_out_one splits run_id off reply so parity assertions compare stripped outcomes/hits/refused cleanly, and asserts directory.sources matches sources argument; run_client_loop updated similarly.
 
 #### P8 — Section 3.3 and B2 describe the permit use wrongly (minor)
 
@@ -372,7 +372,7 @@ about 2 s after. Admission waits up to 2 s, then answers 503." Update the old
 test's removed second assertion (concurrency below the admission limit): say in
 Step 5 that it is dropped on purpose, and why.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Corrected permit description in Section 3.3 and B2: 1 permit for ~2 s after (down from up to 3 permits for up to 2 s before); admission waits up to 2 s before 503; Step 5 notes dropped second assertion.
 
 #### P9 — Run ids can collide when two finds start in the same second (minor)
 
@@ -398,7 +398,7 @@ collection as a single row updated with the data layer's single-writer
 semantics. Whichever is chosen, say in D-A4-8 that `RUNS` exists only for the
 id, or drop it.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Recorded backlog row 'Run ids are not unique under concurrent finds in the same second' in Section 8; D-A4-8 step 1 and B8 note RUNS exists only for id and retention pruning.
 
 #### P10 — The "check-and-store" measure does not say what it times (minor)
 
@@ -423,7 +423,7 @@ headroom, and print it. Say it is taken once per run (not an average) so a
 slow CI machine shows up. Run the Step 9 20-run loop on this scenario as
 well, and use the worst value in the PR text.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). In D-A4-11, Step 5, Step 9, and Exit Criterion 8, defined measure as wall time of whole directory.find call on WASM in ceiling scenario when all 8 sources answer at once without delay (with 40 genuine hits each), minus nothing.
 
 #### P11 — The Hub's final texts and the e2e assertions are not specified (minor)
 
@@ -445,7 +445,7 @@ line (keep "N directories searched" and "You have not added any directories…")
 the busy line (see P3), the help text, and say the cases assert the same final
 line. Remove the per-DID map and the `lines` argument.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Specified exact Hub strings in D-A4-12 and Step 6 (1): 'Searching...', 'N directories searched', neutral start notice, updated help text removing 'one directory at a time in turn', and removed per-DID line map and lines argument.
 
 #### P12 — D-A2c-10 is not mentioned (minor)
 
@@ -471,7 +471,7 @@ record in Deviations that the deferred typing was left again, with a backlog row
 My view: use `SearchOutput`; it is what D-A2c-13 was for. Keep the cap of 40
 hits applied right after the parse (and see P1 for the size cap before it).
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Added D-A4-16 to read remote search reply as typed SearchOutput from roym_core::method::directory, fulfilling D-A2c-10; added test a_truncated_flag_that_is_not_a_boolean_is_unreadable in 7.1; noted in Step 8 and Deviations.
 
 #### P13 — Comments and wire wording that become false are not all listed (minor)
 
@@ -507,7 +507,7 @@ code becomes false and is not listed:
 max_concurrency|MAX_CLIENT_CONCURRENCY"` over `crates apps` and fix every hit
 that is not about `call_all_max_concurrency`. Correct W1 to say both codes.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Corrected W1 to state -32601 locally and -32013 over the wire; added Step 7 (4) rg scan across crates and apps to clean stale query-source/start-run/directory.merge/max_concurrency comments and constants.
 
 #### P14 — Library test layout (minor)
 
@@ -526,4 +526,4 @@ is easy to pass 150 lines, which is fine, but name `types.rs` if it grows
 *Fix.* List `src/tests.rs` and `src/tests/{merge,find,verify}.rs` (each under
 800 lines). Say the merge tests use `Row` values only.
 
-*Status:* Open
+*Status:* Fixed (6b47137b). Listed src/tests.rs beside src/tests/{merge,find,verify}.rs in D-A4-3, Step 2, and Section 7.1 to follow the workspace module layout rule.
