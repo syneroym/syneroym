@@ -19,7 +19,8 @@ review. The title above and the `status.md` row name the model that did the
 work. A review by another model is still useful.
 
 **Summary:** 0 blocker, 1 major, 15 minor. After the fixes check: all 16 are
-Fixed (20728d2f).
+Fixed (20728d2f). After the closing check (last section): P3, P15 and P16
+confirmed, P1 reopened (residual, minor), P17 added (minor). 2 open.
 
 Limits of this review: I read code and did not run it. The memory finding (P1)
 rests on the sizes in the code (16 MiB frame, memory quota) and on how a
@@ -186,7 +187,7 @@ rest in section 7.6, and add a backlog row "`call-all` has no per-reply size
 cap" with target "when `call-all` is next opened". The plan says no change to
 `call-all`, so the row is right.
 
-*Status:* Fixed (20728d2f). Derived MAX_SEARCH_REPLY_BYTES = 6 MiB (50 hits × (64 KiB payload + 16 KiB envelope/membership overhead) × 1.25 JSON escape factor ≈ 5 MiB + margin) in D-A4-3, D-A4-5, and §7.6; isolated oversized reply to canned source hOversized and separate test in §7.2, keeping ceiling run clean for time measurement.
+*Status:* Open (reopened in the closing check below; was Fixed 20728d2f, partial). Derived MAX_SEARCH_REPLY_BYTES = 6 MiB (50 hits × (64 KiB payload + 16 KiB envelope/membership overhead) × 1.25 JSON escape factor ≈ 5 MiB + margin) in D-A4-3, D-A4-5, and §7.6; isolated oversized reply to canned source hOversized and separate test in §7.2, keeping ceiling run clean for time measurement.
 
 #### P2 — Fallback (1) in section 7.6 saves nothing (minor)
 
@@ -643,3 +644,69 @@ false/ignored)", and say it is a wire-reading change of remote answers.
 (b) Add `hTwoVersions` to D-A4-14 and to Step 5 next to `hCeiling1..8`.
 
 *Status:* Fixed (20728d2f). Added B10 in §4 audit table for typed search reply wire-reading change (D-A4-16); defined canned sources hTwoVersions (P6) and hOversized (P1) in D-A4-14 and Step 5 alongside hCeiling1..8.
+
+## Plan review round 1 — closing check — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-02
+
+Checked the fixer's commit 20728d2f (and 1bf49fba, which only closes the fixes
+check) against the plan on `feat/m08a-a4-federated-query`. `git pull` said
+"Already up to date". I read the plan, the review file, `status.md` and the
+code the P1 sum relies on. I ran nothing.
+
+**Confirmed Fixed.**
+- **P3.** No `warn!` is left in D-A4-8, D-A4-10 or Step 4 (I grepped the plan).
+  The cause is now said to be visible in `substrate.proxy.call_all.refused{reason}`.
+  That metric exists in
+  [capabilities_call_all.rs:85](../../../../crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs#L85)
+  and D-A3-13 exists in the A3 plan. The backlog row "The node has no guest
+  logging interface" is listed in section 8. Q4's owner text was changed to match.
+- **P15.** The date is now 2026-11-02 in the plan header, Q1 to Q6 and
+  `status.md`; no `2026-11-01` is left in the A4 files. The fixer also restored
+  the missing `### Q3` heading. I cannot see from the repository that the owner
+  answered; the date change rests on the owner's word. The Q2 line still adds
+  the startup-warning backlog row. Owner: confirm that row too.
+- **P16.** B10 is in the audit table (§4), and `hTwoVersions` and `hOversized`
+  are defined in D-A4-14 and listed in Step 5 and §7.2.
+
+**P1 reopened (residual, minor).** The 6 MiB constant is now derived, and
+`hOversized` is a separate scenario, so the ceiling run is clean. Two things
+remain:
+- The sum uses "16 KiB envelope and membership overhead" per hit. No source is
+  given for 16 KiB. One hit may carry up to 4 credentials and 8 decisions
+  ([membership.rs:23](../../../../crates/roym_core/src/membership.rs#L23)). A
+  decision reason is up to 2048 bytes and a rule up to 256, and a credential
+  scope may list 32 categories of 64 bytes. Each is an envelope string with
+  escaped quotes. My estimate is 3 to 5 KiB each, so 36 to 60 KiB of evidence,
+  not 16 KiB. With a 64 KiB payload, 50 such hits are over 6 MiB. This is a
+  limit case, but the plan says the cap is derived and it is not.
+- The test I asked for last time, 50 hits of maximum size that must still be
+  read, is not in §7.1. Only the oversized test was added.
+*Fix:* write the evidence bound from the constants (`MAX_EVIDENCE_CREDENTIALS`,
+`MAX_EVIDENCE_DECISIONS`, the reason and category limits) in D-A4-3, or say
+plainly that the cap is a judgement for realistic replies and not a proven
+bound. Add a unit test that builds a reply of 50 hits with the real maximum
+evidence and checks it is read, or checks that its size is below the constant.
+The test makes the constant follow the limits.
+
+### New findings
+
+#### P17 — `Gathered.refusal` has no reader (minor)
+
+*Where:* Plan section 5 (the `Gathered` struct, "Refusal message if the whole
+batch was refused"), D-A4-5 outer `Err` row, Step 3.
+
+*Problem.* P3 now says the directory does not log or show the refusal text.
+`Gathered.refusal` is still filled but nothing outside a test reads it. It is
+a public field of the library with no user. A field kept "for later" is the
+kind of thing the project asks to avoid, and the next reader will look for who
+uses it.
+
+*Failure case.* None at run time. The library carries data nobody uses, and
+a later change that adds the logging interface may find the field's shape is
+wrong.
+
+*Fix:* remove the field and say that the library test checks the outcomes
+(`not-started` for every source) only. When guest logging exists, add the
+field with its first reader. Or name the reader in the plan (for example, the
+library test asserts it) and say it is kept for the future logging row.
+
+*Status:* Open
