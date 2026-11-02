@@ -3,9 +3,7 @@
 *Reader: the developer (or AI) who implements slice A4. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written 2026-11-02. The owner has not answered Q1 to Q6 yet.
-Sections 5 and 6 follow the recommendations. If an answer differs, change
-those sections first.**
+**Status: plan reviewed 2026-11-02. The owner answered (a) to Q1–Q6 on 2026-11-01.**
 
 **Size and PR.** M. One PR on `feat/m08a-a4-federated-query`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -120,14 +118,14 @@ not one directory at a time.
 - A directory that did not answer in time, or refused, is named below the
   results in plain words. The results from the other directories are still
   shown.
-- If this installation is too busy to start the search, the page says so in
+- If this installation could not start the search, the page says so in
   one line and the person can press **Search** again.
 - The `roymctl roym directory find` command prints the same lines as before.
 
 A developer can see the work in these ways:
 
 - `cargo nextest run -p syneroym-roym-federated-query` runs the library tests
-  (merge rules, caps, error mapping, request bytes).
+  (merge rules, caps, error mapping, request bytes, size limits).
 - `cargo nextest run -p syneroym-roym-web --test dual_build_parity find` shows
   that the WASM build and the native build return the same page, and that a
   search with one slow directory returns the other results and names the slow
@@ -135,8 +133,8 @@ A developer can see the work in these ways:
 - `roymctl roym directory find --category cycling` prints the result. A
   developer can run it against a test node and read the source notes.
 
-**Demo:** none (Q6). A4 changes a working path that has no demo story today.
-The milestone demo is the live chat in A5.
+**Demo:** none (Q6). Search has no demo story today; its Hub path is covered
+by Hub cases 22 and 23, and the milestone demo is the chat story in A5.
 
 ## 2. Points for the owner
 
@@ -167,7 +165,7 @@ nodes call it. The new client-half method needs another name.
 **Recommendation: (a).** The CLI word and the method word are the same, and a
 third client learns one word.
 
-Owner's answer: _not yet answered_
+Owner answer: (a), 2026-11-01
 
 ### Q2. How does `web` carry a search that takes about two seconds?
 
@@ -199,9 +197,9 @@ search, and the relationship is tested. The risk is an operator who sets
 about 4 s plus checking, and `web` may be stopped. Section 7.6 covers this:
 the sample config gets a comment, and a backlog row records it.
 
-Owner's answer: _not yet answered_
-
-### Q3. What does the node keep of a run?
+Owner answer: (a), 2026-11-01. The sample-config comment guards this today;
+a backlog row records adding a substrate startup warning when
+`call_all_max_concurrency < MAX_SOURCES`.
 
 Today every verified hit of every source is stored as a row with its full
 signed envelope, up to 20 per source
@@ -224,27 +222,33 @@ checks the bytes are the ones the listing owner signed.
 than (b), and the wire method does not change. (c) removes a method the e2e
 test uses to prove "the bytes are byte-identical". That is outside this slice.
 
-Owner's answer: _not yet answered_
+Owner answer: (a), 2026-11-01. The library carries envelopes to the page step
+via a `BTreeMap<record_id, envelope>` beside the rows (P4).
 
 ### Q4. What does `find` return when the node refuses the whole batch?
 
 `call-all` can refuse the whole batch: the node has too many waiting guests,
 or this guest call has no wait time left (both are `internal` with a text
-that starts with `call-all busy:`). Today the same situation appears per
-source as `not-started` ("this installation was busy and did not start the
+that starts with `call-all busy:`), or a read-only caller (`internal`), or
+too many calls (`unsupported-target`) (P3). Today the same situation appears
+per source as `not-started` ("this installation was busy and did not start the
 call"), because the node's own door refuses the HTTP call.
 
 - (a) **Return the page normally.** Every source gets the outcome
-  `not-started`. There are no hits. The Hub shows one line "This installation
-  is busy. Try again." when every outcome is `not-started`. No source row is
-  marked as failed (the directory is not at fault).
+  `not-started`. There are no hits. The Hub shows one neutral line
+  "This installation could not start the search. Press Search to try again."
+  when every outcome is `not-started` (P3). No source row is marked as failed
+  (the directory is not at fault). The directory logs the outer refusal at
+  `warn` (P3).
 - (b) Answer with a JSON-RPC error and no page.
 
 **Recommendation: (a).** `not-started` already exists, already means "the
 node did this, not the directory", and the Hub and `roymctl` already have
 words for it. (b) adds an error code that every client must learn.
 
-Owner's answer: _not yet answered_
+Owner answer: (a), 2026-11-01. All outer refusals (`Internal` and
+`UnsupportedTarget`, P3) map to `not-started`. The directory logs the outer
+refusal once at `warn`, and the Hub shows a neutral start notice.
 
 ### Q5. Does the library work for other wire methods now?
 
@@ -260,7 +264,7 @@ nodes. Their wire methods are different from `directory.search`.
 second user usually has the wrong parameters. The library's seams are small
 (the request builder and the row type), so a later change is local.
 
-Owner's answer: _not yet answered_
+Owner answer: (a), 2026-11-01
 
 ### Q6. Does A4 add a demo story?
 
@@ -277,9 +281,8 @@ end-to-end tests (cases 22 and 23) already do this with the Playwright suite.
 that is about discovery. The change doc's `demo:` line already says `none` for
 the internal contracts; A4 adds to its reason.
 
-Owner's answer: _not yet answered_
-
-## 3. Facts checked in the code
+Owner answer: (a), 2026-11-01. `demo: none` is approved as an owner exception
+with the updated reason (recorded in change doc Deviations, P11).
 
 All links are to `main` at `2f043276`.
 
@@ -348,8 +351,9 @@ All links are to `main` at `2f043276`.
   waiters node-wide.
 - A refused batch is an outer `Err`. "Too many waiting guests" and "no wait
   time left" are `Internal("call-all busy: …")`. More calls than the maximum
-  is `UnsupportedTarget` ([capabilities_call_all.rs:57-67](../../../../crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs#L57)).
-  A read-only instance gets the same refusal as `call`.
+  is `UnsupportedTarget` ([capabilities_call_all.rs:49-72](../../../../crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs#L49)).
+  Read-only and proxy-unavailable are `Internal`. All outer refusals map to
+  `not-started` in the library (P3).
 - A call that does not finish in its time has the entry `Err(TimedOut)`
   ([capabilities_call_all.rs:113](../../../../crates/sandbox_wasm/src/host_capabilities/capabilities_call_all.rs#L113)).
 - Credit is given to the calling guest for its wait. Own time still counts.
@@ -375,10 +379,11 @@ All links are to `main` at `2f043276`.
   method must be `MethodAuth::Owner`. A removed method answers `-32601` from
   `directory`, not from `web`.
 - A guest HTTP request runs under the dispatch epoch (5 s) and the per-service
-  admission permit (`max_concurrent_guest_http_per_service`, default 4). A
-  refused permit is HTTP 503 ([guest_http.rs:84-93](../../../../crates/sandbox_wasm/src/engine/guest_http.rs#L84)).
-  Today a search makes N + 2 HTTP requests, each holding a permit briefly.
-  After A4 it makes one request that holds a permit for the whole search.
+  admission permit (`max_concurrent_guest_http_per_service`, default 4). Admission
+  waits up to 2 s (`GUEST_HTTP_ADMISSION_TIMEOUT`, [engine.rs:314](../../../../crates/sandbox_wasm/src/engine.rs#L314))
+  and then answers HTTP 503. Today `MAX_CLIENT_CONCURRENCY` = 3, and a search
+  makes up to 3 simultaneous HTTP requests, each holding a permit for up to 2 s.
+  After A4 it makes 1 request that holds 1 permit for about 2 s (P8).
 
 ### 3.4 The Hub
 
@@ -459,7 +464,7 @@ Every change below is listed. Everything not listed stays the same.
 
 | # | Change | Who sees it |
 | --- | --- | --- |
-| W1 | `directory.start-run`, `directory.query-source` and `directory.merge` are removed. They answer `-32601`. | Hub, `roymctl`, tests. |
+| W1 | `directory.start-run`, `directory.query-source` and `directory.merge` are removed. They answer `-32601` locally and `-32013` over the wire (P13). | Hub, `roymctl`, tests. |
 | W2 | New local-only method `directory.find`. Input `{ "query": SearchQuery }` (`query` optional, default `{}`; top-level unknown fields refused). Output `{ run_id, outcomes: [{source, verified, refused, truncated, error}], hits, hits_truncated, refused, refused_truncated }`. | Hub, `roymctl`, tests. |
 | W3 | An invalid query field (for example `open_to`) is refused by `directory.find` with `-32602` and `data.field` = `query.open_to`. Before, `query-source` refused it as `open_to`. | Clients, tests (B46). |
 | W4 | `directory.run-envelope` has the same input and output. It finds only records that are on the page `find` returned (Q3 (a)). Before, it found any verified row of the run, including a hit that did not reach the page. | Hub button, e2e. |
@@ -473,13 +478,13 @@ Every change below is listed. Everything not listed stays the same.
 | # | Change |
 | --- | --- |
 | B1 | All sources are asked at the same time (8 at once at the default limit). Before, a client asked 3 at a time. A search with 8 slow sources takes about 2 s, not about 6 s. |
-| B2 | One request to `web` holds one guest-HTTP admission permit for the whole search (about 2 s), not N + 2 short ones. With the default limit of 4, a fifth simultaneous request to `web` gets 503. |
+| B2 | One request to `web` holds 1 guest-HTTP admission permit for about 2 s (down from up to 3 permits before). A fifth simultaneous request waits up to 2 s and gets 503 if no permit frees (P8). |
 | B3 | One search holds one `call-all` waiter permit (node-wide limit 4 by default). A fifth simultaneous search gets `not-started` for every source (Q4). |
 | B4 | The Hub draws the page once, when the call returns. It no longer shows partial results or "N of M directories answered". |
 | B5 | The Hub does not retry a busy node. The person presses **Search** again. `roymctl` does not retry either. |
 | B6 | The source rows (`last_ok_secs`, `last_error`) and the held membership evidence are written after the batch, not after each source. `not-started` never writes `last_error`. |
-| B7 | Evidence is remembered once per `(source, issuer)` pair, not once per hit. The stored row is the same, because the key is `(source, member_did)` and the last write wins today. (The evidence in the last hit of that issuer wins today; the new code keeps the same winner: the last verified hit in the order the source returned.) |
-| B8 | The run row has no `sources` list. Nothing reads it. |
+| B7 | Evidence is remembered for each counted verified hit under the per-source cap in order, exactly as today's `store_verified_hit` loop does (P4). Hits over the cap are checked and dropped with no evidence kept. |
+| B8 | The run row has no `sources` list. `RUNS` exists only for the id and retention pruning (P9). Run ids are not unique under concurrent finds (backlog row). |
 | B9 | Refused hits are not stored. Nothing reads them after the merge. |
 
 ### Stays the same
@@ -525,6 +530,14 @@ It builds for native and for `wasm32-wasip2`. It is generic over
 not read a clock (the caller passes `now_secs`) and does no logging. This
 keeps it testable with a three-method fake.
 
+To prevent a hostile or large source from exhausting guest memory, the library
+enforces two guards (P1):
+1. `text.len()` is checked against `MAX_SEARCH_REPLY_BYTES = 1024 * 1024` (1 MiB)
+   **before** JSON parsing. A reply over the cap becomes `error: Unreadable` with
+   no parse.
+2. Replies are taken by value (`into_iter`) and each reply string is dropped as
+   soon as its hits are read, avoiding keeping all 8 raw responses in memory.
+
 ```rust
 pub struct Source {
     pub did: String,
@@ -546,9 +559,11 @@ pub struct Gathered {
     /// The signed bytes of every record named on the page: `(record_id,
     /// envelope)`, deduplicated by `record_id`. The caller keeps them.
     pub page_envelopes: Vec<(String, String)>,
-    /// Membership evidence of every verified hit, one entry per
-    /// `(source, issuer)` pair. The caller remembers them.
+    /// Membership evidence of every counted verified hit under the per-source
+    /// cap, in order. The caller remembers them.
     pub evidence: Vec<HeldEvidence>,
+    /// Refusal message if the whole batch was refused by call-all (P3).
+    pub refusal: Option<String>,
 }
 
 pub struct Page {            // Serialize + Deserialize, no deny_unknown_fields
@@ -576,10 +591,14 @@ pub struct HeldEvidence {
 ```
 
 `MergedHit`, `HitSource` and `RefusedHit` move from
-`client_merge.rs` with the same fields and serde names. Files in the crate:
-`lib.rs` (the entry and the types), `gather.rs` (request building, error
-mapping, reply parsing), `verify.rs` (verification and rows), `merge.rs` (the
-moved merge code), `tests/` (section 7). Each is well under the file limit.
+`client_merge.rs` with the same fields and serde names. The library keeps a
+`BTreeMap<String, String>` of `(record_id, envelope)` beside the rows during
+checking; `page_envelopes` is read from it after the merge (P4). Files in the
+crate: `src/lib.rs` (the entry and types; `src/types.rs` if types grow),
+`src/gather.rs` (request building, error mapping, reply parsing), `src/verify.rs`
+(verification and rows), `src/merge.rs` (the moved merge code), `src/tests.rs`
+and `src/tests/{merge,find,verify}.rs` (section 7, P14). Each is well under the
+file limit.
 
 **D-A4-4. One batch, one wave, no chunking.** `find` sends one `call_all` with
 one request per source, in input order. Each request:
@@ -596,7 +615,7 @@ and the directory answers `-32603`. An empty list makes no call and returns an
 empty page (`call_all([])` is `Ok([])`, but `find` returns before calling).
 
 **D-A4-5. Outcome mapping.** The mapping from the old `map_proxy_error` and
-`parse_source_response`, moved unchanged:
+`parse_source_response`:
 
 | Result of one call | Outcome |
 | --- | --- |
@@ -604,20 +623,23 @@ empty page (`call_all([])` is `Ok([])`, but `find` returns before calling).
 | `Err(TimedOut)` | `error: TimedOut` |
 | `Err(Callee(c))` | `error: Refused { code: c.code, message }` |
 | any other `Err` | `error: Refused { code: -32603, message: format!("{other:?}") }` |
+| `Ok(text)` with `text.len() > MAX_SEARCH_REPLY_BYTES` | `error: Unreadable { reason: "reply too large" }` (P1) |
 | `Ok(text)` that is not a `Response` | `error: Unreadable` |
 | `Ok` with a JSON-RPC `error` and no `result` | `error: Refused { code, message }` |
 | `Ok` with a `result` whose `hits` cannot be read | `error: Unreadable` |
 | `Ok` with a good `result` | no error; `truncated` from `result.truncated` |
-| The **outer** `Err` (the whole batch refused) | every source: `error: NotStarted` (Q4 (a)) |
+| The **outer** `Err` (`Internal` or `UnsupportedTarget`) | every source: `error: NotStarted`; error text in `Gathered.refusal` (P3) |
 
 **D-A4-6. Checking is unchanged.** For each source, in the order the source
-returned: truncate to 40 hits, then `listing::verify_envelope(&envelope,
-now)` for each. A verified hit counts against the cap of 20 and gets a
-membership verdict from `membership::evaluate` with the source's pinned
-issuer, exactly as in `store_verified_hit`. A refused hit counts against 20.
-A hit over its cap is checked and dropped, as today (the check is the same
-cost; the order of checks is the same). The library does not read the
-`call-all` limits (the backlog row is re-targeted, section 8).
+returned: parse the reply into `SearchOutput` (D-A4-16, P12), truncate to 40
+hits, then `listing::verify_envelope(&hit.envelope, now)` for each. A verified
+hit counts against the cap of 20 and gets a membership verdict from
+`membership::evaluate` with the source's pinned issuer, exactly as in
+`store_verified_hit`. A refused hit counts against 20. A hit over its cap is
+checked and dropped, as today (the check is the same cost; the order of checks
+is the same). Evidence and page envelopes are kept only for counted verified
+hits under the cap in order (P4). The library does not read the `call-all`
+limits (the backlog row is re-targeted, section 8).
 
 **D-A4-7. The merge moves unchanged.** The functions
 `dedupe_and_cap_verified`, `group_and_sort_refused`, `round_robin_merge`,
@@ -632,14 +654,16 @@ existing parity scenarios (98, 102c, 102d, 119) prove the result is the same
 
 1. `begin_run`: create the `runs` and `search_runs` collections, prune both
    by `at_secs` older than `RUN_RETENTION_SECS`, mint `run_{secs}_{count}`,
-   store `RunRow { at_secs }`. This is `start_run` without the source list and
-   without `max_concurrency`.
+   store `RunRow { at_secs }`. `RUNS` exists only for the id and retention
+   pruning; run ids are not unique under concurrent finds (P9).
 2. Read the sources: `SourceRow`s, sorted by DID, as `federated_query::Source`
    (`did`, `issuer_did` as `pinned_issuer`).
-3. `federated_query::find(host, &sources, &query, now_secs)`.
+3. `federated_query::find(host, &sources, &query, now_secs)`. If
+   `gathered.refusal` is `Some(msg)`, log once at `warn!("find batch refused: {msg}")`
+   (P3).
 4. For each report: `mark_source_ok` when there is no error; `record_source_error`
    when there is an error **other than** `NotStarted`.
-5. For each `HeldEvidence`: `held::remember` (best effort, as today).
+5. For each `HeldEvidence` in order: `held::remember` (P4, best effort, as today).
 6. For each page envelope: store a `RunEnvelopeRow { run_id, record_id,
    envelope, at_secs }` under key `{run_id}#{record_id}` in `search_runs`
    (Q3 (a)), best effort.
@@ -657,8 +681,10 @@ unchanged. The row struct has no `deny_unknown_fields`, so an older row from
 a developer's database still parses. Older rows are pruned within the hour.
 
 **D-A4-10. `NotStarted` stays, as a unit variant.** It is now produced by the
-library when the batch is refused. The Hub shows one line when every outcome
-is `not-started`. `record_source_error` is never called for it: the choice is
+library when the batch is refused. The directory logs the outer refusal text
+at `warn` once per `find` (P3). The Hub shows the neutral line "This installation
+could not start the search. Press Search to try again." when every outcome is
+`not-started` (P3). `record_source_error` is never called for it: the choice is
 one small pure function in `client_runs.rs`, `errors_to_record(outcomes)`,
 which skips `NotStarted`, and a unit test fixes it (case 23b checks the same
 rule in a browser today and is deleted).
@@ -680,20 +706,31 @@ assert  waves * DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS
 ```
 
 It reads the real `AppSandboxRole::default()`. A second test (Step 5)
-**measures** the check-and-store work for 8 sources with 40 hits each on the
-WASM build and asserts it is below `DISPATCH_HEADROOM_MS`. This is the
-`unverified` point of this plan: nobody has measured 320 checks in one guest
-call. If the measure fails, the fallback is in section 7.6.
+**measures** the ceiling scenario on the WASM build: the wall time of the whole
+`directory.find` call when all 8 sources answer at once without delay (with
+40 genuine signed listings each, the worst case for checking time, P2, P10),
+minus nothing. Assert it is below `DISPATCH_HEADROOM_MS` and print it (P10).
+Run the Step 9 20-run loop on this scenario and record the worst value in the
+PR text.
 
 **D-A4-12. Clients.** The Hub gets `findListings(query)` in `search.ts`:
 one `call("directory.find", {query})` and a mapping from `outcome.error?.kind`
 to the existing `SourceOutcomeKind`. A thrown `RpcError` with code 503 (the
-`web` door is full) becomes a page-level "busy" notice. `runSearch`, `startRun`,
-`queryOneSource`, `RunSearchOptions`, `ignoreConcurrency`, `SearchProgress`,
-`refreshPartial` and `window.RoymDirectory` are removed. `roymctl` makes one
-`rpc_call("directory.find", {query})` and prints the same lines. Its
-semaphore, `JoinSet`, retry and the two `too_many_arguments` allows are
-removed. Neither client imports the structs (D-A2a-13).
+`web` door is full) becomes a page-level notice: "This installation could not
+start the search. Press Search to try again." (P3, P11).
+Hub string contracts (P11):
+- While waiting: `Searching...`
+- Final line: `N directories searched` (or `You have not added any directories to search.`)
+- Refusal notice: `This installation could not start the search. Press Search to try again.`
+- Help text in `screens/directory.ts` removes "one directory at a time in turn"
+- The per-DID line map (`sourceLines`) and retry line map are removed.
+
+`runSearch`, `startRun`, `queryOneSource`, `RunSearchOptions`,
+`ignoreConcurrency`, `SearchProgress`, `refreshPartial` and `window.RoymDirectory`
+are removed. `roymctl` makes one `rpc_call("directory.find", {query})` and
+prints the same lines. Its semaphore, `JoinSet`, retry and the two
+`too_many_arguments` allows are removed. Neither client imports the structs
+(D-A2a-13).
 
 **D-A4-13. Tests move in a safe order (Steps 4 to 7).** First `find` is added
 beside the old verbs, with an equivalence test that runs both paths on the
@@ -701,14 +738,20 @@ same harness and compares the page. Then the clients and helpers move to
 `find`. Only then are the old verbs and their tests deleted. Every step
 builds and passes.
 
-**D-A4-14. The slow source (OF-6).** `trust_harness::canned_source_response`
-becomes `async` and gains one target name, `did:key:hSlow`, which sleeps 5 s
-and then returns an empty good answer. Both proxies already call that
-function at the top of `invoke`; adding `.await` does not change the line
-count of `helpers.rs`. The host cuts the call at 2 s, so the outcome is
-`timed-out`. The test asserts the other sources' hits, the `timed-out`
-outcome for the slow DID, and that the whole call took under 4 s, on both
-builds.
+**D-A4-14. The slow source (OF-6) and ceiling fakes.**
+`trust_harness::canned_source_response` becomes `async` and gains
+`did:key:hSlow`. `hSlow` inspects the method inside `params`: it sleeps 5 s
+only when the method is `directory.search`; for `directory.info` it answers
+immediately with a normal info response (P5). Both proxies call that function
+at the top of `invoke`; adding `.await` does not change the line count of
+`helpers.rs`. The host cuts the search call at 2 s, so the outcome is `timed-out`.
+The test asserts the other sources' hits, the `timed-out` outcome for the slow
+DID, and that the whole call took under 4 s, on both builds.
+
+For the ceiling scenario, add 8 canned sources `hCeiling1..8` in `trust_harness.rs`
+(P5). Each answers `directory.info` with a name, and `directory.search` with 40
+genuine signed listings built once. Confirm `trust_harness.rs` stays under
+800 lines (P5).
 
 **D-A4-15. Equivalence before deletion.** Step 4's test
 `find_gives_the_page_the_old_loop_gave` drives the old loop
@@ -719,6 +762,12 @@ normalizing `age_secs`, which depends on the clock), and that each source's
 `verified`, `refused`, `truncated` and `error` equal the old `query-source`
 reply. The test is deleted in Step 7 with the old verbs. Its value is that
 the merge move and the check move are proved before the old code goes.
+
+**D-A4-16. Typed remote search reply (P12).** Remote `directory.search` answers
+are parsed into `SearchOutput` from `roym_core::method::directory` (fulfilling
+D-A2c-10 and D-A2c-13). A non-boolean `truncated` field fails typed parsing as
+`Unreadable` (tested in library unit tests). Truncation to 40 hits applies
+immediately after parsing, before envelope checking.
 
 ## 6. Step-by-step changes
 
@@ -735,7 +784,8 @@ WASM components (`mise run build:roym`) after every step that changes
 Behaviour does not change.
 
 1. Add `crates/roym_federated_query` with `Cargo.toml` (lints from the
-   workspace, `[lib]` default crate type), `src/lib.rs`, `src/merge.rs`. Add
+   workspace, `[lib]` default crate type), `src/lib.rs`, `src/merge.rs`,
+   `src/tests.rs` and `src/tests/` (following the module-layout rule, P14). Add
    `syneroym-roym-federated-query = { path = "crates/roym_federated_query" }`
    next to the other Roym crates in the root
    [Cargo.toml:95-101](../../../../Cargo.toml#L95). Dependencies as D-A4-3.
@@ -764,17 +814,22 @@ tests pass unchanged. `cargo shear` finds no unused dependency.
 
 Behaviour does not change; nothing calls it yet.
 
-1. `gather.rs`: build the `CallRequest` list (D-A4-4), map results to
-   per-source replies (D-A4-5), parse `result.hits` and `result.truncated`.
-   `verify.rs`: the check and the caps (D-A4-6) producing `Row`s, `Evidence`
-   and the per-source counts. `lib.rs`: `find`, `Gathered`, `Page`,
-   `SourceReport`, `HeldEvidence`, `FindError`.
+1. `gather.rs`: build the `CallRequest` list (D-A4-4), check `text.len() <=
+   MAX_SEARCH_REPLY_BYTES` before parsing (P1), parse `SearchOutput` (D-A4-16,
+   P12), map results to per-source replies and map outer `Err` to `NotStarted`
+   with error text in `Gathered.refusal` (D-A4-5, P3). Drop each reply text
+   as soon as parsed (`into_iter`, P1). `verify.rs`: the check and the caps
+   (D-A4-6) producing `Row`s, `BTreeMap<String, String>` for page envelopes,
+   and `HeldEvidence` for counted verified hits under the cap (P4). `lib.rs`:
+   `find`, `Gathered`, `Page`, `SourceReport`, `HeldEvidence`, `FindError`.
 2. Move `map_proxy_error` and `parse_source_response` logic here. Leave the
    old copies in `client_query.rs` until Step 7. (A short-lived copy is
    acceptable only because Step 7 deletes it; the duplication gate is
    checked at the end.)
 3. Unit tests with a fake `AppProxy` (section 7.1): request bytes, outcome
-   mapping, caps, truncation before checking, outer refusal.
+   mapping, caps, truncation before checking, oversized replies (P1), typed
+   `SearchOutput` parsing (P12), outer refusal for `Internal` and
+   `UnsupportedTarget` (P3), evidence collected only under cap (P4).
 
 Check: library tests pass; `cargo clippy -p syneroym-roym-federated-query`
 is clean; `cargo build --target wasm32-wasip2 -p
@@ -786,7 +841,9 @@ syneroym-roym-federated-query` builds (the library is part of the
 1. `client_find.rs` and `client_runs.rs` (D-A4-8, D-A4-9). Add the table row
    `"directory.find": client_find::find [client_find::FindInput =>
    client_find::FindOutput]` to [api.rs](../../../../crates/roym_directory/src/api.rs).
-   Keep the old rows. `begin_run` is `start_run` without the output.
+   Keep the old rows. `begin_run` is `start_run` without the output; `RUNS`
+   exists only for the id and retention pruning (P9). If `gathered.refusal`
+   is `Some(msg)`, log once at `warn` (P3).
 2. `run_envelope` reads `RunEnvelopeRow`. For this step the old verbs still
    write full `SearchRunRow`s: `RunEnvelopeRow` ignores their extra fields,
    and the `refused: true` rows that old `query-source` writes carry the
@@ -808,28 +865,33 @@ syneroym-roym-federated-query` builds (the library is part of the
 ### Step 5 — The slow source, the headroom test and the measure
 
 1. `trust_harness::canned_source_response` becomes `async fn`; add
-   `did:key:hSlow` (D-A4-14). Add `.await` at its two call sites. Confirm
+   `did:key:hSlow` (D-A4-14, P5). Add `.await` at its two call sites. Confirm
    `helpers.rs` has the same line count (`cargo xtask check-file-lengths`).
+   Add `hCeiling1..8` canned sources to `trust_harness.rs` (P5).
 2. Scenarios in `directory_find.rs`: the slow source (OF-6), the whole batch
    refused (needs a way to refuse: see section 7.2), and the ceiling
-   (8 sources, 20 valid + 20 refused hits each).
+   (8 sources, 40 genuine hits each, P2, P5).
 3. Rewrite `directory_source_timeout_and_concurrency_fit_the_real_sandbox_defaults`
    as `find_time_fits_the_real_sandbox_defaults` (D-A4-11). Remove
-   `MAX_CLIENT_CONCURRENCY` from its imports.
-4. Record the measured time of the ceiling scenario in the PR description. If
-   it is above 60 % of `DISPATCH_HEADROOM_MS`, apply the fallback in
+   `MAX_CLIENT_CONCURRENCY` from its imports; note that the old test's second
+   assertion (`MAX_CLIENT_CONCURRENCY < admission limit`) is dropped on purpose
+   because client concurrency is now 1 (P8).
+4. Measure the wall time of the whole `directory.find` call in the ceiling
+   scenario on the WASM build (P10). Record the measured time in the PR description.
+   If it is above 60 % of `DISPATCH_HEADROOM_MS`, apply the fallback in
    section 7.6 before going on.
 
 ### Step 6 — Move the clients and test helpers to `find`
 
 1. Hub: `search.ts` (D-A4-12), `screens/directory.ts` (one call, one redraw,
-   the busy line, the per-source lines from `outcomes`), `main.ts` (remove
-   `RoymDirectory`), `search.test.ts` (new tests, section 7.4).
+   exact string contracts from D-A4-12, help text update, P11), `main.ts`
+   (remove `RoymDirectory`), `search.test.ts` (new tests, section 7.4).
 2. `roymctl`: `find.rs` (D-A4-12). Keep the output text. Add a unit test for
    the printing functions with a canned `find` reply (section 7.4).
-3. `fixtures.rs`: `fan_out_one` calls `directory.find` once and returns
-   `(run_id, page)`; `fan_out` is unchanged in shape. `roym_flow.rs`:
-   `run_client_loop` calls `directory.find` and returns `(run_id, page)`.
+3. `fixtures.rs`: `fan_out_one` calls `directory.find` once, splits `run_id`
+   off the reply, asserts `directory.sources` equals `sources`, and returns
+   `(run_id, page)` (P7). `roym_flow.rs`: `run_client_loop` calls `directory.find`
+   and returns `(run_id, page)` similarly (P7).
 4. Rewrite parity scenarios 97, 101, 119, 120 and `directory_compat.rs` onto
    `find`. Move the `contract_directory.rs` cases (W3).
 5. Hub e2e: case 22 reworded (one call; the hit stays; unreachable sources
@@ -852,17 +914,18 @@ syneroym-roym-federated-query` builds (the library is part of the
    line count; run `cargo xtask check-file-lengths`, `check-duplication`
    (lower `MAX_EXACT_DUPLICATE_PERCENT` if it asks),
    `check-lint-suppressions`.
-4. Remove the dead constants and the now-wrong comments in
-   [roym_core/directory.rs](../../../../crates/roym_core/src/directory.rs)
-   (`MAX_CLIENT_CONCURRENCY`, and the sentences that say `query-source` /
-   `start-run`; `MAX_SOURCES`' comment "number of query-source calls one run
-   makes" becomes "number of searches one find makes").
+4. Run `rg -n "query-source|start-run|directory\.merge|max_concurrency|MAX_CLIENT_CONCURRENCY"`
+   over `crates apps` and fix every hit that is not about `call_all_max_concurrency` (P13).
+   Update dead constants and stale comments in `roym_core/directory.rs`
+   (`SourceError::NotStarted`, `DEFAULT_SOURCE_TIMEOUT_MS`, `DISPATCH_HEADROOM_MS`,
+   `MAX_SOURCES`), `app.rs:124`, `helpers.rs:264`, `trust_harness.rs:18, 43`,
+   and Hub doc comments (P13).
 5. Rebuild WASM. Run everything for the crates touched (section 7.5).
 
 ### Step 8 — Docs and close-out
 
 Section 9. Backlog (section 8). Change doc: tick the task, fill the Test
-column of OF-6 and OF-7, add D-A4-1 to D-A4-15 and the owner's answers, add
+column of OF-6 and OF-7, add D-A4-1 to D-A4-16 and the owner's answers, add
 deviations. `task.md` result line. `status.md` row.
 
 ### Step 9 — Finish
@@ -872,20 +935,21 @@ deviations. `task.md` result line. `status.md` row.
 - `cargo dupes report` over the diff (the library keeps one copy of the merge
   and of the error mapping; the Step 3 copies in `client_query.rs` are gone).
 - `mise run verify` as a background job, no `--skip`.
-- Run the new parity file and the Hub case 22/23 20 times. The slow-source
-  test uses wall-clock bounds, so check it is not flaky (exit criterion 13).
+- Run the new parity file, the ceiling scenario, and Hub case 22/23 20 times.
+  The slow-source test uses wall-clock bounds, so check it is not flaky
+  (exit criterion 13). Record worst ceiling measure in PR text (P10).
 - Open the PR (CLA line verbatim).
 
 ## 7. Tests
 
-### 7.1 Library unit tests (`crates/roym_federated_query/src/tests/`)
+### 7.1 Library unit tests (`crates/roym_federated_query/src/tests.rs` and `src/tests/`, P14)
 
 The fake `AppProxy` records the `CallRequest`s it receives and returns
 scripted `Result<String, ProxyError>` entries (or an outer `Err`). A
 `signed_listing()` helper signs a listing with a fresh key (the
 `derive_listing_id` rule of `verify_envelope`).
 
-`merge` (rows only, no signing):
+`merge` (`src/tests/merge.rs`, rows only, no signing):
 - `newer_version_wins_inside_one_source`
 - `one_source_gets_at_most_its_share_of_the_page`
 - `sources_take_turns_in_did_order_not_listing_id_order`
@@ -896,7 +960,7 @@ scripted `Result<String, ProxyError>` entries (or an outer `Err`). A
 - `a_forged_listing_id_that_sorts_first_cannot_fill_the_refused_page`
 - `an_empty_input_gives_an_empty_page`
 
-`find`:
+`find` and `verify` (`src/tests/find.rs`, `src/tests/verify.rs`):
 - `each_call_is_built_like_the_old_query_source` (target, interface, method,
   params bytes, options)
 - `results_follow_the_source_order` (the fake answers in reverse)
@@ -904,6 +968,8 @@ scripted `Result<String, ProxyError>` entries (or an outer `Err`). A
   `a_callee_error_is_refused_with_its_code` / `another_proxy_error_is_refused_32603`
 - `a_reply_that_is_not_json_rpc_is_unreadable` / `a_json_rpc_error_is_refused`
   / `hits_that_do_not_parse_are_unreadable`
+- `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others` (P1)
+- `a_truncated_flag_that_is_not_a_boolean_is_unreadable` (P12)
 - `the_result_truncated_flag_is_reported_per_source`
 - `a_source_with_no_hits_still_reports_truncated`
 - `at_most_forty_hits_are_read_before_checking`
@@ -911,8 +977,10 @@ scripted `Result<String, ProxyError>` entries (or an outer `Err`). A
 - `a_source_is_capped_at_twenty_verified_and_twenty_refused`
 - `membership_uses_the_pinned_issuer_of_that_source`
 - `evidence_is_kept_once_per_source_and_issuer_with_the_last_hit_winning`
+- `evidence_of_a_hit_over_the_cap_is_not_kept` (P4)
 - `page_envelopes_cover_every_source_of_every_hit_once`
-- `a_refused_batch_marks_every_source_not_started`
+- `a_refused_batch_marks_every_source_not_started` (tests both `Internal` and
+  `UnsupportedTarget` refusals, P3)
 - `no_sources_makes_no_call`
 - `more_than_max_sources_is_an_error_and_no_call_runs`
 
@@ -927,13 +995,15 @@ one build is the A2c R1 mistake.
 - `find_names_the_slow_source_and_keeps_the_other_hits` (OF-6)
 - `find_marks_an_unreachable_source_not_found_and_keeps_the_others`
 - `find_refuses_an_invalid_query_field_with_the_field_name` (W3)
-- `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` (the measure)
+- `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` (the measure:
+  8 sources with 40 genuine signed listings each, worst case for checking time,
+  and one oversized reply, P1, P2, P5, P10)
 - `run_envelope_returns_the_signed_bytes_of_a_page_record` (replaces the
   scenario 117/98 assertions at directory.rs :923)
 - `run_envelope_does_not_find_a_record_that_is_not_on_the_page` (W4)
 - `a_second_find_for_one_source_does_not_duplicate_a_listing` (replaces 116:
-  the property is now "one find with a source that returns two versions of
-  one listing in one answer", using the hostile fake source)
+  one find with canned source `hTwoVersions` returning two genuine signed
+  versions of one listing in one answer, P6)
 - `a_find_after_the_retention_hour_prunes_old_run_rows`
 - `an_unregistered_run_id_has_no_envelope` (replaces the run-id half of 102)
 
@@ -995,12 +1065,21 @@ cargo xtask check-file-lengths && cargo xtask check-lint-suppressions
 - `helpers.rs` must not grow (3.7). `fixtures.rs` shrinks.
 - `roym-hub.spec.ts` shrinks (case 23b out).
 - **Checking time (unverified).** 8 sources × 40 hits is 320 `verify_envelope`
-  calls plus the page's row writes in one guest call with 5 s of own time. If
-  the measure in Step 5 is above 60 % of `DISPATCH_HEADROOM_MS`, the fallbacks
-  in order are: (1) stop reading a source's hits once both its caps are full
-  (the check order is the same, so results do not change); (2) lower
+  calls plus the page's row writes in one guest call with 5 s of own time. The
+  worst case for checking time is 40 genuine hits per source (all verified, 20
+  kept and 20 dropped, P2), not 20 valid + 20 refused. If the measure in Step 5
+  is above 60 % of `DISPATCH_HEADROOM_MS`, the fallbacks in order are: (1')
+  verify refused-looking envelopes cheaply first (a forged envelope usually fails
+  at its JSON parse, so cost is mostly genuine signature checks, P2); (2) lower
   `MAX_STORED_PER_SOURCE` + `MAX_REFUSED_RESULTS`; (3) raise
-  `DISPATCH_HEADROOM_MS` and lower `DEFAULT_SOURCE_TIMEOUT_MS`. Pick (1) first.
+  `DISPATCH_HEADROOM_MS` and lower `DEFAULT_SOURCE_TIMEOUT_MS`. (The previous
+  fallback (1) to stop after both caps are full saved nothing because the list
+  is already cut at 40 before checking, P2).
+- **Memory risk during lowering (unverified).** Host lowering writes all 8
+  replies into guest memory before guest code runs. The library caps JSON
+  parsing at `MAX_SEARCH_REPLY_BYTES` = 1 MiB (P1), but `call-all` has no host-side
+  per-reply size cap yet. A backlog row tracks this for when `call-all` is next
+  opened (P1).
 - **Config risk.** If an operator sets `call_all_max_concurrency` below 8,
   the search takes two waves. Add a comment to `config.sample.toml` next to
   `call_all_max_concurrency`: keep it at 8 or more while a person may add 8
@@ -1019,7 +1098,7 @@ cargo xtask check-file-lengths && cargo xtask check-lint-suppressions
 | A2a R1 (a check that does nothing) | the equivalence test could compare empty pages | The test asserts the pages are not empty first (hits and refused), and the Step 4 plan names the scenarios with known non-empty pages. |
 | A2b R5 (behaviour change hidden in a rewrite) | the move of the merge and of the check | The functions move without edits. The equivalence test proves it before the old code is deleted (D-A4-15). A reviewer diffs `merge.rs` against `main`'s `client_merge.rs`. |
 | A2b R8 (deleted why-comments) | long why-comments in `client_merge.rs` and `client_query.rs` | Section 0 and Step 2: the comments move with the code. |
-| A2a R2, R3; A2b R1, R12; A3 R9 (change doc decisions and deviations) | 15 new decisions | Section 9 lists D-A4-1 to D-A4-15 with the same numbers and meaning; real deviations go in their own list. |
+| A2a R2, R3; A2b R1, R12; A3 R9 (change doc decisions and deviations) | 16 new decisions | Section 9 lists D-A4-1 to D-A4-16 (P12) with the same numbers and meaning; real deviations go in their own list. |
 | A2b R2, A2c R3, A3 R3 (wrong counts) | test counts | Step 9 and section 10 say what to count. Record counts in `status.md`. |
 | A2a R10, A2b R7, A2c R6 (numbered comments) | tests | Named test functions. No numbered comments. |
 | A2b R9 (set-up written twice) | the old and the new helper | `fan_out_one` and `run_client_loop` keep their names and return types. One fake source layer. |
@@ -1061,6 +1140,15 @@ All rows are in [deferred-backlog.md](../../deferred-backlog.md).
   - "**The federated query library runs only `directory.search`**": the
     exchange and the shop browse need a second method and hit type. Reason:
     Q5 (a). Target: M08F.
+  - "**`call-all` has no per-reply size cap**": host lowers remote replies into
+    guest memory before guest runs. Target: when `call-all` is next opened (P1).
+  - "**Substrate startup warning when `call_all_max_concurrency < MAX_SOURCES`**":
+    sample-config comment is the only guard today. Target: substrate startup
+    validation (Q2).
+  - "**Run ids are not unique under concurrent finds in the same second**":
+    two finds starting in the same second count existing runs and mint the
+    same id. Target: when a second client starts finds or fast concurrent finds
+    occur (P9).
   - "**A search has no partial result for a slow directory beyond its 2 s**"
     is not needed: D-OF-5 already covers it.
 - No new open `TODO` or `FIXME` marker is added.
@@ -1106,16 +1194,17 @@ or milestone and slice ids in these files. Link ADRs only.
   - **Acceptance criteria:** fill the Test column of OF-6 and OF-7 with the
     tests of section 7.
   - **Design, "Federated query library":** replace the paragraph with the
-    real API (D-A4-3 to D-A4-6): the outcome kinds are `error: null`,
+    real API (D-A4-3 to D-A4-6, D-A4-16): the outcome kinds are `error: null`,
     `not-found`, `timed-out`, `not-started`, `refused`, `unreadable` (the
     sketch listed four).
-  - **Decisions:** add D-A4-1 to D-A4-15 with the same numbers and meaning,
+  - **Decisions:** add D-A4-1 to D-A4-16 (P12) with the same numbers and meaning,
     and one line with the owner's answers to Q1 to Q6.
   - **Deviations:** under "Different from the plan": the outcome kinds
     (`not-found` and `not-started` exist besides the four named); `run-envelope`
     finds only page records; the method is `directory.find`; the three-call
-    form is removed (as D-OF-5 said). Under "Planned wire changes": W1 to W8.
-  - **`demo:`:** extend the `none:` reason (Q6).
+    form is removed (as D-OF-5 said); `SearchOutput` typing and non-boolean
+    `truncated` edge case (D-A4-16, P12). Under "Planned wire changes": W1 to W8.
+  - **`demo:`:** extend the `none:` reason (Q6, P11).
   - `status` stays `draft`.
 - [task.md](task.md): add the A4 result line under "A4".
 - [status.md](status.md): row A4. Later steps record the PR, the test counts
@@ -1146,10 +1235,14 @@ A4 is done when all of these are true:
 7. `directory.run-envelope` returns the signed bytes of a page record,
    byte-identical (the e2e check passes).
 8. `find_time_fits_the_real_sandbox_defaults` passes against the real
-   defaults, and the ceiling measure is below `DISPATCH_HEADROOM_MS`.
-9. A whole-batch refusal gives `not-started` for every source (library
-   test), and `not-started` never writes `last_error` (directory unit test).
-10. `directory.rs` (parity) is lowered in the oversized list, the duplication
+   defaults, and the ceiling measure (wall time of the whole `directory.find`
+   call on WASM with 8 sources answering 40 genuine hits each without delay)
+   is below `DISPATCH_HEADROOM_MS` (P2, P10).
+9. A whole-batch refusal gives `not-started` for every source for both `Internal`
+   and `UnsupportedTarget` refusals (library test, P3), and `not-started` never
+   writes `last_error` (directory unit test).
+10. `a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others` passes (P1).
+    `directory.rs` (parity) is lowered in the oversized list, the duplication
     baseline is correct, and `helpers.rs` did not grow.
 11. The change doc, developer guide, spec, traceability matrix, sample config,
     `task.md`, `status.md` and the backlog are updated as in sections 8 and 9.
