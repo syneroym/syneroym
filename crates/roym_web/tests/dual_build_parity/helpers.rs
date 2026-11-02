@@ -784,7 +784,7 @@ impl ServiceProxy for TestWasmServiceProxy {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
 
-        if let Some(canned) = trust_harness::canned_source_response(target, &request.params) {
+        if let Some(canned) = trust_harness::canned_source_response(target, &request.params).await {
             return Ok(canned);
         }
 
@@ -869,7 +869,7 @@ impl ServiceProxy for TestNativeServiceProxy {
         self.invocations.fetch_add(1, Ordering::SeqCst);
         let target = request.target_service.as_str();
 
-        if let Some(canned) = trust_harness::canned_source_response(target, &request.params) {
+        if let Some(canned) = trust_harness::canned_source_response(target, &request.params).await {
             return Ok(canned);
         }
 

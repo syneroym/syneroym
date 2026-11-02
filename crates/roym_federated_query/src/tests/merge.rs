@@ -16,6 +16,7 @@ fn test_row(source: &str, listing_id: &str, record_id: &str, issued_at: u64) -> 
         membership: None,
         issued_at_secs: issued_at,
         received_at_secs: issued_at,
+        ..Default::default()
     }
 }
 
@@ -25,16 +26,8 @@ fn test_refused_row(source: &str, listing_id: &str, record_id: &str, reason: &st
         record_id: record_id.to_string(),
         source: source.to_string(),
         issuer: "did:key:issuer".to_string(),
-        title: String::new(),
-        summary: String::new(),
-        categories: Vec::new(),
-        conversation_address: String::new(),
-        status: String::new(),
         reason: Some(reason.to_string()),
-        revocation_status: String::new(),
-        membership: None,
-        issued_at_secs: 0,
-        received_at_secs: 0,
+        ..Default::default()
     }
 }
 

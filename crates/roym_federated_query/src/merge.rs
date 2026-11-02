@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use syneroym_roym_core::{
+    area::Area,
     directory::{MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS, MAX_SEARCH_RESULTS},
-    membership::MembershipVerdict,
+    membership::{self, CheckInput, ListingRef, MembershipEvidence, MembershipVerdict},
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -40,7 +41,7 @@ pub struct RefusedHit {
     pub sources: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Row {
     pub listing_id: String,
     pub record_id: String,
@@ -56,6 +57,12 @@ pub struct Row {
     pub membership: Option<MembershipVerdict>,
     pub issued_at_secs: u64,
     pub received_at_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_evidence: Option<MembershipEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_issuer: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<Area>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -221,11 +228,34 @@ fn build_hits(
             let winner = *candidates.first()?;
             let sources: Vec<HitSource> = candidates
                 .iter()
-                .map(|r| HitSource {
-                    directory: r.source.clone(),
-                    record_id: r.record_id.clone(),
-                    received_at_secs: r.received_at_secs,
-                    membership: r.membership.clone(),
+                .map(|r| {
+                    let membership = if let Some(evidence) = &r.raw_evidence
+                        && let Some(pinned_issuer) = &r.pinned_issuer
+                    {
+                        let verdict = membership::evaluate(
+                            evidence,
+                            &CheckInput {
+                                pinned_issuer: Some(pinned_issuer),
+                                member_did: &r.issuer,
+                                listing: Some(ListingRef {
+                                    listing_id: &r.listing_id,
+                                    categories: Some(&r.categories),
+                                    areas: Some(&r.areas),
+                                }),
+                                now_secs: now,
+                                evidence_as_of_secs: now,
+                            },
+                        );
+                        Some(verdict)
+                    } else {
+                        r.membership.clone()
+                    };
+                    HitSource {
+                        directory: r.source.clone(),
+                        record_id: r.record_id.clone(),
+                        received_at_secs: r.received_at_secs,
+                        membership,
+                    }
                 })
                 .collect();
             let distinct_record_ids: BTreeSet<&str> =

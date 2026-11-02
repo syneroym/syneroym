@@ -69,10 +69,10 @@ pub const MAX_STORED_PER_SOURCE: u32 = 2 * MAX_HITS_PER_SOURCE;
 /// `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch` relationship
 /// is asserted host-side (see `MAX_CLIENT_CONCURRENCY`), against the real
 /// `AppSandboxRole` default rather than a literal copied here.
-pub const DEFAULT_SOURCE_TIMEOUT_MS: u32 = 2_000;
+pub const DEFAULT_SOURCE_TIMEOUT_MS: u32 = 1_700;
 /// Headroom the host-side assertion reserves for verifying a full page of
 /// envelopes and writing the run rows.
-pub const DISPATCH_HEADROOM_MS: u32 = 1_500;
+pub const DISPATCH_HEADROOM_MS: u32 = 3_000;
 /// A search run's rows are pruned once older than this. Runs are working
 /// state, not a cache.
 pub const RUN_RETENTION_SECS: u64 = 3_600;

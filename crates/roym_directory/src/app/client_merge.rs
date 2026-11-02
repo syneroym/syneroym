@@ -60,6 +60,7 @@ fn to_row(row: SearchRunRow) -> Row {
         membership: row.membership,
         issued_at_secs: row.issued_at_secs,
         received_at_secs: row.received_at_secs,
+        ..Default::default()
     }
 }
 

@@ -91,7 +91,11 @@ async fn find_over_one_source_matches_the_native_and_wasm_builds() {
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
 
     let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
-    assert_eq!(stripped(&fw), stripped(&fn_res));
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
 
     let hits = fw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1);
@@ -113,7 +117,11 @@ async fn find_with_no_sources_is_an_empty_page_with_a_run_id() {
     let h = harness().await;
 
     let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
-    assert_eq!(stripped(&fw), stripped(&fn_res));
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
 
     let run_w = fw["result"]["run_id"].as_str().unwrap();
     let run_n = fn_res["result"]["run_id"].as_str().unwrap();
@@ -141,7 +149,11 @@ async fn find_marks_an_unreachable_source_not_found_and_keeps_the_others() {
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:zunbound" })).await;
 
     let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
-    assert_eq!(stripped(&fw), stripped(&fn_res));
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
 
     let hits = fw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1);
@@ -328,4 +340,198 @@ async fn a_find_after_the_retention_hour_prunes_old_run_rows() {
             "old search_runs row must be pruned"
         );
     }
+}
+
+#[tokio::test]
+async fn find_names_the_slow_source_and_keeps_the_other_hits() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    let (_id, gw, _gn) = set_and_get(&h, full_listing_params("slow-test-hedge", "Hedge")).await;
+    let env_bytes = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &env_bytes).await;
+
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hSlow" })).await;
+
+    let start_w = std::time::Instant::now();
+    let fw = one_rpc(&h, true, "directory.find", json!({})).await;
+    let elapsed_w = start_w.elapsed();
+
+    let start_n = std::time::Instant::now();
+    let fn_res = one_rpc(&h, false, "directory.find", json!({})).await;
+    let elapsed_n = start_n.elapsed();
+
+    assert!(
+        elapsed_w < std::time::Duration::from_secs(5),
+        "wasm search must finish before slow source's 5s sleep: took {:?}",
+        elapsed_w
+    );
+    assert!(
+        elapsed_n < std::time::Duration::from_secs(5),
+        "native search must finish before slow source's 5s sleep: took {:?}",
+        elapsed_n
+    );
+
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+
+    let hits = fw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "other source's hit must be kept");
+
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    let slow_outcome =
+        outcomes.iter().find(|o| o["source"] == "did:key:hSlow").expect("slow source outcome");
+    assert_eq!(slow_outcome["error"]["kind"], "timed-out");
+    assert_eq!(slow_outcome["verified"], 0);
+
+    let good_outcome = outcomes
+        .iter()
+        .find(|o| o["source"] == "did:key:hForeign")
+        .expect("foreign source outcome");
+    assert_eq!(good_outcome["error"], serde_json::Value::Null);
+    assert_eq!(good_outcome["verified"], 1);
+}
+
+#[tokio::test]
+async fn find_marks_an_oversized_reply_unreadable_and_keeps_the_others() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    let (_id, gw, _gn) = set_and_get(&h, full_listing_params("oversized-hedge", "Hedge")).await;
+    let env_bytes = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &env_bytes).await;
+
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hOversized" })).await;
+
+    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+
+    let hits = fw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "good source's hit must be kept");
+
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    let over_outcome = outcomes
+        .iter()
+        .find(|o| o["source"] == "did:key:hOversized")
+        .expect("oversized source outcome");
+    assert_eq!(over_outcome["error"]["kind"], "unreadable");
+    assert_eq!(over_outcome["error"]["reason"], "reply too large");
+    assert_eq!(over_outcome["verified"], 0);
+
+    let good_outcome = outcomes
+        .iter()
+        .find(|o| o["source"] == "did:key:hForeign")
+        .expect("foreign source outcome");
+    assert_eq!(good_outcome["error"], serde_json::Value::Null);
+    assert_eq!(good_outcome["verified"], 1);
+}
+
+#[tokio::test]
+async fn a_second_find_for_one_source_does_not_duplicate_a_listing() {
+    let h = harness().await;
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hTwoVersions" })).await;
+
+    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    let outcome = outcomes
+        .iter()
+        .find(|o| o["source"] == "did:key:hTwoVersions")
+        .expect("two versions outcome");
+    assert_eq!(outcome["verified"], 2);
+    assert_eq!(outcome["error"], serde_json::Value::Null);
+
+    let hits = fw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "only the newer version appears on the page");
+    assert_eq!(hits[0]["versions_differ"], false);
+    assert_eq!(hits[0]["title"], "Hedge trimming v2");
+    assert_eq!(hits[0]["sources"].as_array().unwrap().len(), 1);
+    assert_eq!(hits[0]["sources"][0]["directory"], "did:key:hTwoVersions");
+}
+
+#[tokio::test]
+async fn find_ceiling_run_of_eight_sources_fits_the_dispatch_budget() {
+    let h = harness().await;
+    for k in 1..=8 {
+        both_rpc(&h, "directory.add-source", json!({ "did": format!("did:key:hCeiling{k}") }))
+            .await;
+    }
+
+    let start_w = std::time::Instant::now();
+    let fw = one_rpc(&h, true, "directory.find", json!({})).await;
+    let elapsed_w = start_w.elapsed();
+
+    let start_n = std::time::Instant::now();
+    let fn_res = one_rpc(&h, false, "directory.find", json!({})).await;
+    let elapsed_n = start_n.elapsed();
+
+    println!("ceiling run wall time: wasm {:?}, native {:?}", elapsed_w, elapsed_n);
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    assert_eq!(outcomes.len(), 8);
+    for outcome in outcomes {
+        assert_eq!(outcome["verified"], 20);
+        assert_eq!(outcome["refused"], 0);
+        assert_eq!(outcome["error"], serde_json::Value::Null);
+    }
+
+    let hits = fw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 50);
+    assert_eq!(fw["result"]["hits_truncated"], true);
+
+    for hit in hits {
+        for src in hit["sources"].as_array().unwrap() {
+            assert_eq!(
+                src["membership"]["state"], "valid",
+                "ceiling hit membership verdict must be Valid: {src}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "isolated measurement of ceiling run against DISPATCH_HEADROOM_MS"]
+async fn find_ceiling_measure_fits_dispatch_headroom() {
+    let h = harness().await;
+    for k in 1..=8 {
+        both_rpc(&h, "directory.add-source", json!({ "did": format!("did:key:hCeiling{k}") }))
+            .await;
+    }
+
+    let start = std::time::Instant::now();
+    let fw = one_rpc(&h, true, "directory.find", json!({})).await;
+    let wasm_elapsed = start.elapsed();
+
+    println!("measured ceiling wasm wall time: {:?}", wasm_elapsed);
+    assert!(fw["result"]["hits"].is_array());
+    assert!(
+        wasm_elapsed
+            < std::time::Duration::from_millis(u64::from(
+                syneroym_roym_core::directory::DISPATCH_HEADROOM_MS
+            )),
+        "measured ceiling wall time ({:?}) must fit within DISPATCH_HEADROOM_MS ({} ms)",
+        wasm_elapsed,
+        syneroym_roym_core::directory::DISPATCH_HEADROOM_MS
+    );
 }

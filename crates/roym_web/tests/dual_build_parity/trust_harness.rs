@@ -8,7 +8,11 @@ use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_roym_core::{
     listing,
-    membership::{self, MembershipCredentialPayload, MembershipScope},
+    membership::{
+        self, MAX_REASON_LEN, MEMBERSHIP_CREDENTIAL_VERSION, MODERATION_DECISION_VERSION,
+        MembershipCredentialPayload, MembershipScope, ModerationAction, ModerationDecisionPayload,
+        ModerationScope, REVOCATION_VERSION, RevocationPayload,
+    },
     record,
 };
 use syneroym_signed_record::{Envelope, RecordDraft};
@@ -347,9 +351,329 @@ pub(crate) fn trust_source_response(target: &str, params: &Value) -> Option<Valu
     Some(Value::String(json!({ "result": result }).to_string()))
 }
 
+/// Returns the 0-based index for `did:key:hCeiling1` .. `did:key:hCeiling8`.
+pub(crate) fn ceiling_source_index(target: &str) -> Option<usize> {
+    let suffix = target.strip_prefix("did:key:hCeiling")?;
+    let num: usize = suffix.parse().ok()?;
+    if (1..=8).contains(&num) { Some(num - 1) } else { None }
+}
+
+pub(crate) fn ceiling_issuer_identity(idx: usize) -> Identity {
+    Identity::from_bytes(&[81 + idx as u8; 32])
+}
+
+pub(crate) fn ceiling_issuer_did(idx: usize) -> String {
+    derive_did_key(&ceiling_issuer_identity(idx).public_key())
+}
+
+static CEILING_RESPONSES: std::sync::OnceLock<[String; 8]> = std::sync::OnceLock::new();
+
+fn get_ceiling_response(idx: usize) -> String {
+    let responses = CEILING_RESPONSES.get_or_init(build_all_ceiling_responses);
+    responses[idx].clone()
+}
+
+fn build_ceiling_evidence(
+    issuer_key: &Identity,
+    issuer_did: &str,
+    member_did: &str,
+    listing_id: &str,
+    src_idx: usize,
+    hit_idx: usize,
+) -> Value {
+    let mut credentials = Vec::with_capacity(4);
+    for c in 0..4 {
+        let payload = MembershipCredentialPayload {
+            synorg_name: "Ceiling Guild".to_string(),
+            member_did: member_did.to_string(),
+            scope: MembershipScope {
+                categories: vec!["gardening".to_string(), format!("extra-{c}")],
+                area: vec![],
+            },
+        };
+        credentials.push(sign_claiming(
+            issuer_key,
+            issuer_did,
+            RecordDraft {
+                version: MEMBERSHIP_CREDENTIAL_VERSION,
+                record_type: record::RECORD_MEMBERSHIP_CREDENTIAL.to_string(),
+                subject: member_did.to_string(),
+                payload: serde_json::to_value(&payload).unwrap(),
+                expires_at_secs: Some(CANNED_VALID_UNTIL_SECS),
+                supersedes: None,
+            },
+        ));
+    }
+
+    let mut revocations = Vec::with_capacity(4);
+    for r in 0..4 {
+        let mut fake_cred_bytes = [0u8; 32];
+        fake_cred_bytes[0] = 0xfd;
+        fake_cred_bytes[1] = src_idx as u8;
+        fake_cred_bytes[2] = hit_idx as u8;
+        fake_cred_bytes[3] = r as u8;
+        let other_id = format!("rec_{}", z32::encode(&fake_cred_bytes));
+        let payload = RevocationPayload {
+            credential_record_id: other_id.clone(),
+            member_did: member_did.to_string(),
+            reason: "x".repeat(MAX_REASON_LEN),
+        };
+        revocations.push(sign_claiming(
+            issuer_key,
+            issuer_did,
+            RecordDraft {
+                version: REVOCATION_VERSION,
+                record_type: record::RECORD_REVOCATION.to_string(),
+                subject: other_id,
+                payload: serde_json::to_value(&payload).unwrap(),
+                expires_at_secs: None,
+                supersedes: None,
+            },
+        ));
+    }
+
+    let mut decisions = Vec::with_capacity(8);
+    for d in 0..8 {
+        let mut fake_bytes = [0u8; 32];
+        fake_bytes[0] = 0xfe;
+        fake_bytes[1] = src_idx as u8;
+        fake_bytes[2] = hit_idx as u8;
+        fake_bytes[3] = d as u8;
+        let fake_rec_id = format!("rec_{}", z32::encode(&fake_bytes));
+        let payload = ModerationDecisionPayload {
+            action: ModerationAction::Lift,
+            member_did: member_did.to_string(),
+            scope: ModerationScope::Listing { listing_id: listing_id.to_string() },
+            rule: String::new(),
+            reason: "m".repeat(MAX_REASON_LEN),
+            until_secs: None,
+        };
+        decisions.push(sign_claiming(
+            issuer_key,
+            issuer_did,
+            RecordDraft {
+                version: MODERATION_DECISION_VERSION,
+                record_type: record::RECORD_MODERATION_DECISION.to_string(),
+                subject: member_did.to_string(),
+                payload: serde_json::to_value(&payload).unwrap(),
+                expires_at_secs: None,
+                supersedes: Some(fake_rec_id),
+            },
+        ));
+    }
+
+    json!({
+        "credentials": credentials,
+        "revocations": revocations,
+        "decisions": decisions,
+    })
+}
+
+fn build_all_ceiling_responses() -> [String; 8] {
+    let member_key = listing_owner_identity();
+    let member_did = listing_owner_did();
+
+    core::array::from_fn(|idx| {
+        let issuer_key = ceiling_issuer_identity(idx);
+        let issuer_did = ceiling_issuer_did(idx);
+
+        let hits: Vec<Value> = (0..40)
+            .map(|h| {
+                let slug = format!("ceiling-listing-{idx}-{h}");
+                let lid = listing::derive_listing_id(&member_did, &slug).unwrap();
+                let (mut env, bytes) = Envelope::unsigned(
+                    RecordDraft {
+                        version: listing::LISTING_VERSION,
+                        record_type: record::RECORD_LISTING.to_string(),
+                        subject: member_did.clone(),
+                        payload: json!({
+                            "listing_id": lid,
+                            "slug": slug,
+                            "title": format!("Ceiling Title {idx}-{h}"),
+                            "summary": "Neat hedges, fortnightly.",
+                            "categories": ["gardening"],
+                            "conversation_address": "did:key:zConv",
+                            "status": "active",
+                            "booking": {
+                                "mode": "enquiry",
+                                "lead_time_secs": 0,
+                                "cancellation_window_secs": 0,
+                                "max_per_booking": 1,
+                            },
+                        }),
+                        expires_at_secs: None,
+                        supersedes: None,
+                    },
+                    member_did.clone(),
+                    None,
+                    CANNED_ISSUED_AT_SECS,
+                )
+                .unwrap();
+                env.attach_signature(z32::encode(&member_key.sign(&bytes).to_bytes())).unwrap();
+                let rec_id = env.record_id().unwrap();
+                let env_json = env.to_json().unwrap();
+
+                let evidence =
+                    build_ceiling_evidence(&issuer_key, &issuer_did, &member_did, &lid, idx, h);
+
+                json!({
+                    "listing_id": lid,
+                    "record_id": rec_id,
+                    "envelope": env_json,
+                    "issued_at_secs": CANNED_ISSUED_AT_SECS,
+                    "received_at_secs": CANNED_ISSUED_AT_SECS,
+                    "area_match": { "kind": "not-queried" },
+                    "membership": evidence,
+                })
+            })
+            .collect();
+
+        json!({ "result": { "hits": hits } }).to_string()
+    })
+}
+
+fn two_versions_search_response() -> String {
+    let issuer = listing_owner_did();
+    let slug = "two-versions-hedge";
+    let lid = listing::derive_listing_id(&issuer, slug).unwrap();
+    let owner_key = listing_owner_identity();
+
+    let (mut env1, bytes1) = Envelope::unsigned(
+        RecordDraft {
+            version: listing::LISTING_VERSION,
+            record_type: record::RECORD_LISTING.to_string(),
+            subject: issuer.clone(),
+            payload: json!({
+                "listing_id": lid,
+                "slug": slug,
+                "title": "Hedge trimming v1",
+                "summary": "Neat hedges, fortnightly.",
+                "categories": ["gardening"],
+                "conversation_address": "did:key:zConv",
+                "status": "active",
+                "booking": {
+                    "mode": "enquiry",
+                    "lead_time_secs": 0,
+                    "cancellation_window_secs": 0,
+                    "max_per_booking": 1,
+                },
+            }),
+            expires_at_secs: None,
+            supersedes: None,
+        },
+        issuer.clone(),
+        None,
+        CANNED_ISSUED_AT_SECS,
+    )
+    .unwrap();
+    env1.attach_signature(z32::encode(&owner_key.sign(&bytes1).to_bytes())).unwrap();
+    let rec1 = env1.record_id().unwrap();
+    let env1_json = env1.to_json().unwrap();
+
+    let (mut env2, bytes2) = Envelope::unsigned(
+        RecordDraft {
+            version: listing::LISTING_VERSION,
+            record_type: record::RECORD_LISTING.to_string(),
+            subject: issuer.clone(),
+            payload: json!({
+                "listing_id": lid,
+                "slug": slug,
+                "title": "Hedge trimming v2",
+                "summary": "Neat hedges, fortnightly.",
+                "categories": ["gardening"],
+                "conversation_address": "did:key:zConv",
+                "status": "active",
+                "booking": {
+                    "mode": "enquiry",
+                    "lead_time_secs": 0,
+                    "cancellation_window_secs": 0,
+                    "max_per_booking": 1,
+                },
+            }),
+            expires_at_secs: None,
+            supersedes: Some(rec1.clone()),
+        },
+        issuer,
+        None,
+        CANNED_ISSUED_AT_SECS + 10,
+    )
+    .unwrap();
+    env2.attach_signature(z32::encode(&owner_key.sign(&bytes2).to_bytes())).unwrap();
+    let rec2 = env2.record_id().unwrap();
+    let env2_json = env2.to_json().unwrap();
+
+    let hit1 = json!({
+        "listing_id": lid,
+        "record_id": rec1,
+        "envelope": env1_json,
+        "issued_at_secs": CANNED_ISSUED_AT_SECS,
+        "received_at_secs": CANNED_ISSUED_AT_SECS,
+        "area_match": { "kind": "not-queried" },
+        "membership": { "credentials": [], "revocations": [], "decisions": [] },
+    });
+    let hit2 = json!({
+        "listing_id": lid,
+        "record_id": rec2,
+        "envelope": env2_json,
+        "issued_at_secs": CANNED_ISSUED_AT_SECS + 10,
+        "received_at_secs": CANNED_ISSUED_AT_SECS + 10,
+        "area_match": { "kind": "not-queried" },
+        "membership": { "credentials": [], "revocations": [], "decisions": [] },
+    });
+
+    json!({ "result": { "hits": [hit1, hit2] } }).to_string()
+}
+
 /// What both stacks' service proxies try before any real routing: the
 /// hostile forgers first, the `hNewer` source, then the trust sources.
-pub(crate) fn canned_source_response(target: &str, params: &Value) -> Option<Value> {
+pub(crate) async fn canned_source_response(target: &str, params: &Value) -> Option<Value> {
+    if target == "did:key:hSlow" {
+        if inner_method(params).as_deref() == Some("directory.search") {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            return Some(Value::String(json!({ "result": { "hits": [] } }).to_string()));
+        }
+        return Some(Value::String(json!({ "result": { "name": "Slow Guild" } }).to_string()));
+    }
+    if target == "did:key:hOversized" {
+        if inner_method(params).as_deref() == Some("directory.search") {
+            let padding = "x".repeat(8 * 1024 * 1024 + 1024);
+            return Some(Value::String(
+                json!({ "result": { "hits": [], "padding": padding } }).to_string(),
+            ));
+        }
+        return Some(Value::String(json!({ "result": { "name": "Oversized Guild" } }).to_string()));
+    }
+    if target == "did:key:hTwoVersions" {
+        if inner_method(params).as_deref() == Some("directory.search") {
+            return Some(Value::String(two_versions_search_response()));
+        }
+        return Some(Value::String(
+            json!({ "result": { "name": "Two Versions Guild" } }).to_string(),
+        ));
+    }
+    if let Some(idx) = ceiling_source_index(target) {
+        let method = inner_method(params)?;
+        let result = match method.as_str() {
+            "directory.info" => json!({
+                "name": format!("Ceiling Guild {}", idx + 1),
+                "issuer_did": ceiling_issuer_did(idx),
+            }),
+            "directory.search" => return Some(Value::String(get_ceiling_response(idx))),
+            "directory.standing" => json!({
+                "issuer_did": ceiling_issuer_did(idx),
+                "member_did": listing_owner_did(),
+                "evidence": json!({ "credentials": [], "revocations": [], "decisions": [] }),
+                "answered_at_secs": CANNED_ISSUED_AT_SECS,
+            }),
+            other => {
+                let error =
+                    json!({ "code": -32601, "message": format!("no such method: {other}") });
+                return Some(Value::String(json!({ "error": error }).to_string()));
+            }
+        };
+        return Some(Value::String(json!({ "result": result }).to_string()));
+    }
+
     if target == "did:key:hNewer" {
         return newer_source_response(params);
     }

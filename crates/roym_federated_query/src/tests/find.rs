@@ -39,7 +39,7 @@ async fn each_call_is_built_like_the_old_query_source() {
 
     let opts = req.options.as_ref().unwrap();
     assert!(opts.idempotent);
-    assert_eq!(opts.timeout_ms, Some(2000));
+    assert_eq!(opts.timeout_ms, Some(syneroym_roym_core::directory::DEFAULT_SOURCE_TIMEOUT_MS));
 }
 
 #[tokio::test]

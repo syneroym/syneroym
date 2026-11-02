@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 use syneroym_core::config::AppSandboxRole;
 use syneroym_roym_core::{
     directory::{
-        DEFAULT_SOURCE_TIMEOUT_MS, DISPATCH_HEADROOM_MS, MAX_CLIENT_CONCURRENCY,
-        MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS,
+        DEFAULT_SOURCE_TIMEOUT_MS, DISPATCH_HEADROOM_MS, MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS,
+        MAX_SOURCES,
     },
     services,
 };
@@ -1113,23 +1113,16 @@ async fn scenario_121_a_named_area_query_discriminates_by_label_parity() {
 }
 
 #[test]
-fn directory_source_timeout_and_concurrency_fit_the_real_sandbox_defaults() {
-    // The constants in `roym_core::directory` are derived from node
-    // limits, not chosen -- and `roym_core` is a guest crate that cannot
-    // import the config crate, so the relationship is asserted here,
-    // against the real `AppSandboxRole` defaults rather than a literal
-    // copied by hand.
+fn find_time_fits_the_real_sandbox_defaults() {
     let defaults = AppSandboxRole::default();
     let epoch_ms = defaults.dispatch_epoch_timeout_secs.saturating_mul(1000);
+    let waves = MAX_SOURCES.div_ceil(defaults.call_all_max_concurrency);
+    let wave_time = u64::from(DEFAULT_SOURCE_TIMEOUT_MS) + 250;
+    assert!(MAX_SOURCES <= defaults.call_all_max_calls);
+    assert!(u64::from(DEFAULT_SOURCE_TIMEOUT_MS) <= defaults.call_all_max_call_timeout_ms);
+    assert!((waves as u64) * wave_time <= defaults.call_all_total_timeout_ms);
     assert!(
-        u64::from(DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS) < epoch_ms,
-        "source timeout ({DEFAULT_SOURCE_TIMEOUT_MS}) + headroom ({DISPATCH_HEADROOM_MS}) must \
-         fit inside the dispatch epoch ({epoch_ms} ms)"
-    );
-    assert!(
-        (MAX_CLIENT_CONCURRENCY as u32) < defaults.max_concurrent_guest_http_per_service,
-        "client fan-out concurrency ({MAX_CLIENT_CONCURRENCY}) must stay below the guest-HTTP \
-         admission limit ({})",
-        defaults.max_concurrent_guest_http_per_service
+        (waves as u64) * wave_time + u64::from(DISPATCH_HEADROOM_MS) < epoch_ms,
+        "wave time + headroom must fit inside dispatch epoch"
     );
 }

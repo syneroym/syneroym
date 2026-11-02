@@ -6,7 +6,7 @@ use serde::Serialize;
 use syneroym_roym_core::{
     directory::{MAX_REFUSED_RESULTS, MAX_STORED_PER_SOURCE, SearchHit},
     listing::{self, ListingStatus, ListingVerdict},
-    membership::{self, CheckInput, ListingRef, MembershipEvidence},
+    membership::{MembershipEvidence, MembershipVerdict},
 };
 
 use crate::{
@@ -123,7 +123,7 @@ fn build_verified_row(
     source: &Source,
     hit: &SearchHit,
     verdict: ListingVerdict,
-    now_secs: u64,
+    _now_secs: u64,
     envelopes_by_record_id: &mut BTreeMap<String, String>,
     evidence: &mut Vec<HeldEvidence>,
 ) -> Option<Row> {
@@ -131,20 +131,6 @@ fn build_verified_row(
     let issuer = verdict.issuer.unwrap_or_default();
     let listing_id = verdict.listing_id.unwrap_or_default();
     let areas = payload.location.as_ref().map(|l| l.service_area.clone()).unwrap_or_default();
-    let membership_verdict = membership::evaluate(
-        &hit.membership,
-        &CheckInput {
-            pinned_issuer: source.pinned_issuer.as_deref(),
-            member_did: &issuer,
-            listing: Some(ListingRef {
-                listing_id: &listing_id,
-                categories: Some(&payload.categories),
-                areas: Some(&areas),
-            }),
-            now_secs,
-            evidence_as_of_secs: now_secs,
-        },
-    );
     let record_id = verdict.record_id.unwrap_or_default();
     envelopes_by_record_id.insert(record_id.clone(), hit.envelope.clone());
     evidence.push(HeldEvidence {
@@ -166,9 +152,16 @@ fn build_verified_row(
         status: serde_str(&verdict.status.unwrap_or(ListingStatus::Active)),
         reason: None,
         revocation_status: verdict.revocation_status.unwrap_or_else(|| "unknown".to_string()),
-        membership: Some(membership_verdict),
+        membership: if source.pinned_issuer.is_none() {
+            Some(MembershipVerdict::Unknown { reason: "issuer-not-pinned".to_string() })
+        } else {
+            None
+        },
         issued_at_secs: verdict.issued_at_secs.unwrap_or(hit.issued_at_secs),
         received_at_secs: hit.received_at_secs,
+        raw_evidence: Some(hit.membership.clone()),
+        pinned_issuer: source.pinned_issuer.clone(),
+        areas,
     })
 }
 
@@ -177,17 +170,11 @@ fn build_refused_row(source: &Source, hit: SearchHit, verdict: ListingVerdict) -
         listing_id: hit.listing_id,
         record_id: hit.record_id,
         source: source.did.clone(),
-        issuer: String::new(),
-        title: String::new(),
-        summary: String::new(),
-        categories: Vec::new(),
-        conversation_address: String::new(),
-        status: String::new(),
         reason: verdict.reason,
         revocation_status: "unknown".to_string(),
-        membership: None,
         issued_at_secs: hit.issued_at_secs,
         received_at_secs: hit.received_at_secs,
+        ..Default::default()
     }
 }
 
