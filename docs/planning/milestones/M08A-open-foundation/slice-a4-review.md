@@ -752,7 +752,7 @@ that number.
 by Claude Sonnet 5.5, and round 1 and its checks were done by the same
 model. So this is the first review of this plan by another model.
 
-**Summary:** 0 blocker, 2 major, 5 minor (P18 to P24). 7 open.
+**Summary:** 0 blocker, 2 major, 5 minor (P18 to P24). All 7 are Fixed (53e4e239).
 
 ### Earlier items checked
 
@@ -916,6 +916,8 @@ exact cost is `unverified`: I did not run it.
    needs no verdict, so B7 is unchanged. This needs an equivalence check of
    its own, because it changes the order of work.
 
+*Status:* Fixed (53e4e239). Updated D-A4-14 to give hCeiling1..8 pinned issuers and 40 hits carrying full membership evidence (4 credentials, 4 revocations, 8 decisions); shared builder with 50-hit size test; clarified ceiling measure scope in D-A4-11 and Exit Criterion 8; added fallback (1'') to §7.6 to defer membership checks past dedupe_and_cap_verified.
+
 #### P19 — The ceiling assertion is a wall-clock bound in the shared parity run, under a 120 s epoch (major)
 
 *Where:* D-A4-11 (second test), D-A4-14 (OF-6 "under 4 s"), Step 5 (4),
@@ -969,6 +971,8 @@ anything. Or a real trap at 5 s is never seen, because the harness allows
    header and exit criterion 12, see P24) or write 250 with a comment that
    names the constant.
 
+*Status:* Fixed (53e4e239). Corrected §3.2 to note WASM parity harness 120 s dispatch epoch override; separated ceiling parity correctness test (printing time) from isolated measurement test find_ceiling_measure_fits_dispatch_headroom (#[ignore]) run in Step 5 (4) and Step 9; updated OF-6 to assert completion before 5 s sleep rather than rigid 4 s; added 5 s epoch chain to §7.3; counted 250 ms cancel grace in D-A4-11 and Exit Criterion 8.
+
 #### P20 — The Hub and `roymctl` have no words for a failure of the one call that is not a 503 (minor)
 
 *Where:* D-A4-12, Step 6 (1) and (2), §7.4.
@@ -992,6 +996,8 @@ and enables the button again. Add the vitest case
 `findListings_turns_any_other_failure_into_a_page_error`. For `roymctl`: say
 that it prints the error and exits non-zero, and add a unit test for it.
 
+*Status:* Fixed (53e4e239). Updated D-A4-12 to clear 'Searching...', show page-level failure notice, and re-enable Search button on non-503 errors; added vitest findListings_turns_any_other_failure_into_a_page_error in §7.4; roymctl prints error and exits non-zero on failure.
+
 #### P21 — Hub case 23's negative check no longer matches any Hub text (minor)
 
 *Where:* §3.6 (case 23: "keep"), Step 6 (5), §7.4.
@@ -1010,6 +1016,8 @@ waiter limit is full), the neutral notice shows, and case 23 still passes.
 *Fix.* In Step 6 (5): case 23 checks that the new notice text is absent from
 the whole page, and keeps the `503` check. Rename case 22 ("the results view
 shows the loopback hit and names the unreachable sources").
+
+*Status:* Fixed (53e4e239). Updated Step 6 (5) and §7.4: renamed case 22; case 23 asserts absence of the new start notice text across the page and keeps the 503 check.
 
 #### P22 — Living-doc statements that become false and that the plan's greps do not find (minor)
 
@@ -1042,6 +1050,8 @@ retry that no longer exist.
 of the change doc. Update the `AGENTS.md` sentence to name the library
 ("`directory`, through the federated query library it links, …").
 
+*Status:* Fixed (53e4e239). Updated §9 to name system-architecture.md:1353 with exact replacement text; added change.md Scope rewrite line to Step 8; updated AGENTS.md Architecture sentence to cite the federated query library.
+
 #### P23 — The change doc's counts for OF-14, OF-15 and OF-18 become false (minor)
 
 *Where:* §9 (change doc), Step 8.
@@ -1062,6 +1072,8 @@ and OF-7. Wrong counts in the change doc were found in A2b, A2c and A3.
 Test column from the real files after Step 7 (count the shape files with
 `ls crates/roym_web/tests/method_shapes | wc -l`).
 
+*Status:* Fixed (53e4e239). Added Step 8 and §9 instructions to update OF-14, OF-15, and OF-18 Test columns in change.md using real counts after Step 7 (141 methods, 35 directory rows, 137 local-only rows).
+
 #### P24 — "No substrate code changes" contradicts the steps (minor)
 
 *Where:* Header ("It changes no other Roym service and no substrate
@@ -1081,4 +1093,6 @@ false, or an implementer avoids a needed test change to keep it true.
 `roym_directory`, `roym_core`, the new crate, the Hub UI and `roymctl`. The
 substrate test files and the sample-config comment change as listed in
 Step 6 and §9."
+
+*Status:* Fixed (53e4e239). Reworded header and Exit Criterion 12 to specify no src/ changes outside roym_directory, roym_core, the new crate, Hub UI, and roymctl, listing test and config updates.
 
