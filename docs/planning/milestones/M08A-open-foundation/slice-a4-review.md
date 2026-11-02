@@ -709,3 +709,30 @@ field with its first reader. Or name the reader in the plan (for example, the
 library test asserts it) and say it is kept for the future logging row.
 
 *Status:* Fixed (60f3282c). Removed dead refusal field from Gathered in D-A4-3, updated D-A4-5 and Step 3 to map outer Err to not-started without holding refusal text; library unit test checks outcomes only.
+
+## Plan review round 1 — final check — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-02
+
+Checked the fixer's commit 60f3282c (and 5ceba5a1, which only closes the
+closing check). `git pull` said "Already up to date". I read the plan diff and
+the code the P1 sum relies on. I ran nothing.
+
+**P1 confirmed Fixed.** D-A4-3 now derives the cap from the constants:
+64 KiB payload + 4 × 3.5 KiB credentials + 8 × 3.5 KiB decisions + 1 KiB
+wrapper = 107 KiB; 50 hits × 107 KiB × 1.15 is 6.0 MiB; with a 2 MiB margin the
+cap is 8 MiB. I redid the sum and it is right. §7.6, `hOversized` and the
+exit criterion use 8 MiB, and no `6 MiB` is left. The test
+`fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read` is in §7.1
+and in exit criterion 10, so the constant follows the limits.
+*Note for the implementer (not a new item):* a hit may also carry up to 4
+revocations
+([membership.rs:401](../../../../crates/roym_core/src/membership.rs#L401)).
+The sum leaves them out; about 12 KiB more per hit gives 6.7 MiB, still under
+8 MiB. Put revocations in the test's "maximum evidence" reply too.
+
+**P17 confirmed Fixed.** `Gathered.refusal` is removed from the struct, from the
+D-A4-5 outer `Err` row and from Step 3. The remaining "refusal" mentions are
+about the outcome `not-started` and the host metric.
+
+**Counts.** 17 items: 0 blocker, 1 major, 16 minor. All 17 are Fixed.
+**0 open.**
+
