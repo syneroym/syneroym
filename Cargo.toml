@@ -99,6 +99,7 @@ syneroym-roym-profile = { path = "crates/roym_profile" }
 syneroym-roym-catalog = { path = "crates/roym_catalog" }
 syneroym-roym-transaction = { path = "crates/roym_transaction" }
 syneroym-roym-directory = { path = "crates/roym_directory" }
+syneroym-roym-federated-query = { path = "crates/roym_federated_query" }
 
 # Networking & Async
 tokio = { version = "1.50", features = ["full"] }
