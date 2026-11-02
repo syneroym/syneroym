@@ -588,7 +588,10 @@ use this import to reach *another* service's native capabilities (`data-layer`,
 When a component must fan out to multiple services (for example, querying several
 directories during federated search), calling `proxy.call` sequentially can hit
 the guest's 5s epoch deadline, because a plain `call` counts all elapsed
-wall-clock wait time against the budget.
+wall-clock wait time against the budget. The `directory` service performs federated
+search this way through the `syneroym-roym-federated-query` library, and node
+operators should keep `call_all_max_concurrency >= 8` while users may add up to
+8 directories.
 
 `proxy.call-all` accepts a list of `call-request` records and dispatches them
 concurrently on the host:
@@ -1734,7 +1737,8 @@ find-and-engage path with `roym directory sources` returning nothing.
 The Hub has a **Directory** tab (add a directory, search, read the merged
 hits and refused evidence) and a **SynOrg** tab (settings and roster) that
 drive the same JSON-RPC API. This command group and the browser Hub are
-two clients of one service; each still owns its own fan-out loop.
+two clients of one service; both call `directory.find` to perform federated
+fan-out across sources in parallel.
 
 ##### Add a Roym method
 
@@ -1755,7 +1759,7 @@ When a client sends invalid parameters to a Roym method:
 
 - **Error code `-32602`.** The service answers with JSON-RPC error code `-32602` ("Invalid params").
 - **Error data.** The error object includes `data: { "field": "<field_name>" }` pointing to the first invalid, missing, or unknown field. When no field can be named, for example when `params` is not a JSON object, `data` is absent.
-- **Unknown fields.** Local-only methods refuse unknown fields with `-32602`. Wire-reachable methods ignore unknown fields so that a newer node can call an older one; a renamed or removed field still breaks the call. Record types inside an input (for example `SearchQuery` inside `directory.query-source`'s `query`) ignore unknown keys, so a misspelled nested key is dropped, not refused. A remote reply is read with `method::read_reply` (or `call_sibling`), never by parsing it as `Response`, because a `null` result would be lost.
+- **Unknown fields.** Local-only methods refuse unknown fields with `-32602`. Wire-reachable methods ignore unknown fields so that a newer node can call an older one; a renamed or removed field still breaks the call. Record types inside an input (for example `SearchQuery` inside `directory.find`'s `query`) ignore unknown keys, so a misspelled nested key is dropped, not refused. A remote reply is read with `method::read_reply` (or `call_sibling`), never by parsing it as `Response`, because a `null` result would be lost.
 - **Nested blocks.** A wrong type inside a nested block is refused with `-32602`; `data.field` names the deepest field it can, which for a tagged block such as `area` is the block itself.
 - **Group alias key.** Group methods accept the group identifier under either the `conversation` key or the `group` alias key. Sending both keys in the same request is refused as a duplicate field with `-32602` (`data.field = "conversation"`).
 - **Profile envelope format.** When calling `contacts.upsert`, pass `profile_envelope` as a serialized JSON string, not a JSON object.

@@ -407,7 +407,7 @@ Minimum requirements at transaction time:
 - Before accepting an agreement, the searcher can inspect the listing owner's stable identity, the provenance and freshness of trust signals, material terms in `AgreedTerms`, the payment recipient, and dispute or cancellation paths. The system displays missing trust signals as unknown. It never converts a missing signal into a positive default.
 - The product avoids collecting stronger identity details than risk warrants. Searchers use lightweight device-bound Ed25519 session keys. Listing owners configure contact rate limits and block lists (`crates/roym_core/src/safety.rs`).
   > **Envisioned.** Not built yet. Dynamic configuration, by listing owners, of searcher-side gates (mandatory deposits, required prior receipts, verified external contacts, or named facilitators). Today searchers use lightweight session identities with recipient-configurable rate limits and block lists.
-- Trust displays present separate facts (credentials, receipts from completed interactions, recency) rather than hiding facts behind a single score. Directory search ranking uses open, explainable deterministic recency and round-robin merging (`crates/roym_directory/src/app/client_merge.rs`).
+- Trust displays present separate facts (credentials, receipts from completed interactions, recency) rather than hiding facts behind a single score. Directory search ranking uses open, explainable deterministic recency and round-robin merging (`crates/roym_federated_query/src/merge.rs`).
   > **Envisioned.** Not built yet. Joint DHT reputation records, exponential moving average (EMA) score formulas, and participant vouch graphs are unbuilt. Today trust relies on independent credentials and bilateral receipts without numerical reputation scores.
 
 ### Trust Layers
@@ -611,7 +611,7 @@ Substrate nodes boot in an unowned state. They fail closed on privileged operati
 
 - An Aggregator is a directory-type SynOrg service (`crates/roym_directory/src/app.rs`) that aggregates listings and credentials. Aggregators do not manage hosting or infrastructure for listing owners.
 - A Participant App (such as the Roym Hub browser web application) allows participants to discover, browse, and transact with listing owners across multiple substrates and SynApps from a single interface.
-- The Participant App queries one or more community directories. It merges results with deterministic round-robin client-side merging (`crates/roym_directory/src/app/client_merge.rs`). Results display clear source attribution, freshness timestamps, and refusal reasons.
+- The Participant App queries one or more community directories. It merges results with deterministic round-robin client-side merging (`crates/roym_federated_query/src/merge.rs`). Results display clear source attribution, freshness timestamps, and refusal reasons.
   > **Envisioned.** Not built yet. Peer referral links and vouching graphs. Today participants discover listing owners via direct listing IDs or directory queries.
 - A participant controls portable identity keys, signed receipts, grants, and preferences from their own device or designated store. Running a personal substrate is optional. Participants can connect through the Client Gateway.
 - The Participant App is a thin client. Business logic runs on the substrates of listing owners. The Participant App is not a privileged participant in the ecosystem.
