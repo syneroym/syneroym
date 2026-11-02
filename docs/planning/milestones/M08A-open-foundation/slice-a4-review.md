@@ -18,7 +18,9 @@ plan. So there is **no model independence** in this round, as in the A3 plan
 review. The title above and the `status.md` row name the model that did the
 work. A review by another model is still useful.
 
-**Summary:** 0 blocker, 1 major, 13 minor. All 14 are Fixed (6b47137b).
+**Summary:** 0 blocker, 1 major, 13 minor. After the fixes check (next
+section): 12 confirmed Fixed, P1 and P3 reopened, P15 and P16 added (minor).
+4 open.
 
 Limits of this review: I read code and did not run it. The memory finding (P1)
 rests on the sizes in the code (16 MiB frame, memory quota) and on how a
@@ -185,7 +187,7 @@ rest in section 7.6, and add a backlog row "`call-all` has no per-reply size
 cap" with target "when `call-all` is next opened". The plan says no change to
 `call-all`, so the row is right.
 
-*Status:* Fixed (6b47137b). Added MAX_SEARCH_REPLY_BYTES length check before parse, replies dropped by value via into_iter in D-A4-3/D-A4-5, unit and ceiling tests in 7.1/7.2, residual host lowering risk in 7.6, and backlog row in Section 8.
+*Status:* Open (reopened in the fixes check below; was Fixed 6b47137b, partial). Added MAX_SEARCH_REPLY_BYTES length check before parse, replies dropped by value via into_iter in D-A4-3/D-A4-5, unit and ceiling tests in 7.1/7.2, residual host lowering risk in 7.6, and backlog row in Section 8.
 
 #### P2 — Fallback (1) in section 7.6 saves nothing (minor)
 
@@ -238,7 +240,7 @@ could not start the search. Press Search to try again." (3) Correct the Q4 text.
 (4) The test `a_refused_batch_marks_every_source_not_started` runs for both an
 `Internal` and an `UnsupportedTarget` refusal.
 
-*Status:* Fixed (6b47137b). Outer refusals map to NotStarted with error text in Gathered.refusal; directory logs refusal at warn in D-A4-8; Hub shows neutral start message in D-A4-10/D-A4-12; test a_refused_batch_marks_every_source_not_started covers Internal and UnsupportedTarget in 7.1.
+*Status:* Open (reopened in the fixes check below; was Fixed 6b47137b, partial). Outer refusals map to NotStarted with error text in Gathered.refusal; directory logs refusal at warn in D-A4-8; Hub shows neutral start message in D-A4-10/D-A4-12; test a_refused_batch_marks_every_source_not_started covers Internal and UnsupportedTarget in 7.1.
 
 #### P4 — The library's `Row` has no envelope, but the page needs the envelopes; the scope of evidence is not stated (minor)
 
@@ -527,3 +529,118 @@ is easy to pass 150 lines, which is fine, but name `types.rs` if it grows
 800 lines). Say the merge tests use `Row` values only.
 
 *Status:* Fixed (6b47137b). Listed src/tests.rs beside src/tests/{merge,find,verify}.rs in D-A4-3, Step 2, and Section 7.1 to follow the workspace module layout rule.
+
+
+## Plan review round 1 — fixes checked — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-02
+
+Checked against `bc08a121` (plan, review file and `status.md` as fixed by
+6b47137b and bc08a121). Same limits as round 1: I read code and the plan, and
+ran nothing. The same model wrote the plan and both reviews, so there is no
+model independence.
+
+### Items checked
+
+- **P2 Fixed, confirmed.** Fallback (1) is removed and (1') is in §7.6. The
+  worst case is now 40 genuine hits per source in D-A4-11, §7.2, Step 5 and
+  exit criterion 8.
+- **P4 Fixed, confirmed.** D-A4-3 names the `BTreeMap<record_id, envelope>`,
+  `HeldEvidence` is "counted verified hits under the cap, in order", B7 says
+  the same, and `evidence_of_a_hit_over_the_cap_is_not_kept` is in §7.1.
+- **P5 Fixed, confirmed.** `hSlow` sleeps only for `directory.search`;
+  `hCeiling1..8` answer `directory.info` and `directory.search`.
+- **P6 Fixed, confirmed in §7.2.** See P16: the source is named but not
+  defined in a step.
+- **P7, P8, P9, P10, P11, P13, P14 Fixed, confirmed.** The permit text in
+  §3.3 and B2 now matches `GUEST_HTTP_ADMISSION_TIMEOUT` (2 s). The `rg` scan
+  and the stale-comment list are in Step 7 (4). `src/tests.rs` is listed. The
+  backlog rows (size cap, startup warning, run ids) are in §8.
+- **P12 Fixed, with a gap.** D-A4-16 uses `SearchOutput` and the test is in
+  §7.1. The behaviour-change audit (§4) has no row for it, see P16.
+- **P1 reopened (partial).** The plan now has a length check before the parse,
+  `into_iter`, the test, the residual in §7.6 and the backlog row. Two things
+  are wrong:
+  - The cap is `MAX_SEARCH_REPLY_BYTES = 1 MiB`. The round 1 fix said to
+    measure it. An honest directory may return up to 50 hits
+    (`MAX_HITS_PER_QUERY`). A signed payload may be 64 KiB
+    ([envelope.rs:7](../../../../crates/signed_record/src/envelope.rs#L7)), the
+    envelope is a JSON string (quotes escaped), and each hit also carries
+    membership evidence (more envelopes). So one honest reply can be over
+    1 MiB. Such a source would turn into `Unreadable` and the person would see
+    no result, with no hostile source at all. Typical listings are small, so
+    this is a limit case, but the plan must show its arithmetic.
+  - §7.2 asks for "one oversized reply" inside the ceiling scenario, whose
+    other sources each give 40 genuine hits and whose time is the measure of
+    exit criterion 8. An oversized reply in the same run changes what is
+    measured and is not defined in D-A4-14.
+  *Fix:* derive the constant from the limits and write the sum in D-A4-5, for
+  example `MAX_HITS_PER_QUERY × (MAX_PAYLOAD_BYTES + evidence bound) × escape
+  factor`, and choose the value (a few MiB), or state why 1 MiB is enough and
+  add a test with 50 hits of maximum size that must still be read. Put the
+  oversized reply in its own scenario (`hOversized`, one extra canned source
+  in D-A4-14), not in the measured run.
+- **P3 reopened (partial).** The outcome mapping, `Gathered.refusal`, the
+  neutral Hub line and the two-refusal test are in. But D-A4-8 step 3, D-A4-10
+  and Step 4 say the directory logs with `warn!("find batch refused: {msg}")`.
+  The Roym guest crates have no logging: `roym_directory` has no `tracing`
+  dependency, `app_host` has no log method, and `wit_interfaces/wit` has no log
+  interface (I grepped `crates/roym_directory`, `crates/roym_core`,
+  `crates/app_host` and `crates/wit_interfaces/wit`). The check
+  `check-roym-deps` would also refuse a `tracing` dependency, because it is not
+  on `target_independent`. So the log line cannot be written as planned, and the
+  operator still has no way to find the cause.
+  *Fix:* pick one: (a) no log; show the text to the person. Put `refusal:
+  Option<String>` in the `directory.find` output (`FindOutput.refusal`, skipped
+  when `None`), and let `roymctl` print it. Add it to W2 and the shape files.
+  Or (b) record "the node has no guest logging" in the backlog, and say in the
+  plan that the cause is visible only in the host metric
+  `substrate.proxy.call_all.refused{reason}`, which `call-all` already emits
+  (D-A3-13). (b) is cheaper and needs no wire change. My view: (b), with the
+  neutral Hub line. Whatever is chosen, remove the `warn!` from D-A4-8, D-A4-10
+  and Step 4.
+
+### New findings
+
+#### P15 — The owner answers are dated before the plan existed (minor)
+
+*Where:* Plan header line 6, the Q1 to Q6 "Owner answer" lines, `status.md`
+row A4.
+
+*Problem.* They say "answered (a) to Q1–Q6 on 2026-11-01". The plan was
+written on 2026-11-02 (its first version said so, and `a4d40bca` is that day's
+commit). The answers cannot be older than the questions. I also cannot tell
+from the repository that the owner answered; round 1 asked for their answers
+and gave only views.
+
+*Failure case.* The change doc copies "2026-11-01" into the decisions line
+(plan §9), and the record is wrong or the questions were closed without the
+owner.
+
+*Fix.* Correct the date, and only keep "Owner answer: (a)" where the owner
+said it. If the owner has not answered, put the lines back to "not yet
+answered". Q2's line also adds a decision the owner may not have made (the
+startup-warning backlog row); confirm it.
+
+*Status:* Open
+
+#### P16 — Two gaps left by the fixes (minor)
+
+*Where:* §4 (audit), D-A4-14 / Step 5.
+
+*Problem.* (a) D-A4-16 changes behaviour in two edges: a `truncated` that is
+not a boolean, and an `answered_at_secs` or `directory` of the wrong type, were
+accepted before (the old code read `truncated` with `as_bool().unwrap_or`, and
+did not read the other two) and are now `Unreadable`. §4 has no row for it, and
+the audit says "Everything not listed stays the same". (b) `hTwoVersions` (P6)
+appears only in §7.2. D-A4-14 and Step 5 define the other canned sources (file,
+what each answers) but not this one.
+
+*Failure case.* (a) A directory that sends `"truncated": "no"` shows as
+unreadable after A4 and nobody listed that. (b) The implementer of Step 5
+does not know that the canned source exists, or where.
+
+*Fix.* (a) Add a B row: "A search reply whose `truncated`, `directory` or
+`answered_at_secs` has the wrong type is `unreadable` (before: read as
+false/ignored)", and say it is a wire-reading change of remote answers.
+(b) Add `hTwoVersions` to D-A4-14 and to Step 5 next to `hCeiling1..8`.
+
+*Status:* Open
