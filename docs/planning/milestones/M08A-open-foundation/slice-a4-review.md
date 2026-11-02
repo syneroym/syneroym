@@ -1210,3 +1210,461 @@ sections.
 **Counts.** Round 3 has 7 items: 0 blocker, 2 major, 5 minor. All 7 are
 Fixed. With round 1 (17 items), all 24 items of this review are Fixed.
 **0 open.**
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-02
+
+Checked `git diff origin/main...HEAD` at `23dd6f2e` on
+`feat/m08a-a4-federated-query` (main checkout, not a worktree; `git pull`
+said "Already up to date"). PR
+[#340](https://github.com/syneroym/syneroym/pull/340) is still a draft. The
+code was written by Gemini 3.8 Flash. I read the plan, the plan review
+rounds above, the code review rounds of A2a, A2b, A2c and A3, the change doc
+and `AGENTS.md`. No code was changed. Line numbers below are at `23dd6f2e`.
+
+CI run [41467969079](https://github.com/syneroym/syneroym/actions/runs/41467969079)
+on `23dd6f2e` passed every job (Lints, Test 1/6 to 6/6, Playwright E2E,
+CLA). I did not run the full suite. I ran only `grep`, `wc` and `git`
+checks. Each finding below follows from the code as written, so no test run
+was needed to prove it.
+
+**Summary:** 0 blocker, 2 major (R1, R2), 7 minor (R3 to R9). 9 open.
+
+### What was checked and found correct
+
+- **The request each source gets (D-A4-4, W8).** `gather::build_requests`
+  builds the same `CallRequest` as the old `query_source`: target
+  `CallTarget::Service(did)`, interface `services::DIRECTORY.interface`,
+  method `invoke`, params `["{\"method\":\"directory.search\",\"params\":…}"]`,
+  `idempotent: true`, no routing or idempotency key. Only the timeout value
+  changed (R1). `each_call_is_built_like_the_old_query_source` checks it.
+- **Outcome mapping (D-A4-5).** `map_proxy_error` is the old function
+  (only `as i64` became `i64::from`). The order of checks in
+  `parse_single_response` is the old order: proxy error, size cap (new, P1,
+  before the parse), `Response` parse, missing `result`, typed
+  `SearchOutput` (D-A4-16), truncation to 40 before checking. An outer
+  `call_all` error gives `NotStarted` for every source.
+  `a_refused_batch_marks_every_source_not_started` covers `Internal` and
+  `UnsupportedTarget`.
+- **Checking (D-A4-6).** `verify_single_source` keeps the old loop: each of
+  the 40 hits is checked with `listing::verify_envelope`; a verified hit over
+  20 is dropped, a refused hit over 20 is dropped. A refused hit keeps only
+  what the source claimed. Page envelopes are keyed by the content-derived
+  `record_id` from the verdict, never by a source's claim, so a hostile
+  source cannot place bytes under a genuine record id.
+- **The merge (D-A4-7).** I diffed `merge.rs` against `main`'s
+  `client_merge.rs`. `dedupe_and_cap_verified`, `group_and_sort_refused`,
+  `round_robin_merge`, `candidates_by_listing` and `build_refused` are
+  unchanged apart from the row type. Their why-comments moved with them. The
+  one dropped sentence (a client calling `query-source` twice) is about a
+  removed verb, so it is right to drop it. `build_hits` changed (R4).
+- **Access control.** `directory.find` is not in `WIRE_REACHABLE`. Scenario
+  106b checks `-32013` over the wire for `find` and `run-envelope` on both
+  builds. `FindInput` refuses unknown top-level fields; `SearchQuery` stays
+  tolerant. `run-envelope` now serves only verified page envelopes, so the
+  old `!row.refused` guard is not needed: refused rows are never written.
+- **The service side (D-A4-8, D-A4-10).** `find` runs `begin_run`, reads the
+  sources sorted by DID, calls the library, then `persist_find_results`.
+  `errors_to_record` skips `NotStarted` and `None`; its unit test fixes the
+  rule. `begin_run` prunes `runs` and `search_runs` by `at_secs`.
+- **Clients (D-A4-12).** The Hub makes one `directory.find` call. A 503
+  becomes the start notice, any other error becomes "The search failed: …",
+  and the button is enabled again in `finally`. `runSearch`,
+  `refreshPartial`, `sourceLines` and `window.RoymDirectory` are gone.
+  `roymctl` makes one `rpc_call` and prints the same lines. `rg` for
+  `query-source|start-run|directory\.merge|max_concurrency|MAX_CLIENT_CONCURRENCY|RoymDirectory|ignoreConcurrency|runSearch|refreshPartial`
+  over `crates apps docs` (outside planning) finds only `call_all` limits.
+- **The slow source (OF-6).** `hSlow` sleeps 5 s only for
+  `directory.search`. The parity test asserts `timed-out` for `hSlow`, the
+  other source's hit, and a finish under 5 s, on both builds.
+- **Both builds.** Every new parity test compares the stripped WASM and
+  native answers (A2c R1 avoided).
+- **The equivalence test (D-A4-15).** It existed from `b7949317` to
+  `aad2bd55`. It asserted non-empty hits and refused hits before comparing
+  (A2a R1 avoided). But see R7 for what it covered.
+- **Counts.** `grep` finds 33 library tests, 13 tests in
+  `directory_find.rs` (12 plus the ignored measure), 38 in parity
+  `directory.rs`, 31 `method_contract` tests, 146 vitest cases, 173
+  `roymctl` tests and 214 shape files. These match `status.md`, `task.md`
+  and the change doc (but see R8 for the "2.75 s" number).
+- **Sizes and ratchets.** All new files are under 800 lines. `helpers.rs`
+  stays at 1 429. Parity `directory.rs` is 1 028, and the oversized list
+  says 1 028. No new `too_many_lines` suppression. `check-roym-deps` lists
+  the library.
+- **Backlog.** The six new rows of plan section 8 are there. The two rows
+  moved to "Recently resolved". The updated rows match the plan (but see R8
+  for one wrong link).
+
+### Findings
+
+#### R1 — major — lowering the shared source timeout changes three other calls, and the docs do not say so
+
+*Where:* `crates/roym_core/src/directory.rs:61` (`DEFAULT_SOURCE_TIMEOUT_MS =
+1_700`) and `:64` (`DISPATCH_HEADROOM_MS = 3_000`); used by
+`crates/roym_directory/src/app/client_sources.rs:93` (`probe_info`, also the
+`add-source` probe), `:310` (`publish_to_source`) and
+`crates/roym_directory/src/app/held.rs:135` (`check_standing`);
+`docs/planning/changes/roym-open-foundation/change.md:326` (D-A4-11) and
+`:362`; `docs/system-architecture.md:3054`.
+
+*Problem:* The implementer applied fallback (3) of plan section 7.6 and
+changed the two constants. The plan allows that for the search. But
+`DEFAULT_SOURCE_TIMEOUT_MS` is also the timeout of three single calls that
+are not part of the fan-out. Plan section 11 says "No change to
+`check-standing`, `probe-info` or `publish-to-source`". W8 says the request
+keeps 2 000 ms. Neither the change doc Deviations nor the PR text names the
+effect on these three calls. Also:
+
+- The change doc rewrote the decision D-A4-11 with the new numbers. The plan
+  still says 2 000 / 1 500. A decision must have the same numbers and
+  meaning in both places; a change of numbers is a deviation.
+- The plan lists the fallbacks in order: (1'), (1''), (2), (3). (2) was
+  skipped. The deviation does not say why.
+- The doc comment of `DEFAULT_SOURCE_TIMEOUT_MS` (`directory.rs:58`) and the
+  test comment at `:349` still state the old relationship
+  `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch`. The test now
+  checks `waves × (timeout + 250) + headroom < epoch`.
+- The budget now has 50 ms of margin (`1 950 + 3 000 = 4 950 < 5 000`).
+  Nothing says that the single calls need this margin. They are plain
+  calls of one network request each.
+
+*Failure case:* A remote directory answers in 1.8 s. Before this branch,
+`add-source`, `publish-to-source` and `check-standing` worked. Now each
+gives `timed-out`, and the person cannot add that directory. No doc tells
+a developer why this changed.
+
+*Fix:* Give the fan-out its own constant (for example
+`FIND_SOURCE_TIMEOUT_MS = 1_700`, used only by `gather::build_requests` and
+the time-model test). Keep `DEFAULT_SOURCE_TIMEOUT_MS = 2_000` for the three
+single calls, so section 11 stays true. Update the two comments to the real
+formula. Restore D-A4-11 in the change doc to the plan's text and keep the
+new numbers only in Deviations, with one line that says why (2) was
+skipped. Add W8's new timeout to the change doc's "Planned wire changes"
+(see R7). If the owner prefers one shared constant, then record the effect
+on the three calls in Deviations and in section 11 of the plan instead.
+
+*Status:* Open
+
+#### R2 — major — the size-cap test and the ceiling measure do not use maximum payloads
+
+*Where:* `crates/roym_federated_query/src/tests/helpers.rs:95` (the 50-hit
+test listing has `summary: format!("Summary {slug}")`);
+`crates/roym_federated_query/src/tests/find.rs:178`
+(`fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read`);
+`crates/roym_web/tests/dual_build_parity/trust_harness.rs:492` (every
+ceiling listing has the summary "Neat hedges, fortnightly.");
+`crates/roym_web/tests/dual_build_parity/directory_find.rs:398` and `:444`.
+
+*Problem:* Plan P1 and §7.1 say the 50-hit test uses "maximum payload and
+full evidence … at maximum lengths". D-A4-11 says the ceiling measure uses
+"realistic maximum payload sizes". Both tests use small listing payloads
+(about 300 bytes, against `MAX_PAYLOAD_BYTES` = 64 KiB). Only the evidence
+reasons are at maximum length. So:
+
+- The 8 MiB cap is not tested against an honest maximum reply. Its
+  derivation assumes a JSON escape factor of 1.15. The listing envelope is a
+  JSON string inside the reply, so each `"` or `\` in a payload is escaped
+  again. A payload made of such characters grows by about 2×. Whether 50
+  honest maximum hits fit under 8 MiB is unproven in either direction.
+- The ceiling measure (1.75 s) does not include hashing and parsing 320
+  payloads of up to 64 KiB. The new constants of R1 were chosen from this
+  measure. Exit criteria 8 and 10 name these two tests as the proof.
+- The plan (D-A4-14) asked for one shared builder for the ceiling and the
+  50-hit test so that both follow the real limits. There are two
+  (`build_max_evidence` in the library tests, `build_ceiling_evidence` in
+  `trust_harness.rs`). They differ: the library one uses one issuer as the
+  member, the parity one uses a separate member.
+
+*Failure case:* A directory lists 50 honest members. Each listing has a long
+description with many quotes or line breaks, near the 64 KiB limit. The
+reply passes 8 MiB, and the searcher shows that directory as `unreadable`
+with no results. Or the check time of 8 such replies passes the headroom,
+and `web` is stopped at its 5 s deadline, so the Hub shows "The search
+failed".
+
+*Fix:* In both tests, pad each listing payload to just under
+`MAX_PAYLOAD_BYTES`, with text that escapes (for example quotes and `\n`).
+In the 50-hit test, assert the real reply length and print it. If it is over
+8 MiB, derive the cap from the real worst case (2× escaping) and update the
+P1 note in D-A4-3. Rerun the isolated ceiling measure with these payloads
+20 times, and record the worst time in the PR text and `status.md`. If it
+is above 60 % of `DISPATCH_HEADROOM_MS`, apply section 7.6 again. Note in
+the change doc why the two builders cannot be shared (different crates), or
+move one builder into a `roym_core` test-support module that both use.
+
+*Status:* Open
+
+#### R3 — minor — why-comments were lost in the move, and the library's public surface has no docs
+
+*Where:* `crates/roym_federated_query/src/gather.rs:18`, `:83`, `:117`,
+`:119`; `crates/roym_federated_query/src/lib.rs:5-7`, `:22-60`;
+`gather.rs:72`.
+
+*Problem:*
+- The old `parse_source_response` had two why-comments: why `truncated`
+  rides on the per-source reply ("A source that returns zero rows can still
+  set this"), and why the hit list is cut **before** checking ("verification
+  cost is what a hostile source controls directly"). Neither moved to
+  `gather.rs`. This is the A2b R8 kind of finding that plan section 0 names.
+- `MAX_SEARCH_REPLY_BYTES` has no comment. Its derivation (P1, D-A4-3) and
+  the reason the check runs before the parse are written only in the plan.
+- The public types and `find` have no doc comments. The plan (D-A4-3) gave
+  them: "`Err` only when `sources` is longer than `MAX_SOURCES`", what
+  `page_envelopes` and `evidence` hold and that the caller keeps them.
+- `pub mod gather; pub mod merge; pub mod verify;` make the internal steps
+  (`execute_and_parse`, `verify_outcomes`, `VerifiedOutcomes`,
+  `SourceOutcome`) part of the public API of a library that later slices
+  (M08D, M08F) will build on. `lib.rs` already re-exports what a caller
+  needs.
+- `gather.rs:72` zips sources with results. If the host ever returns fewer
+  results than requests, the extra sources disappear from `outcomes` with
+  no error, and the Hub counts fewer directories.
+
+*Failure case:* A later change removes the truncation "because it is done
+again in `verify`", or moves it after checking, and a hostile source makes
+the dispatch check thousands of envelopes. Nothing in the code says why it
+is there.
+
+*Fix:* Move the two old comments to `gather.rs:117` and `:119`. Add a
+comment on `MAX_SEARCH_REPLY_BYTES` with the derivation and why it runs
+before the parse. Add the doc comments from D-A4-3 to `find`, `Gathered`,
+`Page`, `SourceReport`, `HeldEvidence` and `Source`. Make the three modules
+private (`mod`) and keep the re-exports. At `gather.rs:72`, give any source
+without a result an `Unreadable { reason: "no result from host" }` outcome
+(or assert equal lengths), so a host bug is visible.
+
+*Status:* Open
+
+#### R4 — minor — the membership verdict is now decided in two places, and D-A4-7 "moves unchanged" is no longer true
+
+*Where:* `crates/roym_federated_query/src/verify.rs:126` and `:155-159`;
+`crates/roym_federated_query/src/merge.rs:44-66` and `:228-249`;
+`docs/planning/changes/roym-open-foundation/change.md:322`.
+
+*Problem:* Fallback (1'') moved `membership::evaluate` from checking into
+`build_hits`. The result is split:
+- `verify.rs` writes `Unknown { reason: "issuer-not-pinned" }` itself when
+  no issuer is pinned. This copies the literal and the rule from
+  `membership::evaluate` (`membership.rs:490-492`). If `evaluate` changes
+  that rule, the two paths differ.
+- `merge.rs` evaluates when `raw_evidence` and `pinned_issuer` are both
+  set, inside a 25-line closure in a `.map`. So `build_hits` is no longer a
+  moved function, and `Row` gained `raw_evidence`, `pinned_issuer` and
+  `areas` plus a `membership` field that is set in one case only.
+- `build_verified_row` still takes `_now_secs`, which it no longer uses.
+- `Row` derives `Serialize` and `Deserialize` with `serde` attributes, but
+  it is never serialized.
+- The change doc's D-A4-7 still says the merge "moves unchanged". The
+  deviation at `:361` describes the change, but the decision text was not
+  aligned.
+
+*Failure case:* A later change to `evaluate` (for example a new reason
+string for an unpinned issuer) shows one word for unpinned sources and
+another for pinned ones on the same page. A reader of `build_hits` cannot
+see the membership step as one named step.
+
+*Fix:* Remove `membership` from `Row`. Always evaluate in one named helper,
+`fn membership_of(row: &Row, now: u64) -> Option<MembershipVerdict>`, which
+calls `membership::evaluate` with `row.pinned_issuer.as_deref()` (it returns
+the unpinned verdict itself). Call it from `build_hits`. Drop `_now_secs`
+and the `serde` derives on `Row`. Align D-A4-7 in the change doc with the
+plan, and keep the change in the Deviation.
+
+*Status:* Open
+
+#### R5 — minor — evidence is now deduplicated before `held::remember`, which changes what is kept, and no test covers it
+
+*Where:* `crates/roym_directory/src/app/client_runs.rs:121-134`;
+`crates/roym_federated_query/src/tests/verify.rs:154`.
+
+*Problem:* Plan B7 says evidence is remembered for each counted verified
+hit, in order, "exactly as today's `store_verified_hit` loop does".
+`persist_find_results` keeps only the last item per `(source, member_did)`
+and calls `remember` once. `held::remember` skips an empty evidence when no
+row exists yet. So the result differs when the earlier hit has evidence and
+the last one does not:
+- Old: the first call writes a row; the second call (empty, row exists)
+  overwrites it with empty evidence.
+- New: only the empty item is passed; no row exists; nothing is written.
+
+The deviation at `change.md:361` mentions the dedup but not this effect. The
+library test named
+`evidence_is_kept_once_per_source_and_issuer_with_the_last_hit_winning`
+asserts that **both** items are kept (`evidence.len() == 2`). It does not
+test "once" or "last wins". The dedup in `client_runs.rs` has no test.
+
+*Failure case:* One source returns two listings of the same member: the
+first with a credential, the second with none. Before, `directory.memberships`
+showed a held row for that member (with empty evidence). Now it shows no
+row.
+
+*Fix:* Keep one call per `(source, member_did)`, but write the row when
+the last item is empty and any earlier item for that key was not empty (the
+old final state). Or call `remember` for every item, as the plan says.
+Rename the library test to what it checks (`evidence_is_kept_for_every_counted_hit_in_order`),
+and add a `roym_directory` unit test of the dedup rule. Record the rule in
+the Deviation.
+
+*Status:* Open
+
+#### R6 — minor — some tests do not prove what their names say, and one case is not tested
+
+*Where:* `crates/roym_web/tests/dual_build_parity/directory_find.rs:104`;
+`apps/roymctl/src/commands/roym/find.rs:155` and `:289`;
+`crates/roym_web/tests/dual_build_parity/directory.rs:448` and `:492`;
+`directory.rs:527` (106b).
+
+*Problem:*
+- `find_refuses_an_invalid_query_field_with_the_field_name` sends an
+  unknown **top-level** field and checks the message text. It does not send
+  an invalid field inside `query`, and it does not check `data.field`. W3
+  (`query.open_to`) is tested only in `contract_directory.rs`. The parity
+  test name says the opposite of what it checks.
+- `error_result_exits_non_zero` does not call `find`. It writes its own
+  `match` on a hand-made `Err` and asserts that the `Err` is an `Err`. It
+  would pass if `find` printed the error and returned `Ok(())`.
+- On error, `find` prints `Error: …` with `eprintln!` and then returns the
+  error, and `main` returns it too. The person sees the error twice.
+- Scenario 97 and `find_over_one_source_matches_the_native_and_wasm_builds`
+  plus `run_envelope_returns_the_signed_bytes_of_a_page_record` test the
+  same thing. Scenario 101 and `find_with_no_sources_is_an_empty_page_with_a_run_id`
+  are the same test. The plan (§7.2, §7.6) says the new tests replace 97 and
+  101, and that `directory.rs` goes down to about 900 lines; it is 1 028.
+- W1 says the removed verbs answer `-32601` locally and `-32013` over the
+  wire. No test calls `directory.start-run`, `directory.query-source` or
+  `directory.merge`. Scenario 106b lists only `find` and `run-envelope`.
+
+*Failure case:* A later change makes `roymctl roym directory find` exit 0
+after a failed RPC call. A script that runs it reads success. No test
+fails.
+
+*Fix:* Rename the parity test to `find_refuses_an_unknown_top_level_field`,
+or change it to send `{"query": {"open_to": "everyone"}}` and assert
+`data.field == "query.open_to"` on both builds. Make `find` testable: move
+the RPC call behind a small function that takes the reply `Result`, and
+have the test call that function and assert the error. Remove the
+`eprintln!` (or the `bail!`), so the error prints once. Delete scenarios 97
+and 101 and lower the oversized-list entry. Add the three removed verbs to
+106b, asserting `-32013` over the wire, and one local call asserting
+`-32601`.
+
+*Status:* Open
+
+#### R7 — minor — the change doc's wire list, three decisions and the design text do not match the plan or the code
+
+*Where:* `docs/planning/changes/roym-open-foundation/change.md:12`, `:138`,
+`:318`, `:330`, `:363`, `:400-407`; the PR #340 text.
+
+*Problem:*
+- "Planned wire changes (plan section 4)" numbers W1 to W8 differently from
+  the plan, and with other meanings. Plan W1 is "removed", the doc's W1 is
+  "added". Plan W5 (outcomes in DID order), W6 (`max_concurrency` gone), W7
+  (counts mean "passed checking") and W8 (request bytes) are missing. The
+  doc's W7 (shape files) and W8 (method count) are not wire changes. The PR
+  text has a third list (its W7 and W8 describe `SearchQuery` fields and
+  unknown fields). W8's timeout is now 1 700 ms (R1).
+- D-A4-15 says equivalence was tested "on all scenarios". The deleted test
+  (`aad2bd55`) ran one combined scenario (4 sources: `hForeignWire`,
+  `hForeignWire2`, `hForge1`, `hTrunc`), not scenarios 97, 98, 102c, 102d,
+  119 and 120 as the plan says.
+- D-A4-3 does not name the `thiserror` dependency, which the library has.
+  The plan lists `serde` and `serde_json` only. Not in Deviations.
+- The design paragraph (`:138`) says the library "caps results at 10
+  verified hits and 20 refused hits per source". The caps are 20 verified
+  and 20 refused per source after checking, and 10 per source on the page.
+  It also says it uses "`signed_record` verification functions"; the
+  library calls only `listing::verify_envelope` and `membership::evaluate`
+  from `roym_core`.
+- The `demo:` reason (`:12`) replaced the earlier reason instead of adding
+  to it (plan Q6: "A4 adds to its reason"). The earlier slices' reason
+  (typed contracts, `call-all`, the shim) is gone. The deviation at `:363`
+  still says the front matter describes those, which is now false. P11 asked
+  for the owner exception to be recorded in Deviations; it is not.
+
+*Failure case:* A later slice reads "W5" in the change doc and in the plan
+and gets two different changes. A reviewer reads D-A4-15 and believes the
+named scenarios were proved equal before the deletion.
+
+*Fix:* Copy W1 to W8 from plan section 4 with the same numbers and words;
+change W8 to the real timeout (or keep 2 000 ms after R1). Put "shape
+files" and "method count" under "Different from the plan" if they are
+needed. Rewrite D-A4-15 to say what ran (one combined scenario, named
+sources) and add a Deviation that the six named scenarios were not run
+through the old loop. Add `thiserror` to D-A4-3's deviation. Correct the
+caps and the verification functions in the design text. Make `demo:` one
+`none:` line with both reasons, fix `:363`, and add the owner exception
+(Q6) to Deviations. Align the PR text with the change doc.
+
+*Status:* Open
+
+#### R8 — minor — four living-doc and comment statements are false, and one number in the evidence is wrong
+
+*Where:* `docs/system-architecture.md:3054`;
+`crates/roym_web/ui/src/directory/search.ts:37-40`;
+`docs/planning/deferred-backlog.md:551`;
+`docs/planning/milestones/M08A-open-foundation/status.md:17` and the PR text.
+
+*Problem:*
+- `system-architecture.md:3054` says the searcher's node "runs at most 3
+  calls at once, gives each call 2 seconds". It now asks all sources at
+  once (up to `call_all_max_concurrency`) with 1.7 s each. Plan section 9
+  asked to grep the file for `directory` and `fan-out`; this line was
+  missed.
+- The `SourceOutcomeKind` comment in `search.ts` says `not-started` is "a
+  503 from guest-HTTP admission". A 503 now becomes a page-level notice and
+  never an outcome. `not-started` comes from a refused `call-all` batch
+  (P13 asked to update Hub doc comments).
+- The new backlog row "`find` takes two waves…" links D-A4-7 (the merge
+  move). The decision is Q2 (a) and D-A4-11.
+- `status.md` and the PR text say "Ceiling measure 1.75 s vs 2.75 s
+  headroom". `DISPATCH_HEADROOM_MS` is 3 000 ms, and the measure test
+  asserts against 3 000 ms.
+
+*Failure case:* An operator reads the architecture doc and expects a search
+over 8 slow directories to take about 6 s. A developer reads the Hub
+comment and looks for a 503 path that does not exist.
+
+*Fix:* Rewrite `system-architecture.md:3054` to match `:1353`. Rewrite the
+`search.ts` comment to say `not-started` means the node refused to start
+the batch. Change the backlog link to D-A4-11 and Q2. Change "2.75 s" to the
+real headroom (or to the new value after R1 and R2).
+
+*Status:* Open
+
+#### R9 — minor — import rule breaks and one copied envelope builder
+
+*Where:* `crates/roym_directory/src/app/client_runs.rs:121`;
+`crates/roym_directory/src/app/client_find.rs:47`;
+`crates/roym_federated_query/src/tests/find.rs:42`;
+`crates/roym_web/tests/dual_build_parity/directory_find.rs:287`, `:291`,
+`:296`, `:301`, `:405`, `:409`, `:451`, `:459-464`;
+`crates/roym_web/tests/dual_build_parity/trust_harness.rs:368`, `:631`,
+`:483-509`, `:540-600`.
+
+*Problem:* `AGENTS.md` asks for types by `use` and no inline paths with
+several `::`. The diff adds `std::collections::BTreeMap::new()`,
+`syneroym_roym_federated_query::find(…)`,
+`syneroym_roym_core::directory::DEFAULT_SOURCE_TIMEOUT_MS`,
+`std::time::Instant::now()` and `std::time::Duration` (seven times),
+`syneroym_roym_core::directory::DISPATCH_HEADROOM_MS` (twice),
+`std::sync::OnceLock` and `tokio::time::sleep(std::time::Duration…)`. Also,
+`trust_harness.rs` builds and signs a listing envelope three times with the
+same 30 lines (the ceiling builder and both versions in
+`two_versions_search_response`); only the slug, title, issued-at and
+`supersedes` differ.
+
+*Failure case:* None at run time. The import pass of the completion
+checklist was not done on these files, and the next canned source copies
+the envelope block a fourth time.
+
+*Fix:* Import `BTreeMap`, `Instant`, `Duration`, `OnceLock`,
+`DISPATCH_HEADROOM_MS` and `DEFAULT_SOURCE_TIMEOUT_MS`; call the library as
+`federated_query::find` after `use syneroym_roym_federated_query as
+federated_query;` (the name the plan uses), and `time::sleep` after `use
+tokio::time;`. Extract `fn signed_canned_listing(slug, title, issued_at,
+supersedes) -> (record_id, envelope_json)` in `trust_harness.rs` and use it
+in the three places.
+
+*Status:* Open
+
+**Counts.** Round 1: 9 items, 0 blocker, 2 major (R1, R2), 7 minor (R3 to
+R9). **9 open.**
