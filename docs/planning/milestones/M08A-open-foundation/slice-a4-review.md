@@ -1180,3 +1180,33 @@ header and to exit criterion 12.
 None.
 
 **Counts.** Round 3 has 7 items: 0 blocker, 2 major, 5 minor. All 7 are Fixed (bc90050e). **0 open.**
+
+## Plan review round 3 — closing check — Claude Opus 5.5, 2026-11-02
+
+Checked the fixer's commit bc90050e (and a5532282, which only sets the
+statuses and the `status.md` row). `git pull` said "Already up to date". I
+read the plan diff. I ran nothing.
+
+**Confirmed Fixed.**
+- **P18.** D-A4-14 now says the 4 revocations are validly signed but name
+  another `credential_record_id`, and the 8 decisions are validly signed but
+  not an active suspension of the listing, so `evaluate` checks all of them
+  and ends with `Valid`. That matches `find_revocation` and
+  `suspend_decisions` in `membership.rs`. The ceiling correctness test
+  asserts the `Valid` verdict (D-A4-14, Step 5 (2), §7.2). §7.6 (1'') says to
+  rerun the equivalence test (D-A4-15) if the fallback is applied.
+- **P19.** The command is now `cargo nextest run -p syneroym-roym-web --test
+  dual_build_parity --run-ignored only -j 1
+  find_ceiling_measure_fits_dispatch_headroom` in D-A4-11, Step 5 (4) and
+  Step 9. No form with `-- --run-ignored` is left in the plan.
+- **P24.** The header and exit criterion 12 now name the `check-roym-deps`
+  list in `xtask/src/main.rs`.
+
+**Note on this file.** The fix commit also edited the "Counts" line of my
+fixes-check section above. The new text is correct after this check, so I
+leave it. A fix session should change only the `*Status:*` lines and its own
+sections.
+
+**Counts.** Round 3 has 7 items: 0 blocker, 2 major, 5 minor. All 7 are
+Fixed. With round 1 (17 items), all 24 items of this review are Fixed.
+**0 open.**
