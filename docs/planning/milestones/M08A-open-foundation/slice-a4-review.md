@@ -2055,6 +2055,37 @@ fails on WASM with `-32603`. No test fails, because the tests check only
    lower it. Record the answer.
 4. Correct the ceiling numbers in `status.md` and the "8 × 40" in D-A4-11.
 
-*Status:* Fixed (c1fc7263, cd856869). Restored find_ceiling_run_of_eight_sources_fits_the_dispatch_budget to 8 honest sources × 10 maximum hits; moved rogue 50-hit response to isolated test source_ignoring_limit_with_fifty_hits_exceeds_reply_cap_and_is_unreadable (failure proven: panicked on left String("unreadable") != right "timed-out", and ceiling verified left 10 != right 11). Documented measured fuel consumption (7 306 615 468 instructions, ~73% of 10B limit, ~27% margin) and owner confirmation to keep 10 checked listings per source with this margin in Deviation at change.md:363. Corrected ceiling numbers in D-A4-11, D-A4-14, and status.md.
+*Status:* Fixed (c1fc7263, cd856869), confirmed in the fourth fixes check below. Fixer note: Restored find_ceiling_run_of_eight_sources_fits_the_dispatch_budget to 8 honest sources × 10 maximum hits; moved rogue 50-hit response to isolated test source_ignoring_limit_with_fifty_hits_exceeds_reply_cap_and_is_unreadable (failure proven: panicked on left String("unreadable") != right "timed-out", and ceiling verified left 10 != right 11). Documented measured fuel consumption (7 306 615 468 instructions, ~73% of 10B limit, ~27% margin) and owner confirmation to keep 10 checked listings per source with this margin in Deviation at change.md:363. Corrected ceiling numbers in D-A4-11, D-A4-14, and status.md.
 
-**Counts.** Third fixes check: 3 confirmed (R10, R13, R14), 1 new (R15, minor). 0 blocker, 0 major, 0 minor. **0 open.** All 15 code review items fixed.
+**Counts.** Third fixes check: 3 confirmed (R10, R13, R14), 1 new (R15,
+minor). 0 blocker, 0 major, 1 minor (R15). **1 open.**
+
+## Code review round 1 — fourth fixes check — Claude Opus 5.5, 2026-11-03
+
+I checked the fix commits c1fc7263 and cd856869 on
+`feat/m08a-a4-federated-query`. 0f1b0884 sets the R15 status and the
+`status.md` row. It also changed the counts line of the third fixes check.
+That line is the record of that check, so I put it back. The new counts are
+below. CI
+[run 41622052244](https://github.com/syneroym/syneroym/actions/runs/41622052244)
+on 0f1b0884 passed every job.
+
+I ran the two ceiling tests and the new 50-hit test on both builds. All 3
+passed. The WASM ceiling run took 0.88–0.89 s.
+
+**Confirmed Fixed.**
+- **R15.** `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget`
+  again uses 8 honest sources × 10 maximum hits and asserts 10 verified for
+  each. The 50-hit case is its own test,
+  `source_ignoring_limit_with_fifty_hits_exceeds_reply_cap_and_is_unreadable`,
+  with `hFiftyHits` and one good source. It asserts `reply too large` for
+  the 50-hit source and 1 verified hit for the good one. The Deviation at
+  `change.md:363` gives 7 306 615 468 instructions (about 73 %, so about
+  27 % margin). This agrees with my probe in the third check (between 70 %
+  and 80 %). The Deviation records the owner's answer: keep 10 checked
+  listings per source. D-A4-11 says 8 × 10 and 3 000 ms. D-A4-14 and the
+  `status.md` row give the new fixture and numbers.
+
+**Counts.** Fourth fixes check: 1 confirmed (R15), 0 new. Code review
+round 1 has 15 items, all fixed and confirmed. 0 blocker, 0 major, 0 minor.
+**0 open.**
