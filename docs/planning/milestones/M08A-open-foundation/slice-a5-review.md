@@ -441,3 +441,48 @@ browser here, so the exact numbers are `unverified`.
   "pull read for services"; (d) add the Q3 and Q5 answers to the one-line
   record of the owner's answers.
 - *Status:* Fixed (5a220d04). OF-10 reword and the task.md bullet are close-out steps in section 9; the D-OF-3 line was updated now.
+
+## Plan review round 2 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-03
+
+Checked the fold of round 1 (`5a220d04`, closed in `6deac94c`) against the
+plan diff and the code on `feat/m08a-a5-event-feed`. I read code and did not
+run it.
+
+**Summary:** 0 blocker, 0 major, 1 minor, 1 item. Open.
+
+**Found correct (round 1 fixes, P1 to P12).** Each fix is in the plan and
+matches the code that I read:
+
+- P1, P3: the reopen loop with backoff and `?after=<cursor>` (D-A5-8 step 7
+  accepts `after`); a feed only while the tab is visible. Login and logout
+  reload the page (`main.ts:102`, :225, :251), so no logout hook is needed.
+- P2: the new return types and the "announce after `transaction` returns" rule.
+  The queue transaction and the store share one `std::sync::Mutex`
+  (`async_queue/queue.rs:287`, `conversation/store/schema.rs:32`), as the plan
+  says.
+- P4 to P12: the head and oldest rule for an empty window, `%record`, the seven
+  factory sites, the `ready` refresh, the refusal event, the check order, the
+  read loop with `limit = 0`, `FeedGuard`, and the change-doc and OF-10 close-out.
+
+### Findings
+
+#### P13 (minor) — The commit-rule probe can fail by chance when store work runs on another thread
+
+- **Where:** plan D-A5-11, "How the tests check the rule" (7.3): `conn_is_free()`
+  is `self.conn.try_lock().is_ok()`, and the text says "on one thread no other
+  task can hold it while `announce` runs, and the probe never fails by chance".
+- **Problem:** The store lock is a `std::sync::Mutex`. The current-thread test
+  runtime does not stop other OS threads from taking it. The conversation crate
+  runs store work on the blocking pool with `spawn_blocking` (`lib.rs:212`,
+  `host_impl.rs:392`, :415, :428, :441). A job like that holds the lock on its
+  own thread.
+- **Failure case:** A test that has `search`, `export_history` or similar store
+  work still running (not yet awaited) when `announce` runs gets
+  `try_lock() == Err`. The probe reports "a transaction is open" for correct
+  code, and the test is flaky. The "no timing is involved" claim is then false.
+- **Fix:** In D-A5-11 say one of: (a) the probe tests await all store work
+  before the call that announces, and the text names this as a rule of the
+  tests; or (b) `conn_is_free()` retries `try_lock` for a short fixed time (for
+  example 50 ms) before it reports "not free". Option (a) keeps the check
+  exact. Correct the "never fails by chance" sentence to match.
+- *Status:* Open.
