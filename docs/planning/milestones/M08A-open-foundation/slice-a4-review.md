@@ -1911,7 +1911,7 @@ when the other sources are large.
 4. Measure the fuel again and give the margin. If it is above 60 %, ask
    the owner.
 
-*Status:* Open
+*Status:* Fixed (2633a24d, bc1ffd56). Bounded query limit in `build_requests` to `min(query.limit.unwrap_or(10), 10)` so honest sources return at most 10 hits; lowered `MAX_SEARCH_REPLY_BYTES` to 2 MiB (2 * 1024 * 1024 bytes) so oversized or rogue replies (such as 50 max-size hits = 8.29 MiB) are rejected pre-parse with `Unreadable { reason: "reply too large" }` before JSON deserialization; updated ceiling test fixture to have 7 sources return 10 max-size hits and 1 source (`hCeiling8`) return 50 max-size hits; proved failure when `MAX_SEARCH_REPLY_BYTES` was 10 MiB (asserted `rogue_outcome["verified"] == 0` failed with `left == 10, right == 0`, and 8 × 50 hits ran out of fuel); restored 2 MiB cap and verified ceiling test passes with 825.4 ms wall time and default fuel budget; recorded in W8 and Deviations.
 
 ### New findings
 
@@ -1951,7 +1951,7 @@ measured one. Define `MAX_CHECKED_PER_SOURCE` from `MAX_STORED_PER_SOURCE`
 test where refused hits come first in the 10. Add the page effect to the
 Deviation at `change.md:363`.
 
-*Status:* Open
+*Status:* Fixed (2633a24d, bc1ffd56). Removed section 7.6 and planning-doc citations from comments in `directory.rs` and `gather.rs`; defined `MAX_CHECKED_PER_SOURCE = MAX_STORED_PER_SOURCE as usize` to prevent drift; renamed verify test to `a_source_is_capped_at_ten_verified_hits` and added `refused_hits_coming_first_are_recorded_up_to_the_cap` testing 5 refused + 5 verified hits when refused come first; recorded duplicate-skipping page effect in Deviations (`change.md:363`).
 
 #### R14 — minor — the change doc and the backlog still give the old caps
 
@@ -1971,7 +1971,7 @@ the code does not have.
 *Fix:* Update `:138`, `:331` and the backlog row to the final caps (after
 R10). Add a Deviation for the reply cap. Give one run count.
 
-*Status:* Open
+*Status:* Fixed (bc1ffd56). Updated design paragraph (`change.md:138`), decisions D-A4-3, D-A4-5, D-A4-6, D-A4-14, D-A4-16 (`change.md:331`), and deferred backlog row (`deferred-backlog.md:553`) to 2 MiB and 10 verified/refused hits; added Deviation for 2 MiB reply cap and bounded query limit; unified run counts to 20/20 runs in `status.md` and R2 status.
 
 **Counts.** Second fixes check: 3 confirmed (R2, R11, R12), 1 reopened
 (R10, major), 2 new (R13, R14, minor). 0 blocker, 1 major (R10), 2 minor
