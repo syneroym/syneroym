@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use syneroym_data_db::host_store::RecordWriteValue;
 use syneroym_roym_core::directory::DISPATCH_HEADROOM_MS;
 
-use super::{fixtures::*, helpers::*, trust_fixtures::*};
+use super::{fixtures::*, helpers::*, trust_fixtures::*, trust_harness};
 
 #[tokio::test]
 async fn find_over_one_source_matches_the_native_and_wasm_builds() {
@@ -405,6 +405,8 @@ async fn find_ceiling_run_of_eight_sources_fits_the_dispatch_budget() {
             .await;
     }
 
+    trust_harness::warm_ceiling_responses();
+
     let start_w = Instant::now();
     let fw = one_rpc(&h, true, "directory.find", json!({})).await;
     let elapsed_w = start_w.elapsed();
@@ -423,7 +425,7 @@ async fn find_ceiling_run_of_eight_sources_fits_the_dispatch_budget() {
     let outcomes = fw["result"]["outcomes"].as_array().unwrap();
     assert_eq!(outcomes.len(), 8);
     for outcome in outcomes {
-        assert_eq!(outcome["verified"], 20);
+        assert_eq!(outcome["verified"], 10);
         assert_eq!(outcome["refused"], 0);
         assert_eq!(outcome["error"], Value::Null);
     }
@@ -450,6 +452,8 @@ async fn find_ceiling_measure_fits_dispatch_headroom() {
         both_rpc(&h, "directory.add-source", json!({ "did": format!("did:key:hCeiling{k}") }))
             .await;
     }
+
+    trust_harness::warm_ceiling_responses();
 
     let start = Instant::now();
     let fw = one_rpc(&h, true, "directory.find", json!({})).await;

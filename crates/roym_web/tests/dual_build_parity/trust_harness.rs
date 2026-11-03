@@ -7,7 +7,10 @@
 use std::{sync::OnceLock, time::Duration};
 
 use serde_json::{Value, json};
-use syneroym_identity::{Identity, substrate::derive_did_key};
+use syneroym_identity::{
+    Identity,
+    substrate::{self, derive_did_key},
+};
 use syneroym_roym_core::{
     listing,
     membership::{
@@ -370,6 +373,10 @@ pub(crate) fn ceiling_issuer_did(idx: usize) -> String {
 
 static CEILING_RESPONSES: OnceLock<[String; 8]> = OnceLock::new();
 
+pub(crate) fn warm_ceiling_responses() {
+    let _ = get_ceiling_response(0);
+}
+
 fn get_ceiling_response(idx: usize) -> String {
     let responses = CEILING_RESPONSES.get_or_init(build_all_ceiling_responses);
     responses[idx].clone()
@@ -477,11 +484,12 @@ fn signed_canned_listing(
     summary: &str,
     issued_at: u64,
     supersedes: Option<String>,
+    max_payload: bool,
 ) -> (String, String) {
     let member_key = listing_owner_identity();
     let member_did = listing_owner_did();
     let lid = listing::derive_listing_id(&member_did, slug).unwrap();
-    let payload = json!({
+    let mut payload = json!({
         "listing_id": lid,
         "slug": slug,
         "title": title,
@@ -496,6 +504,17 @@ fn signed_canned_listing(
             "max_per_booking": 1,
         },
     });
+    if max_payload {
+        payload["description"] = json!("");
+        let base_bytes = substrate::canonicalize_json_value(&payload).to_string().len();
+        let quotes_count = 65_000usize.saturating_sub(base_bytes) / 2;
+        payload["description"] = json!("\"".repeat(quotes_count));
+        let canonical_len = substrate::canonicalize_json_value(&payload).to_string().len();
+        assert!(
+            canonical_len > 64_000 && canonical_len <= 65_536,
+            "canonical payload length must be between 64,000 and 65,536 bytes, got {canonical_len}"
+        );
+    }
     let (mut env, bytes) = Envelope::unsigned(
         RecordDraft {
             version: listing::LISTING_VERSION,
@@ -524,7 +543,7 @@ fn build_all_ceiling_responses() -> [String; 8] {
         let issuer_key = ceiling_issuer_identity(idx);
         let issuer_did = ceiling_issuer_did(idx);
 
-        let hits: Vec<Value> = (0..40)
+        let hits: Vec<Value> = (0..10)
             .map(|h| {
                 let slug = format!("ceiling-listing-{idx}-{h}");
                 let lid = listing::derive_listing_id(&member_did, &slug).unwrap();
@@ -534,6 +553,7 @@ fn build_all_ceiling_responses() -> [String; 8] {
                     &ceiling_summary,
                     CANNED_ISSUED_AT_SECS,
                     None,
+                    true,
                 );
 
                 let evidence =
@@ -565,6 +585,7 @@ fn two_versions_search_response() -> String {
         "Neat hedges, fortnightly.",
         CANNED_ISSUED_AT_SECS,
         None,
+        false,
     );
 
     let (rec2, env2_json) = signed_canned_listing(
@@ -573,6 +594,7 @@ fn two_versions_search_response() -> String {
         "Neat hedges, fortnightly.",
         CANNED_ISSUED_AT_SECS + 10,
         Some(rec1.clone()),
+        false,
     );
 
     let hit1 = json!({
@@ -609,7 +631,7 @@ pub(crate) async fn canned_source_response(target: &str, params: &Value) -> Opti
     }
     if target == "did:key:hOversized" {
         if inner_method(params).as_deref() == Some("directory.search") {
-            let padding = "x".repeat(8 * 1024 * 1024 + 1024);
+            let padding = "x".repeat(10 * 1024 * 1024 + 1024);
             return Some(Value::String(
                 json!({ "result": { "hits": [], "padding": padding } }).to_string(),
             ));
