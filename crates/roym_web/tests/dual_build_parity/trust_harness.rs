@@ -372,14 +372,56 @@ pub(crate) fn ceiling_issuer_did(idx: usize) -> String {
 }
 
 static CEILING_RESPONSES: OnceLock<[String; 8]> = OnceLock::new();
+static FIFTY_HITS_RESPONSE: OnceLock<String> = OnceLock::new();
 
 pub(crate) fn warm_ceiling_responses() {
     let _ = get_ceiling_response(0);
+    let _ = fifty_hits_search_response();
 }
 
 fn get_ceiling_response(idx: usize) -> String {
     let responses = CEILING_RESPONSES.get_or_init(build_all_ceiling_responses);
     responses[idx].clone()
+}
+
+fn fifty_hits_search_response() -> String {
+    FIFTY_HITS_RESPONSE
+        .get_or_init(|| {
+            let member_did = listing_owner_did();
+            let ceiling_summary = "text \"quoted\" \\\n ".repeat(2000 / 18);
+            let issuer_key = ceiling_issuer_identity(0);
+            let issuer_did = ceiling_issuer_did(0);
+
+            let hits: Vec<Value> = (0..50)
+                .map(|h| {
+                    let slug = format!("fifty-listing-{h}");
+                    let lid = listing::derive_listing_id(&member_did, &slug).unwrap();
+                    let (rec_id, env_json) = signed_canned_listing(
+                        &slug,
+                        &format!("Fifty Title {h}"),
+                        &ceiling_summary,
+                        CANNED_ISSUED_AT_SECS,
+                        None,
+                        true,
+                    );
+                    let evidence =
+                        build_ceiling_evidence(&issuer_key, &issuer_did, &member_did, &lid, 0, h);
+
+                    json!({
+                        "listing_id": lid,
+                        "record_id": rec_id,
+                        "envelope": env_json,
+                        "issued_at_secs": CANNED_ISSUED_AT_SECS,
+                        "received_at_secs": CANNED_ISSUED_AT_SECS,
+                        "area_match": { "kind": "not-queried" },
+                        "membership": evidence,
+                    })
+                })
+                .collect();
+
+            json!({ "result": { "hits": hits } }).to_string()
+        })
+        .clone()
 }
 
 fn build_ceiling_evidence(
@@ -543,12 +585,7 @@ fn build_all_ceiling_responses() -> [String; 8] {
         let issuer_key = ceiling_issuer_identity(idx);
         let issuer_did = ceiling_issuer_did(idx);
 
-        // Sources 1..=7 (indices 0..7) return 10 maximum-size hits.
-        // Source 8 (index 7, `hCeiling8`) ignores the requested limit and returns
-        // 50 maximum-size hits (~8.29 MiB), exceeding MAX_SEARCH_REPLY_BYTES (2 MiB).
-        let hit_count = if idx == 7 { 50 } else { 10 };
-
-        let hits: Vec<Value> = (0..hit_count)
+        let hits: Vec<Value> = (0..10)
             .map(|h| {
                 let slug = format!("ceiling-listing-{idx}-{h}");
                 let lid = listing::derive_listing_id(&member_did, &slug).unwrap();
@@ -642,6 +679,15 @@ pub(crate) async fn canned_source_response(target: &str, params: &Value) -> Opti
             ));
         }
         return Some(Value::String(json!({ "result": { "name": "Oversized Guild" } }).to_string()));
+    }
+    if target == "did:key:hFiftyHits" {
+        if inner_method(params).as_deref() == Some("directory.search") {
+            return Some(Value::String(fifty_hits_search_response()));
+        }
+        return Some(Value::String(
+            json!({ "result": { "name": "Fifty Hits Guild", "issuer_did": ceiling_issuer_did(0) } })
+                .to_string(),
+        ));
     }
     if target == "did:key:hTwoVersions" {
         if inner_method(params).as_deref() == Some("directory.search") {

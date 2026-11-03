@@ -424,17 +424,11 @@ async fn find_ceiling_run_of_eight_sources_fits_the_dispatch_budget() {
 
     let outcomes = fw["result"]["outcomes"].as_array().unwrap();
     assert_eq!(outcomes.len(), 8);
-    for outcome in &outcomes[..7] {
+    for outcome in outcomes {
         assert_eq!(outcome["verified"], 10);
         assert_eq!(outcome["refused"], 0);
         assert_eq!(outcome["error"], Value::Null);
     }
-    let rogue_outcome = &outcomes[7];
-    assert_eq!(rogue_outcome["source"], "did:key:hCeiling8");
-    assert_eq!(rogue_outcome["verified"], 0);
-    assert_eq!(rogue_outcome["refused"], 0);
-    assert_eq!(rogue_outcome["error"]["kind"], "unreadable");
-    assert_eq!(rogue_outcome["error"]["reason"], "reply too large");
 
     let hits = fw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 50);
@@ -473,4 +467,47 @@ async fn find_ceiling_measure_fits_dispatch_headroom() {
         wasm_elapsed,
         DISPATCH_HEADROOM_MS
     );
+}
+
+#[tokio::test]
+async fn source_ignoring_limit_with_fifty_hits_exceeds_reply_cap_and_is_unreadable() {
+    let h = harness().await;
+    ensure_synorg(&h).await;
+    enrol_signing(&h, "catalog").await;
+
+    let (_id, gw, _gn) =
+        set_and_get(&h, full_listing_params("fifty-hits-companion", "Companion")).await;
+    let env_bytes = gw["result"]["envelope"].as_str().unwrap().to_string();
+    publish_signed_listing(&h, &env_bytes).await;
+
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hFiftyHits" })).await;
+    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
+
+    trust_harness::warm_ceiling_responses();
+
+    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+
+    let hits = fw["result"]["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 1, "good source's hit must be kept");
+
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    let rogue_outcome = outcomes
+        .iter()
+        .find(|o| o["source"] == "did:key:hFiftyHits")
+        .expect("fifty hits source outcome");
+    assert_eq!(rogue_outcome["error"]["kind"], "unreadable");
+    assert_eq!(rogue_outcome["error"]["reason"], "reply too large");
+    assert_eq!(rogue_outcome["verified"], 0);
+
+    let good_outcome = outcomes
+        .iter()
+        .find(|o| o["source"] == "did:key:hForeign")
+        .expect("foreign source outcome");
+    assert_eq!(good_outcome["error"], Value::Null);
+    assert_eq!(good_outcome["verified"], 1);
 }
