@@ -39,6 +39,24 @@
     }
   ],
   "hits_truncated": "boolean",
+  "outcomes": [
+    {
+      "error": "null",
+      "refused": "number",
+      "source": "string",
+      "truncated": "boolean",
+      "verified": "number"
+    },
+    {
+      "error": {
+        "kind": "not-found"
+      },
+      "refused": "number",
+      "source": "string",
+      "truncated": "boolean",
+      "verified": "number"
+    }
+  ],
   "refused": [
     {
       "listing_id": "string",
@@ -48,5 +66,6 @@
       ]
     }
   ],
-  "refused_truncated": "boolean"
+  "refused_truncated": "boolean",
+  "run_id": "string"
 }

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use super::{
     fixtures::{ensure_dir2_synorg, ensure_synorg, full_listing_params, peer_did},
     helpers::{Driver, Harness, HttpDriver, harness, owner_did},
-    shapes::{assert_shape, enrol_native_signing, rpc},
+    shapes::{assert_shape, enrol_native_signing, rpc, shape},
     trust_fixtures::{FIXTURE_CATEGORIES, fixture_credential_expires_at_secs, stranger_did},
 };
 
@@ -218,6 +218,9 @@ async fn client_shapes() {
     let envelope = get_res["envelope"].as_str().unwrap().to_string();
     let _ = rpc(&h, "directory.publish", json!({ "envelope": envelope })).await;
 
+    let find_empty = rpc(&h, "directory.find", json!({})).await;
+    assert_shape("directory_find_empty", &find_empty);
+
     let add_clean = rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
     assert_shape("directory_add_source_without_note", &add_clean);
 
@@ -248,45 +251,11 @@ async fn client_shapes() {
     let sources = rpc(&h, "directory.sources", json!({})).await;
     assert_shape("directory_sources", &sources);
 
-    let start = rpc(&h, "directory.start-run", json!({})).await;
-    assert_shape("directory_start_run", &start);
-    let run_id = start["run_id"].as_str().unwrap().to_string();
+    let find_hits = rpc(&h, "directory.find", json!({})).await;
+    assert_shape("directory_find_with_hits", &find_hits);
+    let run_id = find_hits["run_id"].as_str().unwrap().to_string();
+    let rec_id = find_hits["hits"][0]["record_id"].as_str().unwrap();
 
-    let qs_hits = rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
-    )
-    .await;
-    assert_shape("directory_query_source_with_hits", &qs_hits);
-
-    let qs_err = rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:zUnbound", "query": {} }),
-    )
-    .await;
-    assert_shape("directory_query_source_error", &qs_err);
-
-    let qs_trunc = rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hTrunc", "query": {} }),
-    )
-    .await;
-    assert_shape("directory_query_source_htrunc", &qs_trunc);
-
-    rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hForge1", "query": {} }),
-    )
-    .await;
-
-    let merged = rpc(&h, "directory.merge", json!({ "run_id": run_id })).await;
-    assert_shape("directory_merge", &merged);
-
-    let rec_id = merged["hits"][0]["record_id"].as_str().unwrap();
     let env_found =
         rpc(&h, "directory.run-envelope", json!({ "run_id": run_id, "record_id": rec_id })).await;
     assert_shape("directory_run_envelope_found", &env_found);

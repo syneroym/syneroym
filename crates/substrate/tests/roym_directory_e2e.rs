@@ -14,10 +14,10 @@
 //!   * **Z** runs the SynOrg (the directory a listing owner publishes to and a
 //!     searcher queries).
 //!   * **Y** is the listing owner: it signs a listing and publishes it to Z.
-//!   * **X** is the searcher: it adds Z as a source, runs the client fan-out
-//!     loop (`start-run` -> `query-source` -> `merge`), verifies every returned
-//!     envelope on its own node, and engages the listing owner from the search
-//!     result's own conversation address.
+//!   * **X** is the searcher: it adds Z as a source, calls `directory.find` to
+//!     fan out and merge in parallel, verifies every returned envelope, and
+//!     engages the listing owner from the search result's own conversation
+//!     address.
 //!
 //! It proves the non-visual half of the directory acceptance test: a
 //! directory is a query target and never a required hub (the

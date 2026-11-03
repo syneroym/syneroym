@@ -633,31 +633,42 @@ pub(crate) async fn publish_listing_to_primary(h: &Harness, slug: &str, title: &
     e
 }
 
-/// One build's full fan-out: mint a run, drive one `query-source` per
-/// source, merge. Returns `(run_id, merged)`. Each build must mint and use
-/// its *own* run id -- `start-run` folds the guest's own wall clock into
-/// the id (`run_{secs}_{n}`), and the two builds' clocks are unsynchronized
-/// (permitted difference 7), so a run id minted on one build is not
-/// guaranteed to exist on the other.
+/// One build's full fan-out: drive one `directory.find` call and return
+/// `(run_id, find_reply)`. Each build mints and uses its own run id.
 pub(crate) async fn fan_out_one(h: &Harness, wasm: bool, sources: &[&str]) -> (String, Value) {
-    let start = one_rpc(h, wasm, "directory.start-run", json!({})).await;
-    let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
+    let sources_reply = one_rpc(h, wasm, "directory.sources", json!({})).await;
+    let actual_sources: Vec<&str> = sources_reply["result"]["sources"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|s| s["did"].as_str()).collect())
+        .unwrap_or_default();
     for did in sources {
-        one_rpc(
-            h,
-            wasm,
-            "directory.query-source",
-            json!({ "run_id": run_id, "source": did, "query": {} }),
-        )
-        .await;
+        assert!(actual_sources.contains(did), "source {did} must be registered");
     }
-    let merged = one_rpc(h, wasm, "directory.merge", json!({ "run_id": run_id })).await;
-    (run_id, merged)
+    assert_eq!(
+        actual_sources.len(),
+        sources.len(),
+        "directory sources must match requested sources"
+    );
+
+    let mut find_res = one_rpc(h, wasm, "directory.find", json!({})).await;
+    let run_id = find_res["result"]["run_id"].as_str().unwrap().to_string();
+    if let Some(res_obj) = find_res.get_mut("result").and_then(Value::as_object_mut) {
+        res_obj.remove("run_id");
+    }
+    (run_id, find_res)
 }
 
 /// Adds the sources, then runs `fan_out_one` on each build. Returns each
 /// build's run id and merged response.
 pub(crate) async fn fan_out(h: &Harness, sources: &[&str]) -> (String, String, Value, Value) {
+    let (sw, _) = both_rpc(h, "directory.sources", json!({})).await;
+    if let Some(list) = sw["result"]["sources"].as_array() {
+        for s in list.iter().filter_map(|s| s["did"].as_str()) {
+            if !sources.contains(&s) {
+                both_rpc(h, "directory.remove-source", json!({ "did": s })).await;
+            }
+        }
+    }
     for did in sources {
         both_rpc(h, "directory.add-source", json!({ "did": did })).await;
     }

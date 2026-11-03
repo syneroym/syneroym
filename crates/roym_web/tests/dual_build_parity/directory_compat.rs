@@ -17,19 +17,16 @@ async fn scenario_229_a_newer_node_answer_with_unknown_keys_is_read_parity() {
     assert_eq!(pw["result"]["name"], "Newer Guild");
     assert!(pw["result"].get("extra").is_none(), "extra key must be dropped: {pw}");
 
-    let (rw, rn) = both_rpc(&h, "directory.start-run", json!({})).await;
-    assert_eq!(stripped(&rw), stripped(&rn));
-    let run_id = rw["result"]["run_id"].as_str().unwrap();
-
-    let (qw, qn) = both_rpc(
-        &h,
-        "directory.query-source",
-        json!({ "run_id": run_id, "source": "did:key:hNewer", "query": {} }),
-    )
-    .await;
-    assert_eq!(stripped(&qw), stripped(&qn));
-    assert_eq!(qw["result"]["verified"], 1, "hit must be stored: {qw}");
-    assert_eq!(qw["result"]["error"], Value::Null, "error must be null: {qw}");
+    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    let outcome = outcomes.iter().find(|o| o["source"] == "did:key:hNewer").unwrap();
+    assert_eq!(outcome["verified"], 1, "hit must be stored: {fw}");
+    assert_eq!(outcome["error"], Value::Null, "error must be null: {fw}");
 
     let (cw, cn) = both_rpc(
         &h,

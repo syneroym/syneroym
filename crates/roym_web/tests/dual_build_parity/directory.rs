@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 use syneroym_core::config::AppSandboxRole;
 use syneroym_roym_core::{
     directory::{
-        DEFAULT_SOURCE_TIMEOUT_MS, DISPATCH_HEADROOM_MS, MAX_CLIENT_CONCURRENCY,
-        MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS,
+        DISPATCH_HEADROOM_MS, FIND_SOURCE_TIMEOUT_MS, MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS,
+        MAX_SOURCES,
     },
     services,
 };
@@ -445,110 +445,6 @@ async fn scenario_96_client_sources_add_list_remove_round_trip_parity() {
 }
 
 #[tokio::test]
-async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity() {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-    enrol_signing(&h, "catalog").await;
-    let (_id, gw, _gn) =
-        set_and_get(&h, full_listing_params("hedge-trimming-97", "Hedge trimming")).await;
-    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
-    // Published as this node's own SynOrg, through the wire path, so it is
-    // reachable by `directory.search` on `did:key:hForeign` -- which
-    // `TestWasmServiceProxy`/`TestNativeServiceProxy` route back to this
-    // very directory over the local dispatch path.
-    publish_signed_listing(&h, &e).await;
-
-    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
-    // Each build mints and uses its own run id: `start-run` folds the
-    // guest's own (unsynchronized) wall clock into the id.
-    let (run_w, mw) = fan_out_one(&h, true, &["did:key:hForeign"]).await;
-    let (run_n, mn) = fan_out_one(&h, false, &["did:key:hForeign"]).await;
-    assert_eq!(stripped(&mw), stripped(&mn));
-    let hits = mw["result"]["hits"].as_array().unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0]["sources"][0]["directory"], "did:key:hForeign");
-    assert!(
-        hits[0].get("envelope").is_none(),
-        "merge must return projections, not envelopes: {mw}"
-    );
-
-    let record_id = hits[0]["record_id"].as_str().unwrap();
-    let ew = one_rpc(
-        &h,
-        true,
-        "directory.run-envelope",
-        json!({ "run_id": run_w, "record_id": record_id }),
-    )
-    .await;
-    let en = one_rpc(
-        &h,
-        false,
-        "directory.run-envelope",
-        json!({ "run_id": run_n, "record_id": record_id }),
-    )
-    .await;
-    assert_eq!(ew, en);
-    assert_eq!(ew["result"]["envelope"], json!(e));
-}
-
-#[tokio::test]
-async fn scenario_101_a_run_with_zero_sources_succeeds_with_zero_hits_parity() {
-    let h = harness().await;
-    // Per build, minting each build's own run id (the id folds in the
-    // guest's own wall clock) -- `start-run`'s raw response is never
-    // compared directly across builds for that reason.
-    let start_w = one_rpc(&h, true, "directory.start-run", json!({})).await;
-    let start_n = one_rpc(&h, false, "directory.start-run", json!({})).await;
-    assert_eq!(start_w["result"]["sources"], json!([]));
-    assert_eq!(start_n["result"]["sources"], json!([]));
-    assert_eq!(start_w["result"]["max_concurrency"], start_n["result"]["max_concurrency"]);
-    let run_w = start_w["result"]["run_id"].as_str().unwrap().to_string();
-    let run_n = start_n["result"]["run_id"].as_str().unwrap().to_string();
-
-    let mw = one_rpc(&h, true, "directory.merge", json!({ "run_id": run_w })).await;
-    let mn = one_rpc(&h, false, "directory.merge", json!({ "run_id": run_n })).await;
-    assert_eq!(stripped(&mw), stripped(&mn));
-    assert_eq!(mw["result"]["hits"], json!([]));
-    assert!(mw["result"].get("error").is_none());
-}
-
-#[tokio::test]
-async fn scenario_102_query_source_refuses_an_unregistered_source_and_a_foreign_run_id_parity() {
-    let h = harness().await;
-
-    // `start-run` folds the guest's own wall clock into the run id, and the
-    // two builds' clocks are unsynchronized -- so each build is driven with
-    // the run id it minted itself, never the other build's.
-    for wasm in [true, false] {
-        let start = one_rpc(&h, wasm, "directory.start-run", json!({})).await;
-        let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
-
-        let u = one_rpc(
-            &h,
-            wasm,
-            "directory.query-source",
-            json!({ "run_id": run_id, "source": "did:key:hForeign", "query": {} }),
-        )
-        .await;
-        assert!(is_err(&u, -32602), "an unregistered source must be refused: {u}");
-
-        one_rpc(&h, wasm, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
-        let r = one_rpc(
-            &h,
-            wasm,
-            "directory.query-source",
-            json!({
-                "run_id": "run_this_node_never_minted",
-                "source": "did:key:hForeign",
-                "query": {}
-            }),
-        )
-        .await;
-        assert!(is_err(&r, -32602), "a run_id this node did not mint must be refused: {r}");
-    }
-}
-
-#[tokio::test]
 async fn scenario_106_listing_history_returns_only_the_named_listings_versions_parity() {
     let h = harness().await;
     enrol_signing(&h, "catalog").await;
@@ -573,14 +469,20 @@ async fn scenario_106_listing_history_returns_only_the_named_listings_versions_p
 async fn scenario_106b_every_client_half_verb_is_refused_over_the_wire_parity() {
     let h = harness().await;
     for method in [
+        "directory.find",
+        "directory.run-envelope",
         "directory.start-run",
         "directory.query-source",
         "directory.merge",
-        "directory.run-envelope",
     ] {
         let (w, n) = h.wire_invoke(services::DIRECTORY, &env(method, json!({}))).await;
         assert_eq!(w, n, "{method}");
         assert_eq!(w["error"]["code"], -32013, "{method}: {w}");
+    }
+    for method in ["directory.start-run", "directory.query-source", "directory.merge"] {
+        let (lw, ln) = both_rpc(&h, method, json!({})).await;
+        assert_eq!(lw, ln, "{method}");
+        assert_eq!(lw["error"]["code"], -32601, "{method}: {lw}");
     }
     let (sw, sn) = h.wire_invoke(services::DIRECTORY, &env("directory.search", json!({}))).await;
     assert_eq!(stripped(&sw), stripped(&sn));
@@ -795,52 +697,6 @@ async fn scenario_115_a_replayed_older_envelope_is_refused_while_a_same_second_e
     let (rw, rn) = publish_signed_listing(&h, &e1).await;
     assert_eq!(rw, rn);
     assert_eq!(rw["error"]["code"], -32602, "a replayed older envelope must be refused: {rw}");
-}
-
-#[tokio::test]
-async fn scenario_116_two_query_source_calls_for_one_source_in_one_run_do_not_duplicate_a_listing_parity()
- {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-    enrol_signing(&h, "catalog").await;
-    let (_id, gw1, _gn1) =
-        set_and_get(&h, full_listing_params("hedge-trimming-116", "Version one")).await;
-    let e1 = gw1["result"]["envelope"].as_str().unwrap().to_string();
-    publish_signed_listing(&h, &e1).await;
-
-    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
-    // Per build, minting each build's own run id (the id folds in the
-    // guest's own wall clock). First `query-source`: stores a row for e1's
-    // record_id.
-    let mint_run = |v: Value| v["result"]["run_id"].as_str().unwrap().to_string();
-    let run_w = mint_run(one_rpc(&h, true, "directory.start-run", json!({})).await);
-    let run_n = mint_run(one_rpc(&h, false, "directory.start-run", json!({})).await);
-    let qs = |run: &str| json!({ "run_id": run, "source": "did:key:hForeign", "query": {} });
-    one_rpc(&h, true, "directory.query-source", qs(&run_w)).await;
-    one_rpc(&h, false, "directory.query-source", qs(&run_n)).await;
-
-    // A newer, same-second (pinned-clock) edit, superseding e1 -- a real
-    // signed version, not a forged duplicate.
-    let (_id2, gw2, _gn2) =
-        set_and_get(&h, full_listing_params("hedge-trimming-116", "Version two")).await;
-    let e2 = gw2["result"]["envelope"].as_str().unwrap().to_string();
-    publish_signed_listing(&h, &e2).await;
-
-    // Second call: same run, same source -- e.g. a client retry -- now
-    // stores a *different* row (different record_id) for the same
-    // listing_id. Before the fix, `merge`'s per-source list carried both,
-    // so this one source would appear twice in one hit's `sources[]`.
-    one_rpc(&h, true, "directory.query-source", qs(&run_w)).await;
-    one_rpc(&h, false, "directory.query-source", qs(&run_n)).await;
-
-    let mw = one_rpc(&h, true, "directory.merge", json!({ "run_id": run_w })).await;
-    let mn = one_rpc(&h, false, "directory.merge", json!({ "run_id": run_n })).await;
-    assert_eq!(stripped(&mw), stripped(&mn));
-    let hits = mw["result"]["hits"].as_array().unwrap();
-    assert_eq!(hits.len(), 1, "{mw}");
-    let sources = hits[0]["sources"].as_array().unwrap();
-    assert_eq!(sources.len(), 1, "one source must appear once, not twice: {mw}");
-    assert_eq!(mw["result"]["hits"][0]["versions_differ"], false, "{mw}");
 }
 
 #[tokio::test]
@@ -1060,25 +916,22 @@ async fn scenario_120_a_source_that_truncates_says_so_per_source_parity() {
 
     // `did:key:hTrunc` answers with no hits but `truncated: true` -- the
     // "500 listings, wanted rows hashed late, zero results" case. The flag
-    // must ride the `query-source` reply, since a zero-row source writes
-    // no run rows for `merge` to carry it on.
+    // must reach the `directory.find` outcomes.
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hTrunc" })).await;
-    for wasm in [true, false] {
-        let start = one_rpc(&h, wasm, "directory.start-run", json!({})).await;
-        let run_id = start["result"]["run_id"].as_str().unwrap().to_string();
-        let reply = one_rpc(
-            &h,
-            wasm,
-            "directory.query-source",
-            json!({ "run_id": run_id, "source": "did:key:hTrunc", "query": {} }),
-        )
-        .await;
-        assert_eq!(reply["result"]["verified"], 0, "{reply}");
-        assert_eq!(
-            reply["result"]["truncated"], true,
-            "the directory's truncated flag must reach the per-source reply: {reply}"
-        );
-    }
+    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
+    let mut w = fw.clone();
+    let mut n = fn_res.clone();
+    w["result"]["run_id"] = json!("stripped_run_id");
+    n["result"]["run_id"] = json!("stripped_run_id");
+    assert_eq!(stripped(&w), stripped(&n));
+
+    let outcomes = fw["result"]["outcomes"].as_array().unwrap();
+    let outcome = outcomes.iter().find(|o| o["source"] == "did:key:hTrunc").unwrap();
+    assert_eq!(outcome["verified"], 0, "{fw}");
+    assert_eq!(
+        outcome["truncated"], true,
+        "the directory's truncated flag must reach the per-source outcome: {fw}"
+    );
 }
 
 #[tokio::test]
@@ -1113,23 +966,16 @@ async fn scenario_121_a_named_area_query_discriminates_by_label_parity() {
 }
 
 #[test]
-fn directory_source_timeout_and_concurrency_fit_the_real_sandbox_defaults() {
-    // The constants in `roym_core::directory` are derived from node
-    // limits, not chosen -- and `roym_core` is a guest crate that cannot
-    // import the config crate, so the relationship is asserted here,
-    // against the real `AppSandboxRole` defaults rather than a literal
-    // copied by hand.
+fn find_time_fits_the_real_sandbox_defaults() {
     let defaults = AppSandboxRole::default();
     let epoch_ms = defaults.dispatch_epoch_timeout_secs.saturating_mul(1000);
+    let waves = MAX_SOURCES.div_ceil(defaults.call_all_max_concurrency);
+    let wave_time = u64::from(FIND_SOURCE_TIMEOUT_MS) + 250;
+    assert!(MAX_SOURCES <= defaults.call_all_max_calls);
+    assert!(u64::from(FIND_SOURCE_TIMEOUT_MS) <= defaults.call_all_max_call_timeout_ms);
+    assert!((waves as u64) * wave_time <= defaults.call_all_total_timeout_ms);
     assert!(
-        u64::from(DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS) < epoch_ms,
-        "source timeout ({DEFAULT_SOURCE_TIMEOUT_MS}) + headroom ({DISPATCH_HEADROOM_MS}) must \
-         fit inside the dispatch epoch ({epoch_ms} ms)"
-    );
-    assert!(
-        (MAX_CLIENT_CONCURRENCY as u32) < defaults.max_concurrent_guest_http_per_service,
-        "client fan-out concurrency ({MAX_CLIENT_CONCURRENCY}) must stay below the guest-HTTP \
-         admission limit ({})",
-        defaults.max_concurrent_guest_http_per_service
+        (waves as u64) * wave_time + u64::from(DISPATCH_HEADROOM_MS) < epoch_ms,
+        "wave time + headroom must fit inside dispatch epoch"
     );
 }

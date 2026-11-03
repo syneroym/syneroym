@@ -1,7 +1,7 @@
 import { call, RpcError } from "../rpc";
 import type { MembershipVerdict } from "./membership";
 
-/// One merged search hit, as `directory.merge` returns it. Every field the
+/// One merged search hit, as `directory.find` returns it. Every field the
 /// directory could not vouch for is still present -- an absent field is
 /// what a UI turns into a positive default, so the node fills all of them.
 export interface MergedHit {
@@ -34,18 +34,17 @@ export interface RefusedHit {
   sources: string[];
 }
 
-export interface MergeResult {
-  hits: MergedHit[];
-  hits_truncated: boolean;
-  refused: RefusedHit[];
-  refused_truncated: boolean;
-}
-
-/// Why one source contributed nothing, as the client saw it. `NotStarted`
-/// is this installation's own gateway refusing to begin the call (a 503
-/// from guest-HTTP admission) -- deliberately not folded into `TimedOut`,
-/// because this node being busy is not that directory's fault.
-export type SourceOutcomeKind = "ok" | "not-started" | "timed-out" | "not-found" | "refused" | "unreadable";
+/// Why one source contributed nothing, as the client saw it. `not-started`
+/// means this node refused to start the batch (e.g. proxy call-all busy)
+/// -- deliberately not folded into `timed-out`, because this node being
+/// busy is not that directory's fault.
+export type SourceOutcomeKind =
+  | "ok"
+  | "not-started"
+  | "timed-out"
+  | "not-found"
+  | "refused"
+  | "unreadable";
 
 export interface SourceOutcome {
   source: string;
@@ -58,156 +57,76 @@ export interface SourceOutcome {
   message?: string;
 }
 
-export interface StartedRun {
+export interface FindResult {
   runId: string;
-  sources: string[];
-  maxConcurrency: number;
+  outcomes: SourceOutcome[];
+  hits: MergedHit[];
+  hitsTruncated: boolean;
+  refused: RefusedHit[];
+  refusedTruncated: boolean;
 }
 
-export async function startRun(): Promise<StartedRun> {
-  const res = await call<{ run_id: string; sources: string[]; max_concurrency: number }>(
-    "directory.start-run",
-  );
-  return {
-    runId: res.run_id,
-    sources: res.sources ?? [],
-    // The node owns this number because it owns the admission limit it is
-    // derived from; the client never picks its own.
-    maxConcurrency: Math.max(1, res.max_concurrency ?? 1),
-  };
+interface FindReply {
+  run_id: string;
+  outcomes: Array<{
+    source: string;
+    verified: number;
+    refused: number;
+    truncated?: boolean;
+    error?: { kind: string; code?: number; message?: string; reason?: string } | null;
+  }>;
+  hits: MergedHit[];
+  hits_truncated: boolean;
+  refused: RefusedHit[];
+  refused_truncated: boolean;
 }
 
-interface QuerySourceReply {
-  source: string;
-  verified: number;
-  refused: number;
-  truncated?: boolean;
-  error: { kind: string; code?: number; message?: string } | null;
-}
-
-/// Ask one directory. A 503 from this node's own gateway is `not-started`;
-/// every other failure arrives inside the reply's `error`.
-async function queryOneSource(
-  runId: string,
-  source: string,
+export async function findListings(
   query: Record<string, unknown>,
-): Promise<SourceOutcome> {
+): Promise<FindResult> {
+  let reply: FindReply;
   try {
-    const reply = await call<QuerySourceReply>("directory.query-source", {
-      run_id: runId,
-      source,
-      query,
-    });
-    if (reply.error) {
-      return {
-        source,
-        kind: (reply.error.kind as SourceOutcomeKind) || "unreadable",
-        verified: reply.verified ?? 0,
-        refused: reply.refused ?? 0,
-        truncated: reply.truncated ?? false,
-        message: reply.error.message,
-      };
-    }
-    return {
-      source,
-      kind: "ok",
-      verified: reply.verified ?? 0,
-      refused: reply.refused ?? 0,
-      truncated: reply.truncated ?? false,
-    };
+    reply = await call<FindReply>("directory.find", { query });
   } catch (err) {
     if (err instanceof RpcError && err.code === 503) {
-      return { source, kind: "not-started", verified: 0, refused: 0, truncated: false };
+      throw new Error(
+        "This installation could not start the search. Press Search to try again.",
+      );
+    }
+    const msg =
+      err instanceof RpcError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    throw new Error(`The search failed: ${msg}. Press Search to try again.`);
+  }
+
+  const outcomes: SourceOutcome[] = (reply.outcomes ?? []).map((o) => {
+    let kind: SourceOutcomeKind = "ok";
+    let message: string | undefined;
+    if (o.error) {
+      kind = (o.error.kind as SourceOutcomeKind) || "unreadable";
+      message = o.error.message ?? o.error.reason;
     }
     return {
-      source,
-      kind: "unreadable",
-      verified: 0,
-      refused: 0,
-      truncated: false,
-      message: err instanceof Error ? err.message : String(err),
+      source: o.source,
+      kind,
+      verified: o.verified ?? 0,
+      refused: o.refused ?? 0,
+      truncated: o.truncated ?? false,
+      message,
     };
-  }
-}
+  });
 
-/// The client's fan-out loop, the one place it lives in the Hub. Runs
-/// `query-source` for every source, at most `maxConcurrency` in flight,
-/// calling `onSource` as each one answers so the view can render
-/// progressively, then returns `directory.merge`'s result.
-export interface SearchProgress {
-  answered: number;
-  total: number;
-  runId: string;
-  /// `"fanout"` while the run is still answering sources; `"retry"` for
-  /// the second attempt at a source this node was too busy to start. In
-  /// the retry phase `answered` is already `total` (every source
-  /// answered once), so the view should not render it as a live count.
-  phase: "fanout" | "retry";
-}
-
-export interface RunSearchOptions {
-  onSource?: (outcome: SourceOutcome, progress: SearchProgress) => void | Promise<void>;
-  /// Only the browser test suite passes this: it oversubscribes this
-  /// node's own guest-HTTP admission limit on purpose, to prove a 503 from
-  /// the node becomes `not-started` and never `timed-out`. The Hub itself
-  /// always honours `max_concurrency`.
-  ignoreConcurrency?: boolean;
-}
-
-export async function runSearch(
-  query: Record<string, unknown>,
-  onSourceOrOpts?:
-    | ((outcome: SourceOutcome, progress: SearchProgress) => void | Promise<void>)
-    | RunSearchOptions,
-): Promise<{ run: StartedRun; outcomes: SourceOutcome[]; merged: MergeResult }> {
-  const opts: RunSearchOptions =
-    typeof onSourceOrOpts === "function" ? { onSource: onSourceOrOpts } : onSourceOrOpts ?? {};
-  const onSource = opts.onSource;
-  const run = await startRun();
-  const outcomes: SourceOutcome[] = [];
-  const queue = [...run.sources];
-  let answered = 0;
-
-  async function worker() {
-    for (;;) {
-      const source = queue.shift();
-      if (source === undefined) return;
-      const outcome = await queryOneSource(run.runId, source, query);
-      outcomes.push(outcome);
-      answered += 1;
-      await onSource?.(outcome, {
-        answered,
-        total: run.sources.length,
-        runId: run.runId,
-        phase: "fanout",
-      });
-    }
-  }
-
-  const concurrency = opts.ignoreConcurrency
-    ? run.sources.length
-    : Math.min(run.maxConcurrency, run.sources.length);
-  await Promise.all(Array.from({ length: concurrency }, worker));
-
-  // A source this node refused to start may be retried once the run's
-  // other calls have drained -- the admission permits are free again.
-  const retryable = opts.ignoreConcurrency
-    ? []
-    : outcomes.filter((o) => o.kind === "not-started").map((o) => o.source);
-  for (const source of retryable) {
-    const again = await queryOneSource(run.runId, source, query);
-    const idx = outcomes.findIndex((o) => o.source === source);
-    if (idx >= 0) outcomes[idx] = again;
-    await onSource?.(again, {
-      answered,
-      total: run.sources.length,
-      runId: run.runId,
-      phase: "retry",
-    });
-  }
-
-  const merged = await call<MergeResult>("directory.merge", { run_id: run.runId });
-  return { run, outcomes, merged };
+  return {
+    runId: reply.run_id,
+    outcomes,
+    hits: reply.hits ?? [],
+    hitsTruncated: reply.hits_truncated ?? false,
+    refused: reply.refused ?? [],
+    refusedTruncated: reply.refused_truncated ?? false,
+  };
 }
 
 export async function runEnvelope(runId: string, recordId: string): Promise<string | null> {

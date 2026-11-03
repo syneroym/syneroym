@@ -760,7 +760,7 @@ test.describe('Roym Hub', () => {
     await expect(draft.locator('.publish-status')).toContainText('draft');
   });
 
-  test('22. Directory tab: the results view fills in per source and a slow source does not blank the page', async ({ page }) => {
+  test('22. Directory tab: the results view shows the loopback hit and names the unreachable sources', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
@@ -779,10 +779,8 @@ test.describe('Roym Hub', () => {
     await page.locator('.search-categories').fill('cycling');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
 
-    // The results view is re-merged and re-rendered as each source answers
-    // (the client calls `directory.merge` per source, not only at the end),
-    // and the loopback hit survives every re-render while the unreachable
-    // sources are still being tried.
+    // The loopback hit is shown while the unreachable sources are reported
+    // as errors without replacing the results.
     const hit = page.locator('.search-hit', { hasText: 'Progressive render listing' });
     await expect(hit).toHaveCount(1, { timeout: 20_000 });
     await expect(page.locator('.search-progress')).toContainText('4 directories searched', {
@@ -818,65 +816,10 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.search-hit', { hasText: 'Ceiling run listing' })).toHaveCount(1);
     // No 503 and no "busy" wording reached the person, and every source that
     // did not answer is shown as a directory problem, not this node's.
-    const errorsText = await page.locator('.search-source-errors').innerText();
-    expect(errorsText).not.toContain('503');
-    expect(errorsText.toLowerCase()).not.toContain('this installation was busy');
-  });
-
-  // The deterministic NotStarted-vs-TimedOut mapping is proven by the
-  // vitest suite; this case only asserts that a run at full concurrency
-  // never blames the loopback source for a timeout and never conflates
-  // the two outcome kinds.
-  test('23b. Directory tab: a run at full concurrency never blames the loopback source for a timeout', async ({ page }) => {
-    await page.goto(HUB_URL);
-    await page.waitForLoadState('networkidle');
-    await loginWithDelegatedKey(page);
-    await ensureSynOrgWithListing(page, 'NotStarted listing');
-
-    await removeAllSources(page);
-    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
-    await page.getByRole('button', { name: 'Add directory' }).click();
-    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
-    for (const n of [1, 2, 3, 4, 5, 6, 7] as const) {
-      await page.locator('.add-source-did').fill(bogusDid(n));
-      await page.getByRole('button', { name: 'Add directory' }).click();
-      await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
-    }
-
-    // Drive the real client loop with `ignoreConcurrency` so it
-    // oversubscribes this node's four-permit guest-HTTP admission door.
-    const result = await page.evaluate(async () => {
-      const win = window as unknown as {
-        RoymDirectory: { runSearch: (q: unknown, o: unknown) => Promise<{ outcomes: Array<{ source: string; kind: string }> }> };
-      };
-      const { outcomes } = await win.RoymDirectory.runSearch(
-        { categories: ['cycling'] },
-        { ignoreConcurrency: true },
-      );
-      return outcomes;
-    });
-
-    const timedOut = result.filter((o) => o.kind === 'timed-out');
-    // Whether or not a real 503 fired this run (it is scheduling-dependent),
-    // the loopback source must never be blamed as timed out, and no outcome
-    // conflates "this node was busy" with "the directory did not answer" --
-    // `search.ts` keeps the 503 -> not-started mapping separate, proven
-    // deterministically by the vitest suite.
-    for (const o of timedOut) {
-      expect(o.source).not.toBe(process.env.ROYM_DIRECTORY_DID);
-    }
-    expect(result.every((o) => ['ok', 'not-started', 'timed-out', 'not-found', 'refused', 'unreadable'].includes(o.kind))).toBe(true);
-    // The node kept no `last_error` for a source it never actually called.
-    const sources = await page.evaluate(async () => {
-      const res = await fetch('/rpc', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(window as any).RoymSession.authHeaders() },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'directory.sources', params: {} }),
-      });
-      return (await res.json()).result.sources as Array<{ did: string; last_error?: { kind: string } }>;
-    });
-    const loopback = sources.find((s) => s.did === process.env.ROYM_DIRECTORY_DID);
-    expect(loopback?.last_error ?? null).toBeNull();
+    const pageText = await page.innerText('body');
+    expect(pageText).not.toContain('503');
+    expect(pageText).not.toContain('This installation could not start the search');
+    expect(pageText.toLowerCase()).not.toContain('this installation was busy');
   });
 
   test('24. components tab: request, quote, and agreement-receipt samples render real fields as text', async ({ page }) => {

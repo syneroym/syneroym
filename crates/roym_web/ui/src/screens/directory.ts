@@ -1,8 +1,7 @@
 import {
+  findListings,
   runEnvelope,
-  runSearch,
   type MergedHit,
-  type MergeResult,
   type RefusedHit,
   type SourceOutcome,
 } from "../directory/search";
@@ -221,8 +220,7 @@ function buildSearch(): HTMLElement {
     "p",
     "Matching is on whole words in the title, summary and categories. " +
       "Punctuation is ignored, so searching for 50% finds 50. There is no " +
-      "ranking and no paid placement -- results are shown newest first, " +
-      "one directory at a time in turn.",
+      "ranking and no paid placement -- results are shown newest first.",
     "search-help",
   );
   const goBtn = text("button", "Search", "button run-search") as HTMLButtonElement;
@@ -234,17 +232,11 @@ function buildSearch(): HTMLElement {
   const errorsHost = document.createElement("div");
   errorsHost.className = "search-source-errors";
 
-  // One partial merge at a time, at most one queued. The fan-out workers
-  // never wait on it -- they only mark the results dirty -- so a slow
-  // merge cannot serialize the queries behind it.
-  const sourceLines = new Map<string, HTMLElement>();
-
   goBtn.onclick = async () => {
     results.replaceChildren();
     refusedHost.replaceChildren();
     errorsHost.replaceChildren();
-    sourceLines.clear();
-    progress.textContent = "Starting...";
+    progress.textContent = "Searching...";
     goBtn.disabled = true;
 
     const query: Record<string, unknown> = {};
@@ -255,79 +247,45 @@ function buildSearch(): HTMLElement {
       .filter(Boolean);
     if (cats.length) query.categories = cats;
 
-    let mergeRunning = false;
-    let mergeDirty = false;
-    let lastRunId = "";
-    async function refreshPartial(runId: string) {
-      lastRunId = runId;
-      if (mergeRunning) {
-        mergeDirty = true;
+    try {
+      const res = await findListings(query);
+      if (res.outcomes.length > 0 && res.outcomes.every((o) => o.kind === "not-started")) {
+        progress.textContent =
+          "This installation could not start the search. Press Search to try again.";
         return;
       }
-      mergeRunning = true;
-      try {
-        do {
-          mergeDirty = false;
-          const partial = await call<MergeResult>("directory.merge", { run_id: runId });
-          results.replaceChildren();
-          refusedHost.replaceChildren();
-          renderHits(results, partial.hits, partial.hits_truncated, runId);
-          renderRefused(refusedHost, partial.refused, partial.refused_truncated);
-        } while (mergeDirty);
-      } catch {
-        /* the final merge below is authoritative */
-      } finally {
-        mergeRunning = false;
-      }
-    }
-
-    try {
-      const { run, merged } = await runSearch(query, (outcome, prog) => {
-        progress.textContent =
-          prog.phase === "retry"
-            ? "Retrying directories this installation was too busy to start..."
-            : `${prog.answered} of ${prog.total} directories answered...`;
-        renderSourceOutcome(errorsHost, sourceLines, outcome);
-        // Fire, do not await: the worker moves straight to the next
-        // source while this catches up in the background.
-        void refreshPartial(prog.runId);
-      });
       progress.textContent =
-        run.sources.length === 0
+        res.outcomes.length === 0
           ? "You have not added any directories. Add one above, or reach a listing owner by a direct link."
-          : `${run.sources.length} directories searched.`;
+          : `${res.outcomes.length} directories searched.`;
       results.replaceChildren();
       refusedHost.replaceChildren();
-      renderHits(results, merged.hits, merged.hits_truncated, run.runId || lastRunId);
-      renderRefused(refusedHost, merged.refused, merged.refused_truncated);
+      errorsHost.replaceChildren();
+      for (const outcome of res.outcomes) {
+        renderSourceOutcome(errorsHost, outcome);
+      }
+      renderHits(results, res.hits, res.hitsTruncated, res.runId);
+      renderRefused(refusedHost, res.refused, res.refusedTruncated);
     } catch (err) {
-      progress.textContent = `Search failed: ${errText(err)}`;
+      progress.textContent =
+        err instanceof Error
+          ? err.message
+          : `The search failed: ${String(err)}. Press Search to try again.`;
+    } finally {
+      goBtn.disabled = false;
     }
-    goBtn.disabled = false;
   };
 
   wrap.append(textInput, catInput, help, goBtn, progress, results, refusedHost, errorsHost);
   return wrap;
 }
 
-/// One line per source, keyed by DID and replaced in place -- so a source
-/// that was `not-started` and then succeeded on retry loses its old line
-/// instead of keeping a stale "this installation was busy" note next to
-/// results it did contribute.
 function renderSourceOutcome(
   host: HTMLElement,
-  lines: Map<string, HTMLElement>,
   outcome: SourceOutcome,
 ) {
   const clean = outcome.kind === "ok" && !outcome.truncated;
-  const existing = lines.get(outcome.source);
-  if (clean) {
-    if (existing) {
-      existing.remove();
-      lines.delete(outcome.source);
-    }
-    return;
-  }
+  if (clean) return;
   const line = document.createElement("div");
   line.className = "source-error-line";
   line.dataset.kind = outcome.kind === "ok" ? "truncated" : outcome.kind;
@@ -337,12 +295,7 @@ function renderSourceOutcome(
       ? "this directory had more matches than it would return"
       : sourceErrorWords(outcome.kind);
   line.appendChild(text("span", reason, "source-error-reason"));
-  if (existing) {
-    existing.replaceWith(line);
-  } else {
-    host.appendChild(line);
-  }
-  lines.set(outcome.source, line);
+  host.appendChild(line);
 }
 
 function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, runId: string) {

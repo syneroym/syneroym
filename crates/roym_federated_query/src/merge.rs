@@ -1,49 +1,24 @@
-//! Client half: merging fanned-out search results into one page.
+//! Result merging and deduplication across fanned-out sources.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    clock,
+    area::Area,
     directory::{MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS, MAX_SEARCH_RESULTS},
-    envelope::Response,
-    membership::MembershipVerdict,
-    method::Reply,
-    paging,
+    membership::{self, CheckInput, ListingRef, MembershipEvidence, MembershipVerdict},
 };
 
-use super::{SEARCH_RUNS, client_query::SearchRunRow, ensure_coll, search_runs_indexes};
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RunInput {
-    pub run_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RunEnvelopeInput {
-    pub run_id: String,
-    pub record_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct RunEnvelopeOutput {
-    pub envelope: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct HitSource {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HitSource {
     pub directory: String,
     pub record_id: String,
     pub received_at_secs: u64,
     pub membership: Option<MembershipVerdict>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MergedHit {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MergedHit {
     pub listing_id: String,
     pub record_id: String,
     pub issuer: String,
@@ -59,66 +34,55 @@ pub(crate) struct MergedHit {
     pub versions_differ: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct RefusedHit {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusedHit {
     pub listing_id: String,
     pub reason: String,
     pub sources: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct MergeOutput {
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Row {
+    pub listing_id: String,
+    pub record_id: String,
+    pub source: String,
+    pub issuer: String,
+    pub title: String,
+    pub summary: String,
+    pub categories: Vec<String>,
+    pub conversation_address: String,
+    pub status: String,
+    pub reason: Option<String>,
+    pub revocation_status: String,
+    pub issued_at_secs: u64,
+    pub received_at_secs: u64,
+    pub raw_evidence: Option<MembershipEvidence>,
+    pub pinned_issuer: Option<String>,
+    pub areas: Vec<Area>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MergedRows {
     pub hits: Vec<MergedHit>,
     pub hits_truncated: bool,
     pub refused: Vec<RefusedHit>,
     pub refused_truncated: bool,
 }
 
-pub(crate) async fn merge<H: AppHost>(host: &H, input: RunInput) -> Reply<MergeOutput> {
-    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
-        return Err(Response::internal_error(e));
-    }
-    let (verified_rows, refused_rows) = match load_run_rows(host, &input.run_id).await {
-        Ok(v) => v,
-        Err(e) => return Err(Response::internal_error(e)),
-    };
-
-    let by_source = dedupe_and_cap_verified(verified_rows);
+/// Merges verified and refused result rows across sources into a single page.
+pub fn merge_rows(verified: Vec<Row>, refused: Vec<Row>, now_secs: u64) -> MergedRows {
+    let by_source = dedupe_and_cap_verified(verified);
     let (order, seen, merge_truncated) = round_robin_merge(&by_source, MAX_SEARCH_RESULTS);
     let candidates = candidates_by_listing(&by_source, &seen);
-    let now = clock::now_secs();
-    let hits = build_hits(order, candidates, now);
+    let hits = build_hits(order, candidates, now_secs);
 
-    let refused_by_source = group_and_sort_refused(refused_rows);
+    let refused_by_source = group_and_sort_refused(refused);
     let (refused_order, refused_seen, refused_truncated) =
         round_robin_merge(&refused_by_source, MAX_REFUSED_RESULTS);
     let refused_candidates = candidates_by_listing(&refused_by_source, &refused_seen);
     let refused = build_refused(refused_order, refused_candidates);
 
-    Ok(MergeOutput { hits, hits_truncated: merge_truncated, refused, refused_truncated })
-}
-
-/// Loads every `search_runs` row for `run_id`, split into verified and
-/// refused rows. Rows carry `run_id` as a top-level field (the key is
-/// `<run_id>#<source>#<record_id>`, or `<run_id>#refused#<source>#
-/// <record_id>`, and no host filter can match a key prefix). Filter on
-/// the field, so this reads one run's rows, not every run ever stored.
-async fn load_run_rows<H: AppHost>(
-    host: &H,
-    run_id: &str,
-) -> Result<(Vec<SearchRunRow>, Vec<SearchRunRow>), String> {
-    let rows: Vec<SearchRunRow> =
-        paging::query_all(host, SEARCH_RUNS, Some(json!({ "run_id": run_id }).to_string())).await?;
-    let mut verified_rows: Vec<SearchRunRow> = Vec::new();
-    let mut refused_rows: Vec<SearchRunRow> = Vec::new();
-    for row in rows {
-        if row.refused {
-            refused_rows.push(row);
-        } else {
-            verified_rows.push(row);
-        }
-    }
-    Ok((verified_rows, refused_rows))
+    MergedRows { hits, hits_truncated: merge_truncated, refused, refused_truncated }
 }
 
 /// Per source, first: dedupe by `listing_id`, keeping the newer row.
@@ -126,16 +90,10 @@ async fn load_run_rows<H: AppHost>(
 /// arbitrary JSON, so nothing stops it returning two genuinely-signed
 /// versions of one listing in a single answer; an honest directory's
 /// own `search()` collapsing to one hit per listing narrows this but
-/// does not close it. It also covers the case that reliably occurs
-/// even against a well-behaved source: a client calling
-/// `query-source` more than once for the same `(run_id, source)`,
-/// e.g. a retry, storing a different version each time. Then sort by
-/// (issued_at desc, listing_id asc) and take at most
-/// `MAX_HITS_PER_SOURCE`.
-fn dedupe_and_cap_verified(
-    verified_rows: Vec<SearchRunRow>,
-) -> BTreeMap<String, Vec<SearchRunRow>> {
-    let mut by_source: BTreeMap<String, BTreeMap<String, SearchRunRow>> = BTreeMap::new();
+/// does not close it. Then sort by (issued_at desc, listing_id asc) and take
+/// at most `MAX_HITS_PER_SOURCE`.
+fn dedupe_and_cap_verified(verified_rows: Vec<Row>) -> BTreeMap<String, Vec<Row>> {
+    let mut by_source: BTreeMap<String, BTreeMap<String, Row>> = BTreeMap::new();
     for row in verified_rows {
         let per_listing = by_source.entry(row.source.clone()).or_default();
         match per_listing.get(&row.listing_id) {
@@ -145,7 +103,7 @@ fn dedupe_and_cap_verified(
             }
         }
     }
-    let mut by_source: BTreeMap<String, Vec<SearchRunRow>> = by_source
+    let mut by_source: BTreeMap<String, Vec<Row>> = by_source
         .into_iter()
         .map(|(source, per_listing)| (source, per_listing.into_values().collect()))
         .collect();
@@ -166,8 +124,8 @@ fn dedupe_and_cap_verified(
 /// otherwise fill every slot before a second, honest source's evidence
 /// is ever reached. `round_robin_merge` is what actually bounds one
 /// source's share.
-fn group_and_sort_refused(refused_rows: Vec<SearchRunRow>) -> BTreeMap<String, Vec<SearchRunRow>> {
-    let mut refused_by_source: BTreeMap<String, Vec<SearchRunRow>> = BTreeMap::new();
+fn group_and_sort_refused(refused_rows: Vec<Row>) -> BTreeMap<String, Vec<Row>> {
+    let mut refused_by_source: BTreeMap<String, Vec<Row>> = BTreeMap::new();
     for row in refused_rows {
         refused_by_source.entry(row.source.clone()).or_default().push(row);
     }
@@ -191,7 +149,7 @@ fn group_and_sort_refused(refused_rows: Vec<SearchRunRow>) -> BTreeMap<String, V
 /// the verified merge and the refused-evidence merge, which round-robin
 /// identically over differently-ordered, differently-capped input.
 fn round_robin_merge(
-    by_source: &BTreeMap<String, Vec<SearchRunRow>>,
+    by_source: &BTreeMap<String, Vec<Row>>,
     cap: u32,
 ) -> (Vec<String>, BTreeSet<String>, bool) {
     let mut positions: BTreeMap<String, usize> =
@@ -231,10 +189,10 @@ fn round_robin_merge(
 /// produced `by_source` (`dedupe_and_cap_verified` or
 /// `group_and_sort_refused`).
 fn candidates_by_listing<'a>(
-    by_source: &'a BTreeMap<String, Vec<SearchRunRow>>,
+    by_source: &'a BTreeMap<String, Vec<Row>>,
     seen: &BTreeSet<String>,
-) -> BTreeMap<String, Vec<&'a SearchRunRow>> {
-    let mut out: BTreeMap<String, Vec<&SearchRunRow>> = BTreeMap::new();
+) -> BTreeMap<String, Vec<&'a Row>> {
+    let mut out: BTreeMap<String, Vec<&Row>> = BTreeMap::new();
     for rows in by_source.values() {
         for row in rows {
             if seen.contains(&row.listing_id) {
@@ -247,7 +205,7 @@ fn candidates_by_listing<'a>(
 
 fn build_hits(
     order: Vec<String>,
-    mut candidates_by_listing: BTreeMap<String, Vec<&SearchRunRow>>,
+    mut candidates_by_listing: BTreeMap<String, Vec<&Row>>,
     now: u64,
 ) -> Vec<MergedHit> {
     order
@@ -266,7 +224,7 @@ fn build_hits(
                     directory: r.source.clone(),
                     record_id: r.record_id.clone(),
                     received_at_secs: r.received_at_secs,
-                    membership: r.membership.clone(),
+                    membership: membership_of(r, now),
                 })
                 .collect();
             let distinct_record_ids: BTreeSet<&str> =
@@ -290,9 +248,27 @@ fn build_hits(
         .collect()
 }
 
+fn membership_of(row: &Row, now: u64) -> Option<MembershipVerdict> {
+    let evidence = row.raw_evidence.as_ref()?;
+    Some(membership::evaluate(
+        evidence,
+        &CheckInput {
+            pinned_issuer: row.pinned_issuer.as_deref(),
+            member_did: &row.issuer,
+            listing: Some(ListingRef {
+                listing_id: &row.listing_id,
+                categories: Some(&row.categories),
+                areas: Some(&row.areas),
+            }),
+            now_secs: now,
+            evidence_as_of_secs: now,
+        },
+    ))
+}
+
 fn build_refused(
     refused_order: Vec<String>,
-    mut refused_candidates: BTreeMap<String, Vec<&SearchRunRow>>,
+    mut refused_candidates: BTreeMap<String, Vec<&Row>>,
 ) -> Vec<RefusedHit> {
     refused_order
         .into_iter()
@@ -306,36 +282,4 @@ fn build_refused(
             })
         })
         .collect()
-}
-
-pub(crate) async fn run_envelope<H: AppHost>(
-    host: &H,
-    input: RunEnvelopeInput,
-) -> Reply<Option<RunEnvelopeOutput>> {
-    if let Err(e) = ensure_coll(host, SEARCH_RUNS, &search_runs_indexes()).await {
-        return Err(Response::internal_error(e));
-    }
-    // Filtered on the `run_id` field at the host -- one run's rows, not
-    // the whole collection. Only a *verified* row is accepted: its
-    // `record_id` is content-derived from the envelope, so any surviving
-    // verified row for `record_id` carries the identical signed bytes. A
-    // refused row's `record_id` is whatever the source claimed,
-    // unverified, so a hostile source could set one to collide with a
-    // genuine record -- excluded here rather than trusted to sort last.
-    let rows: Vec<SearchRunRow> = match paging::query_all(
-        host,
-        SEARCH_RUNS,
-        Some(json!({ "run_id": input.run_id }).to_string()),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => return Err(Response::internal_error(e)),
-    };
-    for row in rows {
-        if !row.refused && row.record_id == input.record_id {
-            return Ok(Some(RunEnvelopeOutput { envelope: row.envelope }));
-        }
-    }
-    Ok(None)
 }

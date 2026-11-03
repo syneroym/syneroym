@@ -8365,9 +8365,25 @@ dependencies = [
  "serde_json",
  "syneroym-app-host",
  "syneroym-roym-core",
+ "syneroym-roym-federated-query",
  "syneroym-rpc",
  "syneroym-wit-interfaces",
  "wit-bindgen",
+]
+
+[[package]]
+name = "syneroym-roym-federated-query"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-identity",
+ "syneroym-roym-core",
+ "syneroym-signed-record",
+ "thiserror 2.0.21",
+ "tokio",
+ "z32",
 ]
 
 [[package]]

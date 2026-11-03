@@ -153,7 +153,9 @@ lifecycle_hook_epoch_timeout_secs = 30
 # Batched outbound call limits (`call-all`)
 # Maximum number of calls in one batch
 call_all_max_calls = 16
-# Maximum number of calls running concurrently for one guest instance
+# Maximum number of calls running concurrently for one guest instance.
+# Keep at 8 or more so federated search (which queries up to 8 added
+# directories in parallel) can complete in one wave within the 5s epoch.
 call_all_max_concurrency = 8
 # Default per-call timeout in milliseconds when unspecified
 call_all_default_call_timeout_ms = 5000

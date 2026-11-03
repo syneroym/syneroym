@@ -83,36 +83,28 @@ async fn directory_parameter_errors() {
     assert!(w.get("error").is_none(), "nested unknown key should be accepted: {w}");
     assert!(w.get("result").is_some());
 
-    // directory.query-source with invalid open_to in query
+    // directory.find with invalid open_to in query
     let (aw, an) =
         post_rpc(&h, "directory.add-source", Some(json!({ "did": "did:key:hTrustValid" }))).await;
     assert_eq!(stripped(&aw), stripped(&an));
     assert!(aw["result"]["source"]["last_ok_secs"].is_number());
     assert!(an["result"]["source"]["last_ok_secs"].is_number());
 
-    let mut query_errors = Vec::new();
+    let mut find_errors = Vec::new();
     for wasm in [true, false] {
-        let start = one_rpc(&h, wasm, "directory.start-run", json!({})).await;
-        let run_id = start["result"]["run_id"].as_str().unwrap();
         let err = one_rpc(
             &h,
             wasm,
-            "directory.query-source",
+            "directory.find",
             json!({
-                "run_id": run_id,
-                "source": "did:key:hTrustValid",
                 "query": { "open_to": "everyone" }
             }),
         )
         .await;
-        query_errors.push(err);
-
-        let m = one_rpc(&h, wasm, "directory.merge", json!({ "run_id": run_id })).await;
-        assert!(m["result"]["hits"].as_array().unwrap().is_empty());
-        assert!(m["result"]["refused"].as_array().unwrap().is_empty());
+        find_errors.push(err);
     }
-    assert_eq!(query_errors[0], query_errors[1]);
-    let w = &query_errors[0];
+    assert_eq!(find_errors[0], find_errors[1]);
+    let w = &find_errors[0];
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "query.open_to");
     assert_eq!(

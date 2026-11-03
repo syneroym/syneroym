@@ -69,7 +69,7 @@ fn every_transaction_method_has_typed_input_and_output() {
 #[test]
 fn every_directory_method_has_typed_input_and_output() {
     let table = directory_api::method_table();
-    assert_eq!(table.len(), 37);
+    assert_eq!(table.len(), 35);
     let wire: Vec<&str> = directory_api::WIRE_REACHABLE.iter().map(|(n, _)| *n).collect();
     let mut sorted_wire = wire.clone();
     sorted_wire.sort();

@@ -316,18 +316,13 @@ pub(super) async fn handle_directory(
             handle_directory_trust(command, dir, run_as, ucan_path).await?
         }
         DirectoryCommands::Find { text, categories, near, limit, gateway_url, host } => {
-            super::find::find(
-                text.as_deref(),
+            let args = super::find::FindArgs {
+                text: text.as_deref(),
                 categories,
-                near.as_deref(),
-                *limit,
-                gateway_url,
-                host.as_deref(),
-                dir,
-                run_as,
-                ucan_path,
-            )
-            .await?;
+                near: near.as_deref(),
+                limit: *limit,
+            };
+            super::find::find(args, gateway_url, host.as_deref(), ctx).await?;
         }
     }
     Ok(())

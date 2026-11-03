@@ -184,6 +184,7 @@ fn check_roym_deps() -> Result<()> {
         target_independent: &[
             "syneroym-app-host",
             "syneroym-roym-core",
+            "syneroym-roym-federated-query",
             "syneroym-signed-record",
             "serde",
             "serde_json",

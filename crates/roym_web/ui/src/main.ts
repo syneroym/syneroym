@@ -1,6 +1,5 @@
 import { renderCard } from "./cards/render";
 import { renderRefusedCard } from "./cards/refused";
-import { runSearch } from "./directory/search";
 import { errText, text } from "./dom";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
@@ -45,9 +44,6 @@ declare global {
       authHeaders: typeof authHeaders;
       whoami: typeof whoami;
     };
-    RoymDirectory?: {
-      runSearch: typeof runSearch;
-    };
     RoymMessages?: {
       openQuoteForm: typeof openQuoteForm;
       openDeclineDialog: typeof openDeclineDialog;
@@ -63,10 +59,6 @@ declare global {
 // crafted fixture, instead of only ever seeing the sample gallery below.
 window.RoymRegistry = { renderCard, renderRefusedCard };
 window.RoymSession = { storedToken, authHeaders, whoami };
-// Test hook: the `roym-hub.spec.ts` `NotStarted` case drives the real
-// client loop with `ignoreConcurrency` so it can oversubscribe this node's
-// admission limit on purpose.
-window.RoymDirectory = { runSearch };
 window.RoymMessages = {
   openQuoteForm,
   openDeclineDialog,
