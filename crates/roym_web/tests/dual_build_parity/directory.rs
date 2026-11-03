@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use syneroym_core::config::AppSandboxRole;
 use syneroym_roym_core::{
     directory::{
-        DEFAULT_SOURCE_TIMEOUT_MS, DISPATCH_HEADROOM_MS, MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS,
+        DISPATCH_HEADROOM_MS, FIND_SOURCE_TIMEOUT_MS, MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS,
         MAX_SOURCES,
     },
     services,
@@ -1017,9 +1017,9 @@ fn find_time_fits_the_real_sandbox_defaults() {
     let defaults = AppSandboxRole::default();
     let epoch_ms = defaults.dispatch_epoch_timeout_secs.saturating_mul(1000);
     let waves = MAX_SOURCES.div_ceil(defaults.call_all_max_concurrency);
-    let wave_time = u64::from(DEFAULT_SOURCE_TIMEOUT_MS) + 250;
+    let wave_time = u64::from(FIND_SOURCE_TIMEOUT_MS) + 250;
     assert!(MAX_SOURCES <= defaults.call_all_max_calls);
-    assert!(u64::from(DEFAULT_SOURCE_TIMEOUT_MS) <= defaults.call_all_max_call_timeout_ms);
+    assert!(u64::from(FIND_SOURCE_TIMEOUT_MS) <= defaults.call_all_max_call_timeout_ms);
     assert!((waves as u64) * wave_time <= defaults.call_all_total_timeout_ms);
     assert!(
         (waves as u64) * wave_time + u64::from(DISPATCH_HEADROOM_MS) < epoch_ms,

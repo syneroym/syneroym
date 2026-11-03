@@ -7,8 +7,8 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     directory::{
-        DEFAULT_SOURCE_TIMEOUT_MS, MAX_REFUSED_RESULTS, MAX_STORED_PER_SOURCE, SearchHit,
-        SearchQuery, SourceError,
+        FIND_SOURCE_TIMEOUT_MS, MAX_REFUSED_RESULTS, MAX_STORED_PER_SOURCE, SearchHit, SearchQuery,
+        SourceError,
     },
     envelope::Response,
     method::directory::SearchOutput,
@@ -42,7 +42,7 @@ pub fn build_requests(sources: &[Source], query: &SearchQuery) -> Vec<CallReques
             options: Some(CallOptions {
                 protocol: None,
                 idempotent: true,
-                timeout_ms: Some(DEFAULT_SOURCE_TIMEOUT_MS),
+                timeout_ms: Some(FIND_SOURCE_TIMEOUT_MS),
                 routing_key: None,
                 idempotency_key: None,
             }),

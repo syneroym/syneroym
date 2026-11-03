@@ -51,14 +51,17 @@ pub const MAX_SOURCES: usize = 8;
 /// already contributed, so a source can be asked for more than its share's
 /// worth of rows before it has contributed its share.
 pub const MAX_STORED_PER_SOURCE: u32 = 2 * MAX_HITS_PER_SOURCE;
+/// Per-source deadline for single directory operations (probe, publish,
+/// and check-standing).
+pub const DEFAULT_SOURCE_TIMEOUT_MS: u32 = 2_000;
 /// Per-source deadline for each parallel source call `directory.find`
 /// makes via `call-all`. Derived from the guest dispatch epoch, not chosen: the
 /// dispatch traps after `dispatch_epoch_timeout_secs` of wall clock -- 5s by
 /// default -- and that budget is spent while waiting on the calls. The
-/// `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < epoch` relationship
-/// is asserted host-side, against the real `AppSandboxRole` default rather
-/// than a literal copied here.
-pub const DEFAULT_SOURCE_TIMEOUT_MS: u32 = 1_700;
+/// `waves * (FIND_SOURCE_TIMEOUT_MS + 250) + DISPATCH_HEADROOM_MS < epoch`
+/// relationship is asserted host-side, against the real `AppSandboxRole`
+/// default rather than a literal copied here.
+pub const FIND_SOURCE_TIMEOUT_MS: u32 = 1_700;
 /// Headroom the host-side assertion reserves for verifying a full page of
 /// envelopes and writing the run rows.
 pub const DISPATCH_HEADROOM_MS: u32 = 3_000;
@@ -346,8 +349,9 @@ mod tests {
         );
     }
 
-    // `DEFAULT_SOURCE_TIMEOUT_MS + DISPATCH_HEADROOM_MS < dispatch epoch`
-    // is asserted in `roym_web/tests/dual_build_parity/directory.rs`, which
-    // links the real `AppSandboxRole` defaults. A copy of those literals here
-    // would pass even after the node default moved.
+    // `waves * (FIND_SOURCE_TIMEOUT_MS + 250) + DISPATCH_HEADROOM_MS < dispatch
+    // epoch` is asserted in
+    // `roym_web/tests/dual_build_parity/directory.rs`, which links the real
+    // `AppSandboxRole` defaults. A copy of those literals here would pass
+    // even after the node default moved.
 }
