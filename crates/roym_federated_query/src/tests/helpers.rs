@@ -80,6 +80,70 @@ pub fn sign_test_listing(slug: &str, title: &str, now: u64) -> (String, String, 
     sign_test_listing_with_issuer(&key, &issuer, slug, title, now)
 }
 
+pub fn max_escaping_summary() -> String {
+    let pattern = "text \"quoted\" \\\n ";
+    pattern.repeat(2000 / pattern.len())
+}
+
+pub fn sign_max_payload_listing_with_issuer(
+    key: &Identity,
+    issuer: &str,
+    slug: &str,
+    title: &str,
+    now: u64,
+) -> (String, String, String) {
+    let listing_id = derive_listing_id(issuer, slug).unwrap();
+    let payload = ListingPayload {
+        listing_id: listing_id.clone(),
+        slug: slug.to_string(),
+        title: title.to_string(),
+        summary: max_escaping_summary(),
+        categories: vec!["services".to_string()],
+        conversation_address: format!("{issuer}#conv"),
+        status: ListingStatus::Active,
+        booking: None,
+        payment: Some(PaymentTerms {
+            currency: "EUR".to_string(),
+            model: PaymentModel::PerHour,
+            amount_minor: Some(3500),
+            tax_included: true,
+            fees_minor: None,
+            methods: vec!["cash".to_string()],
+            payee: "A. Provider".to_string(),
+        }),
+        product: None,
+        service: None,
+        location: None,
+        relationship: None,
+        service_record: None,
+    };
+    let mut payload_val = serde_json::to_value(&payload).unwrap();
+    // Pad payload to just under MAX_PAYLOAD_BYTES (64 KiB = 65,536 bytes) with
+    // escaping text in an extra description field.
+    let base_bytes = substrate::canonicalize_json_value(&payload_val).to_string().len();
+    let pad_pattern = "item \"quoted\" \\\n ";
+    // Each repetition of pad_pattern takes 25 bytes in canonical JSON.
+    let needed = 65_000usize.saturating_sub(base_bytes);
+    let padding = pad_pattern.repeat(needed / 25);
+    payload_val["description"] = serde_json::Value::String(padding);
+
+    let draft = RecordDraft {
+        version: LISTING_VERSION,
+        record_type: RECORD_LISTING.to_string(),
+        subject: listing_id.clone(),
+        payload: payload_val,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer.to_string(), None, now).unwrap();
+    let sig = z32::encode(&key.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let envelope_json = env.to_json().unwrap();
+    let verdict: ListingVerdict = verify_envelope(&envelope_json, now);
+    let record_id = verdict.record_id.unwrap();
+    (listing_id, record_id, envelope_json)
+}
+
 pub fn sign_test_listing_with_issuer(
     key: &Identity,
     issuer: &str,

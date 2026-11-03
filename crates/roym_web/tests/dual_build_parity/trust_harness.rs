@@ -468,9 +468,54 @@ fn build_ceiling_evidence(
     })
 }
 
-fn build_all_ceiling_responses() -> [String; 8] {
+fn signed_canned_listing(
+    slug: &str,
+    title: &str,
+    summary: &str,
+    issued_at: u64,
+    supersedes: Option<String>,
+) -> (String, String) {
     let member_key = listing_owner_identity();
     let member_did = listing_owner_did();
+    let lid = listing::derive_listing_id(&member_did, slug).unwrap();
+    let payload = json!({
+        "listing_id": lid,
+        "slug": slug,
+        "title": title,
+        "summary": summary,
+        "categories": ["gardening"],
+        "conversation_address": "did:key:zConv",
+        "status": "active",
+        "booking": {
+            "mode": "enquiry",
+            "lead_time_secs": 0,
+            "cancellation_window_secs": 0,
+            "max_per_booking": 1,
+        },
+    });
+    let (mut env, bytes) = Envelope::unsigned(
+        RecordDraft {
+            version: listing::LISTING_VERSION,
+            record_type: record::RECORD_LISTING.to_string(),
+            subject: member_did.clone(),
+            payload,
+            expires_at_secs: None,
+            supersedes,
+        },
+        member_did,
+        None,
+        issued_at,
+    )
+    .unwrap();
+    env.attach_signature(z32::encode(&member_key.sign(&bytes).to_bytes())).unwrap();
+    let rec_id = env.record_id().unwrap();
+    let env_json = env.to_json().unwrap();
+    (rec_id, env_json)
+}
+
+fn build_all_ceiling_responses() -> [String; 8] {
+    let member_did = listing_owner_did();
+    let ceiling_summary = "text \"quoted\" \\\n ".repeat(2000 / 18);
 
     core::array::from_fn(|idx| {
         let issuer_key = ceiling_issuer_identity(idx);
@@ -480,37 +525,13 @@ fn build_all_ceiling_responses() -> [String; 8] {
             .map(|h| {
                 let slug = format!("ceiling-listing-{idx}-{h}");
                 let lid = listing::derive_listing_id(&member_did, &slug).unwrap();
-                let (mut env, bytes) = Envelope::unsigned(
-                    RecordDraft {
-                        version: listing::LISTING_VERSION,
-                        record_type: record::RECORD_LISTING.to_string(),
-                        subject: member_did.clone(),
-                        payload: json!({
-                            "listing_id": lid,
-                            "slug": slug,
-                            "title": format!("Ceiling Title {idx}-{h}"),
-                            "summary": "Neat hedges, fortnightly.",
-                            "categories": ["gardening"],
-                            "conversation_address": "did:key:zConv",
-                            "status": "active",
-                            "booking": {
-                                "mode": "enquiry",
-                                "lead_time_secs": 0,
-                                "cancellation_window_secs": 0,
-                                "max_per_booking": 1,
-                            },
-                        }),
-                        expires_at_secs: None,
-                        supersedes: None,
-                    },
-                    member_did.clone(),
-                    None,
+                let (rec_id, env_json) = signed_canned_listing(
+                    &slug,
+                    &format!("Ceiling Title {idx}-{h}"),
+                    &ceiling_summary,
                     CANNED_ISSUED_AT_SECS,
-                )
-                .unwrap();
-                env.attach_signature(z32::encode(&member_key.sign(&bytes).to_bytes())).unwrap();
-                let rec_id = env.record_id().unwrap();
-                let env_json = env.to_json().unwrap();
+                    None,
+                );
 
                 let evidence =
                     build_ceiling_evidence(&issuer_key, &issuer_did, &member_did, &lid, idx, h);
@@ -532,74 +553,24 @@ fn build_all_ceiling_responses() -> [String; 8] {
 }
 
 fn two_versions_search_response() -> String {
-    let issuer = listing_owner_did();
     let slug = "two-versions-hedge";
-    let lid = listing::derive_listing_id(&issuer, slug).unwrap();
-    let owner_key = listing_owner_identity();
+    let lid = listing::derive_listing_id(&listing_owner_did(), slug).unwrap();
 
-    let (mut env1, bytes1) = Envelope::unsigned(
-        RecordDraft {
-            version: listing::LISTING_VERSION,
-            record_type: record::RECORD_LISTING.to_string(),
-            subject: issuer.clone(),
-            payload: json!({
-                "listing_id": lid,
-                "slug": slug,
-                "title": "Hedge trimming v1",
-                "summary": "Neat hedges, fortnightly.",
-                "categories": ["gardening"],
-                "conversation_address": "did:key:zConv",
-                "status": "active",
-                "booking": {
-                    "mode": "enquiry",
-                    "lead_time_secs": 0,
-                    "cancellation_window_secs": 0,
-                    "max_per_booking": 1,
-                },
-            }),
-            expires_at_secs: None,
-            supersedes: None,
-        },
-        issuer.clone(),
-        None,
+    let (rec1, env1_json) = signed_canned_listing(
+        slug,
+        "Hedge trimming v1",
+        "Neat hedges, fortnightly.",
         CANNED_ISSUED_AT_SECS,
-    )
-    .unwrap();
-    env1.attach_signature(z32::encode(&owner_key.sign(&bytes1).to_bytes())).unwrap();
-    let rec1 = env1.record_id().unwrap();
-    let env1_json = env1.to_json().unwrap();
-
-    let (mut env2, bytes2) = Envelope::unsigned(
-        RecordDraft {
-            version: listing::LISTING_VERSION,
-            record_type: record::RECORD_LISTING.to_string(),
-            subject: issuer.clone(),
-            payload: json!({
-                "listing_id": lid,
-                "slug": slug,
-                "title": "Hedge trimming v2",
-                "summary": "Neat hedges, fortnightly.",
-                "categories": ["gardening"],
-                "conversation_address": "did:key:zConv",
-                "status": "active",
-                "booking": {
-                    "mode": "enquiry",
-                    "lead_time_secs": 0,
-                    "cancellation_window_secs": 0,
-                    "max_per_booking": 1,
-                },
-            }),
-            expires_at_secs: None,
-            supersedes: Some(rec1.clone()),
-        },
-        issuer,
         None,
+    );
+
+    let (rec2, env2_json) = signed_canned_listing(
+        slug,
+        "Hedge trimming v2",
+        "Neat hedges, fortnightly.",
         CANNED_ISSUED_AT_SECS + 10,
-    )
-    .unwrap();
-    env2.attach_signature(z32::encode(&owner_key.sign(&bytes2).to_bytes())).unwrap();
-    let rec2 = env2.record_id().unwrap();
-    let env2_json = env2.to_json().unwrap();
+        Some(rec1.clone()),
+    );
 
     let hit1 = json!({
         "listing_id": lid,

@@ -7,8 +7,8 @@ use syneroym_roym_core::{
 };
 
 use super::helpers::{
-    FakeProxy, build_max_evidence, canned_search_hit, canned_search_response, sign_test_listing,
-    sign_test_listing_with_issuer,
+    FakeProxy, build_max_evidence, canned_search_hit, canned_search_response,
+    sign_max_payload_listing_with_issuer, sign_test_listing,
 };
 use crate::{FindError, Source, find, gather::MAX_SEARCH_REPLY_BYTES};
 
@@ -181,7 +181,7 @@ async fn fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read() {
 
     let mut hits = Vec::new();
     for i in 0..50 {
-        let (listing_id, record_id, envelope) = sign_test_listing_with_issuer(
+        let (listing_id, record_id, envelope) = sign_max_payload_listing_with_issuer(
             &issuer_key,
             &issuer_did,
             &format!("max-slug-{i}"),
@@ -193,6 +193,11 @@ async fn fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read() {
     }
 
     let resp_text = canned_search_response(hits, true);
+    println!(
+        "50-hit response size: {} bytes (cap: {} bytes)",
+        resp_text.len(),
+        MAX_SEARCH_REPLY_BYTES
+    );
     assert!(resp_text.len() <= MAX_SEARCH_REPLY_BYTES, "response size {} > 8 MiB", resp_text.len());
 
     let source = Source { did: "did:key:s1".to_string(), pinned_issuer: Some(issuer_did) };
