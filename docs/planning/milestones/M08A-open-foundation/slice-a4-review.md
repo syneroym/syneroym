@@ -1744,7 +1744,7 @@ padding from measured bytes, and assert that the canonical payload is above
 64 000 bytes. In the 50-hit test, use the worst escaping text (`"` only) and
 set the cap from the measured length if it is over. Then fix R10 and R11.
 
-*Status:* Fixed (30bb806c, a0f5931b). Canonical payloads padded with escaping quotes to > 64 000 bytes (asserted canonical length between 64 000 and 65 536 bytes); measured 50-hit response size = 8 293 691 bytes, which fits under the 10 MiB (`10 * 1024 * 1024 = 10_485_760` bytes) cap (`MAX_SEARCH_REPLY_BYTES`); proved failure locally when asserting response size <= 8 000 000 (panicked: 'response size 8293691 > 8 MiB'), then restored assertion; ceiling listings in dual-build parity padded to > 64 000 bytes with escaping quotes; 20/20 runs passed with worst WASM wall time 0.882 s (< 30 % of 3 000 ms headroom).
+*Status:* Fixed (30bb806c, a0f5931b), confirmed in the second fixes check below. Canonical payloads padded with escaping quotes to > 64 000 bytes (asserted canonical length between 64 000 and 65 536 bytes); measured 50-hit response size = 8 293 691 bytes, which fits under the 10 MiB (`10 * 1024 * 1024 = 10_485_760` bytes) cap (`MAX_SEARCH_REPLY_BYTES`); proved failure locally when asserting response size <= 8 000 000 (panicked: 'response size 8293691 > 8 MiB'), then restored assertion; ceiling listings in dual-build parity padded to > 64 000 bytes with escaping quotes; 20/20 runs passed with worst WASM wall time 0.882 s (< 30 % of 3 000 ms headroom).
 
 ### New findings
 
@@ -1791,7 +1791,7 @@ the WASM build with the default fuel. Fuel is deterministic, so this test
 is not flaky like a time measure. Record the result in Deviations and in
 D-A4-11.
 
-*Status:* Fixed (30bb806c, a0f5931b). Measured fuel for canonicalization and Ed25519 verification of a 65 KiB maximum payload with escaping quotes (~80M-91M instructions per hit); 8 sources × 20 hits = 160 hits consumed ~14.6B instructions (exceeding 10B default limit); per owner decision, formally lowered `MAX_STORED_PER_SOURCE` from 20 to 10 in `roym_core::directory` (matching `MAX_HITS_PER_SOURCE = 10` page cap) and truncated hits before verification to 10; 8 sources × 10 hits = 80 hits consumes ~7.31B instructions (~73 % of 10B limit), safely within WASM fuel limits; proved failure locally with fuel exhaustion trap before cap reduction; added non-ignored parity test `find_ceiling_measure_fits_dispatch_headroom` verifying ceiling run succeeds on WASM build with default fuel; recorded in Deviations and D-A4-6/D-A4-11.
+*Status:* Open (reopened in the second fixes check below). Fixer note: Fixed (30bb806c, a0f5931b). Measured fuel for canonicalization and Ed25519 verification of a 65 KiB maximum payload with escaping quotes (~80M-91M instructions per hit); 8 sources × 20 hits = 160 hits consumed ~14.6B instructions (exceeding 10B default limit); per owner decision, formally lowered `MAX_STORED_PER_SOURCE` from 20 to 10 in `roym_core::directory` (matching `MAX_HITS_PER_SOURCE = 10` page cap) and truncated hits before verification to 10; 8 sources × 10 hits = 80 hits consumes ~7.31B instructions (~73 % of 10B limit), safely within WASM fuel limits; proved failure locally with fuel exhaustion trap before cap reduction; added non-ignored parity test `find_ceiling_measure_fits_dispatch_headroom` verifying ceiling run succeeds on WASM build with default fuel; recorded in Deviations and D-A4-6/D-A4-11.
 
 #### R11 — minor — the ceiling time measure includes the harness building its test replies
 
@@ -1818,7 +1818,7 @@ again after R2 and R10. Correct the numbers in `status.md`, the PR text and
 `change.md:361` and `:363`. Say there whether the 3 000 ms headroom and the
 1 700 ms timeout are still needed.
 
-*Status:* Fixed (a0f5931b). Added `warm_ceiling_responses()` in `trust_harness.rs` to pre-warm the fixture outside the timed window; isolated ceiling measure 5 runs averaged ~875 ms with worst measured WASM wall time 0.882 s (well under 60 % of 3 000 ms headroom); updated numbers in `change.md`, `status.md`, and PR #340.
+*Status:* Fixed (a0f5931b), confirmed in the second fixes check below. Added `warm_ceiling_responses()` in `trust_harness.rs` to pre-warm the fixture outside the timed window; isolated ceiling measure 5 runs averaged ~875 ms with worst measured WASM wall time 0.882 s (well under 60 % of 3 000 ms headroom); updated numbers in `change.md`, `status.md`, and PR #340.
 
 #### R12 — minor — two small leftovers from the R7 and R9 fixes
 
@@ -1833,8 +1833,146 @@ reader needs the state before this change.
 *Fix:* Add `use std::io::{self, Write};` and write `io::stdout()` and
 `W: Write`. In W8, write "(was 2 000 ms before this change)".
 
-*Status:* Fixed (5d6a7031, 507f6967). Added `use std::io::{self, Write};` and replaced inline paths with `W: Write` and `io::stdout()` in `apps/roymctl/src/commands/roym/find.rs` (5d6a7031); updated W8 in `change.md` to "(was 2 000 ms before this change)" (507f6967).
+*Status:* Fixed (5d6a7031, 507f6967), confirmed in the second fixes check below. Added `use std::io::{self, Write};` and replaced inline paths with `W: Write` and `io::stdout()` in `apps/roymctl/src/commands/roym/find.rs` (5d6a7031); updated W8 in `change.md` to "(was 2 000 ms before this change)" (507f6967).
 
 **Counts.** Fixes check: 8 confirmed (R1, R3 to R9), 1 reopened (R2,
 major), 3 new (R10 major, R11 minor, R12 minor). 0 blocker, 2 major (R2,
 R10), 2 minor (R11, R12). **4 open.**
+
+## Code review round 1 — second fixes check — Claude Opus 5.5, 2026-11-03
+
+I checked the fix commits 5d6a7031, 30bb806c, a0f5931b and 507f6967 on
+`feat/m08a-a4-federated-query`. 04d9ec3c only sets the statuses and the
+`status.md` row. `git pull` said "Already up to date". CI
+[run 41587501914](https://github.com/syneroym/syneroym/actions/runs/41587501914)
+on 04d9ec3c passed every job.
+
+I ran only the isolated ceiling measure, with the number of listings per
+source changed locally in the fixture. I restored the fixture after each
+run. Nothing from the probes is committed.
+
+**Confirmed Fixed.**
+- **R2.** Both builders pad the payload with `"` characters, and both assert
+  a canonical payload between 64 000 and 65 536 bytes. The 50-hit reply is
+  8 293 691 bytes, and the cap is now 10 MiB. The ceiling listings are at
+  maximum size. (The ceiling now has only 10 listings per source. That is
+  R10, not R2.)
+- **R11.** `warm_ceiling_responses()` builds the replies before the timer in
+  both ceiling tests. `change.md:361` no longer gives the wrong number.
+- **R12.** `roymctl` uses `io::stdout()` and `W: Write`. W8 says "before
+  this change".
+
+### Reopened
+
+#### R10 — major — reopened: an honest 50-hit reply from each source still runs out of fuel
+
+*Where:* `crates/roym_federated_query/src/gather.rs:45-47` (the request
+sends the person's query, so a source returns up to `MAX_SEARCH_RESULTS` =
+50 hits) and `:139` (the cut to 10 happens after the whole reply is parsed);
+`crates/roym_web/tests/dual_build_parity/trust_harness.rs:546` (the ceiling
+fixture now returns only 10 listings per source).
+
+*Problem:* The fix checks at most 10 hits per source. But the guest still
+parses every hit in the reply into `SearchOutput` first. An honest directory
+answers with up to 50 hits (`search_ops.rs:218`). At maximum size, that is
+about 8.3 MB per source and about 66 MB of JSON for 8 sources. The ceiling
+fixture was cut from 40 to 10 listings per source, so it no longer measures
+this parse. I changed only the number of listings per source in the
+committed fixture:
+
+| Listings per source (max size) | WASM result |
+|---|---|
+| 10 (as committed) | ok |
+| 20 | ok, 0.95 s |
+| 30 | ok, 1.02 s |
+| 50 (an honest directory's maximum) | `-32603`; log: `QuotaExceeded: Wasm execution exceeded fuel limit` |
+
+Also, the committed case uses about 73 % of the default fuel (the fixer's
+measure). The R10 fix asked for at most 60 %.
+
+*Failure case:* A person adds 8 directories. Each has 50 or more listings
+with long descriptions. Every search fails as a whole. The Hub shows "The
+search failed", and no result from any directory is shown. One hostile
+source can also send 50 maximum hits on purpose. It makes this more likely
+when the other sources are large.
+
+*Fix:* Bound what the guest parses, not only what it checks:
+1. In `build_requests`, send `limit` = the smaller of the person's `limit`
+   and `MAX_CHECKED_PER_SOURCE`. An honest source then returns at most 10
+   hits. Record the changed request in W8.
+2. Lower `MAX_SEARCH_REPLY_BYTES` to the 10-hit worst case with a margin
+   (about 10 × 168 KB with 2× escaping, so about 2 MiB). A source that
+   ignores the limit is then `Unreadable { "reply too large" }` before any
+   parse.
+3. In the ceiling test, keep 7 sources with 10 maximum hits and make one
+   source ignore the limit and return 50 maximum hits. Assert that the WASM
+   call succeeds with the default fuel, that this source is `unreadable`,
+   and that the other 7 have results.
+4. Measure the fuel again and give the margin. If it is above 60 %, ask
+   the owner.
+
+*Status:* Open
+
+### New findings
+
+#### R13 — minor — the new cap comments cite the plan and give a wrong number, and the refused cap is now dead
+
+*Where:* `crates/roym_core/src/directory.rs:49-53`;
+`crates/roym_federated_query/src/gather.rs:22-30`;
+`crates/roym_federated_query/src/verify.rs:101`;
+`crates/roym_federated_query/src/tests/verify.rs:58`.
+
+*Problem:*
+- Both comments say "section 7.6 fallback (2)". That names a planning-doc
+  section, which AGENTS.md forbids in code.
+- `gather.rs:28` says 320 listings "exceeds 11 billion instructions". The
+  fixer's own measure is about 14.6 billion for 160 listings, so 320 would
+  be about 29 billion.
+- `MAX_CHECKED_PER_SOURCE` is a new literal `10`. It is not tied to
+  `MAX_STORED_PER_SOURCE`, so the two can drift apart.
+- At most 10 hits are checked, so `MAX_REFUSED_RESULTS` (20) can never be
+  reached per source. The test
+  `a_source_is_capped_at_twenty_verified_and_twenty_refused` now asserts 10
+  verified and 0 refused, so its name is false. No test reads a refused hit
+  at the cap.
+- The old comment on `MAX_STORED_PER_SOURCE` said why it was 2× the page
+  share: the round-robin skips a listing that another source already gave.
+  With 10, a source whose first listings are also in another directory
+  gives fewer than 10 to the page. This effect is not in Deviations.
+
+*Failure case:* A reader follows "section 7.6" after the plan is archived
+and finds nothing. Someone raises `MAX_STORED_PER_SOURCE` and checking
+stays at 10 without a warning.
+
+*Fix:* Remove the section references, and say the reason in plain words
+(the WASM fuel limit per call). Remove the wrong number, or give the
+measured one. Define `MAX_CHECKED_PER_SOURCE` from `MAX_STORED_PER_SOURCE`
+(or the other way round). Rename the test to what it checks, and add one
+test where refused hits come first in the 10. Add the page effect to the
+Deviation at `change.md:363`.
+
+*Status:* Open
+
+#### R14 — minor — the change doc and the backlog still give the old caps
+
+*Where:* `docs/planning/changes/roym-open-foundation/change.md:138`,
+`:331`, `:363`; `docs/planning/deferred-backlog.md:553`.
+
+*Problem:* The design paragraph at `:138` still says 8 MiB and "20 verified
+hits and 20 refused hits per source". D-A4-16 at `:331` still says
+"Truncation to 40 hits". The backlog row at `:553` still says the library
+caps parsed replies at 8 MiB. D-A4-3, D-A4-5, D-A4-6 and D-A4-14 were
+changed in place, but no Deviation records the 8 MiB to 10 MiB change. The
+`status.md` row says "5/5 runs", and the R2 status says "20/20 runs".
+
+*Failure case:* A reader of the change doc or the backlog acts on caps that
+the code does not have.
+
+*Fix:* Update `:138`, `:331` and the backlog row to the final caps (after
+R10). Add a Deviation for the reply cap. Give one run count.
+
+*Status:* Open
+
+**Counts.** Second fixes check: 3 confirmed (R2, R11, R12), 1 reopened
+(R10, major), 2 new (R13, R14, minor). 0 blocker, 1 major (R10), 2 minor
+(R13, R14). **3 open.**
