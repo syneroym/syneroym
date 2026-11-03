@@ -35,7 +35,7 @@ use syneroym_roym_core::{
     record::Envelope,
     services,
     signing::{self, CertificateError},
-    transaction::{AgreedTerms, DealRole, ReceiptHalf},
+    transaction::{AgreedTerms, DealRole, EVENT_BOOKING, EVENT_CARD, ReceiptHalf},
 };
 
 use crate::api;
@@ -392,6 +392,32 @@ pub(crate) async fn put_row<H: AppHost, T: Serialize>(
     .map_err(|e| e.to_string())
 }
 
+pub(crate) async fn put_card<H: AppHost>(host: &H, card: &CardRow) -> Result<(), String> {
+    put_row(host, CARDS, &card.message_id, card).await?;
+    // The row is stored either way; a missed event only delays a client's refresh.
+    let _ = host
+        .record_event(
+            EVENT_CARD.to_string(),
+            card.conversation.clone(),
+            Some(card.message_id.clone()),
+        )
+        .await;
+    Ok(())
+}
+
+pub(crate) async fn put_booking<H: AppHost>(host: &H, booking: &BookingRow) -> Result<(), String> {
+    put_row(host, BOOKINGS, &booking.agreement, booking).await?;
+    // The row is stored either way; a missed event only delays a client's refresh.
+    let _ = host
+        .record_event(
+            EVENT_BOOKING.to_string(),
+            booking.conversation.clone(),
+            Some(booking.agreement.clone()),
+        )
+        .await;
+    Ok(())
+}
+
 pub(crate) async fn get_row<T: for<'a> Deserialize<'a>, H: AppHost>(
     host: &H,
     collection: &str,
@@ -482,7 +508,7 @@ pub(crate) async fn file_own_card<H: AppHost>(
         agreement_payment_methods: Vec::new(),
         version_count,
     };
-    put_row(host, CARDS, message_id, &card_row).await
+    put_card(host, &card_row).await
 }
 
 /// Sends a record as a card on `conversation`, then files this node's own

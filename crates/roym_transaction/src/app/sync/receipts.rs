@@ -12,8 +12,9 @@ use syneroym_roym_core::{
 
 use super::{
     super::{
-        AGREEMENTS, AgreementRow, CARDS, CardRow, FULFILMENTS, FulfilmentsRow, PAYMENTS, PROGRESS,
-        PaymentsRow, ProgressRow, QUOTE_HISTORY, booking_ops, get_bytes, get_row, put_row,
+        AGREEMENTS, AgreementRow, CardRow, FULFILMENTS, FulfilmentsRow, PAYMENTS, PROGRESS,
+        PaymentsRow, ProgressRow, QUOTE_HISTORY, booking_ops, get_bytes, get_row, put_card,
+        put_row,
     },
     FileCardResult, refuse_card,
 };
@@ -123,7 +124,7 @@ pub(crate) async fn file_progress_card<H: AppHost>(
     row.verified = true;
     row.record_id = v.record_id;
     row.data = serde_json::to_value(p).ok();
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,
         refused: false,
@@ -206,7 +207,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
             row.record_id = Some(rec_id);
             row.reason = Some("a second payment request for one agreement".to_string());
             row.data = serde_json::to_value(p).ok();
-            put_row(host, CARDS, msg_id, &row).await?;
+            put_card(host, &row).await?;
             return Ok(FileCardResult {
                 filed: true,
                 refused: false,
@@ -230,7 +231,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
     row.verified = true;
     row.record_id = Some(rec_id);
     row.data = serde_json::to_value(p).ok();
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,
         refused: false,
@@ -307,7 +308,7 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     row.verified = true;
     row.record_id = v.record_id.clone();
     row.data = serde_json::to_value(p).ok();
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
 
     if owner == agr.quote_author_did && p.role == DealRole::Counterparty {
         let _ = booking_ops::transition(
@@ -420,7 +421,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     row.verified = true;
     row.record_id = Some(rec_id);
     row.data = serde_json::to_value(p).ok();
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
 
     if owner == agr.quote_author_did && p.role == DealRole::Counterparty {
         let _ = booking_ops::transition(

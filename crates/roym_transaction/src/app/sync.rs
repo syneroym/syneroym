@@ -21,7 +21,7 @@ use syneroym_roym_core::{
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTE_HISTORY, REQUEST_HISTORY, SYNC_STATE,
     SyncStateRow, agreement_ops::maybe_countersign, ensure_collections, get_bytes, get_row,
-    put_row, quote_ops::store_received_quote, request_ops::store_received_request,
+    put_card, put_row, quote_ops::store_received_quote, request_ops::store_received_request,
 };
 
 #[derive(Debug, Deserialize)]
@@ -356,7 +356,7 @@ async fn file_incoming_card<H: AppHost>(
     row.version = card.version;
     row.known = card::is_known_card(&card.card_type, card.version);
     if !row.known {
-        put_row(host, CARDS, &msg_id, &row).await?;
+        put_card(host, &row).await?;
         return Ok(FileCardResult {
             filed: true,
             refused: false,
@@ -372,12 +372,12 @@ async fn file_incoming_card<H: AppHost>(
 /// Stores `row` with `reason` and reports it as filed-but-refused.
 pub(crate) async fn refuse_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
+    _msg_id: &str,
     mut row: CardRow,
     reason: impl Into<String>,
 ) -> Result<FileCardResult, String> {
     row.reason = Some(reason.into());
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,
         refused: true,
@@ -419,7 +419,7 @@ async fn file_request_card<H: AppHost>(
     row.issuer = v.issuer;
     row.record_id = v.record_id;
     row.revocation_status = v.revocation_status;
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,
         refused: false,
@@ -484,7 +484,7 @@ async fn file_quote_card<H: AppHost>(
     row.issuer = v.issuer;
     row.record_id = v.record_id;
     row.revocation_status = v.revocation_status;
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,
         refused: false,
@@ -575,7 +575,7 @@ async fn file_agreement_receipt_card<H: AppHost>(
     row.record_id = v.record_id;
     row.revocation_status = v.revocation_status;
     let countersigned = maybe_countersign(host, &mut row_agr, &qv, now, owner).await?;
-    put_row(host, CARDS, msg_id, &row).await?;
+    put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,
         refused: false,
