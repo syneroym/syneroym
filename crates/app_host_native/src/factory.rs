@@ -12,7 +12,9 @@ use dashmap::DashMap;
 use syneroym_app_host::{ConversationSink, MessageSink, types::messaging::MessagingError};
 use syneroym_app_orchestration::LogicalResolver;
 use syneroym_conversation::ConversationService;
-use syneroym_core::{local_registry::EndpointRegistry, record_signer::NodeRecordSigner};
+use syneroym_core::{
+    event_bus::EventBus, local_registry::EndpointRegistry, record_signer::NodeRecordSigner,
+};
 use syneroym_data_blob::traits::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
@@ -70,6 +72,7 @@ pub struct NativeHostFactory {
     record_signer: OnceLock<Arc<NodeRecordSigner>>,
     declares_conversation_sink: bool,
     call_all: OnceLock<CallAll>,
+    event_bus: OnceLock<Arc<EventBus>>,
 }
 
 /// Hand-written, not derived: `StorageProvider` has no `Debug` supertrait,
@@ -119,6 +122,7 @@ impl NativeHostFactory {
             record_signer: OnceLock::new(),
             declares_conversation_sink,
             call_all: OnceLock::new(),
+            event_bus: OnceLock::new(),
         });
         // The factory registers itself as this service's conversation
         // notification target, so the delivery worker wakes a natively-
@@ -147,6 +151,13 @@ impl NativeHostFactory {
     #[must_use]
     pub fn with_call_all(self: Arc<Self>, call_all: CallAll) -> Arc<Self> {
         let _ = self.call_all.set(call_all);
+        self
+    }
+
+    /// Attaches the shared `EventBus`.
+    #[must_use]
+    pub fn with_event_bus(self: Arc<Self>, event_bus: Arc<EventBus>) -> Arc<Self> {
+        let _ = self.event_bus.set(event_bus);
         self
     }
 
@@ -313,6 +324,7 @@ impl NativeHostFactory {
         .with_conversation(Arc::downgrade(&self.conversation) as Weak<dyn ConversationHost>)
         .with_websocket_senders(self.websocket_senders.clone())
         .with_record_signer(self.record_signer.get().cloned())
+        .with_event_bus(self.event_bus.get().cloned())
     }
 
     /// Private, and deliberately not `pub`: nothing an app or an embedder can

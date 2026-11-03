@@ -23,6 +23,7 @@ use syneroym_app_orchestration::LogicalResolver;
 use syneroym_chunk_transfer::{self as chunk_transfer, ChunkSink};
 use syneroym_core::{
     config::SubstrateConfig,
+    event_bus::EventBus,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     record_signer::NodeRecordSigner,
     streaming::StreamDirection,
@@ -42,6 +43,7 @@ use syneroym_wit_interfaces::{
         ArtifactSource, DeployManifest, ServiceType,
     },
     conversation_host::syneroym::conversation::conversation,
+    events_host::syneroym::events::events,
     host::syneroym::{
         app_config::app_config,
         blob_store::blob_store,
@@ -154,6 +156,8 @@ pub struct AppSandboxEngine {
     pub conversation: OnceLock<Weak<dyn syneroym_rpc::ConversationHost>>,
     /// The node's record signer (`syneroym:signing`).
     pub record_signer: OnceLock<Arc<NodeRecordSigner>>,
+    /// The node's event bus (`syneroym:events`).
+    pub event_bus: OnceLock<Arc<EventBus>>,
     /// Live guest-delivery subscriptions, keyed `(service_id,
     /// namespaced_topic)`. Dropping an entry unsubscribes from the broker
     /// (see `SubscriptionHandle::drop`).
@@ -459,6 +463,10 @@ impl AppSandboxEngine {
     /// implement it when a deployed policy opts in.
     const AUTHORIZER_INTERFACE: &str = "syneroym:data-layer/authorizer@0.1.0";
 
+    pub fn set_event_bus(&self, bus: Arc<EventBus>) -> Result<(), Arc<EventBus>> {
+        self.event_bus.set(bus)
+    }
+
     /// Total component instantiations this engine has performed,
     /// process-lifetime. Tests assert on a **delta**
     /// measured around the request under test, never this absolute value --
@@ -564,7 +572,8 @@ impl AppSandboxEngine {
         .with_websocket_senders(self.websocket_senders())
         .with_record_signer(self.record_signer.get().cloned())
         .with_invocation_origin(opts.invocation_origin)
-        .with_call_all(self.call_all.clone());
+        .with_call_all(self.call_all.clone())
+        .with_event_bus(self.event_bus.get().cloned());
 
         debug!("created wasi ctx and host state");
 

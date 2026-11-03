@@ -548,11 +548,7 @@ async fn test_wasm_quotas() {
         guest_websocket_permits: Arc::new(DashMap::new()),
         max_concurrent_websockets_per_service: 10,
         max_sse_subscribers_per_service: 100,
-        websocket_senders: {
-            let ws = OnceLock::new();
-            let _ = ws.set(WebSocketSenders::new());
-            ws
-        },
+        websocket_senders: OnceLock::from(WebSocketSenders::new()),
         _shutdown_tx: None,
         key_store: Arc::new(KeyStore::new()),
         storage_provider: Arc::new(SqliteStorageProvider::new(env::temp_dir(), false).unwrap()),
@@ -562,6 +558,7 @@ async fn test_wasm_quotas() {
         service_proxy: OnceLock::new(),
         record_signer: OnceLock::new(),
         conversation: OnceLock::new(),
+        event_bus: OnceLock::new(),
         subscriptions: DashMap::new(),
         endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
         logical_resolver: syneroym_app_orchestration::empty_resolver(),
@@ -696,11 +693,7 @@ fn test_app_engine(storage_provider: Arc<dyn StorageProvider>) -> AppSandboxEngi
         guest_websocket_permits: Arc::new(DashMap::new()),
         max_concurrent_websockets_per_service: 10,
         max_sse_subscribers_per_service: 100,
-        websocket_senders: {
-            let ws = OnceLock::new();
-            let _ = ws.set(WebSocketSenders::new());
-            ws
-        },
+        websocket_senders: OnceLock::from(WebSocketSenders::new()),
         _shutdown_tx: None,
         key_store: Arc::new(KeyStore::new()),
         storage_provider,
@@ -710,6 +703,7 @@ fn test_app_engine(storage_provider: Arc<dyn StorageProvider>) -> AppSandboxEngi
         service_proxy: OnceLock::new(),
         record_signer: OnceLock::new(),
         conversation: OnceLock::new(),
+        event_bus: OnceLock::new(),
         subscriptions: DashMap::new(),
         endpoint_registry: EndpointRegistry::new_mock(Arc::new(MockStorage::new())),
         logical_resolver: syneroym_app_orchestration::empty_resolver(),

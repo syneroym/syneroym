@@ -18,6 +18,7 @@ use serde_json::Value;
 use syneroym_app_host::types::http::FrameKind as AppFrameKind;
 use syneroym_app_orchestration::{AppInstanceId, LogicalResolver, LogicalServiceName, TopologyKey};
 use syneroym_core::{
+    event_bus::EventBus,
     local_registry::SubstrateEndpoint,
     record_signer::{
         CallerBinding, NodeRecordSigner, SigningError, SigningIdentity, SigningPrincipal,
@@ -398,6 +399,8 @@ pub struct HostState {
     /// and `None` is the honest state for a node that never wired one
     /// (every existing `HostState::new` call site, all of them tests).
     pub record_signer: Option<Arc<NodeRecordSigner>>,
+    /// The node's event bus (`syneroym:events`).
+    pub event_bus: Option<Arc<EventBus>>,
     /// Tracks execution time and wait credit for epoch deadline callbacks.
     pub(crate) epoch: EpochBudget,
     /// Limits and waiters for batched outbound calls.
@@ -465,6 +468,7 @@ impl HostState {
             conversation: empty_conversation_host(),
             websocket_senders: WebSocketSenders::new(),
             record_signer: None,
+            event_bus: None,
             epoch: EpochBudget::new(CallAllLimits::default().total_timeout),
             call_all: CallAll::default(),
         }
@@ -486,6 +490,12 @@ impl HostState {
     #[must_use]
     pub fn with_record_signer(mut self, signer: Option<Arc<NodeRecordSigner>>) -> Self {
         self.record_signer = signer;
+        self
+    }
+
+    #[must_use]
+    pub fn with_event_bus(mut self, event_bus: Option<Arc<EventBus>>) -> Self {
+        self.event_bus = event_bus;
         self
     }
 
@@ -635,6 +645,7 @@ pub use call_all_limits::{CallAll, CallAllLimits, MIN_BATCH_ALLOWANCE};
 mod capabilities_blob;
 mod capabilities_call_all;
 pub(crate) use capabilities_call_all::WaitCredit;
+mod capabilities_events;
 mod capabilities_messaging;
 mod capabilities_proxy;
 #[cfg(test)]

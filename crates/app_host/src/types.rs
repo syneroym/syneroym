@@ -49,6 +49,12 @@ pub mod vault {
     pub use syneroym_wit_interfaces::vault::syneroym::vault::vault::VaultError;
 }
 
+pub mod events {
+    pub use syneroym_wit_interfaces::events::syneroym::events::events::{
+        Event, EventsError, ReadResult,
+    };
+}
+
 /// Mirrors `syneroym:http/incoming-handler@0.1.0`'s records field for
 /// field, **in the same order** -- the dynamic `Val::Record` the WASM
 /// build marshals from these must match the declared field order.

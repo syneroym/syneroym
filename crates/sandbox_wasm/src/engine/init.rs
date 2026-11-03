@@ -253,6 +253,7 @@ impl AppSandboxEngine {
             service_proxy: OnceLock::new(),
             conversation: OnceLock::new(),
             record_signer: OnceLock::new(),
+            event_bus: OnceLock::new(),
             subscriptions: DashMap::new(),
             endpoint_registry,
             logical_resolver,
@@ -408,6 +409,7 @@ impl AppSandboxEngine {
         conversation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         signing::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         invocation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        events::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 

@@ -6,7 +6,7 @@ use std::{fmt, sync::Arc};
 
 use syneroym_app_host::{
     AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
-    AppInvocation, AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
+    AppEvents, AppInvocation, AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
@@ -18,6 +18,7 @@ use syneroym_app_host::{
             CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult, RawQueryResult,
             RecordReadValue, RecordWriteValue, SqlValue,
         },
+        events::{EventsError, ReadResult},
         http::FrameKind,
         invocation::CallerOrigin,
         messaging::MessagingError,
@@ -708,5 +709,29 @@ impl AppInvocation for NativeAppHost {
                 _ => CallerOrigin::Anonymous,
             },
         }
+    }
+}
+
+impl AppEvents for NativeAppHost {
+    async fn record_event(
+        &self,
+        kind: String,
+        subject: String,
+        item: Option<String>,
+    ) -> Result<String, EventsError> {
+        let state = self.0.state_mutex().await.lock().await;
+        state.record_event(kind, subject, item).map_err(convert::events_error_guest)
+    }
+
+    async fn read_events(
+        &self,
+        after: Option<String>,
+        limit: u32,
+    ) -> Result<ReadResult, EventsError> {
+        let state = self.0.state_mutex().await.lock().await;
+        state
+            .read_events(after, limit)
+            .map(convert::read_result_guest)
+            .map_err(convert::events_error_guest)
     }
 }

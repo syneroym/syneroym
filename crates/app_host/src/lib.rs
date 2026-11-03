@@ -27,6 +27,7 @@ use types::{
         GroupInfo, HistoryPage, Message, Transcript,
     },
     data_layer::*,
+    events::{EventsError, ReadResult},
     http::FrameKind,
     invocation::CallerOrigin,
     messaging::MessagingError,
@@ -47,6 +48,7 @@ pub trait AppHost:
     + AppSigning
     + AppInvocation
     + AppWebSocket
+    + AppEvents
     + Send
     + Sync
 {
@@ -62,6 +64,7 @@ impl<T> AppHost for T where
         + AppSigning
         + AppInvocation
         + AppWebSocket
+        + AppEvents
         + Send
         + Sync
 {
@@ -140,6 +143,21 @@ pub trait AppWebSocket {
         frame: Vec<u8>,
         kind: FrameKind,
     ) -> impl Future<Output = Result<(), String>> + Send;
+}
+
+/// Mirrors `syneroym:events/events@0.1.0`.
+pub trait AppEvents {
+    fn record_event(
+        &self,
+        kind: String,
+        subject: String,
+        item: Option<String>,
+    ) -> impl Future<Output = Result<String, EventsError>> + Send;
+    fn read_events(
+        &self,
+        after: Option<String>,
+        limit: u32,
+    ) -> impl Future<Output = Result<ReadResult, EventsError>> + Send;
 }
 
 /// Mirrors `syneroym:data-layer/store@0.1.0`, function for function.

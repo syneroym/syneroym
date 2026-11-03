@@ -261,8 +261,8 @@ pub(crate) mod tests {
     };
 
     use syneroym_app_host::{
-        AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppInvocation, AppMessaging,
-        AppProxy, AppSigning, AppVault, AppWebSocket,
+        AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppEvents, AppInvocation,
+        AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
         types::{
             app_config::ConfigError,
             blob_store::BlobError,
@@ -274,6 +274,7 @@ pub(crate) mod tests {
                 CollectionSchema, DataLayerError, Mutation, QueryOptions, QueryResult,
                 RecordReadValue,
             },
+            events::{EventsError, ReadResult},
             http::FrameKind,
             invocation::CallerOrigin,
             messaging::MessagingError,
@@ -689,6 +690,25 @@ pub(crate) mod tests {
             _kind: FrameKind,
         ) -> Result<(), String> {
             unimplemented!()
+        }
+    }
+
+    impl AppEvents for TestHost {
+        async fn record_event(
+            &self,
+            _kind: String,
+            _subject: String,
+            _item: Option<String>,
+        ) -> Result<String, EventsError> {
+            Ok("0000000000000000-1".to_string())
+        }
+
+        async fn read_events(
+            &self,
+            _after: Option<String>,
+            _limit: u32,
+        ) -> Result<ReadResult, EventsError> {
+            Ok(ReadResult::Events((Vec::new(), "0000000000000000-1".to_string())))
         }
     }
 
