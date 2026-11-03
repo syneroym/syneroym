@@ -448,7 +448,7 @@ Checked the fold of round 1 (`5a220d04`, closed in `6deac94c`) against the
 plan diff and the code on `feat/m08a-a5-event-feed`. I read code and did not
 run it.
 
-**Summary:** 0 blocker, 0 major, 1 minor, 1 item. Open.
+**Summary:** 0 blocker, 0 major, 1 minor, 1 item. Fixed (cab51d85).
 
 **Found correct (round 1 fixes, P1 to P12).** Each fix is in the plan and
 matches the code that I read:
@@ -485,4 +485,4 @@ matches the code that I read:
   tests; or (b) `conn_is_free()` retries `try_lock` for a short fixed time (for
   example 50 ms) before it reports "not free". Option (a) keeps the check
   exact. Correct the "never fails by chance" sentence to match.
-- *Status:* Open.
+- *Status:* Fixed (cab51d85). Option (a): probe tests await each service call before the next and never spawn or join calls; the plan names the `spawn_blocking` sites, drops the "never fails by chance" claim, and says not to retry `try_lock`.
