@@ -1502,7 +1502,12 @@ or milestone and slice ids in these files. Link ADRs only.
   (`/_syneroym/events`)" part: the request, the four frame types, the cursor
   and `Last-Event-ID`, the error codes of W1 in their order, and that the
   feed needs the gateway in `login` identity mode (in `open` and `fixed` mode
-  every request gets `401`). The host interface list: add `syneroym:events`. (A7 writes the full client guide; A5 writes the facts.)
+  every request gets `401`). Also the connection limit: the gateway speaks
+  HTTP/1.1 only, a browser allows about 6 connections per host across all its
+  tabs, and each open feed holds one of them for as long as it is open. So a
+  browser client should keep a feed open only while its page is visible, as
+  the Hub does (D-A5-12), and reopen it with `?after=<last cursor>` after an
+  error status. The host interface list: add `syneroym:events`. (A7 writes the full client guide; A5 writes the facts.)
 - [docs/roym-integrated-experience-spec.md](../../../roym-integrated-experience-spec.md):
   the Conversation row (:98) and the Transaction row: one line each that the
   service's changes appear on the event feed. Grep "refresh" and "open the
