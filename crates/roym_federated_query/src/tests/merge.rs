@@ -13,7 +13,6 @@ fn test_row(source: &str, listing_id: &str, record_id: &str, issued_at: u64) -> 
         status: "active".to_string(),
         reason: None,
         revocation_status: "valid".to_string(),
-        membership: None,
         issued_at_secs: issued_at,
         received_at_secs: issued_at,
         ..Default::default()

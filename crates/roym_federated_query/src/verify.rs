@@ -6,7 +6,7 @@ use serde::Serialize;
 use syneroym_roym_core::{
     directory::{MAX_REFUSED_RESULTS, MAX_STORED_PER_SOURCE, SearchHit},
     listing::{self, ListingStatus, ListingVerdict},
-    membership::{MembershipEvidence, MembershipVerdict},
+    membership::MembershipEvidence,
 };
 
 use crate::{
@@ -15,6 +15,7 @@ use crate::{
     merge::Row,
 };
 
+/// Membership evidence collected from a verified search hit for retention.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldEvidence {
     pub source: String,
@@ -90,14 +91,9 @@ fn verify_single_source(
             if verified_count >= MAX_STORED_PER_SOURCE {
                 continue;
             }
-            if let Some(row) = build_verified_row(
-                &source,
-                &hit,
-                verdict,
-                now_secs,
-                acc.envelopes_by_record_id,
-                acc.evidence,
-            ) {
+            if let Some(row) =
+                build_verified_row(&source, &hit, verdict, acc.envelopes_by_record_id, acc.evidence)
+            {
                 acc.verified_rows.push(row);
                 verified_count += 1;
             }
@@ -123,7 +119,6 @@ fn build_verified_row(
     source: &Source,
     hit: &SearchHit,
     verdict: ListingVerdict,
-    _now_secs: u64,
     envelopes_by_record_id: &mut BTreeMap<String, String>,
     evidence: &mut Vec<HeldEvidence>,
 ) -> Option<Row> {
@@ -152,11 +147,6 @@ fn build_verified_row(
         status: serde_str(&verdict.status.unwrap_or(ListingStatus::Active)),
         reason: None,
         revocation_status: verdict.revocation_status.unwrap_or_else(|| "unknown".to_string()),
-        membership: if source.pinned_issuer.is_none() {
-            Some(MembershipVerdict::Unknown { reason: "issuer-not-pinned".to_string() })
-        } else {
-            None
-        },
         issued_at_secs: verdict.issued_at_secs.unwrap_or(hit.issued_at_secs),
         received_at_secs: hit.received_at_secs,
         raw_evidence: Some(hit.membership.clone()),

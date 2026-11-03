@@ -15,8 +15,14 @@ use syneroym_roym_core::{
     services,
 };
 
+/// Pre-parse size cap for remote search responses. Derived from 50 max hits ×
+/// (64 KiB payload + 42 KiB maximum credential/decision evidence + envelope
+/// overhead) × 1.15 JSON escape factor ≈ 6.0 MiB + 2 MiB safety margin = 8 MiB.
+/// Checked before JSON-RPC parsing to prevent guest memory exhaustion from
+/// hostile large responses.
 pub const MAX_SEARCH_REPLY_BYTES: usize = 8 * 1024 * 1024;
 
+/// A remote search source with its DID and optional pinned SynOrg issuer DID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Source {
     pub did: String,
@@ -66,12 +72,19 @@ pub async fn execute_and_parse<P: AppProxy>(
         }
     };
 
-    sources
-        .iter()
-        .cloned()
-        .zip(call_results)
-        .map(|(source, res)| parse_single_response(source, res))
-        .collect()
+    let mut outcomes = Vec::with_capacity(sources.len());
+    let mut results_iter = call_results.into_iter();
+    for source in sources.iter().cloned() {
+        let outcome = match results_iter.next() {
+            Some(res) => parse_single_response(source, res),
+            None => SourceOutcome::Error {
+                source,
+                error: SourceError::Unreadable { reason: "no result from host".to_string() },
+            },
+        };
+        outcomes.push(outcome);
+    }
+    outcomes
 }
 
 fn parse_single_response(source: Source, res: Result<String, ProxyError>) -> SourceOutcome {
@@ -114,8 +127,12 @@ fn parse_single_response(source: Source, res: Result<String, ProxyError>) -> Sou
     };
 
     let mut hits = search_output.hits;
+    // Verification cost is what a hostile source controls directly: cap hits
+    // to read at 40 before envelope verification.
     hits.truncate((MAX_STORED_PER_SOURCE + MAX_REFUSED_RESULTS) as usize);
 
+    // A source that returns zero rows can still set this: record the flag
+    // directly as reported by the source.
     SourceOutcome::Success { source, hits, truncated: search_output.truncated }
 }
 
