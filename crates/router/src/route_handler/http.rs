@@ -154,6 +154,7 @@ pub struct HttpHandler {
 mod auth;
 mod blobs;
 mod dispatch;
+mod events;
 mod format;
 mod guest;
 mod parse;
@@ -305,6 +306,10 @@ impl HttpHandler {
 
         let method = req.method().clone();
         let path = req.uri().path().to_string();
+
+        if method == Method::GET && path == syneroym_core::event_bus::EVENT_FEED_PATH {
+            return handler.handle_event_feed(req).await;
+        }
 
         if method == Method::GET
             && let Some(hash) = blob_hash_from_path(&path)

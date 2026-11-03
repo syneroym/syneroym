@@ -312,6 +312,17 @@ async fn read_http_headers(stream: &mut TcpStream, buf: &mut [u8]) -> Result<Hea
     }
 }
 
+pub(crate) fn is_forwarded_syneroym_path(path: &str) -> bool {
+    if !path.starts_with("/_syneroym/") {
+        return false;
+    }
+    if path.starts_with("/_syneroym/session") {
+        return true;
+    }
+    let path_only = path.split('?').next().unwrap_or(path);
+    path_only == syneroym_core::event_bus::EVENT_FEED_PATH
+}
+
 fn resolve_target_host(host_header: &str, path: &str) -> Option<TargetHost> {
     if let Some(t) = parse_target_host(host_header) {
         return Some(t);
@@ -408,7 +419,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<GatewayState>) -> R
 
     let path = req.path.unwrap_or("");
 
-    if path.starts_with("/_syneroym/") && !path.starts_with("/_syneroym/session") {
+    if path.starts_with("/_syneroym/") && !is_forwarded_syneroym_path(path) {
         return write_json_rpc_error(&mut stream, 404, "Not Found").await;
     }
 

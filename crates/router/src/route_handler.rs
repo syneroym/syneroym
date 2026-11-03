@@ -177,7 +177,6 @@ pub struct RouteHandlerInner {
     /// Session revocation store (ADR-0024).
     pub session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
     /// Node-level event feed bus.
-    #[allow(dead_code)]
     pub event_bus: Option<Arc<EventBus>>,
     /// Whether a stream for a service this node does not host is forwarded
     /// to its host (ADR-0002 A1). Only a coordinator forwards; any other
