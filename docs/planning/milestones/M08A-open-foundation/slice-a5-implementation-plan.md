@@ -1007,11 +1007,21 @@ asserts `store.conn_is_free()` (a new `#[cfg(test)]` method on
 `ConversationStore`, `self.conn.try_lock().is_ok()`: the lock is free, so no
 transaction is open on this thread) and then reads `conversation.history` and finds the
 change. If `announce` moved inside a transaction, the probe's `try_lock` fails
-at once, on the same thread, every time. No timing is involved. The tests
-use the default current-thread `#[tokio::test]` runtime. The lock is a
-`std::sync::Mutex` that no code holds across an `.await`, so on one thread no
-other task can hold it while `announce` runs, and the probe never fails by
-chance.
+at once, on the same thread, every time. No timing is involved.
+
+The probe is exact only when no other thread holds the lock while `announce`
+runs. The current-thread `#[tokio::test]` runtime does not stop other OS
+threads. The crate runs some store work on the blocking pool with
+`spawn_blocking` (store open at lib.rs:212; `search`, `transcript_digest`,
+`export_history` and `import_history` at host_impl.rs:392, :415, :428, :441),
+and such a job holds the lock on its own thread. Each of those calls awaits
+its own job before it returns. So the rule for every probe test is: **call the
+service one step at a time and await each call before the next one; never
+spawn a call, and never run two calls at once with `join!` or `select!`.**
+Then no blocking job is running when `announce` runs, and a failed
+`try_lock` can only mean that the caller itself holds the lock. The probe
+does not retry `try_lock`: a retry would hide the bug the test is for. Write
+this rule as a comment above the probe helper in the test module.
 
 In `roym_transaction`: two functions in `app.rs`, `put_card(host, &CardRow)`
 and `put_booking(host, &BookingRow)`, each `put_row` then `record_event`. The
