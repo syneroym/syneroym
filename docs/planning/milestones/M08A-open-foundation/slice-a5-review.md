@@ -26,7 +26,7 @@ the model that did the work.
 the only doc in the list. No other change doc is named. The criteria OF-8 to
 OF-11, D-OF-3 and D-OF-4 are in it.
 
-**Summary:** 0 blocker, 3 major, 9 minor, 12 items, all Open.
+**Summary:** 0 blocker, 3 major, 9 minor, 12 items. All 12 Fixed in the fold of round 1 (2026-11-03).
 
 Limits of this review: I read code and did not run it. I did not run a browser.
 P1 and P3 rest on how `EventSource` and browsers behave (the HTML living
@@ -167,7 +167,7 @@ browser here, so the exact numbers are `unverified`.
   `page.route` returns 503 once), and check the next event still arrives. State
   in the plan that the Hub never shows an error for a feed that is down; it
   works as it does today (refresh on action).
-- *Status:* Open
+- *Status:* Fixed (5a220d04).
 
 #### P2 (major) — Three of the listed writers run inside a transaction, so the event would come before the commit
 
@@ -213,7 +213,7 @@ browser here, so the exact numbers are `unverified`.
   visible); do not announce for an inbound row that was `undecided`, `held` or
   `dropped`. Add a test `a_deletion_request_is_visible_to_history_when_its_event_arrives`
   (the same shape as the admission test) and `an_undecided_message_deleted_by_its_author_records_nothing`.
-- *Status:* Open
+- *Status:* Fixed (5a220d04).
 
 #### P3 (major) — One `EventSource` per tab runs into the browser's per-host connection limit
 
@@ -242,7 +242,7 @@ browser here, so the exact numbers are `unverified`.
   stays the leader. If the owner prefers to keep it simple for v1, then the
   plan must say so, write the limit into the backlog and into the developer
   guide note, and lower the plan's "one feed per tab" claim.
-- *Status:* Open
+- *Status:* Fixed (5a220d04). Fixed in a simpler way with the same bound: a tab holds a feed only while it is visible (D-A5-12), not a leader tab. The leader-tab option and the remaining limit (6 visible windows) are a backlog row.
 
 #### P4 (minor) — "The newest event's cursor, or seq 0" is wrong once old events have left the window
 
@@ -263,7 +263,7 @@ browser here, so the exact numbers are `unverified`.
   recorded in this run) and `oldest` as the front event's seq, or `next_seq`
   when the window is empty. Add `after_all_events_age_out_a_new_reader_does_not_get_a_false_reload`
   and `after_all_events_age_out_the_old_head_cursor_is_not_a_reload` to 7.1.
-- *Status:* Open
+- *Status:* Fixed (5a220d04).
 
 #### P5 (minor) — `record` is a WIT keyword; the function needs `%record`
 
@@ -282,7 +282,7 @@ browser here, so the exact numbers are `unverified`.
   ("`syneroym:events` `record`" appears in W3, D-A5-6, D-A5-7, section 1). Also
   run `wasm-tools component wit` (or the build) over the text before the
   implementer starts, if the author wants to be sure about the rest of it.
-- *Status:* Open
+- *Status:* Fixed (5a220d04). Used `%record`.
 
 #### P6 (minor) — There are seven native factory sites, not six, and the existing count test says seven
 
@@ -307,7 +307,7 @@ browser here, so the exact numbers are `unverified`.
   also get a bus (or say why they stay without one, and what answers
   `no-app-instance`). Say that the 8 test files that build `RouteHandlerDeps`
   get `event_bus: None`.
-- *Status:* Open
+- *Status:* Fixed (5a220d04). The `app_host_native` parity harness gets no bus (its fixture records nothing; the file is at its cap).
 
 #### P7 (minor) — A change between "page loaded" and "feed connected" is lost
 
@@ -325,7 +325,7 @@ browser here, so the exact numbers are `unverified`.
   `reload` (the plan says `{reload: true}` only for `reload`). Add vitest
   `a_ready_frame_refreshes_every_listener_once`. Say in D-A5-8 that `ready` is
   the "you may have missed something before this point" frame.
-- *Status:* Open
+- *Status:* Fixed (5a220d04).
 
 #### P8 (minor) — Some visible changes have no event, and one sequence-number site is not listed
 
@@ -352,7 +352,7 @@ browser here, so the exact numbers are `unverified`.
   `conversation.delivery` when a member's state changes, or add a backlog row
   ("group per-member delivery states record no event"). For (3) say who calls
   it; if nobody, say "unused" in 3.1 and leave it out, if somebody does, add it.
-- *Status:* Open
+- *Status:* Fixed (5a220d04). (1) refusal records `conversation.delivery`; (2) backlog row; (3) test-only caller, noted in 3.1.
 
 #### P9 (minor) — The order of checks tells a stranger which services are in an app, and the plan does not say the feed needs `login` mode
 
@@ -374,7 +374,7 @@ browser here, so the exact numbers are `unverified`.
   instance `404`, then `406`. Add the mode rule to the developer-guide part in
   section 9 and to W1 ("needs the gateway in `login` mode"). Add a router test
   for the new order (`a_stranger_cannot_tell_an_app_service_from_a_plain_one`).
-- *Status:* Open
+- *Status:* Fixed (5a220d04).
 
 #### P10 (minor) — The feed's read size, `limit = 0` and the open-feed gauge are not defined
 
@@ -396,7 +396,7 @@ browser here, so the exact numbers are `unverified`.
   the permit, the `watch` receiver and a small `FeedGuard` with a `Drop` that
   decrements the gauge in the stream state. Add a router test
   `a_reader_far_behind_gets_all_events_before_it_waits`.
-- *Status:* Open
+- *Status:* Fixed (5a220d04).
 
 #### P11 (minor) — One conversation test cannot be written as described
 
@@ -417,7 +417,7 @@ browser here, so the exact numbers are `unverified`.
   the same for the delete test of P2. If the store's single connection makes a
   true "second reader" impossible, say that the test checks order with a hook
   that records "committed" and "announced" in a shared list.
-- *Status:* Open
+- *Status:* Fixed (5a220d04). Used a `#[cfg(test)]` probe in `announce` that checks the connection lock is free (`try_lock`) on the same thread, then reads history.
 
 #### P12 (minor) — The change doc's deviations list leaves out Q3 and Q5, and OF-10 still says "subscribe"
 
@@ -440,4 +440,4 @@ browser here, so the exact numbers are `unverified`.
   (c) change the `task.md` A5 bullet "internal subscription for services" to
   "pull read for services"; (d) add the Q3 and Q5 answers to the one-line
   record of the owner's answers.
-- *Status:* Open
+- *Status:* Fixed (5a220d04). OF-10 reword and the task.md bullet are close-out steps in section 9; the D-OF-3 line was updated now.
