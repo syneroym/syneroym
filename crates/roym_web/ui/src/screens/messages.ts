@@ -198,11 +198,13 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
 
   // Resolves to the rows when this run drew the list, else `undefined` (the
   // load failed, or a newer run replaced this one).
+  let latestRows: ConversationRow[] = [];
   const fillList = refiller(listItems, async (into: DocumentFragment, select?: string) => {
     let rows: ConversationRow[] = [];
     try {
       const res = await call<{ conversations: ConversationRow[] }>("conversation.list", { kind: "direct" });
       rows = res.conversations;
+      latestRows = rows;
     } catch (err) {
       into.appendChild(text("p", `Could not load: ${errText(err)}`));
       return undefined;
@@ -211,10 +213,11 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       into.appendChild(text("p", "No conversations yet.", "conversations-empty"));
       return rows;
     }
+    const currentSelect = select ?? activeConvId ?? undefined;
     for (const r of rows) {
       const row = document.createElement("div");
       row.className = "conversation-item";
-      if (r.id === select) row.classList.add("selected");
+      if (r.id === currentSelect) row.classList.add("selected");
       row.appendChild(text("div", r.peer_person_did || r.peer_address, "peer-label"));
       row.appendChild(text("div", `${r.message_count} messages`, "count-label"));
       row.onclick = () => {
@@ -228,15 +231,18 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
   });
 
   async function reloadList(select?: string) {
-    const rows = await fillList(select);
-    if (!rows) return;
+    if (select) activeConvId = select;
+    await fillList(select ?? activeConvId ?? undefined);
+    const rows = latestRows;
     if (rows.length === 0) {
       activeConvId = null;
       activeFillHistory = null;
       threadPane.replaceChildren();
       return;
     }
-    const target = select ? rows.find((r) => r.id === select) : rows[0];
+    const target = select
+      ? rows.find((r) => r.id === select)
+      : (activeConvId ? rows.find((r) => r.id === activeConvId) : rows[0]);
     if (target) await renderThread(threadPane, target, myDid, onThreadActive);
   }
 

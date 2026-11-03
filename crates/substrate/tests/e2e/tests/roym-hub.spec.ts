@@ -91,7 +91,7 @@ test.describe('Roym Hub', () => {
 
     // A plain reload keeps the session (sessionStorage bearer token rides along).
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
     await expect(page.locator('.session-bar')).toContainText('did:key:', { timeout: 15_000 });
 
     // Clearing the session token and the stored key drops the session, so
@@ -188,7 +188,7 @@ test.describe('Roym Hub', () => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
 
     await page.getByRole('button', { name: 'Components' }).click();
 
@@ -352,7 +352,7 @@ test.describe('Roym Hub', () => {
 
     // Reload: the listing is still there with its title and status.
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
     await page.getByRole('button', { name: 'Listings' }).click();
     const row = page.locator('.listing-row', { hasText: 'Hedge trimming' });
     await expect(row).toHaveCount(1);
@@ -414,7 +414,7 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
 
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
     await page.getByRole('button', { name: 'Listings' }).click();
 
     const evilRow = page.locator('.listing-row', { hasText: '<img src=x' });
