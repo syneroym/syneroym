@@ -424,11 +424,17 @@ async fn find_ceiling_run_of_eight_sources_fits_the_dispatch_budget() {
 
     let outcomes = fw["result"]["outcomes"].as_array().unwrap();
     assert_eq!(outcomes.len(), 8);
-    for outcome in outcomes {
+    for outcome in &outcomes[..7] {
         assert_eq!(outcome["verified"], 10);
         assert_eq!(outcome["refused"], 0);
         assert_eq!(outcome["error"], Value::Null);
     }
+    let rogue_outcome = &outcomes[7];
+    assert_eq!(rogue_outcome["source"], "did:key:hCeiling8");
+    assert_eq!(rogue_outcome["verified"], 0);
+    assert_eq!(rogue_outcome["refused"], 0);
+    assert_eq!(rogue_outcome["error"]["kind"], "unreadable");
+    assert_eq!(rogue_outcome["error"]["reason"], "reply too large");
 
     let hits = fw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 50);

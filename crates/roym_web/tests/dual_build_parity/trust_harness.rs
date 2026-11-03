@@ -543,7 +543,12 @@ fn build_all_ceiling_responses() -> [String; 8] {
         let issuer_key = ceiling_issuer_identity(idx);
         let issuer_did = ceiling_issuer_did(idx);
 
-        let hits: Vec<Value> = (0..10)
+        // Sources 1..=7 (indices 0..7) return 10 maximum-size hits.
+        // Source 8 (index 7, `hCeiling8`) ignores the requested limit and returns
+        // 50 maximum-size hits (~8.29 MiB), exceeding MAX_SEARCH_REPLY_BYTES (2 MiB).
+        let hit_count = if idx == 7 { 50 } else { 10 };
+
+        let hits: Vec<Value> = (0..hit_count)
             .map(|h| {
                 let slug = format!("ceiling-listing-{idx}-{h}");
                 let lid = listing::derive_listing_id(&member_did, &slug).unwrap();
@@ -631,7 +636,7 @@ pub(crate) async fn canned_source_response(target: &str, params: &Value) -> Opti
     }
     if target == "did:key:hOversized" {
         if inner_method(params).as_deref() == Some("directory.search") {
-            let padding = "x".repeat(10 * 1024 * 1024 + 1024);
+            let padding = "x".repeat(2 * 1024 * 1024 + 1024);
             return Some(Value::String(
                 json!({ "result": { "hits": [], "padding": padding } }).to_string(),
             ));

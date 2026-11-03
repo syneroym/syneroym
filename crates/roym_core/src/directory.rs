@@ -48,8 +48,7 @@ pub const MAX_REFUSED_RESULTS: u32 = 20;
 pub const MAX_SOURCES: usize = 8;
 /// Verified hits stored per source in memory before merging. Matches the
 /// per-source page cap `MAX_HITS_PER_SOURCE` (10) to keep signature
-/// verification instruction fuel within WASM sandbox limits (section 7.6
-/// fallback (2)).
+/// verification instruction fuel within WASM sandbox limits.
 pub const MAX_STORED_PER_SOURCE: u32 = MAX_HITS_PER_SOURCE;
 /// Per-source deadline for single directory operations (probe, publish,
 /// and check-standing).

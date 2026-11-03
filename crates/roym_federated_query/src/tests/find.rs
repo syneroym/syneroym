@@ -36,6 +36,7 @@ async fn each_call_is_built_like_the_old_query_source() {
     let inner: serde_json::Value = serde_json::from_str(inner_str).unwrap();
     assert_eq!(inner["method"], "directory.search");
     assert_eq!(inner["params"]["text"], "plumber");
+    assert_eq!(inner["params"]["limit"], 10);
 
     let opts = req.options.as_ref().unwrap();
     assert!(opts.idempotent);
@@ -175,7 +176,42 @@ async fn a_reply_over_the_size_cap_is_unreadable_and_does_not_stop_the_others() 
 }
 
 #[tokio::test]
-async fn fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read() {
+async fn ten_hits_with_maximum_evidence_fit_under_size_cap_and_are_read() {
+    let issuer_key = Identity::generate().unwrap();
+    let issuer_did = substrate::derive_did_key(&issuer_key.public_key());
+
+    let mut hits = Vec::new();
+    for i in 0..10 {
+        let (listing_id, record_id, envelope) = sign_max_payload_listing_with_issuer(
+            &issuer_key,
+            &issuer_did,
+            &format!("max-slug-{i}"),
+            &format!("Max Listing {i}"),
+            1000,
+        );
+        let evidence = build_max_evidence(&issuer_key, &issuer_did, &issuer_did, &listing_id, 1000);
+        hits.push(canned_search_hit(&listing_id, &record_id, &envelope, evidence, 1000));
+    }
+
+    let resp_text = canned_search_response(hits, true);
+    println!(
+        "10-hit response size: {} bytes (cap: {} bytes)",
+        resp_text.len(),
+        MAX_SEARCH_REPLY_BYTES
+    );
+    assert!(resp_text.len() <= MAX_SEARCH_REPLY_BYTES, "response size {} > 2 MiB", resp_text.len());
+
+    let source = Source { did: "did:key:s1".to_string(), pinned_issuer: Some(issuer_did) };
+    let proxy = FakeProxy::new(Ok(vec![Ok(resp_text)]));
+
+    let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
+    assert_eq!(res.page.outcomes[0].error, None);
+    assert_eq!(res.page.outcomes[0].verified, 10);
+    assert!(res.page.outcomes[0].truncated);
+}
+
+#[tokio::test]
+async fn a_fifty_hit_maximum_evidence_reply_exceeds_size_cap_and_is_unreadable() {
     let issuer_key = Identity::generate().unwrap();
     let issuer_did = substrate::derive_did_key(&issuer_key.public_key());
 
@@ -193,14 +229,9 @@ async fn fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read() {
     }
 
     let resp_text = canned_search_response(hits, true);
-    println!(
-        "50-hit response size: {} bytes (cap: {} bytes)",
-        resp_text.len(),
-        MAX_SEARCH_REPLY_BYTES
-    );
     assert!(
-        resp_text.len() <= MAX_SEARCH_REPLY_BYTES,
-        "response size {} > 10 MiB",
+        resp_text.len() > MAX_SEARCH_REPLY_BYTES,
+        "50-hit response size {} should exceed 2 MiB",
         resp_text.len()
     );
 
@@ -208,9 +239,11 @@ async fn fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read() {
     let proxy = FakeProxy::new(Ok(vec![Ok(resp_text)]));
 
     let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
-    assert_eq!(res.page.outcomes[0].error, None);
-    assert_eq!(res.page.outcomes[0].verified, 10);
-    assert!(res.page.outcomes[0].truncated);
+    assert_eq!(
+        res.page.outcomes[0].error,
+        Some(SourceError::Unreadable { reason: "reply too large".to_string() })
+    );
+    assert_eq!(res.page.outcomes[0].verified, 0);
 }
 
 #[tokio::test]

@@ -55,14 +55,29 @@ async fn a_tampered_envelope_is_refused_evidence_not_a_hit() {
 }
 
 #[tokio::test]
-async fn a_source_is_capped_at_twenty_verified_and_twenty_refused() {
+async fn a_source_is_capped_at_ten_verified_hits() {
     let mut hits = Vec::new();
-    for i in 0..25 {
+    for i in 0..15 {
         let (listing_id, record_id, envelope) =
             sign_test_listing(&format!("v-slug-{i}"), &format!("Verified {i}"), 1000);
         hits.push(canned_search_hit(&listing_id, &record_id, &envelope, Default::default(), 1000));
     }
-    for i in 0..25 {
+
+    // 15 total hits in response: truncated to MAX_CHECKED_PER_SOURCE (10) before
+    // checking.
+    let source = Source { did: "did:key:s1".to_string(), pinned_issuer: None };
+    let resp = canned_search_response(hits, false);
+    let proxy = FakeProxy::new(Ok(vec![Ok(resp)]));
+
+    let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
+    assert_eq!(res.page.outcomes[0].verified, 10);
+    assert_eq!(res.page.outcomes[0].refused, 0);
+}
+
+#[tokio::test]
+async fn refused_hits_coming_first_are_recorded_up_to_the_cap() {
+    let mut hits = Vec::new();
+    for i in 0..5 {
         let (listing_id, record_id, envelope) =
             sign_test_listing(&format!("r-slug-{i}"), &format!("Refused {i}"), 1000);
         let mut val: serde_json::Value = serde_json::from_str(&envelope).unwrap();
@@ -75,16 +90,23 @@ async fn a_source_is_capped_at_twenty_verified_and_twenty_refused() {
             1000,
         ));
     }
+    for i in 0..10 {
+        let (listing_id, record_id, envelope) =
+            sign_test_listing(&format!("v-slug-{i}"), &format!("Verified {i}"), 1000);
+        hits.push(canned_search_hit(&listing_id, &record_id, &envelope, Default::default(), 1000));
+    }
 
-    // 50 total hits in response: truncated to MAX_CHECKED_PER_SOURCE (10) before
-    // checking.
+    // 15 total hits: 5 refused + 10 verified. Truncated to 10 before checking
+    // -> 5 refused and 5 verified checked.
     let source = Source { did: "did:key:s1".to_string(), pinned_issuer: None };
     let resp = canned_search_response(hits, false);
     let proxy = FakeProxy::new(Ok(vec![Ok(resp)]));
 
     let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
-    assert_eq!(res.page.outcomes[0].verified, 10);
-    assert_eq!(res.page.outcomes[0].refused, 0);
+    assert_eq!(res.page.outcomes[0].refused, 5);
+    assert_eq!(res.page.outcomes[0].verified, 5);
+    assert_eq!(res.page.refused.len(), 5);
+    assert_eq!(res.page.hits.len(), 5);
 }
 
 #[tokio::test]

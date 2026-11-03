@@ -6,28 +6,26 @@ use syneroym_app_host::{
     types::proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
 };
 use syneroym_roym_core::{
-    directory::{FIND_SOURCE_TIMEOUT_MS, SearchHit, SearchQuery, SourceError},
+    directory::{
+        FIND_SOURCE_TIMEOUT_MS, MAX_STORED_PER_SOURCE, SearchHit, SearchQuery, SourceError,
+    },
     envelope::Response,
     method::directory::SearchOutput,
     services,
 };
 
-/// Pre-parse size cap for remote search responses. Derived from 50 max hits ×
+/// Pre-parse size cap for remote search responses. Derived from 10 max hits ×
 /// (64 KiB payload + 42 KiB maximum credential/decision evidence + envelope
-/// overhead) × worst-case ~2x JSON string escaping factor ≈ 8.29 MiB + 1.7 MiB
-/// safety margin = 10 MiB (10 * 1024 * 1024 bytes). Checked before JSON-RPC
-/// parsing to prevent guest memory exhaustion from hostile large responses.
-pub const MAX_SEARCH_REPLY_BYTES: usize = 10 * 1024 * 1024;
+/// overhead) × worst-case ~2x JSON string escaping factor ≈ 1.66 MiB + ~340 KiB
+/// safety margin = 2 MiB (2 * 1024 * 1024 bytes). Checked before JSON-RPC
+/// parsing to prevent guest memory exhaustion and WASM instruction fuel
+/// exhaustion from hostile or oversized responses.
+pub const MAX_SEARCH_REPLY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Maximum hits checked from a single source before verification.
-///
-/// Under 8 sources, verifying 10 maximum-size listings (64 KiB payload + 42 KiB
-/// evidence) per source consumes ~7.3 billion WASM instructions (~73% of
-/// default_max_instructions = 10_000_000_000), succeeding deterministically
-/// without fuel exhaustion (section 7.6 fallback (2)). Checking 40 listings per
-/// source across 8 sources (320 listings) exceeds 11 billion instructions and
-/// triggers QuotaExceeded fuel exhaustion in the WASM sandbox.
-pub const MAX_CHECKED_PER_SOURCE: usize = 10;
+/// Matches `MAX_STORED_PER_SOURCE` to ensure verification and parsing costs
+/// stay within WASM sandbox instruction fuel limits.
+pub const MAX_CHECKED_PER_SOURCE: usize = MAX_STORED_PER_SOURCE as usize;
 
 /// A remote search source with its DID and optional pinned SynOrg issuer DID.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +41,13 @@ pub enum SourceOutcome {
 }
 
 pub fn build_requests(sources: &[Source], query: &SearchQuery) -> Vec<CallRequest> {
-    let params_str = json!({ "method": "directory.search", "params": query }).to_string();
+    let mut bound_query = query.clone();
+    let bounded_limit = match bound_query.limit {
+        Some(l) => l.min(MAX_CHECKED_PER_SOURCE as u32),
+        None => MAX_CHECKED_PER_SOURCE as u32,
+    };
+    bound_query.limit = Some(bounded_limit);
+    let params_str = json!({ "method": "directory.search", "params": bound_query }).to_string();
     let body = json!([params_str]).to_string();
     sources
         .iter()
