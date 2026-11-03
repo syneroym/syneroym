@@ -1791,7 +1791,7 @@ the WASM build with the default fuel. Fuel is deterministic, so this test
 is not flaky like a time measure. Record the result in Deviations and in
 D-A4-11.
 
-*Status:* Open (reopened in the second fixes check below). Fixer note: Fixed (30bb806c, a0f5931b). Measured fuel for canonicalization and Ed25519 verification of a 65 KiB maximum payload with escaping quotes (~80M-91M instructions per hit); 8 sources × 20 hits = 160 hits consumed ~14.6B instructions (exceeding 10B default limit); per owner decision, formally lowered `MAX_STORED_PER_SOURCE` from 20 to 10 in `roym_core::directory` (matching `MAX_HITS_PER_SOURCE = 10` page cap) and truncated hits before verification to 10; 8 sources × 10 hits = 80 hits consumes ~7.31B instructions (~73 % of 10B limit), safely within WASM fuel limits; proved failure locally with fuel exhaustion trap before cap reduction; added non-ignored parity test `find_ceiling_measure_fits_dispatch_headroom` verifying ceiling run succeeds on WASM build with default fuel; recorded in Deviations and D-A4-6/D-A4-11.
+*Status:* Fixed (2633a24d, bc1ffd56), confirmed in the third fixes check below. Earlier fixer note: Fixed (30bb806c, a0f5931b). Measured fuel for canonicalization and Ed25519 verification of a 65 KiB maximum payload with escaping quotes (~80M-91M instructions per hit); 8 sources × 20 hits = 160 hits consumed ~14.6B instructions (exceeding 10B default limit); per owner decision, formally lowered `MAX_STORED_PER_SOURCE` from 20 to 10 in `roym_core::directory` (matching `MAX_HITS_PER_SOURCE = 10` page cap) and truncated hits before verification to 10; 8 sources × 10 hits = 80 hits consumes ~7.31B instructions (~73 % of 10B limit), safely within WASM fuel limits; proved failure locally with fuel exhaustion trap before cap reduction; added non-ignored parity test `find_ceiling_measure_fits_dispatch_headroom` verifying ceiling run succeeds on WASM build with default fuel; recorded in Deviations and D-A4-6/D-A4-11.
 
 #### R11 — minor — the ceiling time measure includes the harness building its test replies
 
@@ -1911,7 +1911,7 @@ when the other sources are large.
 4. Measure the fuel again and give the margin. If it is above 60 %, ask
    the owner.
 
-*Status:* Fixed (2633a24d, bc1ffd56). Bounded query limit in `build_requests` to `min(query.limit.unwrap_or(10), 10)` so honest sources return at most 10 hits; lowered `MAX_SEARCH_REPLY_BYTES` to 2 MiB (2 * 1024 * 1024 bytes) so oversized or rogue replies (such as 50 max-size hits = 8.29 MiB) are rejected pre-parse with `Unreadable { reason: "reply too large" }` before JSON deserialization; updated ceiling test fixture to have 7 sources return 10 max-size hits and 1 source (`hCeiling8`) return 50 max-size hits; proved failure when `MAX_SEARCH_REPLY_BYTES` was 10 MiB (asserted `rogue_outcome["verified"] == 0` failed with `left == 10, right == 0`, and 8 × 50 hits ran out of fuel); restored 2 MiB cap and verified ceiling test passes with 825.4 ms wall time and default fuel budget; recorded in W8 and Deviations.
+*Status:* Fixed (2633a24d, bc1ffd56), confirmed in the third fixes check below. Fixer note: Bounded query limit in `build_requests` to `min(query.limit.unwrap_or(10), 10)` so honest sources return at most 10 hits; lowered `MAX_SEARCH_REPLY_BYTES` to 2 MiB (2 * 1024 * 1024 bytes) so oversized or rogue replies (such as 50 max-size hits = 8.29 MiB) are rejected pre-parse with `Unreadable { reason: "reply too large" }` before JSON deserialization; updated ceiling test fixture to have 7 sources return 10 max-size hits and 1 source (`hCeiling8`) return 50 max-size hits; proved failure when `MAX_SEARCH_REPLY_BYTES` was 10 MiB (asserted `rogue_outcome["verified"] == 0` failed with `left == 10, right == 0`, and 8 × 50 hits ran out of fuel); restored 2 MiB cap and verified ceiling test passes with 825.4 ms wall time and default fuel budget; recorded in W8 and Deviations.
 
 ### New findings
 
@@ -1951,7 +1951,7 @@ measured one. Define `MAX_CHECKED_PER_SOURCE` from `MAX_STORED_PER_SOURCE`
 test where refused hits come first in the 10. Add the page effect to the
 Deviation at `change.md:363`.
 
-*Status:* Fixed (2633a24d, bc1ffd56). Removed section 7.6 and planning-doc citations from comments in `directory.rs` and `gather.rs`; defined `MAX_CHECKED_PER_SOURCE = MAX_STORED_PER_SOURCE as usize` to prevent drift; renamed verify test to `a_source_is_capped_at_ten_verified_hits` and added `refused_hits_coming_first_are_recorded_up_to_the_cap` testing 5 refused + 5 verified hits when refused come first; recorded duplicate-skipping page effect in Deviations (`change.md:363`).
+*Status:* Fixed (2633a24d, bc1ffd56), confirmed in the third fixes check below. Fixer note: Removed section 7.6 and planning-doc citations from comments in `directory.rs` and `gather.rs`; defined `MAX_CHECKED_PER_SOURCE = MAX_STORED_PER_SOURCE as usize` to prevent drift; renamed verify test to `a_source_is_capped_at_ten_verified_hits` and added `refused_hits_coming_first_are_recorded_up_to_the_cap` testing 5 refused + 5 verified hits when refused come first; recorded duplicate-skipping page effect in Deviations (`change.md:363`).
 
 #### R14 — minor — the change doc and the backlog still give the old caps
 
@@ -1971,8 +1971,91 @@ the code does not have.
 *Fix:* Update `:138`, `:331` and the backlog row to the final caps (after
 R10). Add a Deviation for the reply cap. Give one run count.
 
-*Status:* Fixed (bc1ffd56). Updated design paragraph (`change.md:138`), decisions D-A4-3, D-A4-5, D-A4-6, D-A4-14, D-A4-16 (`change.md:331`), and deferred backlog row (`deferred-backlog.md:553`) to 2 MiB and 10 verified/refused hits; added Deviation for 2 MiB reply cap and bounded query limit; unified run counts to 20/20 runs in `status.md` and R2 status.
+*Status:* Fixed (bc1ffd56), confirmed in the third fixes check below. Fixer note: Updated design paragraph (`change.md:138`), decisions D-A4-3, D-A4-5, D-A4-6, D-A4-14, D-A4-16 (`change.md:331`), and deferred backlog row (`deferred-backlog.md:553`) to 2 MiB and 10 verified/refused hits; added Deviation for 2 MiB reply cap and bounded query limit; unified run counts to 20/20 runs in `status.md` and R2 status.
 
 **Counts.** Second fixes check: 3 confirmed (R2, R11, R12), 1 reopened
 (R10, major), 2 new (R13, R14, minor). 0 blocker, 1 major (R10), 2 minor
 (R13, R14). **3 open.**
+
+## Code review round 1 — third fixes check — Claude Opus 5.5, 2026-11-03
+
+I checked the fix commits 2633a24d and bc1ffd56 on
+`feat/m08a-a4-federated-query`. bdc7607d only sets the statuses and the
+`status.md` row. `git pull` said "Already up to date". CI
+[run 41605948326](https://github.com/syneroym/syneroym/actions/runs/41605948326)
+on bdc7607d passed every job.
+
+I ran `cargo nextest run -p syneroym-roym-federated-query` (35 passed) and
+the two ceiling tests as committed (both passed; WASM 0.83 s). For the fuel
+probe, I changed the ceiling fixture and the default fuel limit locally. I
+restored both files after the runs. Nothing from the probes is committed.
+
+**Confirmed Fixed.**
+- **R10.** `build_requests` sends `limit` = min(person's limit, 10), and a
+  unit test checks `limit` 10 on the wire. W8 says so. The reply cap is
+  2 MiB. The 10-hit maximum reply is 1 658 851 bytes, so the margin is
+  about 21 %. A 50-hit reply is `Unreadable { "reply too large" }` before
+  any parse (unit test and ceiling test with `hCeiling8`). The failure case
+  from the second check is gone: with 8 honest sources of 10 maximum hits,
+  the WASM call passes with the default fuel. The fuel margin (fix step 4)
+  is not given. That is R15 below.
+- **R13.** No plan section is cited in code. `MAX_CHECKED_PER_SOURCE` is
+  defined from `MAX_STORED_PER_SOURCE`. The test name is true, and the new
+  test puts 5 refused hits first. The page effect is in Deviations.
+  `MAX_REFUSED_RESULTS` stays at 20 because the page's refused cap
+  (`merge.rs:81`) still uses it. That is correct.
+- **R14.** `change.md:138`, D-A4-16 and the backlog row give 2 MiB and 10
+  hits. A Deviation records the reply cap and the bounded `limit`.
+
+### New findings
+
+#### R15 — minor — no test covers 8 honest maximum sources, and the fuel margin is not given
+
+*Where:* `crates/roym_web/tests/dual_build_parity/trust_harness.rs:546-549`
+(both ceiling tests use this fixture);
+`docs/planning/changes/roym-open-foundation/change.md:363`;
+`docs/planning/milestones/M08A-open-foundation/status.md:17`;
+`change.md:326` (D-A4-11).
+
+*Problem:*
+- Both ceiling tests now use 7 honest sources and `hCeiling8`. The guest
+  drops `hCeiling8` before any parse, so it checks 70 listings. The honest
+  worst case is 8 sources × 10 = 80 listings. No test runs it any more.
+- The R10 fix step 4 asked for the fuel margin, and for the owner's answer
+  if the use is above 60 %. Neither is in the change. I set the fixture to
+  8 honest sources × 10 maximum hits and changed only
+  `default_max_instructions`:
+
+  | Fuel limit | WASM result |
+  |---|---|
+  | 6 000 000 000 (60 %) | `QuotaExceeded` |
+  | 7 000 000 000 (70 %) | `QuotaExceeded` |
+  | 8 000 000 000 (80 %) | ok, 0.89 s |
+  | 10 000 000 000 (default) | ok, 0.89 s |
+
+  So the honest worst case uses 70–80 % of the fuel (the fixer measured
+  about 73 %). The margin is 20–30 %.
+- The `status.md` row gives "worst 0.882 s" and "20/20 runs" for the
+  ceiling measure. That fixture is gone. My runs of the committed fixture
+  give 0.83 s.
+- D-A4-11 still says "checks up to 8 × 40 envelopes".
+
+*Failure case:* A later change makes checking about 30 % more costly (for
+example a larger evidence check). Every search with 8 large directories
+fails on WASM with `-32603`. No test fails, because the tests check only
+70 listings.
+
+*Fix:*
+1. Make `find_ceiling_run_of_eight_sources_fits_the_dispatch_budget` use 8
+   honest sources × 10 maximum hits again. Move the `hCeiling8` case (50
+   hits, `unreadable`) to its own test.
+2. Write the measured fuel use (about 73 % of the default) in the Deviation
+   at `change.md:363`.
+3. Ask the owner: keep 10 checked listings per source with this margin, or
+   lower it. Record the answer.
+4. Correct the ceiling numbers in `status.md` and the "8 × 40" in D-A4-11.
+
+*Status:* Open
+
+**Counts.** Third fixes check: 3 confirmed (R10, R13, R14), 1 new (R15,
+minor). 0 blocker, 0 major, 1 minor (R15). **1 open.**
