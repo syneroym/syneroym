@@ -74,7 +74,7 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 - New crate `crates/roym_federated_query`, package `syneroym-roym-federated-query`. Move merging and duplicate removal out of `roym_directory`. The directory's client half keeps the source list and calls the library.
 - One search method. The Hub and `roymctl` stop running their own loops. Remove `window.RoymDirectory`'s `ignoreConcurrency` hook if nothing needs it.
 - Criteria: OF-6, OF-7.
-- A4 result: New crate `crates/roym_federated_query` implements parallel fan-out via `call-all`, reply size capping (8 MiB), verification, and deterministic round-robin merging. `directory.find` replaces old fan-out verbs (`start-run`, `query-source`, `merge`), leaving 35 methods in the directory table and 141 across Roym services. Hub and `roymctl` migrated to single `find` call; `MAX_CLIENT_CONCURRENCY` and `ignoreConcurrency` removed. 33 library tests, 12 find parity tests, 38 directory parity tests, 31 contract tests, 146 vitest, 173 roymctl tests pass.
+- A4 result: New crate `crates/roym_federated_query` implements parallel fan-out via `call-all`, reply size capping (8 MiB), verification, and deterministic round-robin merging. `directory.find` replaces old fan-out verbs (`start-run`, `query-source`, `merge`), leaving 35 methods in the directory table and 141 across Roym services. Hub and `roymctl` migrated to single `find` call; `MAX_CLIENT_CONCURRENCY` and `ignoreConcurrency` removed. 35 library tests, 13 find parity tests (plus one ignored ceiling measure, 20/20 runs), 36 directory parity tests, 31 contract tests, 146 vitest, 173 roymctl tests pass.
 
 ### A5 — Event feed (M)
 
