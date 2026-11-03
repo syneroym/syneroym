@@ -146,7 +146,7 @@ fn a_deposited_message_deleted_before_delivery_is_failed() {
     let item = sent(&s, &conv, "m:1");
     s.park_deposited(item, "m:1", None, &park(2_000)).unwrap();
 
-    assert!(s.delete_message(&conv, "m:1", 3_000).unwrap());
+    assert!(s.delete_message(&conv, "m:1", 3_000).unwrap().is_some());
 
     let message = s.get_message("m:1").unwrap().unwrap();
     assert_eq!(message.state, ConversationDeliveryState::Failed);
@@ -207,7 +207,7 @@ fn parking_does_nothing_for_a_message_that_is_no_longer_pending() {
     let s = store();
     let conv = conversation(&s);
     let item = sent(&s, &conv, "m:1");
-    assert!(s.delete_message(&conv, "m:1", 1_500).unwrap());
+    assert!(s.delete_message(&conv, "m:1", 1_500).unwrap().is_some());
 
     let parked = s.park_deposited(item, "m:1", None, &park(2_000)).unwrap();
 
@@ -222,7 +222,7 @@ fn unparking_does_nothing_for_a_message_that_is_no_longer_deposited() {
     let conv = conversation(&s);
     let item = sent(&s, &conv, "m:1");
     s.park_deposited(item, "m:1", None, &park(2_000)).unwrap();
-    assert!(s.delete_message(&conv, "m:1", 2_500).unwrap());
+    assert!(s.delete_message(&conv, "m:1", 2_500).unwrap().is_some());
 
     let back = s.unpark_to_pending(item, "m:1", None, 3_000).unwrap();
 
@@ -245,7 +245,7 @@ fn a_member_copy_is_not_moved_once_the_group_message_was_deleted() {
             [],
         )
         .unwrap();
-    assert!(s.delete_message(&conv, "m:1", 1_500).unwrap());
+    assert!(s.delete_message(&conv, "m:1", 1_500).unwrap().is_some());
 
     let parked = s.park_deposited(item, "m:1", Some("peer1"), &park(2_000)).unwrap();
 

@@ -28,7 +28,7 @@ fn delete_message_removes_from_store_and_fts() {
     assert_eq!(hits[0].id, "m:to_delete");
 
     // Delete message: delete_message(conv_id, msg_id, now_ms)
-    assert!(s.delete_message(&conv, "m:to_delete", now + 10).unwrap());
+    assert!(s.delete_message(&conv, "m:to_delete", now + 10).unwrap().is_some());
 
     // No longer returned by search
     let hits_after = s.search("unique_keyword_to_find", Some(&conv), 10).unwrap();
@@ -103,7 +103,7 @@ fn delete_held_incoming_zeros_body_but_fts_is_not_corrupted() {
     // At the store level delete_message succeeds; the FTS guard (admission ==
     // "accepted") prevents touching the trigram index for this never-indexed row.
     let deleted = s.delete_message(&conv, "m:held_in", now + 10).unwrap();
-    assert!(deleted);
+    assert_eq!(deleted, Some(false));
     let msg = s.get_message("m:held_in").unwrap().unwrap();
     assert!(msg.deleted_at.is_some(), "body must be zeroed even for held incoming");
 }

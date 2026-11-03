@@ -226,6 +226,7 @@ impl ConversationHost for ConversationService {
                 .enqueue(&msg.conversation_id, message, &payload, now)
                 .map_err(internal)?;
         }
+        self.announce(service_id, "conversation.delivery", &msg.conversation_id, Some(message));
         Ok(())
     }
 
@@ -330,7 +331,10 @@ impl ConversationHost for ConversationService {
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
         let now = store::now_ms();
-        store.delete_message(&conv.id, message, now).map_err(internal)?;
+        let deleted = store.delete_message(&conv.id, message, now).map_err(internal)?;
+        if deleted == Some(true) {
+            self.announce(service_id, "conversation.message", &conv.id, Some(message));
+        }
 
         // Ask even for a message still pending: a send may be in flight, or
         // the peer may hold it with only the receipt lost. Deleting cancels

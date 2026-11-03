@@ -53,6 +53,9 @@ pub struct ConversationConfig {
     pub store: StoreConfig,
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub type AnnounceProbe = Box<dyn Fn(&str, &str) + Send + Sync>;
+
 pub struct ConversationService {
     storage_provider: Arc<dyn StorageProvider>,
     key_store: Arc<KeyStore>,
@@ -73,6 +76,8 @@ pub struct ConversationService {
     open_lock: TokioMutex<()>,
     default_notifier: RwLock<Weak<dyn ConversationNotifier>>,
     service_notifiers: Mutex<HashMap<String, Weak<dyn ConversationNotifier>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    announce_probe: RwLock<Option<AnnounceProbe>>,
 }
 
 impl fmt::Debug for ConversationService {
@@ -111,6 +116,8 @@ impl ConversationService {
             open_lock: TokioMutex::new(()),
             default_notifier: RwLock::new(empty_notifier()),
             service_notifiers: Mutex::new(HashMap::new()),
+            #[cfg(any(test, feature = "test-support"))]
+            announce_probe: RwLock::new(None),
         }))
     }
 
@@ -122,6 +129,59 @@ impl ConversationService {
 
     pub fn set_event_bus(&self, bus: Arc<EventBus>) {
         let _ = self.event_bus.set(bus);
+    }
+
+    pub fn registry(&self) -> &EndpointRegistry {
+        &self.registry
+    }
+
+    pub fn event_bus(&self) -> Option<Arc<EventBus>> {
+        self.event_bus.get().cloned()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_announce_probe(&self, probe: Option<AnnounceProbe>) {
+        #[allow(clippy::expect_used)]
+        {
+            *self.announce_probe.write().expect("announce_probe lock poisoned") = probe;
+        }
+    }
+
+    pub(crate) fn announce(
+        &self,
+        service_id: &str,
+        kind: &str,
+        conversation_id: &str,
+        message_id: Option<&str>,
+    ) {
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            #[allow(clippy::expect_used)]
+            let probe = self.announce_probe.read().expect("announce_probe lock poisoned");
+            if let Some(ref p) = *probe {
+                p(kind, conversation_id);
+            }
+        }
+        if let Some(bus) = self.event_bus.get() {
+            let now_ms = store::now_ms();
+            let _ = bus.record(service_id, kind, conversation_id, message_id, now_ms);
+        }
+    }
+
+    pub(crate) fn admit_and_announce(
+        &self,
+        store: &ConversationStore,
+        service_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        admission: &Admission,
+        now: i64,
+    ) -> Result<bool, ConversationError> {
+        let became_visible = store.apply_admission(message_id, admission, now).map_err(internal)?;
+        if became_visible {
+            self.announce(service_id, "conversation.message", conversation_id, Some(message_id));
+        }
+        Ok(became_visible)
     }
 
     pub(crate) fn current_service_proxy(&self) -> Weak<dyn ServiceProxy> {
@@ -167,9 +227,11 @@ impl ConversationService {
     async fn notify_state(
         &self,
         service_id: &str,
+        conversation_id: &str,
         message_id: String,
         state: ConversationDeliveryState,
     ) {
+        self.announce(service_id, "conversation.delivery", conversation_id, Some(&message_id));
         if let Some(n) = self.notifier_for(service_id).upgrade() {
             n.notify_delivery_state(service_id, message_id, state).await;
         }
@@ -194,10 +256,24 @@ impl ConversationService {
         };
         match outcome {
             NotifyOutcome::Answered(admission) => {
-                let _ = store.apply_admission(&msg.id, &admission, now);
+                let _ = self.admit_and_announce(
+                    store,
+                    service_id,
+                    &msg.conversation_id,
+                    &msg.id,
+                    &admission,
+                    now,
+                );
             }
             NotifyOutcome::NoHandler => {
-                let _ = store.apply_admission(&msg.id, &Admission::Accept, now);
+                let _ = self.admit_and_announce(
+                    store,
+                    service_id,
+                    &msg.conversation_id,
+                    &msg.id,
+                    &Admission::Accept,
+                    now,
+                );
             }
             NotifyOutcome::NoAnswer => {}
         }
@@ -331,7 +407,13 @@ impl ConversationService {
         let last_error =
             if state == ConversationDeliveryState::Failed { Some("delivery failed") } else { None };
         let _ = store.set_state(message_id, state, last_error);
-        self.notify_state(service_id, message_id.to_string(), state).await;
+        let conv_id = store
+            .get_message(message_id)
+            .ok()
+            .flatten()
+            .map(|m| m.conversation_id)
+            .unwrap_or_default();
+        self.notify_state(service_id, &conv_id, message_id.to_string(), state).await;
         Ok(())
     }
 
@@ -404,6 +486,7 @@ impl ConversationService {
                     internal(e)
                 }
             })?;
+        self.announce(service_id, "conversation.message", &conv_id, Some(&message_id));
         Ok(message_id)
     }
 }

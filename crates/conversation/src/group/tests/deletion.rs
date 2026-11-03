@@ -79,7 +79,7 @@ fn a_request_that_arrives_first_is_applied_when_the_message_arrives() {
     );
 
     validate_and_insert(&s, "svc:me", &conv, &request).unwrap();
-    let (_, for_app) = validate_and_insert(&s, "svc:me", &conv, &message).unwrap();
+    let (_, for_app, _) = validate_and_insert(&s, "svc:me", &conv, &message).unwrap();
 
     assert!(for_app.is_none(), "the app is never asked about a withdrawn message");
     let row = s.get_message(&message.entry_id).unwrap().expect("the row is kept for the digest");
@@ -105,7 +105,7 @@ fn a_request_from_someone_else_does_not_withdraw_the_message() {
     );
 
     validate_and_insert(&s, "svc:me", &conv, &forged).unwrap();
-    let (_, for_app) = validate_and_insert(&s, "svc:me", &conv, &message).unwrap();
+    let (_, for_app, _) = validate_and_insert(&s, "svc:me", &conv, &message).unwrap();
 
     let asked = for_app.expect("the message goes to the app as usual");
     assert_eq!(asked.body, b"mine to keep");

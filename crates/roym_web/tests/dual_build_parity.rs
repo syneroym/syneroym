@@ -33,6 +33,8 @@ mod directory;
 mod directory_compat;
 #[path = "dual_build_parity/directory_find.rs"]
 mod directory_find;
+#[path = "dual_build_parity/events.rs"]
+mod events;
 #[path = "dual_build_parity/fulfilment.rs"]
 mod fulfilment;
 #[path = "dual_build_parity/group.rs"]
