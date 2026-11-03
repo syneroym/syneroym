@@ -46,11 +46,11 @@ pub const MAX_REFUSED_RESULTS: u32 = 20;
 /// Directories one person may add, and therefore the maximum number of
 /// calls one `directory.find` fan-out makes.
 pub const MAX_SOURCES: usize = 8;
-/// Verified hits stored per source in memory before merging. Twice the
-/// per-source share, because the round-robin skips a listing another source
-/// already contributed, so a source can be asked for more than its share's
-/// worth of rows before it has contributed its share.
-pub const MAX_STORED_PER_SOURCE: u32 = 2 * MAX_HITS_PER_SOURCE;
+/// Verified hits stored per source in memory before merging. Matches the
+/// per-source page cap `MAX_HITS_PER_SOURCE` (10) to keep signature
+/// verification instruction fuel within WASM sandbox limits (section 7.6
+/// fallback (2)).
+pub const MAX_STORED_PER_SOURCE: u32 = MAX_HITS_PER_SOURCE;
 /// Per-source deadline for single directory operations (probe, publish,
 /// and check-standing).
 pub const DEFAULT_SOURCE_TIMEOUT_MS: u32 = 2_000;

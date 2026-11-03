@@ -118,14 +118,18 @@ pub fn sign_max_payload_listing_with_issuer(
         service_record: None,
     };
     let mut payload_val = serde_json::to_value(&payload).unwrap();
-    // Pad payload to just under MAX_PAYLOAD_BYTES (64 KiB = 65,536 bytes) with
-    // escaping text in an extra description field.
+    payload_val["description"] = serde_json::Value::String(String::new());
     let base_bytes = substrate::canonicalize_json_value(&payload_val).to_string().len();
-    let pad_pattern = "item \"quoted\" \\\n ";
-    // Each repetition of pad_pattern takes 25 bytes in canonical JSON.
-    let needed = 65_000usize.saturating_sub(base_bytes);
-    let padding = pad_pattern.repeat(needed / 25);
-    payload_val["description"] = serde_json::Value::String(padding);
+    // In canonical JSON, each `"` character inside a JSON string escapes to `\"` (2
+    // bytes).
+    let target_canonical_bytes = 65_500usize;
+    let quotes_count = target_canonical_bytes.saturating_sub(base_bytes) / 2;
+    payload_val["description"] = serde_json::Value::String("\"".repeat(quotes_count));
+    let canonical_len = substrate::canonicalize_json_value(&payload_val).to_string().len();
+    assert!(
+        canonical_len > 64_000 && canonical_len <= 65_536,
+        "canonical payload length must be between 64,000 and 65,536 bytes, got {canonical_len}"
+    );
 
     let draft = RecordDraft {
         version: LISTING_VERSION,

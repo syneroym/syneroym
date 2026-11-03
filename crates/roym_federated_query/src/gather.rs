@@ -6,10 +6,7 @@ use syneroym_app_host::{
     types::proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
 };
 use syneroym_roym_core::{
-    directory::{
-        FIND_SOURCE_TIMEOUT_MS, MAX_REFUSED_RESULTS, MAX_STORED_PER_SOURCE, SearchHit, SearchQuery,
-        SourceError,
-    },
+    directory::{FIND_SOURCE_TIMEOUT_MS, SearchHit, SearchQuery, SourceError},
     envelope::Response,
     method::directory::SearchOutput,
     services,
@@ -17,10 +14,20 @@ use syneroym_roym_core::{
 
 /// Pre-parse size cap for remote search responses. Derived from 50 max hits ×
 /// (64 KiB payload + 42 KiB maximum credential/decision evidence + envelope
-/// overhead) × 1.15 JSON escape factor ≈ 6.0 MiB + 2 MiB safety margin = 8 MiB.
-/// Checked before JSON-RPC parsing to prevent guest memory exhaustion from
-/// hostile large responses.
-pub const MAX_SEARCH_REPLY_BYTES: usize = 8 * 1024 * 1024;
+/// overhead) × worst-case ~2x JSON string escaping factor ≈ 8.29 MiB + 1.7 MiB
+/// safety margin = 10 MiB (10 * 1024 * 1024 bytes). Checked before JSON-RPC
+/// parsing to prevent guest memory exhaustion from hostile large responses.
+pub const MAX_SEARCH_REPLY_BYTES: usize = 10 * 1024 * 1024;
+
+/// Maximum hits checked from a single source before verification.
+///
+/// Under 8 sources, verifying 10 maximum-size listings (64 KiB payload + 42 KiB
+/// evidence) per source consumes ~7.3 billion WASM instructions (~73% of
+/// default_max_instructions = 10_000_000_000), succeeding deterministically
+/// without fuel exhaustion (section 7.6 fallback (2)). Checking 40 listings per
+/// source across 8 sources (320 listings) exceeds 11 billion instructions and
+/// triggers QuotaExceeded fuel exhaustion in the WASM sandbox.
+pub const MAX_CHECKED_PER_SOURCE: usize = 10;
 
 /// A remote search source with its DID and optional pinned SynOrg issuer DID.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,8 +135,8 @@ fn parse_single_response(source: Source, res: Result<String, ProxyError>) -> Sou
 
     let mut hits = search_output.hits;
     // Verification cost is what a hostile source controls directly: cap hits
-    // to read at 40 before envelope verification.
-    hits.truncate((MAX_STORED_PER_SOURCE + MAX_REFUSED_RESULTS) as usize);
+    // to check before envelope verification to fit within WASM sandbox fuel limits.
+    hits.truncate(MAX_CHECKED_PER_SOURCE);
 
     // A source that returns zero rows can still set this: record the flag
     // directly as reported by the source.

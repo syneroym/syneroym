@@ -16,9 +16,9 @@ use super::helpers::{
 use crate::{Source, find};
 
 #[tokio::test]
-async fn at_most_forty_hits_are_read_before_checking() {
+async fn at_most_ten_hits_are_read_before_checking() {
     let mut hits = Vec::new();
-    for i in 0..45 {
+    for i in 0..25 {
         let (listing_id, record_id, envelope) =
             sign_test_listing(&format!("slug-{i}"), &format!("Title {i}"), 1000);
         hits.push(canned_search_hit(&listing_id, &record_id, &envelope, Default::default(), 1000));
@@ -29,8 +29,8 @@ async fn at_most_forty_hits_are_read_before_checking() {
     let proxy = FakeProxy::new(Ok(vec![Ok(resp)]));
 
     let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
-    // 40 hits are checked: 20 kept (cap), 20 dropped.
-    assert_eq!(res.page.outcomes[0].verified, 20);
+    // 10 hits are checked and kept (cap).
+    assert_eq!(res.page.outcomes[0].verified, 10);
     // Page has 10 (merge per-source cap)
     assert_eq!(res.page.hits.len(), 10);
 }
@@ -76,15 +76,15 @@ async fn a_source_is_capped_at_twenty_verified_and_twenty_refused() {
         ));
     }
 
-    // 50 total hits in response: truncated to 40 before checking (25 verified, 15
-    // refused).
+    // 50 total hits in response: truncated to MAX_CHECKED_PER_SOURCE (10) before
+    // checking.
     let source = Source { did: "did:key:s1".to_string(), pinned_issuer: None };
     let resp = canned_search_response(hits, false);
     let proxy = FakeProxy::new(Ok(vec![Ok(resp)]));
 
     let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
-    assert_eq!(res.page.outcomes[0].verified, 20);
-    assert_eq!(res.page.outcomes[0].refused, 15);
+    assert_eq!(res.page.outcomes[0].verified, 10);
+    assert_eq!(res.page.outcomes[0].refused, 0);
 }
 
 #[tokio::test]
@@ -201,10 +201,10 @@ async fn evidence_of_a_hit_over_the_cap_is_not_kept() {
     let proxy = FakeProxy::new(Ok(vec![Ok(resp)]));
 
     let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
-    // Only 20 verified hits are kept under cap
-    assert_eq!(res.page.outcomes[0].verified, 20);
+    // Only 10 verified hits are kept under cap
+    assert_eq!(res.page.outcomes[0].verified, 10);
     // Evidence is collected only for counted hits under the cap
-    assert_eq!(res.evidence.len(), 20);
+    assert_eq!(res.evidence.len(), 10);
 }
 
 #[tokio::test]

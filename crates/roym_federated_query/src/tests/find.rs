@@ -198,14 +198,18 @@ async fn fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read() {
         resp_text.len(),
         MAX_SEARCH_REPLY_BYTES
     );
-    assert!(resp_text.len() <= MAX_SEARCH_REPLY_BYTES, "response size {} > 8 MiB", resp_text.len());
+    assert!(
+        resp_text.len() <= MAX_SEARCH_REPLY_BYTES,
+        "response size {} > 10 MiB",
+        resp_text.len()
+    );
 
     let source = Source { did: "did:key:s1".to_string(), pinned_issuer: Some(issuer_did) };
     let proxy = FakeProxy::new(Ok(vec![Ok(resp_text)]));
 
     let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
     assert_eq!(res.page.outcomes[0].error, None);
-    assert_eq!(res.page.outcomes[0].verified, 20);
+    assert_eq!(res.page.outcomes[0].verified, 10);
     assert!(res.page.outcomes[0].truncated);
 }
 
