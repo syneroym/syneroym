@@ -2055,7 +2055,6 @@ fails on WASM with `-32603`. No test fails, because the tests check only
    lower it. Record the answer.
 4. Correct the ceiling numbers in `status.md` and the "8 × 40" in D-A4-11.
 
-*Status:* Open
+*Status:* Fixed (c1fc7263, cd856869). Restored find_ceiling_run_of_eight_sources_fits_the_dispatch_budget to 8 honest sources × 10 maximum hits; moved rogue 50-hit response to isolated test source_ignoring_limit_with_fifty_hits_exceeds_reply_cap_and_is_unreadable (failure proven: panicked on left String("unreadable") != right "timed-out", and ceiling verified left 10 != right 11). Documented measured fuel consumption (7 306 615 468 instructions, ~73% of 10B limit, ~27% margin) and owner confirmation to keep 10 checked listings per source with this margin in Deviation at change.md:363. Corrected ceiling numbers in D-A4-11, D-A4-14, and status.md.
 
-**Counts.** Third fixes check: 3 confirmed (R10, R13, R14), 1 new (R15,
-minor). 0 blocker, 0 major, 1 minor (R15). **1 open.**
+**Counts.** Third fixes check: 3 confirmed (R10, R13, R14), 1 new (R15, minor). 0 blocker, 0 major, 0 minor. **0 open.** All 15 code review items fixed.
