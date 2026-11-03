@@ -16,10 +16,10 @@ crates/data_db/src/sqlite/tests.rs 899
 crates/data_db/src/tests_crud.rs 819
 crates/data_db/src/tests_fdae.rs 1791
 crates/router/src/route_handler/io/tests.rs 1115
-crates/router/tests/proxy_dispatch.rs 983
+crates/router/tests/proxy_dispatch.rs 979
 crates/roym_core/src/transaction/tests.rs 834
 crates/roym_web/tests/dual_build_parity/directory.rs 981
-crates/roym_web/tests/dual_build_parity/helpers.rs 1429
+crates/roym_web/tests/dual_build_parity/helpers.rs 1290
 crates/roym_web/tests/dual_build_parity/profile.rs 1112
 crates/roym_web/tests/dual_build_parity/transaction.rs 846
 crates/sandbox_wasm/src/engine/tests.rs 821

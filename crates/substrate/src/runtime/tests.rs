@@ -84,12 +84,13 @@ async fn an_unreadable_persisted_binding_is_skipped_not_fatal() {
 }
 
 #[test]
-fn every_production_factory_in_runtime_is_wired_with_call_all() {
+fn every_production_factory_in_runtime_is_fully_wired() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let runtime_dir = manifest_dir.join("src").join("runtime");
 
     let mut factory_new_count = 0;
     let mut with_call_all_count = 0;
+    let mut with_event_bus_count = 0;
 
     let entries = fs::read_dir(&runtime_dir).expect("read runtime dir");
     for entry in entries {
@@ -101,6 +102,7 @@ fn every_production_factory_in_runtime_is_wired_with_call_all() {
             let content = fs::read_to_string(&path).expect("read file");
             factory_new_count += content.matches("NativeHostFactory::new(").count();
             with_call_all_count += content.matches(".with_call_all(").count();
+            with_event_bus_count += content.matches(".with_event_bus(").count();
         }
     }
 
@@ -111,5 +113,9 @@ fn every_production_factory_in_runtime_is_wired_with_call_all() {
     assert_eq!(
         with_call_all_count, factory_new_count,
         "every NativeHostFactory::new site in runtime must be followed by .with_call_all"
+    );
+    assert_eq!(
+        with_event_bus_count, factory_new_count,
+        "every NativeHostFactory::new site in runtime must be followed by .with_event_bus"
     );
 }

@@ -27,6 +27,7 @@ use syneroym_core::{
     asset_manifest::AssetRegistry,
     config::{RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
+    event_bus::EventBus,
     http_routes::{HttpRouteRegistry, SsePermitRegistry},
     local_registry::EndpointRegistry,
     protocol_utils::SessionRevocationCheck,
@@ -175,6 +176,9 @@ pub struct RouteHandlerInner {
     pub dedup_guard: Option<Arc<CallDedupGuard>>,
     /// Session revocation store (ADR-0024).
     pub session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
+    /// Node-level event feed bus.
+    #[allow(dead_code)]
+    pub event_bus: Option<Arc<EventBus>>,
     /// Whether a stream for a service this node does not host is forwarded
     /// to its host (ADR-0002 A1). Only a coordinator forwards; any other
     /// node answers `not_hosted_here`.
@@ -235,6 +239,8 @@ pub struct RouteHandlerDeps {
     pub control_plane: Option<Arc<ControlPlaneService>>,
     /// Optional session revocation checker (ADR-0024).
     pub session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
+    /// Node-level event feed bus.
+    pub event_bus: Option<Arc<EventBus>>,
 }
 
 impl Debug for RouteHandlerDeps {
@@ -453,6 +459,7 @@ impl RouteHandler {
             _proxy: Some(proxy),
             dedup_guard: Some(dedup_guard),
             session_revocation: deps.session_revocation,
+            event_bus: deps.event_bus,
             forwards: false,
         });
 
@@ -498,6 +505,7 @@ impl RouteHandler {
             _proxy: None,
             dedup_guard: None,
             session_revocation: None,
+            event_bus: None,
             forwards: true,
         });
         Ok(Self { inner })

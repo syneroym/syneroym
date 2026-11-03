@@ -10,7 +10,8 @@ use std::sync::Arc;
 use syneroym_app_orchestration::LogicalResolver;
 use syneroym_conversation::ConversationService;
 use syneroym_core::{
-    asset_manifest::AssetRegistry, http_routes::HttpRouteRegistry, record_signer::NodeRecordSigner,
+    asset_manifest::AssetRegistry, event_bus::EventBus, http_routes::HttpRouteRegistry,
+    record_signer::NodeRecordSigner,
 };
 use syneroym_data_blob::BlobProvider;
 use syneroym_data_db::traits::StorageProvider;
@@ -70,6 +71,8 @@ pub(super) struct SharedNodeHandles {
     record_signer: Arc<NodeRecordSigner>,
     #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     call_all: CallAll,
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
+    event_bus: Arc<EventBus>,
 }
 
 impl SharedNodeHandles {
@@ -89,6 +92,7 @@ impl SharedNodeHandles {
         assets: AssetRegistry,
         record_signer: Arc<NodeRecordSigner>,
         call_all: CallAll,
+        event_bus: Arc<EventBus>,
     ) -> Self {
         Self {
             key_store,
@@ -105,6 +109,7 @@ impl SharedNodeHandles {
             assets,
             record_signer,
             call_all,
+            event_bus,
         }
     }
 
@@ -176,5 +181,10 @@ impl SharedNodeHandles {
     #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
     pub(super) fn call_all(&self) -> &CallAll {
         &self.call_all
+    }
+
+    #[cfg_attr(all(not(feature = "dual_build_fixture"), not(feature = "roym")), allow(dead_code))]
+    pub(super) fn event_bus(&self) -> &Arc<EventBus> {
+        &self.event_bus
     }
 }

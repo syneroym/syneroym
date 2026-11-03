@@ -189,6 +189,7 @@ pub(crate) async fn test_route_handler() -> (RouteHandler, HttpRouteRegistry) {
         control_plane_service: Arc::new(RecordingNativeService::default()),
         control_plane: None,
         session_revocation: None,
+        event_bus: None,
     };
 
     let route_handler = RouteHandler::init(

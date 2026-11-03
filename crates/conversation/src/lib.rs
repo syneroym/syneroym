@@ -33,7 +33,7 @@ use ids::derive_conversation_id;
 use rand::RngCore;
 use store::{ConversationConfig as StoreConfig, ConversationStore, StoredMessage};
 use syneroym_async_queue::QueueConfig;
-use syneroym_core::local_registry::EndpointRegistry;
+use syneroym_core::{event_bus::EventBus, local_registry::EndpointRegistry};
 use syneroym_data_db::traits::StorageProvider;
 use syneroym_data_keystore::KeyStore;
 use syneroym_rpc::{
@@ -63,6 +63,7 @@ pub struct ConversationService {
     /// service_proxy`/`ControlPlaneService.service_proxy` are already
     /// `OnceLock` for.
     service_proxy: OnceLock<Weak<dyn ServiceProxy>>,
+    event_bus: OnceLock<Arc<EventBus>>,
     registry: EndpointRegistry,
     crypto: Arc<dyn crypto::SessionCrypto>,
     queue_config: QueueConfig,
@@ -100,6 +101,7 @@ impl ConversationService {
             storage_provider,
             key_store,
             service_proxy: OnceLock::new(),
+            event_bus: OnceLock::new(),
             registry,
             crypto: Arc::new(X3dhDoubleRatchetCrypto::new()),
             queue_config,
@@ -116,6 +118,10 @@ impl ConversationService {
     /// own doc). Called at most once, from the node's composition root.
     pub fn set_service_proxy(&self, proxy: Weak<dyn ServiceProxy>) {
         let _ = self.service_proxy.set(proxy);
+    }
+
+    pub fn set_event_bus(&self, bus: Arc<EventBus>) {
+        let _ = self.event_bus.set(bus);
     }
 
     pub(crate) fn current_service_proxy(&self) -> Weak<dyn ServiceProxy> {

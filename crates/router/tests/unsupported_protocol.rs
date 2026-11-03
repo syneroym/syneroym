@@ -94,6 +94,7 @@ async fn route_handler_with(config: &SubstrateConfig, temp_dir: &Path) -> RouteH
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
         session_revocation: None,
+        event_bus: None,
     };
     RouteHandler::init("test-orchestrator".to_string(), config, registry, [11u8; 32], None, deps)
         .await

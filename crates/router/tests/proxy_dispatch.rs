@@ -53,7 +53,6 @@ use proxy_harness::*;
 /// with `target-kind = "dependency"` exercises the real host-side
 /// dependency-resolution path end to end, not just the Rust-level unit tests in
 /// `sandbox_wasm::host_capabilities`.
-#[expect(clippy::too_many_lines, reason = "complex test harness setup with bound dependencies")]
 async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, Arc<LogicalResolver>)>
 {
     let proxy_test_bytes = fs::read(test_constants::proxy_test_wasm_path()).ok()?;
@@ -68,14 +67,8 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig::default()).unwrap());
     let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
 
-    registry
-        .set_app_context(
-            "proxy-caller".to_string(),
-            "app-1".to_string(),
-            "proxy-caller-svc".to_string(),
-        )
-        .await
-        .unwrap();
+    let (pc, app, svc) = ("proxy-caller".into(), "app-1".into(), "proxy-caller-svc".into());
+    registry.set_app_context(pc, app, svc).await.unwrap();
 
     let app_registry = Arc::new(StaticInventory::new());
     let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
@@ -150,6 +143,7 @@ async fn test_route_handler_with_a_bound_dependency() -> Option<(RouteHandler, A
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
         session_revocation: None,
+        event_bus: None,
     };
 
     Some((
@@ -454,6 +448,7 @@ async fn test_route_handler_with_self_native_data_layer(
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
         session_revocation: None,
+        event_bus: None,
     };
 
     let route_handler = RouteHandler::init(
@@ -586,6 +581,7 @@ async fn test_route_handler_with_self_native_data_layer_and_stage4(
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
         session_revocation: None,
+        event_bus: None,
     };
 
     let route_handler = RouteHandler::init(

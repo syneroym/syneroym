@@ -16,6 +16,7 @@ use syneroym_core::{
     config::{BlobBackend, RetryPolicy, SubstrateConfig},
     dht_registry::RegistryClient,
     endpoint_publisher::EndpointPublisher,
+    event_bus::EventBus,
     host_identity::HostIdentity,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
@@ -336,33 +337,64 @@ pub(super) async fn replay_persisted_bindings(
 /// backends, the WASM and container sandboxes, and the control-plane
 /// native service. This is the substrate's composition root -- `router`
 /// only needs the finished handles, not the knowledge of how to build them.
+async fn init_base_capabilities(
+    config: &SubstrateConfig,
+    secret_key: [u8; 32],
+    registry: &EndpointRegistry,
+) -> anyhow::Result<(
+    Arc<Identity>,
+    Arc<KeyStore>,
+    Arc<dyn StorageProvider>,
+    Arc<dyn BlobProvider>,
+    Arc<MqttBroker>,
+    Arc<LogicalResolver>,
+)> {
+    let node_identity = Arc::new(Identity::from_bytes(&secret_key));
+    let key_store = Arc::new(KeyStore::new());
+    let storage_provider: Arc<dyn StorageProvider> =
+        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, config.storage.encryption)?);
+    let blob_provider = build_blob_provider(config)?;
+    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
+        channel_capacity: config.mqtt.channel_capacity as usize,
+    })?);
+    let app_registry = replay_persisted_bindings(registry).await?;
+    let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
+    Ok((
+        node_identity,
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        logical_resolver,
+    ))
+}
+
+fn wire_conversation_and_engine(
+    conversation: &Arc<ConversationService>,
+    app_sandbox_engine: &Arc<AppSandboxEngine>,
+) -> anyhow::Result<()> {
+    app_sandbox_engine
+        .conversation
+        .set(Arc::downgrade(conversation) as Weak<dyn ConversationHost>)
+        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::conversation set more than once"))?;
+    conversation.set_notifier(Arc::downgrade(app_sandbox_engine) as Weak<dyn ConversationNotifier>);
+    Ok(())
+}
+
 async fn build_route_handler_deps(
     config: &SubstrateConfig,
     service_id: &str,
     registry: &EndpointRegistry,
     secret_key: [u8; 32],
 ) -> anyhow::Result<(RouteHandlerDeps, SharedNodeHandles)> {
-    // Shared with `ControlPlaneService`'s native `data-layer` dispatch
-    // (`SynSvcNativeService`), which signs relationship-proof
-    // records as this node's own asserter identity -- the same key material
-    // `ConnectionRouter::init` (below, in the caller) separately constructs
-    // its own `Identity` from for `ProxyRouter`'s `node_identity`.
-    let node_identity = Arc::new(Identity::from_bytes(&secret_key));
-    let key_store = Arc::new(KeyStore::new());
-    let storage_provider: Arc<dyn StorageProvider> =
-        Arc::new(SqliteStorageProvider::new(&config.storage.db_dir, config.storage.encryption)?);
-    let blob_provider = build_blob_provider(config)?;
-
-    let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
-        channel_capacity: config.mqtt.channel_capacity as usize,
-    })?);
-
-    // ADR-0021 §2: replay persisted bindings before anything can
-    // resolve one -- a restarted substrate must answer a guest's first
-    // call, and nothing re-pushes on restart (ADR-0021 §5 -- push failure
-    // is sticky, and so is push absence).
-    let app_registry = replay_persisted_bindings(registry).await?;
-    let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
+    let (
+        node_identity,
+        key_store,
+        storage_provider,
+        blob_provider,
+        messaging_broker,
+        logical_resolver,
+    ) = init_base_capabilities(config, secret_key, registry).await?;
 
     let (app_sandbox_engine, podman_sandbox_engine, websocket_senders, call_all) =
         build_sandbox_engines(
@@ -386,25 +418,10 @@ async fn build_route_handler_deps(
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let assets: AssetRegistry = Arc::new(DashMap::new());
 
-    // Cloning the `Arc`, not `node_identity` itself -- `Identity`
-    // deliberately does not implement `Clone`, but a second handle to the
-    // same key material is exactly what's needed here. The supervisor role
-    // (when configured) uses this as the identity it presents when it
-    // connects, as a client, to the substrates it manages (ADR-0021 §8).
     let supervisor_client_identity = node_identity.clone();
 
     let conversation = build_conversation_service(config, &storage_provider, &key_store, registry)?;
-
-    // Both directions, `Weak` on both sides: the engine reaches
-    // `conversation` for the guest-facing WIT surface, `conversation`
-    // reaches the engine to notify a wasm-hosted service of an inbound
-    // message/state change.
-    app_sandbox_engine
-        .conversation
-        .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
-        .map_err(|_| anyhow::anyhow!("AppSandboxEngine::conversation set more than once"))?;
-    conversation
-        .set_notifier(Arc::downgrade(&app_sandbox_engine) as Weak<dyn ConversationNotifier>);
+    wire_conversation_and_engine(&conversation, &app_sandbox_engine)?;
 
     let record_signer = NodeRecordSigner::new(node_identity.clone(), registry.clone());
     let _ = app_sandbox_engine.record_signer.set(record_signer.clone());
@@ -438,6 +455,10 @@ async fn build_route_handler_deps(
         .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
         .map_err(|_| anyhow::anyhow!("ControlPlaneService::conversation set more than once"))?;
 
+    let event_bus = EventBus::new(registry.clone());
+    let _ = app_sandbox_engine.set_event_bus(event_bus.clone());
+    conversation.set_event_bus(event_bus.clone());
+
     let shared = SharedNodeHandles::new(
         key_store.clone(),
         storage_provider.clone(),
@@ -453,6 +474,7 @@ async fn build_route_handler_deps(
         assets.clone(),
         record_signer,
         call_all,
+        event_bus.clone(),
     );
 
     #[cfg(feature = "auth")]
@@ -476,6 +498,7 @@ async fn build_route_handler_deps(
             control_plane_service: control_plane_service.clone(),
             control_plane: Some(control_plane_service),
             session_revocation: auth_service.map(|a| a as Arc<dyn SessionRevocationCheck>),
+            event_bus: Some(event_bus),
         },
         shared,
     ))
