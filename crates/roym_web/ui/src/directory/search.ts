@@ -34,10 +34,10 @@ export interface RefusedHit {
   sources: string[];
 }
 
-/// Why one source contributed nothing, as the client saw it. `NotStarted`
-/// is this installation's own gateway refusing to begin the call (a 503
-/// from guest-HTTP admission) -- deliberately not folded into `TimedOut`,
-/// because this node being busy is not that directory's fault.
+/// Why one source contributed nothing, as the client saw it. `not-started`
+/// means this node refused to start the batch (e.g. proxy call-all busy)
+/// -- deliberately not folded into `timed-out`, because this node being
+/// busy is not that directory's fault.
 export type SourceOutcomeKind =
   | "ok"
   | "not-started"

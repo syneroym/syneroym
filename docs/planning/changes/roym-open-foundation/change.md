@@ -9,7 +9,7 @@ living-docs-touched:
   - docs/planning/traceability-matrix.md
   - docs/planning/deferred-backlog.md
 demo:
-  - none: internal federated query fan-out and merging, directory.find call, and removal of client-side loop without new user-facing screens
+  - none: internal typed method contracts, proxy call-all batching, dual-build shim capability, and internal federated query fan-out; search has no demo story because its Hub path is covered by Hub cases 22 and 23, and the milestone demo is the chat story in A5
 ---
 # Roym open foundation
 
@@ -135,7 +135,7 @@ Rejected: wait for async guests (WASI 0.3). Its date is not known, and M8 federa
 
 ### Federated query library
 
-A Roym library in `crates/roym_federated_query`, Cargo package `syneroym-roym-federated-query`. It takes a list of sources (`Source { did, pinned_issuer }`), a query (`SearchQuery`), and `now_secs`. It calls `proxy::call_all`, checks every raw reply against `MAX_SEARCH_REPLY_BYTES` (8 MiB), parses JSON-RPC responses, verifies each record with `roym_core` and `signed_record` verification functions, checks membership evidence against pinned issuers, caps results at 10 verified hits and 20 refused hits per source, and merges deterministically with round-robin ordering across sources into a `Page` (up to 50 hits, 20 refused). The outcome kinds per source are `error: null`, `not-found`, `timed-out`, `not-started`, `refused`, and `unreadable`.
+A Roym library in `crates/roym_federated_query`, Cargo package `syneroym-roym-federated-query`. It takes a list of sources (`Source { did, pinned_issuer }`), a query (`SearchQuery`), and `now_secs`. It calls `proxy::call_all`, checks every raw reply against `MAX_SEARCH_REPLY_BYTES` (8 MiB), parses JSON-RPC responses, verifies each record with `listing::verify_envelope` and `membership::evaluate` from `roym_core`, checks membership evidence against pinned issuers, caps results at 20 verified hits and 20 refused hits per source after checking (and 10 per source on the page), and merges deterministically with round-robin ordering across sources into a `Page` (up to 50 hits, 20 refused). The outcome kinds per source are `error: null`, `not-found`, `timed-out`, `not-started`, `refused`, and `unreadable`.
 
 **Who owns what:**
 
@@ -315,7 +315,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Q1–Q6: option (a), 2026-11-02.**
 - **D-A4-1. The method.** `directory.find` in the method table of `roym_directory`. `FindInput { #[serde(default)] query: SearchQuery }` with `#[serde(deny_unknown_fields)]`. `SearchQuery` stays tolerant of unknown fields. `FindOutput { run_id: String, #[serde(flatten)] page: Page }` defined in `roym_directory` (`client_find.rs`); `Page` comes from the library. Local-only.
 - **D-A4-2. Removed methods.** `directory.start-run`, `directory.query-source`, `directory.merge`, `MAX_CLIENT_CONCURRENCY`, `validate_run_and_source`, and their shapes are removed without deprecation. `directory.run-envelope` stays.
-- **D-A4-3. The library.** `crates/roym_federated_query` (`syneroym-roym-federated-query`). Depends on `syneroym-app-host`, `syneroym-roym-core`, `serde`, `serde_json`. Generic over `P: AppProxy`. Pre-parse 8 MiB size cap (`MAX_SEARCH_REPLY_BYTES`), reply strings dropped as soon as hits are parsed.
+- **D-A4-3. The library.** `crates/roym_federated_query` (`syneroym-roym-federated-query`). Depends on `syneroym-app-host`, `syneroym-roym-core`, `serde`, `serde_json`, and `thiserror`. Generic over `P: AppProxy`. Pre-parse 8 MiB size cap (`MAX_SEARCH_REPLY_BYTES`), reply strings dropped as soon as hits are parsed.
 - **D-A4-4. One batch, one wave, no chunking.** `find` sends one `call_all` with one request per source, in input order, with `DEFAULT_SOURCE_TIMEOUT_MS`. A list longer than `MAX_SOURCES` (8) is `FindError::TooManySources` (`-32603`). An empty list returns an empty page without calling `call_all`.
 - **D-A4-5. Outcome mapping.** `ServiceNotFound` / `DependencyNotBound` -> `NotFound`; `TimedOut` -> `TimedOut`; `Callee(c)` -> `Refused { code: c.code, message }`; other proxy error -> `Refused { -32603 }`; raw reply > 8 MiB -> `Unreadable { "reply too large" }`; malformed JSON-RPC or hits -> `Unreadable`; batch refusal (`Internal` / `UnsupportedTarget`) -> `NotStarted`.
 - **D-A4-6. Checking is unchanged.** For each source in returned order: parse into `SearchOutput`, truncate to 40 hits, verify envelope with `listing::verify_envelope`. Cap at 20 verified and 20 refused per source. Membership evaluated with source's pinned issuer.
@@ -327,7 +327,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A4-12. Clients.** Hub uses `findListings(query)` in `search.ts`: one `directory.find` call, 503 -> busy notice, other error -> failure notice, help text updated, old per-source progress maps removed. `roymctl` makes one `directory.find` call, prints canned format, exits non-zero on error.
 - **D-A4-13. Safe migration ordering.** `find` added beside old verbs with equivalence test before clients move, then old verbs and shapes deleted.
 - **D-A4-14. Slow source and ceiling fakes.** `trust_harness::canned_source_response` made async, adds `hSlow` (sleeps 5s on search only), `hCeiling1..8` (40 valid listings with full evidence), `hTwoVersions` (two versions of one listing in one reply), `hOversized` (>8 MiB payload).
-- **D-A4-15. Equivalence before deletion.** Step 4 tested equivalence between old 3-call loop and `find` on all scenarios before Step 7 deletion.
+- **D-A4-15. Equivalence before deletion.** Step 4 tested equivalence between the old 3-call loop and `find` on one combined scenario (4 sources: `hForeignWire`, `hForeignWire2`, `hForge1`, `hTrunc`) before Step 7 deletion.
 - **D-A4-16. Typed remote search reply.** Remote `directory.search` parsed into `SearchOutput`; non-boolean `truncated` treated as `Unreadable`. Truncation to 40 hits applies before envelope checking.
 
 ## Deviations
@@ -361,7 +361,11 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Deferred membership checks in ceiling scenario (fallback 1''):** In WASM debug mode, genuine Ed25519 verification of 320 full evidence listings took ~1.6-1.7s; membership checks were deferred to `build_hits` (at most 50 hits on the merged page) to safely fit headroom.
 - **Separate ceiling evidence builders:** Unit tests in `syneroym-roym-federated-query` and dual-build parity tests in `syneroym-roym-web` use separate evidence builders because `roym_core` is a WASM-target guest library that cannot export test helpers requiring `Identity` signing without introducing a host-only crypto dependency into its target-independent production graph.
 - **Adjusted dispatch headroom and fan-out source timeout (fallback 3):** To fit the ceiling verification budget in WASM debug execution, `DISPATCH_HEADROOM_MS` was increased to 3 000 ms, while `FIND_SOURCE_TIMEOUT_MS` was created at 1 700 ms specifically for `find` requests (`waves * (timeout + 250) + headroom = 1 950 + 3 000 = 4 950 ms < 5 000 ms`), leaving `DEFAULT_SOURCE_TIMEOUT_MS` at 2 000 ms for single-source operations (`probe_info`, `publish_to_source`, `check_standing`). Fallback (2) (lowering hit caps) was skipped because reducing query capacity compromises search results, whereas adjusting timeouts directly satisfies the 5 s dispatch budget.
-- **Demo close-out:** Front matter `demo:` describes internal typed method contracts, proxy call-all batching, and dual-build shim capability.
+- **`thiserror` dependency in `syneroym-roym-federated-query` (D-A4-3):** The plan listed `serde` and `serde_json` only; `thiserror` was added to derive error variants for `FindError`.
+- **Equivalence testing scope before deletion (D-A4-15):** Equivalence between the old 3-call loop and `find` was verified on one combined scenario with four distinct sources (`hForeignWire`, `hForeignWire2`, `hForge1`, `hTrunc`), rather than running the six separate planned scenarios (97, 98, 102c, 102d, 119, 120) through the old loop.
+- **Demo story owner exception (Q6):** Search has no dedicated demo story; its Hub path is covered by existing test cases, and the milestone demo is the chat story in A5.
+- **Method shapes and method table count:** Shapes for `start-run`, `query-source`, and `merge` deleted; `directory_find_empty.json` and `directory_find_with_hits.json` added. Method table has 35 methods (38 minus 3).
+- **Demo close-out:** Front matter `demo:` combines the earlier slices' reasons (typed contracts, call-all batching, dual-build shim) with the search fan-out exception.
 
 ### Planned wire changes (plan section 4)
 
@@ -398,14 +402,14 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Wire search with absent/null params (B55):** `directory.search` over the wire accepts absent or `null` params, returning newest listings as `{}` does.
 - **Serde error ordering (B56):** Request with multiple errors reports the first one parsed by serde.
 - **Null SynOrg result preservation (B57):** `probe-info` preserves `{"result": null}` when remote has no SynOrg; `add-source` records the probe note. Tested in `directory_compat.rs`.
-- **`directory.find` added (W1):** Added to `roym_directory`'s local method table with `FindInput` and `FindOutput`.
-- **Old search verbs removed (W2):** `directory.start-run`, `directory.query-source`, and `directory.merge` removed from method table.
-- **`SearchQuery` error path under `find` (W3):** Invalid query field reports the field path under `query` (e.g. `data: {"field": "query.categories"}`).
-- **`directory.run-envelope` restricted to page records (W4):** Envelopes for unmerged or refused records return `null`.
-- **Refused envelopes not served (W5):** `RunEnvelopeRow` no longer stores `refused: bool` or refused envelopes.
-- **Client single search request (W6):** Hub and `roymctl` send a single `directory.find` request.
-- **Obsolete method shapes deleted (W7):** Shapes for `start-run`, `query-source`, and `merge` deleted; `directory_find_empty.json` and `directory_find_with_hits.json` added.
-- **Directory method count is 35 (W8):** Method table has 35 methods (38 minus 3).
+- **Removed search verbs (W1):** `directory.start-run`, `directory.query-source`, and `directory.merge` are removed. They answer `-32601` locally and `-32013` over the wire (P13).
+- **`directory.find` added (W2):** New local-only method `directory.find`. Input `{ "query": SearchQuery }` (`query` optional, default `{}`; top-level unknown fields refused). Output `{ run_id, outcomes: [{source, verified, refused, truncated, error}], hits, hits_truncated, refused, refused_truncated }`.
+- **`SearchQuery` error path under `find` (W3):** An invalid query field (for example `open_to`) is refused by `directory.find` with `-32602` and `data.field` = `query.open_to`. Before, `query-source` refused it as `open_to`.
+- **`directory.run-envelope` restricted to page records (W4):** `directory.run-envelope` has the same input and output. It finds only records that are on the page `find` returned (Q3 (a)). Before, it found any verified row of the run, including a hit that did not reach the page.
+- **Outcomes order (W5):** The `outcomes` list is in source order (sorted by DID). Before, a client got outcomes in the order the sources answered.
+- **`max_concurrency` removed (W6):** `max_concurrency` is gone from every reply.
+- **Outcome verification counts (W7):** `verified` and `refused` in an outcome count what passed checking and the per-source cap, not what was stored successfully.
+- **Wire search request format and timeout (W8):** The `directory.search` request that goes to each source is byte-for-byte the same: `["{\"method\":\"directory.search\",\"params\":<query>}"]`, interface `directory`, method `invoke`, `idempotent`, 1 700 ms (was 2 000 ms before R1).
 
 ## Close-out
 
