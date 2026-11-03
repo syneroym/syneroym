@@ -581,7 +581,7 @@ WIT signature, so the call is typed at the dispatch boundary even though the wir
 is JSON-RPC. Set `options.idempotent = true` only for calls safe to retry on
 transport failure; a callee-returned error is never retried. A component cannot
 use this import to reach *another* service's native capabilities (`data-layer`,
-`vault`, `app-config`, `blob-store`, `messaging`) — that's refused with
+`vault`, `app-config`, `blob-store`, `messaging`, `events`) — that's refused with
 `permission-denied` — only its own, via its regular host imports.
 
 ##### Batched Outbound Calls (`call-all`)
@@ -1844,6 +1844,26 @@ The node auth service is addressed by `Host: auth.<domain>` (or `Host: auth-<aut
 - `GET /_syneroym/session/whoami`: Returns the active session's person DID, auth method, and expiration.
 - `POST /_syneroym/session/refresh`: Re-issues a session token bounded by the original delegation lifetime.
 - `POST /_syneroym/session/logout`: Revokes the session token and clears the cookie (`Max-Age=0`).
+
+##### Event Feed (`/_syneroym/events`)
+
+The router exposes an event feed at `GET /_syneroym/events` on each service hostname behind the gateway:
+- **Request**: `GET /_syneroym/events` with header `Accept: text/event-stream`.
+- **Identity Mode & Authorization**: Requires the client gateway to run in `login` identity mode. In `open` and `fixed` mode, every request receives `401 Unauthorized`. The session must belong to the recorded owner of the service's app instance (`403 Forbidden` if not owner).
+- **Error Status Codes & Order of Checks**:
+  1. `404 Not Found`: No event bus on this substrate (coordinator node).
+  2. `401 Unauthorized`: No valid gateway session cookie or bearer token.
+  3. `403 Forbidden`: Caller is not the registered owner of this service.
+  4. `404 Not Found`: The service does not belong to a deployed app instance.
+  5. `406 Not Acceptable`: Missing `Accept: text/event-stream` header.
+  6. `503 Service Unavailable` with `Retry-After: 1`: Concurrency limit reached (at most 16 concurrent feeds per app instance).
+- **Frames**:
+  - `event: ready\nid: <head>\ndata: {"cursor":"<head>"}\n\n` (sent on initial connection without a cursor).
+  - `event: change\nid: <cursor>\ndata: {"cursor":"...","kind":"...","service":"...","subject":"...","item":...,"at_ms":...}\n\n` (emitted on data changes).
+  - `event: reload\nid: <now>\ndata: {"cursor":"<now>"}\n\n` (sent when the requested cursor is evicted, ahead of head, or invalid).
+  - `: keep-alive\n\n` (emitted every 25 seconds of inactivity).
+- **Catch-up via Cursors**: Clients resume missed events by providing the last cursor via the `Last-Event-ID` header, or via the `?after=<cursor>` query parameter when reconnecting with a fresh `EventSource`.
+- **Browser Connection Limits**: The client gateway speaks HTTP/1.1 only. Web browsers enforce a per-host connection limit of approximately 6 concurrent connections across all tabs. Each open feed holds one connection slot indefinitely. Browser clients must pause or close the feed when their tab is hidden (`document.visibilityState === 'hidden'`) and resume with `?after=<last cursor>` when shown again. Reconnection on error should use exponential backoff with jitter.
 
 ##### Configuration
 

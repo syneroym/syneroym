@@ -9,6 +9,7 @@ living-docs-touched:
   - docs/planning/traceability-matrix.md
   - docs/planning/deferred-backlog.md
 demo:
+  - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
   - none: internal typed method contracts, proxy call-all batching, dual-build shim capability, and internal federated query fan-out; search has no demo story because its Hub path is covered by Hub cases 22 and 23, and the milestone demo is the chat story in A5
 ---
 # Roym open foundation
@@ -49,7 +50,7 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
   - A **batched outbound call** in the substrate, so that a guest can wait on many targets in one call without hitting its epoch deadline. It has a cap on targets and on concurrency. A fallback design is part of this change, in case the deadline cannot be extended.
   - A **federated query library** (a Roym library): fan-out, time limits, and the merge and removal of duplicates over results from many sources. It is used by the participant's search and later by the exchange.
   - One method for a whole search (`directory.find`). The three-call form (`directory.start-run`, `directory.query-source`, `directory.merge`) is removed.
-  - The **event feed**: one per participant node. WebSocket for clients outside the node. An internal subscription for services on the node.
+  - The **event feed**: one per participant node. SSE for clients outside the node. A pull read for services on the node.
   - **Remote clients:** remote access is a setting that is off by default. When it is on, clients log in with `delegated-key`, and `local` login keeps answering only loopback requests.
   - **Typed method inputs and outputs:** every Roym method reads its input into a struct and writes its output from a struct.
   - A **client guide** for developers: how to log in, call methods, read the event feed, render cards.
@@ -74,10 +75,10 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 | OF-7 | Merging results from many sources and removing duplicates is done only by the federated query library. The Hub and `roymctl` hold no merge logic. Each service still verifies the records it receives, with the same `roym_core` verification functions as today. | `crates/roym_federated_query` unit tests: 35 tests in `merge.rs`, `find.rs`, `verify.rs` covering parallel fan-out, sorting, round-robin, size caps, and hit deduplication. `dual_build_parity/directory_find.rs`: `a_second_find_for_one_source_does_not_duplicate_a_listing`. `dual_build_parity/directory.rs`: `scenario_97`, `scenario_98`, `scenario_102c`, `scenario_102d`, `scenario_119`, `scenario_120`. |
 | OF-17 | A batched call with more targets than the host maximum is refused before any call is made. The host runs at most a fixed number of outbound calls at once for one guest instance, and queues the rest. | `host_capabilities/tests/tests_call_all.rs`: `a_batch_over_the_maximum_is_refused_before_any_call`, `at_most_the_concurrency_limit_run_at_once_and_the_rest_wait`. `host_capabilities/tests/tests_call_all/limits.rs`: `the_waiter_limit_refuses_at_once_and_a_permit_is_released_after_the_batch`. `dual_build_parity/call_all_deadline.rs`: `slow_batches_do_not_fill_the_instance_pool`. `proxy_call_all.rs`: `batch_over_the_maximum_is_refused`, `local_wasm_callees_pool_exhaustion_is_bounded`. |
 | **Event feed** | | |
-| OF-8 | A client opens the event feed with its login session. When a message, a card, a booking or a delivery state changes on the node, the client gets an event within 1 s. The event names what changed and a cursor. It carries no message content. | |
-| OF-9 | A client that reconnects with its last cursor gets every event after that cursor, or is told the cursor is too old and it must reload. | |
-| OF-10 | A service on the node can subscribe to the same events through an internal subscription, without WebSocket. A service receives only the events of its own app instance. A client receives only the events of the apps its login session may use. | |
-| OF-11 | The Hub shows a new incoming message on an open screen with no user action. | |
+| OF-8 | A client opens the event feed with its login session. When a message, a card, a booking or a delivery state changes on the node, the client gets an event within 1 s. The event names what changed and a cursor. It carries no message content. | `crates/substrate/tests/roym_event_feed_e2e.rs: a_sent_message_records_a_message_event_within_one_second`. |
+| OF-9 | A client that reconnects with its last cursor gets every event after that cursor, or is told the cursor is too old and it must reload. | `crates/substrate/tests/roym_event_feed_e2e.rs: a_reconnect_with_the_last_cursor_gets_the_missed_events, a_cursor_from_before_a_restart_gets_reload`. `crates/core/src/event_bus/tests.rs: a_cursor_older_than_the_window_is_a_reload_with_the_head`. `crates/router/src/route_handler/http/events/tests.rs: a_too_old_cursor_gets_reload_then_live_changes`. |
+| OF-10 | A service on the node can read the events of its own app instance with `events.read`, without WebSocket. A service receives only the events of its own app instance. A client session receives only the events of the app instance of the hostname it opens, and only when the person is that app's owner. | `crates/sandbox_wasm/src/host_capabilities/capabilities_events.rs` tests (`events_read_and_record`, `events_scoping_by_app_instance`), `dual_build_parity/events.rs: sending_a_message_records_a_message_event_in_both_builds`, `crates/router/src/route_handler/http/events/tests.rs: the_feed_of_one_app_never_carries_another_apps_event, another_person_gets_403`. |
+| OF-11 | The Hub shows a new incoming message on an open screen with no user action. | `crates/substrate/tests/e2e/tests/roym-hub.spec.ts: 41. messages tab: a message sent in one tab appears in a second open tab with no reload`. `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`. |
 | **Remote clients** | | |
 | OF-12 | `local` login answers only a request whose TCP socket peer address is a loopback address. Headers such as `X-Forwarded-For` are never used for this check. When remote access is on, `local` login is turned off completely, because a proxy on the same machine (for example Caddy for TLS) makes every request arrive from loopback. A refused request gets an error that names `delegated-key` as the method to use. | |
 | OF-13 | By default the gateway binds `127.0.0.1`, and the spec and the default config say so. A node owner turns on remote access with a config setting that names the bind address. With it on, a client on another machine logs in with `delegated-key` and can use every Roym method. The Hub works from that machine (its Content Security Policy no longer names only `auth.localhost`). The Docker deploy (`deploy/docker-compose.community.yml`, `Dockerfile`) still works after the default changes. | |
@@ -168,10 +169,14 @@ Where the feed lives was decided in the M08A spike (D-OF-3): the host-level even
 
 The host-level bus is simpler, faster, and does not need state in a guest (D-OF-3).
 
-**Catch-up window and kinds (D-OF-4):**
+**Catch-up window, kinds, and delivery (D-OF-4, D-A5-4 to D-A5-13):**
 - In-memory window per app instance: newest 10,000 events or 24 hours, whichever is smaller.
-- Events carry a run id (node session) and sequence number. After a restart, or for cursors past the window, the node responds with "reload".
-- Four v1 event kinds: `conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking` (owned and written by Roym services).
+- Events carry cursor `<run_id>-<seq>`, `kind` (up to 64 bytes), `service` (up to 64 bytes), `subject` (up to 256 bytes), `item` (optional, up to 256 bytes), and `at_ms` (i64 timestamp).
+- Four v1 event kinds: `conversation.message` (message receipt/seq and visible deletion), `conversation.delivery` (delivery state change and refusal), `transaction.card` (card write), `transaction.booking` (booking write).
+- Recorded after database transactions commit. Failed record does not fail the transaction.
+- Clients read SSE stream at `GET /_syneroym/events` with `Accept: text/event-stream`, authenticated with an owner session (W1, D-A5-8).
+- Four frame types: `ready`, `change`, `reload`, and `: keep-alive` (every 25 s). Reconnects use `Last-Event-ID` or `?after=<cursor>`.
+- Services read through `syneroym:events@0.1.0` (`record` and `read`).
 
 ### Remote clients
 
@@ -203,7 +208,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - [x] Participant rename across Roym crates, the Hub, `roymctl`, docs.
 - [x] `call-all` with its limits, the deadline extension (or the fallback), and the native shim.
 - [x] The federated query library. Move merging and duplicate removal into it. One search method.
-- [ ] The event feed: the bus (or `web`), scoped by app instance, the WebSocket path, internal subscription, catch-up.
+- [x] The event feed: the bus, scoped by app instance, the SSE path, pull read for services (events.read), catch-up.
 - [ ] Remote access setting, default bind `127.0.0.1`, `local` login by socket peer address and off when remote access is on, `delegated-key` for remote clients, the Hub CSP, the Docker deploy.
 - [x] Typed input and output for every Roym method, the unknown-field rule, and the check test.
   - [x] profile and conversation
@@ -329,6 +334,20 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A4-14. Slow source and ceiling fakes.** `trust_harness::canned_source_response` made async, adds `hSlow` (sleeps 5s on search only), `hCeiling1..8` (10 valid listings each with maximum 64 KiB payloads and full evidence), `hFiftyHits` (50 maximum-size listings exceeding 2 MiB), `hTwoVersions` (two versions of one listing in one reply), `hOversized` (> 2 MiB payload).
 - **D-A4-15. Equivalence before deletion.** Step 4 tested equivalence between the old 3-call loop and `find` on one combined scenario (4 sources: `hForeignWire`, `hForeignWire2`, `hForge1`, `hTrunc`) before Step 7 deletion.
 - **D-A4-16. Typed remote search reply.** Remote `directory.search` parsed into `SearchOutput`; non-boolean `truncated` treated as `Unreadable`. Truncation to 10 hits (matching `MAX_CHECKED_PER_SOURCE`) applies before envelope checking.
+- **Q1–Q8: option (a), 2026-11-03.**
+- **D-A5-1. The bus and its lock.** `EventBus` lives in `crates/core/src/event_bus.rs`. The outer map is keyed by app instance (`HashMap<String, Window>`). It is behind an `Arc<RwLock<...>>` with read/write separation and a `tokio::sync::watch` channel notifying readers of newly committed records.
+- **D-A5-2. Writer identity.** The host tags each event with the app instance of the calling service from `app_context_of` (`engine.rs:535`), never from the event body. Services outside any app instance cannot record events.
+- **D-A5-3. The cursor.** A string `<run_id>-<seq>` with a 16-character hex run identifier and a monotonic sequence number starting at 1. Formatted as lowercase hex and base-10 sequence.
+- **D-A5-4. The window.** In-memory ring buffer holding up to 10 000 newest events per app instance, retained for at most 24 hours. The window is reset on restart; cursors from previous runs receive `reload`.
+- **D-A5-5. Limits on event fields.** `kind` up to 64 bytes, `service` up to 64 bytes, `subject` up to 256 bytes, `item` up to 256 bytes. Control characters and newlines are rejected with `invalid-argument`.
+- **D-A5-6. The WIT interface.** Package `syneroym:events@0.1.0` with functions `record` (WIT `%record`) and `read`. Returns immediately with no waiting.
+- **D-A5-7. Host capability and engine wiring.** `HostState::record_event` and `read_events` in `sandbox_wasm`. The engine receives the bus via `set_event_bus` and links `syneroym:events/events@0.1.0`.
+- **D-A5-8. The client feed.** Path `GET /_syneroym/events` handled by `HttpHandler::handle_event_feed` in `crates/router/src/route_handler/http/events.rs`. Strict check order: 404 (no bus), 401 (no session), 403 (not owner), 404 (no app instance), 406 (no event-stream Accept), 503 (feed permit limit of 16). Streams `ready`, `change`, `reload`, and `: keep-alive` (every 25 s).
+- **D-A5-9. The gateway.** Gateway forwards `/_syneroym/events` using `is_forwarded_syneroym_path`.
+- **D-A5-10. `AppEvents` in `syneroym-app-host`.** `AppEvents` supertrait on `AppHost` implemented by `GuestHost`, `NativeAppHost`, and test hosts.
+- **D-A5-11. Who records.** `syneroym-conversation` records `conversation.message` and `conversation.delivery`. `roym_transaction` records `transaction.card` and `transaction.booking`. Events are recorded only after database transactions commit.
+- **D-A5-12. The Hub.** `events.ts` manages an `EventSource` connection, closes on hidden tab, reconnects on shown, applies 150 ms per-subject debounce, and reconnects on error with backoff.
+- **D-A5-13. No config.** Window size, retention period, field limits, feed concurrency cap, and keep-alive intervals are hardcoded constants.
 
 ## Deviations
 
@@ -367,6 +386,12 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **Demo story owner exception (Q6):** Search has no dedicated demo story; its Hub path is covered by existing test cases, and the milestone demo is the chat story in A5.
 - **Method shapes and method table count:** Shapes for `start-run`, `query-source`, and `merge` deleted; `directory_find_empty.json` and `directory_find_with_hits.json` added. Method table has 35 methods (38 minus 3).
 - **Demo close-out:** Front matter `demo:` combines the earlier slices' reasons (typed contracts, call-all batching, dual-build shim) with the search fan-out exception.
+- **Event kinds written by host conversation capability (Q1):** The plan and change doc originally sketched services writing all events; conversation events (`conversation.message` and `conversation.delivery`) are written by the host capability in `syneroym-conversation`.
+- **SSE instead of WebSocket for client event feed (Q2):** The feed uses Server-Sent Events (`GET /_syneroym/events`), not WebSocket, for simpler unidirectional framing and native browser reconnect semantics.
+- **Pull read for guest services without push export (Q3):** Services pull events with `events.read`; internal push subscription is deferred to M08C (see deferred backlog).
+- **Event schema has `subject` and `item` (Q4):** Events carry `subject` and `item` instead of a single `id` field.
+- **Owner-only feed per hostname (Q5):** A client reads one app instance per hostname and must be the recorded owner of that app instance, rather than reading all apps associated with a session.
+- **Gateway identity mode requirement:** The feed requires the gateway to run in `login` identity mode. In `open` and `fixed` mode, all feed requests receive `401 Unauthorized`.
 
 ### Planned wire changes (plan section 4)
 
@@ -411,6 +436,10 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **`max_concurrency` removed (W6):** `max_concurrency` is gone from every reply.
 - **Outcome verification counts (W7):** `verified` and `refused` in an outcome count what passed checking and the per-source cap, not what was stored successfully.
 - **Wire search request format and timeout (W8):** The `directory.search` request that goes to each source sends `["{\"method\":\"directory.search\",\"params\":<query>}"]` with `query.limit` bounded to at most `MAX_CHECKED_PER_SOURCE` (10, or caller's smaller limit), interface `directory`, method `invoke`, `idempotent`, 1 700 ms (was 2 000 ms before this change).
+- **Client event feed path (W9 / A5-W1):** New path `GET /_syneroym/events` on every service hostname behind the gateway. Answers 200 with `text/event-stream` when requested with `Accept: text/event-stream` and authenticated by the service owner.
+- **Gateway event path forwarding (W10 / A5-W2):** Gateway forwards `/_syneroym/events` by `Host` header to the target service instead of answering 404.
+- **WIT events package (W11 / A5-W3):** New WIT package `syneroym:events@0.1.0` with `record` and `read` functions, imported by all Roym components and dual-build fixture.
+- **Router event feed path precedence (W12 / A5-W4):** Router intercepts `GET /_syneroym/events` before the service's internal route table.
 
 ## Close-out
 

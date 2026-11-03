@@ -545,9 +545,9 @@ flowchart TD
 | `roym` | Links the Roym services into the binary (Cargo feature `roym`). |
 | `mailbox` | Holds sealed messages for sleeping or offline receivers (crate `syneroym-mailbox`). |
 
-Two more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`.
+Three more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`. The event bus (`syneroym_core::event_bus`, ADR-0027) holds an in-memory ring buffer of change events scoped strictly by app instance.
 
-**Ingress.** A node accepts streams on two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. Each transport hands every stream it accepts to the connection router. A caller connects to a node. A WASM service never accepts connections itself, because the router dispatches each stream to it. Iroh is the peer-to-peer networking library from Layer 1. HTTP/1.1 requests travel inside these streams. The client gateway takes a local HTTP request and sends it to the target node as a stream. Browsers and the CLI send JSON-RPC 2.0 requests this way.
+**Ingress.** A node accepts streams on two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. Each transport hands every stream it accepts to the connection router. A caller connects to a node. A WASM service never accepts connections itself, because the router dispatches each stream to it. Iroh is the peer-to-peer networking library from Layer 1. HTTP/1.1 requests travel inside these streams. The client gateway takes a local HTTP request and sends it to the target node as a stream. Browsers and the CLI send JSON-RPC 2.0 requests this way. The router also answers `GET /_syneroym/events` directly as a Server-Sent Events (SSE) feed for the authenticated owner of the app instance (ADR-0027).
 
 WebSocket is an option for one app. The guest declares an HTTP route with `target = "websocket"`. The router upgrades the connection and hands each frame to the guest. The app defines the frames. They are not JSON-RPC.
 
@@ -1891,7 +1891,7 @@ A caller that is given the address of a coordinator (for example **C** or **Cp**
 | WASM runtime | **Wasmtime** 48.x LTS (WASI 0.2) | Bytecode Alliance; component model support |
 | Container runtime | **Podman** (the host's `podman` command) | No daemon; Docker-compatible CLI. Rootless use is operator advice: the engine checks neither the Podman version nor the rootless mode |
 | API IDL | **WIT** (Component Model, WASI 0.2) | Single source for the host and guest component interfaces. The wire surface is separate: the route preamble and the Roym JSON envelope |
-| External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams | Types come from WIT. Method dispatch is written by hand. WebSocket is an optional route for one app |
+| External API | **JSON-RPC 2.0** over HTTP/1.1 and framed Iroh/WebRTC streams, and an **SSE event feed** (`/_syneroym/events`, ADR-0027) | Types come from WIT. Method dispatch is written by hand. WebSocket is an optional route for one app |
 | Inter-component calls | **JSON-RPC 2.0** through the Universal Proxy | Local, or over Iroh QUIC to another node |
 | Local storage | **SQLite** (`rusqlite` + `sqlcipher`) | Single writer per service; see Storage & Write Arbitration |
 | DHT / registry | **pkarr** 8.1 + BEP 0044 DHT | Community registry first, DHT second. The bootstrap server is Envisioned: see Layer 1 |

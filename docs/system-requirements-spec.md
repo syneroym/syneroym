@@ -620,7 +620,7 @@ Substrate nodes boot in an unowned state. They fail closed on privileged operati
 
 The Client Gateway bridges HTTP and WebSocket traffic from web browsers and external clients to internal and remote substrate RPC handlers.
 
-- **Ingress Protocol Translation:** The gateway listens on port 7960 (configurable). It translates browser HTTP requests (`POST /rpc`, `GET /metrics`, `GET /blobs/*`) and WebSocket connections (`/__syneroym/tunnel`, `/__syneroym/ws`) into substrate router calls.
+- **Ingress Protocol Translation:** The gateway listens on port 7960 (configurable). It translates browser HTTP requests (`POST /rpc`, `GET /metrics`, `GET /blobs/*`, `GET /_syneroym/events`) and WebSocket connections (`/__syneroym/tunnel`, `/__syneroym/ws`) into substrate router calls.
 - **Session Identity Propagation:** The gateway extracts caller credentials from session cookies (`syneroym_session`) or Authorization headers. It validates credentials against the Node Auth Service and injects verified caller DIDs into requests.
 - **Multi-Substrate Routing:** Inbound requests for foreign substrate services route across the Iroh network overlay using local static inventories or registry lookups. Web browsers do not need native QUIC connections.
 - **Static Asset Delivery:** Static user interface assets and application bundles stream directly from the filesystem or content-addressed blob storage. The gateway does not instantiate guest WebAssembly components for static assets.
@@ -1070,6 +1070,15 @@ Isolate topic namespaces in the embedded MQTT broker by prefixing topics with th
 
 - **Publish Isolation:** Prefix outbound publish requests with the calling service identity (`svc/<service_id>/<topic>`). This prevents services from publishing into another service's namespace or spoofing message origins.
 - **Subscription Scoping:** Scope inbound subscriptions to the caller's namespace by default (`svc/<service_id>/<topic>`). Allow cross-service subscriptions only when the caller specifies a fully qualified topic (`svc/<other_service>/<topic>`). This prevents unintended message access across services.
+
+### [PLT-EVT] Host Event Feed
+
+The substrate maintains an in-memory event bus providing real-time change notifications to clients and local services without polling (ADR-0027).
+
+- **Strict App-Instance Isolation:** Every event is tagged by the substrate with the emitting service's app instance. Events never leak across different app instances or to external callers without owner authorization.
+- **Owner-Only Gateway Streaming:** The HTTP router streams events at `GET /_syneroym/events` over Server-Sent Events (SSE). The endpoint admits only authenticated sessions belonging to the app's owner, returning 401 for unauthenticated calls and 403 for non-owners.
+- **Cursor Catch-Up & Reload:** Each event carries a monotonic cursor `<run_id>-<seq>`. Readers catch up from a cursor within an in-memory ring buffer (up to 10 000 events or 24 hours). Reconnecting after a node restart, or with an evicted cursor, returns a `reload` frame directing the client to re-fetch baseline data.
+- **Guest Pull Capability:** Local guest components record and pull events through the `syneroym:events@0.1.0` host interface.
 
 ### [PLT-ASY] Asynchronous Operations & Scheduling
 
