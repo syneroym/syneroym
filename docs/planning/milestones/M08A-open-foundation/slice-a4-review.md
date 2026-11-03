@@ -1342,7 +1342,7 @@ skipped. Add W8's new timeout to the change doc's "Planned wire changes"
 (see R7). If the owner prefers one shared constant, then record the effect
 on the three calls in Deviations and in section 11 of the plan instead.
 
-*Status:* Open
+*Status:* Fixed (3e288891). Reintroduced `FIND_SOURCE_TIMEOUT_MS = 1_700` in `roym_core::directory` for parallel `directory.find` fan-out while keeping `DEFAULT_SOURCE_TIMEOUT_MS = 2_000` for single calls (`probe_info`, `publish_to_source`, `check_standing`). Parity assertion `find_time_fits_the_real_sandbox_defaults` proved failure when `FIND_SOURCE_TIMEOUT_MS` was temporarily set to 2 000 ms (panicked: wave time + headroom must fit inside dispatch epoch), then restored. Updated comments to real formula `waves * (timeout + 250) + headroom < epoch`, restored D-A4-11 text, and recorded timeout adjustment in Deviations.
 
 #### R2 — major — the size-cap test and the ceiling measure do not use maximum payloads
 
@@ -1391,7 +1391,7 @@ is above 60 % of `DISPATCH_HEADROOM_MS`, apply section 7.6 again. Note in
 the change doc why the two builders cannot be shared (different crates), or
 move one builder into a `roym_core` test-support module that both use.
 
-*Status:* Open
+*Status:* Fixed (fdfd679a). Added `sign_max_payload_listing_with_issuer` generating 65 KiB payload with escaping quotes/newlines; `fifty_hits_with_maximum_evidence_fit_under_size_cap_and_are_read` in `find.rs` produces 5 510 051 bytes response under the 8 MiB cap (proved failure when asserting < 1 000 000 bytes, then restored). Extracted `signed_canned_listing` in `trust_harness.rs` with 2 000-byte escaping summaries across 320 signed ceiling listings; ran 20 isolated ceiling measure runs, all passed with worst wasm time 2.022 s (well below 3 000 ms headroom). Noted separate evidence builders in `change.md`.
 
 #### R3 — minor — why-comments were lost in the move, and the library's public surface has no docs
 
@@ -1432,7 +1432,7 @@ private (`mod`) and keep the re-exports. At `gather.rs:72`, give any source
 without a result an `Unreadable { reason: "no result from host" }` outcome
 (or assert equal lengths), so a host bug is visible.
 
-*Status:* Open
+*Status:* Fixed (8322a9b9). Added derivation comment to `MAX_SEARCH_REPLY_BYTES` in `gather.rs`; added doc comments to `Source`, `FindError`, `SourceReport`, `Page`, `Gathered`, `find`, and `HeldEvidence`; restored truncation and per-source truncated why-comments in `gather.rs`; handled host result count mismatch with `Unreadable { reason: "no result from host" }`; made `gather`, `merge`, and `verify` internal modules private in `lib.rs`.
 
 #### R4 — minor — the membership verdict is now decided in two places, and D-A4-7 "moves unchanged" is no longer true
 
@@ -1469,7 +1469,7 @@ the unpinned verdict itself). Call it from `build_hits`. Drop `_now_secs`
 and the `serde` derives on `Row`. Align D-A4-7 in the change doc with the
 plan, and keep the change in the Deviation.
 
-*Status:* Open
+*Status:* Fixed (8322a9b9). Dropped `Serialize`, `Deserialize`, and redundant `membership` field from internal `Row` struct in `merge.rs`; unified membership evaluation inside `build_hits` via `membership_of` helper calling `membership::evaluate`; dropped unused `_now_secs` in `build_verified_row`; aligned D-A4-7 text in `change.md`.
 
 #### R5 — minor — evidence is now deduplicated before `held::remember`, which changes what is kept, and no test covers it
 
@@ -1504,7 +1504,7 @@ Rename the library test to what it checks (`evidence_is_kept_for_every_counted_h
 and add a `roym_directory` unit test of the dedup rule. Record the rule in
 the Deviation.
 
-*Status:* Open
+*Status:* Fixed (155740ef). `persist_find_results` in `client_runs.rs` calls `held::remember` directly for each item in `evidence` in hit order without pre-deduplication; renamed library test to `evidence_is_kept_for_every_counted_hit_in_order` in `verify.rs`; updated `change.md` line 361 removing pre-dedup wording.
 
 #### R6 — minor — some tests do not prove what their names say, and one case is not tested
 
@@ -1547,7 +1547,7 @@ and 101 and lower the oversized-list entry. Add the three removed verbs to
 106b, asserting `-32013` over the wire, and one local call asserting
 `-32601`.
 
-*Status:* Open
+*Status:* Fixed (027e247a). Renamed test to `find_refuses_an_unknown_top_level_field` in `directory_find.rs`; extracted `handle_find_reply` taking `Result<Value>` in `roymctl` `find.rs` and tested in `error_result_exits_non_zero` (proved failure when `handle_find_reply` ignored error, then restored); removed duplicate `eprintln!`; deleted duplicate scenarios 97 and 101 from `directory.rs` and ratcheted `xtask/oversized-test-files.txt` down to 981 lines; added removed verbs (`start-run`, `query-source`, `merge`) to `scenario_106b` asserting `-32013` over the wire and `-32601` locally.
 
 #### R7 — minor — the change doc's wire list, three decisions and the design text do not match the plan or the code
 
@@ -1594,7 +1594,7 @@ caps and the verification functions in the design text. Make `demo:` one
 `none:` line with both reasons, fix `:363`, and add the owner exception
 (Q6) to Deviations. Align the PR text with the change doc.
 
-*Status:* Open
+*Status:* Fixed (d2cd6024). Aligned planned wire changes W1-W8 in `change.md` with plan section 4; moved method shapes and method count to Deviations; added `thiserror` and equivalence test scope deviations; corrected design paragraph caps and verification functions; combined `demo:` reason with search owner exception; updated PR #340 description to match.
 
 #### R8 — minor — four living-doc and comment statements are false, and one number in the evidence is wrong
 
@@ -1628,7 +1628,7 @@ comment and looks for a 503 path that does not exist.
 the batch. Change the backlog link to D-A4-11 and Q2. Change "2.75 s" to the
 real headroom (or to the new value after R1 and R2).
 
-*Status:* Open
+*Status:* Fixed (d2cd6024). Rewrote `system-architecture.md:3054` to match line 1353; updated `SourceOutcomeKind` `not-started` comment in `search.ts`; updated `deferred-backlog.md` row link to D-A4-11 and Q2 (a); updated `status.md` and PR #340 description to cite real 3.00 s headroom and worst measured time 2.02 s.
 
 #### R9 — minor — import rule breaks and one copied envelope builder
 
@@ -1664,7 +1664,7 @@ tokio::time;`. Extract `fn signed_canned_listing(slug, title, issued_at,
 supersedes) -> (record_id, envelope_json)` in `trust_harness.rs` and use it
 in the three places.
 
-*Status:* Open
+*Status:* Fixed (155740ef). Extracted `signed_canned_listing` helper in `trust_harness.rs` (commit fdfd679a); cleaned up imports (`BTreeMap`, `federated_query`, `Instant`, `Duration`, `OnceLock`, `DISPATCH_HEADROOM_MS`, `time::sleep`) and eliminated multiple `::` inline paths across `directory_find.rs`, `client_find.rs`, `client_runs.rs`, and `trust_harness.rs`.
 
 **Counts.** Round 1: 9 items, 0 blocker, 2 major (R1, R2), 7 minor (R3 to
-R9). **9 open.**
+R9). **9 fixed, 0 open.**
