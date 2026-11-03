@@ -242,7 +242,7 @@ browser here, so the exact numbers are `unverified`.
   stays the leader. If the owner prefers to keep it simple for v1, then the
   plan must say so, write the limit into the backlog and into the developer
   guide note, and lower the plan's "one feed per tab" claim.
-- *Status:* Fixed (5a220d04). Fixed in a simpler way with the same bound: a tab holds a feed only while it is visible (D-A5-12), not a leader tab. The leader-tab option and the remaining limit (6 visible windows) are a backlog row.
+- *Status:* Fixed (5a220d04). Fixed in a simpler way with the same bound: a tab holds a feed only while it is visible (D-A5-12), not a leader tab. The leader-tab option and the remaining limit (6 visible windows) are a backlog row, and section 9 adds the limit to the developer-guide note (Fixed (fb06a6be)).
 
 #### P4 (minor) — "The newest event's cursor, or seq 0" is wrong once old events have left the window
 
