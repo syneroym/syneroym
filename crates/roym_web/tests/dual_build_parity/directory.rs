@@ -445,64 +445,6 @@ async fn scenario_96_client_sources_add_list_remove_round_trip_parity() {
 }
 
 #[tokio::test]
-async fn scenario_97_client_fan_out_over_one_source_yields_a_merged_hit_parity() {
-    let h = harness().await;
-    ensure_synorg(&h).await;
-    enrol_signing(&h, "catalog").await;
-    let (_id, gw, _gn) =
-        set_and_get(&h, full_listing_params("hedge-trimming-97", "Hedge trimming")).await;
-    let e = gw["result"]["envelope"].as_str().unwrap().to_string();
-    // Published as this node's own SynOrg, through the wire path, so it is
-    // reachable by `directory.search` on `did:key:hForeign` -- which
-    // `TestWasmServiceProxy`/`TestNativeServiceProxy` route back to this
-    // very directory over the local dispatch path.
-    publish_signed_listing(&h, &e).await;
-
-    both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
-    // Each build mints and uses its own run id: directory.find folds the
-    // guest's own (unsynchronized) wall clock into the id.
-    let (run_w, mw) = fan_out_one(&h, true, &["did:key:hForeign"]).await;
-    let (run_n, mn) = fan_out_one(&h, false, &["did:key:hForeign"]).await;
-    assert_eq!(stripped(&mw), stripped(&mn));
-    let hits = mw["result"]["hits"].as_array().unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0]["sources"][0]["directory"], "did:key:hForeign");
-    assert!(hits[0].get("envelope").is_none(), "find must return projections, not envelopes: {mw}");
-
-    let record_id = hits[0]["record_id"].as_str().unwrap();
-    let ew = one_rpc(
-        &h,
-        true,
-        "directory.run-envelope",
-        json!({ "run_id": run_w, "record_id": record_id }),
-    )
-    .await;
-    let en = one_rpc(
-        &h,
-        false,
-        "directory.run-envelope",
-        json!({ "run_id": run_n, "record_id": record_id }),
-    )
-    .await;
-    assert_eq!(ew, en);
-    assert_eq!(ew["result"]["envelope"], json!(e));
-}
-
-#[tokio::test]
-async fn scenario_101_a_run_with_zero_sources_succeeds_with_zero_hits_parity() {
-    let h = harness().await;
-    let (fw, fn_res) = both_rpc(&h, "directory.find", json!({})).await;
-    let mut w = fw.clone();
-    let mut n = fn_res.clone();
-    w["result"]["run_id"] = json!("stripped_run_id");
-    n["result"]["run_id"] = json!("stripped_run_id");
-    assert_eq!(stripped(&w), stripped(&n));
-    assert_eq!(fw["result"]["hits"], json!([]));
-    assert_eq!(fw["result"]["outcomes"], json!([]));
-    assert!(fw["result"].get("error").is_none());
-}
-
-#[tokio::test]
 async fn scenario_106_listing_history_returns_only_the_named_listings_versions_parity() {
     let h = harness().await;
     enrol_signing(&h, "catalog").await;
@@ -526,10 +468,21 @@ async fn scenario_106_listing_history_returns_only_the_named_listings_versions_p
 #[tokio::test]
 async fn scenario_106b_every_client_half_verb_is_refused_over_the_wire_parity() {
     let h = harness().await;
-    for method in ["directory.find", "directory.run-envelope"] {
+    for method in [
+        "directory.find",
+        "directory.run-envelope",
+        "directory.start-run",
+        "directory.query-source",
+        "directory.merge",
+    ] {
         let (w, n) = h.wire_invoke(services::DIRECTORY, &env(method, json!({}))).await;
         assert_eq!(w, n, "{method}");
         assert_eq!(w["error"]["code"], -32013, "{method}: {w}");
+    }
+    for method in ["directory.start-run", "directory.query-source", "directory.merge"] {
+        let (lw, ln) = both_rpc(&h, method, json!({})).await;
+        assert_eq!(lw, ln, "{method}");
+        assert_eq!(lw["error"]["code"], -32601, "{method}: {lw}");
     }
     let (sw, sn) = h.wire_invoke(services::DIRECTORY, &env("directory.search", json!({}))).await;
     assert_eq!(stripped(&sw), stripped(&sn));

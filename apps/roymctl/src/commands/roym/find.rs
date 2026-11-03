@@ -2,7 +2,7 @@
 //! directory via one `directory.find` call, and print the merged, verified
 //! result.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::{Value, json};
 use syneroym_roym_core::membership;
 
@@ -149,13 +149,12 @@ pub(super) async fn find(
     )
     .await;
 
-    match result {
-        Ok(reply) => print_find_reply(std::io::stdout(), &reply),
-        Err(e) => {
-            eprintln!("Error: {e}");
-            bail!(e);
-        }
-    }
+    handle_find_reply(std::io::stdout(), result)
+}
+
+fn handle_find_reply<W: std::io::Write>(writer: W, result: Result<Value>) -> Result<()> {
+    let reply = result?;
+    print_find_reply(writer, &reply)
 }
 
 #[cfg(test)]
@@ -288,10 +287,7 @@ mod tests {
     #[test]
     fn error_result_exits_non_zero() {
         let err: Result<Value> = Err(anyhow::anyhow!("connection refused"));
-        let handled = match err {
-            Ok(reply) => print_find_reply(std::io::stdout(), &reply),
-            Err(e) => Err(e),
-        };
+        let handled = handle_find_reply(&mut Vec::new(), err);
         assert!(handled.is_err());
         assert_eq!(handled.unwrap_err().to_string(), "connection refused");
     }

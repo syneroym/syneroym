@@ -104,7 +104,7 @@ async fn find_marks_an_unreachable_source_not_found_and_keeps_the_others() {
 }
 
 #[tokio::test]
-async fn find_refuses_an_invalid_query_field_with_the_field_name() {
+async fn find_refuses_an_unknown_top_level_field() {
     let h = harness().await;
 
     let fw = one_rpc(&h, true, "directory.find", json!({ "unknown_field": 123 })).await;
