@@ -40,6 +40,8 @@ export function storedToken(): string | null {
 function setToken(token: string): void {
   try {
     window.sessionStorage.setItem(TOKEN_KEY, token);
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `syneroym_session=${token}; path=/; SameSite=Lax${secure}`;
   } catch {
     // sessionStorage unavailable (private mode); the session lasts this page only
   }
@@ -48,6 +50,8 @@ function setToken(token: string): void {
 function clearToken(): void {
   try {
     window.sessionStorage.removeItem(TOKEN_KEY);
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `syneroym_session=; path=/; Max-Age=0; SameSite=Lax${secure}`;
   } catch {
     // nothing to clear
   }
@@ -277,6 +281,8 @@ export interface Whoami {
 export async function whoami(): Promise<Whoami | null> {
   const token = storedToken();
   if (!token) return null;
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `syneroym_session=${token}; path=/; SameSite=Lax${secure}`;
   try {
     const res = await fetch(`${authOrigin()}/_syneroym/session/whoami`, {
       headers: { Authorization: `Bearer ${token}` },

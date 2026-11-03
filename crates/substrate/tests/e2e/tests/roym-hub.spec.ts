@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '../fixtures';
 import {
   addContact, loginWithDelegatedKey, openConversation, openMessages, rpcCall, saveProfile, sendMessage,
+  threadMessage,
 } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
@@ -1241,5 +1242,53 @@ test.describe('Roym Hub', () => {
 
     await hits.click();
     await expect(heading).toHaveText(peerDid, { timeout: 15_000 });
+  });
+
+  test('41. messages tab: a message sent in one tab appears in a second open tab with no reload', async ({ context, page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await openMessages(page);
+    const peerDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000041';
+    await openConversation(page, peerDid);
+
+    // Open a second tab on the same Hub in the same browser context.
+    const page2 = await context.newPage();
+
+    // The second page routes the first /_syneroym/events request to return 503 once,
+    // exercising the backoff and reconnect logic.
+    let failedOnce = false;
+    await page2.route('**/_syneroym/events*', async (route) => {
+      if (!failedOnce) {
+        failedOnce = true;
+        await route.fulfill({
+          status: 503,
+          headers: { 'Retry-After': '1' },
+          body: 'Service Unavailable',
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page2.goto(HUB_URL);
+    await page2.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page2);
+
+    await openMessages(page2);
+    await openConversation(page2, peerDid);
+
+    // Send a message from page 1.
+    const messageText = `live-sync-${Date.now()}`;
+    await sendMessage(page, messageText);
+
+    // On page 1, the message is visible.
+    await expect(threadMessage(page, messageText)).toBeVisible({ timeout: 15_000 });
+
+    // On page 2, the message appears with no reload.
+    await expect(threadMessage(page2, messageText)).toBeVisible({ timeout: 15_000 });
+
+    await page2.close();
   });
 });
