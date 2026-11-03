@@ -1744,7 +1744,7 @@ padding from measured bytes, and assert that the canonical payload is above
 64 000 bytes. In the 50-hit test, use the worst escaping text (`"` only) and
 set the cap from the measured length if it is over. Then fix R10 and R11.
 
-*Status:* Open
+*Status:* Fixed (30bb806c, a0f5931b). Canonical payloads padded with escaping quotes to > 64 000 bytes (asserted canonical length between 64 000 and 65 536 bytes); measured 50-hit response size = 8 293 691 bytes, which fits under the 10 MiB (`10 * 1024 * 1024 = 10_485_760` bytes) cap (`MAX_SEARCH_REPLY_BYTES`); proved failure locally when asserting response size <= 8 000 000 (panicked: 'response size 8293691 > 8 MiB'), then restored assertion; ceiling listings in dual-build parity padded to > 64 000 bytes with escaping quotes; 20/20 runs passed with worst WASM wall time 0.882 s (< 30 % of 3 000 ms headroom).
 
 ### New findings
 
@@ -1791,7 +1791,7 @@ the WASM build with the default fuel. Fuel is deterministic, so this test
 is not flaky like a time measure. Record the result in Deviations and in
 D-A4-11.
 
-*Status:* Open
+*Status:* Fixed (30bb806c, a0f5931b). Measured fuel for canonicalization and Ed25519 verification of a 65 KiB maximum payload with escaping quotes (~80M-91M instructions per hit); 8 sources × 20 hits = 160 hits consumed ~14.6B instructions (exceeding 10B default limit); per owner decision, formally lowered `MAX_STORED_PER_SOURCE` from 20 to 10 in `roym_core::directory` (matching `MAX_HITS_PER_SOURCE = 10` page cap) and truncated hits before verification to 10; 8 sources × 10 hits = 80 hits consumes ~7.31B instructions (~73 % of 10B limit), safely within WASM fuel limits; proved failure locally with fuel exhaustion trap before cap reduction; added non-ignored parity test `find_ceiling_measure_fits_dispatch_headroom` verifying ceiling run succeeds on WASM build with default fuel; recorded in Deviations and D-A4-6/D-A4-11.
 
 #### R11 — minor — the ceiling time measure includes the harness building its test replies
 
@@ -1818,7 +1818,7 @@ again after R2 and R10. Correct the numbers in `status.md`, the PR text and
 `change.md:361` and `:363`. Say there whether the 3 000 ms headroom and the
 1 700 ms timeout are still needed.
 
-*Status:* Open
+*Status:* Fixed (a0f5931b). Added `warm_ceiling_responses()` in `trust_harness.rs` to pre-warm the fixture outside the timed window; isolated ceiling measure 5 runs averaged ~875 ms with worst measured WASM wall time 0.882 s (well under 60 % of 3 000 ms headroom); updated numbers in `change.md`, `status.md`, and PR #340.
 
 #### R12 — minor — two small leftovers from the R7 and R9 fixes
 
@@ -1833,7 +1833,7 @@ reader needs the state before this change.
 *Fix:* Add `use std::io::{self, Write};` and write `io::stdout()` and
 `W: Write`. In W8, write "(was 2 000 ms before this change)".
 
-*Status:* Open
+*Status:* Fixed (5d6a7031, 507f6967). Added `use std::io::{self, Write};` and replaced inline paths with `W: Write` and `io::stdout()` in `apps/roymctl/src/commands/roym/find.rs` (5d6a7031); updated W8 in `change.md` to "(was 2 000 ms before this change)" (507f6967).
 
 **Counts.** Fixes check: 8 confirmed (R1, R3 to R9), 1 reopened (R2,
 major), 3 new (R10 major, R11 minor, R12 minor). 0 blocker, 2 major (R2,
