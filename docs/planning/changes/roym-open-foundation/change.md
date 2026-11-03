@@ -227,7 +227,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-OF-3. Event feed lives in a host-level event bus.** Simpler, faster, zero guest instances on write, and avoids forcing ephemeral connection state into database storage.
   - The host tags each event with the writer's app instance from `app_context_of` (`engine.rs:535`), never from the event body.
   - A service outside any app instance cannot write events in v1 (recommended).
-  - A5 decides how services subscribe (OF-10).
+  - How services subscribe (OF-10): decided in the A5 plan, owner answer Q3 (a), 2026-11-03. A service reads the events of its own app instance by cursor with `events.read` (a pull read). There is no push export in v1; push comes with the first service that reacts to events (M08C, backlog row).
 - **D-OF-4. Event kinds and in-memory catch-up window.** In-memory ring buffer per app instance (newest 10,000 events or 24 hours). Lost on restart (answers "reload"). Four v1 event kinds: `conversation.message`, `conversation.delivery`, `transaction.card`, `transaction.booking`.
 - **D-OF-5. Search has no live-progress form in v1.** Search is one client call returning a merged page. Bounded by `call-all` total limit. Option (c) (host-emitted progress events) recorded in deferred backlog as a future option.
 - **D-OF-6. `call-all` in `syneroym:proxy`.** Placed beside `proxy.call`, reusing target, options, and error types, with JSON text params.
