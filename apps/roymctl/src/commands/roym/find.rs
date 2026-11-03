@@ -2,6 +2,8 @@
 //! directory via one `directory.find` call, and print the merged, verified
 //! result.
 
+use std::io::{self, Write};
+
 use anyhow::Result;
 use serde_json::{Value, json};
 use syneroym_roym_core::membership;
@@ -74,7 +76,7 @@ pub(crate) fn build_find_query(
     Ok(query)
 }
 
-pub(crate) fn print_find_reply<W: std::io::Write>(mut out: W, reply: &Value) -> Result<()> {
+pub(crate) fn print_find_reply<W: Write>(mut out: W, reply: &Value) -> Result<()> {
     let empty_vec = vec![];
     let outcomes = reply.get("outcomes").and_then(|v| v.as_array()).unwrap_or(&empty_vec);
 
@@ -149,10 +151,10 @@ pub(super) async fn find(
     )
     .await;
 
-    handle_find_reply(std::io::stdout(), result)
+    handle_find_reply(io::stdout(), result)
 }
 
-fn handle_find_reply<W: std::io::Write>(writer: W, result: Result<Value>) -> Result<()> {
+fn handle_find_reply<W: Write>(writer: W, result: Result<Value>) -> Result<()> {
     let reply = result?;
     print_find_reply(writer, &reply)
 }
