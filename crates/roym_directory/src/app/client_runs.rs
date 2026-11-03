@@ -118,11 +118,7 @@ pub(crate) async fn persist_find_results<H: AppHost>(
         record_source_error(host, source, error).await;
     }
 
-    let mut last_by_key = std::collections::BTreeMap::new();
     for item in evidence {
-        last_by_key.insert((item.source.as_str(), item.member_did.as_str()), item);
-    }
-    for item in last_by_key.values() {
         let _ = held::remember(
             host,
             &item.source,

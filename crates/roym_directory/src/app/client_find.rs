@@ -1,9 +1,10 @@
 //! Client half: federated find across registered directory sources.
 
+use federated_query::{Page, Source};
 use serde::{Deserialize, Serialize};
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{directory::SearchQuery, envelope::Response, method::Reply, paging};
-use syneroym_roym_federated_query::{Page, Source};
+use syneroym_roym_federated_query as federated_query;
 
 use super::{
     SOURCES,
@@ -43,11 +44,10 @@ pub(crate) async fn find<H: AppHost>(host: &H, input: FindInput) -> Reply<FindOu
         .map(|r| Source { did: r.did, pinned_issuer: r.issuer_did })
         .collect();
 
-    let gathered =
-        match syneroym_roym_federated_query::find(host, &sources, &input.query, now).await {
-            Ok(g) => g,
-            Err(e) => return Err(Response::internal_error(e.to_string())),
-        };
+    let gathered = match federated_query::find(host, &sources, &input.query, now).await {
+        Ok(g) => g,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
 
     persist_find_results(
         host,

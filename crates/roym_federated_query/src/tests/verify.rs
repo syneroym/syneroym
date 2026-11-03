@@ -151,7 +151,7 @@ async fn membership_uses_the_pinned_issuer_of_that_source() {
 }
 
 #[tokio::test]
-async fn evidence_is_kept_once_per_source_and_issuer_with_the_last_hit_winning() {
+async fn evidence_is_kept_for_every_counted_hit_in_order() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
 

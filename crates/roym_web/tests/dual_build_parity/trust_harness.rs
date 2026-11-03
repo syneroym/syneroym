@@ -4,6 +4,8 @@
 //! a chosen defect. A real directory cannot serve either -- its own
 //! `directory.publish` verifies every envelope at the door.
 
+use std::{sync::OnceLock, time::Duration};
+
 use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_roym_core::{
@@ -16,6 +18,7 @@ use syneroym_roym_core::{
     record,
 };
 use syneroym_signed_record::{Envelope, RecordDraft};
+use tokio::time;
 
 use super::{fixtures::peer_identity, helpers::owner_identity, trust_fixtures::dir2_owner_did};
 
@@ -365,7 +368,7 @@ pub(crate) fn ceiling_issuer_did(idx: usize) -> String {
     derive_did_key(&ceiling_issuer_identity(idx).public_key())
 }
 
-static CEILING_RESPONSES: std::sync::OnceLock<[String; 8]> = std::sync::OnceLock::new();
+static CEILING_RESPONSES: OnceLock<[String; 8]> = OnceLock::new();
 
 fn get_ceiling_response(idx: usize) -> String {
     let responses = CEILING_RESPONSES.get_or_init(build_all_ceiling_responses);
@@ -599,7 +602,7 @@ fn two_versions_search_response() -> String {
 pub(crate) async fn canned_source_response(target: &str, params: &Value) -> Option<Value> {
     if target == "did:key:hSlow" {
         if inner_method(params).as_deref() == Some("directory.search") {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            time::sleep(Duration::from_secs(5)).await;
             return Some(Value::String(json!({ "result": { "hits": [] } }).to_string()));
         }
         return Some(Value::String(json!({ "result": { "name": "Slow Guild" } }).to_string()));

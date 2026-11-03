@@ -1,8 +1,11 @@
 //! Parity integration tests for `directory.find` and `directory.run-envelope`
 //! across WASM and native builds.
 
-use serde_json::json;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
 use syneroym_data_db::host_store::RecordWriteValue;
+use syneroym_roym_core::directory::DISPATCH_HEADROOM_MS;
 
 use super::{fixtures::*, helpers::*, trust_fixtures::*};
 
@@ -284,21 +287,21 @@ async fn find_names_the_slow_source_and_keeps_the_other_hits() {
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hForeign" })).await;
     both_rpc(&h, "directory.add-source", json!({ "did": "did:key:hSlow" })).await;
 
-    let start_w = std::time::Instant::now();
+    let start_w = Instant::now();
     let fw = one_rpc(&h, true, "directory.find", json!({})).await;
     let elapsed_w = start_w.elapsed();
 
-    let start_n = std::time::Instant::now();
+    let start_n = Instant::now();
     let fn_res = one_rpc(&h, false, "directory.find", json!({})).await;
     let elapsed_n = start_n.elapsed();
 
     assert!(
-        elapsed_w < std::time::Duration::from_secs(5),
+        elapsed_w < Duration::from_secs(5),
         "wasm search must finish before slow source's 5s sleep: took {:?}",
         elapsed_w
     );
     assert!(
-        elapsed_n < std::time::Duration::from_secs(5),
+        elapsed_n < Duration::from_secs(5),
         "native search must finish before slow source's 5s sleep: took {:?}",
         elapsed_n
     );
@@ -322,7 +325,7 @@ async fn find_names_the_slow_source_and_keeps_the_other_hits() {
         .iter()
         .find(|o| o["source"] == "did:key:hForeign")
         .expect("foreign source outcome");
-    assert_eq!(good_outcome["error"], serde_json::Value::Null);
+    assert_eq!(good_outcome["error"], Value::Null);
     assert_eq!(good_outcome["verified"], 1);
 }
 
@@ -362,7 +365,7 @@ async fn find_marks_an_oversized_reply_unreadable_and_keeps_the_others() {
         .iter()
         .find(|o| o["source"] == "did:key:hForeign")
         .expect("foreign source outcome");
-    assert_eq!(good_outcome["error"], serde_json::Value::Null);
+    assert_eq!(good_outcome["error"], Value::Null);
     assert_eq!(good_outcome["verified"], 1);
 }
 
@@ -384,7 +387,7 @@ async fn a_second_find_for_one_source_does_not_duplicate_a_listing() {
         .find(|o| o["source"] == "did:key:hTwoVersions")
         .expect("two versions outcome");
     assert_eq!(outcome["verified"], 2);
-    assert_eq!(outcome["error"], serde_json::Value::Null);
+    assert_eq!(outcome["error"], Value::Null);
 
     let hits = fw["result"]["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 1, "only the newer version appears on the page");
@@ -402,11 +405,11 @@ async fn find_ceiling_run_of_eight_sources_fits_the_dispatch_budget() {
             .await;
     }
 
-    let start_w = std::time::Instant::now();
+    let start_w = Instant::now();
     let fw = one_rpc(&h, true, "directory.find", json!({})).await;
     let elapsed_w = start_w.elapsed();
 
-    let start_n = std::time::Instant::now();
+    let start_n = Instant::now();
     let fn_res = one_rpc(&h, false, "directory.find", json!({})).await;
     let elapsed_n = start_n.elapsed();
 
@@ -422,7 +425,7 @@ async fn find_ceiling_run_of_eight_sources_fits_the_dispatch_budget() {
     for outcome in outcomes {
         assert_eq!(outcome["verified"], 20);
         assert_eq!(outcome["refused"], 0);
-        assert_eq!(outcome["error"], serde_json::Value::Null);
+        assert_eq!(outcome["error"], Value::Null);
     }
 
     let hits = fw["result"]["hits"].as_array().unwrap();
@@ -448,19 +451,16 @@ async fn find_ceiling_measure_fits_dispatch_headroom() {
             .await;
     }
 
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let fw = one_rpc(&h, true, "directory.find", json!({})).await;
     let wasm_elapsed = start.elapsed();
 
     println!("measured ceiling wasm wall time: {:?}", wasm_elapsed);
     assert!(fw["result"]["hits"].is_array());
     assert!(
-        wasm_elapsed
-            < std::time::Duration::from_millis(u64::from(
-                syneroym_roym_core::directory::DISPATCH_HEADROOM_MS
-            )),
+        wasm_elapsed < Duration::from_millis(u64::from(DISPATCH_HEADROOM_MS)),
         "measured ceiling wall time ({:?}) must fit within DISPATCH_HEADROOM_MS ({} ms)",
         wasm_elapsed,
-        syneroym_roym_core::directory::DISPATCH_HEADROOM_MS
+        DISPATCH_HEADROOM_MS
     );
 }
