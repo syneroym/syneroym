@@ -332,6 +332,15 @@ pub(super) async fn replay_persisted_bindings(
     Ok(app_registry)
 }
 
+struct BaseCapabilities {
+    node_identity: Arc<Identity>,
+    key_store: Arc<KeyStore>,
+    storage_provider: Arc<dyn StorageProvider>,
+    blob_provider: Arc<dyn BlobProvider>,
+    messaging_broker: Arc<MqttBroker>,
+    logical_resolver: Arc<LogicalResolver>,
+}
+
 /// Constructs every capability the connection router holds and dispatches
 /// through but does not itself build: storage, blob, and messaging
 /// backends, the WASM and container sandboxes, and the control-plane
@@ -341,14 +350,12 @@ async fn init_base_capabilities(
     config: &SubstrateConfig,
     secret_key: [u8; 32],
     registry: &EndpointRegistry,
-) -> anyhow::Result<(
-    Arc<Identity>,
-    Arc<KeyStore>,
-    Arc<dyn StorageProvider>,
-    Arc<dyn BlobProvider>,
-    Arc<MqttBroker>,
-    Arc<LogicalResolver>,
-)> {
+) -> anyhow::Result<BaseCapabilities> {
+    // Shared with `ControlPlaneService`'s native `data-layer` dispatch
+    // (`SynSvcNativeService`), which signs relationship-proof
+    // records as this node's own asserter identity -- the same key material
+    // `ConnectionRouter::init` (below, in the caller) separately constructs
+    // its own `Identity` from for `ProxyRouter`'s `node_identity`.
     let node_identity = Arc::new(Identity::from_bytes(&secret_key));
     let key_store = Arc::new(KeyStore::new());
     let storage_provider: Arc<dyn StorageProvider> =
@@ -357,22 +364,30 @@ async fn init_base_capabilities(
     let messaging_broker = Arc::new(MqttBroker::new(MqttBrokerConfig {
         channel_capacity: config.mqtt.channel_capacity as usize,
     })?);
+    // ADR-0021 §2: replay persisted bindings before anything can
+    // resolve one -- a restarted substrate must answer a guest's first
+    // call, and nothing re-pushes on restart (ADR-0021 §5 -- push failure
+    // is sticky, and so is push absence).
     let app_registry = replay_persisted_bindings(registry).await?;
     let logical_resolver = Arc::new(LogicalResolver::new(app_registry));
-    Ok((
+    Ok(BaseCapabilities {
         node_identity,
         key_store,
         storage_provider,
         blob_provider,
         messaging_broker,
         logical_resolver,
-    ))
+    })
 }
 
 fn wire_conversation_and_engine(
     conversation: &Arc<ConversationService>,
     app_sandbox_engine: &Arc<AppSandboxEngine>,
 ) -> anyhow::Result<()> {
+    // Both directions, `Weak` on both sides: the engine reaches
+    // `conversation` for the guest-facing WIT surface, `conversation`
+    // reaches the engine to notify a wasm-hosted service of an inbound
+    // message/state change.
     app_sandbox_engine
         .conversation
         .set(Arc::downgrade(conversation) as Weak<dyn ConversationHost>)
@@ -387,24 +402,17 @@ async fn build_route_handler_deps(
     registry: &EndpointRegistry,
     secret_key: [u8; 32],
 ) -> anyhow::Result<(RouteHandlerDeps, SharedNodeHandles)> {
-    let (
-        node_identity,
-        key_store,
-        storage_provider,
-        blob_provider,
-        messaging_broker,
-        logical_resolver,
-    ) = init_base_capabilities(config, secret_key, registry).await?;
+    let base = init_base_capabilities(config, secret_key, registry).await?;
 
     let (app_sandbox_engine, podman_sandbox_engine, websocket_senders, call_all) =
         build_sandbox_engines(
             config,
             registry,
-            &key_store,
-            &storage_provider,
-            &blob_provider,
-            &messaging_broker,
-            &logical_resolver,
+            &base.key_store,
+            &base.storage_provider,
+            &base.blob_provider,
+            &base.messaging_broker,
+            &base.logical_resolver,
         )
         .await?;
 
@@ -418,12 +426,18 @@ async fn build_route_handler_deps(
     let http_routes: HttpRouteRegistry = Arc::new(DashMap::new());
     let assets: AssetRegistry = Arc::new(DashMap::new());
 
-    let supervisor_client_identity = node_identity.clone();
+    // Cloning the `Arc`, not `node_identity` itself -- `Identity`
+    // deliberately does not implement `Clone`, but a second handle to the
+    // same key material is exactly what's needed here. The supervisor role
+    // (when configured) uses this as the identity it presents when it
+    // connects, as a client, to the substrates it manages (ADR-0021 §8).
+    let supervisor_client_identity = base.node_identity.clone();
 
-    let conversation = build_conversation_service(config, &storage_provider, &key_store, registry)?;
+    let conversation =
+        build_conversation_service(config, &base.storage_provider, &base.key_store, registry)?;
     wire_conversation_and_engine(&conversation, &app_sandbox_engine)?;
 
-    let record_signer = NodeRecordSigner::new(node_identity.clone(), registry.clone());
+    let record_signer = NodeRecordSigner::new(base.node_identity.clone(), registry.clone());
     let _ = app_sandbox_engine.record_signer.set(record_signer.clone());
 
     let control_plane_service = ControlPlaneService::init(
@@ -433,15 +447,15 @@ async fn build_route_handler_deps(
         podman_sandbox_engine,
         registry.clone(),
         config.hosted_apps_dir(),
-        key_store.clone(),
-        storage_provider.clone(),
-        blob_provider.clone(),
-        messaging_broker.clone(),
+        base.key_store.clone(),
+        base.storage_provider.clone(),
+        base.blob_provider.clone(),
+        base.messaging_broker.clone(),
         native_dispatch.clone(),
         http_routes.clone(),
         assets.clone(),
-        node_identity,
-        logical_resolver.clone(),
+        base.node_identity,
+        base.logical_resolver.clone(),
     )
     .await?;
     let control_plane_service = Arc::new(control_plane_service);
@@ -460,13 +474,13 @@ async fn build_route_handler_deps(
     conversation.set_event_bus(event_bus.clone());
 
     let shared = SharedNodeHandles::new(
-        key_store.clone(),
-        storage_provider.clone(),
+        base.key_store.clone(),
+        base.storage_provider.clone(),
         native_dispatch.clone(),
         supervisor_client_identity,
-        messaging_broker.clone(),
-        blob_provider,
-        logical_resolver.clone(),
+        base.messaging_broker.clone(),
+        base.blob_provider,
+        base.logical_resolver.clone(),
         conversation.clone(),
         http_routes.clone(),
         native_http.clone(),
@@ -484,11 +498,11 @@ async fn build_route_handler_deps(
 
     Ok((
         RouteHandlerDeps {
-            logical_resolver: logical_resolver.clone(),
-            key_store,
-            storage_provider,
+            logical_resolver: base.logical_resolver,
+            key_store: base.key_store,
+            storage_provider: base.storage_provider,
             app_sandbox_engine,
-            messaging_broker,
+            messaging_broker: base.messaging_broker,
             native_dispatch,
             native_http,
             websocket_senders,
