@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { z32Encode } from "./login";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
+import {
+  clearEventFeedCookie,
+  EVENT_FEED_COOKIE_MAX_AGE_SECS,
+  setEventFeedCookie,
+  z32Encode,
+} from "./login";
 
 // Vectors produced by the Rust `z32` crate (the encoding the auth service
 // verifies against). If these drift, a browser-signed challenge stops
@@ -21,5 +26,40 @@ describe("z32Encode", () => {
 
   it("returns an empty string for empty input", () => {
     expect(z32Encode(new Uint8Array(0))).toBe("");
+  });
+});
+
+describe("event feed cookie", () => {
+  const written: string[] = [];
+
+  beforeEach(() => {
+    Object.defineProperty(document, "cookie", {
+      configurable: true,
+      get: () => "",
+      set: (value: string) => {
+        written.push(value);
+      },
+    });
+  });
+
+  afterEach(() => {
+    written.length = 0;
+    Reflect.deleteProperty(document, "cookie");
+  });
+
+  it("is_scoped_to_the_feed_path_and_lives_one_hour", () => {
+    setEventFeedCookie("abc123");
+    expect(written).toEqual([
+      `syneroym_session=abc123; path=/_syneroym/events; Max-Age=${EVENT_FEED_COOKIE_MAX_AGE_SECS}; SameSite=Lax`,
+    ]);
+    expect(EVENT_FEED_COOKIE_MAX_AGE_SECS).toBe(3600);
+  });
+
+  it("is_cleared_on_the_feed_path_and_on_the_old_root_path", () => {
+    clearEventFeedCookie();
+    expect(written).toEqual([
+      "syneroym_session=; path=/_syneroym/events; Max-Age=0; SameSite=Lax",
+      "syneroym_session=; path=/; Max-Age=0; SameSite=Lax",
+    ]);
   });
 });
