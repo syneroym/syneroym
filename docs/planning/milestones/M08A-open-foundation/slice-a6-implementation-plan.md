@@ -6,8 +6,8 @@ planning conversation. This plan is meant to stand alone.*
 **Status: plan written 2026-11-04. The owner answered Q1–Q10 on 2026-11-04,
 all (a); the answer is under each question. Q10 and the notes on the answers
 come from plan review round 1 ([slice-a6-review.md](slice-a6-review.md)).
-Sections 4 to 10 do not show Q10 or the review findings P1 to P14 yet; the
-plan fix folds them in.**
+The plan fix of 2026-11-04 folds Q10 and the findings P1 to P14 into
+sections 1 to 11; each finding's status in the review file names where.**
 
 **Size and PR.** S to M. One PR on `feat/m08a-a6-remote-clients`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -100,10 +100,12 @@ already logs in with `delegated-key` only; it does not change its login. Its
 CSP stops naming `auth.localhost`: the page now allows exactly the auth origin
 that it computes from its own host (Q3). The auth service's `allowed_origins`
 can name every Hub hostname of a domain with one pattern (Q4). Remote access
-with `identity_mode = "fixed"` stops startup (Q5). Remote access on a
+with `identity_mode = "fixed"` stops startup (Q5). Remote access in `open`
+mode, or in `login` mode with no `connection_auth_gate`, logs a warning that
+every network client acts as this node (Q10). Remote access on a
 non-loopback address over plain HTTP logs a warning (Q6). The Docker deploy
-gets an example config that turns remote access on inside the container (Q7).
-ADR-0028 records the new rule (Q8).
+gets a complete example config that turns remote access on inside the
+container (Q7). ADR-0028 records the new rule (Q8).
 
 ## How this is shown to an end user
 
@@ -111,8 +113,9 @@ ADR-0028 records the new rule (Q8).
   that same server can open her Hub. A program on another computer cannot
   even connect.
 - Alice wants to use the Hub from her laptop. She turns on remote access in
-  the node's settings, and puts a TLS proxy (for example Caddy) in front of
-  the node, so the Hub address starts with `https://`.
+  the node's settings. She lists the Hub's web address in the node's allowed
+  web addresses. She puts a TLS proxy (for example Caddy) in front of the
+  node, so the Hub address starts with `https://`.
 - On her laptop she opens the Hub address and signs in with her session key
   file, the same way she does on the server today.
 - Messages, search and cards work the same as on the server.
@@ -123,9 +126,12 @@ A developer can see the work in these ways:
 
 - `ss -ltn | grep 7960` on a node with no `remote_access` table shows
   `127.0.0.1:7960`. With `bind_address = "0.0.0.0"` it shows `0.0.0.0:7960`.
-- With remote access on: `curl -s -X POST http://127.0.0.1:7960/_syneroym/session/login
+- With remote access on, on a node with `person_identities_dir` set:
+  `curl -s -w ' %{http_code}\n' -X POST http://127.0.0.1:7960/_syneroym/session/login
   -H 'Content-Type: application/json' -d '{"method":"local","identity":"alice"}'`
-  prints a `403` body whose text names `delegated-key`, and
+  prints a body whose text names `delegated-key`, then `403`. (With no
+  `person_identities_dir`, the answer is `400` "local login method is not
+  enabled; use delegated-key".) And
   `curl -s http://127.0.0.1:7960/_syneroym/session/methods` lists only
   `delegated-key`.
 - `cargo nextest run -p syneroym-substrate --test gateway_remote_access_e2e`
@@ -194,9 +200,13 @@ Options:
      DID (an own-gateway stream). A stream from another node is refused.
   3. The auth service refuses `local` when the request carries `Forwarded`,
      `X-Forwarded-For`, `X-Real-IP` or `Via`. This only **refuses**; a header
-     never allows anything. It catches an owner who put a proxy on the same
-     machine and forgot to turn remote access on: Caddy and most proxies add
-     `X-Forwarded-For` by default.
+     never allows anything. It catches **some** owners who put a proxy on the
+     same machine and forgot to turn remote access on: Caddy, Traefik and
+     Apache `mod_proxy` add `X-Forwarded-For` by default. nginx `proxy_pass`
+     and HAProxy add it only when configured, and `ssh -L`, `socat` and
+     `kubectl port-forward` add no header (`unverified`; from the tools'
+     documented defaults). So the docs never rely on it: any program that
+     forwards connections to the gateway needs remote access on.
 - (b) Checks 1 and 2 only.
 - (c) The gateway adds the peer address to the route preamble of each
   connection, and the router passes it to the auth service, trusted only from
@@ -234,7 +244,9 @@ serves it generically ([blobs.rs:19](../../../../crates/router/src/route_handler
   change, no config. Risk: the second tag works only if the browser applies a
   `<meta>` CSP added by script; the spec says a policy applies from the moment
   the element is inserted into `<head>`. `unverified` until the Playwright
-  case in 7.6 runs; that case fails if the narrowing does not happen.
+  case in 7.6 runs; that case fails if the narrowing does not happen. Step 5
+  writes that case first, so the answer is known early. Fallback if it fails:
+  build (b) and record a deviation; (c) only with the owner's approval.
 - (b) The router sends a `Content-Security-Policy` header on HTML assets,
   from a policy the app manifest declares, with a placeholder for the auth
   origin. It would also allow `frame-ancestors` (backlog §10). New manifest
@@ -266,9 +278,13 @@ and service has its own.
 
 Reason for (a): the same rule the auth service already applies to
 `*.localhost`, so a remote node behaves like a local one. The cost is the same
-as today's local rule: every app page on that domain may make credentialed
-calls to the auth service. Section 8 adds a backlog row for that (it is true
-for `*.localhost` today).
+as today's local rule: any page served through this gateway under that domain
+may make credentialed calls to the auth service. The gateway serves any
+service in the registry under the node's domain, so this includes other
+people's services, not only apps on this node. It is safe today only because
+no client logs in with credentials (the Hub's auth fetches send no
+`credentials` option). Section 8 adds a backlog row for that (it is true for
+`*.localhost` today).
 
 Owner answer: (a), 2026-11-04. Also from review P11: the backlog row and
 ADR-0028 say that the pattern admits any page served through this gateway
@@ -315,9 +331,9 @@ runs `--config /etc/syneroym/config.toml`. The repo has no such config file.
 Inside a container, a gateway bound to `127.0.0.1` cannot be reached through
 any port mapping.
 
-- **(a) Recommended.** Public. Add `deploy/config.community.example.toml`
-  with `[roles.client_gateway.remote_access] bind_address = "0.0.0.0"`
-  (and the registry and Iroh roles the compose file already publishes). The
+- **(a) Recommended.** Public. Add a complete
+  `deploy/config.community.example.toml` (every key is listed in D-A6-11),
+  with `[roles.client_gateway.remote_access] bind_address = "0.0.0.0"`. The
   compose file keeps `7960:7960`, says to copy the example to
   `./config/config.toml`, and has a comment: change it to
   `127.0.0.1:7960:7960` for a private node. The same edit fixes `7965:7965`
@@ -442,9 +458,15 @@ Owner answer: (a), 2026-11-04.
 - No test asserts the text of a `local` refusal (grep of
   "local login method is not" and "browser origin").
 - Callers of `local` login:
-  - `roymctl session login` with `--identity` or `--as` and no key file
+  - `roymctl session login --method local` (with `--identity` or `--as`)
     ([session.rs:262-300](../../../../apps/roymctl/src/commands/session.rs#L262)),
-    through the gateway URL and the `/_syneroym/session/login` path.
+    through the gateway URL and the `/_syneroym/session/login` path. The
+    default method is `delegated-key`
+    ([session.rs:44-46](../../../../apps/roymctl/src/commands/session.rs#L44),
+    [session.rs:432-438](../../../../apps/roymctl/src/commands/session.rs#L432)),
+    so `roymctl --as owner session login` with no `--method` (the Playwright
+    global setup, `global-setup.ts:171`, and the developer guide example at
+    `:1807`) is `delegated-key` and keeps working with remote access.
   - Substrate tests through the gateway: the Roym harness `RoymNode::login`
     ([common/roym.rs:452-463](../../../../crates/substrate/tests/common/roym.rs#L452)),
     [roym_app_e2e.rs:345](../../../../crates/substrate/tests/roym_app_e2e.rs#L345),
@@ -484,7 +506,24 @@ Owner answer: (a), 2026-11-04.
   its blind tunnel has no identity of its own
   ([coordinator.rs:80-88](../../../../crates/coordinator_webrtc/src/coordinator.rs#L80)).
   The gateway is the only part that sends HTTP client bytes signed by the
-  node key (grep of `passthrough_with_conn`).
+  node key (grep of `passthrough_with_conn`). The outbound proxy also signs
+  native calls with the node key when a call has no service id
+  ([proxy/router.rs:368-374](../../../../crates/router/src/proxy/router.rs#L368)),
+  but those calls carry a JSON-RPC preamble, not an HTTP one, so they never
+  reach the auth service's HTTP handler. Check 2 of Q2 rests on this fact;
+  if the proxy ever gains HTTP calls signed by the node key, the check must
+  be revisited. ADR-0028 says so.
+- In `fixed` mode the gateway's stream to the auth service also carries the
+  fixed delegation, so its caller is the fixed person, not the node DID
+  (3.1, [gateway.rs:535-538](../../../../crates/client_gateway/src/gateway.rs#L535)).
+- In `open` mode, and in `login` mode for a request with no session, the
+  target sees the caller as this node's DID, self-asserted, on this node and
+  on other nodes the gateway resolves from the registry
+  ([gateway.rs:511-551](../../../../crates/client_gateway/src/gateway.rs#L511),
+  [gateway.rs:645-660](../../../../crates/client_gateway/src/gateway.rs#L645)).
+  Only `login` mode with `connection_auth_gate = true` stops a client with no
+  session ([gateway.rs:455-461](../../../../crates/client_gateway/src/gateway.rs#L455)).
+  This is Q10.
 - `CallerContext::verified(did, auth, caps)` builds a caller for tests
   ([native.rs:244](../../../../crates/rpc/src/native.rs#L244)).
 
@@ -549,7 +588,19 @@ Owner answer: (a), 2026-11-04.
 - The architecture config table says the Iroh `quic_bind_address`
   (`0.0.0.0:7965`) is QUIC address discovery, used when relay TLS is set
   ([system-architecture.md:375](../../../../docs/system-architecture.md#L375)).
-  QUIC is UDP.
+  QUIC is UDP. The `Dockerfile` has `EXPOSE 7964 7965 7961 7960`, all TCP.
+- A config file has no `app_data_dir` by default: the default is
+  `dirs::data_dir()/syneroym`
+  ([config.rs:36-38](../../../../crates/core/src/config.rs#L36)), which in the
+  container is `/root/.local/share/syneroym`, not the mounted `./data`
+  volume. The node key is written under `app_data_dir`
+  ([util.rs:20-35](../../../../crates/core/src/util.rs#L20)). So a config
+  without `app_data_dir = "/var/lib/syneroym"` gets a new node DID after
+  every `docker compose down && up`.
+- The gateway's `registry_url` comes from `[substrate] registry_url`
+  ([gateway.rs:101](../../../../crates/client_gateway/src/gateway.rs#L101)).
+  With none, it resolves no hostname. `dev_mode_config()` sets one; a config
+  file must too.
 
 ### 3.7 Living-doc statements that become false
 
@@ -565,6 +616,10 @@ Owner answer: (a), 2026-11-04.
   the auth endpoints and the configuration block; the port list at `:236`.
 - [system-requirements-spec.md:623](../../../../docs/system-requirements-spec.md#L623):
   "The gateway listens on port 7960".
+- [system-requirements-spec.md:112-115](../../../../docs/system-requirements-spec.md#L112):
+  the three identity modes, with no word on remote access.
+- [system-architecture.md:696](../../../../docs/system-architecture.md#L696):
+  the `identity_mode` table, the same gap, and no word on Q10's consequence.
 - [traceability-matrix.md](../../traceability-matrix.md): no row covers
   remote clients yet (the last Roym row is `[ROY-EVT]`, `:96`).
 
@@ -596,6 +651,14 @@ Owner answer: (a), 2026-11-04.
   binds `127.0.0.1` inside the container and cannot be reached. The
   `Dockerfile` comment says to mount a config.
 - **F11. Upgrade of an existing public node.** Q7's note.
+- **F12. Remote access in `open` mode makes every client this node** (3.3).
+  Q10.
+- **F13. OF-12's peer check is per connection, at the gateway.** OF-12 and
+  `task.md` say `local` login checks the socket peer and the refusal names
+  `delegated-key`. The auth service cannot see the socket (Q2). The gateway
+  checks the peer at accept and drops a non-loopback peer with no answer,
+  which cannot happen with the loopback bind. Every refusal the auth service
+  sends names `delegated-key`. Deviation.
 
 ## 4. Behaviour-change audit
 
@@ -608,12 +671,14 @@ Every change below is listed. Everything not listed stays the same.
 | W1 | The gateway binds `127.0.0.1:<http_port>` by default. Before: `0.0.0.0:<http_port>`. A client on another machine cannot connect unless remote access is on. | Every client on another machine; Docker deploys (F10, F11). |
 | W2 | New optional config table `[roles.client_gateway.remote_access]` with the required field `bind_address` (an IP address). Present means remote access is on, and the gateway binds `<bind_address>:<http_port>`. | Node owners. An older binary ignores the table and binds `0.0.0.0`. |
 | W3 | `POST …/login` with `method: "local"` gets `403` when the request did not come on an own-gateway stream (for example over Iroh from another node). Before: a token. | Other nodes (F3). |
-| W4 | When remote access is on: `local` login gets `403`, and `GET …/methods` lists only `delegated-key`, even when `person_identities_dir` is set. | Clients of a node with remote access; `roymctl session login --as` against it. |
+| W4 | When remote access is on: `local` login gets `403`, and `GET …/methods` lists only `delegated-key`, even when `person_identities_dir` is set. | Clients of a node with remote access; `roymctl session login --method local` against it. The default `delegated-key` method of `roymctl` is not affected. |
 | W5 | `local` login gets `403` when the request carries `Forwarded`, `X-Forwarded-For`, `X-Real-IP` or `Via`. | A same-machine proxy without remote access. |
 | W6 | The four `local` refusal texts name `delegated-key` (D-A6-7). The `400` for a node with no `person_identities_dir` keeps its status; only its text grows. | Anyone who reads the error, including `roymctl`, which prints it. |
 | W7 | An `allowed_origins` entry `<scheme>://*.<domain>[:<port>]` matches subdomain origins (D-A6-9). | Node owners; remote Hubs. |
 | W8 | The Hub page's effective `connect-src` is `'self' <its auth origin>`, exact to the scheme and port. Before: `'self' http://auth.localhost:* https://auth.localhost:*`. The static tag alone now says `'self' http: https:` (D-A6-10). | The Hub, in every browser. |
 | W9 | Startup fails when `remote_access` is set and `identity_mode = "fixed"` (D-A6-4). | Node owners. |
+| W10 | In `fixed` mode, `local` login through the gateway gets `403` with the text of D-A6-7 check 5. Before: a token. The stream carries the fixed person as caller (3.3), and `fixed` mode needs no login. | Owners of a `fixed`-mode node with `person_identities_dir` set (P4). |
+| W11 | An empty or unknown key inside `[roles.client_gateway.remote_access]`, or `bind_address` with a port (`"0.0.0.0:7960"`), fails to parse (D-A6-1). A misspelled table name is still ignored, which leaves remote access off. | Node owners. |
 
 No JSON-RPC method, input, output or error changes. No WIT changes. The
 method tables and shape files stay as they are.
@@ -626,6 +691,7 @@ method tables and shape files stay as they are.
 | B2 | Startup logs where the gateway listens and whether remote access is on (D-A6-3). A non-loopback `bind_address` adds one `warn!` about plain HTTP (D-A6-5). |
 | B3 | When remote access is on and `person_identities_dir` is set, startup logs one `warn!` that `local` login is off (D-A6-6). |
 | B4 | `local` login on an own-gateway stream that also carries a valid session token is refused: the router makes the person the caller (3.3), so the caller is not the node DID. `roymctl` sends no token on login. |
+| B5 | Remote access in `open` mode, or in `login` mode with `connection_auth_gate = false`, logs one `warn!` at startup that every client on the network acts as this node (Q10, D-A6-14). Startup still succeeds. |
 
 ### Stays the same
 
@@ -639,7 +705,7 @@ flags. The Hub's login flow and its `sessionStorage` and feed cookie. The
 ## 5. Decisions this plan makes
 
 Decisions are numbered D-A6-n. They go into the change doc at close-out
-(section 9). Q1 to Q9 are the owner's. The others are made here.
+(section 9). Q1 to Q10 are the owner's. The others are made here.
 
 **D-A6-1. The config type.** In `crates/core/src/config/roles.rs`:
 
@@ -647,10 +713,12 @@ Decisions are numbered D-A6-n. They go into the change doc at close-out
 /// Lets clients on other machines reach the client gateway. Absent means
 /// the gateway binds `127.0.0.1` and refuses non-loopback peers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteAccess {
-    /// The address the gateway binds, with `http_port`. `0.0.0.0` accepts
-    /// every interface. `127.0.0.1` is for a TLS proxy on the same machine:
-    /// remote access is still on, so `local` login is off.
+    /// The IP address the gateway binds: an address only, the port is
+    /// `http_port`. `0.0.0.0` accepts every interface. `127.0.0.1` is for a
+    /// TLS proxy or any other forwarder on the same machine: remote access is
+    /// still on, so `local` login is off.
     pub bind_address: IpAddr,
 }
 
@@ -667,12 +735,32 @@ pub struct ClientGatewayRole {
 `remote_access.bind_address` or `Ipv4Addr::LOCALHOST`, so the gateway and the
 docs use one rule.
 
+Every other bind setting in this config is a `host:port` string
+(`http_bind_address`, `quic_bind_address`, `signalling_bind_address`,
+[roles.rs:44, :312-313](../../../../crates/core/src/config/roles.rs#L312)).
+This one is an IP only, because the port already has its own setting. The doc
+comment, the sample config and the developer guide say "an IP address only;
+the port is `http_port`". `ClientGatewayRole` keeps accepting unknown keys, so
+a misspelled table name (`remote_acess`) is ignored and remote access stays
+off. That fails closed; the D-A6-3 log line tells the owner, and the
+developer guide says so.
+
 **D-A6-2. The gateway listener.** `ClientGateway` gets
 `bind: SocketAddr` and `remote_access: bool`, set in `init` from the role
 (`SocketAddr::new(role.bind_ip(), port)`; with no role, `127.0.0.1:7000`
-keeps today's port fallback). `run` binds `self.bind`. Add
-`pub fn bind_addr(&self) -> SocketAddr` for the unit test. `Debug` prints
-`bind` instead of `port`.
+keeps today's port fallback). `Debug` prints `bind` instead of `port`.
+
+The bind moves out of `run` into one function, so a test can check the
+address the socket really has:
+
+```rust
+/// Binds the listener on the configured address. The only place that binds.
+async fn bind_listener(&self) -> Result<TcpListener>
+```
+
+`run` calls `bind_listener` and nothing else binds. The unit test (7.2) uses
+`http_port = 0`, so the OS picks a free port, and reads
+`listener.local_addr()`.
 
 In the accept arm:
 
@@ -759,12 +847,22 @@ Checks, in this order, each with its exact text:
    case) → `403`, `"local login is not allowed through a proxy; use
    delegated-key"`.
 5. Caller is not `Some(c)` with `c.caller_did == self.node_did` → `403`,
-   `"local login is only for a client on this node's own machine; use
-   delegated-key"`.
+   `"local login works only through this node's own gateway in open or
+   login mode; use delegated-key"`. This text is also right for a `fixed`-mode
+   node, whose gateway streams carry the fixed person as caller (W10), and for
+   a request whose valid session token made the person the caller (B4). It
+   does not claim the client is on another machine.
 
 Then `login_local` runs as today, with the dir from step 1. `login_local`
-itself keeps its signature and its own `400` checks, so direct unit-test
-calls still work; it reads the dir from `LocalLogin::On`. `handle_request`
+keeps its own `400` checks and reads the dir from `LocalLogin::On`. It
+becomes `pub(crate)` in `service/local.rs`, so the gated path through
+`handle_request` is the only public way to get a `local` token. A later
+caller in another crate cannot skip the gate. The cases of
+`local_login_and_refusals` that call `login_local` directly
+([auth_service_tests.rs:264-313](../../../../crates/auth/tests/auth_service_tests.rs#L264))
+move to an in-crate test, `crates/auth/src/service/local/tests.rs` (the
+path-traversal and unknown-name cases), or are rewritten through
+`handle_request` with a node caller (the `methods()` cases). `handle_request`
 passes `caller.as_ref()` to `handle_login`. The router's `is_gateway_origin`
 also checks "no delegation"; the auth service does not need it, because a
 stream with a delegation has the master DID as caller (3.3).
@@ -777,6 +875,11 @@ sibling module files, entry point `service.rs` beside `service/`:
 - `crates/auth/src/service/cors.rs`: `is_allowed_origin`, `cors_headers`
   (moved) and the pattern match of D-A6-9.
 Keep every why-comment in the moved code. `service.rs` gets smaller.
+- `crates/auth/src/service/local/tests.rs` and
+  `crates/auth/src/service/cors/tests.rs`: in-crate unit tests for the
+  `pub(crate)` `login_local` (D-A6-7) and for `matches_origin_pattern`
+  (7.3), with `service/local.rs` + `service/local/` and `service/cors.rs` +
+  `service/cors/` per the module-layout rule.
 
 **D-A6-9. The origin pattern.** In `cors.rs`:
 
@@ -814,19 +917,42 @@ today. Update `AuthRole.allowed_origins`' doc comment and the sample config.
   imports in order, so this runs before any other Hub code.
 
 **D-A6-11. The Docker files** (Q7 (a)).
-- New `deploy/config.community.example.toml`: the roles the compose file
-  publishes (`community_registry` on `0.0.0.0:7961`, `coordinator.iroh` on
-  `0.0.0.0:7964` and `0.0.0.0:7965`, `client_gateway` on `7960` with
-  `[roles.client_gateway.remote_access] bind_address = "0.0.0.0"`), and
-  comments for TLS and `secure_cookies`. Nothing else: no keys, no paths
-  outside the mounted volumes.
+- New `deploy/config.community.example.toml`. Every key it has, and why
+  (3.6):
+  - `app_config_dir = "/etc/syneroym"`, `app_data_dir = "/var/lib/syneroym"`,
+    `app_local_data_dir = "/var/lib/syneroym"`, `app_cache_dir =
+    "/var/lib/syneroym/cache"`, `app_log_dir = "/var/lib/syneroym/logs"`: the
+    node key, the stores and the logs live in the mounted `./data` volume, so
+    the node keeps its DID after `docker compose down && up` and an image
+    update. (Use the exact key names of `SubstrateConfig`,
+    [config.rs:61-66](../../../../crates/core/src/config.rs#L61).)
+  - `[substrate] registry_url = "http://127.0.0.1:7961"`: the node's own
+    registry, so the gateway can resolve hostnames.
+  - `[parent_coordinator.iroh] url = "http://127.0.0.1:7964"`: the node is its
+    own home relay (as in dev mode).
+  - `[roles.community_registry] http_bind_address = "0.0.0.0:7961"`.
+  - `[roles.coordinator.iroh]` with `enable_relay = true`,
+    `http_bind_address = "0.0.0.0:7964"`, `quic_bind_address =
+    "0.0.0.0:7965"`.
+  - `[roles.client_gateway]` with `http_port = 7960`, `identity_mode =
+    "open"` (the public node, Q10), and
+    `[roles.client_gateway.remote_access] bind_address = "0.0.0.0"`.
+  - A commented `[roles.coordinator.tls]` block with
+    `/etc/letsencrypt/live/<domain>/fullchain.pem` and `privkey.pem`, because
+    QUIC address discovery runs only with relay TLS; and commented
+    `[roles.auth]` lines for `allowed_origins` and `secure_cookies = true`.
+  - Nothing else: no keys, no secrets, no paths outside `/etc/syneroym`,
+    `/var/lib/syneroym` and `/etc/letsencrypt`. Most config structs accept
+    unknown keys, so a misspelled key would parse and be ignored. The test in
+    7.7 therefore asserts the parsed **value** of every key above, not only
+    that the file parses.
 - `docker-compose.community.yml`: a comment above `volumes` "copy
   `deploy/config.community.example.toml` to `./config/config.toml`"; a
   comment on the `7960` line about `127.0.0.1:7960:7960` for a private node;
   `7965:7965/udp`.
-- `Dockerfile`: the port comment says the gateway needs
-  `[roles.client_gateway.remote_access]` to be reachable through a port
-  mapping, and that `run` with no config is a dev setup.
+- `Dockerfile`: `EXPOSE 7964 7965/udp 7961 7960`. The port comment says
+  7965 is UDP, the gateway needs `[roles.client_gateway.remote_access]` to be
+  reachable through a port mapping, and `run` with no config is a dev setup.
 
 **D-A6-12. The shared delegated-login test helper.** Move `login_to_gateway`
 and `AUTH_HOST` from `gateway_session_e2e.rs:260-319` to a new
@@ -840,8 +966,40 @@ the way `login` does.
 
 **D-A6-13. The ADR** (Q8 (a)). `docs/decisions/0028-remote-client-access.md`,
 reader: developers and node owners. Context (ADR-0024's same-machine
-assumption), decision (Q1, Q2 (a), Q5, Q6), consequences (HTTPS for a remote
-Hub, upgrade note), alternatives (Q2 (c), Q3 (b)).
+assumption). Decision: Q1, Q2 (a), Q5, Q6, Q10, and the CORS pattern of Q4.
+Consequences:
+- A remote Hub needs HTTPS; the upgrade note of Q7.
+- Any program that forwards connections to the gateway (a TLS proxy, an SSH
+  tunnel, a port forwarder) needs remote access on, even with
+  `bind_address = "127.0.0.1"`. The proxy-header check catches some proxies
+  only (P6).
+- In `open` mode, and in `login` mode with no `connection_auth_gate`, every
+  network client acts as this node (Q10). A personal node should use `login`
+  with `connection_auth_gate = true`.
+- The `local` check rests on "only the gateway sends HTTP bytes signed by the
+  node key"; the outbound proxy signs with the node key only on JSON-RPC
+  preambles (3.3).
+- The CORS pattern admits any page served through this gateway under the
+  domain, including other people's services. Safe while no client logs in
+  with credentials (the sentence of the section 8 row).
+Alternatives: Q2 (c), Q3 (b).
+
+**D-A6-14. The `open`-mode warning** (Q10 (a)). In `ClientGateway::init`,
+when `remote_access` is set and either `identity_mode = "open"`, or
+`identity_mode = "login"` with `connection_auth_gate = false`: one `warn!`
+that names `remote_access`, `identity_mode` and `connection_auth_gate`, and
+says "every client on the network acts as this node; use identity_mode =
+\"login\" with connection_auth_gate = true for a personal node". Startup
+succeeds.
+
+**D-A6-15. A shared helper for the auth tests.** New
+`crates/auth/tests/common/mod.rs` with `MockAnchorResolver` (moved from
+`auth_service_tests.rs:32`), `service_with_identities(dir) -> AuthService`
+(a temp dir holding `alice.key`), `node_caller(&AuthService)` and
+`login_request(headers: Vec<(String, String)>, body: Value) -> HttpRequest`
+(the eight-field literal once). `auth_service_tests.rs` and the new
+`local_login_gate.rs` both use it (`mod common;`), so no mock or literal is
+copied and `check-duplication` does not rise.
 
 ## 6. Step-by-step changes
 
@@ -856,13 +1014,15 @@ because the Hub bundle changes (Step 5).
 ### Step 2 — The config and the gateway bind
 
 1. `RemoteAccess`, the field and `bind_ip` (D-A6-1). Config tests (7.1).
-2. Gateway: `bind`, `remote_access`, `admit_peer`, the log line, the fixed
-   check, the plain-HTTP warning, `bind_addr` (D-A6-2 to D-A6-5).
+2. Gateway: `bind`, `remote_access`, `bind_listener`, `admit_peer`, the log
+   line, the fixed check, the plain-HTTP warning, the `open`-mode warning
+   (D-A6-2 to D-A6-5, D-A6-14).
    `test_state` gets no new field (the new fields are on `ClientGateway`,
    not `GatewayState`).
 3. Gateway unit tests (7.2).
-4. `config.sample.toml`: the commented `remote_access` table, and "binds
-   `127.0.0.1` unless remote access is set".
+4. `config.sample.toml`: the commented `remote_access` table, "an IP
+   address only; the port is `http_port`", and "binds `127.0.0.1` unless
+   remote access is set".
 
 Check: `cargo nextest run -p syneroym-core config`, `cargo nextest run -p
 syneroym-client-gateway`, and the substrate tests that boot a gateway
@@ -872,10 +1032,12 @@ basic_lifecycle`) still pass on `127.0.0.1`.
 ### Step 3 — The auth service gate and CORS
 
 1. Move the code into `service/local.rs` and `service/cors.rs` with no
-   behaviour change. Build and run `cargo nextest run -p syneroym-auth`
-   before the next item.
+   behaviour change, and move `MockAnchorResolver` into
+   `crates/auth/tests/common/mod.rs` (D-A6-15). Build and run `cargo nextest
+   run -p syneroym-auth` before the next item.
 2. `LocalLogin`, `with_remote_access`, `local_login_gate`, the new texts,
-   `methods()` (D-A6-6, D-A6-7).
+   `methods()`, `login_local` to `pub(crate)` and its direct test cases moved
+   in-crate (D-A6-6, D-A6-7).
 3. The origin pattern (D-A6-9).
 4. `runtime/auth.rs`: `with_remote_access(..)` and B3's warning.
 5. Update `http_interface_endpoints_and_unknown_method` to pass a
@@ -896,12 +1058,18 @@ gateway_remote_access_e2e --test gateway_session_e2e`.
 
 ### Step 5 — The Hub CSP
 
-1. `csp.ts`, `boot-csp.ts`, the `main.ts` import, `index.html` (D-A6-10).
-2. `csp.test.ts` (7.5).
-3. `node-boot.ts`: a `gateway.allowedOrigins?: string[]` option that writes
+Case 42 comes first, so Q3's risk is known before the rest is built.
+
+1. `node-boot.ts`: a `gateway.allowedOrigins?: string[]` option that writes
    `allowed_origins` into `[roles.auth]`. `global-setup.ts` sets
    `["http://*.roym.test:<gateway port>"]` for the Hub node.
-4. `tests/roym-hub-remote.spec.ts` with case 42 (7.6).
+2. `tests/roym-hub-remote.spec.ts` with case 42 (7.6), written against the
+   `csp.ts`/`boot-csp.ts` change of item 3 only (no other Hub change). Run it.
+   If step 2 of the case fails because the second tag is not applied, stop:
+   build Q3 (b) instead (a router header from a policy the app declares) and
+   record a deviation; use (c) only with the owner's approval.
+3. `csp.ts`, `boot-csp.ts`, the `main.ts` import, `index.html` (D-A6-10).
+4. `csp.test.ts` (7.5).
 
 Check: `cd crates/roym_web/ui && npm test`; `mise run build:roym`;
 `mise run test:e2e` (all Hub cases, including the old ones that now get an
@@ -909,7 +1077,8 @@ exact auth origin).
 
 ### Step 6 — Docker files
 
-D-A6-11, and the deploy config test (7.7).
+D-A6-11 (the example config, the compose file, `EXPOSE 7965/udp`), and the
+deploy config test (7.7).
 
 Check: `cargo nextest run -p syneroym-substrate --test
 community_deploy_config`.
@@ -936,6 +1105,10 @@ over the changed files; the ratchets; `mise run verify` with no `--skip`.
 - `remote_access_without_a_bind_address_fails_to_parse`: an empty
   `[roles.client_gateway.remote_access]` table is an error that names
   `bind_address`.
+- `a_bind_address_with_a_port_fails_to_parse`: `bind_address =
+  "0.0.0.0:7960"` is an error.
+- `an_unknown_key_in_remote_access_fails_to_parse`: `bind_adress = "0.0.0.0"`
+  (or an extra key next to `bind_address`) is an error (`deny_unknown_fields`).
 
 ### 7.2 Gateway unit tests (`crates/client_gateway/src/gateway/tests.rs`)
 
@@ -943,24 +1116,33 @@ over the changed files; the ratchets; `mise run verify` with no `--skip`.
   `127.0.0.1`, `127.0.0.2`, `::1`, `::ffff:127.0.0.1` (admitted) and
   `192.168.1.5`, `10.0.0.1`, `::ffff:192.168.1.5`, `2001:db8::1` (refused);
   with remote access on, all admitted.
-- `init_binds_loopback_by_default_and_the_remote_access_address_when_set`:
-  `ClientGateway::init` with a test config; `bind_addr()` is
-  `127.0.0.1:<port>`, then `0.0.0.0:<port>`. `init` does not bind, so the
-  test writes no port literal: it reads the port from
-  `ClientGatewayRole::default().http_port`. `init` loads or writes the node
-  key, so the config points `app_data_dir` at a `tempfile::tempdir()`.
+- `the_listener_binds_loopback_by_default_and_the_remote_access_address_when_set`:
+  `ClientGateway::init` with a test config and `http_port = 0` (the OS picks a
+  free port; no port literal), then `bind_listener()`;
+  `listener.local_addr()?.ip()` is `127.0.0.1` with no table, and `0.0.0.0`
+  with `bind_address = "0.0.0.0"`. This checks the socket, not a getter, so a
+  `run` that binds another address cannot pass. `init` loads or writes the
+  node key, so the config points `app_data_dir` at a `tempfile::tempdir()`.
 - `init_refuses_remote_access_in_fixed_mode`: the error text names
   `remote_access` and `fixed`.
+- `init_accepts_remote_access_in_open_mode`: `init` succeeds with
+  `identity_mode = "open"` and remote access (Q10 is a warning, not an
+  error). The warning text is not checked; that needs a log capture.
 
-### 7.3 Auth service (`crates/auth/tests/local_login_gate.rs`, new)
+### 7.3 Auth service
 
-Each test builds `AuthService` with a temp identities dir holding
-`alice.key`, and calls `handle_request` with a `local` login request.
-`node_caller()` is `CallerContext::verified(node_did, AuthLevel::…, vec![])`.
+Integration tests in `crates/auth/tests/local_login_gate.rs` (new) use the
+shared `crates/auth/tests/common/mod.rs` (D-A6-15):
+`service_with_identities(dir)` (a temp dir holding `alice.key`),
+`node_caller(&service)` (`CallerContext::verified(node_did, AuthLevel::…,
+vec![])`) and `login_request(headers, body)`. Each test calls
+`handle_request` with a `local` login request.
 
 - `local_login_on_an_own_gateway_stream_gets_a_token`.
 - `local_login_with_no_caller_is_refused_and_names_delegated_key` (`403`).
-- `local_login_from_another_nodes_key_is_refused` (`403`).
+- `local_login_from_another_nodes_key_is_refused` (`403`). Also covers the
+  `fixed`-mode case (W10): a caller whose DID is a person's master DID, not
+  the node's, gets the check-5 text.
 - `local_login_through_a_proxy_is_refused`: one case per header name, mixed
   case (`X-Forwarded-For`, `forwarded`, `X-Real-IP`, `Via`).
 - `remote_access_turns_local_login_off_and_hides_it_from_methods`: `403`
@@ -969,15 +1151,22 @@ Each test builds `AuthService` with a temp identities dir holding
   `delegated-key`.
 - `the_origin_refusal_comes_before_the_caller_check`: `Origin` plus no
   caller gives the browser-origin text.
-- `a_subdomain_pattern_allows_every_label_of_its_domain_and_nothing_else`:
-  `http://*.roym.test:7960` allows `http://a.roym.test:7960` and
-  `http://a-b.c.roym.test:7960`; refuses `http://roym.test:7960`,
-  `http://evilroym.test:7960`, `https://a.roym.test:7960`,
-  `http://a.roym.test:7961`, `http://a.roym.test`, `http://.roym.test:7960`.
-  Checked through `cors_headers` (the reflected
-  `access-control-allow-origin`).
-- `exact_allowed_origins_still_match_exactly` (the existing
-  `configured_allowed_origins_are_reflected_in_cors` keeps passing).
+In-crate unit tests (they reach `pub(crate)` items):
+
+- `crates/auth/src/service/cors/tests.rs`:
+  `a_subdomain_pattern_allows_every_label_of_its_domain_and_nothing_else`
+  calls `matches_origin_pattern` directly. The pattern
+  `http://*.roym.test:8443` allows `http://a.roym.test:8443` and
+  `http://a-b.c.roym.test:8443`; refuses `http://roym.test:8443`,
+  `http://evilroym.test:8443`, `https://a.roym.test:8443`,
+  `http://a.roym.test:8444`, `http://a.roym.test`, `http://.roym.test:8443`.
+  (These are strings, not listeners, so the numbers are not ports a test
+  binds.) The existing integration test
+  `configured_allowed_origins_are_reflected_in_cors` keeps passing for exact
+  entries, through `handle_request` with an `Origin` header.
+- `crates/auth/src/service/local/tests.rs`: the path-traversal, empty-name and
+  unknown-name cases of `login_local`, moved from `local_login_and_refusals`
+  (D-A6-7).
 
 ### 7.4 Substrate e2e (`crates/substrate/tests/gateway_remote_access_e2e.rs`, new)
 
@@ -988,8 +1177,15 @@ the harness.
   in `login` mode with an identities dir; `POST /_syneroym/session/login`
   `local` → `200` and a token. (Guards W1 against breaking the old path.)
 - `local_login_over_iroh_from_another_identity_is_refused`: the same node;
-  `node.client_as(Identity::generate())`, connect, and `passthrough` to the
-  `auth` alias over a local TCP pair, sending a raw `POST
+  `node.client_as(Identity::generate())` and `connect()`. Then call
+  `SyneroymClient::passthrough_with_conn(client.connection()?,
+  AUTH_SERVICE_ALIAS, "", <request bytes>, &mut tcp, &identity, None)` over a
+  local TCP pair, as the gateway does
+  ([gateway.rs:540-551](../../../../crates/client_gateway/src/gateway.rs#L540)).
+  `passthrough` cannot be used: it always targets `self.service_id`, the
+  node DID
+  ([passthrough.rs:106-123](../../../../crates/sdk/src/client/passthrough.rs#L106)).
+  The request is a raw `POST
   /_syneroym/session/login` with `{"method":"local","identity":"alice"}`;
   the HTTP answer is `403` and the body names `delegated-key`.
 - `remote_access_turns_local_login_off_and_delegated_key_still_logs_in`:
@@ -1025,9 +1221,12 @@ auth origin: `http://auth.roym.test:<port>`.
 
 1. Open the Hub. `fetch(<auth origin>/_syneroym/session/methods)` in the page
    answers `200` (CSP and CORS allow it).
-2. `fetch('http://other.roym.test:<port>/')` in the page rejects, and a
-   `securitypolicyviolation` event with `effectiveDirective === 'connect-src'`
-   fires. This fails if the second tag is not applied (Q3's risk).
+2. `fetch('http://other.roym.test:<port>/')` in the page. **The assertion is
+   the `securitypolicyviolation` event** with `effectiveDirective ===
+   'connect-src'` and `blockedURI` on `other.roym.test`. The rejected `fetch`
+   alone proves nothing: it also rejects for lack of CORS headers under the
+   wide static tag. This step fails if the second tag is not applied (Q3's
+   risk; Step 5 runs it first).
 3. Log in with `loginWithDelegatedKey` (hub-helpers) and see the session bar
    with the person DID. Needs the secure-context flag (F7).
 
@@ -1043,9 +1242,16 @@ delegated login itself is covered by 7.4.
 - `the_community_example_config_parses_and_opens_the_gateway`: read
   `deploy/config.community.example.toml` (path from `CARGO_MANIFEST_DIR`),
   parse it as `SubstrateConfig`; `remote_access.bind_address` is `0.0.0.0`,
-  `http_port` is 7960, `identity_mode` is not `fixed`.
-- `the_compose_file_maps_the_quic_port_as_udp`: the compose file text has
-  `7965:7965/udp`. A text check, no YAML dependency.
+  `http_port` is 7960, `identity_mode` is `open`.
+- `the_community_example_config_keeps_state_in_the_mounted_volumes`: after
+  `resolve_paths()`, every path in the config (the five `app_*_dir` keys, and
+  any key path or TLS path that is set) is under `/var/lib/syneroym`,
+  `/etc/syneroym` or `/etc/letsencrypt`; `substrate.registry_url` is set; the
+  registry and Iroh bind addresses and `parent_coordinator.iroh.url` have the
+  values of D-A6-11.
+- `the_deploy_files_expose_the_quic_port_as_udp`: the compose file text has
+  `7965:7965/udp`, and the `Dockerfile` text has `EXPOSE 7964 7965/udp 7961
+  7960`. Text checks, no YAML dependency.
 
 ### 7.8 Not tested
 
@@ -1064,7 +1270,7 @@ delegated login itself is covered by 7.4.
   doc's Test column for OF-12 and OF-13 is filled from section 7 after the
   run, with real test names.
 - **Change-doc decisions that do not match the plan** (A3 R9, A4 R7, A5 R4):
-  D-A6-1 to D-A6-13 are copied, not rewritten, at close-out.
+  D-A6-1 to D-A6-15 are copied, not rewritten, at close-out.
 - **Lost why-comments in moved code** (A4 R3, A5 R8): Step 3 item 1 is a move
   with no other change; diff it before item 2.
 - **Living-doc statements left false** (A4 P22, A5 R9): section 3.7 lists
@@ -1074,6 +1280,9 @@ delegated login itself is covered by 7.4.
 - **Security of tokens and cookies** (A5 R1, R11): A6 adds no new place that
   holds a token; it only refuses more.
 - **Import-rule breaks** (A4 R9, A5 R10): Step 8.
+- **Copied test helpers** (A2b R9, A4 R9): the auth mock and request builder
+  live once in `crates/auth/tests/common/mod.rs`; the delegated-login helper
+  once in `crates/substrate/tests/common/session.rs`.
 
 ### 7.10 Size risks
 
@@ -1086,7 +1295,7 @@ delegated login itself is covered by 7.4.
 | `crates/core/src/config/tests.rs` | 258 | About +40. |
 | `crates/substrate/tests/gateway_session_e2e.rs` | 1 477 (listed) | Goes down by about 60; lower its entry. |
 | `crates/substrate/tests/common/roym.rs` | 649 | About +12. |
-| `crates/auth/tests/auth_service_tests.rs` | 628 | Small edit only; new tests in a new file. |
+| `crates/auth/tests/auth_service_tests.rs` | 628 | Goes down: the mock moves to `tests/common/mod.rs`, the direct `login_local` cases move in-crate. |
 
 ## 8. Deferred backlog
 
@@ -1102,22 +1311,39 @@ Close:
 
 Add:
 - §3 "The auth service answers credentialed CORS for every allowed origin":
-  an app page on an allowed domain (every `*.localhost` today, and a
-  `*.<domain>` pattern) can call `refresh` with the auth cookie and read a new
-  token. Target `TBD`. Link `crates/auth/src/service/cors.rs`.
+  any page served through this node's gateway under an allowed domain
+  (every `*.localhost` today, and a `*.<domain>` pattern), including other
+  people's services that the gateway resolves from the registry, may make
+  credentialed calls to the auth service, for example `refresh` with the auth
+  cookie, and read a new token. Safe while no client logs in with
+  credentials (the Hub's auth fetches send no `credentials` option, so the
+  browser never stores the auth cookie from them). Before any client does,
+  stop sending `access-control-allow-credentials`, or limit it to exact
+  origins. Target `TBD`. Link `crates/auth/src/service/cors.rs` and
+  `crates/client_gateway/src/gateway.rs:645`.
 - §7 "The client gateway has no TLS": remote access over plain HTTP sends
   tokens in clear text, and a remote Hub needs a TLS proxy. Target `TBD`.
   Link `crates/client_gateway/src/gateway.rs`.
+- §3 "Remote access in `open` mode lets every network client act as this
+  node": a warning only (Q10); a later option is to refuse it, or to give the
+  gateway its own key for unauthenticated remote clients. Target `TBD`. Link
+  `crates/client_gateway/src/gateway.rs` (`init`).
 
 No new `TODO` or `FIXME` marker.
 
 ## 9. Living docs to update at close-out
 
 - **Change doc** (`roym-open-foundation/change.md`): OF-12 and OF-13 Test
-  column with the tests of section 7; the task line ticked; D-A6-1 to D-A6-13
+  column with the tests of section 7; the task line ticked; D-A6-1 to D-A6-15
   under Decisions; Deviations: F1 (no Hub login change), F4 (new Docker
-  section), the new example config file, the UDP fix, the proxy-header deny
-  (not in the design text), the Iroh gap F3 and its fix; the `demo:` line of
+  section), F13 (OF-12: the peer address is checked by the gateway at accept,
+  for the whole connection; a non-loopback peer is dropped with no answer,
+  which cannot occur with the loopback bind; the auth service checks that the
+  caller is this node's own gateway; every refusal the auth service sends
+  names `delegated-key`), the new example config file, the UDP fix in the
+  compose file and the `Dockerfile`, the proxy-header deny (not in the design
+  text, and an extra net only), the Iroh gap F3 and its fix, `local` refused
+  in `fixed` mode (W10), the `open`-mode warning (Q10); the `demo:` line of
   Q9; `living-docs-touched` keeps its list. `status` stays `draft` (A7 sets
   `done`).
 - **`docs/roym-integrated-experience-spec.md`**: D8 (`:77`) and G3 (`:849`):
@@ -1126,16 +1352,38 @@ No new `TODO` or `FIXME` marker.
   HTTPS. `:174` the same in one sentence. Link ADR-0028.
 - **`docs/system-architecture.md`**: `:694` replace "sets no rule about which
   machine may connect" with the bind rule, the peer refusal and the remote
-  access table; `:711` the `local` rules of D-A6-7; `:764` the image needs a
-  config with remote access, and `deploy/config.community.example.toml`.
+  access table; `:696` the `identity_mode` table: `fixed` with remote access
+  stops startup, `local` is refused in `fixed` mode, and in `open` mode (or
+  `login` with no `connection_auth_gate`) every network client acts as this
+  node, so a personal node with remote access uses `login` with
+  `connection_auth_gate = true`; `:711` the `local` rules of D-A6-7; `:764`
+  the image needs a config with remote access, and
+  `deploy/config.community.example.toml`, and exposes `7965/udp`.
 - **`docs/developer-guide.md`**: the port list (`:236`) says 7960 binds
   `127.0.0.1` by default; the auth endpoints (`:1840`) say when `local`
-  answers; the Configuration block (`:1870`) shows `remote_access` and the
-  `allowed_origins` pattern; a new subsection "Run a node in Docker" under
-  section 5 (copy the example config, the port mappings, the private
-  mapping, TLS, the upgrade note of Q7).
+  answers; the Configuration block (`:1870`) shows `remote_access` ("an IP
+  address only; the port is `http_port`"; a misspelled table name leaves
+  remote access off) and the `allowed_origins` pattern; a new remote-access
+  text that says:
+  - a remote Hub needs HTTPS, an `allowed_origins` entry for its address, and
+    `secure_cookies = true`;
+  - the TLS proxy needs a certificate for `*.<domain>` (every app has its own
+    hostname) and `auth.<domain>`; a wildcard certificate needs a DNS
+    challenge (for example in Caddy);
+  - any program that forwards connections to the gateway (a TLS proxy, an SSH
+    tunnel, a port forwarder) needs remote access on, even with
+    `bind_address = "127.0.0.1"`;
+  - in `open` mode, and in `login` mode with no `connection_auth_gate`, every
+    network client acts as this node; a personal node uses `login` with
+    `connection_auth_gate = true`;
+  
+  and a new subsection "Run a node in Docker" under section 5 (copy the
+  example config, the port mappings with `7965/udp`, the private mapping,
+  TLS, the upgrade note of Q7).
 - **`docs/system-requirements-spec.md:623`**: "The gateway listens on port
   7960 on `127.0.0.1`, or on the address that remote access names."
+  `:112-115` (identity modes): `fixed` cannot be used with remote access, and
+  `local` login is refused in `fixed` mode.
 - **`docs/TERMINOLOGY.md`**: add "remote access (client gateway)".
 - **`docs/planning/traceability-matrix.md`**: new row `[ROY-RMT]` "Remote
   clients", M8, with the code and test links of sections 6 and 7.
@@ -1148,9 +1396,10 @@ No new `TODO` or `FIXME` marker.
 
 A6 is done when all of these are true:
 
-1. The owner has answered Q1 to Q9, and sections 4 to 9 match the answers.
-2. With no `remote_access`, the gateway binds `127.0.0.1:<http_port>`, and
-   `admit_peer` refuses non-loopback peers (7.1, 7.2) (OF-13).
+1. The owner has answered Q1 to Q10, and sections 4 to 9 match the answers.
+2. With no `remote_access`, the gateway's listener is bound to
+   `127.0.0.1` (checked on the socket, 7.2), and `admit_peer` refuses
+   non-loopback peers (7.1, 7.2) (OF-13).
 3. With `remote_access`, the gateway binds `bind_address`, `local` login is
    off, `/methods` lists only `delegated-key`, a delegated session can use a
    Roym method (7.4) (OF-12, OF-13).
@@ -1161,10 +1410,13 @@ A6 is done when all of these are true:
    review of `local_login_gate`).
 6. The Hub's effective `connect-src` is its own auth origin, and case 42
    passes on a non-`localhost` domain (OF-13).
-7. Remote access with `fixed` mode stops startup.
-8. The Docker example config parses and opens the gateway; the compose file
-   maps QUIC as UDP (7.7).
-9. The three backlog rows are closed or split, and the two new rows exist.
+7. Remote access with `fixed` mode stops startup; with `open` mode it
+   starts and warns (Q10).
+8. The Docker example config parses, opens the gateway, and keeps every
+   path in the mounted volumes; the compose file and the `Dockerfile` use
+   UDP for QUIC (7.7).
+9. The three backlog rows are closed or split, and the three new rows exist.
+   `login_local` is `pub(crate)`.
 10. The change doc, the living docs, the traceability matrix, ADR-0028,
     `task.md` and `status.md` are updated as in sections 8 and 9.
 11. `src/` changes are only in: `crates/core` (config),
@@ -1181,7 +1433,9 @@ A6 is done when all of these are true:
 - No proof step for `local`; it stays a same-machine convenience.
 - No change to `delegated-key`, session tokens, cookies or the router.
 - No peer address in the route preamble (Q2 (c)).
-- No CSP or framing response header (`frame-ancestors` stays in the backlog).
+- No CSP or framing response header (`frame-ancestors` stays in the backlog),
+  unless case 42 forces Q3's fallback (b).
+- No refusal of remote access in `open` mode; Q10 is a warning only.
 - No browser access for a visitor who has no node (the shop change).
 - No change to other roles' bind addresses.
 - No Hub login change (F1).
