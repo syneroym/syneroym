@@ -30,6 +30,12 @@ the right change doc for every criterion and decision.
 
 **Summary:** 0 blocker, 2 major, 12 minor, 14 items. All Open.
 
+**Owner answers (2026-11-04).** The owner agreed with the reviewer's view on
+every question below: (a) for Q1 to Q9, each with the notes given there, and
+(a) for the new Q10 from P1 (a startup warning). The answers are recorded under
+each question in the plan, and Q10 is added to the plan's section 2. The
+findings stay Open: the plan fix folds them into sections 4 to 10.
+
 Limits of this review: I read the code and did not run it. I did not run a
 browser. Statements about CSP `<meta>` tags added by script, and about which
 proxies add `X-Forwarded-For` by default, come from the specs and the proxies'

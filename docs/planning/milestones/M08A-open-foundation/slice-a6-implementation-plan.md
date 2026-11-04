@@ -3,9 +3,11 @@
 *Reader: the developer (or AI) who implements slice A6. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written 2026-11-04. The owner has not answered Q1 to Q9 yet.
-Sections 4 to 10 follow the recommendation of each question. If the owner
-picks another option, change the sections that the question names.**
+**Status: plan written 2026-11-04. The owner answered Q1–Q10 on 2026-11-04,
+all (a); the answer is under each question. Q10 and the notes on the answers
+come from plan review round 1 ([slice-a6-review.md](slice-a6-review.md)).
+Sections 4 to 10 do not show Q10 or the review findings P1 to P14 yet; the
+plan fix folds them in.**
 
 **Size and PR.** S to M. One PR on `feat/m08a-a6-remote-clients`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -131,8 +133,9 @@ A developer can see the work in these ways:
 
 ## 2. Points for the owner
 
-Each question has options, a recommendation and the reason. Sections 4 to 10
-follow the recommendation. Two choices are not questions, because the change
+Each question has options, a recommendation and the reason. The owner chose
+the recommendation, (a), for every question on 2026-11-04; the answer is under
+each question. Two choices are not questions, because the change
 doc settles them:
 
 - The check never reads `X-Forwarded-For` or any other header to allow a
@@ -159,6 +162,10 @@ doc settles them:
 
 Reason for (a): one setting cannot disagree with itself, the table can grow,
 and the Caddy case has a clear form.
+
+Owner answer: (a), 2026-11-04. Also from review P14: `bind_address` is an IP
+address only (the port is `http_port`), and `RemoteAccess` refuses unknown
+fields.
 
 ### Q2. How does `local` login know the request is from this machine?
 
@@ -205,6 +212,10 @@ socket bound to `127.0.0.1` accepts only loopback peers. It stays as the
 place that states OF-12's rule in code, and it keeps holding if a later change
 adds a second listener.
 
+Owner answer: (a), 2026-11-04. Also from review P6: check 3 is an extra net
+only. The docs and ADR-0028 say that any program that forwards connections to
+the gateway needs remote access on.
+
 ### Q3. How does the Hub CSP allow the right auth origin?
 
 Today [index.html:14](../../../../crates/roym_web/ui/index.html#L14) has
@@ -235,6 +246,9 @@ Reason for (a): exact policy, small change, uses the function that already
 decides where the Hub logs in. `frame-ancestors` stays in the backlog (section
 8).
 
+Owner answer: (a), 2026-11-04. Also from review P9: if case 42 shows that the
+second tag is not applied, use (b) and record a deviation.
+
 ### Q4. How does the auth service allow a remote Hub's origin (CORS)?
 
 The auth service always allows `localhost`, `127.0.0.1` and every
@@ -256,6 +270,11 @@ as today's local rule: every app page on that domain may make credentialed
 calls to the auth service. Section 8 adds a backlog row for that (it is true
 for `*.localhost` today).
 
+Owner answer: (a), 2026-11-04. Also from review P11: the backlog row and
+ADR-0028 say that the pattern admits any page served through this gateway
+under the domain, including other people's services, and that this is safe
+only while no client logs in with credentials.
+
 ### Q5. Remote access together with `identity_mode = "fixed"`?
 
 In `fixed` mode the gateway attaches one person's delegation to every stream
@@ -265,6 +284,8 @@ With remote access, every client on the network would act as that person.
 - **(a) Recommended.** Startup fails with an error that names both settings.
 - (b) A warning at startup.
 - (c) Allowed with no message.
+
+Owner answer: (a), 2026-11-04.
 
 ### Q6. Remote access on a public address over plain HTTP?
 
@@ -283,6 +304,8 @@ Hub's `delegated-key` login cannot sign on a plain-HTTP page that is not
 
 Reason for (a): the Docker community node needs `0.0.0.0` inside the
 container (Q7), and its TLS may sit outside the container.
+
+Owner answer: (a), 2026-11-04.
 
 ### Q7. The Docker deploy: is the community node's gateway public?
 
@@ -310,6 +333,10 @@ answering other machines. The startup log line (D-A6-3) says so, and the PR
 description and the developer guide's Docker section name it as an upgrade
 step.
 
+Owner answer: (a), 2026-11-04. Also from review P2: the example config is
+complete (`app_data_dir`, `substrate.registry_url` and the other keys that P2
+names), and the `Dockerfile` exposes `7965/udp`.
+
 ### Q8. Does the rule get an ADR?
 
 ADR-0024 says the browser and the gateway are on the same machine, and that
@@ -324,6 +351,9 @@ supported setup.
 Reason for (a): it is a security boundary, and ADR-0024 would otherwise be
 the only permanent record and say the opposite.
 
+Owner answer: (a), 2026-11-04. ADR-0028 also records Q10 and the CORS rule of
+Q4.
+
 ### Q9. The demo close-out
 
 A remote Hub needs a second machine and TLS. A demo story runs on one
@@ -334,6 +364,27 @@ machine.
 - (b) A story that opens the Hub on a non-`localhost` domain mapped to
   `127.0.0.1` (the trick of case 42). It would show the same screens as the
   chat story.
+
+Owner answer: (a), 2026-11-04.
+
+### Q10. Remote access in `open` mode, or in `login` mode with no `connection_auth_gate`?
+
+Added from review P1. The gateway signs every stream with the node key. In
+`open` mode, and in `login` mode for a request with no session, the target sees
+the caller as this node's DID, self-asserted. This holds for services on this
+node and on other nodes. With remote access, every client on the network can
+act as this node, unless `login` mode with `connection_auth_gate = true` is set.
+
+- **(a) Recommended.** One `warn!` at startup that names both settings and
+  says "every client on the network acts as this node". The developer guide
+  and ADR-0028 say the same, and recommend `login` with
+  `connection_auth_gate = true` for a personal node.
+- (b) Startup fails, as for `fixed` (Q5).
+- (c) No message.
+
+Reason for (a): the public community node (Q7) runs in `open` mode on purpose.
+
+Owner answer: (a), 2026-11-04.
 
 ## 3. Facts checked in the code
 
