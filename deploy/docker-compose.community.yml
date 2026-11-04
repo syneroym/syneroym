@@ -7,10 +7,13 @@ services:
     restart: unless-stopped
     ports:
       - "7964:7964" # Iroh HTTP info port
-      - "7965:7965" # Iroh QUIC port
+      - "7965:7965/udp" # Iroh QUIC port (UDP)
       - "7961:7961" # Community Registry http port
-      - "7960:7960" # Client Gateway http port
+      # Client Gateway http port. Public, as the example config turns on remote
+      # access. For a private node use "127.0.0.1:7960:7960" instead.
+      - "7960:7960"
     volumes:
+      # Copy deploy/config.community.example.toml to ./config/config.toml
       - ./config:/etc/syneroym
       - ./data:/var/lib/syneroym
       # If using native TLS, mount certbot certificates path

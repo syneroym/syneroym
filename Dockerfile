@@ -30,10 +30,15 @@ COPY --from=builder /usr/src/syneroym/target/release/roymctl /usr/local/bin/
 
 # Default ports:
 # 7964 - Iroh HTTP info port
-# 7965 - Iroh QUIC port
+# 7965 - Iroh QUIC port (UDP)
 # 7961 - Community Registry http port
-# 7960 - Client Gateway http port
-EXPOSE 7964 7965 7961 7960
+# 7960 - Client Gateway http port. The gateway binds 127.0.0.1 unless
+#        [roles.client_gateway.remote_access] is set, and no port mapping can
+#        reach a loopback address inside a container. Mount a config that sets
+#        it (see deploy/config.community.example.toml).
+#
+# `run` with no --config is a development setup. Mount a config for a real node.
+EXPOSE 7964 7965/udp 7961 7960
 
 ENTRYPOINT ["syneroym-substrate"]
 CMD ["run"]
