@@ -173,8 +173,11 @@ export interface NodeOptions {
   registry?: boolean;
   /** The node runs the Iroh and WebRTC coordinators. `shareInRegistry` lists the Iroh relay in the registry. */
   coordinator?: { shareInRegistry?: boolean };
-  /** The node runs the client gateway. `login` adds the session-login mode and the auth role. */
-  gateway?: { login?: boolean };
+  /**
+   * The node runs the client gateway. `login` adds the session-login mode and the auth role.
+   * `allowedOrigins` gets the gateway port and returns the auth role's extra CORS origins.
+   */
+  gateway?: { login?: boolean; allowedOrigins?: (gatewayPort: number) => string[] };
   /** The node runs the app sandbox. `conversationTickSecs` sets the Roym outbox tick. */
   appSandbox?: { conversationTickSecs?: number };
   /** Registry the node publishes to. Defaults to its own, which needs `registry: true`. */
@@ -287,10 +290,14 @@ bootstrap_page_bind_address = "0.0.0.0:${ports.webrtcBootstrap}"
 `);
   }
   if (options.gateway) {
+    const origins = options.gateway.allowedOrigins?.(ports.gateway!) ?? [];
+    const allowedOrigins = origins.length
+      ? `allowed_origins = [${origins.map((o) => JSON.stringify(o)).join(', ')}]\n`
+      : '';
     parts.push(`
 [roles.client_gateway]
 http_port = ${ports.gateway}
-${options.gateway.login ? 'identity_mode = "login"\n\n[roles.auth]\n' : ''}`);
+${options.gateway.login ? `identity_mode = "login"\n\n[roles.auth]\n${allowedOrigins}` : ''}`);
   }
   if (options.appSandbox) {
     const tick = options.appSandbox.conversationTickSecs;
