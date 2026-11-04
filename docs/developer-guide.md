@@ -233,7 +233,7 @@ These run long-duration endurance scenarios to detect slow memory/FD/task/cache 
 
 ## 3. Port Reference (Normalized 796x)
 
-- **7960**: Client Gateway (HTTP Proxy)
+- **7960**: Client Gateway (HTTP Proxy). Binds `127.0.0.1` unless `[roles.client_gateway.remote_access]` names an address (see [Remote access](#remote-access-to-the-client-gateway)).
 - **7961**: Community Registry (HTTP)
 - **7962**: WebRTC Bootstrap Page (HTTP)
 - **7963**: WebRTC Signaling Server (WebSocket)
@@ -1839,8 +1839,8 @@ To act as a verified person identity, a client opens a session with the gateway:
 
 The node auth service is addressed by `Host: auth.<domain>` (or `Host: auth-<auth-did-hash>.<domain>`), or via the standard path prefix `/_syneroym/session/*` on the client gateway port (7960):
 - `POST /_syneroym/session/challenge`: Returns a cryptographic nonce, the node DID, and challenge expiry.
-- `POST /_syneroym/session/login`: Validates the signed challenge assertion and delegation certificate (`delegated-key`) or local identity (`local`), returning a signed UCAN session token and setting `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Lax; Path=/`.
-- `GET /_syneroym/session/methods`: Returns the list of enabled login methods on this node.
+- `POST /_syneroym/session/login`: Validates the signed challenge assertion and delegation certificate (`delegated-key`) or local identity (`local`, answered only on a connection from this node's own gateway, never with remote access on; see [Remote access](#remote-access-to-the-client-gateway)), returning a signed UCAN session token and setting `Set-Cookie: syneroym_session=...; HttpOnly; SameSite=Lax; Path=/`.
+- `GET /_syneroym/session/methods`: Returns the list of enabled login methods on this node. `local` is listed only when `person_identities_dir` is set and remote access is off.
 - `GET /_syneroym/session/whoami`: Returns the active session's person DID, auth method, and expiration.
 - `POST /_syneroym/session/refresh`: Re-issues a session token bounded by the original delegation lifetime.
 - `POST /_syneroym/session/logout`: Revokes the session token and clears the cookie (`Max-Age=0`).
@@ -1873,11 +1873,21 @@ http_port = 7960
 # Identity mode: "open" (default), "login", or "fixed"
 identity_mode = "open"
 
+# Optional. Present means clients on other machines may connect. Absent (the
+# default) means the gateway binds 127.0.0.1. bind_address is an IP address
+# only; the port is http_port. A misspelled table name is ignored, which
+# leaves remote access off.
+# [roles.client_gateway.remote_access]
+# bind_address = "0.0.0.0"
+
 [roles.auth]
 # Session lifetime in seconds (defaults to 28800 = 8 hours)
 session_ttl_secs = 28800
 # Challenge nonce lifetime in seconds (defaults to 60 = 1 minute)
 nonce_ttl_secs = 60
+# Extra origins that may call the auth service from a browser. An entry is an
+# exact origin, or "<scheme>://*.<domain>[:<port>]" for every host under a domain.
+# allowed_origins = ["https://*.example.com"]
 
 [roles.mailbox]
 # SQLite file name under storage.db_dir (default: "mailbox.db")
@@ -1918,6 +1928,25 @@ sweep_interval_secs = 60
 republish_interval_secs = 3600
 ```
 
+
+##### Remote access to the client gateway
+
+By default the gateway binds `127.0.0.1` and drops any peer that is not a loopback address. Only programs on the same machine can connect. To let clients on other machines connect, add the table `[roles.client_gateway.remote_access]` with `bind_address` (see Configuration above). The decision and its reasons are in [ADR-0028](decisions/0028-remote-client-access.md).
+
+With remote access on:
+- The `local` login method is off. `GET /_syneroym/session/methods` lists only `delegated-key`, and a `local` login answers `403` with a text that names `delegated-key`. Remote clients, including the Hub, use `delegated-key`. `roymctl session login --as <name>` uses it by default.
+- A `local` login is also refused when the request did not come on a stream from this node's own gateway (for example over Iroh from another node), when it carries an `Origin` header, or when it carries `Forwarded`, `X-Forwarded-For`, `X-Real-IP` or `Via`. A header never allows a login.
+- `identity_mode = "fixed"` stops startup.
+- Any program that forwards connections to the gateway (a TLS proxy, an SSH tunnel, a port forwarder) needs remote access on, even with `bind_address = "127.0.0.1"`. Otherwise every request reaches the gateway from loopback and looks local. The proxy-header check catches some proxies only, so do not rely on it.
+- In `open` mode, and in `login` mode without `connection_auth_gate`, every client on the network acts as this node. The node logs a warning at startup. A personal node should use `identity_mode = "login"` with `connection_auth_gate = true`.
+
+The gateway serves plain HTTP. A non-loopback `bind_address` logs a warning. A remote Hub needs HTTPS: a browser offers `crypto.subtle`, which the Hub needs to sign in, only on an HTTPS page or on `localhost`. To open the Hub from another machine:
+1. Put a TLS proxy (for example Caddy) in front of the gateway. It needs a certificate for `*.<domain>` (every app has its own host name) and `auth.<domain>`. A wildcard certificate needs a DNS challenge (in Caddy, a DNS provider module).
+2. Add the Hub's address to `[roles.auth] allowed_origins`, for example `"https://*.example.com"`. The pattern lets any page that the gateway serves under that domain call the auth service, including other people's services.
+3. Set `secure_cookies = true` under `[roles.auth]`.
+4. Open the Hub and sign in with a session key file.
+
+A node that ran before with its own config and no `remote_access` table becomes local-only after this change. The startup log line "client gateway listening" says whether remote access is on.
 
 ### Health and Metrics
 
@@ -2194,3 +2223,14 @@ roymctl app deploy inst-1 app.toml --mint-masters --mailbox-passport mailbox-pas
 **Files.** The leases of a mailbox are in `<storage.db_dir>/mailbox_passports.db`. A queue no longer stores its limits in `mailbox.db`. The product is not released and has no migration, so delete an old `mailbox.db` before you start the new binary.
 
 **Limits of this version.** A sender asks for a message time-to-live of at most 7 days, so a larger `--max-ttl-days` has no effect yet. A leased master is not refused by `max_queues`, but `max_total_bytes` and the node-wide rate limits are shared with open queues.
+
+### 5.7. Run a node in Docker
+
+The image runs `syneroym-substrate`. With no config (`run` alone) it starts a development setup whose gateway binds `127.0.0.1` inside the container, which no port mapping can reach. Run a real node with a config:
+
+1. Copy `deploy/config.community.example.toml` to `deploy/config/config.toml`, next to `deploy/docker-compose.community.yml`. The example keeps the node key, the stores and the logs in the mounted `./data` volume, so the node keeps its identity after `docker compose down && up` and after an image update. It runs the registry, the Iroh relay and the client gateway, and turns remote access on.
+2. Start it: `docker compose -f deploy/docker-compose.community.yml up -d`.
+3. The compose file publishes `7964`, `7961` and `7960` as TCP and `7965/udp`. The Iroh QUIC port is UDP; Docker publishes TCP unless told. For a private node, change the gateway mapping to `127.0.0.1:7960:7960`.
+4. Put a TLS proxy in front of the gateway for browser clients (see Remote access above). For QUIC address discovery, set `[roles.coordinator.tls]` to certificate files under the mounted `/etc/letsencrypt`.
+
+If you run a node in Docker with your own config and no `remote_access` table, its gateway is local-only after upgrading to this version. Add the table to restore access from other machines.
