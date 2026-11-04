@@ -598,7 +598,7 @@ config` (35 passed; 24 of them are `config::tests`, which is the count in
 `status.md` (5 + 3 + 20 + 3 + 1 + 4 = 36). The `status.md` and PR counts
 match.
 
-**Summary:** 0 blocker, 1 major (R1), 4 minor (R2 to R5). All 5 fixed (code review round 1 fixes); 0 open. Not yet re-checked by the reviewer.
+**Summary:** 0 blocker, 1 major (R1), 4 minor (R2 to R5). 5 open.
 
 ### What was checked and found correct
 
@@ -720,7 +720,7 @@ the way out (for example, let the gate pass `GET` of an app's static files,
 or give a no-session request its own key instead of the node's). Record the
 change as a deviation and in the Q10 answer note.
 
-*Status:* Fixed (docs only, owner choice 2026-11-04). The code is unchanged except the warning text. ADR-0028 decision 6, the developer guide, the architecture doc, `config.sample.toml`, the community example config and the Q10 backlog row now say the gate suits API-only nodes and a Hub node runs `login` without it. New backlog row "The connection gate cannot admit a browser page load". Deviation recorded in the change doc.
+*Status:* Fixed (6779b343, f1aa0010), confirmed in the fixes check below. Docs only, owner choice 2026-11-04. The code is unchanged except the warning text. ADR-0028 decision 6, the developer guide, the architecture doc, `config.sample.toml`, the community example config and the Q10 backlog row now say the gate suits API-only nodes and a Hub node runs `login` without it. New backlog row "The connection gate cannot admit a browser page load". Deviation recorded in the change doc.
 
 #### R2 — minor — a comment cites a test number
 
@@ -736,7 +736,7 @@ the comment then points at the wrong test.
 *Fix:* `// The Hub-on-another-domain test opens the Hub on a `*.roym.test`
 host, so the auth service must allow that domain.`
 
-*Status:* Fixed. The comment names the test by what it does, with no number.
+*Status:* Fixed (6779b343), confirmed in the fixes check below. The comment names the test by what it does, with no number.
 
 #### R3 — minor — the `fixed`-mode e2e test drops the port the harness allocated
 
@@ -760,7 +760,7 @@ for the wrong reason or hangs.
 `ClientGatewayRole { identity_mode: IdentityMode::Fixed, remote_access: …,
 ..gateway }`.
 
-*Status:* Fixed. The test starts from the harness gateway role, so it keeps the allocated port.
+*Status:* Fixed (6779b343), confirmed in the fixes check below. The test starts from the harness gateway role, so it keeps the allocated port.
 
 #### R4 — minor — two inline paths that the import rules forbid
 
@@ -779,7 +779,7 @@ same lines again.
 *Fix:* `use std::str;` and `str::from_utf8(&bytes)` in `local.rs`;
 `use tempfile::TempDir;` in the e2e file.
 
-*Status:* Fixed. `use std::str;` in `local.rs` and `use tempfile::TempDir;` in the e2e file.
+*Status:* Fixed (6779b343), confirmed in the fixes check below. `use std::str;` in `local.rs` and `use tempfile::TempDir;` in the e2e file.
 
 #### R5 — minor — "every refusal names `delegated-key`" is wider than the code
 
@@ -802,4 +802,58 @@ gets a text without it.
 checks) names `delegated-key`" in both docs, or add "; use delegated-key" to
 the three other texts too. The docs change is enough.
 
-*Status:* Fixed. ADR-0028, the architecture doc, the change doc and `task.md` say "every refusal because the request is not local (the five gate checks)".
+*Status:* Fixed (6779b343, f1aa0010), confirmed in the fixes check below. ADR-0028, the architecture doc, the change doc and `task.md` say "every refusal because the request is not local (the five gate checks)".
+
+## Code review round 1 — fixes checked — Claude Opus 5.5, 2026-11-04
+
+I checked the fix commits 6779b343 (code and living docs) and f1aa0010
+(change doc, backlog, `task.md`, statuses) on `feat/m08a-a6-remote-clients`
+(main checkout, not a worktree; `git pull` said "Already up to date").
+f1aa0010 also changed the counts line of round 1. That line is the record of
+the review, so I put it back. The fix statuses had no commit ids; I added
+them. No code was changed.
+
+CI: [run 41855913063](https://github.com/syneroym/syneroym/actions/runs/41855913063)
+on f1aa0010 failed in Test 1/6 and Test 6/6. Both jobs stopped after about
+55 minutes with "The hosted runner lost communication with the server", and
+no test failed in them. Lints, Playwright E2E and Test 2/6 to 5/6 passed.
+The fix commits change only an import, a log text, a test setup and a
+comment, so the loss is a runner problem. I started a re-run of the two
+failed jobs (attempt 2). CI has not yet passed on the fixed code.
+
+I ran only targeted tests: `syneroym-auth` and `syneroym-client-gateway` 33
+passed; `gateway_remote_access_e2e` and `community_deploy_config` 8 passed
+(the Roym test ran, it did not skip).
+
+**Confirmed Fixed.**
+- **R1.** ADR-0028 decision 6, the developer guide, the architecture doc,
+  `config.sample.toml` and the community example config all say the same
+  thing now: the gate stops "every client acts as this node", the gate also
+  answers `401` to the Hub's page and files, so the gate is for nodes that
+  serve only API clients, and a Hub node runs `login` without the gate and
+  keeps the warning. The startup warning no longer recommends the gate. The
+  new backlog row "The connection gate cannot admit a browser page load"
+  records the way out. The change doc records the deviation and links it
+  from the Q1–Q10 line. No living doc still says a personal node should use
+  the gate (searched `*.md`, `*.toml`, `*.rs`, `*.ts`, Dockerfile, compose).
+- **R2.** The `global-setup.ts` comment names the test by what it does.
+  `task.md` still says "Hub case 42"; that is a planning doc, not a code
+  comment, so the rule does not apply.
+- **R3.** The test now starts from the harness gateway role. The harness
+  sets `http_port` to the allocated port (`common/node.rs:277`) before it
+  runs the test's `configure` hook (`:315`), so the port is kept.
+  `remote_access_in_fixed_mode_stops_startup` passes.
+- **R4.** `use std::str;` with `str::from_utf8` in `local.rs`, and
+  `use tempfile::TempDir;` in the e2e file.
+- **R5.** ADR-0028, the architecture doc, the change doc and `task.md` limit
+  the claim to the five gate checks. D-A6-7 ("Every text names
+  `delegated-key`") is about the gate texts only, so it stays true. The
+  developer guide line about a remote-access node is also true: with remote
+  access on, a `local` login stops at a gate check.
+
+### New findings
+
+None.
+
+**Summary:** R1 to R5 confirmed Fixed. No new findings. **0 open.** The
+slice can close after CI passes on the fixed code.
