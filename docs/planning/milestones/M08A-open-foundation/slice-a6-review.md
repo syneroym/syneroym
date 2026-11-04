@@ -571,3 +571,235 @@ same commit. Same model as the plan author, as in round 1.
   in-crate tests need no test resolver and copy nothing.
 
 **Result:** all 14 items Fixed and confirmed. **0 open.**
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-04
+
+Checked `git diff origin/main...HEAD` at `f8c32442` on
+`feat/m08a-a6-remote-clients` (main checkout, not a worktree; `git pull` said
+"Already up to date"). The code was written by Claude Sonnet 5.5. I read
+`AGENTS.md`, session-strategy.md ("The review file"), the plan, the plan
+review rounds above, the code review rounds of A2a to A5, and the change doc.
+No code was changed. Line numbers below are at `f8c32442`.
+
+The review prompt named PR #338. That PR is a merged docs PR on another
+branch. The PR of this branch is
+[#344](https://github.com/syneroym/syneroym/pull/344) (draft), so this review
+uses #344.
+
+CI: `gh pr checks 344` on `f8c32442`
+([run 41827059524](https://github.com/syneroym/syneroym/actions/runs/41827059524))
+passed every job. The CI log shows that
+`a_roym_method_works_with_a_delegated_session_on_a_remote_access_node` ran
+(13.8 s, not the early return) and that Hub case 42 passed. I did not run the
+full suite. I ran `cargo nextest run -p syneroym-auth -p
+syneroym-client-gateway` (33 passed), `cargo nextest run -p syneroym-core
+config` (35 passed; 24 of them are `config::tests`, which is the count in
+`status.md`), and `cargo nextest list` for the six substrate binaries named in
+`status.md` (5 + 3 + 20 + 3 + 1 + 4 = 36). The `status.md` and PR counts
+match.
+
+**Summary:** 0 blocker, 1 major (R1), 4 minor (R2 to R5). 5 open.
+
+### What was checked and found correct
+
+- **The config (D-A6-1).** `RemoteAccess { bind_address: IpAddr }` has
+  `deny_unknown_fields`; `ClientGatewayRole.remote_access` is
+  `Option<RemoteAccess>` with `#[serde(default)]` and `None` in `Default`;
+  `bind_ip()` returns the address or `127.0.0.1`. The five config tests have
+  the plan's names and check an empty table, a port in the address, a typo
+  and an extra key.
+- **The gateway (D-A6-2 to D-A6-5, D-A6-14).** `bind` and `remote_access` are
+  set in `init`; with no role the bind is `127.0.0.1:7000`. `bind_listener` is
+  the only place that binds. The accept arm is one line and calls
+  `accept_one`, which drops a refused peer with a `warn!` and no answer.
+  `admit_peer` is the plan's expression with `to_canonical`. The `fixed`
+  check runs before the fixed delegation is read, and its text is the plan's.
+  The plain-HTTP warning fires for a non-loopback address. The `open`-mode
+  warning condition (`Open || !connection_auth_gate`, after `Fixed` has
+  already failed) is the plan's. The listener test checks the real socket
+  address with `http_port = 0`.
+- **The `local` gate (D-A6-6, D-A6-7).** `LocalLogin` has the three states;
+  `with_remote_access` only turns `On` into `OffForRemoteAccess`; `methods()`
+  lists `local` only for `On`. `local_login_gate` runs in the `local` arm
+  before `identity` is read, with the plan's five checks in the plan's order
+  and the plan's exact texts. A header can only refuse. The caller check is
+  `caller_did == node_did`, as the plan decided (the router's extra "no
+  delegation" test is not needed: no production code issues a delegation
+  with the node key as master; I grepped `DelegationCertificate::issue`).
+  `login_local` is `pub(crate)` in `service/local.rs` and its body moved
+  unchanged except for the directory argument (a recorded deviation).
+  `runtime/auth.rs` passes `with_remote_access` and logs B3's warning.
+- **Check 2 rests on a true fact.** The only callers of
+  `passthrough_with_conn` are in `gateway.rs`; the only production call of a
+  `NativeHttpService::handle_request` is the router's native dispatch, which
+  passes the effective caller. A WASM guest has no network access
+  (`WasiCtx::builder().build()`, no `wasi:http`), so it cannot reach the
+  gateway on loopback.
+- **CORS (D-A6-9).** `is_allowed_origin` and `cors_headers` moved unchanged;
+  the pattern match is stricter than the plan (it also refuses an empty
+  label such as `a..roym.test`), and the tests cover the plan's cases plus a
+  userinfo case.
+- **The Hub CSP (D-A6-10).** The static tag is the plan's text; `boot-csp.ts`
+  is one line; `main.ts` imports it first; `csp.ts` has the two functions.
+  Case 42 asserts the `securitypolicyviolation` event, not a rejected `fetch`,
+  and its step 3 logs in with `delegated-key` and checks the session bar. No
+  port is read at module load.
+- **Docker (D-A6-11).** The example config has every key of D-A6-11 and no
+  others; the test checks each value and every resolved path. The compose
+  file has `7965:7965/udp` and the two comments; the `Dockerfile` has
+  `EXPOSE 7964 7965/udp 7961 7960` and the port comment.
+- **Test helpers (D-A6-12, D-A6-15).** `delegated_login` is
+  `login_to_gateway` moved with an unchanged body;
+  `gateway_session_e2e.rs` drops from 1 477 to 1 419 lines and its entry is
+  lowered. The auth mock and request builder exist once, in
+  `crates/auth/tests/common/mod.rs`.
+- **Tests that can fail.** The PR records that
+  `local_login_over_iroh_from_another_identity_is_refused` returned `200` with
+  the caller check off, and that case 42 times out without the second tag.
+- **Wire changes and decisions.** A6-W1 to A6-W11 are in the change doc's
+  "Planned wire changes", with the plan's meaning. D-A6-1 to D-A6-15 are in
+  the change doc's Decisions and match the plan. The deviations F1, F4, F13,
+  the proxy-header refusal, F3, W10, Q10, the example config and the UDP fix
+  are recorded, plus six implementation deviations. `status: draft` and the
+  `demo:` line of Q9 are set.
+- **Living docs.** The architecture doc (`:694`, `:696`, `:704`, `:711-715`,
+  `:764`), the requirements spec (`:112-115`, `:623`), the Roym spec (D8,
+  `:174`, G3), the developer guide (port list, auth endpoints, configuration,
+  remote access, section 5.7), `TERMINOLOGY.md` and the `[ROY-RMT]` row say
+  what section 9 asks (but see R1 and R5).
+- **Backlog.** The three rows of section 8 are closed or split, and the three
+  new rows exist. No new `TODO` or `FIXME`.
+- **Sizes and scope.** No Rust file passes 800 lines (largest touched:
+  `gateway.rs` 745). `service.rs` went from 789 to 680. `src/` changes are
+  only in `core`, `client_gateway`, `auth`, `substrate/src/runtime/auth.rs`
+  and the Hub UI. No planning ids in code comments (but see R2).
+
+### Findings
+
+#### R1 — major — the setup the docs recommend for a remote node blocks the Hub page itself
+
+*Where:* `crates/client_gateway/src/gateway.rs:298-303` (the warning text);
+`docs/decisions/0028-remote-client-access.md:60-66` (decision 6);
+`docs/developer-guide.md:1941` and the steps under it ("4. Open the Hub and
+sign in");
+`docs/system-architecture.md:704`; `crates/substrate/config.sample.toml:258-260`;
+`deploy/config.community.example.toml:50-52`; the Q10 row in
+`docs/planning/deferred-backlog.md`. The gate itself:
+`crates/client_gateway/src/gateway.rs:525-531`.
+
+*Problem:* Every place that A6 writes about Q10 says a personal node with
+remote access should use `identity_mode = "login"` with
+`connection_auth_gate = true`. But with the gate on, the gateway answers
+`401` to every request for a host that is not the auth host and that has no
+valid session cookie or `Bearer` token (`gateway.rs:525-531`; the existing
+test `gateway_session_e2e.rs:1359-1367` shows `401` for a request with no
+session). A browser that opens the Hub sends neither: the Hub keeps its
+token in `sessionStorage` and sends it as `Bearer` from page code, and the
+only cookie it writes on its own host has `path=/_syneroym/events`
+(`login.ts:54`). So `GET /` and the Hub's script and style files get `401`,
+and the sign-in screen never loads. The Hub has never run with the gate on:
+`node-boot.ts` never sets it, and no test turns it on with a browser.
+
+*Failure case:* Alice follows ADR-0028 and the developer guide. She sets
+`login`, `connection_auth_gate = true` and remote access, puts Caddy in
+front, and opens `https://roym-….example.com` on her laptop. She sees
+`{"error":"unauthorized: valid session required"}`, not the Hub. The only
+setup in which a remote Hub works is the one the startup warning tells her to
+avoid. So the slice's own user story ("on her laptop she opens the Hub
+address and signs in") works only in the warned setup, and the docs do not
+say so.
+
+*Fix:* This changes an owner answer (Q10), so ask the owner. Recommended:
+keep the code, and change the text in the seven places above to say: the
+gate refuses every page and file load that has no session, so it suits a node
+that serves only API clients (`roymctl`, scripts); a node that serves the Hub
+to remote browsers runs `login` without the gate, and then a request with no
+session acts as this node (the warning still fires). Add a backlog row "The
+connection gate cannot admit a browser page load" (target `TBD`), which names
+the way out (for example, let the gate pass `GET` of an app's static files,
+or give a no-session request its own key instead of the node's). Record the
+change as a deviation and in the Q10 answer note.
+
+*Status:* Open
+
+#### R2 — minor — a comment cites a test number
+
+*Where:* `crates/substrate/tests/e2e/global-setup.ts:38`.
+
+*Problem:* `// Case 42 opens the Hub on a `*.roym.test` host, …`. The comment
+rule forbids test numbers in comments; the number goes stale when the Hub
+cases are renumbered or split.
+
+*Failure case:* A later change moves the case to another number or file;
+the comment then points at the wrong test.
+
+*Fix:* `// The Hub-on-another-domain test opens the Hub on a `*.roym.test`
+host, so the auth service must allow that domain.`
+
+*Status:* Open
+
+#### R3 — minor — the `fixed`-mode e2e test drops the port the harness allocated
+
+*Where:* `crates/substrate/tests/gateway_remote_access_e2e.rs:238-244`
+(`remote_access_in_fixed_mode_stops_startup`).
+
+*Problem:* The `configure` closure replaces the harness's gateway role with
+`ClientGatewayRole { …, ..Default::default() }`. That throws away the
+`http_port` that the harness allocated, so the role has the default port
+7960. The test passes only because `init` fails before anything binds.
+`node_builder` in the same file keeps the harness role with
+`c.roles.client_gateway.take().unwrap_or_default()`.
+
+*Failure case:* A later change moves the `fixed` check after the bind (or
+the check is broken). The node then binds the fixed port 7960, which
+collides with a developer's running node or another test, and the test fails
+for the wrong reason or hangs.
+
+*Fix:* Start from the harness role:
+`let gateway = c.roles.client_gateway.take().unwrap_or_default();` and
+`ClientGatewayRole { identity_mode: IdentityMode::Fixed, remote_access: …,
+..gateway }`.
+
+*Status:* Open
+
+#### R4 — minor — two inline paths that the import rules forbid
+
+*Where:* `crates/auth/src/service/local.rs:121` (`std::str::from_utf8`);
+`crates/substrate/tests/gateway_remote_access_e2e.rs:53`
+(`tempfile::TempDir` in a return type).
+
+*Problem:* The import clean-up rule asks for types through `use` and no
+inline paths with several `::` in an edited file. `local.rs` is a new file
+(the line moved with `login_local`, but the move created the file), and
+`TempDir` is a type written with its crate path.
+
+*Failure case:* None at run time; the next import pass or review flags the
+same lines again.
+
+*Fix:* `use std::str;` and `str::from_utf8(&bytes)` in `local.rs`;
+`use tempfile::TempDir;` in the e2e file.
+
+*Status:* Open
+
+#### R5 — minor — "every refusal names `delegated-key`" is wider than the code
+
+*Where:* `docs/decisions/0028-remote-client-access.md:51`
+("Every `local` refusal names `delegated-key`");
+`docs/system-architecture.md:713` ("Every refusal names `delegated-key`");
+the PR description and `task.md` say the same.
+
+*Problem:* The five refusals of `local_login_gate` name `delegated-key`. Three
+other `local` refusals do not: `400 "missing identity parameter for local
+login"` (`service.rs` `handle_login`), `400 "invalid identity name"` and
+`401 "unknown local identity"` (`local.rs:99-112`). The living docs state
+the rule for all of them.
+
+*Failure case:* A reader (or a client author) expects every `local` error
+text to contain `delegated-key` and parses for it; a wrong identity name
+gets a text without it.
+
+*Fix:* Say "every refusal because the request is not local (the five gate
+checks) names `delegated-key`" in both docs, or add "; use delegated-key" to
+the three other texts too. The docs change is enough.
+
+*Status:* Open
