@@ -633,7 +633,7 @@ record the answer in the change doc. Add a router test: a request with a
 revoked cookie and a valid `Bearer` is accepted (or the cookie is ignored off
 the events path).
 
-*Status:* Open (reopened in the second fixes check below: the header order change breaks `test_22_cookie_takes_priority_over_bearer`). Fixer note: Fixed (efd0f620). The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, the owner confirmed the choice on 2026-11-04, and the deviation line and ADR-0027 record it.
+*Status:* Fixed (595d4ab2), confirmed at the slice close below. It was reopened in the second fixes check (the header order change broke `test_22_cookie_takes_priority_over_bearer`). Fixer note: Fixed (efd0f620). The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, the owner confirmed the choice on 2026-11-04, and the deviation line and ADR-0027 record it.
 
 #### R2 — major — an open feed keeps streaming after its session is revoked or expired
 
@@ -1173,3 +1173,20 @@ SessionTokenClaims)>`. Then:
 **1 open** (R1). CI is red on the fixes (Test 4/6).
 
 **Counts after the fix of the second fixes check.** Code review round 1 has 13 items: 12 Fixed, 1 Rejected (R3). 0 open. CI has not yet run on 595d4ab2.
+
+## Slice close — Claude Opus 5.5, 2026-11-04
+
+I checked the R1 fix 595d4ab2. `select_session_token` (`auth.rs`) tries the
+cookie first, then `Bearer`, and returns the first token that is not revoked
+and verifies. `resolve_effective_session_caller` and the feed both call it,
+so the feed watches the token that authenticated the request. The developer
+guide and the change doc deviation line state the fall-through rule. R1 is
+confirmed.
+
+The close-out import pass found new inline multi-segment paths in seven
+files of this slice. 0e809695 turns them into imports. It changes no
+behaviour.
+
+**Counts.** Code review round 1 has 13 items: 12 Fixed and confirmed, 1
+Rejected (R3). **0 open.**
+
