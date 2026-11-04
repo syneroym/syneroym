@@ -468,7 +468,7 @@ Checked the plan at `923b63d` (fix commit `68e75166`, status commit
 `923b63d`) against the code at the same commit. I read the whole diff of the
 plan from `e75abfa`. Same model as the plan author, as in round 1.
 
-**Result:** 12 confirmed Fixed, 2 reopened (P9, P13, both minor). **2 open.**
+**Result:** 12 confirmed Fixed, 2 reopened (P9, P13, both minor), both Fixed (ec847475). **0 open.**
 
 ### Confirmed
 
@@ -531,7 +531,7 @@ plan from `e75abfa`. Same model as the plan author, as in round 1.
   (D-A6-10); (3) case 42, then run it, with the "if step 2 fails, stop and
   build Q3 (b)" rule; (4) `csp.test.ts`. Items 2 and 3 are small, so the
   answer is still known before the rest of the slice.
-- *Status:* Open.
+- *Status:* Fixed (ec847475). Step 5 now runs: (1) `node-boot.ts`/`global-setup.ts`, (2) the CSP change, (3) case 42 with the stop rule, (4) `csp.test.ts`.
 
 #### P13 (minor, reopened) — The in-crate `login_local` tests have no way to build an `AuthService`
 
@@ -550,5 +550,5 @@ plan from `e75abfa`. Same model as the plan author, as in round 1.
   `struct NoAnchors;`. `login_local` never resolves an anchor, so the error is
   never reached. It is a different shape from `MockAnchorResolver`, so it is
   not a copy. Name it in 7.3.
-- *Status:* Open.
+- *Status:* Fixed (ec847475), with a different fix: the in-crate tests use the production resolver `RegistryClient::new(false, None)` (the type the runtime passes) instead of a new `NoAnchors` struct. It is cheap to build, never called by `login_local`, and adds no test type at all. Named in D-A6-7 and 7.3.
 
