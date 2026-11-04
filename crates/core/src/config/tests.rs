@@ -5,6 +5,8 @@ use std::{
     path::Path,
 };
 
+use toml::de;
+
 use super::*;
 
 #[test]
@@ -260,7 +262,7 @@ fn app_sandbox_call_all_defaults_when_absent() {
     assert_eq!(sandbox.call_all_max_waiting_guests, 4);
 }
 
-fn gateway_role(toml: &str) -> Result<ClientGatewayRole, toml::de::Error> {
+fn gateway_role(toml: &str) -> Result<ClientGatewayRole, de::Error> {
     toml::from_str::<SubstrateConfig>(toml).map(|c| c.roles.client_gateway.unwrap())
 }
 

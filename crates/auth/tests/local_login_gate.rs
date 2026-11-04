@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+use std::sync::Arc;
+
 use serde_json::{Value, json};
 use syneroym_auth::{AUTH_METHOD_LOCAL, AuthService, LoginResponse};
 use syneroym_identity::{Identity, substrate};
@@ -8,7 +10,7 @@ use tempfile::tempdir;
 
 mod common;
 
-use common::{login_request, node_caller, service_with_identities};
+use common::{MockAnchorResolver, login_request, node_caller, service_with_identities};
 
 fn local_body() -> Value {
     json!({"method": "local", "identity": "alice"})
@@ -101,8 +103,7 @@ async fn remote_access_turns_local_login_off_and_hides_it_from_methods() {
 #[tokio::test]
 async fn a_node_with_no_identities_dir_still_answers_400() {
     let node_did = substrate::derive_did_key(&Identity::generate().unwrap().public_key());
-    let resolver =
-        std::sync::Arc::new(common::MockAnchorResolver { resolvable: true, revoked: vec![] });
+    let resolver = Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![] });
     let service =
         AuthService::new(Identity::generate().unwrap(), node_did, 3600, 60, None, resolver);
 
