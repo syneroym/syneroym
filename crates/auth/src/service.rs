@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::PathBuf,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -24,6 +23,9 @@ use tracing::warn;
 use crate::token::{
     AUTH_METHOD_DELEGATED_KEY, AUTH_METHOD_LOCAL, CLAIM_DELEGATION_EXPIRES_AT_SECS, SessionToken,
 };
+
+mod cors;
+mod local;
 
 pub const MAX_PENDING_CHALLENGES: usize = 4096;
 pub const MAX_LOGGED_OUT_TOKENS: usize = 10000;
@@ -340,81 +342,6 @@ impl AuthService {
         })
     }
 
-    pub fn login_local(&self, identity_name: &str) -> Result<LoginResponse, (u16, &'static str)> {
-        let identities_dir = self
-            .person_identities_dir
-            .as_ref()
-            .ok_or((400, "local login method is not enabled"))?;
-
-        let trimmed = identity_name.trim();
-        if trimmed.is_empty()
-            || trimmed.contains('/')
-            || trimmed.contains('\\')
-            || trimmed.contains("..")
-        {
-            return Err((400, "invalid identity name"));
-        }
-
-        let mut key_path = identities_dir.join(format!("{trimmed}.key"));
-        if !key_path.exists() {
-            key_path = identities_dir.join(trimmed);
-        }
-        if !key_path.exists() {
-            return Err((401, "unknown local identity"));
-        }
-
-        let secret_bytes = match fs::read(&key_path) {
-            Ok(bytes) => {
-                if bytes.len() == 32 {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&bytes);
-                    arr
-                } else if let Ok(s) = std::str::from_utf8(&bytes) {
-                    if let Ok(hex_bytes) = hex::decode(s.trim()) {
-                        if hex_bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&hex_bytes);
-                            arr
-                        } else {
-                            return Err((500, "invalid key file length"));
-                        }
-                    } else {
-                        return Err((500, "invalid key file format"));
-                    }
-                } else {
-                    return Err((500, "invalid key file content"));
-                }
-            }
-            Err(_) => return Err((500, "failed to read identity key file")),
-        };
-
-        let person_identity = Identity::from_bytes(&secret_bytes);
-        let person_did = substrate::derive_did_key(&person_identity.public_key());
-
-        let now = now_secs();
-        let session_token = SessionToken::mint(
-            &self.auth_identity,
-            &person_did,
-            AUTH_METHOD_LOCAL,
-            Some({
-                let mut map = Map::new();
-                map.insert("local_name".to_string(), Value::String(trimmed.to_string()));
-                map
-            }),
-            self.session_ttl_secs,
-        )
-        .map_err(|_| (500, "failed to mint session token"))?;
-
-        let token_str =
-            session_token.to_token_string().map_err(|_| (500, "failed to encode session token"))?;
-
-        Ok(LoginResponse {
-            token: token_str,
-            person_did,
-            expires_at_secs: now + self.session_ttl_secs,
-        })
-    }
-
     pub fn methods(&self) -> MethodsResponse {
         let mut methods = vec![AUTH_METHOD_DELEGATED_KEY.to_string()];
         if self.person_identities_dir.is_some() {
@@ -511,41 +438,6 @@ impl AuthService {
             }
         }
         None
-    }
-
-    fn is_allowed_origin(&self, origin: &str) -> bool {
-        let trimmed = origin.trim();
-        if self.allowed_origins.iter().any(|allowed| allowed == trimmed) {
-            return true;
-        }
-        trimmed.starts_with("http://localhost:")
-            || trimmed.starts_with("https://localhost:")
-            || trimmed == "http://localhost"
-            || trimmed == "https://localhost"
-            || trimmed.starts_with("http://127.0.0.1:")
-            || trimmed.starts_with("https://127.0.0.1:")
-            || trimmed == "http://127.0.0.1"
-            || trimmed == "https://127.0.0.1"
-            || (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
-                && (trimmed.contains(".localhost:") || trimmed.ends_with(".localhost"))
-    }
-
-    fn cors_headers(&self, origin: Option<&str>) -> Vec<(String, String)> {
-        let mut headers = vec![
-            ("access-control-allow-methods".to_string(), "GET, POST, OPTIONS".to_string()),
-            (
-                "access-control-allow-headers".to_string(),
-                "content-type, authorization, x-syneroym-routing-key".to_string(),
-            ),
-        ];
-        if let Some(orig) = origin
-            && self.is_allowed_origin(orig)
-        {
-            headers.push(("access-control-allow-origin".to_string(), orig.to_string()));
-            headers.push(("access-control-allow-credentials".to_string(), "true".to_string()));
-            headers.push(("vary".to_string(), "Origin".to_string()));
-        }
-        headers
     }
 
     fn cookie_attribute(&self) -> &'static str {

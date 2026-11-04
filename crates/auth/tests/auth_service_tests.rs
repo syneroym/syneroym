@@ -1,10 +1,6 @@
 #![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used)]
 
-use std::{
-    fs,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, sync::Arc};
 
 use serde_json::json;
 use syneroym_app_host::types::http::HttpRequest;
@@ -12,10 +8,7 @@ use syneroym_auth::{
     AUTH_METHOD_DELEGATED_KEY, AUTH_METHOD_LOCAL, AuthService, DelegatedKeyLoginParams,
     SessionToken,
 };
-use syneroym_core::{
-    dht_registry::{MasterAnchorPayload, MasterAnchorResolver},
-    protocol_utils::gateway_session_assertion,
-};
+use syneroym_core::protocol_utils::gateway_session_assertion;
 use syneroym_identity::{
     DelegationCertificate, Identity,
     delegation::{SCOPE_ROUTING, SCOPE_SERVICE_INSTANCE, SCOPE_SESSION_AUTH},
@@ -24,30 +17,9 @@ use syneroym_identity::{
 use syneroym_rpc::NativeHttpService;
 use tempfile::tempdir;
 
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
+mod common;
 
-#[derive(Debug)]
-struct MockAnchorResolver {
-    resolvable: bool,
-    revoked: Vec<String>,
-}
-
-#[async_trait::async_trait]
-impl MasterAnchorResolver for MockAnchorResolver {
-    async fn resolve_master_anchor(&self, master_id: &str) -> anyhow::Result<MasterAnchorPayload> {
-        if !self.resolvable {
-            return Err(anyhow::anyhow!("DHT anchor lookup failed for {master_id}"));
-        }
-        Ok(MasterAnchorPayload {
-            schema: "master_anchor_v1".to_string(),
-            revoked_keys: self.revoked.clone(),
-            revoke_list_registry: None,
-            timestamp: now_secs(),
-        })
-    }
-}
+use common::{MockAnchorResolver, now_secs};
 
 #[tokio::test]
 #[expect(clippy::too_many_lines, reason = "linear delegated key login and refusal scenarios")]
