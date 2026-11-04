@@ -11,6 +11,7 @@ use std::{
 };
 
 use futures::{Stream, StreamExt};
+use reqwest::{Client, StatusCode};
 use rustls::crypto::ring;
 use serde_json::json;
 use syneroym_core::protocol_utils::SESSION_COOKIE_NAME;
@@ -85,7 +86,7 @@ impl EventStream {
 }
 
 async fn open_event_feed(node: &RoymNode, after: Option<&str>) -> EventStream {
-    let client = reqwest::Client::builder().build().unwrap();
+    let client = Client::builder().build().unwrap();
     let mut req = client
         .get(format!("{}/_syneroym/events", node.gateway_url))
         .header("Host", node.web_host_header())
@@ -100,7 +101,7 @@ async fn open_event_feed(node: &RoymNode, after: Option<&str>) -> EventStream {
     }
 
     let resp = req.send().await.unwrap();
-    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::OK);
     EventStream { stream: Box::new(resp.bytes_stream()), buffer: String::new() }
 }
 

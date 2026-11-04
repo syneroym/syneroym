@@ -20,7 +20,10 @@ use syneroym_core::{
     event_bus::{Cursor, Event, EventBus, READ_LIMIT_CAP, ReadOutcome},
     protocol_utils::SessionRevocationCheck,
 };
-use tokio::sync::{OwnedSemaphorePermit, watch};
+use tokio::{
+    sync::{OwnedSemaphorePermit, watch},
+    time,
+};
 
 use super::{HttpBody, HttpHandler, SESSION_CALLER_MARKER, auth::select_session_token, http_error};
 
@@ -213,7 +216,7 @@ fn make_feed_stream(state: FeedState) -> HttpBody {
                         now_ms,
                     );
                 }
-                _ = tokio::time::sleep(FEED_KEEP_ALIVE_INTERVAL) => {
+                _ = time::sleep(FEED_KEEP_ALIVE_INTERVAL) => {
                     if is_session_expired_or_revoked(
                         &state.session_token,
                         state.session_exp_secs,

@@ -1,3 +1,6 @@
+use syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS;
+use syneroym_ucan::{SessionToken, SessionTokenClaims};
+
 use super::*;
 
 /// Internal session marker set in `CallerContext.session.claims` when an HTTP
@@ -81,11 +84,11 @@ fn session_token_candidates(headers: &hyper::HeaderMap) -> Vec<String> {
 pub(super) fn select_session_token(
     route_handler: &RouteHandler,
     headers: &hyper::HeaderMap,
-) -> Option<(String, syneroym_ucan::SessionTokenClaims)> {
+) -> Option<(String, SessionTokenClaims)> {
     let auth_did = route_handler
         .inner
         .native_http
-        .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
+        .get(AUTH_SERVICE_ALIAS)
         .and_then(|svc| svc.service_id().map(ToString::to_string))?;
 
     session_token_candidates(headers).into_iter().find_map(|token| {
@@ -95,7 +98,7 @@ pub(super) fn select_session_token(
         if revoked {
             return None;
         }
-        let claims = syneroym_ucan::SessionToken::verify(&token, &auth_did).ok()?;
+        let claims = SessionToken::verify(&token, &auth_did).ok()?;
         Some((token, claims))
     })
 }

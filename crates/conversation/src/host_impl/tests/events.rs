@@ -9,10 +9,12 @@ use std::{
 
 use async_trait::async_trait;
 use ed25519_dalek::SigningKey;
+use serde_json::Value;
 use syneroym_core::event_bus::{Cursor, Event, EventBus, ReadOutcome};
+use syneroym_identity::{DelegationCertificate, Identity, delegation::SCOPE_SERVICE_INSTANCE};
 use syneroym_rpc::{
     Admission, ConversationDeliveryState, ConversationHistoryItem, ConversationHost,
-    ConversationMessage, ConversationNotifier, DropAnswer, NotifyOutcome,
+    ConversationMessage, ConversationNotifier, DropAnswer, NotifyOutcome, ProxyError,
 };
 
 use crate::{
@@ -568,16 +570,13 @@ struct RefusingDeliveryProxy {
 
 #[async_trait::async_trait]
 impl syneroym_rpc::ServiceProxy for RefusingDeliveryProxy {
-    async fn invoke(
-        &self,
-        request: syneroym_rpc::ProxyRequest,
-    ) -> std::result::Result<serde_json::Value, syneroym_rpc::ProxyError> {
+    async fn invoke(&self, request: syneroym_rpc::ProxyRequest) -> Result<Value, ProxyError> {
         if request.method == "prekey-bundle" {
             let bundle = self
                 .peer
                 .prekey_bundle(&request.target_service, ME)
                 .await
-                .map_err(|e| syneroym_rpc::ProxyError::Transport(e.to_string()))?;
+                .map_err(|e| ProxyError::Transport(e.to_string()))?;
             return Ok(serde_json::from_slice(&bundle).unwrap());
         }
         if request.method == "deliver" {
@@ -587,7 +586,7 @@ impl syneroym_rpc::ServiceProxy for RefusingDeliveryProxy {
             });
             return Ok(ack);
         }
-        Err(syneroym_rpc::ProxyError::Transport("unsupported".to_string()))
+        Err(ProxyError::Transport("unsupported".to_string()))
     }
 }
 
@@ -599,13 +598,13 @@ async fn a_refused_delivery_ack_records_a_delivery_event() {
     let peer = event_service(dir2.path()).await.0;
     let store = service.store_for(ME).await.unwrap();
 
-    let master = syneroym_identity::Identity::generate().unwrap();
-    let instance = syneroym_identity::Identity::generate().unwrap();
-    let cert = syneroym_identity::DelegationCertificate::issue(
+    let master = Identity::generate().unwrap();
+    let instance = Identity::generate().unwrap();
+    let cert = DelegationCertificate::issue(
         &master,
         instance.public_key(),
         3600,
-        syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+        SCOPE_SERVICE_INSTANCE.to_string(),
     )
     .unwrap();
     service.registry().set_owner(ME.to_string(), "did:key:zOwner".to_string()).await.unwrap();

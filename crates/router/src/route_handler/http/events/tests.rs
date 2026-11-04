@@ -11,8 +11,10 @@ use dashmap::DashMap;
 use http_body_util::BodyExt;
 use hyper::{
     HeaderMap, StatusCode,
-    header::{ACCEPT, RETRY_AFTER},
+    header::{ACCEPT, AUTHORIZATION, RETRY_AFTER},
 };
+use metrics::{Counter, Gauge, Histogram};
+use serde_json::Value;
 use syneroym_core::{
     config::SubstrateConfig,
     event_bus::EventBus,
@@ -27,9 +29,10 @@ use syneroym_data_keystore::KeyStore;
 use syneroym_mqtt_broker::{MqttBroker, MqttBrokerConfig};
 use syneroym_rpc::{
     AuthLevel, CallerContext, NativeDispatchRegistry, NativeInvocation, NativeResponse,
-    NativeService, RpcResult, SessionContext,
+    NativeService, RpcResult, SessionContext, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
+use tokio::time;
 
 use super::{FeedGuard, HttpHandler, SESSION_CALLER_MARKER};
 use crate::{RouteHandler, RouteHandlerDeps, RoutePreamble, route_handler::http::HttpBody};
@@ -43,7 +46,7 @@ struct NoopControlPlane;
 #[async_trait::async_trait]
 impl NativeService for NoopControlPlane {
     async fn dispatch(&self, _invocation: NativeInvocation) -> RpcResult<NativeResponse> {
-        Ok(NativeResponse { payload: serde_json::Value::Null })
+        Ok(NativeResponse { payload: Value::Null })
     }
 }
 
@@ -84,7 +87,7 @@ async fn build_test_router(
         messaging_broker,
         native_dispatch: NativeDispatchRegistry::default(),
         native_http: Arc::new(DashMap::new()),
-        websocket_senders: syneroym_rpc::WebSocketSenders::new(),
+        websocket_senders: WebSocketSenders::new(),
         http_routes,
         assets: Arc::new(DashMap::new()),
         sse_permits: Arc::new(DashMap::new()),
@@ -152,7 +155,7 @@ impl TestFixture {
 
     fn session_caller(&self, caller_did: Option<&str>) -> CallerContext {
         let mut session = SessionContext::default();
-        session.claims.insert(SESSION_CALLER_MARKER.to_string(), serde_json::Value::Bool(true));
+        session.claims.insert(SESSION_CALLER_MARKER.to_string(), Value::Bool(true));
         CallerContext {
             caller_did: caller_did.unwrap_or(&self.owner_did).to_string(),
             auth: AuthLevel::Delegated,
@@ -169,7 +172,7 @@ fn sse_headers() -> HeaderMap {
     let mut h = HeaderMap::new();
     h.insert(ACCEPT, "text/event-stream".parse().unwrap());
     let token = login::mint_token(OWNER_DID, 3600);
-    h.insert(hyper::header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+    h.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
     h
 }
 
@@ -328,8 +331,7 @@ async fn the_feed_of_one_app_never_carries_another_apps_event() {
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
     fix.bus.record(other_svc, "other.event", "sub", None, now_ms).unwrap();
 
-    let timeout_res =
-        tokio::time::timeout(Duration::from_millis(60), read_frame_text(&mut body)).await;
+    let timeout_res = time::timeout(Duration::from_millis(60), read_frame_text(&mut body)).await;
     assert!(timeout_res.is_err(), "other app event should not reach this feed");
 
     fix.bus.record(&fix.service_id, "conversation.message", "conv1", Some("mine"), now_ms).unwrap();
@@ -362,7 +364,7 @@ async fn the_seventeenth_feed_gets_503_and_a_closed_feed_frees_its_permit() {
 
 #[tokio::test]
 async fn a_quiet_feed_sends_a_keep_alive() {
-    tokio::time::pause();
+    time::pause();
 
     let fix = TestFixture::new().await;
     let caller = fix.session_caller(None);
@@ -375,7 +377,7 @@ async fn a_quiet_feed_sends_a_keep_alive() {
     let ready = read_frame_text(&mut body).await.unwrap();
     assert!(ready.starts_with("event: ready\n"), "got: {ready}");
 
-    tokio::time::advance(Duration::from_secs(25)).await;
+    time::advance(Duration::from_secs(25)).await;
 
     let keep_alive = read_frame_text(&mut body).await.unwrap();
     assert_eq!(keep_alive, ": keep-alive\n\n");
@@ -441,7 +443,7 @@ async fn a_reader_far_behind_gets_all_events_before_it_waits() {
 
     let mut count = 0;
     while let Ok(Some(frame)) =
-        tokio::time::timeout(Duration::from_millis(50), read_frame_text(&mut body)).await
+        time::timeout(Duration::from_millis(50), read_frame_text(&mut body)).await
     {
         assert!(frame.starts_with("event: change\n"));
         count += 1;
@@ -488,18 +490,14 @@ impl metrics::Recorder for TestRecorder {
         _: metrics::SharedString,
     ) {
     }
-    fn register_counter(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
-        metrics::Counter::noop()
+    fn register_counter(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> Counter {
+        Counter::noop()
     }
-    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
-        metrics::Gauge::from_arc(Arc::new(TestGauge(self.0.clone())))
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> Gauge {
+        Gauge::from_arc(Arc::new(TestGauge(self.0.clone())))
     }
-    fn register_histogram(
-        &self,
-        _: &metrics::Key,
-        _: &metrics::Metadata<'_>,
-    ) -> metrics::Histogram {
-        metrics::Histogram::noop()
+    fn register_histogram(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> Histogram {
+        Histogram::noop()
     }
 }
 

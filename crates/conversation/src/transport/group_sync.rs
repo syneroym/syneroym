@@ -5,7 +5,7 @@ use syneroym_rpc::{ConversationError, Delivery};
 
 use super::{Disposition, Sent, internal};
 use crate::{
-    ConversationService,
+    ConversationService, group,
     store::{ConversationStore, StoredMessage, now_ms},
 };
 
@@ -129,8 +129,7 @@ impl ConversationService {
                     "entry conversation_id does not match request group".to_string(),
                 ));
             }
-            let (ins, msg_opt, del_opt) =
-                crate::group::validate_and_insert(&store, svc, &conv, entry)?;
+            let (ins, msg_opt, del_opt) = group::validate_and_insert(&store, svc, &conv, entry)?;
             if ins {
                 accepted.push(entry.entry_id.clone());
             }
@@ -346,7 +345,7 @@ impl ConversationService {
                 if entry.conversation_id != conversation {
                     continue;
                 }
-                match crate::group::validate_and_insert(&store, service_id, &conv, &entry) {
+                match group::validate_and_insert(&store, service_id, &conv, &entry) {
                     Ok((_, msg_opt, del_opt)) => {
                         if !saw_failure {
                             highest_applied_seq = highest_applied_seq.max(seq);

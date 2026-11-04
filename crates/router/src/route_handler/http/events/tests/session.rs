@@ -3,6 +3,8 @@
 
 use std::collections::HashSet;
 
+use hyper::header::COOKIE;
+
 use super::{login::mint_token, *};
 use crate::route_handler::http::auth::{resolve_effective_session_caller, select_session_token};
 
@@ -32,10 +34,10 @@ fn headers_with(cookie: Option<&str>, bearer: Option<&str>) -> HeaderMap {
     let mut h = HeaderMap::new();
     h.insert(ACCEPT, "text/event-stream".parse().unwrap());
     if let Some(token) = cookie {
-        h.insert(hyper::header::COOKIE, format!("syneroym_session={token}").parse().unwrap());
+        h.insert(COOKIE, format!("syneroym_session={token}").parse().unwrap());
     }
     if let Some(token) = bearer {
-        h.insert(hyper::header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+        h.insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
     }
     h
 }
@@ -165,7 +167,7 @@ async fn an_open_feed_ends_on_the_first_change_after_its_session_expires() {
     let token = mint_token(OWNER_DID, 2);
     let mut body = open_feed(&fix, &headers_with(None, Some(&token))).await;
 
-    tokio::time::sleep(Duration::from_millis(2100)).await;
+    time::sleep(Duration::from_millis(2100)).await;
     record_one_change(&fix);
 
     let next_frame = read_frame_text(&mut body).await;
@@ -174,14 +176,14 @@ async fn an_open_feed_ends_on_the_first_change_after_its_session_expires() {
 
 #[tokio::test]
 async fn a_revoked_session_ends_a_quiet_feed_at_the_keep_alive() {
-    tokio::time::pause();
+    time::pause();
     let token = mint_token(OWNER_DID, 3600);
     let revoked = Arc::new(DynamicRevocation(AtomicBool::new(false)));
     let fix = TestFixture::with_revocation(Some(revoked.clone())).await;
     let mut body = open_feed(&fix, &headers_with(None, Some(&token))).await;
 
     revoked.0.store(true, Ordering::SeqCst);
-    tokio::time::advance(super::super::FEED_KEEP_ALIVE_INTERVAL).await;
+    time::advance(super::super::FEED_KEEP_ALIVE_INTERVAL).await;
 
     let next_frame = read_frame_text(&mut body).await;
     assert!(next_frame.is_none(), "no event came, so the keep-alive must end it: {next_frame:?}");
