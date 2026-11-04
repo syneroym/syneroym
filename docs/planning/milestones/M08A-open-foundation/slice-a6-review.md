@@ -28,7 +28,7 @@ owner may want a second round by a different tool.
 "Remote clients" design section and the task line are all in it. The plan names
 the right change doc for every criterion and decision.
 
-**Summary:** 0 blocker, 2 major, 12 minor, 14 items. All Fixed (68e75166); see each item.
+**Summary:** 0 blocker, 2 major, 12 minor, 14 items. Fixed in 68e75166; the fixes check reopened P9 and P13 (2 open, both minor).
 
 **Owner answers (2026-11-04).** The owner agreed with the reviewer's view on
 every question below: (a) for Q1 to Q9, each with the notes given there, and
@@ -355,7 +355,7 @@ documented defaults, not from a run here.
   owner's approval. In 7.6 step 2, say the event is the assertion, and the
   rejection alone is not. Write case 42 first in Step 5, before the other
   items, so a failure is known early.
-- *Status:* Fixed (68e75166). Q3 names the fallback ((b), deviation; (c) only with owner approval); Step 5 writes case 42 first; 7.6 step 2 asserts the `securitypolicyviolation` event, not the rejection.
+- *Status:* Open (reopened in the fixes check: the Step 5 order is circular; see below). Earlier: Fixed (68e75166). Q3 names the fallback ((b), deviation; (c) only with owner approval); Step 5 writes case 42 first; 7.6 step 2 asserts the `securitypolicyviolation` event, not the rejection.
 
 #### P10 (minor) — The end-user story and the developer checks miss setup steps
 
@@ -436,7 +436,7 @@ documented defaults, not from a run here.
   `local_login_and_refusals` that call it directly into an in-crate test
   (`service/local/tests.rs`), or rewrite them through `handle_request` with a
   node caller. Then the gated path is the only public one.
-- *Status:* Fixed (68e75166). D-A6-7: `login_local` becomes `pub(crate)`; direct cases move to `service/local/tests.rs`; D-A6-8, Step 3, exit criterion 9.
+- *Status:* Open (reopened in the fixes check: the in-crate tests have no anchor resolver; see below). Earlier: Fixed (68e75166). D-A6-7: `login_local` becomes `pub(crate)`; direct cases move to `service/local/tests.rs`; D-A6-8, Step 3, exit criterion 9.
 
 #### P14 (minor) — The new config table: the address form and unknown fields
 
@@ -461,3 +461,94 @@ documented defaults, not from a run here.
   `a_bind_address_with_a_port_fails_to_parse`. In the developer guide, say
   that a misspelled table name leaves remote access off.
 - *Status:* Fixed (68e75166). D-A6-1: `deny_unknown_fields` on `RemoteAccess`, "an IP address only; the port is `http_port`" in the doc comment, sample config and guide; misspelled table name noted; W11; 7.1 adds `a_bind_address_with_a_port_fails_to_parse` and `an_unknown_key_in_remote_access_fails_to_parse`.
+
+## Plan review round 1 — fixes checked — Claude Opus 5.5 (Claude Code, cloud session), 2026-11-04
+
+Checked the plan at `923b63d` (fix commit `68e75166`, status commit
+`923b63d`) against the code at the same commit. I read the whole diff of the
+plan from `e75abfa`. Same model as the plan author, as in round 1.
+
+**Result:** 12 confirmed Fixed, 2 reopened (P9, P13, both minor). **2 open.**
+
+### Confirmed
+
+- **P1.** Q10 is in section 2 with the owner's answer. D-A6-14 says where the
+  warning goes and what it names. B5, F12, 3.3, the 7.2 test
+  `init_accepts_remote_access_in_open_mode`, the ADR consequences (D-A6-13),
+  the backlog row and the docs (architecture :696, developer guide) are all
+  there. Exit criterion 7 covers it.
+- **P2.** D-A6-11 lists every key with its reason. The key names match
+  `SubstrateConfig` (`app_config_dir`, `app_local_data_dir`, `app_data_dir`,
+  `app_cache_dir`, `app_log_dir`,
+  [config.rs:61-66](../../../../crates/core/src/config.rs#L61)) and
+  `CoordinatorIrohConfig` (`enable_relay`, `http_bind_address`,
+  `quic_bind_address`, [roles.rs:312-313](../../../../crates/core/src/config/roles.rs#L312)).
+  7.7 now checks values, the paths after `resolve_paths()`, `registry_url`,
+  and UDP in both files. `EXPOSE 7965/udp` is in D-A6-11, Step 6 and exit
+  criterion 8.
+- **P3.** F13 and the Deviations item use the reviewer's wording.
+- **P4.** W10, the new check-5 text, and the 7.3 case with a person caller.
+- **P5.** 3.2 names `--method local` and the default
+  ([session.rs:44-46](../../../../apps/roymctl/src/commands/session.rs#L44));
+  W4 is corrected; 3.3 names the proxy's `key_only` path and why it cannot
+  reach `auth`.
+- **P6.** Q2 check 3 now says which proxies add the header, marked
+  `unverified`, and the docs and ADR do not rely on it.
+- **P7.** 7.4 uses `passthrough_with_conn` with `AUTH_SERVICE_ALIAS` and an
+  empty interface, as the gateway does for an auth host
+  ([gateway.rs:540-551](../../../../crates/client_gateway/src/gateway.rs#L540)).
+  The CORS cases are in-crate and call `matches_origin_pattern` directly.
+  D-A6-15 adds `crates/auth/tests/common/mod.rs` for the integration tests.
+  Two small points for the implementer, not findings: `client_as` takes the
+  `Identity` by value, so keep a copy (`Identity::from_bytes(&id.to_bytes())`,
+  as the gateway does) for `passthrough_with_conn`; `client.connection()`
+  returns an `Option`, so use `.expect(..)` in a test that returns `()`.
+- **P8.** `bind_listener` is the only bind. The 7.2 test binds with
+  `http_port = 0` and reads `local_addr()`. It is a private method, and
+  `gateway/tests.rs` is a child module, so the test can call it.
+- **P10.** The end-user bullet, the developer bullet (with
+  `person_identities_dir` and `-w`), and the developer-guide text.
+- **P11.** Q4's reason, the section 8 row and the ADR text.
+- **P12.** SRS :112-115 and architecture :696 are in 3.7 and section 9.
+- **P14.** `deny_unknown_fields` on `RemoteAccess`, the doc-comment text, W11,
+  and the two 7.1 tests.
+
+### Reopened
+
+#### P9 (minor, reopened) — Step 5 asks to run case 42 before the code it tests exists
+
+- **Where:** plan Step 5 items 2 and 3.
+- **Problem:** Item 2 writes case 42 "against the `csp.ts`/`boot-csp.ts`
+  change of item 3 only" and says "Run it". Item 3 builds `csp.ts` and
+  `boot-csp.ts`. So item 2 cannot run until item 3 is done, and the order
+  says the opposite. The aim of the fix (find out early whether a
+  script-added `<meta>` CSP works) is right; the steps do not deliver it.
+- **Failure case:** The implementer runs case 42 after item 2, with no second
+  tag in the page. Step 2 of the case fails, and the plan says "stop: build Q3
+  (b)". The implementer switches to (b) without the risk being real.
+- **Fix:** Reorder Step 5: (1) `node-boot.ts` and `global-setup.ts`; (2)
+  `csp.ts`, `boot-csp.ts`, the `main.ts` import and the `index.html` change
+  (D-A6-10); (3) case 42, then run it, with the "if step 2 fails, stop and
+  build Q3 (b)" rule; (4) `csp.test.ts`. Items 2 and 3 are small, so the
+  answer is still known before the rest of the slice.
+- *Status:* Open.
+
+#### P13 (minor, reopened) — The in-crate `login_local` tests have no way to build an `AuthService`
+
+- **Where:** D-A6-7, D-A6-8, D-A6-15, 7.3 (`service/local/tests.rs`).
+- **Problem:** `AuthService::new` needs an `Arc<dyn MasterAnchorResolver>`
+  ([service.rs:126-133](../../../../crates/auth/src/service.rs#L126)). The
+  only test resolver in the crate is `MockAnchorResolver`, which D-A6-15 moves
+  to `crates/auth/tests/common/mod.rs`. An integration-test module is not
+  visible to in-crate tests. So `service/local/tests.rs` must define its own
+  resolver, and the plan does not say so. A copy of `MockAnchorResolver` is
+  the kind of copy D-A6-15 is meant to stop.
+- **Failure case:** The implementer copies the mock into
+  `service/local/tests.rs`, and `cargo dupes` reports it as a duplicate.
+- **Fix:** Say in D-A6-7 (or D-A6-15) that the in-crate tests use a small
+  resolver of their own that always returns an error, for example
+  `struct NoAnchors;`. `login_local` never resolves an anchor, so the error is
+  never reached. It is a different shape from `MockAnchorResolver`, so it is
+  not a copy. Name it in 7.3.
+- *Status:* Open.
+
