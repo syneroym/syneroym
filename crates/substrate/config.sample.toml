@@ -273,13 +273,19 @@ http_port = 7960
 # Absent by default -- "local" is unavailable unless configured.
 #
 # WARNING: The "local" login method is intended solely for same-machine CLI/test
-# convenience and is strictly refused on requests carrying an `Origin` header.
+# convenience. It answers only on a connection from this node's own gateway, is
+# refused on requests carrying an `Origin` or a proxy header, and is off when
+# the gateway has remote access.
 # Do not point this at a directory a less-trusted local user on this machine
 # can read. Anyone who can read a key file here can log in as that person.
 # person_identities_dir = "/path/to/identities"
 #
 # Additional permitted CORS origins (localhost patterns are allowed by default).
-# allowed_origins = ["https://hub.example.com"]
+# An entry is an exact origin, or "<scheme>://*.<domain>[:<port>]", which allows
+# every host under that domain with the same scheme and port. Every Hub has its
+# own hostname, so a remote node usually lists one pattern. The pattern lets
+# any page served through this gateway under that domain call the auth service.
+# allowed_origins = ["https://*.example.com"]
 #
 # Mark session cookies with `; Secure` (recommended in production HTTPS deployments).
 # secure_cookies = false

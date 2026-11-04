@@ -27,6 +27,8 @@ use crate::token::{
 mod cors;
 mod local;
 
+use local::LocalLogin;
+
 pub const MAX_PENDING_CHALLENGES: usize = 4096;
 pub const MAX_LOGGED_OUT_TOKENS: usize = 10000;
 pub const DEFAULT_NONCE_TTL_SECS: u64 = 60;
@@ -118,7 +120,7 @@ pub struct AuthService {
     nonce_ttl_secs: u64,
     challenges: DashMap<String, u64>,
     logged_out_tokens: DashMap<String, u64>,
-    person_identities_dir: Option<PathBuf>,
+    local_login: LocalLogin,
     anchor_resolver: Arc<dyn MasterAnchorResolver>,
     allowed_origins: Vec<String>,
     secure_cookies: bool,
@@ -142,7 +144,7 @@ impl AuthService {
             nonce_ttl_secs,
             challenges: DashMap::new(),
             logged_out_tokens: DashMap::new(),
-            person_identities_dir,
+            local_login: LocalLogin::from_dir(person_identities_dir),
             anchor_resolver,
             allowed_origins: Vec::new(),
             secure_cookies: false,
@@ -344,7 +346,7 @@ impl AuthService {
 
     pub fn methods(&self) -> MethodsResponse {
         let mut methods = vec![AUTH_METHOD_DELEGATED_KEY.to_string()];
-        if self.person_identities_dir.is_some() {
+        if matches!(self.local_login, LocalLogin::On(_)) {
             methods.push(AUTH_METHOD_LOCAL.to_string());
         }
         MethodsResponse { methods }
@@ -476,7 +478,7 @@ impl AuthService {
     async fn handle_login(
         &self,
         request: &HttpRequest,
-        origin: Option<&str>,
+        caller: Option<&CallerContext>,
         headers: Vec<(String, String)>,
     ) -> std::result::Result<HttpResponse, String> {
         let req: LoginRequest = match serde_json::from_slice(&request.body) {
@@ -512,13 +514,10 @@ impl AuthService {
                 .await
             }
             AUTH_METHOD_LOCAL => {
-                if origin.is_some() {
-                    return Self::error_response(
-                        headers,
-                        403,
-                        "local login method is not allowed from a browser origin",
-                    );
-                }
+                let dir = match self.local_login_gate(request, caller) {
+                    Ok(dir) => dir,
+                    Err((status, msg)) => return Self::error_response(headers, status, msg),
+                };
                 let Some(identity) = req.identity else {
                     return Self::error_response(
                         headers,
@@ -526,7 +525,7 @@ impl AuthService {
                         "missing identity parameter for local login",
                     );
                 };
-                self.login_local(&identity)
+                self.login_local(dir, &identity)
             }
             _ => {
                 return Self::error_response(
@@ -607,7 +606,7 @@ impl NativeHttpService for AuthService {
     async fn handle_request(
         &self,
         request: HttpRequest,
-        _caller: Option<CallerContext>,
+        caller: Option<CallerContext>,
     ) -> std::result::Result<HttpResponse, String> {
         let method = request.method.to_uppercase();
         let path = request.path.trim();
@@ -646,7 +645,7 @@ impl NativeHttpService for AuthService {
         }
 
         if method == "POST" && is_login {
-            return self.handle_login(&request, origin, headers).await;
+            return self.handle_login(&request, caller.as_ref(), headers).await;
         }
 
         if method == "GET" && is_whoami {

@@ -3,7 +3,11 @@ use super::AuthService;
 impl AuthService {
     fn is_allowed_origin(&self, origin: &str) -> bool {
         let trimmed = origin.trim();
-        if self.allowed_origins.iter().any(|allowed| allowed == trimmed) {
+        if self
+            .allowed_origins
+            .iter()
+            .any(|allowed| allowed == trimmed || matches_origin_pattern(allowed, trimmed))
+        {
             return true;
         }
         trimmed.starts_with("http://localhost:")
@@ -36,3 +40,33 @@ impl AuthService {
         headers
     }
 }
+
+/// `https://*.example.com:8443` allows `https://<one or more labels>.example.com:8443`.
+///
+/// The scheme and the port (or the lack of one) must be equal. The labels
+/// before the domain may hold only letters, digits and `-`, so the match
+/// cannot be fooled by a host such as `evilexample.com` or one that smuggles
+/// in a path or a userinfo part.
+fn matches_origin_pattern(pattern: &str, origin: &str) -> bool {
+    let (Some((pattern_scheme, pattern_rest)), Some((origin_scheme, origin_rest))) =
+        (pattern.split_once("://"), origin.split_once("://"))
+    else {
+        return false;
+    };
+    let Some(suffix) = pattern_rest.strip_prefix("*.").filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    if pattern_scheme != origin_scheme {
+        return false;
+    }
+    let Some(labels) = origin_rest.strip_suffix(suffix).and_then(|l| l.strip_suffix('.')) else {
+        return false;
+    };
+    !labels.is_empty()
+        && labels
+            .split('.')
+            .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+}
+
+#[cfg(test)]
+mod tests;

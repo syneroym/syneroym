@@ -485,11 +485,14 @@ pub struct AuthRole {
     #[serde(default)]
     pub key_path: Option<PathBuf>,
     /// Directory containing person keys for the `local` login method.
-    /// When unset, the `local` method is disabled.
+    /// When unset, the `local` method is disabled. It is also off when the
+    /// client gateway has remote access.
     #[serde(default)]
     pub person_identities_dir: Option<PathBuf>,
     /// Additional origins permitted for CORS requests. Localhost patterns
-    /// (`localhost`, `127.0.0.1`, `*.localhost`) are always allowed.
+    /// (`localhost`, `127.0.0.1`, `*.localhost`) are always allowed. An entry
+    /// is an exact origin, or `<scheme>://*.<domain>[:<port>]`, which allows
+    /// every host under that domain with the same scheme and port.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
     /// Whether to mark session cookies with `; Secure`.
