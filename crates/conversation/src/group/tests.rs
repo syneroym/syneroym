@@ -196,7 +196,7 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
     .unwrap();
 
     // Validate and insert when key is not in group_epochs
-    let (ins, msg_opt) = validate_and_insert(&s, "svc:me", &conv, &entry).unwrap();
+    let (ins, msg_opt, _) = validate_and_insert(&s, "svc:me", &conv, &entry).unwrap();
     assert!(ins);
     assert!(msg_opt.is_none());
 
@@ -215,7 +215,7 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
             rusqlite::params![conv_id, epoch_key.as_slice(), now],
         )
         .unwrap();
-        let (_, msg_opt) =
+        let (_, msg_opt, _) =
             apply_entry(&tx, "svc:me", conv_id, &unapplied[0], s.config(), now).unwrap();
         assert!(msg_opt.is_some());
         let msg = msg_opt.unwrap();
@@ -410,7 +410,7 @@ fn row_7_joiner_cannot_decrypt_pre_join_and_removed_cannot_decrypt_post_removal(
         let conn = s.conn().lock().unwrap();
         let tx = conn.unchecked_transaction().unwrap();
         let stored_dag = stored_dag_from(&entry_epoch1);
-        let (_, msg_opt) =
+        let (_, msg_opt, _) =
             apply_entry(&tx, "svc:alice", conv_id, &stored_dag, s.config(), now).unwrap();
         assert!(msg_opt.is_none(), "pre-join message must not decrypt without epoch key");
     }
@@ -455,7 +455,8 @@ fn row_7_joiner_cannot_decrypt_pre_join_and_removed_cannot_decrypt_post_removal(
     let conn = s.conn().lock().unwrap();
     let tx = conn.unchecked_transaction().unwrap();
     let stored_dag = stored_dag_from(&entry_epoch3);
-    let (_, msg_opt) = apply_entry(&tx, "svc:bob", conv_id, &stored_dag, s.config(), now).unwrap();
+    let (_, msg_opt, _) =
+        apply_entry(&tx, "svc:bob", conv_id, &stored_dag, s.config(), now).unwrap();
     assert!(msg_opt.is_none(), "post-removal message must not decrypt without epoch key");
 }
 

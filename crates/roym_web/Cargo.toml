@@ -23,6 +23,7 @@ syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false
     "blob-store",
     "conversation",
     "data-layer",
+    "events",
     "http",
     "invocation",
     "messaging",
@@ -70,3 +71,4 @@ tempfile.workspace = true
 "syneroym:http" = { path = "wit/deps/http" }
 "syneroym:signing" = { path = "wit/deps/signing" }
 "syneroym:invocation" = { path = "wit/deps/invocation" }
+"syneroym:events" = { path = "wit/deps/events" }

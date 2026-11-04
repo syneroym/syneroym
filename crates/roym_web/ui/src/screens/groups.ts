@@ -1,4 +1,5 @@
 import { errText, field, refiller, text } from "../dom";
+import { onFeed } from "../events";
 import { renderRefusedCard } from "../cards/refused";
 import {
   CARDS_NOT_IN_GROUPS_MESSAGE,
@@ -330,6 +331,8 @@ export async function renderGroups(container: HTMLElement) {
     }
 
     if (rows.length === 0) {
+      activeGroupId = null;
+      activeGroupReload = null;
       rightPane.replaceChildren();
       return;
     }
@@ -339,6 +342,8 @@ export async function renderGroups(container: HTMLElement) {
     }
   }
 
+  let activeGroupId: string | null = null;
+  let activeGroupReload: (() => Promise<void>) | null = null;
   let currentSelectionSeq = 0;
 
   async function selectGroup(gid: string) {
@@ -646,8 +651,35 @@ export async function renderGroups(container: HTMLElement) {
       }
     }
 
+    activeGroupId = gid;
+    activeGroupReload = reloadThread;
     await reloadThread();
   }
+
+  const removeFeed = onFeed(async (event) => {
+    if (!screen.isConnected) {
+      removeFeed();
+      return;
+    }
+    if ("reload" in event && event.reload) {
+      if (activeGroupReload) {
+        await activeGroupReload();
+      }
+      await reloadGroupList(activeGroupId ?? undefined);
+      return;
+    }
+    if ("kind" in event) {
+      if (activeGroupId && event.subject === activeGroupId && activeGroupReload) {
+        await activeGroupReload();
+      }
+      const hasConv =
+        event.kind.startsWith("conversation.") ||
+        ("kinds" in event && Boolean(event.kinds?.some((k) => k.startsWith("conversation."))));
+      if (hasConv) {
+        await reloadGroupList(activeGroupId ?? undefined);
+      }
+    }
+  });
 
   await reloadGroupList();
 }

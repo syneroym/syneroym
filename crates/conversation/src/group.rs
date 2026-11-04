@@ -506,6 +506,8 @@ impl ConversationService {
                 }
             })?;
 
+        self.announce(service_id, "conversation.message", &conv.id, Some(&entry_id));
+
         Ok(entry_id)
     }
 
@@ -527,13 +529,23 @@ impl ConversationService {
         // to it in the meantime.
         let now = now_ms();
         let mut for_app = Vec::new();
+        let mut deleted_ids = Vec::new();
         for entry in &unapplied {
             let result = store
                 .queue()
                 .transaction(|tx, _| apply_entry(tx, svc, group_id, entry, store.config(), now));
             match result {
-                Ok((_, Some(msg))) => for_app.push(msg),
-                Ok((_, None)) => {}
+                Ok((_, Some(msg), del_opt)) => {
+                    if let Some(target_id) = del_opt {
+                        deleted_ids.push(target_id);
+                    }
+                    for_app.push(msg);
+                }
+                Ok((_, None, del_opt)) => {
+                    if let Some(target_id) = del_opt {
+                        deleted_ids.push(target_id);
+                    }
+                }
                 Err(e) => {
                     tracing::warn!(
                         svc,
@@ -544,6 +556,9 @@ impl ConversationService {
                     );
                 }
             }
+        }
+        for target_id in deleted_ids {
+            self.announce(svc, "conversation.message", group_id, Some(&target_id));
         }
         // Ask the app only after the whole batch is in: a sync can bring a
         // message and its author's deletion request together, and the app must

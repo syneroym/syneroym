@@ -3,6 +3,7 @@
 
 use std::{fmt, time::Duration};
 
+use anyhow::Result;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rusqlite::Transaction;
 use syneroym_rpc::{
@@ -283,14 +284,23 @@ impl ConversationService {
         if let Some(refused_reason) = ack.refused {
             // Cap reason length to match parse_refusal_notice.
             let capped: String = refused_reason.chars().take(120).collect();
-            if let Err(e) =
-                store.record_refusal(&msg.conversation_id, &msg.id, peer_address, &capped)
-            {
-                tracing::warn!(
-                    message = msg.id,
-                    error = ?e,
-                    "failed to record refusal on own sent message"
-                );
+            match store.record_refusal(&msg.conversation_id, &msg.id, peer_address, &capped) {
+                Ok(true) => {
+                    self.announce(
+                        svc,
+                        "conversation.delivery",
+                        &msg.conversation_id,
+                        Some(&msg.id),
+                    );
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        message = msg.id,
+                        error = ?e,
+                        "failed to record refusal on own sent message"
+                    );
+                }
             }
         }
 
@@ -421,12 +431,14 @@ impl ConversationService {
         let my_sig_key: [u8; 32] = my_ident.sig_secret.as_slice().try_into().unwrap_or([0u8; 32]);
         let my_vk = SigningKey::from_bytes(&my_sig_key).verifying_key().to_bytes();
 
-        let is_deletion_req = payload.content_type == DELETION_REQUEST_CONTENT_TYPE;
-        let is_refusal_notice = payload.content_type == REFUSAL_NOTICE_CONTENT_TYPE;
-        let is_system = is_group_key || is_deletion_req || is_refusal_notice;
+        let is_system = is_group_key
+            || payload.content_type == DELETION_REQUEST_CONTENT_TYPE
+            || payload.content_type == REFUSAL_NOTICE_CONTENT_TYPE;
 
         let mut group_id_to_apply = None;
         let mut inserted = false;
+        let mut deleted_target: Option<String> = None;
+        let mut refused_target: Option<String> = None;
         store
             .queue()
             .transaction(|tx, _txq| {
@@ -456,30 +468,8 @@ impl ConversationService {
                     now,
                     store.config().max_messages_per_conversation,
                 )?;
-                if is_system {
-                    tx.execute(
-                        "UPDATE messages SET system = 1, admission = 'accepted' WHERE id = ?1",
-                        rusqlite::params![payload.message_id],
-                    )?;
-                }
-
-                if is_deletion_req {
-                    ConversationStore::handle_inbound_deletion_request(
-                        tx,
-                        &payload.conversation_id,
-                        author,
-                        &payload.body,
-                        now,
-                    )?;
-                }
-                if is_refusal_notice {
-                    ConversationStore::handle_inbound_refusal_notice(
-                        tx,
-                        &payload.conversation_id,
-                        author,
-                        &payload.body,
-                    )?;
-                }
+                (deleted_target, refused_target) =
+                    ingest_system_content(tx, &payload, author, is_system, now)?;
                 if let Some(session) = session {
                     self.crypto
                         .commit_in(tx, session)
@@ -494,6 +484,13 @@ impl ConversationService {
                     ConversationError::Internal(e.to_string())
                 }
             })?;
+
+        if let Some(target_id) = deleted_target {
+            self.announce(svc, "conversation.message", &payload.conversation_id, Some(&target_id));
+        }
+        if let Some(target_id) = refused_target {
+            self.announce(svc, "conversation.delivery", &payload.conversation_id, Some(&target_id));
+        }
 
         if is_group_key {
             if let Some(gid) = group_id_to_apply {
@@ -522,6 +519,7 @@ impl ConversationService {
     ) -> Option<String> {
         if inserted {
             let stored = store.get_message(message_id).ok().flatten()?;
+            let conv_id = stored.conversation_id.clone();
             let ask_timeout = Duration::from_millis(store.config().admission_ask_timeout_ms);
             let outcome = match time::timeout(
                 ask_timeout,
@@ -534,7 +532,8 @@ impl ConversationService {
             };
             match outcome {
                 NotifyOutcome::Answered(admission) => {
-                    let _ = store.apply_admission(message_id, &admission, now);
+                    let _ =
+                        self.admit_and_announce(store, svc, &conv_id, message_id, &admission, now);
                     if let Admission::Drop(drop_ans) = admission
                         && drop_ans.report
                     {
@@ -542,7 +541,14 @@ impl ConversationService {
                     }
                 }
                 NotifyOutcome::NoHandler => {
-                    let _ = store.apply_admission(message_id, &Admission::Accept, now);
+                    let _ = self.admit_and_announce(
+                        store,
+                        svc,
+                        &conv_id,
+                        message_id,
+                        &Admission::Accept,
+                        now,
+                    );
                 }
                 NotifyOutcome::NoAnswer => {}
             }
@@ -706,4 +712,41 @@ pub(super) fn classify(error: ProxyError) -> Disposition {
         | ProxyError::Callee { .. } => Disposition::Terminal("callee refused".to_string()),
         ProxyError::Internal(_) => Disposition::Retry,
     }
+}
+
+fn ingest_system_content(
+    tx: &Transaction<'_>,
+    payload: &DeliveryPayload,
+    author: &str,
+    is_system: bool,
+    now: i64,
+) -> Result<(Option<String>, Option<String>)> {
+    if is_system {
+        tx.execute(
+            "UPDATE messages SET system = 1, admission = 'accepted' WHERE id = ?1",
+            rusqlite::params![payload.message_id],
+        )?;
+    }
+    let deleted_target = if payload.content_type == DELETION_REQUEST_CONTENT_TYPE {
+        ConversationStore::handle_inbound_deletion_request(
+            tx,
+            &payload.conversation_id,
+            author,
+            &payload.body,
+            now,
+        )?
+    } else {
+        None
+    };
+    let refused_target = if payload.content_type == REFUSAL_NOTICE_CONTENT_TYPE {
+        ConversationStore::handle_inbound_refusal_notice(
+            tx,
+            &payload.conversation_id,
+            author,
+            &payload.body,
+        )?
+    } else {
+        None
+    };
+    Ok((deleted_target, refused_target))
 }

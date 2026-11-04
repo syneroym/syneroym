@@ -12,7 +12,7 @@ use syneroym_roym_core::{
     transaction::ReceiptHalf,
 };
 
-use super::{BOOKINGS, BookingRow, LEDGER, get_row, put_row};
+use super::{BOOKINGS, BookingRow, LEDGER, get_row, put_booking};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -275,7 +275,7 @@ pub(crate) async fn roll_forward<H: AppHost>(host: &H, row: &mut BookingRow) -> 
         {
             let _ = AppDataLayer::delete(host, LEDGER.to_string(), seat_id(slot, seat)).await;
         }
-        put_row(host, BOOKINGS, &row.agreement, row).await?;
+        put_booking(host, row).await?;
     }
     Ok(())
 }
@@ -330,6 +330,6 @@ pub(crate) async fn load_booking<H: AppHost>(
     {
         let _ = AppDataLayer::delete(host, LEDGER.to_string(), seat_id(slot, seat)).await;
     }
-    put_row(host, BOOKINGS, agreement, &row).await?;
+    put_booking(host, &row).await?;
     Ok(Some(row))
 }

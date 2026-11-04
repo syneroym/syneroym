@@ -136,8 +136,13 @@ impl ConversationService {
     async fn back_to_direct(&self, row: &Row<'_>, now: i64) {
         match row.store.unpark_to_pending(row.item.id, &row.msg.id, row.member(), now) {
             Ok(true) if !row.is_group() => {
-                self.notify_state(row.svc, row.msg.id.clone(), ConversationDeliveryState::Pending)
-                    .await;
+                self.notify_state(
+                    row.svc,
+                    &row.msg.conversation_id,
+                    row.msg.id.clone(),
+                    ConversationDeliveryState::Pending,
+                )
+                .await;
             }
             // Deleted or restored while the poll ran: it must not be sent.
             Ok(false) => self.drop_row(row),

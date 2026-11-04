@@ -95,10 +95,10 @@ through shared database access.
 | Service | Runs on | Owns | Main API |
 |---|---|---|---|
 | **Web entrypoint** | Every participant's substrate | The UI bundle; nothing else | serves static assets; forwards JSON-RPC to the four services below |
-| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, message bodies, and the search index over them | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
+| **Conversation** | Every participant's substrate | Conversations, messages, delivery state, outbox, group keys, message bodies, and the search index over them. Changes appear on the host event feed (`/_syneroym/events`, ADR-0027) | `open`, `send`, `history`, `conversations`, `delivery-status`, `outbox`, `retry`, `search`, `delete-message`, `transcript-digest`, `group.*`, `export`/`import` |
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
 | **Catalog** | Listing owner's substrate | Listings, prices, service area, availability | `listing.*` (incl. `verify`, `limits`/`set-limits`), `availability.*`, `export`/`import` |
-| **Transaction** | Quote author's substrate | Requests, quotes, agreements, bookings, orders, receipts | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
+| **Transaction** | Quote author's substrate | Requests, quotes, agreements, bookings, orders, receipts. Changes appear on the host event feed (`/_syneroym/events`, ADR-0027) | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
 | **Directory** | SynOrg's substrate, on every installation (deployed everywhere the SynApp is; the column names where the server half *matters*, not where the component lives) — and, on a searcher's own node, that person's list of directories | Member list, published listings, search index, membership credentials, revocations | Server half: `directory.search`, `directory.info`, `directory.publish`, `directory.unpublish`, `member.*`, `credential.*`, `revocation.*`. Client half (local-only, one node's own list of directories and search runs): `directory.add-source`/`remove-source`/`sources`, `directory.find`, `directory.run-envelope` |
 
 Four rules follow from this split:

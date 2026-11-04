@@ -14,6 +14,11 @@
 // JSON body; the Hub keeps it in `sessionStorage` and sends it as
 // `Authorization: Bearer` on every later call — the HttpOnly cookie the
 // auth origin also sets is never visible to the Hub's own host.
+//
+// For the event feed (`EventSource`), which cannot send custom HTTP headers,
+// the Hub writes a cookie scoped strictly to `path=/_syneroym/events` with
+// `SameSite=Lax` and a `Max-Age` of one hour (written again before every
+// connect); other requests to the Hub never carry it.
 
 const TOKEN_KEY = "roym_session_token";
 
@@ -37,9 +42,36 @@ export function storedToken(): string | null {
   }
 }
 
+// The feed cookie lives one hour and is written again before every connect,
+// so a session that goes on is never cut short. A session that ends sooner
+// is refused by the router, which checks the token itself.
+export const EVENT_FEED_COOKIE_MAX_AGE_SECS = 3600;
+
+export function setEventFeedCookie(token: string): void {
+  try {
+    if (typeof document === "undefined") return;
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `syneroym_session=${token}; path=/_syneroym/events; Max-Age=${EVENT_FEED_COOKIE_MAX_AGE_SECS}; SameSite=Lax${secure}`;
+  } catch {
+    // ignore
+  }
+}
+
+export function clearEventFeedCookie(): void {
+  try {
+    if (typeof document === "undefined") return;
+    const secure = window.location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `syneroym_session=; path=/_syneroym/events; Max-Age=0; SameSite=Lax${secure}`;
+    document.cookie = `syneroym_session=; path=/; Max-Age=0; SameSite=Lax${secure}`;
+  } catch {
+    // ignore
+  }
+}
+
 function setToken(token: string): void {
   try {
     window.sessionStorage.setItem(TOKEN_KEY, token);
+    setEventFeedCookie(token);
   } catch {
     // sessionStorage unavailable (private mode); the session lasts this page only
   }
@@ -48,6 +80,7 @@ function setToken(token: string): void {
 function clearToken(): void {
   try {
     window.sessionStorage.removeItem(TOKEN_KEY);
+    clearEventFeedCookie();
   } catch {
     // nothing to clear
   }
@@ -277,6 +310,7 @@ export interface Whoami {
 export async function whoami(): Promise<Whoami | null> {
   const token = storedToken();
   if (!token) return null;
+  setEventFeedCookie(token);
   try {
     const res = await fetch(`${authOrigin()}/_syneroym/session/whoami`, {
       headers: { Authorization: `Bearer ${token}` },

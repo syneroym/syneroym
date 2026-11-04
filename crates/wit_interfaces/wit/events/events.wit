@@ -1,0 +1,65 @@
+package syneroym:events@0.1.0;
+
+/// Short notes that something changed in this app instance. An event names
+/// what changed; it never carries content. A reader fetches the content with
+/// the app's normal methods. The host keeps the newest events of each app
+/// instance in memory and loses them on restart.
+interface events {
+    variant events-error {
+        /// The calling service is not part of an app instance, so its
+        /// events would have no window.
+        no-app-instance,
+        /// A field is empty, too long, or has a character it may not have.
+        /// The string names the field and the rule.
+        invalid-argument(string),
+        /// The call is read-only (for example an access-check call), so it
+        /// may not record.
+        read-only,
+    }
+
+    record event {
+        /// Opaque. Pass it back to `read` to get the events after it.
+        cursor: string,
+        /// What changed, for example `transaction.card`. Lowercase letters,
+        /// digits, `.` and `-`, at most 64 bytes.
+        kind: string,
+        /// The service of this app that recorded it. Set by the host.
+        service: string,
+        /// The thing a reader loads again, for example a conversation id.
+        subject: string,
+        /// The one row inside `subject` that changed, if there is one.
+        item: option<string>,
+        /// The node's clock when the event was recorded, in Unix ms.
+        at-ms: s64,
+    }
+
+    variant read-result {
+        /// The events after the cursor, oldest first, and the cursor to
+        /// pass next time.
+        events(tuple<list<event>, string>),
+        /// The cursor is too old, from before a restart, or unknown. The
+        /// string is the current cursor. Load the state again with the
+        /// normal methods, then read from it.
+        reload(string),
+    }
+
+    /// Records one event in the caller's app instance. Returns its cursor.
+    /// The host takes the app instance and `service` from its own records.
+    /// `record` is a WIT keyword, so the name is escaped; the Rust and
+    /// guest name is still `record`.
+    %record: func(kind: string, subject: string, item: option<string>)
+        -> result<string, events-error>;
+
+    /// Reads the events of the caller's app instance after `after`, at most
+    /// `limit` (the host caps it at 500). With no cursor, or with `limit` 0,
+    /// returns no events and the cursor it was given (the head when no cursor is given)
+    /// (a cursor that would get `reload` still gets `reload`). Never waits.
+    read: func(after: option<string>, limit: u32)
+        -> result<read-result, events-error>;
+}
+
+/// No guest export, so one world serves the guest and host views alike, as
+/// `invocation-import` does.
+world events-import {
+    import events;
+}

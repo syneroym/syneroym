@@ -1,3 +1,6 @@
+use syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS;
+use syneroym_ucan::{SessionToken, SessionTokenClaims};
+
 use super::*;
 
 /// Internal session marker set in `CallerContext.session.claims` when an HTTP
@@ -50,29 +53,54 @@ pub(super) fn guest_caller_identity(
     }))
 }
 
-pub(super) fn extract_session_token_from_hyper_headers(
-    headers: &hyper::HeaderMap,
-) -> Option<String> {
+/// The values a request offers as a session token: the session cookie first,
+/// then `Authorization: Bearer`. An app may send its own `Bearer` token
+/// next to the platform cookie, so the first value is not always the session.
+fn session_token_candidates(headers: &hyper::HeaderMap) -> Vec<String> {
+    let mut candidates = Vec::new();
     if let Some(cookie) = headers.get(hyper::header::COOKIE).and_then(|v| v.to_str().ok()) {
         for pair in cookie.split(';') {
             let mut parts = pair.splitn(2, '=');
             if let (Some(k), Some(v)) = (parts.next(), parts.next())
                 && k.trim() == syneroym_core::protocol_utils::SESSION_COOKIE_NAME
             {
-                return Some(v.trim().to_string());
+                candidates.push(v.trim().to_string());
             }
         }
     }
     if let Some(auth) = headers.get(hyper::header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
         let trimmed = auth.trim();
-        if let Some(token) = trimmed.strip_prefix("Bearer ") {
-            return Some(token.trim().to_string());
-        }
-        if let Some(token) = trimmed.strip_prefix("bearer ") {
-            return Some(token.trim().to_string());
+        if let Some(token) = trimmed.strip_prefix("Bearer ").or(trimmed.strip_prefix("bearer ")) {
+            candidates.push(token.trim().to_string());
         }
     }
-    None
+    candidates
+}
+
+/// The first candidate that is not revoked and verifies against the local
+/// auth service. A stale cookie falls through to a valid `Bearer`, and an
+/// app's own `Bearer` never hides a valid cookie. `None` when no auth
+/// service is configured (fail closed).
+pub(super) fn select_session_token(
+    route_handler: &RouteHandler,
+    headers: &hyper::HeaderMap,
+) -> Option<(String, SessionTokenClaims)> {
+    let auth_did = route_handler
+        .inner
+        .native_http
+        .get(AUTH_SERVICE_ALIAS)
+        .and_then(|svc| svc.service_id().map(ToString::to_string))?;
+
+    session_token_candidates(headers).into_iter().find_map(|token| {
+        // A revoked token must not authenticate even if it has not expired yet.
+        let revoked =
+            route_handler.inner.session_revocation.as_ref().is_some_and(|r| r.is_revoked(&token));
+        if revoked {
+            return None;
+        }
+        let claims = SessionToken::verify(&token, &auth_did).ok()?;
+        Some((token, claims))
+    })
 }
 
 pub(super) fn resolve_effective_session_caller(
@@ -90,25 +118,7 @@ pub(super) fn resolve_effective_session_caller(
         return None;
     }
 
-    let token_str = extract_session_token_from_hyper_headers(headers)?;
-
-    // A revoked token must not authenticate even if it has not expired yet.
-    let is_revoked =
-        route_handler.inner.session_revocation.as_ref().is_some_and(|r| r.is_revoked(&token_str));
-
-    if is_revoked {
-        return None;
-    }
-
-    // Fail closed: if no auth service is configured on this node, reject all
-    // session tokens
-    let auth_did = route_handler
-        .inner
-        .native_http
-        .get(syneroym_core::protocol_utils::AUTH_SERVICE_ALIAS)
-        .and_then(|svc| svc.service_id().map(ToString::to_string))?;
-
-    let claims = syneroym_ucan::SessionToken::verify(&token_str, &auth_did).ok()?;
+    let (_, claims) = select_session_token(route_handler, headers)?;
 
     let mut session = caller.map(|c| c.session.clone()).unwrap_or_default();
     session.subject_did = claims.person_did.clone();

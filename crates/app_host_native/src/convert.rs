@@ -74,12 +74,14 @@ use syneroym_wit_interfaces::{
 
 mod conversation;
 mod data_layer;
+mod events;
 mod proxy;
 mod signing;
 mod simple_errors;
 
 pub(crate) use conversation::*;
 pub(crate) use data_layer::*;
+pub(crate) use events::*;
 pub(crate) use proxy::*;
 pub(crate) use signing::*;
 pub(crate) use simple_errors::*;

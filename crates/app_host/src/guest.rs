@@ -20,6 +20,7 @@ use syneroym_wit_interfaces::{
     blob_store::syneroym::blob_store::blob_store as bs,
     conversation::syneroym::conversation::conversation as conv,
     data_layer::syneroym::data_layer::store as dl,
+    events::syneroym::events::events as evt,
     http_guest::syneroym::http::{websocket as ws, websocket_types as wst},
     invocation::syneroym::invocation::invocation as inv,
     messaging::syneroym::messaging::host_api as msg,
@@ -30,12 +31,13 @@ use syneroym_wit_interfaces::{
 
 use crate::{
     AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
-    AppInvocation, AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
+    AppEvents, AppInvocation, AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
         conversation::{ChangePage, ConversationError, ExportChunk, Message, Transcript},
         data_layer::*,
+        events::{EventsError, ReadResult},
         http::FrameKind,
         invocation::CallerOrigin,
         messaging::MessagingError,
@@ -446,6 +448,25 @@ fn frame_kind_out(kind: FrameKind) -> wst::FrameKind {
 impl AppWebSocket for GuestHost {
     async fn send(&self, conn: String, frame: Vec<u8>, kind: FrameKind) -> Result<(), String> {
         ws::send(&conn, &frame, frame_kind_out(kind))
+    }
+}
+
+impl AppEvents for GuestHost {
+    async fn record_event(
+        &self,
+        kind: String,
+        subject: String,
+        item: Option<String>,
+    ) -> Result<String, EventsError> {
+        evt::record(&kind, &subject, item.as_deref())
+    }
+
+    async fn read_events(
+        &self,
+        after: Option<String>,
+        limit: u32,
+    ) -> Result<ReadResult, EventsError> {
+        evt::read(after.as_deref(), limit)
     }
 }
 

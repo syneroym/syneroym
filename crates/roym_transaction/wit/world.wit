@@ -16,6 +16,7 @@ world transaction {
     import syneroym:http/websocket@0.1.0;
     import syneroym:signing/signing@0.1.0;
     import syneroym:invocation/invocation@0.1.0;
+    import syneroym:events/events@0.1.0;
 
     export api;
 }

@@ -267,16 +267,16 @@ impl ConversationStore {
         message_id: &str,
         admission: &Admission,
         now_ms: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut conn = self.conn.lock().expect("conversation connection lock poisoned");
         let tx = conn.transaction()?;
-        Self::apply_admission_conn(&tx, message_id, admission, now_ms)?;
+        let became_visible = Self::apply_admission_conn(&tx, message_id, admission, now_ms)?;
         tx.commit()?;
         if matches!(admission, Admission::Drop(_)) {
             self.flag_wal_checkpoint();
             self.flag_drop_prune();
         }
-        Ok(())
+        Ok(became_visible)
     }
 
     pub fn apply_admission_conn(
@@ -284,7 +284,7 @@ impl ConversationStore {
         message_id: &str,
         admission: &Admission,
         now_ms: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let msg_info: Option<(i64, String, String, Vec<u8>, String)> = conn
             .query_row(
                 "SELECT rowid, conversation_id, content_type, body, admission FROM messages WHERE \
@@ -293,13 +293,13 @@ impl ConversationStore {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
             .optional()?;
-        let Some((rowid, conv_id, ct, body, prior)) = msg_info else { return Ok(()) };
+        let Some((rowid, conv_id, ct, body, prior)) = msg_info else { return Ok(false) };
         // A dropped row has no body left to decide on, and an accepted row
         // already has its sequence number and index entry: only a drop may
         // still change it. A late answer from a racing re-ask must not hand
         // out a second number or hide an indexed row.
         if prior == "dropped" || (prior == "accepted" && !matches!(admission, Admission::Drop(_))) {
-            return Ok(());
+            return Ok(false);
         }
 
         match admission {
@@ -319,6 +319,7 @@ impl ConversationStore {
                         params![rowid, body_str],
                     )?;
                 }
+                Ok(true)
             }
             Admission::Hold(reason) => {
                 conn.execute(
@@ -326,6 +327,7 @@ impl ConversationStore {
                      admission_changed_at = ?2 WHERE id = ?3",
                     params![reason, now_ms, message_id],
                 )?;
+                Ok(false)
             }
             Admission::Drop(drop_ans) => {
                 let is_group = conn
@@ -355,9 +357,9 @@ impl ConversationStore {
                     params![drop_ans.reason, if report { 1i64 } else { 0i64 }, now_ms, message_id],
                 )?;
                 Self::mark_scrub_needed(conn)?;
+                Ok(false)
             }
         }
-        Ok(())
     }
 
     pub fn delete_message(
@@ -365,12 +367,12 @@ impl ConversationStore {
         conversation_id: &str,
         message_id: &str,
         now_ms: i64,
-    ) -> Result<bool> {
+    ) -> Result<Option<bool>> {
         let mut conn = self.conn.lock().expect("conversation connection lock poisoned");
         let tx = conn.transaction()?;
         let deleted = Self::delete_message_conn(&tx, conversation_id, message_id, now_ms)?;
         tx.commit()?;
-        if deleted {
+        if deleted.is_some() {
             self.flag_wal_checkpoint();
         }
         Ok(deleted)
@@ -381,7 +383,7 @@ impl ConversationStore {
         conversation_id: &str,
         message_id: &str,
         now_ms: i64,
-    ) -> Result<bool> {
+    ) -> Result<Option<bool>> {
         let info: Option<(i64, String, Vec<u8>, String, i64, String)> = conn
             .query_row(
                 "SELECT rowid, content_type, body, admission, outgoing, state FROM messages WHERE \
@@ -390,7 +392,8 @@ impl ConversationStore {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             )
             .optional()?;
-        let Some((rowid, ct, body, admission, outgoing, state)) = info else { return Ok(false) };
+        let Some((rowid, ct, body, admission, outgoing, state)) = info else { return Ok(None) };
+        let visible = outgoing != 0 || admission == "accepted";
         // FTS delete only for rows that were indexed (accepted, non-empty body).
         // Issuing 'delete' for a never-indexed row corrupts the FTS table.
         if admission == "accepted"
@@ -434,7 +437,7 @@ impl ConversationStore {
             )?;
         }
         Self::mark_scrub_needed(conn)?;
-        Ok(true)
+        Ok(Some(visible))
     }
 
     pub fn handle_inbound_deletion_request(
@@ -443,9 +446,9 @@ impl ConversationStore {
         author: &str,
         body: &[u8],
         now_ms: i64,
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         let Some(target_id) = parse_deletion_request(body) else {
-            return Ok(false);
+            return Ok(None);
         };
         let target_info: Option<(String, String)> = conn
             .query_row(
@@ -457,10 +460,11 @@ impl ConversationStore {
         if let Some((target_conv, target_author)) = target_info
             && target_conv == conversation_id
             && target_author == author
+            && let Some(true) = Self::delete_message_conn(conn, &target_conv, &target_id, now_ms)?
         {
-            return Self::delete_message_conn(conn, &target_conv, &target_id, now_ms);
+            return Ok(Some(target_id));
         }
-        Ok(false)
+        Ok(None)
     }
 
     pub fn handle_inbound_refusal_notice(
@@ -468,9 +472,9 @@ impl ConversationStore {
         conversation_id: &str,
         author: &str,
         body: &[u8],
-    ) -> Result<bool> {
+    ) -> Result<Option<String>> {
         let Some((target_id, reason)) = parse_refusal_notice(body) else {
-            return Ok(false);
+            return Ok(None);
         };
         let conv_info: Option<(String, Option<String>)> = conn
             .query_row(
@@ -483,14 +487,16 @@ impl ConversationStore {
             && kind == "direct"
             && direct_peer.as_deref() == Some(author)
         {
-            conn.execute(
+            let affected = conn.execute(
                 "UPDATE messages SET refused = ?1 WHERE id = ?2 AND conversation_id = ?3 AND \
                  outgoing = 1",
                 params![reason, target_id, conversation_id],
             )?;
-            return Ok(true);
+            if affected > 0 {
+                return Ok(Some(target_id));
+            }
         }
-        Ok(false)
+        Ok(None)
     }
 
     pub fn readmit(&self, conversation_id: &str, reasons: &[String]) -> Result<u32> {

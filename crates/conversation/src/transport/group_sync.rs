@@ -5,7 +5,7 @@ use syneroym_rpc::{ConversationError, Delivery};
 
 use super::{Disposition, Sent, internal};
 use crate::{
-    ConversationService,
+    ConversationService, group,
     store::{ConversationStore, StoredMessage, now_ms},
 };
 
@@ -129,9 +129,12 @@ impl ConversationService {
                     "entry conversation_id does not match request group".to_string(),
                 ));
             }
-            let (ins, msg_opt) = crate::group::validate_and_insert(&store, svc, &conv, entry)?;
+            let (ins, msg_opt, del_opt) = group::validate_and_insert(&store, svc, &conv, entry)?;
             if ins {
                 accepted.push(entry.entry_id.clone());
+            }
+            if let Some(target_id) = del_opt {
+                self.announce(svc, "conversation.message", &conv.id, Some(&target_id));
             }
             if let Some(msg) = msg_opt {
                 self.notify_and_apply_admission(&store, svc, &msg, now_ms()).await;
@@ -342,17 +345,22 @@ impl ConversationService {
                 if entry.conversation_id != conversation {
                     continue;
                 }
-                let res = crate::group::validate_and_insert(&store, service_id, &conv, &entry);
-                match res {
-                    Ok((_, Some(msg))) => {
+                match group::validate_and_insert(&store, service_id, &conv, &entry) {
+                    Ok((_, msg_opt, del_opt)) => {
                         if !saw_failure {
                             highest_applied_seq = highest_applied_seq.max(seq);
                         }
-                        self.notify_and_apply_admission(&store, service_id, &msg, now_ms()).await;
-                    }
-                    Ok(_) => {
-                        if !saw_failure {
-                            highest_applied_seq = highest_applied_seq.max(seq);
+                        if let Some(target_id) = del_opt {
+                            self.announce(
+                                service_id,
+                                "conversation.message",
+                                &conv.id,
+                                Some(&target_id),
+                            );
+                        }
+                        if let Some(msg) = msg_opt {
+                            self.notify_and_apply_admission(&store, service_id, &msg, now_ms())
+                                .await;
                         }
                     }
                     Err(e) => {

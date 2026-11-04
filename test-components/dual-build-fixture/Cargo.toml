@@ -26,6 +26,7 @@ syneroym-wit-interfaces = { path = "../../crates/wit_interfaces", default-featur
     "blob-store",
     "conversation",
     "data-layer",
+    "events",
     "http",
     "invocation",
     "messaging",
@@ -50,3 +51,4 @@ async-trait.workspace = true
 "syneroym:http" = { path = "wit/deps/http" }
 "syneroym:signing" = { path = "wit/deps/signing" }
 "syneroym:invocation" = { path = "wit/deps/invocation" }
+"syneroym:events" = { path = "wit/deps/events" }

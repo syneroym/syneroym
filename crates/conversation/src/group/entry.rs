@@ -27,7 +27,7 @@ pub fn apply_entry(
     entry: &StoredDagEntry,
     config: &ConversationConfig,
     now: i64,
-) -> Result<(bool, Option<StoredMessage>)> {
+) -> Result<(bool, Option<StoredMessage>, Option<String>)> {
     match entry.kind {
         EntryKind::Membership => apply_membership_entry(tx, conv_id, entry, now),
         EntryKind::Message => apply_message_entry(tx, conv_id, entry, config, now),
@@ -40,7 +40,7 @@ fn apply_membership_entry(
     conv_id: &str,
     entry: &StoredDagEntry,
     now: i64,
-) -> Result<(bool, Option<StoredMessage>)> {
+) -> Result<(bool, Option<StoredMessage>, Option<String>)> {
     if let Some(payload) = &entry.payload {
         ConversationStore::apply_membership(tx, conv_id, payload)?;
         // Verify member_list_hash matches local calculation of members after
@@ -70,7 +70,7 @@ fn apply_membership_entry(
         )?;
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
     }
-    Ok((false, None))
+    Ok((false, None, None))
 }
 
 fn apply_profile_entry(
@@ -78,7 +78,7 @@ fn apply_profile_entry(
     conv_id: &str,
     entry: &StoredDagEntry,
     now: i64,
-) -> Result<(bool, Option<StoredMessage>)> {
+) -> Result<(bool, Option<StoredMessage>, Option<String>)> {
     if let Some(payload) = &entry.profile_payload {
         if let Ok(valid_name) = dag::validate_group_name(&payload.name) {
             let is_newest: bool = tx
@@ -104,7 +104,7 @@ fn apply_profile_entry(
         }
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
     }
-    Ok((false, None))
+    Ok((false, None, None))
 }
 
 fn apply_message_entry(
@@ -113,19 +113,19 @@ fn apply_message_entry(
     entry: &StoredDagEntry,
     config: &ConversationConfig,
     now: i64,
-) -> Result<(bool, Option<StoredMessage>)> {
+) -> Result<(bool, Option<StoredMessage>, Option<String>)> {
     let msg_count: i64 = tx.query_row(
         "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
         rusqlite::params![conv_id],
         |r| r.get(0),
     )?;
     if msg_count as u32 >= config.max_messages_per_conversation {
-        return Ok((false, None));
+        return Ok((false, None, None));
     }
 
     let key = ConversationStore::epoch_key_in(tx, conv_id, entry.epoch)?;
     let Some(key) = key else {
-        return Ok((false, None));
+        return Ok((false, None, None));
     };
     let prefix = canonical_entry_prefix(
         conv_id,
@@ -137,28 +137,28 @@ fn apply_message_entry(
     );
     let ct = entry.ciphertext.as_deref().unwrap_or(&[]);
     let Some(nonce) = &entry.nonce else {
-        return Ok((false, None));
+        return Ok((false, None, None));
     };
     let plaintext = match open(&key, &prefix, nonce, ct) {
         Ok(p) => p,
-        Err(_) => return Ok((false, None)),
+        Err(_) => return Ok((false, None, None)),
     };
     let (content_type, body) = match decode_body(&plaintext) {
         Ok(b) => b,
-        Err(_) => return Ok((false, None)),
+        Err(_) => return Ok((false, None, None)),
     };
     if body.len() as u32 > config.max_body_bytes {
-        return Ok((false, None));
+        return Ok((false, None, None));
     }
     if content_type == DELETION_REQUEST_CONTENT_TYPE {
-        apply_group_deletion_request(tx, conv_id, &entry.author, &body, now)?;
+        let deleted = apply_group_deletion_request(tx, conv_id, &entry.author, &body, now)?;
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
-        return Ok((false, None));
+        return Ok((false, None, deleted));
     }
     if take_pending_deletion(tx, conv_id, &entry.entry_id, &entry.author)? {
         store_withdrawn_message(tx, conv_id, entry, &content_type, now)?;
         ConversationStore::mark_dag_applied(tx, &entry.entry_id)?;
-        return Ok((false, None));
+        return Ok((false, None, None));
     }
     let claim_window_ms = (config.admission_claim_secs as i64) * 1000;
     let next_notify_at = now + claim_window_ms;
@@ -209,9 +209,9 @@ fn apply_message_entry(
             restored: false,
             visible_seq: 0,
         };
-        Ok((true, Some(msg)))
+        Ok((true, Some(msg), None))
     } else {
-        Ok((false, None))
+        Ok((false, None, None))
     }
 }
 
@@ -221,7 +221,7 @@ fn apply_group_deletion_request(
     author: &str,
     body: &[u8],
     now: i64,
-) -> Result<()> {
+) -> Result<Option<String>> {
     if let Some(target_id) = dag::parse_deletion_request(body) {
         let target_info: Option<(String, String)> = tx
             .query_row(
@@ -234,7 +234,11 @@ fn apply_group_deletion_request(
             Some((target_conv, target_author))
                 if target_conv == conv_id && target_author == author =>
             {
-                ConversationStore::delete_message_conn(tx, conv_id, &target_id, now)?;
+                if let Some(true) =
+                    ConversationStore::delete_message_conn(tx, conv_id, &target_id, now)?
+                {
+                    return Ok(Some(target_id));
+                }
             }
             // Not here yet: the request can arrive before the message, for
             // example when the message is pulled by a later sync. Remember it
@@ -249,7 +253,7 @@ fn apply_group_deletion_request(
             Some(_) => {}
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Consumes a remembered deletion request for this message from its own
@@ -377,7 +381,7 @@ pub fn validate_and_insert(
     svc: &str,
     conv: &ConversationRow,
     entry: &WireEntry,
-) -> Result<(bool, Option<StoredMessage>), ConversationError> {
+) -> Result<(bool, Option<StoredMessage>, Option<String>), ConversationError> {
     let header = canonical_entry_bytes(entry);
     if derive_entry_id(&header) != entry.entry_id {
         return Err(ConversationError::InvalidArgument("mismatched entry id".to_string()));
@@ -427,6 +431,7 @@ pub fn validate_and_insert(
     }
 
     let mut newly_stored_msg = None;
+    let mut newly_deleted_msg = None;
     let inserted = store
         .queue()
         .transaction(|tx, _| {
@@ -452,11 +457,13 @@ pub fn validate_and_insert(
                 relay_pending: true,
                 parents: entry.parents.clone(),
             };
-            let (_, msg_opt) = apply_entry(tx, svc, &conv.id, &stored_dag, store.config(), now)?;
+            let (_, msg_opt, del_opt) =
+                apply_entry(tx, svc, &conv.id, &stored_dag, store.config(), now)?;
             newly_stored_msg = msg_opt;
+            newly_deleted_msg = del_opt;
             Ok(true)
         })
         .map_err(internal)?;
 
-    Ok((inserted, newly_stored_msg))
+    Ok((inserted, newly_stored_msg, newly_deleted_msg))
 }

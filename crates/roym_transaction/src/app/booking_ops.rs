@@ -22,7 +22,7 @@ use super::{
         Claim, LedgerKind, LedgerRow, StepRow, claim_decision, claim_seat, load_booking, seat_id,
         step_id,
     },
-    progress, put_row,
+    progress, put_booking,
 };
 
 #[derive(Debug, Deserialize)]
@@ -143,7 +143,7 @@ pub(crate) async fn decide_booking<H: AppHost>(
     match outcome {
         Claim::Won(row) => {
             let row = *row;
-            put_row(host, BOOKINGS, &agreement.quote_record_id, &row).await?;
+            put_booking(host, &row).await?;
             progress::send(host, &row).await;
             Ok(row)
         }
@@ -165,7 +165,7 @@ pub(crate) async fn decide_booking<H: AppHost>(
             {
                 Claim::Won(row) => {
                     let row = *row;
-                    put_row(host, BOOKINGS, &agreement.quote_record_id, &row).await?;
+                    put_booking(host, &row).await?;
                     progress::send(host, &row).await;
                     Ok(row)
                 }
@@ -260,7 +260,7 @@ pub(crate) async fn transition<H: AppHost>(
             updated_at_secs: now,
         };
 
-        if let Err(e) = put_row(host, BOOKINGS, q, &new_row).await {
+        if let Err(e) = put_booking(host, &new_row).await {
             return Err(Response::internal_error(e));
         }
 

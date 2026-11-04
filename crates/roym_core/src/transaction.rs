@@ -28,6 +28,9 @@ pub const REQUEST_VERSION: u32 = 1;
 pub const QUOTE_VERSION: u32 = 1;
 pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 
+pub const EVENT_CARD: &str = "transaction.card";
+pub const EVENT_BOOKING: &str = "transaction.booking";
+
 /// The notice a counterparty is shown before a request is signed, and which
 /// the request then carries under their own signature. One constant, so
 /// the Hub, `roymctl` and the record cannot drift apart, and so the

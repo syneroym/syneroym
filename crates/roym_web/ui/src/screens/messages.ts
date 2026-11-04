@@ -1,4 +1,5 @@
 import { refiller } from "../dom";
+import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
 import { renderCard } from "../cards/render";
@@ -187,6 +188,14 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
   listItems.className = "conversation-items";
   listPane.appendChild(listItems);
 
+  let activeConvId: string | null = null;
+  let activeFillHistory: (() => Promise<void>) | null = null;
+
+  const onThreadActive = (convId: string, fill: () => Promise<void>) => {
+    activeConvId = convId;
+    activeFillHistory = fill;
+  };
+
   // Resolves to the rows when this run drew the list, else `undefined` (the
   // load failed, or a newer run replaced this one).
   const fillList = refiller(listItems, async (into: DocumentFragment, select?: string) => {
@@ -202,16 +211,17 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       into.appendChild(text("p", "No conversations yet.", "conversations-empty"));
       return rows;
     }
+    const currentSelect = select ?? activeConvId ?? undefined;
     for (const r of rows) {
       const row = document.createElement("div");
       row.className = "conversation-item";
-      if (r.id === select) row.classList.add("selected");
+      if (r.id === currentSelect) row.classList.add("selected");
       row.appendChild(text("div", r.peer_person_did || r.peer_address, "peer-label"));
       row.appendChild(text("div", `${r.message_count} messages`, "count-label"));
       row.onclick = () => {
         listItems.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
         row.classList.add("selected");
-        renderThread(threadPane, r, myDid);
+        renderThread(threadPane, r, myDid, onThreadActive);
       };
       into.appendChild(row);
     }
@@ -219,21 +229,66 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
   });
 
   async function reloadList(select?: string) {
-    const rows = await fillList(select);
-    if (!rows) return;
+    if (select) activeConvId = select;
+    const rows = await fillList(select ?? activeConvId ?? undefined);
+    if (rows === undefined) {
+      return;
+    }
     if (rows.length === 0) {
+      activeConvId = null;
+      activeFillHistory = null;
       threadPane.replaceChildren();
       return;
     }
-    const target = select ? rows.find((r) => r.id === select) : rows[0];
-    if (target) await renderThread(threadPane, target, myDid);
+    const target = select
+      ? rows.find((r) => r.id === select)
+      : (activeConvId ? rows.find((r) => r.id === activeConvId) : rows[0]);
+    if (target) await renderThread(threadPane, target, myDid, onThreadActive);
   }
+
+  const removeFeed = onFeed(async (event) => {
+    if (!box.isConnected) {
+      removeFeed();
+      return;
+    }
+    if ("reload" in event && event.reload) {
+      if (activeFillHistory) {
+        await activeFillHistory();
+      }
+      if (!activeConvId) {
+        await reloadList();
+      } else {
+        await fillList(activeConvId);
+      }
+      return;
+    }
+    if ("kind" in event) {
+      if (activeConvId && event.subject === activeConvId && activeFillHistory) {
+        await activeFillHistory();
+      }
+      const hasConv =
+        event.kind.startsWith("conversation.") ||
+        ("kinds" in event && Boolean(event.kinds?.some((k) => k.startsWith("conversation."))));
+      if (hasConv) {
+        if (!activeConvId) {
+          await reloadList();
+        } else {
+          await fillList(activeConvId);
+        }
+      }
+    }
+  });
 
   await reloadList();
   container.appendChild(box);
 }
 
-async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: string) {
+async function renderThread(
+  pane: HTMLElement,
+  conv: ConversationRow,
+  myDid: string,
+  onActive?: (convId: string, fill: () => Promise<void>) => void,
+) {
   pane.replaceChildren();
   pane.appendChild(text("h3", conv.peer_person_did || conv.peer_address));
 
@@ -372,6 +427,7 @@ async function renderThread(pane: HTMLElement, conv: ConversationRow, myDid: str
     }
   });
 
+  onActive?.(conv.id, fillHistory);
   await fillHistory();
 }
 

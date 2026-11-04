@@ -12,6 +12,8 @@ pub mod control_plane;
 pub mod conversation;
 #[cfg(feature = "data-layer")]
 pub mod data_layer;
+#[cfg(feature = "events")]
+pub mod events;
 #[cfg(feature = "http")]
 pub mod http_guest;
 #[cfg(feature = "invocation")]
@@ -41,3 +43,6 @@ pub mod signing_host;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod invocation_host;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod events_host;

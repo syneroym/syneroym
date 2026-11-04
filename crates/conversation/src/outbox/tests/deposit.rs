@@ -363,7 +363,7 @@ async fn a_deleted_deposited_message_has_its_row_completed_without_a_poll() {
     let message = world.send_direct().await;
     world.pass().await;
     let conv = world.store.get_message(&message).unwrap().unwrap().conversation_id;
-    assert!(world.store.delete_message(&conv, &message, now_ms()).unwrap());
+    assert!(world.store.delete_message(&conv, &message, now_ms()).unwrap().is_some());
 
     world.parked_pass().await;
 
@@ -378,7 +378,7 @@ fn deleting(world: &World, message: &str) -> Hook {
     let message = message.to_string();
     Hook(Box::new(move || {
         let conv = store.get_message(&message).unwrap().unwrap().conversation_id;
-        assert!(store.delete_message(&conv, &message, now_ms()).unwrap());
+        assert!(store.delete_message(&conv, &message, now_ms()).unwrap().is_some());
     }))
 }
 

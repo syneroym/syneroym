@@ -37,6 +37,7 @@ pub(crate) fn test_service_proxy() -> Weak<dyn ServiceProxy> {
 }
 
 mod tests_call_all;
+mod tests_events;
 mod tests_proxy;
 mod tests_services;
 mod tests_store;

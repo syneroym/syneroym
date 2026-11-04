@@ -1,9 +1,6 @@
 use std::{
     fs,
-    sync::{
-        Arc, Weak,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Weak, atomic::AtomicUsize},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,6 +20,7 @@ use syneroym_async_queue::QueueConfig;
 use syneroym_conversation::{ConversationConfig, ConversationService};
 use syneroym_core::{
     config::{AppSandboxRole, RetryPolicy, SubstrateConfig},
+    event_bus::EventBus,
     local_registry::EndpointRegistry,
     record_signer::{NodeRecordSigner, RecordClock},
     storage::MockStorage,
@@ -47,7 +45,7 @@ use syneroym_roym_web::native::NativeWeb;
 use syneroym_rpc::{
     AuthLevel, CallerContext, ConversationDeliveryState, ConversationHost, ConversationMessage,
     ConversationNotifier, JsonRpcRequest, NativeHttpService, NativeInvocation, NativeService,
-    ProxyError, ProxyRequest, ServiceProxy, SessionContext, WebSocketSenders,
+    ServiceProxy, SessionContext, WebSocketSenders,
 };
 use syneroym_sandbox_wasm::{AppSandboxEngine, GuestHttpOutcome};
 use syneroym_signed_record::Envelope;
@@ -509,6 +507,10 @@ pub(crate) struct Harness {
     /// group here (a kind the inbox refuses) or reads delivery state.
     pub(crate) wasm_conversation: Arc<ConversationService>,
     pub(crate) native_conversation: Arc<ConversationService>,
+    #[allow(dead_code)]
+    pub(crate) wasm_event_bus: Arc<EventBus>,
+    #[allow(dead_code)]
+    pub(crate) native_event_bus: Arc<EventBus>,
     /// `host_for_wire`-built native instances: the parity harness is the
     /// only caller of that constructor, and it is what makes the wire
     /// refusal a real two-build comparison rather than a wasm-only one.
@@ -772,159 +774,9 @@ impl Drop for Harness {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct TestWasmServiceProxy {
-    pub(crate) engine: Arc<AppSandboxEngine>,
-    pub(crate) invocations: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl ServiceProxy for TestWasmServiceProxy {
-    async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
-        self.invocations.fetch_add(1, Ordering::SeqCst);
-        let target = request.target_service.as_str();
-
-        if let Some(canned) = trust_harness::canned_source_response(target, &request.params).await {
-            return Ok(canned);
-        }
-
-        if let Some((service_id, anon)) = foreign_wire_route(target) {
-            let caller = if anon { anon_wire_caller() } else { foreign_searcher_caller() };
-            let rpc_req = JsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                method: request.method,
-                params: request.params,
-                id: None,
-                idempotency_key: request.idempotency_key,
-            };
-            return self
-                .engine
-                .execute_wasm_json_from_wire(
-                    &service_id,
-                    &request.interface,
-                    &rpc_req,
-                    Some(caller),
-                )
-                .await
-                .map_err(|e| ProxyError::Internal(e.to_string()));
-        }
-
-        let service_id = if target == "did:key:hForeign" {
-            did_for_service("directory")
-        } else {
-            target.to_string()
-        };
-
-        if service_id.contains("unbound") {
-            return Err(ProxyError::ServiceNotFound("unbound".to_string()));
-        }
-        if service_id.contains("timeout") {
-            return Err(ProxyError::Timeout(Duration::from_secs(30)));
-        }
-
-        let rpc_req = JsonRpcRequest {
-            jsonrpc: "2.0".to_string(),
-            method: request.method,
-            params: request.params,
-            id: None,
-            idempotency_key: request.idempotency_key,
-        };
-
-        let res = self
-            .engine
-            .execute_wasm_json(&service_id, &request.interface, &rpc_req, Some(request.caller))
-            .await;
-
-        match res {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                eprintln!(
-                    "TestWasmServiceProxy error invoking {service_id} {}: {e:?}",
-                    request.interface
-                );
-                Err(ProxyError::Internal(e.to_string()))
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct TestNativeServiceProxy {
-    pub(crate) web: Arc<NativeWeb<NativeAppHost>>,
-    pub(crate) profile: Arc<NativeProfile<NativeAppHost>>,
-    pub(crate) conversation: Arc<NativeConversation<NativeAppHost>>,
-    pub(crate) catalog: Arc<NativeCatalog<NativeAppHost>>,
-    pub(crate) transaction: Arc<NativeTransaction<NativeAppHost>>,
-    pub(crate) directory: Arc<NativeDirectory<NativeAppHost>>,
-    /// `host_for_wire`-built instances the foreign-wire targets route to,
-    /// so a fan-out call is a real wire round trip on the native stack too.
-    pub(crate) directory_wire: Arc<dyn NativeService>,
-    pub(crate) directory2_wire: Arc<dyn NativeService>,
-    pub(crate) invocations: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl ServiceProxy for TestNativeServiceProxy {
-    async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
-        self.invocations.fetch_add(1, Ordering::SeqCst);
-        let target = request.target_service.as_str();
-
-        if let Some(canned) = trust_harness::canned_source_response(target, &request.params).await {
-            return Ok(canned);
-        }
-
-        if let Some((_service_id, anon)) = foreign_wire_route(target) {
-            let svc = if target == "did:key:hForeignWire2" {
-                &self.directory2_wire
-            } else {
-                &self.directory_wire
-            };
-            let caller = if anon { anon_wire_caller() } else { foreign_searcher_caller() };
-            let inv = NativeInvocation {
-                interface: request.interface,
-                method: request.method,
-                params: request.params,
-                caller,
-            };
-            return svc
-                .dispatch(inv)
-                .await
-                .map(|r| r.payload)
-                .map_err(|e| ProxyError::Internal(e.to_string()));
-        }
-
-        let svc: Arc<dyn NativeService> = if target == "did:key:hForeign" {
-            self.directory.clone()
-        } else if target == did_for_service("profile") {
-            self.profile.clone()
-        } else if target == did_for_service("conversation") {
-            self.conversation.clone()
-        } else if target == did_for_service("catalog") {
-            self.catalog.clone()
-        } else if target == did_for_service("transaction") {
-            self.transaction.clone()
-        } else if target == did_for_service("directory") {
-            self.directory.clone()
-        } else if target == did_for_service("web") {
-            self.web.clone()
-        } else {
-            return Err(ProxyError::ServiceNotFound(target.to_string()));
-        };
-
-        let inv = NativeInvocation {
-            interface: request.interface,
-            method: request.method,
-            params: request.params,
-            caller: request.caller,
-        };
-
-        let res = svc.dispatch(inv).await;
-        match res {
-            Ok(resp) => Ok(resp.payload),
-            Err(e) => Err(ProxyError::Internal(e.to_string())),
-        }
-    }
-}
+#[path = "test_proxies.rs"]
+pub(crate) mod test_proxies;
+pub(crate) use test_proxies::*;
 
 pub(crate) fn wasm_deploy_manifest(bytes: Vec<u8>, iface: &str) -> DeployManifest {
     DeployManifest::unpublished(
@@ -1120,6 +972,9 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         .unwrap(),
     );
     wasm_engine.self_weak.set(Arc::downgrade(&wasm_engine)).expect("self_weak set once");
+    let wasm_event_bus = EventBus::new(wasm_reg.clone());
+    let _ = wasm_engine.set_event_bus(wasm_event_bus.clone());
+    wasm_conversation.set_event_bus(wasm_event_bus.clone());
     let wasm_ws_senders = WebSocketSenders::new();
     wasm_engine.websocket_senders.set(wasm_ws_senders.clone()).expect("set ws senders");
     wasm_engine
@@ -1210,6 +1065,9 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     let native_conversation =
         test_conversation_service(native_storage.clone(), native_ks.clone(), native_reg.clone());
 
+    let native_event_bus = EventBus::new(native_reg.clone());
+    native_conversation.set_event_bus(native_event_bus.clone());
+
     let native_record_signer =
         NodeRecordSigner::with_clock(node_identity, native_reg.clone(), fixed_clock);
 
@@ -1226,6 +1084,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
             native_ws_senders.clone(),
             name == "conversation",
         )
+        .with_event_bus(native_event_bus.clone())
     };
 
     let f_web = make_factory("web");
@@ -1415,6 +1274,8 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         _conv_factory: f_conversation.clone(),
         wasm_conversation: wasm_conversation.clone(),
         native_conversation: native_conversation.clone(),
+        wasm_event_bus,
+        native_event_bus,
         wire_native,
         wasm_storage: wasm_storage.clone(),
         native_storage: native_storage.clone(),

@@ -8,6 +8,8 @@ use crate::{
     transport::tests::test_service,
 };
 
+mod events;
+
 const ME: &str = "svc:me";
 const PEER: &str = "svc:peer";
 

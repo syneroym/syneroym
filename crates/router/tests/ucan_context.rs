@@ -122,6 +122,7 @@ async fn test_route_handler(service_id: &str) -> RouteHandler {
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
         session_revocation: None,
+        event_bus: None,
     };
 
     let route_handler = RouteHandler::init(

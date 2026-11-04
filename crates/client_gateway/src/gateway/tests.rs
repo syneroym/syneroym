@@ -400,3 +400,12 @@ async fn forward_to_service_rehomes_and_replays_on_host_mismatch() {
     assert!(forward_res.is_ok());
     server_task.abort();
 }
+
+#[test]
+fn forwarded_syneroym_paths_match_expected() {
+    assert!(is_forwarded_syneroym_path("/_syneroym/events"));
+    assert!(is_forwarded_syneroym_path("/_syneroym/events?after=x"));
+    assert!(is_forwarded_syneroym_path("/_syneroym/session/login"));
+    assert!(!is_forwarded_syneroym_path("/_syneroym/other"));
+    assert!(!is_forwarded_syneroym_path("/_syneroym/eventsx"));
+}

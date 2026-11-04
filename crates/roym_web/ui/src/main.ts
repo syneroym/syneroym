@@ -1,6 +1,7 @@
 import { renderCard } from "./cards/render";
 import { renderRefusedCard } from "./cards/refused";
 import { errText, text } from "./dom";
+import { startFeed } from "./events";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
 import { renderDirectory } from "./screens/directory";
@@ -118,6 +119,7 @@ async function main() {
 }
 
 async function renderTabs(container: HTMLElement, did: string) {
+  startFeed();
   container.replaceChildren();
 
   const nav = document.createElement("div");

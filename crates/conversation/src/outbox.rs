@@ -109,7 +109,7 @@ impl ConversationService {
         self.registry.owner_of(svc).is_some() || self.registry.instance_cert(svc).is_some()
     }
 
-    async fn drain_once(&self) {
+    pub(crate) async fn drain_once(&self) {
         let services = self.candidate_service_ids();
         for svc in services {
             let still_deployed = self.is_deployed(&svc);
@@ -305,6 +305,7 @@ impl ConversationService {
                 if !row.is_group() {
                     self.notify_state(
                         row.svc,
+                        &row.msg.conversation_id,
                         row.msg.id.clone(),
                         ConversationDeliveryState::Deposited,
                     )
@@ -359,16 +360,33 @@ impl ConversationService {
                         ConversationDeliveryState::Failed,
                         Some("one or more recipients failed"),
                     );
-                    self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Failed).await;
+                    self.notify_state(
+                        svc,
+                        &msg.conversation_id,
+                        msg.id.clone(),
+                        ConversationDeliveryState::Failed,
+                    )
+                    .await;
                 } else {
                     let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
-                    self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered)
-                        .await;
+                    self.notify_state(
+                        svc,
+                        &msg.conversation_id,
+                        msg.id.clone(),
+                        ConversationDeliveryState::Delivered,
+                    )
+                    .await;
                 }
             }
         } else {
             let _ = store.set_state(&msg.id, ConversationDeliveryState::Delivered, None);
-            self.notify_state(svc, msg.id.clone(), ConversationDeliveryState::Delivered).await;
+            self.notify_state(
+                svc,
+                &msg.conversation_id,
+                msg.id.clone(),
+                ConversationDeliveryState::Delivered,
+            )
+            .await;
             let _ = store.queue().complete(item.id);
         }
     }
@@ -399,6 +417,26 @@ impl ConversationService {
         peer_address: &str,
     ) {
         let _ = store.delete_outbound_envelope(message_id);
+        let conv_id = match store.get_message(message_id) {
+            Ok(Some(m)) => Some(m.conversation_id),
+            Ok(None) => {
+                warn!(
+                    service = svc,
+                    message = message_id,
+                    "missing message row when failing delivery item"
+                );
+                None
+            }
+            Err(e) => {
+                warn!(
+                    service = svc,
+                    message = message_id,
+                    error = ?e,
+                    "failed to read message when failing delivery item"
+                );
+                None
+            }
+        };
         if is_group {
             let _ = store.set_recipient_state(
                 message_id,
@@ -412,8 +450,15 @@ impl ConversationService {
                     ConversationDeliveryState::Failed,
                     Some("one or more recipients failed"),
                 );
-                self.notify_state(svc, message_id.to_string(), ConversationDeliveryState::Failed)
+                if let Some(ref cid) = conv_id {
+                    self.notify_state(
+                        svc,
+                        cid,
+                        message_id.to_string(),
+                        ConversationDeliveryState::Failed,
+                    )
                     .await;
+                }
                 metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
                 warn!(
                     service = svc,
@@ -424,7 +469,15 @@ impl ConversationService {
             }
         } else {
             let _ = store.set_state(message_id, ConversationDeliveryState::Failed, Some(reason));
-            self.notify_state(svc, message_id.to_string(), ConversationDeliveryState::Failed).await;
+            if let Some(ref cid) = conv_id {
+                self.notify_state(
+                    svc,
+                    cid,
+                    message_id.to_string(),
+                    ConversationDeliveryState::Failed,
+                )
+                .await;
+            }
             metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
             warn!(
                 service = svc,
@@ -480,11 +533,25 @@ impl ConversationService {
         let timed_out = asked.is_err();
         match asked.unwrap_or(NotifyOutcome::NoAnswer) {
             NotifyOutcome::Answered(admission) => {
-                let _ = store.apply_admission(&msg.id, &admission, now);
+                let _ = self.admit_and_announce(
+                    store,
+                    svc,
+                    &msg.conversation_id,
+                    &msg.id,
+                    &admission,
+                    now,
+                );
                 self.report_late_refusal(svc, store, msg, &admission).await;
             }
             NotifyOutcome::NoHandler => {
-                let _ = store.apply_admission(&msg.id, &Admission::Accept, now);
+                let _ = self.admit_and_announce(
+                    store,
+                    svc,
+                    &msg.conversation_id,
+                    &msg.id,
+                    &Admission::Accept,
+                    now,
+                );
             }
             NotifyOutcome::NoAnswer => {
                 let age_ms = now.saturating_sub(msg.received_at_ms);

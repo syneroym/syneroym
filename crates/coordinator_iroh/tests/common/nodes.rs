@@ -153,6 +153,7 @@ pub async fn build_test_route_handler_deps(
         control_plane_service: control_plane_service.clone(),
         control_plane: Some(control_plane_service),
         session_revocation: None,
+        event_bus: None,
     })
 }
 

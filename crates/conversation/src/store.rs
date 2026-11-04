@@ -266,6 +266,11 @@ impl ConversationStore {
         &self.conn
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn conn_is_free(&self) -> bool {
+        self.conn.try_lock().is_ok()
+    }
+
     pub fn flag_wal_checkpoint(&self) {
         self.needs_wal_checkpoint.store(true, Ordering::Release);
     }
