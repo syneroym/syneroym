@@ -862,7 +862,18 @@ caller in another crate cannot skip the gate. The cases of
 ([auth_service_tests.rs:264-313](../../../../crates/auth/tests/auth_service_tests.rs#L264))
 move to an in-crate test, `crates/auth/src/service/local/tests.rs` (the
 path-traversal and unknown-name cases), or are rewritten through
-`handle_request` with a node caller (the `methods()` cases). `handle_request`
+`handle_request` with a node caller (the `methods()` cases). The in-crate
+tests build `AuthService` with the production resolver
+`RegistryClient::new(false, None)` (no DHT, no registry URL;
+[client.rs:93](../../../../crates/core/src/dht_registry/client.rs#L93),
+`MasterAnchorResolver` impl at
+[client.rs:599](../../../../crates/core/src/dht_registry/client.rs#L599)), the
+same type the runtime passes
+([runtime/auth.rs:41](../../../../crates/substrate/src/runtime/auth.rs#L41)).
+`login_local` never resolves an anchor, so the resolver is never called. No
+test resolver is defined in-crate, so `MockAnchorResolver` (which D-A6-15
+moves to `crates/auth/tests/common/mod.rs`, out of reach of in-crate tests)
+is not copied. `handle_request`
 passes `caller.as_ref()` to `handle_login`. The router's `is_gateway_origin`
 also checks "no delegation"; the auth service does not need it, because a
 stream with a delegation has the master DID as caller (3.3).
@@ -1058,17 +1069,19 @@ gateway_remote_access_e2e --test gateway_session_e2e`.
 
 ### Step 5 — The Hub CSP
 
-Case 42 comes first, so Q3's risk is known before the rest is built.
+Case 42 runs right after the small CSP change, so Q3's risk is known before
+the rest of the step.
 
 1. `node-boot.ts`: a `gateway.allowedOrigins?: string[]` option that writes
    `allowed_origins` into `[roles.auth]`. `global-setup.ts` sets
    `["http://*.roym.test:<gateway port>"]` for the Hub node.
-2. `tests/roym-hub-remote.spec.ts` with case 42 (7.6), written against the
-   `csp.ts`/`boot-csp.ts` change of item 3 only (no other Hub change). Run it.
-   If step 2 of the case fails because the second tag is not applied, stop:
-   build Q3 (b) instead (a router header from a policy the app declares) and
-   record a deviation; use (c) only with the owner's approval.
-3. `csp.ts`, `boot-csp.ts`, the `main.ts` import, `index.html` (D-A6-10).
+2. `csp.ts`, `boot-csp.ts`, the `main.ts` import, `index.html` (D-A6-10).
+   Nothing else in the Hub changes.
+3. `tests/roym-hub-remote.spec.ts` with case 42 (7.6). Run it
+   (`mise run build:roym`, then the one spec). If step 2 of the case fails
+   because the second tag is not applied, stop: build Q3 (b) instead (a
+   router header from a policy the app declares) and record a deviation;
+   use (c) only with the owner's approval.
 4. `csp.test.ts` (7.5).
 
 Check: `cd crates/roym_web/ui && npm test`; `mise run build:roym`;
@@ -1166,7 +1179,8 @@ In-crate unit tests (they reach `pub(crate)` items):
   entries, through `handle_request` with an `Origin` header.
 - `crates/auth/src/service/local/tests.rs`: the path-traversal, empty-name and
   unknown-name cases of `login_local`, moved from `local_login_and_refusals`
-  (D-A6-7).
+  (D-A6-7). The service is built with `RegistryClient::new(false, None)` as
+  its resolver, not a test mock.
 
 ### 7.4 Substrate e2e (`crates/substrate/tests/gateway_remote_access_e2e.rs`, new)
 
