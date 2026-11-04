@@ -1,6 +1,9 @@
 use std::{
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -15,6 +18,7 @@ use syneroym_core::{
     event_bus::EventBus,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
+    protocol_utils::SessionRevocationCheck,
     storage::MockStorage,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
@@ -27,7 +31,10 @@ use syneroym_rpc::{
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 
-use super::{FeedGuard, HttpHandler, SESSION_CALLER_MARKER};
+use super::{
+    super::auth::extract_session_token_from_hyper_headers, FeedGuard, HttpHandler,
+    SESSION_CALLER_MARKER,
+};
 use crate::{RouteHandler, RouteHandlerDeps, RoutePreamble, route_handler::http::HttpBody};
 
 #[derive(Debug, Default)]
@@ -44,7 +51,7 @@ async fn build_test_router(
     temp_dir: &Path,
     registry: EndpointRegistry,
     bus: Option<Arc<EventBus>>,
-    session_revocation: Option<Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>>,
+    session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
 ) -> RouteHandler {
     let mut config = SubstrateConfig::default();
     config.storage.db_dir = temp_dir.to_path_buf();
@@ -104,9 +111,7 @@ impl TestFixture {
         Self::with_revocation(None).await
     }
 
-    async fn with_revocation(
-        session_revocation: Option<Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>>,
-    ) -> Self {
+    async fn with_revocation(session_revocation: Option<Arc<dyn SessionRevocationCheck>>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
         let bus = EventBus::new(registry.clone());
@@ -437,20 +442,20 @@ async fn a_reader_far_behind_gets_all_events_before_it_waits() {
     assert_eq!(count, 1200, "all 1200 events should arrive without waiting for new records");
 }
 
-struct TestGauge(Arc<std::sync::atomic::AtomicI64>);
+struct TestGauge(Arc<AtomicI64>);
 impl metrics::GaugeFn for TestGauge {
     fn increment(&self, value: f64) {
-        self.0.fetch_add(value as i64, std::sync::atomic::Ordering::SeqCst);
+        self.0.fetch_add(value as i64, Ordering::SeqCst);
     }
     fn decrement(&self, value: f64) {
-        self.0.fetch_sub(value as i64, std::sync::atomic::Ordering::SeqCst);
+        self.0.fetch_sub(value as i64, Ordering::SeqCst);
     }
     fn set(&self, value: f64) {
-        self.0.store(value as i64, std::sync::atomic::Ordering::SeqCst);
+        self.0.store(value as i64, Ordering::SeqCst);
     }
 }
 
-struct TestRecorder(Arc<std::sync::atomic::AtomicI64>);
+struct TestRecorder(Arc<AtomicI64>);
 impl metrics::Recorder for TestRecorder {
     fn describe_counter(
         &self,
@@ -490,14 +495,14 @@ impl metrics::Recorder for TestRecorder {
 
 #[test]
 fn a_closed_feed_lowers_the_open_feeds_gauge() {
-    let gauge_val = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let gauge_val = Arc::new(AtomicI64::new(0));
     let recorder = TestRecorder(gauge_val.clone());
     metrics::with_local_recorder(&recorder, || {
-        assert_eq!(gauge_val.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(gauge_val.load(Ordering::SeqCst), 0);
         let guard = FeedGuard::new();
-        assert_eq!(gauge_val.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(gauge_val.load(Ordering::SeqCst), 1);
         drop(guard);
-        assert_eq!(gauge_val.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(gauge_val.load(Ordering::SeqCst), 0);
     });
 }
 
@@ -506,22 +511,19 @@ async fn a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_toke
     let mut headers = HeaderMap::new();
     headers.insert(hyper::header::COOKIE, "syneroym_session=revoked-cookie".parse().unwrap());
     headers.insert(hyper::header::AUTHORIZATION, "Bearer valid-token".parse().unwrap());
-    assert_eq!(
-        super::super::auth::extract_session_token_from_hyper_headers(&headers),
-        Some("valid-token".to_string())
-    );
+    assert_eq!(extract_session_token_from_hyper_headers(&headers), Some("valid-token".to_string()));
 }
 
-struct DynamicRevocation(std::sync::atomic::AtomicBool);
-impl syneroym_core::protocol_utils::SessionRevocationCheck for DynamicRevocation {
+struct DynamicRevocation(AtomicBool);
+impl SessionRevocationCheck for DynamicRevocation {
     fn is_revoked(&self, _token: &str) -> bool {
-        self.0.load(std::sync::atomic::Ordering::SeqCst)
+        self.0.load(Ordering::SeqCst)
     }
 }
 
 #[tokio::test]
 async fn a_revoked_session_terminates_an_open_feed_stream() {
-    let revocation = Arc::new(DynamicRevocation(std::sync::atomic::AtomicBool::new(false)));
+    let revocation = Arc::new(DynamicRevocation(AtomicBool::new(false)));
     let fix = TestFixture::with_revocation(Some(revocation.clone())).await;
 
     let mut caller = fix.session_caller(None);
@@ -538,7 +540,7 @@ async fn a_revoked_session_terminates_an_open_feed_stream() {
     let ready = read_frame_text(&mut body).await.unwrap();
     assert!(ready.starts_with("event: ready\n"));
 
-    revocation.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    revocation.0.store(true, Ordering::SeqCst);
 
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
     fix.bus.record(&fix.service_id, "conversation.message", "conv1", Some("m1"), now_ms).unwrap();

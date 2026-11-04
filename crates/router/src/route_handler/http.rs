@@ -54,6 +54,7 @@ use serde_json::Value;
 use syneroym_app_host::types::http::{CallerAuth, CallerIdentity, HttpRequest, HttpResponse};
 use syneroym_core::{
     asset_manifest::AssetEntry,
+    event_bus::EVENT_FEED_PATH,
     http_routes::{DEFAULT_MAX_SSE_SUBSCRIBERS_PER_SERVICE, HttpRoute, match_path, param_name},
     streaming::StreamDirection,
 };
@@ -307,7 +308,7 @@ impl HttpHandler {
         let method = req.method().clone();
         let path = req.uri().path().to_string();
 
-        if method == Method::GET && path == syneroym_core::event_bus::EVENT_FEED_PATH {
+        if method == Method::GET && path == EVENT_FEED_PATH {
             return handler.handle_event_feed(req).await;
         }
 

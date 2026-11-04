@@ -109,7 +109,7 @@ impl ConversationService {
         self.registry.owner_of(svc).is_some() || self.registry.instance_cert(svc).is_some()
     }
 
-    pub async fn drain_once(&self) {
+    pub(crate) async fn drain_once(&self) {
         let services = self.candidate_service_ids();
         for svc in services {
             let still_deployed = self.is_deployed(&svc);
@@ -417,12 +417,26 @@ impl ConversationService {
         peer_address: &str,
     ) {
         let _ = store.delete_outbound_envelope(message_id);
-        let conv_id = store
-            .get_message(message_id)
-            .ok()
-            .flatten()
-            .map(|m| m.conversation_id)
-            .unwrap_or_default();
+        let conv_id = match store.get_message(message_id) {
+            Ok(Some(m)) => Some(m.conversation_id),
+            Ok(None) => {
+                warn!(
+                    service = svc,
+                    message = message_id,
+                    "missing message row when failing delivery item"
+                );
+                None
+            }
+            Err(e) => {
+                warn!(
+                    service = svc,
+                    message = message_id,
+                    error = ?e,
+                    "failed to read message when failing delivery item"
+                );
+                None
+            }
+        };
         if is_group {
             let _ = store.set_recipient_state(
                 message_id,
@@ -436,13 +450,15 @@ impl ConversationService {
                     ConversationDeliveryState::Failed,
                     Some("one or more recipients failed"),
                 );
-                self.notify_state(
-                    svc,
-                    &conv_id,
-                    message_id.to_string(),
-                    ConversationDeliveryState::Failed,
-                )
-                .await;
+                if let Some(ref cid) = conv_id {
+                    self.notify_state(
+                        svc,
+                        cid,
+                        message_id.to_string(),
+                        ConversationDeliveryState::Failed,
+                    )
+                    .await;
+                }
                 metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
                 warn!(
                     service = svc,
@@ -453,13 +469,15 @@ impl ConversationService {
             }
         } else {
             let _ = store.set_state(message_id, ConversationDeliveryState::Failed, Some(reason));
-            self.notify_state(
-                svc,
-                &conv_id,
-                message_id.to_string(),
-                ConversationDeliveryState::Failed,
-            )
-            .await;
+            if let Some(ref cid) = conv_id {
+                self.notify_state(
+                    svc,
+                    cid,
+                    message_id.to_string(),
+                    ConversationDeliveryState::Failed,
+                )
+                .await;
+            }
             metrics::counter!("substrate.conversation.outbox.dead_lettered").increment(1);
             warn!(
                 service = svc,

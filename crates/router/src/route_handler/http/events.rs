@@ -1,6 +1,7 @@
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    result,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -296,7 +297,7 @@ impl HttpHandler {
         &self,
         bus: &EventBus,
         headers: &HeaderMap,
-    ) -> std::result::Result<String, FeedAccessError> {
+    ) -> result::Result<String, FeedAccessError> {
         let is_session = self
             .caller
             .as_ref()

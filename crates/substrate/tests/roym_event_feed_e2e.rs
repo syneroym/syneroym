@@ -5,7 +5,10 @@
     clippy::panic,
     dead_code
 )]
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use futures::{Stream, StreamExt};
 use rustls::crypto::ring;
@@ -101,10 +104,7 @@ async fn open_event_feed(node: &RoymNode, after: Option<&str>) -> EventStream {
     EventStream { stream: Box::new(resp.bytes_stream()), buffer: String::new() }
 }
 
-async fn setup_pair(
-    temp_a: &std::path::Path,
-    temp_b: &std::path::Path,
-) -> (RoymNode, RoymNode, String, String) {
+async fn setup_pair(temp_a: &Path, temp_b: &Path) -> (RoymNode, RoymNode, String, String) {
     let owner_a = Identity::generate().unwrap();
     let owner_b = Identity::generate().unwrap();
 

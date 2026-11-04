@@ -3,6 +3,7 @@
 
 use std::{fmt, time::Duration};
 
+use anyhow::Result;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use rusqlite::Transaction;
 use syneroym_rpc::{
@@ -714,12 +715,12 @@ pub(super) fn classify(error: ProxyError) -> Disposition {
 }
 
 fn ingest_system_content(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &Transaction<'_>,
     payload: &DeliveryPayload,
     author: &str,
     is_system: bool,
     now: i64,
-) -> anyhow::Result<(Option<String>, Option<String>)> {
+) -> Result<(Option<String>, Option<String>)> {
     if is_system {
         tx.execute(
             "UPDATE messages SET system = 1, admission = 'accepted' WHERE id = ?1",

@@ -131,11 +131,13 @@ impl ConversationService {
         let _ = self.event_bus.set(bus);
     }
 
-    pub fn registry(&self) -> &EndpointRegistry {
+    #[cfg(test)]
+    pub(crate) fn registry(&self) -> &EndpointRegistry {
         &self.registry
     }
 
-    pub fn event_bus(&self) -> Option<Arc<EventBus>> {
+    #[cfg(test)]
+    pub(crate) fn event_bus(&self) -> Option<Arc<EventBus>> {
         self.event_bus.get().cloned()
     }
 
@@ -407,12 +409,21 @@ impl ConversationService {
         let last_error =
             if state == ConversationDeliveryState::Failed { Some("delivery failed") } else { None };
         let _ = store.set_state(message_id, state, last_error);
-        let conv_id = store
-            .get_message(message_id)
-            .ok()
-            .flatten()
-            .map(|m| m.conversation_id)
-            .unwrap_or_default();
+        let conv_id = match store.get_message(message_id) {
+            Ok(Some(m)) => m.conversation_id,
+            Ok(None) => {
+                tracing::warn!(message_id, "cannot notify delivery state for missing message");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(
+                    message_id,
+                    error = ?e,
+                    "failed to read message for delivery state notification"
+                );
+                return Ok(());
+            }
+        };
         self.notify_state(service_id, &conv_id, message_id.to_string(), state).await;
         Ok(())
     }

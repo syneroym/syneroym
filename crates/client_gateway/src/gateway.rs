@@ -18,6 +18,7 @@ use httparse::{EMPTY_HEADER, Header, Request, Status};
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
     config::{IdentityMode, SubstrateConfig},
+    event_bus::EVENT_FEED_PATH,
     protocol_utils::{
         AUTH_SERVICE_ALIAS, ROUTING_KEY_HEADER, SESSION_COOKIE_NAME, TargetHost, parse_target_host,
     },
@@ -320,7 +321,7 @@ pub(crate) fn is_forwarded_syneroym_path(path: &str) -> bool {
         return true;
     }
     let path_only = path.split('?').next().unwrap_or(path);
-    path_only == syneroym_core::event_bus::EVENT_FEED_PATH
+    path_only == EVENT_FEED_PATH
 }
 
 fn resolve_target_host(host_header: &str, path: &str) -> Option<TargetHost> {
