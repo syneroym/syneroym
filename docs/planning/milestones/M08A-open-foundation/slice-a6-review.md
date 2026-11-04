@@ -598,7 +598,7 @@ config` (35 passed; 24 of them are `config::tests`, which is the count in
 `status.md` (5 + 3 + 20 + 3 + 1 + 4 = 36). The `status.md` and PR counts
 match.
 
-**Summary:** 0 blocker, 1 major (R1), 4 minor (R2 to R5). 5 open.
+**Summary:** 0 blocker, 1 major (R1), 4 minor (R2 to R5). All 5 fixed (code review round 1 fixes); 0 open. Not yet re-checked by the reviewer.
 
 ### What was checked and found correct
 
@@ -720,7 +720,7 @@ the way out (for example, let the gate pass `GET` of an app's static files,
 or give a no-session request its own key instead of the node's). Record the
 change as a deviation and in the Q10 answer note.
 
-*Status:* Open
+*Status:* Fixed (docs only, owner choice 2026-11-04). The code is unchanged except the warning text. ADR-0028 decision 6, the developer guide, the architecture doc, `config.sample.toml`, the community example config and the Q10 backlog row now say the gate suits API-only nodes and a Hub node runs `login` without it. New backlog row "The connection gate cannot admit a browser page load". Deviation recorded in the change doc.
 
 #### R2 — minor — a comment cites a test number
 
@@ -736,7 +736,7 @@ the comment then points at the wrong test.
 *Fix:* `// The Hub-on-another-domain test opens the Hub on a `*.roym.test`
 host, so the auth service must allow that domain.`
 
-*Status:* Open
+*Status:* Fixed. The comment names the test by what it does, with no number.
 
 #### R3 — minor — the `fixed`-mode e2e test drops the port the harness allocated
 
@@ -760,7 +760,7 @@ for the wrong reason or hangs.
 `ClientGatewayRole { identity_mode: IdentityMode::Fixed, remote_access: …,
 ..gateway }`.
 
-*Status:* Open
+*Status:* Fixed. The test starts from the harness gateway role, so it keeps the allocated port.
 
 #### R4 — minor — two inline paths that the import rules forbid
 
@@ -779,7 +779,7 @@ same lines again.
 *Fix:* `use std::str;` and `str::from_utf8(&bytes)` in `local.rs`;
 `use tempfile::TempDir;` in the e2e file.
 
-*Status:* Open
+*Status:* Fixed. `use std::str;` in `local.rs` and `use tempfile::TempDir;` in the e2e file.
 
 #### R5 — minor — "every refusal names `delegated-key`" is wider than the code
 
@@ -802,4 +802,4 @@ gets a text without it.
 checks) names `delegated-key`" in both docs, or add "; use delegated-key" to
 the three other texts too. The docs change is enough.
 
-*Status:* Open
+*Status:* Fixed. ADR-0028, the architecture doc, the change doc and `task.md` say "every refusal because the request is not local (the five gate checks)".
