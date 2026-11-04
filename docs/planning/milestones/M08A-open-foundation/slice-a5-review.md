@@ -1012,7 +1012,7 @@ in claims, since a time is not a credential, under a named constant). Keep
 the token in `FeedState` only. Add a test that a session caller's
 `AbacAuthContext.claims_json` does not contain the token.
 
-*Status:* Open.
+*Status:* Fixed (5ffabf4d). The token is no longer in `session.claims`. The feed handler reads it from the request headers and keeps it in `FeedState`; the claims hold only the expiry time, under `SESSION_EXPIRES_AT_CLAIM`. Proof: with the token put back in the claims, `a_session_caller_carries_no_token_in_its_claims` (it runs the real `resolve_effective_session_caller` with a minted token) fails; restored, it passes.
 
 #### R12 — minor — `tokenMaxAge` parses a JWT, but the session token is z-base-32 JSON, so `Max-Age` is always 3600
 
@@ -1037,7 +1037,7 @@ has one), or drop the parse and say in the comment and in ADR-0027 that the
 cookie lives 1 hour and is rewritten on each connect. Add a vitest for the
 cookie string that `setEventFeedCookie` writes.
 
-*Status:* Open.
+*Status:* Fixed (324244d9). I took the second option: the parse is gone, `EVENT_FEED_COOKIE_MAX_AGE_SECS` is 3600, and ADR-0027, the `login.ts` comment and the change doc say the cookie lives one hour and is written again before every connect. Proof: with the cookie path changed to `/`, `is_scoped_to_the_feed_path_and_lives_one_hour` fails; restored, it passes.
 
 #### R13 — minor — the expiry checks and the keep-alive check have no test
 
@@ -1062,8 +1062,10 @@ connect; an open stream with `exp` reached ends on the next change; and with
 session ends without any event. Write them after the R11 change, since R11
 changes where the token and the expiry come from.
 
-*Status:* Open.
+*Status:* Fixed (5ffabf4d). Four new tests in `events/tests/session.rs`: 401 at connect for a session whose expiry is reached; an open feed ends on the first change after expiry; a revoked session ends a quiet feed at the keep-alive (paused clock); the old revocation test now sends the token in `Authorization`. Proofs, each broken and restored: expiry check disabled fails the connect and the open-feed tests; `>=` changed to `>` fails the connect test; the check removed from the keep-alive arm fails the keep-alive test.
 
 **Counts.** Fixes check: 9 confirmed (R1, R2, R4 to R10), 1 rejection
 accepted (R3), 3 new (R11 major, R12 and R13 minor). Code review round 1
 now has 13 items: 0 blocker, 4 major, 9 minor. **3 open** (R11, R12, R13).
+
+**Counts after the fix of the fixes check.** Code review round 1 has 13 items: 12 Fixed, 1 Rejected (R3). 0 open.
