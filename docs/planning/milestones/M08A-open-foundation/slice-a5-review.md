@@ -1166,8 +1166,10 @@ SessionTokenClaims)>`. Then:
   through when the cookie does not verify" rule to it and to the change doc
   deviation line.
 
-*Status:* Open.
+*Status:* Fixed (595d4ab2). `select_session_token` in `auth.rs` tries the cookie first, then `Bearer`, and returns the first token that is not revoked and verifies. `resolve_effective_session_caller` and the feed both use it, so the feed watches the token that authenticated the request. This is the same failure as the red CI job (`test_22_cookie_takes_priority_over_bearer`); the first R1 fix commit changed only the unit test and I did not run `gateway_session_e2e` then. Now `cargo nextest run -p syneroym-substrate --test gateway_session_e2e` passes (20 tests). Proofs, each broken and restored: trying only the first candidate fails `a_revoked_cookie_falls_through_to_a_valid_bearer`; bearer-first fails `a_valid_cookie_wins_over_an_apps_own_bearer` and `the_feed_watches_the_token_that_authenticated_it`, and also fails `test_22` with the same `self-asserted` / `delegated` error as CI; a feed that watches another token fails `the_feed_watches_the_token_that_authenticated_it`. The developer guide line and the change doc deviation line state the fall-through rule.
 
 **Counts.** Second fixes check: 3 confirmed (R11, R12, R13), 1 reopened
 (R1), 0 new. Code review round 1 has 13 items: 0 blocker, 4 major, 9 minor.
 **1 open** (R1). CI is red on the fixes (Test 4/6).
+
+**Counts after the fix of the second fixes check.** Code review round 1 has 13 items: 12 Fixed, 1 Rejected (R3). 0 open. CI has not yet run on 595d4ab2.
