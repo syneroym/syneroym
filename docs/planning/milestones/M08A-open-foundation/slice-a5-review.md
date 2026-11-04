@@ -486,3 +486,425 @@ matches the code that I read:
   example 50 ms) before it reports "not free". Option (a) keeps the check
   exact. Correct the "never fails by chance" sentence to match.
 - *Status:* Fixed (cab51d85). Option (a): probe tests await each service call before the next and never spawn or join calls; the plan names the `spawn_blocking` sites, drops the "never fails by chance" claim, and says not to retry `try_lock`.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-04
+
+Checked `git diff origin/main...HEAD` at `4cfd96a0` on
+`feat/m08a-a5-event-feed` (main checkout, not a worktree; `git pull` said
+"Already up to date"). PR [#341](https://github.com/syneroym/syneroym/pull/341)
+is still a draft. The code was written by Gemini 3.8 Flash. I read
+`AGENTS.md`, session-strategy.md ("The review file"), the plan, the plan
+review rounds above, the code review rounds of A2a, A2b, A2c, A3 and A4, and
+the change doc. No code was changed. Line numbers below are at `4cfd96a0`.
+
+CI: `gh pr checks 341` on `4cfd96a0` is **red**. Test 1/6 failed before it ran
+any test, because the runner ran out of disk (R3). Every other job passed. I
+did not run the full suite. I ran `npx vitest run` in `crates/roym_web/ui`
+(155 passed) and `grep`, `wc` and `git` checks. Each finding below follows
+from the code as written.
+
+**Summary:** 0 blocker, 3 major (R1, R2, R3), 7 minor (R4 to R10). 10 open.
+
+### What was checked and found correct
+
+- **The bus (D-A5-1 to D-A5-5).** `EventBus` is in `syneroym_core::event_bus`
+  with a `DashMap` of `Arc<Window>`, a `Mutex<VecDeque>`, `next_seq` from 1, a
+  `watch` sender and a 16-permit semaphore per window. `record` tags the event
+  with the app instance and service name from `app_context_of`, never from the
+  event. `head` and `oldest` use `next_seq`, so a cursor at the head stays
+  valid after every event ages out. The reload rules match D-A5-3 (other run,
+  ahead of head, `seq + 1 < oldest`). `limit = 0` returns the given cursor.
+  The field caps are 64 / 128 / 128, as the plan says (but see R4 for the
+  docs). The 18 tests have the plan's names, and the window, age-out and
+  tagging tests fail for the mutations the plan names (I checked
+  `>=` against the window test by hand: the read at seq 5 becomes a reload).
+- **The host capability (D-A5-6, D-A5-7, D-A5-10).** `events.wit` is the
+  plan's text. `HostState::record_event` checks `read_only`, then the app
+  instance, then the bus, and passes `component_id` to the bus. `read_events`
+  uses `app_instance_id`. One copy of the logic serves the WIT impl and
+  `NativeAppHost`. The engine has a `OnceLock` and `set_event_bus`; `init`
+  keeps its signature. The linker adds `events` after `invocation`. All six
+  Roym worlds and the dual-build fixture import the package through a
+  symlink. The `roym_core` test host returns a fixed cursor.
+- **Wiring (Step 4).** One bus per node in `build_route_handler_deps`, set on
+  the engine, the conversation service and `RouteHandlerDeps`. Seven
+  `.with_event_bus(` calls beside seven `.with_call_all(`, and the renamed
+  count test checks both. Every other `RouteHandlerDeps` literal got
+  `event_bus: None`. The parity harness moved the two test proxies to
+  `test_proxies.rs` and the oversized entry went from 1 429 to 1 290.
+- **The commit rule (D-A5-11).** Every `announce` call is outside the
+  `transaction` closure: `ingest_verified` hands out `deleted_target` and
+  `refused_target`; `validate_and_insert` and `apply_pending_entries` hand out
+  the deleted id; `send_group` and `enqueue_direct` announce after the
+  transaction returns. `apply_admission` returns `true` only for the call that
+  gives the row its number, so a racing re-ask records nothing.
+  `delete_message_conn` returns `Some(true)` only for an outgoing or an
+  accepted row. `notify_state` announces for all eight callers, and `retry`
+  announces after `restart_pending`.
+- **Transaction writers.** `put_card` and `put_booking` replace the eleven
+  card writes and the five booking writes. I checked that the keys did not
+  change: `CardRow.message_id` is the old `msg_id` at every site, and
+  `BookingRow.agreement` is the old key (`agreement.quote_record_id`, `q`)
+  at every site. Import keeps `put_row`.
+- **Access control (Q5, D-A5-8).** The router answers the path before the
+  blob check, only for `GET` and the exact path. The check order is the
+  plan's: no bus 404, no session marker 401, `owner_of != caller` 403, no app
+  instance 404, no `Accept` 406, no permit 503 with `Retry-After: 1`. The
+  session marker is set only for gateway-origin traffic with a verified,
+  unrevoked token. A peer over Iroh gets 401. The window is chosen by the app
+  instance of the hostname, not by the cursor, so a foreign cursor is a
+  reload or a gap. `changed()` is subscribed before `head()` is read, so no
+  wake-up is lost between them. The read loop continues while a read returns
+  500 events.
+- **The gateway (D-A5-9).** `is_forwarded_syneroym_path` forwards only
+  `/_syneroym/session*` and the exact events path (query ignored). Its test
+  covers the five plan cases.
+- **The Hub.** One `EventSource` per visible tab; closed when hidden;
+  reopened with `?after=<last cursor>`; reopen after `CLOSED` with 1 s
+  doubling to 30 s plus up to 20 % jitter; backoff reset on a frame; 150 ms
+  debounce per subject; `ready` and `reload` refresh every listener. Messages
+  and Groups remove their listener when their container is gone. 155 vitest
+  cases pass (matches `status.md`).
+- **Demo and Hub e2e.** The chat story uses two browser sessions, has no
+  reopen loop, and waits with `DELIVERY_WAIT_MS`. Case 41 exists. The
+  `demo:` list adds the story and keeps the earlier `none:` line.
+- **Sizes and ratchets.** No Rust file passes 800 lines (largest touched:
+  `signing.rs` 778). `oversized-test-files.txt` lowers three entries.
+  `MAX_TOO_MANY_LINES_SUPPRESSIONS` goes from 39 to 38. Lints passed in CI.
+- **Backlog.** The seven new rows of plan section 8 are there, and the
+  restart row is updated (but see R4 for one wrong number).
+
+### Findings
+
+#### R1 — major — the Hub now writes the session token into a cookie on its own host, which every request carries
+
+*Where:* `crates/roym_web/ui/src/session/login.ts:43-44` (`setToken`),
+`:53-54` (`clearToken`), `:284-285` (`whoami`);
+`crates/roym_web/ui/src/events.ts:61-67` (`openFeed`);
+`crates/router/src/route_handler/http/auth.rs:53-63` (the cookie is read
+before `Authorization`); `docs/planning/changes/roym-open-foundation/change.md:395`
+(the deviation line); `docs/decisions/0027-host-event-feed.md` (says nothing).
+
+*Problem:* `EventSource` cannot send an `Authorization` header. The plan
+assumed a session cookie already exists on the Hub's host; it does not (the
+auth service sets its `HttpOnly` cookie on `auth.<domain>` only, and the
+header comment of `login.ts:1-15` says the Hub sends only `Bearer`). To make
+the feed work, the implementer writes `syneroym_session=<token>; path=/;
+SameSite=Lax` from page JS. This changes the session model of ADR-0024 for
+the whole Hub host, not only for the feed:
+
+1. **Every** request from the browser to the Hub host now carries the
+   session as an ambient cookie, including `POST /rpc`. The router accepts a
+   cookie for any route. The `web` service does not check `Content-Type` or
+   `Origin`. So a page on the same *site* (`SameSite=Lax` lets same-site
+   requests carry the cookie) can send a simple cross-origin
+   `POST /rpc` with `Content-Type: text/plain`, and it runs as the owner.
+   Before this branch that was impossible, because the Hub host had no
+   cookie. With the default `*.localhost` names each host is its own site,
+   so the default setup is not open. With a real domain
+   (`hub.node.example.com` and any other page under `example.com`), which A6
+   brings, it is.
+2. The cookie is shared by all tabs of the browser, but each tab keeps its
+   own token in `sessionStorage`. The cookie holds the token of the tab that
+   loaded last. `extract_session_token_from_hyper_headers` reads the cookie
+   first and never falls back to `Bearer`: an expired or revoked token in the
+   cookie makes the request anonymous even when its `Bearer` token is valid.
+3. A logout in one tab clears the cookie for every tab. The other tabs keep
+   working over `Bearer`, but their feed reconnect gets `401` and stays in
+   the backoff loop until the page reloads. Live updates stop with no sign.
+4. The change is recorded only as one deviation line. It is not in
+   ADR-0027, not an owner decision, and the `login.ts` header comment is now
+   false.
+
+*Failure case:* (1) The node uses `hub.node.example.com`. A page on
+`blog.example.com` posts `{"method":"conversation.send",…}` as `text/plain`
+to `https://hub.node.example.com/rpc`. The browser sends the Hub cookie. The
+message is sent as the owner. (2) Tab A logged in first, tab B later, then
+tab A reloads (cookie = A's token). A's token expires. Every RPC from tab B
+now fails as anonymous, although B's own `Bearer` token is valid.
+
+*Fix:* Scope the cookie to the feed only: write it with
+`Path=/_syneroym/events` (and a `Max-Age` no longer than the token's life),
+so no other request carries it. In the router, read `Authorization` before
+the cookie, or accept the cookie only for the events path. Say in ADR-0027
+how the feed authenticates a browser, and fix the `login.ts` header comment.
+Because this touches ADR-0024's rule, ask the owner to confirm the choice and
+record the answer in the change doc. Add a router test: a request with a
+revoked cookie and a valid `Bearer` is accepted (or the cookie is ignored off
+the events path).
+
+*Status:* Open
+
+#### R2 — major — an open feed keeps streaming after its session is revoked or expired
+
+*Where:* `crates/router/src/route_handler/http/events.rs:166-204`
+(`FeedState`, `make_feed_stream`) and `:223-235` (the only session check).
+
+*Problem:* The session and the owner are checked once, when the feed opens.
+After that the stream lives as long as the connection. The keep-alive frame
+every 25 s keeps the connection busy, so it never times out. ADR-0024 says a
+revoked token must not authenticate, and `resolve_effective_session_caller`
+checks revocation for each request. A feed is one request that can last for
+days. Neither the plan nor ADR-0027 says what happens to an open feed.
+
+*Failure case:* A session token is stolen. The owner revokes it (logout or
+`roymctl`). The thief's open `curl -N …/_syneroym/events` keeps receiving
+every event of the app (conversation ids, message ids, card ids, timing) until
+the node restarts. The same happens after the token's `exp` passes.
+
+*Fix:* Keep the token string and its `exp` in `FeedState`. On every wake-up
+(a change and the keep-alive tick), end the stream (`return None`) when the
+token is revoked (`session_revocation.is_revoked`) or `exp` has passed. The
+client then reconnects and gets `401`. Add a router test with a revocation
+checker that turns revoked after the first frame: the next tick ends the
+body. Say in ADR-0027 that a feed ends when its session ends.
+
+*Status:* Open
+
+#### R3 — major — CI has not passed on this PR
+
+*Where:* CI run [41732307695](https://github.com/syneroym/syneroym/actions/runs/41732307695)
+on `4cfd96a0`, job "Test 1/6"; `status.md` row A5.
+
+*Problem:* Test 1/6 failed at the build step. The runner warned "Free space
+left: 17 MB", and `rust-lld` then crashed with a bus error while it linked
+`service_visibility_e2e` and `messaging_client_e2e`. No test of that shard ran.
+The only other run on the branch (41731943367) was cancelled. So no run proves
+the full suite on this branch. `main` passed the same workflow 12 hours
+earlier, so the shard was close to the disk limit already; this branch adds a
+test binary (`roym_event_feed_e2e`) and more code, which may be enough to pass
+the limit. The plan's step 10 (`mise run verify`, and the 20-run result in
+`status.md`) is not recorded either.
+
+*Failure case:* A test in shard 1 that this branch breaks would not be seen
+before merge.
+
+*Fix:* Re-run the job. If it fails on disk again, find what grew (for example
+compare `du -sh target` of shard 1 on `main` and on this branch) and free
+space in the CI job, or add the new e2e file as a module of an existing test
+binary. Record a green run and the 20-run result in `status.md`.
+
+*Status:* Open
+
+#### R4 — minor — the change doc's D-A5 decisions do not match the plan, and four docs give the wrong field cap
+
+*Where:* `docs/planning/changes/roym-open-foundation/change.md:338-350`
+(D-A5-1 to D-A5-13), `:174` (design text); `docs/decisions/0027-host-event-feed.md:26-27`;
+`docs/planning/deferred-backlog.md:369`.
+
+*Problem:* A decision must have the same number, meaning and values in the
+plan and in the change doc.
+
+- D-A5-1 says the map is a `HashMap<String, Window>` "behind an
+  `Arc<RwLock<...>>`". The plan and the code use a `DashMap` of
+  `Arc<Window>` with a `Mutex` per window. The sentence is false.
+- D-A5-2 in the plan is the bus API. The change doc's D-A5-2 is "Writer
+  identity", a different decision under the same number.
+- D-A5-5 says `subject` and `item` are up to **256** bytes. The plan and the
+  code (`event_bus.rs:255`, `:260`) say **128**. The change doc's design
+  text (`:174`), ADR-0027 (`:26-27`) and the backlog row "Event-feed limits
+  are constants" say 256 too. ADR-0027 becomes a permanent record, so the
+  wrong number must be fixed before merge.
+- D-A5-5 leaves out the `kind` character rule. D-A5-11 leaves out which
+  deletes are visible and the refusal writer. D-A5-12 leaves out the
+  `?after=` reopen and what `ready` means. D-A5-3 leaves out the reload rules.
+
+*Failure case:* An A7 client author reads ADR-0027, sends a 200-byte subject
+from a service, and gets `invalid-argument("subject")`.
+
+*Fix:* Copy D-A5-1 to D-A5-13 from the plan with the same numbers and words
+(short is fine, but the same meaning and values). Change 256 to 128 in the
+change doc design text, ADR-0027 and the backlog row.
+
+*Status:* Open
+
+#### R5 — minor — the evidence names tests that do not exist, and the counts are wrong
+
+*Where:* `change.md:78-80` (OF-8, OF-9, OF-10 Test column);
+`status.md` row A5; `task.md:84` (A5 result).
+
+*Problem:*
+
+- OF-8 cites `roym_event_feed_e2e.rs: a_sent_message_records_a_message_event_within_one_second`.
+  OF-9 cites `a_reconnect_with_the_last_cursor_gets_the_missed_events` and
+  `a_cursor_from_before_a_restart_gets_reload`. The file has one test,
+  `roym_event_feed_reaches_clients_survives_reconnect_and_reloads_on_restart`,
+  which calls five `check_*` helpers. None of the cited names exist.
+- OF-10 cites `capabilities_events.rs` tests `events_read_and_record` and
+  `events_scoping_by_app_instance`. They do not exist; the tests are in
+  `host_capabilities/tests/tests_events.rs` (for example
+  `read_reads_only_the_callers_app_instance`). It also cites
+  `sending_a_message_records_a_message_event_in_both_builds`; the real name is
+  `sending_a_message_records_the_same_event_in_both_builds`.
+- `status.md` and `task.md` say 10 host capability tests (there are 5), 8
+  parity events tests (there are 5) and 5 substrate e2e tests (there is 1).
+  They do not give the 13 conversation tests, which plan section 9 asks for.
+  The 20-run result (exit criterion 11) is missing.
+
+*Failure case:* A reader runs `cargo nextest run … a_sent_message_records_a_message_event_within_one_second`
+to check OF-8 and runs zero tests.
+
+*Fix:* Use the real test names (or split the e2e test into the five tests of
+plan 7.6, which also makes a failure name its case). Correct the counts in
+`status.md` and `task.md`, add the conversation count and the 20-run result.
+
+*Status:* Open
+
+#### R6 — minor — some tests cannot fail or do not cover what the plan names
+
+*Where:* `crates/router/src/route_handler/http/events/tests.rs:432-436`;
+`crates/conversation/src/host_impl/tests/events.rs:475-497`;
+`crates/roym_web/tests/dual_build_parity/events.rs:17-25`, `:95-96`,
+`:145-149`, `:220-221`; `crates/substrate/tests/e2e/tests/roym-hub.spec.ts:1247-1293`.
+
+*Problem:*
+
+- `a_closed_feed_lowers_the_open_feeds_gauge` creates and drops a
+  `FeedGuard` and asserts nothing. It cannot fail (the A3 R13 kind, which
+  plan 7.10 names). Read the gauge with a local `metrics` recorder
+  (`metrics_util::debugging::DebuggingRecorder`), or test that the permit
+  and gauge come back after the body is dropped.
+- `a_peer_refusal_records_a_delivery_event` covers only the refusal notice.
+  Plan 7.3 asks for both writers; the refused acknowledgement
+  (`transport.rs:286-303`, `record_refusal`) has no test. The refusal and the
+  two send paths also run without the `announce_probe`, so moving their
+  `announce` into the closure would not fail any test, although plan 7.3 says
+  "move any `announce` call into the `transaction` closure" must fail.
+- Plan 7.4 says each parity test compares the full list of
+  `(kind, service, subject, item)`. `accepting_an_agreement_…` compares only
+  the kinds (`kinds_w == kinds_n` and `contains`). `a_request_card_…` checks
+  `item.is_some()`, not that the item is the card's message id.
+- The parity helper `read_events_after` turns a `Reload` into an empty list,
+  so the two "records nothing" tests would pass on a reload. Make it panic
+  on `Reload`. `a_transaction_import_records_no_event` only checks that
+  import did not fail with `-32602`; check that it succeeded.
+- Hub case 41 never checks that the `503` was served (`failedOnce`), so it
+  does not prove the reopen path it was written for.
+
+*Failure case:* A change that drops the `FeedGuard` decrement, or records the
+wrong card id, or moves the refusal `announce` into the transaction, passes
+every test.
+
+*Fix:* As in each point above.
+
+*Status:* Open
+
+#### R7 — minor — the Hub misses list refreshes after a burst, and draws a thread from stale rows
+
+*Where:* `crates/roym_web/ui/src/events.ts:115-123`;
+`crates/roym_web/ui/src/screens/messages.ts:201-247` (`latestRows`,
+`reloadList`); `change.md:397`.
+
+*Problem:*
+
+1. The debounce keeps only the **last** event of a burst for one subject.
+   The Messages and Groups listeners refresh the list only when
+   `kind.startsWith("conversation.")`. When a burst ends with a
+   `transaction.*` event, the list is not refreshed.
+2. `reloadList` no longer uses the value `fillList` returns. It reads
+   `latestRows`, which is not cleared when the load fails or when a newer
+   refill replaced this one. The `refiller` guard ("resolves to the rows when
+   this run drew the list, else `undefined`") is now bypassed.
+
+*Failure case:* (1) Alice sends a request card. `transaction` sends the
+carrier message (`conversation.message`) and files the card
+(`transaction.card`) within a few ms. One listener call with
+`transaction.card` arrives. The thread refreshes, but the list still shows the
+old "N messages" count. (2) `conversation.list` fails once (node busy). The
+thread pane draws a conversation from the old rows, maybe one that was
+deleted.
+
+*Fix:* (1) Per subject, keep the set of kinds in the burst (or a flag "a
+`conversation.*` kind was seen") and pass that to listeners. (2) Keep the
+refiller result: when it is `undefined` because a newer run replaced this
+one, let the newer run draw the thread; when the load failed, do not draw
+it. Record the final rule in the Deviations line.
+
+*Status:* Open
+
+#### R8 — minor — why-comments were lost in a refactor of `build_route_handler_deps`
+
+*Where:* `crates/substrate/src/runtime/router.rs:340-397`
+(`init_base_capabilities`, `wire_conversation_and_engine`, and the caller).
+
+*Problem:* The plan's step 4 adds three lines here. The branch also splits the
+function into helpers (not in the plan) and drops four why-comments that
+were in `main`: the node identity shared with `SynSvcNativeService` to sign
+relationship-proof records; "ADR-0021 §2: replay persisted bindings before
+anything can resolve one"; "Cloning the `Arc`, not `node_identity` itself …
+the supervisor role … ADR-0021 §8"; and "Both directions, `Weak` on both
+sides". This is the A2b R8 / A4 R3 kind, which plan 7.10 names.
+`init_base_capabilities` also returns a 6-tuple, which is hard to read.
+
+*Failure case:* A later change moves `replay_persisted_bindings` after a
+resolver use, because nothing says the order matters.
+
+*Fix:* Put the four comments back beside the code they explain. Return a
+small named struct instead of the 6-tuple. Record the split in the
+Deviations if it stays.
+
+*Status:* Open
+
+#### R9 — minor — three living-doc and interface statements are false or missing
+
+*Where:* `docs/developer-guide.md:584`; `AGENTS.md:258`;
+`crates/wit_interfaces/wit/events/events.wit:806-809` (doc of `read`).
+
+*Problem:*
+
+- The developer guide now says a proxy call to another service's `events`
+  is refused with `permission-denied`. `events` is not in
+  `NATIVE_CAPABILITY_INTERFACES` (`crates/core/src/local_registry.rs:44-53`),
+  and no endpoint registers it, so that refusal does not exist.
+- `AGENTS.md` lists the WIT interfaces (`…, conversation, invocation`) and
+  does not list `events`. Earlier slices added their package there.
+- The WIT doc says that with `limit` 0 `read` "returns no events and the
+  current cursor". The code returns the **given** cursor
+  (`event_bus.rs:216-218`), as D-A5-6's prose says. A guest that reads
+  "current" as "head" skips events.
+
+*Failure case:* A guest author calls `read(Some(c), 0)` to learn the head,
+gets `c` back, then reads from there and sees old events again, or reads the
+guide and expects a refusal that never comes.
+
+*Fix:* Drop `events` from the guide's sentence (or add it to
+`NATIVE_CAPABILITY_INTERFACES` if a refusal is wanted, with a test). Add
+`events` to the `AGENTS.md` list. Change the WIT text to "returns no events
+and the cursor it was given (the head when no cursor is given)".
+
+*Status:* Open
+
+#### R10 — minor — widened APIs, a dead parameter, a lost event, and import-rule breaks
+
+*Where:* see each point.
+
+*Problem:*
+
+- `crates/conversation/src/outbox.rs:112`: `drain_once` became `pub`. Its only
+  other caller is the crate's own test (`outbox/tests/deposit.rs:233`),
+  which could already reach it. `lib.rs:134` `registry()` and `:138`
+  `event_bus()` are new `pub` getters used only by in-crate tests.
+- `crates/roym_transaction/src/app/sync.rs:375`: `refuse_card` keeps a
+  parameter `_msg_id` that is no longer used. Remove it from the signature
+  and the callers.
+- `crates/conversation/src/lib.rs:410-415` and `outbox.rs:420-425`: when
+  `get_message` fails, the conversation id falls back to `""`, the bus
+  refuses the empty subject, and the event is lost with no log line. Pass the
+  id the caller already has, or log the miss.
+- `crates/router/src/route_handler/http/events.rs:51`: the second
+  `get("last-event-id")` is dead; `HeaderMap` lookup ignores case. `:194`:
+  the 25 s keep-alive is a bare literal; D-A5-13 says the limits are named
+  constants.
+- Import rule (types by `use`, no inline paths with several `::`):
+  `http.rs:310` and `gateway.rs:323` (`syneroym_core::event_bus::EVENT_FEED_PATH`);
+  `transport.rs:717-721` (`rusqlite::Transaction<'_>`, `anyhow::Result`);
+  `dual_build_parity/events.rs:9`, `:19` (`std::time::SystemTime`,
+  `std::time::UNIX_EPOCH`) and `:77`, `:130-131`, `:165-166`, `:208` (`syneroym_roym_core::transaction::…`);
+  `roym_event_feed_e2e.rs:105-106` (`std::path::Path`).
+
+*Failure case:* Small, but each one is a rule the next reviewer must check
+again.
+
+*Fix:* As in each point.
+
+*Status:* Open
