@@ -633,7 +633,7 @@ record the answer in the change doc. Add a router test: a request with a
 revoked cookie and a valid `Bearer` is accepted (or the cookie is ignored off
 the events path).
 
-*Status:* Fixed (efd0f620). The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, so the owner still has to confirm it (the review asks for that); the deviation line and ADR-0027 record it.
+*Status:* Fixed (efd0f620). The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, the owner confirmed the choice on 2026-11-04, and the deviation line and ADR-0027 record it.
 
 #### R2 — major — an open feed keeps streaming after its session is revoked or expired
 
