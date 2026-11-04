@@ -28,13 +28,13 @@ owner may want a second round by a different tool.
 "Remote clients" design section and the task line are all in it. The plan names
 the right change doc for every criterion and decision.
 
-**Summary:** 0 blocker, 2 major, 12 minor, 14 items. All Open.
+**Summary:** 0 blocker, 2 major, 12 minor, 14 items. All Fixed (68e75166); see each item.
 
 **Owner answers (2026-11-04).** The owner agreed with the reviewer's view on
 every question below: (a) for Q1 to Q9, each with the notes given there, and
 (a) for the new Q10 from P1 (a startup warning). The answers are recorded under
 each question in the plan, and Q10 is added to the plan's section 2. The
-findings stay Open: the plan fix folds them into sections 4 to 10.
+plan fix (68e75166) folds the findings into sections 1 to 11.
 
 Limits of this review: I read the code and did not run it. I did not run a
 browser. Statements about CSP `<meta>` tags added by script, and about which
@@ -170,7 +170,7 @@ documented defaults, not from a run here.
   node. If (a): one test in `gateway/tests.rs` that `init` succeeds in `open`
   mode with remote access. A warning text cannot be checked without a log
   capture, so test only that startup does not fail.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). Q10 added; W/B row B5; D-A6-14; ADR content in D-A6-13; 3.3 and F12; 7.2 `init_accepts_remote_access_in_open_mode`; section 9 (architecture :696, developer guide); new backlog row.
 
 #### P2 (major) — The Docker example config is not specified enough to work, and the test cannot see it
 
@@ -204,7 +204,7 @@ documented defaults, not from a run here.
   path is under `/var/lib/syneroym`, `/etc/syneroym` or `/etc/letsencrypt`,
   and that `substrate.registry_url` is set. Change the `Dockerfile` to
   `EXPOSE 7964 7965/udp 7961 7960`, and extend the text check of 7.7 to it.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). D-A6-11 lists every key with its reason (the five `app_*_dir` keys, `registry_url`, the relay URL, the roles, the commented TLS block); `Dockerfile` `EXPOSE 7964 7965/udp 7961 7960`; 3.6 facts; 7.7 checks values and paths after `resolve_paths()` and both files for UDP; exit criterion 8.
 
 #### P3 (minor) — The OF-12 deviation is not in the plan's Deviations list
 
@@ -223,7 +223,7 @@ documented defaults, not from a run here.
   with no answer (it cannot occur with the loopback bind). The auth service
   checks that the caller is this node's own gateway. Every refusal the auth
   service sends names `delegated-key`."
-- *Status:* Open.
+- *Status:* Fixed (68e75166). F13 in 3.8 and the Deviations item in section 9, with the reviewer's wording.
 
 #### P4 (minor) — `local` login through the gateway in `fixed` mode becomes a refusal; the audit does not say so
 
@@ -243,7 +243,7 @@ documented defaults, not from a run here.
   DID is not the node's, or give check 5 a text that does not claim the client
   is on another machine, for example "local login works only through this
   node's own gateway in `open` or `login` mode; use delegated-key".
-- *Status:* Open.
+- *Status:* Fixed (68e75166). W10; check 5 text changed to "works only through this node's own gateway in open or login mode"; 7.3 covers a non-node caller; SRS and architecture text in section 9.
 
 #### P5 (minor) — Two facts in section 3 are wrong or incomplete
 
@@ -270,7 +270,7 @@ documented defaults, not from a run here.
 - **Fix:** Correct 3.2 and W4 (`--method local`). Add the proxy path to 3.3
   with the reason it cannot reach `auth`. Put the same one-sentence reason in
   ADR-0028.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). 3.2 names `--method local` and the `delegated-key` default; W4 corrected; 3.3 adds the outbound proxy path and why it cannot reach `auth`; ADR content in D-A6-13.
 
 #### P6 (minor) — The proxy-header check catches fewer proxies than the plan says
 
@@ -289,7 +289,7 @@ documented defaults, not from a run here.
   developer guide, say: "Any program that forwards connections to the gateway
   (a TLS proxy, an SSH tunnel, a port forwarder) needs remote access on, even
   with `bind_address = "127.0.0.1"`." Keep the check.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). Q2 check 3 lists which proxies add the header and which do not (`unverified`); the docs never rely on it; developer guide and ADR text in section 9 and D-A6-13.
 
 #### P7 (minor) — Some planned tests cannot be written as described
 
@@ -320,7 +320,7 @@ documented defaults, not from a run here.
   builder with a temp identities dir, and a `login_request(headers)` helper;
   use it from both files. (4) put the CORS cases in their own file or in the
   in-crate tests.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). 7.4 names `passthrough_with_conn` with `AUTH_SERVICE_ALIAS`; CORS pattern cases move to in-crate `service/cors/tests.rs`; D-A6-15 adds `crates/auth/tests/common/mod.rs` (mock, service builder, request builder).
 
 #### P8 (minor) — No test shows that `run` binds the configured address
 
@@ -337,7 +337,7 @@ documented defaults, not from a run here.
   OS picks the port) and assert `listener.local_addr()?.ip()` is `127.0.0.1`
   with no table and `0.0.0.0` with `bind_address = "0.0.0.0"`. `run` calls
   `bind_listener` and nothing else binds.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). D-A6-2 adds `bind_listener`, the only place that binds; 7.2 test binds with `http_port = 0` and checks `local_addr()`; exit criterion 2.
 
 #### P9 (minor) — The CSP plan has no fallback, and one check proves nothing
 
@@ -355,7 +355,7 @@ documented defaults, not from a run here.
   owner's approval. In 7.6 step 2, say the event is the assertion, and the
   rejection alone is not. Write case 42 first in Step 5, before the other
   items, so a failure is known early.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). Q3 names the fallback ((b), deviation; (c) only with owner approval); Step 5 writes case 42 first; 7.6 step 2 asserts the `securitypolicyviolation` event, not the rejection.
 
 #### P10 (minor) — The end-user story and the developer checks miss setup steps
 
@@ -380,7 +380,7 @@ documented defaults, not from a run here.
   Developer bullet: "on a node with `person_identities_dir` set", and add
   `-w ' %{http_code}\n'`. Section 9: the developer guide's remote-access text
   names `allowed_origins`, `secure_cookies` and the wildcard certificate.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). End-user bullet 2 adds the allowed web address; developer bullet names `person_identities_dir` and uses `-w`; section 9 developer guide text names `allowed_origins`, `secure_cookies` and the wildcard certificate.
 
 #### P11 (minor) — The new CORS backlog row describes the risk too narrowly
 
@@ -405,7 +405,7 @@ documented defaults, not from a run here.
   limit it to exact origins." Link
   `crates/auth/src/service/cors.rs` and `gateway.rs:645`. Copy the same
   sentence into ADR-0028's consequences.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). Q4 reason and the section 8 row rewritten with the reviewer's sentence and the `gateway.rs:645` link; same sentence in ADR content (D-A6-13).
 
 #### P12 (minor) — Two living-doc places are missing from section 9
 
@@ -420,7 +420,7 @@ documented defaults, not from a run here.
   and gets a startup error the SRS does not mention.
 - **Fix:** Add SRS:112-115 and architecture :696 to 3.7 and section 9, with
   the sentence each must say.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). 3.7 adds SRS :112-115 and architecture :696; section 9 says what each must say.
 
 #### P13 (minor) — `login_local` stays public and ungated
 
@@ -436,7 +436,7 @@ documented defaults, not from a run here.
   `local_login_and_refusals` that call it directly into an in-crate test
   (`service/local/tests.rs`), or rewrite them through `handle_request` with a
   node caller. Then the gated path is the only public one.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). D-A6-7: `login_local` becomes `pub(crate)`; direct cases move to `service/local/tests.rs`; D-A6-8, Step 3, exit criterion 9.
 
 #### P14 (minor) — The new config table: the address form and unknown fields
 
@@ -460,4 +460,4 @@ documented defaults, not from a run here.
   `#[serde(deny_unknown_fields)]` to `RemoteAccess`. Add a config test
   `a_bind_address_with_a_port_fails_to_parse`. In the developer guide, say
   that a misspelled table name leaves remote access off.
-- *Status:* Open.
+- *Status:* Fixed (68e75166). D-A6-1: `deny_unknown_fields` on `RemoteAccess`, "an IP address only; the port is `http_port`" in the doc comment, sample config and guide; misspelled table name noted; W11; 7.1 adds `a_bind_address_with_a_port_fails_to_parse` and `an_unknown_key_in_remote_access_fails_to_parse`.
