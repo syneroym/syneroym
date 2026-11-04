@@ -552,3 +552,22 @@ plan from `e75abfa`. Same model as the plan author, as in round 1.
   not a copy. Name it in 7.3.
 - *Status:* Fixed (ec847475), with a different fix: the in-crate tests use the production resolver `RegistryClient::new(false, None)` (the type the runtime passes) instead of a new `NoAnchors` struct. It is cheap to build, never called by `login_local`, and adds no test type at all. Named in D-A6-7 and 7.3.
 
+
+## Plan review round 1 — reopened items confirmed — Claude Opus 5.5 (Claude Code, cloud session), 2026-11-04
+
+Checked the plan at `a456a5e` (fix commit `ec847475`) against the code at the
+same commit. Same model as the plan author, as in round 1.
+
+- **P9 confirmed Fixed.** Step 5 now builds the CSP change (item 2) before it
+  writes and runs case 42 (item 3), and the stop rule for Q3 (b) is on item 3.
+  The order is buildable and still finds the risk early.
+- **P13 confirmed Fixed** (the different fix is fine).
+  `RegistryClient::new(false, None)` exists
+  ([client.rs:93-100](../../../../crates/core/src/dht_registry/client.rs#L93)).
+  With the DHT off it builds only a `reqwest` client, so it does no network or
+  file work. It implements `MasterAnchorResolver` (:599).
+  `syneroym-auth` already depends on `syneroym-core`
+  (`crates/auth/Cargo.toml:19`). `login_local` never resolves an anchor, so the
+  in-crate tests need no test resolver and copy nothing.
+
+**Result:** all 14 items Fixed and confirmed. **0 open.**
