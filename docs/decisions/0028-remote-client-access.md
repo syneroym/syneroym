@@ -48,8 +48,9 @@ machine.
      port-forward` add no header. No document relies on check 3.
    - The existing refusal of a request with an `Origin` header stays.
 3. **`local` is off when remote access is on.** `GET .../methods` lists only
-   `delegated-key`. Every `local` refusal names `delegated-key`. Remote clients
-   use `delegated-key`, which has a challenge and a signature.
+   `delegated-key`. Every refusal because the request is not local (the five
+   gate checks) names `delegated-key`. Remote clients use `delegated-key`, which
+   has a challenge and a signature.
 4. **Any program that forwards connections to the gateway needs remote access
    on.** This covers a TLS proxy, an SSH tunnel and a port forwarder, even when
    `bind_address = "127.0.0.1"`. Otherwise every request reaches the gateway from
@@ -61,9 +62,12 @@ machine.
    access:** startup succeeds with a warning. In these modes a request with no
    session reaches its target as this node's DID, self-asserted. With remote
    access, every client on the network can act as this node, on this node and on
-   other nodes the gateway reaches. A personal node should use `login` with
-   `connection_auth_gate = true`. The public community node uses `open` on
-   purpose.
+   other nodes the gateway reaches. `login` with `connection_auth_gate = true`
+   stops this, but the gate answers `401` to every request that has no session,
+   including the Hub's page and script files, so a browser cannot load the Hub.
+   Use the gate on a node that serves only API clients (`roymctl`, scripts). A
+   node that serves the Hub to remote browsers runs `login` without the gate,
+   and the warning stays. The public community node uses `open` on purpose.
 7. **Plain HTTP warning.** The gateway has no TLS. A non-loopback
    `bind_address` logs a warning. A remote Hub needs HTTPS: a browser offers
    `crypto.subtle`, which the Hub needs to sign in, only in a secure context.

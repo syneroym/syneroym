@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    str,
 };
 
 use serde_json::{Map, Value};
@@ -118,7 +119,7 @@ impl AuthService {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&bytes);
                     arr
-                } else if let Ok(s) = std::str::from_utf8(&bytes) {
+                } else if let Ok(s) = str::from_utf8(&bytes) {
                     if let Ok(hex_bytes) = hex::decode(s.trim()) {
                         if hex_bytes.len() == 32 {
                             let mut arr = [0u8; 32];

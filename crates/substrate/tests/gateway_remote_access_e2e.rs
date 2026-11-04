@@ -19,6 +19,7 @@ use syneroym_core::{
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_sdk::SyneroymClient;
+use tempfile::TempDir;
 use tokio::{
     io::AsyncReadExt,
     net::{TcpListener, TcpStream},
@@ -50,7 +51,7 @@ fn node_builder(ids_dir: &Path, remote_access: bool) -> NodeBuilder {
 }
 
 /// A directory holding `alice.key`. Returns Alice's DID too.
-fn identities_dir() -> (tempfile::TempDir, String) {
+fn identities_dir() -> (TempDir, String) {
     let dir = tempfile::tempdir().unwrap();
     let alice = Identity::generate().unwrap();
     fs::write(dir.path().join("alice.key"), alice.to_bytes()).unwrap();
@@ -236,10 +237,11 @@ async fn remote_access_in_fixed_mode_stops_startup() {
 
     let error = SubstrateNode::builder()
         .configure(|c| {
+            let gateway = c.roles.client_gateway.take().unwrap_or_default();
             c.roles.client_gateway = Some(ClientGatewayRole {
                 identity_mode: IdentityMode::Fixed,
                 remote_access: Some(RemoteAccess { bind_address: Ipv4Addr::LOCALHOST.into() }),
-                ..Default::default()
+                ..gateway
             });
         })
         .init_error()

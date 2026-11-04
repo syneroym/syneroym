@@ -47,9 +47,10 @@ quic_bind_address = "0.0.0.0:7965"
 [roles.client_gateway]
 http_port = 7960
 # "open": a client needs no login. This is a public community node.
-# For a personal node use identity_mode = "login" with
-# connection_auth_gate = true. In "open" mode every client on the network
-# acts as this node.
+# In "open" mode every client on the network acts as this node.
+# identity_mode = "login" with connection_auth_gate = true stops that, but the
+# gate also refuses a Hub page load with no session; use it only for a node
+# that serves API clients (roymctl, scripts).
 identity_mode = "open"
 
 # Clients on other machines may connect. Inside the container the gateway must

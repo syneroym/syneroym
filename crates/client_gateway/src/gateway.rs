@@ -298,8 +298,8 @@ fn check_remote_access(
     if identity_mode == IdentityMode::Open || !connection_auth_gate {
         warn!(
             "remote_access is on, but identity_mode is not \"login\" with connection_auth_gate = \
-             true: every client on the network acts as this node; use identity_mode = \"login\" \
-             with connection_auth_gate = true for a personal node"
+             true: every client on the network acts as this node; that setting stops it for API \
+             clients, but the gate also refuses a Hub page load that has no session"
         );
     }
     Ok(())

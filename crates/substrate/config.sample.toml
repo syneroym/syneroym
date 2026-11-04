@@ -255,9 +255,11 @@ http_port = 7960
 # front of it (a remote Hub needs HTTPS to sign in). Any program that
 # forwards connections to the gateway (a proxy, an SSH tunnel) needs this
 # table too, even with bind_address = "127.0.0.1". Cannot be used with
-# identity_mode = "fixed". For a personal node use identity_mode = "login"
-# with connection_auth_gate = true; otherwise every client on the network
-# acts as this node.
+# identity_mode = "fixed". Without identity_mode = "login" and
+# connection_auth_gate = true, every client on the network acts as this node.
+# The gate answers 401 to every request with no session, including the Hub's
+# page and files, so use it only on a node that serves API clients (roymctl,
+# scripts), not one that serves the Hub to remote browsers.
 # bind_address is an IP address only; the port is http_port. A misspelled
 # table name is ignored, which leaves remote access off.
 # [roles.client_gateway.remote_access]
