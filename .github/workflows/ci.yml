@@ -109,6 +109,14 @@ jobs:
           # instead of piling onto shards 1-2 the way `count` (per-binary
           # round-robin, now deprecated) did.
           partition: "slice:${{ matrix.shard }}/6"
+      # Logs how full the disk is at the end of the shard, also when the
+      # shard fails, so the log shows how close each run came to the limit.
+      - name: Log disk usage
+        if: always()
+        run: |
+          df -h /
+          du -sh target 2>/dev/null || true
+        shell: bash
 
   # Playwright WebRTC browser suite. Enforced on every push/PR to main; on
   # workflow_dispatch it stays opt-in via the `e2e` input.
