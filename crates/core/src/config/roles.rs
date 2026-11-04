@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::PathBuf,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -429,6 +432,30 @@ pub struct ClientGatewayRole {
     /// valid session with 401.
     #[serde(default)]
     pub connection_auth_gate: bool,
+    /// Remote access. Absent by default: the gateway binds `127.0.0.1`.
+    #[serde(default)]
+    pub remote_access: Option<RemoteAccess>,
+}
+
+/// Lets clients on other machines reach the client gateway. Absent means
+/// the gateway binds `127.0.0.1` and refuses non-loopback peers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAccess {
+    /// The IP address the gateway binds: an address only, the port is
+    /// `http_port`. `0.0.0.0` accepts every interface. `127.0.0.1` is for a
+    /// TLS proxy or any other forwarder on the same machine: remote access is
+    /// still on, so `local` login is off.
+    pub bind_address: IpAddr,
+}
+
+impl ClientGatewayRole {
+    /// The IP address the gateway binds. One rule for the gateway and the
+    /// docs: the remote-access address when set, else loopback.
+    #[must_use]
+    pub fn bind_ip(&self) -> IpAddr {
+        self.remote_access.as_ref().map_or(IpAddr::V4(Ipv4Addr::LOCALHOST), |r| r.bind_address)
+    }
 }
 
 impl Default for ClientGatewayRole {
@@ -440,6 +467,7 @@ impl Default for ClientGatewayRole {
             fixed_identity_did: None,
             fixed_delegation: None,
             connection_auth_gate: false,
+            remote_access: None,
         }
     }
 }

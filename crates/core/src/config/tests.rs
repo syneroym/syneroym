@@ -1,6 +1,9 @@
 #![allow(clippy::cognitive_complexity)]
 
-use std::path::Path;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    path::Path,
+};
 
 use super::*;
 
@@ -255,4 +258,44 @@ fn app_sandbox_call_all_defaults_when_absent() {
     assert_eq!(sandbox.call_all_max_call_timeout_ms, 10000);
     assert_eq!(sandbox.call_all_total_timeout_ms, 15000);
     assert_eq!(sandbox.call_all_max_waiting_guests, 4);
+}
+
+fn gateway_role(toml: &str) -> Result<ClientGatewayRole, toml::de::Error> {
+    toml::from_str::<SubstrateConfig>(toml).map(|c| c.roles.client_gateway.unwrap())
+}
+
+#[test]
+fn a_gateway_role_with_no_remote_access_binds_loopback() {
+    let role = gateway_role("[roles.client_gateway]\nhttp_port = 7960\n").unwrap();
+    assert!(role.remote_access.is_none());
+    assert_eq!(role.bind_ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+}
+
+#[test]
+fn remote_access_names_the_bind_address() {
+    for address in ["0.0.0.0", "::"] {
+        let toml = format!("[roles.client_gateway.remote_access]\nbind_address = \"{address}\"\n");
+        let role = gateway_role(&toml).unwrap();
+        assert_eq!(role.bind_ip(), address.parse::<IpAddr>().unwrap());
+    }
+}
+
+#[test]
+fn remote_access_without_a_bind_address_fails_to_parse() {
+    let err = gateway_role("[roles.client_gateway.remote_access]\n").unwrap_err();
+    assert!(err.to_string().contains("bind_address"), "unexpected error: {err}");
+}
+
+#[test]
+fn a_bind_address_with_a_port_fails_to_parse() {
+    let toml = "[roles.client_gateway.remote_access]\nbind_address = \"0.0.0.0:7960\"\n";
+    gateway_role(toml).unwrap_err();
+}
+
+#[test]
+fn an_unknown_key_in_remote_access_fails_to_parse() {
+    let misspelled = "[roles.client_gateway.remote_access]\nbind_adress = \"0.0.0.0\"\n";
+    gateway_role(misspelled).unwrap_err();
+    let extra = "[roles.client_gateway.remote_access]\nbind_address = \"0.0.0.0\"\nport = 1\n";
+    gateway_role(extra).unwrap_err();
 }

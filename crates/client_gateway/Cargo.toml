@@ -28,3 +28,4 @@ hex.workspace = true
 iroh.workspace = true
 p256.workspace = true
 syneroym-router.workspace = true
+tempfile.workspace = true

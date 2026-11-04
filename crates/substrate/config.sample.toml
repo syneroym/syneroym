@@ -235,7 +235,8 @@ bootstrap_page_bind_address = "0.0.0.0:7962"
 
 # Client Gateway: Reverse proxy for external HTTP/JSON-RPC access to internal services
 [roles.client_gateway]
-# HTTP port for the gateway
+# HTTP port for the gateway. The gateway binds 127.0.0.1 unless remote access
+# is set below, so only programs on this machine can connect.
 http_port = 7960
 # How the gateway attributes a request: "open" (no person identity),
 # "login" (a signed session cookie, verified per service), or "fixed" (one
@@ -246,6 +247,21 @@ http_port = 7960
 # connection_auth_gate = false
 # In "fixed" mode only: the single person this node always acts as.
 # fixed_identity_did = "did:key:..."
+#
+# Remote access: lets clients on other machines reach the gateway. Absent
+# means the gateway binds 127.0.0.1 and drops any peer that is not loopback.
+# When set, the "local" login method is off; remote clients use
+# "delegated-key". The gateway serves plain HTTP, so put a TLS proxy in
+# front of it (a remote Hub needs HTTPS to sign in). Any program that
+# forwards connections to the gateway (a proxy, an SSH tunnel) needs this
+# table too, even with bind_address = "127.0.0.1". Cannot be used with
+# identity_mode = "fixed". For a personal node use identity_mode = "login"
+# with connection_auth_gate = true; otherwise every client on the network
+# acts as this node.
+# bind_address is an IP address only; the port is http_port. A misspelled
+# table name is ignored, which leaves remote access off.
+# [roles.client_gateway.remote_access]
+# bind_address = "0.0.0.0"
 
 # Auth service: the node's identity provider. Serves /_syneroym/session/*
 # (challenge, login, methods, whoami, logout, refresh) and mints the

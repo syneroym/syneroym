@@ -6,6 +6,7 @@
 use std::{
     fmt::{self, Debug, Formatter},
     fs,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     str,
     sync::{Arc, RwLock},
@@ -72,7 +73,10 @@ struct GatewayState {
 /// `ClientGateway`: Acts as an entry point for local HTTP/WebSocket clients to
 /// reach the wider Syneroym network.
 pub struct ClientGateway {
-    port: u16,
+    /// The address the listener binds.
+    bind: SocketAddr,
+    /// Whether clients on other machines may connect.
+    remote_access: bool,
     state: Arc<GatewayState>,
     shutdown_tx: Option<Sender<()>>,
 }
@@ -80,7 +84,8 @@ pub struct ClientGateway {
 impl Debug for ClientGateway {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientGateway")
-            .field("port", &self.port)
+            .field("bind", &self.bind)
+            .field("remote_access", &self.remote_access)
             .field("state", &self.state)
             .field("shutdown_tx", &self.shutdown_tx.as_ref().map(|_| "oneshot::Sender"))
             .finish()
@@ -97,7 +102,12 @@ impl ClientGateway {
     pub async fn init(config: &SubstrateConfig) -> Result<Self> {
         info!("initializing client gateway");
 
-        let port = config.roles.client_gateway.as_ref().map_or(7000, |g| g.http_port);
+        let role_cfg = config.roles.client_gateway.as_ref();
+        let bind = role_cfg.map_or_else(
+            || SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7000),
+            |g| SocketAddr::new(g.bind_ip(), g.http_port),
+        );
+        let remote_access = role_cfg.is_some_and(|g| g.remote_access.is_some());
         let registry_url = config.substrate.registry_url.clone().unwrap_or_default();
         let identity = load_or_generate_node_identity(config)?;
 
@@ -113,8 +123,11 @@ impl ClientGateway {
             }
         })));
 
-        let role_cfg = config.roles.client_gateway.as_ref();
         let identity_mode = role_cfg.map_or(IdentityMode::Open, |g| g.identity_mode);
+        let connection_auth_gate = role_cfg.is_some_and(|g| g.connection_auth_gate);
+        if remote_access {
+            check_remote_access(bind, identity_mode, connection_auth_gate)?;
+        }
         let fixed_identity_did = role_cfg.and_then(|g| g.fixed_identity_did.clone());
         let fixed_delegation = if let Some(g) = role_cfg
             && let Some(del_path) = &g.fixed_delegation
@@ -129,7 +142,6 @@ impl ClientGateway {
         } else {
             None
         };
-        let connection_auth_gate = role_cfg.is_some_and(|g| g.connection_auth_gate);
 
         let resolver = LogicalResolver::new(Arc::new(StaticInventory::new()));
         let resolve_ucan_path =
@@ -178,16 +190,29 @@ impl ClientGateway {
             auth_service_did,
         });
 
-        Ok(Self { port, state, shutdown_tx: None })
+        Ok(Self { bind, remote_access, state, shutdown_tx: None })
+    }
+
+    /// Binds the listener on the configured address. The only place that binds.
+    async fn bind_listener(&self) -> Result<TcpListener> {
+        TcpListener::bind(self.bind)
+            .await
+            .with_context(|| format!("failed to bind client gateway to {}", self.bind))
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let addr = format!("0.0.0.0:{}", self.port);
-        let listener = TcpListener::bind(&addr)
-            .await
-            .with_context(|| format!("failed to bind client gateway to {addr}"))?;
-        info!("running client gateway");
-        info!("client gateway listening on {}", addr);
+        let listener = self.bind_listener().await?;
+        let bound = listener.local_addr().unwrap_or(self.bind);
+        if self.remote_access {
+            info!(bind = %bound, remote_access = true, "client gateway listening");
+        } else {
+            info!(
+                bind = %bound,
+                remote_access = false,
+                "client gateway listening; other machines cannot connect, see \
+                 [roles.client_gateway.remote_access]"
+            );
+        }
 
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         self.shutdown_tx = Some(shutdown_tx);
@@ -200,15 +225,7 @@ impl ClientGateway {
                 }
                 res = listener.accept() => {
                     match res {
-                        Ok((stream, peer_addr)) => {
-                            debug!("gateway accepted connection from {}", peer_addr);
-                            let state = self.state.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, state).await {
-                                    error!("error handling connection from {}: {:#}", peer_addr, e);
-                                }
-                            });
-                        }
+                        Ok((stream, peer_addr)) => self.accept_one(stream, peer_addr),
                         Err(e) => {
                             error!("gateway accept error: {:#}", e);
                         }
@@ -218,6 +235,22 @@ impl ClientGateway {
         }
 
         Ok(())
+    }
+
+    /// Hands one accepted connection to its own task, unless the peer is not
+    /// allowed to connect.
+    fn accept_one(&self, stream: TcpStream, peer_addr: SocketAddr) {
+        if !admit_peer(self.remote_access, peer_addr) {
+            warn!(%peer_addr, "client gateway refused a non-loopback peer: remote access is off");
+            return;
+        }
+        debug!("gateway accepted connection from {}", peer_addr);
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, state).await {
+                error!("error handling connection from {}: {:#}", peer_addr, e);
+            }
+        });
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
@@ -233,6 +266,43 @@ impl ClientGateway {
 
         Ok(())
     }
+}
+
+/// With remote access off only a program on this machine may connect.
+fn admit_peer(remote_access: bool, peer: SocketAddr) -> bool {
+    remote_access || peer.ip().to_canonical().is_loopback()
+}
+
+/// Startup checks for a gateway that clients on other machines can reach.
+///
+/// `fixed` mode would make every client on the network one person, so it
+/// stops startup. The other modes only warn.
+fn check_remote_access(
+    bind: SocketAddr,
+    identity_mode: IdentityMode,
+    connection_auth_gate: bool,
+) -> Result<()> {
+    if identity_mode == IdentityMode::Fixed {
+        anyhow::bail!(
+            "[roles.client_gateway] remote_access cannot be used with identity_mode = \"fixed\": \
+             every client on the network would act as the fixed person"
+        );
+    }
+    if !bind.ip().is_loopback() {
+        warn!(
+            address = %bind.ip(),
+            "client gateway serves plain HTTP on a non-loopback address; put a TLS proxy in front, \
+             a remote Hub needs HTTPS to sign in"
+        );
+    }
+    if identity_mode == IdentityMode::Open || !connection_auth_gate {
+        warn!(
+            "remote_access is on, but identity_mode is not \"login\" with connection_auth_gate = \
+             true: every client on the network acts as this node; use identity_mode = \"login\" \
+             with connection_auth_gate = true for a personal node"
+        );
+    }
+    Ok(())
 }
 
 fn is_auth_service_alias(alias: &str, state: &GatewayState) -> bool {
