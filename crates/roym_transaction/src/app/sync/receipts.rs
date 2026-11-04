@@ -21,7 +21,6 @@ use super::{
 
 pub(crate) async fn defer_or_refuse<H: AppHost>(
     host: &H,
-    msg_id: &str,
     row: CardRow,
     envelope_json: &str,
     now: u64,
@@ -37,13 +36,12 @@ pub(crate) async fn defer_or_refuse<H: AppHost>(
             deferred: true,
         })
     } else {
-        refuse_card(host, msg_id, row, reason).await
+        refuse_card(host, row, reason).await
     }
 }
 
 pub(crate) async fn file_progress_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     mut row: CardRow,
     envelope: &str,
     conversation: &str,
@@ -53,19 +51,18 @@ pub(crate) async fn file_progress_card<H: AppHost>(
     let v = booking::verify_booking_progress(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "booking progress does not verify".to_string());
-        return refuse_card(host, msg_id, row, reason).await;
+        return refuse_card(host, row, reason).await;
     }
     let p = match v.payload.as_ref() {
         Some(p) => p,
-        None => return refuse_card(host, msg_id, row, "missing payload").await,
+        None => return refuse_card(host, row, "missing payload").await,
     };
     if p.conversation != conversation {
-        return refuse_card(host, msg_id, row, "card names another conversation").await;
+        return refuse_card(host, row, "card names another conversation").await;
     }
     if owner != p.counterparty_did {
         return refuse_card(
             host,
-            msg_id,
             row,
             "progress for an agreement this node is not the counterparty of",
         )
@@ -76,7 +73,6 @@ pub(crate) async fn file_progress_card<H: AppHost>(
         None => {
             return defer_or_refuse(
                 host,
-                msg_id,
                 row,
                 envelope,
                 now,
@@ -88,20 +84,19 @@ pub(crate) async fn file_progress_card<H: AppHost>(
     let quote_env = String::from_utf8_lossy(&quote_bytes);
     let qv = transaction::verify_quote(&quote_env, now);
     if !qv.verified {
-        return refuse_card(host, msg_id, row, "stored quote does not verify").await;
+        return refuse_card(host, row, "stored quote does not verify").await;
     }
     if v.issuer != qv.signer_did {
-        return refuse_card(host, msg_id, row, "not signed by the service that signed the quote")
-            .await;
+        return refuse_card(host, row, "not signed by the service that signed the quote").await;
     }
     let qp = match qv.payload.as_ref() {
         Some(q) => q,
-        None => return refuse_card(host, msg_id, row, "stored quote has no payload").await,
+        None => return refuse_card(host, row, "stored quote has no payload").await,
     };
     if p.quote_author_did != qv.issuer.unwrap_or_default()
         || p.counterparty_did != qp.counterparty_did
     {
-        return refuse_card(host, msg_id, row, "names the wrong parties").await;
+        return refuse_card(host, row, "names the wrong parties").await;
     }
 
     let stored: Option<ProgressRow> = get_row(host, PROGRESS, &p.agreement).await?;
@@ -136,7 +131,6 @@ pub(crate) async fn file_progress_card<H: AppHost>(
 
 pub(crate) async fn file_payment_request_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     mut row: CardRow,
     envelope: &str,
     conversation: &str,
@@ -146,11 +140,11 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
     let v = payment::verify_payment_request(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "payment request does not verify".to_string());
-        return refuse_card(host, msg_id, row, reason).await;
+        return refuse_card(host, row, reason).await;
     }
     let p = match v.payload.as_ref() {
         Some(p) => p,
-        None => return refuse_card(host, msg_id, row, "missing payload").await,
+        None => return refuse_card(host, row, "missing payload").await,
     };
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let agr = match agr {
@@ -158,7 +152,6 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
         None => {
             return defer_or_refuse(
                 host,
-                msg_id,
                 row,
                 envelope,
                 now,
@@ -169,24 +162,17 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
     };
     let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
-        return defer_or_refuse(
-            host,
-            msg_id,
-            row,
-            envelope,
-            now,
-            "agreement not complete on this node",
-        )
-        .await;
+        return defer_or_refuse(host, row, envelope, now, "agreement not complete on this node")
+            .await;
     }
     if p.quote_author_did != agr.quote_author_did || p.counterparty_did != agr.counterparty_did {
-        return refuse_card(host, msg_id, row, "names the wrong parties").await;
+        return refuse_card(host, row, "names the wrong parties").await;
     }
     if p.conversation != conversation || p.conversation != agr.conversation {
-        return refuse_card(host, msg_id, row, "card names another conversation").await;
+        return refuse_card(host, row, "card names another conversation").await;
     }
     if !payment::matches_terms(&p.currency, p.amount_minor, None, &agr.terms) {
-        return refuse_card(host, msg_id, row, "amount-mismatch").await;
+        return refuse_card(host, row, "amount-mismatch").await;
     }
 
     let mut payments: PaymentsRow =
@@ -243,7 +229,6 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
 
 pub(crate) async fn file_payment_ack_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     mut row: CardRow,
     envelope: &str,
     conversation: &str,
@@ -254,22 +239,22 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     if !v.verified {
         let reason =
             v.reason.unwrap_or_else(|| "payment acknowledgement does not verify".to_string());
-        return refuse_card(host, msg_id, row, reason).await;
+        return refuse_card(host, row, reason).await;
     }
     let p = match v.payload.as_ref() {
         Some(p) => p,
-        None => return refuse_card(host, msg_id, row, "missing payload").await,
+        None => return refuse_card(host, row, "missing payload").await,
     };
     if p.conversation != conversation {
-        return refuse_card(host, msg_id, row, "card names another conversation").await;
+        return refuse_card(host, row, "card names another conversation").await;
     }
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let agr = match validate_ack_agreement(agr, p) {
         Ok(a) => a,
         Err((reason, true)) => {
-            return defer_or_refuse(host, msg_id, row, envelope, now, reason).await;
+            return defer_or_refuse(host, row, envelope, now, reason).await;
         }
-        Err((reason, false)) => return refuse_card(host, msg_id, row, reason).await,
+        Err((reason, false)) => return refuse_card(host, row, reason).await,
     };
 
     let mut payments: PaymentsRow =
@@ -284,7 +269,7 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
 
     let env = match Envelope::from_json(envelope) {
         Ok(e) => e,
-        Err(e) => return refuse_card(host, msg_id, row, e.to_string()).await,
+        Err(e) => return refuse_card(host, row, e.to_string()).await,
     };
 
     let versions = match p.role {
@@ -295,9 +280,9 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     let _first = match append_ack_half(versions, env.supersedes.as_deref(), envelope, &v, p, now) {
         AckAppendResult::First => true,
         AckAppendResult::Subsequent => false,
-        AckAppendResult::Refuse(reason) => return refuse_card(host, msg_id, row, reason).await,
+        AckAppendResult::Refuse(reason) => return refuse_card(host, row, reason).await,
         AckAppendResult::Defer(reason) => {
-            return defer_or_refuse(host, msg_id, row, envelope, now, reason).await;
+            return defer_or_refuse(host, row, envelope, now, reason).await;
         }
     };
 
@@ -331,7 +316,6 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
 
 pub(crate) async fn file_fulfilment_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     mut row: CardRow,
     envelope: &str,
     conversation: &str,
@@ -341,11 +325,11 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     let v = fulfilment::verify_fulfilment_receipt(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "fulfilment receipt does not verify".to_string());
-        return refuse_card(host, msg_id, row, reason).await;
+        return refuse_card(host, row, reason).await;
     }
     let p = match v.payload.as_ref() {
         Some(p) => p,
-        None => return refuse_card(host, msg_id, row, "missing payload").await,
+        None => return refuse_card(host, row, "missing payload").await,
     };
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let agr = match agr {
@@ -353,7 +337,6 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         None => {
             return defer_or_refuse(
                 host,
-                msg_id,
                 row,
                 envelope,
                 now,
@@ -364,24 +347,17 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     };
     let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
-        return defer_or_refuse(
-            host,
-            msg_id,
-            row,
-            envelope,
-            now,
-            "agreement not complete on this node",
-        )
-        .await;
+        return defer_or_refuse(host, row, envelope, now, "agreement not complete on this node")
+            .await;
     }
     if p.quote_author_did != agr.quote_author_did || p.counterparty_did != agr.counterparty_did {
-        return refuse_card(host, msg_id, row, "names the wrong parties").await;
+        return refuse_card(host, row, "names the wrong parties").await;
     }
     if p.conversation != conversation || p.conversation != agr.conversation {
-        return refuse_card(host, msg_id, row, "card names another conversation").await;
+        return refuse_card(host, row, "card names another conversation").await;
     }
     if p.terms != agr.terms {
-        return refuse_card(host, msg_id, row, "terms differ from the agreement").await;
+        return refuse_card(host, row, "terms differ from the agreement").await;
     }
 
     let mut fulfilments: FulfilmentsRow =
@@ -403,7 +379,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         if ex.record_id == rec_id {
             false
         } else {
-            return refuse_card(host, msg_id, row, "a second receipt from this party").await;
+            return refuse_card(host, row, "a second receipt from this party").await;
         }
     } else {
         *existing = Some(ReceiptHalf {

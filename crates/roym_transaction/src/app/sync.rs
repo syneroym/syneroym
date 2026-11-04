@@ -229,7 +229,7 @@ async fn classify_sync_message<H: AppHost>(
     if file_res.deferred { Ok(SyncOutcome::Deferred) } else { Ok(SyncOutcome::Filed(file_res)) }
 }
 
-fn init_card_row(m: &Value, conversation: &str, now: u64) -> (String, CardRow) {
+fn init_card_row(m: &Value, conversation: &str, now: u64) -> CardRow {
     let msg_id = m.get("id").and_then(Value::as_str).unwrap_or("").to_string();
     let direction_str = m.get("direction").and_then(Value::as_str).unwrap_or("incoming");
     let direction =
@@ -237,8 +237,8 @@ fn init_card_row(m: &Value, conversation: &str, now: u64) -> (String, CardRow) {
     let sender_timestamp_ms =
         m.get("sender_timestamp_ms").and_then(Value::as_i64).unwrap_or(now as i64 * 1000);
 
-    let row = CardRow {
-        message_id: msg_id.clone(),
+    CardRow {
+        message_id: msg_id,
         conversation: conversation.to_string(),
         direction,
         sender_timestamp_ms,
@@ -257,13 +257,11 @@ fn init_card_row(m: &Value, conversation: &str, now: u64) -> (String, CardRow) {
         version_count: None,
         agreement_payee: None,
         agreement_payment_methods: Vec::new(),
-    };
-    (msg_id, row)
+    }
 }
 
 async fn dispatch_known_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     row: CardRow,
     card: &card::Card,
     conversation: &str,
@@ -271,65 +269,27 @@ async fn dispatch_known_card<H: AppHost>(
     owner: &str,
 ) -> Result<FileCardResult, String> {
     match card.card_type.as_str() {
-        "request" => {
-            file_request_card(host, msg_id, row, &card.envelope, conversation, now, owner).await
-        }
-        "quote" => {
-            file_quote_card(host, msg_id, row, &card.envelope, conversation, now, owner).await
-        }
+        "request" => file_request_card(host, row, &card.envelope, conversation, now, owner).await,
+        "quote" => file_quote_card(host, row, &card.envelope, conversation, now, owner).await,
         "agreement-receipt" => {
-            file_agreement_receipt_card(host, msg_id, row, &card.envelope, conversation, now, owner)
-                .await
+            file_agreement_receipt_card(host, row, &card.envelope, conversation, now, owner).await
         }
         "booking-progress" => {
-            receipts::file_progress_card(
-                host,
-                msg_id,
-                row,
-                &card.envelope,
-                conversation,
-                now,
-                owner,
-            )
-            .await
+            receipts::file_progress_card(host, row, &card.envelope, conversation, now, owner).await
         }
         "payment-request" => {
-            receipts::file_payment_request_card(
-                host,
-                msg_id,
-                row,
-                &card.envelope,
-                conversation,
-                now,
-                owner,
-            )
-            .await
+            receipts::file_payment_request_card(host, row, &card.envelope, conversation, now, owner)
+                .await
         }
         "payment-acknowledgement" => {
-            receipts::file_payment_ack_card(
-                host,
-                msg_id,
-                row,
-                &card.envelope,
-                conversation,
-                now,
-                owner,
-            )
-            .await
+            receipts::file_payment_ack_card(host, row, &card.envelope, conversation, now, owner)
+                .await
         }
         "fulfilment-receipt" => {
-            receipts::file_fulfilment_card(
-                host,
-                msg_id,
-                row,
-                &card.envelope,
-                conversation,
-                now,
-                owner,
-            )
-            .await
+            receipts::file_fulfilment_card(host, row, &card.envelope, conversation, now, owner)
+                .await
         }
-        _ => refuse_card(host, msg_id, row, "a known card type this build does not file").await,
+        _ => refuse_card(host, row, "a known card type this build does not file").await,
     }
 }
 
@@ -340,16 +300,16 @@ async fn file_incoming_card<H: AppHost>(
     now: u64,
     owner: &str,
 ) -> Result<FileCardResult, String> {
-    let (msg_id, mut row) = init_card_row(m, conversation, now);
+    let mut row = init_card_row(m, conversation, now);
 
     let body = match m.get("body").and_then(Value::as_str) {
         Some(b) => b,
-        None => return refuse_card(host, &msg_id, row, "no body").await,
+        None => return refuse_card(host, row, "no body").await,
     };
 
     let card = match card::parse_card(body) {
         Ok(c) => c,
-        Err(e) => return refuse_card(host, &msg_id, row, e.to_string()).await,
+        Err(e) => return refuse_card(host, row, e.to_string()).await,
     };
 
     row.card_type = card.card_type.clone();
@@ -366,13 +326,12 @@ async fn file_incoming_card<H: AppHost>(
         });
     }
 
-    dispatch_known_card(host, &msg_id, row, &card, conversation, now, owner).await
+    dispatch_known_card(host, row, &card, conversation, now, owner).await
 }
 
 /// Stores `row` with `reason` and reports it as filed-but-refused.
 pub(crate) async fn refuse_card<H: AppHost>(
     host: &H,
-    _msg_id: &str,
     mut row: CardRow,
     reason: impl Into<String>,
 ) -> Result<FileCardResult, String> {
@@ -389,7 +348,6 @@ pub(crate) async fn refuse_card<H: AppHost>(
 
 async fn file_request_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     mut row: CardRow,
     envelope: &str,
     conversation: &str,
@@ -399,19 +357,19 @@ async fn file_request_card<H: AppHost>(
     let v = transaction::verify_request(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "request does not verify".to_string());
-        return refuse_card(host, msg_id, row, reason).await;
+        return refuse_card(host, row, reason).await;
     }
     let payload = match v.payload.as_ref() {
         Some(p) => p,
-        None => return refuse_card(host, msg_id, row, "missing payload").await,
+        None => return refuse_card(host, row, "missing payload").await,
     };
     if payload.conversation != conversation {
-        return refuse_card(host, msg_id, row, "card names another conversation").await;
+        return refuse_card(host, row, "card names another conversation").await;
     }
     let version_count = match store_received_request(host, envelope, &v, payload, now, owner).await
     {
         Ok(vc) => vc,
-        Err(e) => return refuse_card(host, msg_id, row, e).await,
+        Err(e) => return refuse_card(host, row, e).await,
     };
     row.verified = true;
     row.version_count = Some(version_count);
@@ -431,7 +389,6 @@ async fn file_request_card<H: AppHost>(
 
 async fn file_quote_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     mut row: CardRow,
     envelope: &str,
     conversation: &str,
@@ -441,41 +398,35 @@ async fn file_quote_card<H: AppHost>(
     let v = transaction::verify_quote(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "quote does not verify".to_string());
-        return refuse_card(host, msg_id, row, reason).await;
+        return refuse_card(host, row, reason).await;
     }
     let payload = match v.payload.as_ref() {
         Some(p) => p,
-        None => return refuse_card(host, msg_id, row, "missing payload").await,
+        None => return refuse_card(host, row, "missing payload").await,
     };
     if payload.conversation != conversation {
-        return refuse_card(host, msg_id, row, "card names another conversation").await;
+        return refuse_card(host, row, "card names another conversation").await;
     }
     let req_bytes = match get_bytes(host, REQUEST_HISTORY, &payload.request_record_id).await? {
         Some(b) => b,
         None => {
-            return refuse_card(host, msg_id, row, "answers a request this node does not hold")
-                .await;
+            return refuse_card(host, row, "answers a request this node does not hold").await;
         }
     };
     let req_str = match String::from_utf8(req_bytes) {
         Ok(s) => s,
         Err(_) => {
-            return refuse_card(host, msg_id, row, "stored request envelope is invalid utf8").await;
+            return refuse_card(host, row, "stored request envelope is invalid utf8").await;
         }
     };
     let req_v = transaction::verify_request(&req_str, now);
     if !req_v.verified || req_v.issuer.as_deref() != Some(payload.counterparty_did.as_str()) {
-        return refuse_card(
-            host,
-            msg_id,
-            row,
-            "quote counterparty_did does not match request issuer",
-        )
-        .await;
+        return refuse_card(host, row, "quote counterparty_did does not match request issuer")
+            .await;
     }
     let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {
         Ok(vc) => vc,
-        Err(e) => return refuse_card(host, msg_id, row, e).await,
+        Err(e) => return refuse_card(host, row, e).await,
     };
     row.verified = true;
     row.expired = v.expired;
@@ -496,7 +447,6 @@ async fn file_quote_card<H: AppHost>(
 
 async fn file_agreement_receipt_card<H: AppHost>(
     host: &H,
-    msg_id: &str,
     mut row: CardRow,
     envelope: &str,
     conversation: &str,
@@ -506,43 +456,43 @@ async fn file_agreement_receipt_card<H: AppHost>(
     let v = transaction::verify_agreement_receipt(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "agreement receipt does not verify".to_string());
-        return refuse_card(host, msg_id, row, reason).await;
+        return refuse_card(host, row, reason).await;
     }
     let payload = match v.payload.as_ref() {
         Some(p) => p,
-        None => return refuse_card(host, msg_id, row, "missing payload").await,
+        None => return refuse_card(host, row, "missing payload").await,
     };
     let q_bytes = match get_bytes(host, QUOTE_HISTORY, &payload.quote_record_id).await? {
         Some(b) => b,
         None => {
-            return refuse_card(host, msg_id, row, "attests a quote this node does not hold").await;
+            return refuse_card(host, row, "attests a quote this node does not hold").await;
         }
     };
     let q_str = match String::from_utf8(q_bytes) {
         Ok(s) => s,
         Err(_) => {
-            return refuse_card(host, msg_id, row, "stored quote envelope is invalid utf8").await;
+            return refuse_card(host, row, "stored quote envelope is invalid utf8").await;
         }
     };
     let qv = transaction::verify_quote(&q_str, now);
     if !qv.verified {
-        return refuse_card(host, msg_id, row, "the quote it attests does not verify").await;
+        return refuse_card(host, row, "the quote it attests does not verify").await;
     }
     let q_payload = match qv.payload.as_ref() {
         Some(qp) => qp,
-        None => return refuse_card(host, msg_id, row, "quote missing payload").await,
+        None => return refuse_card(host, row, "quote missing payload").await,
     };
     if q_payload.terms != payload.terms {
-        return refuse_card(host, msg_id, row, "terms differ from the quote").await;
+        return refuse_card(host, row, "terms differ from the quote").await;
     }
     if payload.counterparty_did != q_payload.counterparty_did
         || payload.quote_author_did != qv.issuer.as_deref().unwrap_or("")
     {
-        return refuse_card(host, msg_id, row, "names the wrong parties").await;
+        return refuse_card(host, row, "names the wrong parties").await;
     }
     let issued_at = v.issued_at_secs.unwrap_or(0);
     if issued_at >= payload.terms.quote_expires_at_secs {
-        return refuse_card(host, msg_id, row, "accepted after the quote expired").await;
+        return refuse_card(host, row, "accepted after the quote expired").await;
     }
     let mut row_agr: AgreementRow =
         match get_row(host, AGREEMENTS, &payload.quote_record_id).await? {
