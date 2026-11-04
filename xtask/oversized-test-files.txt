@@ -24,7 +24,7 @@ crates/roym_web/tests/dual_build_parity/profile.rs 1112
 crates/roym_web/tests/dual_build_parity/transaction.rs 846
 crates/sandbox_wasm/src/engine/tests.rs 821
 crates/sandbox_wasm/tests/abac_integration.rs 811
-crates/substrate/tests/gateway_session_e2e.rs 1477
+crates/substrate/tests/gateway_session_e2e.rs 1419
 crates/substrate/tests/guest_http_e2e.rs 957
 crates/substrate/tests/http_passthrough_e2e.rs 817
 crates/ucan/src/token/tests.rs 1087

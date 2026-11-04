@@ -4,6 +4,7 @@ use core::future::Future;
 use std::{
     collections::BTreeMap,
     fs, mem,
+    net::Ipv4Addr,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -17,7 +18,7 @@ use syneroym_app_orchestration::{
     models::{ServiceId, SubstrateAlias, SynAppManifest, Visibility},
 };
 use syneroym_core::{
-    config::{AppSandboxRole, AuthRole, ClientGatewayRole, IdentityMode},
+    config::{AppSandboxRole, AuthRole, ClientGatewayRole, IdentityMode, RemoteAccess},
     dht_registry::{DEFAULT_ENDPOINT_NOT_AFTER_SECS, RegistryClient},
     util::short_hash,
 };
@@ -31,6 +32,8 @@ use syneroym_sdk::{
 };
 use syneroym_signed_record::SCOPE_RECORD_SIGNING;
 use tokio::time;
+
+use super::session;
 
 pub const SIGNING_SERVICES: &[&str] =
     &["profile", "catalog", "conversation", "transaction", "directory"];
@@ -192,6 +195,8 @@ pub struct RoymNode {
     pub masters: BTreeMap<String, Identity>,
     pub role: AppSandboxRole,
     pub cert_overrides: CertOverrides,
+    /// Whether the gateway has remote access, which turns `local` login off.
+    pub remote_access: bool,
 
     pub builder: super::NodeBuilder,
     pub node: Option<super::SubstrateNode>,
@@ -210,11 +215,44 @@ impl RoymNode {
         owner: Identity,
         role: AppSandboxRole,
     ) -> Self {
+        Self::boot_with(label, base_path, shared_registry_url, owner, role, false).await
+    }
+
+    /// Like [`Self::boot`], with remote access on (bound to loopback, the
+    /// shape of a TLS proxy on the same machine). `local` login is off, so
+    /// [`Self::login`] signs in with `delegated-key`.
+    pub async fn boot_with_remote_access(
+        label: &'static str,
+        base_path: PathBuf,
+        shared_registry_url: Option<String>,
+        owner: Identity,
+        role: AppSandboxRole,
+    ) -> Self {
+        Self::boot_with(label, base_path, shared_registry_url, owner, role, true).await
+    }
+
+    async fn boot_with(
+        label: &'static str,
+        base_path: PathBuf,
+        shared_registry_url: Option<String>,
+        owner: Identity,
+        role: AppSandboxRole,
+        remote_access: bool,
+    ) -> Self {
         let ids_dir = base_path.join("identities");
         fs::create_dir_all(&ids_dir).unwrap();
         owner.save_to_path(ids_dir.join("owner.key")).unwrap();
 
-        Self::spawn_substrate(label, base_path, shared_registry_url, None, owner, role).await
+        Self::spawn_substrate(
+            label,
+            base_path,
+            shared_registry_url,
+            None,
+            owner,
+            role,
+            remote_access,
+        )
+        .await
     }
 
     pub async fn boot_ready(
@@ -247,6 +285,7 @@ impl RoymNode {
             Some(coord.relay_url().to_string()),
             owner,
             role,
+            false,
         )
         .await;
         node.full_bring_up().await;
@@ -277,6 +316,7 @@ impl RoymNode {
         shared_relay_url: Option<&str>,
         owner: &Identity,
         role: &AppSandboxRole,
+        remote_access: bool,
     ) -> super::NodeBuilder {
         let ids_dir = base_path.join("identities");
         let role = role.clone();
@@ -286,8 +326,12 @@ impl RoymNode {
             .inject_kek_bytes([0xcd; 32])
             .configure(move |c| {
                 let gateway = c.roles.client_gateway.take().unwrap_or_default();
-                c.roles.client_gateway =
-                    Some(ClientGatewayRole { identity_mode: IdentityMode::Login, ..gateway });
+                c.roles.client_gateway = Some(ClientGatewayRole {
+                    identity_mode: IdentityMode::Login,
+                    remote_access: remote_access
+                        .then(|| RemoteAccess { bind_address: Ipv4Addr::LOCALHOST.into() }),
+                    ..gateway
+                });
                 c.roles.auth = Some(AuthRole {
                     person_identities_dir: Some(ids_dir.clone()),
                     ..Default::default()
@@ -310,6 +354,7 @@ impl RoymNode {
         shared_relay_url: Option<String>,
         owner: Identity,
         role: AppSandboxRole,
+        remote_access: bool,
     ) -> Self {
         let builder = Self::make_builder(
             &base_path,
@@ -317,6 +362,7 @@ impl RoymNode {
             shared_relay_url.as_deref(),
             &owner,
             &role,
+            remote_access,
         );
         let node = builder.clone().boot().await;
 
@@ -329,6 +375,7 @@ impl RoymNode {
             masters: BTreeMap::new(),
             role,
             cert_overrides: CertOverrides::default(),
+            remote_access,
             registry_url: node.registry_url().to_string(),
             gateway_url: node.gateway_url(),
             substrate_did: node.did().to_string(),
@@ -450,6 +497,9 @@ impl RoymNode {
     }
 
     pub async fn login(&mut self) {
+        if self.remote_access {
+            return self.login_delegated().await;
+        }
         let http = Client::builder().pool_max_idle_per_host(0).build().unwrap();
         let resp = http
             .post(format!("{}/_syneroym/session/login", self.gateway_url))
@@ -460,6 +510,13 @@ impl RoymNode {
         assert!(resp.status().is_success(), "{} login failed: {:?}", self.label, resp.text().await);
         let body: Value = resp.json().await.unwrap();
         self.session_token = Some(body["token"].as_str().unwrap().to_string());
+    }
+
+    /// Signs the owner in with `delegated-key`, as a remote client does.
+    pub async fn login_delegated(&mut self) {
+        let (token, _) =
+            session::delegated_login(&self.gateway_url, &self.owner, &self.registry_url, 1).await;
+        self.session_token = Some(token);
     }
 
     pub async fn rpc(&self, method: &str, params: Value) -> Value {
@@ -560,6 +617,7 @@ impl RoymNode {
                 self.shared_relay_url.as_deref(),
                 &self.owner,
                 &self.role,
+                self.remote_access,
             );
         }
         let masters = mem::take(&mut self.masters);

@@ -41,6 +41,7 @@ pub mod passport;
 pub mod roym;
 pub mod roym_flow;
 pub mod roym_group;
+pub mod session;
 pub mod streams;
 
 use std::{
