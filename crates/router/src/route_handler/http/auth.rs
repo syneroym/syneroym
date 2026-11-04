@@ -53,6 +53,15 @@ pub(super) fn guest_caller_identity(
 pub(super) fn extract_session_token_from_hyper_headers(
     headers: &hyper::HeaderMap,
 ) -> Option<String> {
+    if let Some(auth) = headers.get(hyper::header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        let trimmed = auth.trim();
+        if let Some(token) = trimmed.strip_prefix("Bearer ") {
+            return Some(token.trim().to_string());
+        }
+        if let Some(token) = trimmed.strip_prefix("bearer ") {
+            return Some(token.trim().to_string());
+        }
+    }
     if let Some(cookie) = headers.get(hyper::header::COOKIE).and_then(|v| v.to_str().ok()) {
         for pair in cookie.split(';') {
             let mut parts = pair.splitn(2, '=');
@@ -61,15 +70,6 @@ pub(super) fn extract_session_token_from_hyper_headers(
             {
                 return Some(v.trim().to_string());
             }
-        }
-    }
-    if let Some(auth) = headers.get(hyper::header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
-        let trimmed = auth.trim();
-        if let Some(token) = trimmed.strip_prefix("Bearer ") {
-            return Some(token.trim().to_string());
-        }
-        if let Some(token) = trimmed.strip_prefix("bearer ") {
-            return Some(token.trim().to_string());
         }
     }
     None
@@ -113,6 +113,11 @@ pub(super) fn resolve_effective_session_caller(
     let mut session = caller.map(|c| c.session.clone()).unwrap_or_default();
     session.subject_did = claims.person_did.clone();
     session.claims.insert(SESSION_CALLER_MARKER.to_string(), serde_json::Value::Bool(true));
+    session.claims.insert("roym.session.token".to_string(), serde_json::Value::String(token_str));
+    session.claims.insert(
+        "roym.session.exp".to_string(),
+        serde_json::Value::Number(claims.expires_at_secs.into()),
+    );
 
     Some(CallerContext {
         caller_did: claims.person_did,

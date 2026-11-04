@@ -23,8 +23,8 @@ A substrate can host multiple services and app instances. Different apps must no
    - `cursor`: a run identifier and a monotonic sequence number (`<run_id>-<seq>`).
    - `kind`: what changed (for example, `conversation.message` or `transaction.card`), up to 64 bytes.
    - `service`: the service alias that recorded it, up to 64 bytes.
-   - `subject`: the entity that changed (for example, a conversation identifier), up to 256 bytes.
-   - `item`: an optional sub-entity (for example, a message identifier), up to 256 bytes.
+   - `subject`: the entity that changed (for example, a conversation identifier), up to 128 bytes.
+   - `item`: an optional sub-entity (for example, a message identifier), up to 128 bytes.
    - `at_ms`: millisecond UNIX timestamp.
    An event carries no payload body and no secrets. A client reads the event metadata and fetches detailed state through standard service methods.
 4. **Ring buffer in memory.** Each app instance keeps an in-memory window of up to 10 000 events, retained for at most 24 hours. The window is not persisted to disk. On restart, the bus starts with a new run identifier.
@@ -35,6 +35,8 @@ A substrate can host multiple services and app instances. Different apps must no
 6. **Server-Sent Events (SSE) for external clients.** The router exposes `GET /_syneroym/events` on each service hostname.
    - Requires `Accept: text/event-stream`.
    - Requires an authenticated gateway session of the app's owner. Non-owners get `403 Forbidden`. Requests without a valid session get `401 Unauthorized`.
+   - Browser authentication: `EventSource` cannot send custom HTTP headers like `Authorization: Bearer`. For browser clients, the session token is sent via a cookie named `syneroym_session` scoped strictly to `Path=/_syneroym/events` with `SameSite=Lax` and lifetime bounded by the session token's `exp`. RPC endpoints continue to authenticate via `Authorization: Bearer` headers.
+   - Feed stream lifecycle and revocation: An open SSE stream validates session revocation and token expiry on connect and on every wake-up tick (event change or 25-second keep-alive). If the session token is revoked or expires, the router immediately terminates the stream. When the client attempts to reconnect, it receives `401 Unauthorized`.
    - Answers with four frame types: `ready` (on initial connect without a cursor), `change` (one frame per event), `reload` (when catch-up is not possible), and `: keep-alive` comments (sent every 25 seconds of silence).
    - The gateway forwards `/_syneroym/events` to the service named in the `Host` header.
 7. **Pull interface for guest services.** WebAssembly components and native services read and record events through the `syneroym:events@0.1.0` interface (`record` and `read`). There is no push export to guests in this version.

@@ -1,4 +1,4 @@
-import { storedToken } from "./session/login";
+import { setEventFeedCookie, storedToken } from "./session/login";
 
 export type FeedChangeEvent = {
   kind: string;
@@ -61,8 +61,7 @@ export function openFeed(): void {
   if (typeof document !== "undefined") {
     const token = storedToken();
     if (token) {
-      const secure = window.location.protocol === "https:" ? "; Secure" : "";
-      document.cookie = `syneroym_session=${token}; path=/; SameSite=Lax${secure}`;
+      setEventFeedCookie(token);
     }
   }
 

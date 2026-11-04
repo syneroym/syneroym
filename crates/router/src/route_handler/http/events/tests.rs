@@ -44,6 +44,7 @@ async fn build_test_router(
     temp_dir: &Path,
     registry: EndpointRegistry,
     bus: Option<Arc<EventBus>>,
+    session_revocation: Option<Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>>,
 ) -> RouteHandler {
     let mut config = SubstrateConfig::default();
     config.storage.db_dir = temp_dir.to_path_buf();
@@ -82,7 +83,7 @@ async fn build_test_router(
         sse_permits: Arc::new(DashMap::new()),
         control_plane_service: Arc::new(NoopControlPlane),
         control_plane: None,
-        session_revocation: None,
+        session_revocation,
         event_bus: bus,
     };
     RouteHandler::init("test-node".to_string(), &config, registry, [11u8; 32], None, deps)
@@ -100,6 +101,12 @@ struct TestFixture {
 
 impl TestFixture {
     async fn new() -> Self {
+        Self::with_revocation(None).await
+    }
+
+    async fn with_revocation(
+        session_revocation: Option<Arc<dyn syneroym_core::protocol_utils::SessionRevocationCheck>>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
         let bus = EventBus::new(registry.clone());
@@ -112,7 +119,8 @@ impl TestFixture {
             .await
             .unwrap();
 
-        let route_handler = build_test_router(temp.path(), registry, Some(bus.clone())).await;
+        let route_handler =
+            build_test_router(temp.path(), registry, Some(bus.clone()), session_revocation).await;
 
         Self { _temp: temp, route_handler, bus, owner_did, service_id }
     }
@@ -433,4 +441,53 @@ async fn a_reader_far_behind_gets_all_events_before_it_waits() {
 fn a_closed_feed_lowers_the_open_feeds_gauge() {
     let guard = FeedGuard::new();
     drop(guard);
+}
+
+#[tokio::test]
+async fn a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token() {
+    let mut headers = HeaderMap::new();
+    headers.insert(hyper::header::COOKIE, "syneroym_session=revoked-cookie".parse().unwrap());
+    headers.insert(hyper::header::AUTHORIZATION, "Bearer valid-token".parse().unwrap());
+    assert_eq!(
+        super::super::auth::extract_session_token_from_hyper_headers(&headers),
+        Some("valid-token".to_string())
+    );
+}
+
+struct DynamicRevocation(std::sync::atomic::AtomicBool);
+impl syneroym_core::protocol_utils::SessionRevocationCheck for DynamicRevocation {
+    fn is_revoked(&self, _token: &str) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[tokio::test]
+async fn a_revoked_session_terminates_an_open_feed_stream() {
+    let revocation = Arc::new(DynamicRevocation(std::sync::atomic::AtomicBool::new(false)));
+    let fix = TestFixture::with_revocation(Some(revocation.clone())).await;
+
+    let mut caller = fix.session_caller(None);
+    caller.session.claims.insert(
+        "roym.session.token".to_string(),
+        serde_json::Value::String("token-123".to_string()),
+    );
+
+    let handler = fix.make_handler(Some(caller), None);
+    let resp = handler.handle_event_feed_parts(&sse_headers(), None).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+
+    let ready = read_frame_text(&mut body).await.unwrap();
+    assert!(ready.starts_with("event: ready\n"));
+
+    revocation.0.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+    fix.bus.record(&fix.service_id, "conversation.message", "conv1", Some("m1"), now_ms).unwrap();
+
+    let next_frame = read_frame_text(&mut body).await;
+    assert!(
+        next_frame.is_none(),
+        "feed stream must terminate on revocation, but got: {next_frame:?}"
+    );
 }

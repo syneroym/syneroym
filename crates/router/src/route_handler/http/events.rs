@@ -15,7 +15,10 @@ use hyper::{
     header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE, HeaderValue, RETRY_AFTER},
 };
 use serde::Serialize;
-use syneroym_core::event_bus::{Cursor, Event, EventBus, READ_LIMIT_CAP, ReadOutcome};
+use syneroym_core::{
+    event_bus::{Cursor, Event, EventBus, READ_LIMIT_CAP, ReadOutcome},
+    protocol_utils::SessionRevocationCheck,
+};
 use tokio::sync::{OwnedSemaphorePermit, watch};
 
 use super::{HttpBody, HttpHandler, SESSION_CALLER_MARKER, http_error};
@@ -38,6 +41,8 @@ impl Drop for FeedGuard {
     }
 }
 
+pub const FEED_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(25);
+
 #[derive(Debug, PartialEq, Eq)]
 enum StartCursorState {
     None,
@@ -46,10 +51,7 @@ enum StartCursorState {
 }
 
 fn parse_start_cursor(headers: &HeaderMap, query: Option<&str>) -> StartCursorState {
-    let header_val = headers
-        .get("Last-Event-ID")
-        .or_else(|| headers.get("last-event-id"))
-        .and_then(|v| v.to_str().ok());
+    let header_val = headers.get("Last-Event-ID").and_then(|v| v.to_str().ok());
 
     if let Some(val) = header_val {
         return match Cursor::parse(val) {
@@ -163,12 +165,34 @@ fn current_time_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
+fn is_session_expired_or_revoked(
+    token: Option<&str>,
+    exp_secs: Option<u64>,
+    revocation: Option<&Arc<dyn SessionRevocationCheck>>,
+) -> bool {
+    if let Some(exp) = exp_secs {
+        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        if now_secs >= exp {
+            return true;
+        }
+    }
+    if let (Some(t), Some(r)) = (token, revocation)
+        && r.is_revoked(t)
+    {
+        return true;
+    }
+    false
+}
+
 struct FeedState {
     bus: Arc<EventBus>,
     app_instance: String,
     last_cursor: Cursor,
     buffered_frames: VecDeque<Bytes>,
     changed_rx: watch::Receiver<u64>,
+    session_token: Option<String>,
+    session_exp_secs: Option<u64>,
+    session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
     _permit: OwnedSemaphorePermit,
     _guard: FeedGuard,
 }
@@ -182,6 +206,13 @@ fn make_feed_stream(state: FeedState) -> HttpBody {
                         return None;
                     }
                     let _ = state.changed_rx.borrow_and_update();
+                    if is_session_expired_or_revoked(
+                        state.session_token.as_deref(),
+                        state.session_exp_secs,
+                        state.session_revocation.as_ref(),
+                    ) {
+                        return None;
+                    }
                     let now_ms = current_time_ms();
                     fetch_events(
                         &state.bus,
@@ -191,7 +222,14 @@ fn make_feed_stream(state: FeedState) -> HttpBody {
                         now_ms,
                     );
                 }
-                _ = tokio::time::sleep(Duration::from_secs(25)) => {
+                _ = tokio::time::sleep(FEED_KEEP_ALIVE_INTERVAL) => {
+                    if is_session_expired_or_revoked(
+                        state.session_token.as_deref(),
+                        state.session_exp_secs,
+                        state.session_revocation.as_ref(),
+                    ) {
+                        return None;
+                    }
                     state.buffered_frames.push_back(Bytes::from_static(b": keep-alive\n\n"));
                 }
             }
@@ -203,7 +241,91 @@ fn make_feed_stream(state: FeedState) -> HttpBody {
     StreamBody::new(stream).boxed_unsync()
 }
 
+fn init_initial_buffered_frames(
+    bus: &EventBus,
+    app_instance: &str,
+    cursor_state: StartCursorState,
+    now_ms: i64,
+) -> (Cursor, VecDeque<Bytes>) {
+    let mut buffered_frames = VecDeque::new();
+    let mut last_cursor = bus.head(app_instance);
+    match cursor_state {
+        StartCursorState::None => {
+            let frame = format_ready_frame(&last_cursor);
+            buffered_frames.push_back(Bytes::from(frame));
+        }
+        StartCursorState::Reload => {
+            metrics::counter!("substrate.events.reloads").increment(1);
+            let frame = format_reload_frame(&last_cursor);
+            buffered_frames.push_back(Bytes::from(frame));
+        }
+        StartCursorState::Cursor(cursor) => {
+            last_cursor = cursor;
+            fetch_events(bus, app_instance, &mut last_cursor, &mut buffered_frames, now_ms);
+        }
+    }
+    (last_cursor, buffered_frames)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FeedAccessError {
+    Unauthorized,
+    Forbidden,
+    NotAppService,
+    NotAcceptable,
+}
+
+impl FeedAccessError {
+    fn into_response(self) -> Response<HttpBody> {
+        match self {
+            Self::Unauthorized => http_error(StatusCode::UNAUTHORIZED, "Unauthorized".into()),
+            Self::Forbidden => http_error(StatusCode::FORBIDDEN, "Forbidden".into()),
+            Self::NotAppService => {
+                http_error(StatusCode::NOT_FOUND, "this service is not part of an app".into())
+            }
+            Self::NotAcceptable => http_error(
+                StatusCode::NOT_ACCEPTABLE,
+                "Accept: text/event-stream is required".into(),
+            ),
+        }
+    }
+}
+
 impl HttpHandler {
+    fn check_feed_access(
+        &self,
+        bus: &EventBus,
+        headers: &HeaderMap,
+    ) -> std::result::Result<String, FeedAccessError> {
+        let is_session = self
+            .caller
+            .as_ref()
+            .is_some_and(|c| c.session.claims.contains_key(SESSION_CALLER_MARKER));
+        if !is_session {
+            return Err(FeedAccessError::Unauthorized);
+        }
+
+        let caller_did = self.caller.as_ref().map(|c| c.caller_did.as_str()).unwrap_or("");
+        let owner = self.route_handler.inner.registry.owner_of(&self.preamble.service_id);
+        if owner.as_deref() != Some(caller_did) {
+            return Err(FeedAccessError::Forbidden);
+        }
+
+        let Some(app_instance) = bus.app_instance_of(&self.preamble.service_id) else {
+            return Err(FeedAccessError::NotAppService);
+        };
+
+        let accepts_sse = headers
+            .get(ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/event-stream"));
+        if !accepts_sse {
+            return Err(FeedAccessError::NotAcceptable);
+        }
+
+        Ok(app_instance)
+    }
+
     pub(super) async fn handle_event_feed(
         &self,
         req: Request<Incoming>,
@@ -220,37 +342,10 @@ impl HttpHandler {
             return Ok(http_error(StatusCode::NOT_FOUND, "Not Found".into()));
         };
 
-        let is_session = self
-            .caller
-            .as_ref()
-            .is_some_and(|c| c.session.claims.contains_key(SESSION_CALLER_MARKER));
-        if !is_session {
-            return Ok(http_error(StatusCode::UNAUTHORIZED, "Unauthorized".into()));
-        }
-
-        let caller_did = self.caller.as_ref().map(|c| c.caller_did.as_str()).unwrap_or("");
-        let owner = self.route_handler.inner.registry.owner_of(&self.preamble.service_id);
-        if owner.as_deref() != Some(caller_did) {
-            return Ok(http_error(StatusCode::FORBIDDEN, "Forbidden".into()));
-        }
-
-        let Some(app_instance) = bus.app_instance_of(&self.preamble.service_id) else {
-            return Ok(http_error(
-                StatusCode::NOT_FOUND,
-                "this service is not part of an app".into(),
-            ));
+        let app_instance = match self.check_feed_access(bus, headers) {
+            Ok(inst) => inst,
+            Err(err) => return Ok(err.into_response()),
         };
-
-        let accepts_sse = headers
-            .get(ACCEPT)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("text/event-stream"));
-        if !accepts_sse {
-            return Ok(http_error(
-                StatusCode::NOT_ACCEPTABLE,
-                "Accept: text/event-stream is required".into(),
-            ));
-        }
 
         let permit = match bus.try_acquire_feed_permit(&app_instance) {
             Some(p) => p,
@@ -267,24 +362,29 @@ impl HttpHandler {
         let cursor_state = parse_start_cursor(headers, query);
         let guard = FeedGuard::new();
         let changed_rx = bus.changed(&app_instance);
-        let mut buffered_frames = VecDeque::new();
-        let mut last_cursor = bus.head(&app_instance);
         let now_ms = current_time_ms();
+        let (last_cursor, buffered_frames) =
+            init_initial_buffered_frames(bus, &app_instance, cursor_state, now_ms);
 
-        match cursor_state {
-            StartCursorState::None => {
-                let frame = format_ready_frame(&last_cursor);
-                buffered_frames.push_back(Bytes::from(frame));
-            }
-            StartCursorState::Reload => {
-                metrics::counter!("substrate.events.reloads").increment(1);
-                let frame = format_reload_frame(&last_cursor);
-                buffered_frames.push_back(Bytes::from(frame));
-            }
-            StartCursorState::Cursor(cursor) => {
-                last_cursor = cursor;
-                fetch_events(bus, &app_instance, &mut last_cursor, &mut buffered_frames, now_ms);
-            }
+        let session_token = self.caller.as_ref().and_then(|c| {
+            c.session
+                .claims
+                .get("roym.session.token")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+        });
+        let session_exp_secs = self
+            .caller
+            .as_ref()
+            .and_then(|c| c.session.claims.get("roym.session.exp").and_then(|v| v.as_u64()));
+        let session_revocation = self.route_handler.inner.session_revocation.clone();
+
+        if is_session_expired_or_revoked(
+            session_token.as_deref(),
+            session_exp_secs,
+            session_revocation.as_ref(),
+        ) {
+            return Ok(http_error(StatusCode::UNAUTHORIZED, "Unauthorized".into()));
         }
 
         let state = FeedState {
@@ -293,6 +393,9 @@ impl HttpHandler {
             last_cursor,
             buffered_frames,
             changed_rx,
+            session_token,
+            session_exp_secs,
+            session_revocation,
             _permit: permit,
             _guard: guard,
         };
