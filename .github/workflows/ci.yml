@@ -96,6 +96,7 @@ jobs:
         shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-free-disk
       - uses: ./.github/actions/ci-setup
         with:
           cache-key: test
@@ -145,6 +146,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.coverage }}
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/ci-free-disk
       - uses: ./.github/actions/ci-setup
         with:
           cache-key: coverage
