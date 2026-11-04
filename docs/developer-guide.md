@@ -1816,7 +1816,7 @@ To act as a verified person identity, a client opens a session with the gateway:
    ```
 
 4. **Use Session with `curl`**:
-   Present the session token via either the `syneroym_session` cookie or `Authorization: Bearer` (Cookie takes priority when both are present):
+   Present the session token via either the `syneroym_session` cookie or `Authorization: Bearer` (Cookie takes priority when both are present. If the cookie is not a valid session token, for example it is expired or revoked, the gateway tries the `Bearer` value next. A `Bearer` value that is not a session token, such as an app's own token, is ignored for sessions):
    ```bash
    # Via Cookie
    curl http://localhost:7960/echo \

@@ -18,7 +18,7 @@ use syneroym_core::{
     event_bus::EventBus,
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
-    protocol_utils::SessionRevocationCheck,
+    protocol_utils::{AUTH_SERVICE_ALIAS, SessionRevocationCheck},
     storage::MockStorage,
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
@@ -31,12 +31,10 @@ use syneroym_rpc::{
 };
 use syneroym_sandbox_wasm::AppSandboxEngine;
 
-use super::{
-    super::auth::extract_session_token_from_hyper_headers, FeedGuard, HttpHandler,
-    SESSION_CALLER_MARKER, SESSION_EXPIRES_AT_CLAIM,
-};
+use super::{FeedGuard, HttpHandler, SESSION_CALLER_MARKER};
 use crate::{RouteHandler, RouteHandlerDeps, RoutePreamble, route_handler::http::HttpBody};
 
+mod login;
 mod session;
 
 #[derive(Debug, Default)]
@@ -100,6 +98,8 @@ async fn build_test_router(
         .unwrap()
 }
 
+const OWNER_DID: &str = "did:key:z6MkuVv9OwnerDid";
+
 struct TestFixture {
     _temp: tempfile::TempDir,
     route_handler: RouteHandler,
@@ -117,7 +117,7 @@ impl TestFixture {
         let temp = tempfile::tempdir().unwrap();
         let registry = EndpointRegistry::new_mock(Arc::new(MockStorage::new()));
         let bus = EventBus::new(registry.clone());
-        let owner_did = "did:key:z6MkuVv9OwnerDid".to_string();
+        let owner_did = OWNER_DID.to_string();
         let service_id = "test-service".to_string();
 
         registry.set_owner(service_id.clone(), owner_did.clone()).await.unwrap();
@@ -128,6 +128,11 @@ impl TestFixture {
 
         let route_handler =
             build_test_router(temp.path(), registry, Some(bus.clone()), session_revocation).await;
+
+        route_handler
+            .inner
+            .native_http
+            .insert(AUTH_SERVICE_ALIAS.to_string(), Arc::new(login::FakeAuthService::new()));
 
         Self { _temp: temp, route_handler, bus, owner_did, service_id }
     }
@@ -159,9 +164,12 @@ impl TestFixture {
     }
 }
 
+/// The headers of an owner's feed request: `Accept` and a valid session token.
 fn sse_headers() -> HeaderMap {
     let mut h = HeaderMap::new();
     h.insert(ACCEPT, "text/event-stream".parse().unwrap());
+    let token = login::mint_token(OWNER_DID, 3600);
+    h.insert(hyper::header::AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
     h
 }
 
@@ -506,14 +514,6 @@ fn a_closed_feed_lowers_the_open_feeds_gauge() {
         drop(guard);
         assert_eq!(gauge_val.load(Ordering::SeqCst), 0);
     });
-}
-
-#[tokio::test]
-async fn a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token() {
-    let mut headers = HeaderMap::new();
-    headers.insert(hyper::header::COOKIE, "syneroym_session=revoked-cookie".parse().unwrap());
-    headers.insert(hyper::header::AUTHORIZATION, "Bearer valid-token".parse().unwrap());
-    assert_eq!(extract_session_token_from_hyper_headers(&headers), Some("valid-token".to_string()));
 }
 
 struct DynamicRevocation(AtomicBool);

@@ -22,10 +22,7 @@ use syneroym_core::{
 };
 use tokio::sync::{OwnedSemaphorePermit, watch};
 
-use super::{
-    HttpBody, HttpHandler, SESSION_CALLER_MARKER, SESSION_EXPIRES_AT_CLAIM,
-    auth::extract_session_token_from_hyper_headers, http_error,
-};
+use super::{HttpBody, HttpHandler, SESSION_CALLER_MARKER, auth::select_session_token, http_error};
 
 #[cfg(test)]
 mod tests;
@@ -170,22 +167,12 @@ fn current_time_ms() -> i64 {
 }
 
 fn is_session_expired_or_revoked(
-    token: Option<&str>,
-    exp_secs: Option<u64>,
+    token: &str,
+    exp_secs: u64,
     revocation: Option<&Arc<dyn SessionRevocationCheck>>,
 ) -> bool {
-    if let Some(exp) = exp_secs {
-        let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        if now_secs >= exp {
-            return true;
-        }
-    }
-    if let (Some(t), Some(r)) = (token, revocation)
-        && r.is_revoked(t)
-    {
-        return true;
-    }
-    false
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    now_secs >= exp_secs || revocation.is_some_and(|r| r.is_revoked(token))
 }
 
 struct FeedState {
@@ -194,8 +181,8 @@ struct FeedState {
     last_cursor: Cursor,
     buffered_frames: VecDeque<Bytes>,
     changed_rx: watch::Receiver<u64>,
-    session_token: Option<String>,
-    session_exp_secs: Option<u64>,
+    session_token: String,
+    session_exp_secs: u64,
     session_revocation: Option<Arc<dyn SessionRevocationCheck>>,
     _permit: OwnedSemaphorePermit,
     _guard: FeedGuard,
@@ -211,7 +198,7 @@ fn make_feed_stream(state: FeedState) -> HttpBody {
                     }
                     let _ = state.changed_rx.borrow_and_update();
                     if is_session_expired_or_revoked(
-                        state.session_token.as_deref(),
+                        &state.session_token,
                         state.session_exp_secs,
                         state.session_revocation.as_ref(),
                     ) {
@@ -228,7 +215,7 @@ fn make_feed_stream(state: FeedState) -> HttpBody {
                 }
                 _ = tokio::time::sleep(FEED_KEEP_ALIVE_INTERVAL) => {
                     if is_session_expired_or_revoked(
-                        state.session_token.as_deref(),
+                        &state.session_token,
                         state.session_exp_secs,
                         state.session_revocation.as_ref(),
                     ) {
@@ -351,6 +338,13 @@ impl HttpHandler {
             Err(err) => return Ok(err.into_response()),
         };
 
+        // The token that authenticated this request is the one to watch.
+        let Some((session_token, claims)) = select_session_token(&self.route_handler, headers)
+        else {
+            return Ok(http_error(StatusCode::UNAUTHORIZED, "Unauthorized".into()));
+        };
+        let session_exp_secs = claims.expires_at_secs;
+
         let permit = match bus.try_acquire_feed_permit(&app_instance) {
             Some(p) => p,
             None => {
@@ -370,20 +364,7 @@ impl HttpHandler {
         let (last_cursor, buffered_frames) =
             init_initial_buffered_frames(bus, &app_instance, cursor_state, now_ms);
 
-        let session_token = extract_session_token_from_hyper_headers(headers);
-        let session_exp_secs = self
-            .caller
-            .as_ref()
-            .and_then(|c| c.session.claims.get(SESSION_EXPIRES_AT_CLAIM).and_then(|v| v.as_u64()));
         let session_revocation = self.route_handler.inner.session_revocation.clone();
-
-        if is_session_expired_or_revoked(
-            session_token.as_deref(),
-            session_exp_secs,
-            session_revocation.as_ref(),
-        ) {
-            return Ok(http_error(StatusCode::UNAUTHORIZED, "Unauthorized".into()));
-        }
 
         let state = FeedState {
             bus: bus.clone(),
