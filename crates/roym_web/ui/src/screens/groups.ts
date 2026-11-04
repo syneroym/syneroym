@@ -672,7 +672,10 @@ export async function renderGroups(container: HTMLElement) {
       if (activeGroupId && event.subject === activeGroupId && activeGroupReload) {
         await activeGroupReload();
       }
-      if (event.kind.startsWith("conversation.")) {
+      const hasConv =
+        event.kind.startsWith("conversation.") ||
+        ("kinds" in event && Boolean(event.kinds?.some((k) => k.startsWith("conversation."))));
+      if (hasConv) {
         await reloadGroupList(activeGroupId ?? undefined);
       }
     }

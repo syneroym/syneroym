@@ -437,10 +437,68 @@ async fn a_reader_far_behind_gets_all_events_before_it_waits() {
     assert_eq!(count, 1200, "all 1200 events should arrive without waiting for new records");
 }
 
+struct TestGauge(Arc<std::sync::atomic::AtomicI64>);
+impl metrics::GaugeFn for TestGauge {
+    fn increment(&self, value: f64) {
+        self.0.fetch_add(value as i64, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn decrement(&self, value: f64) {
+        self.0.fetch_sub(value as i64, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn set(&self, value: f64) {
+        self.0.store(value as i64, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct TestRecorder(Arc<std::sync::atomic::AtomicI64>);
+impl metrics::Recorder for TestRecorder {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        metrics::Counter::noop()
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::from_arc(Arc::new(TestGauge(self.0.clone())))
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::noop()
+    }
+}
+
 #[test]
 fn a_closed_feed_lowers_the_open_feeds_gauge() {
-    let guard = FeedGuard::new();
-    drop(guard);
+    let gauge_val = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let recorder = TestRecorder(gauge_val.clone());
+    metrics::with_local_recorder(&recorder, || {
+        assert_eq!(gauge_val.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let guard = FeedGuard::new();
+        assert_eq!(gauge_val.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(guard);
+        assert_eq!(gauge_val.load(std::sync::atomic::Ordering::SeqCst), 0);
+    });
 }
 
 #[tokio::test]

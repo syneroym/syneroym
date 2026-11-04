@@ -1,13 +1,20 @@
+use std::{
+    collections::HashMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use serde_json::json;
 use syneroym_core::event_bus::{Cursor, Event, EventBus, ReadOutcome};
+use syneroym_roym_core::transaction::{
+    AGREEMENT_RECEIPT_VERSION, DEFAULT_DATA_USE_NOTICE, RECORD_AGREEMENT_RECEIPT, RECORD_REQUEST,
+    REQUEST_VERSION,
+};
 use syneroym_signed_record::Envelope;
 
 use super::{deal_fixtures, fixtures::*, helpers::*};
 
 fn current_cursor(bus: &EventBus) -> Cursor {
-    let now =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-            as i64;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
     match bus.read("roym", None, 100, now) {
         ReadOutcome::Events { last, .. } => last,
         ReadOutcome::Reload { now: head } => head,
@@ -15,12 +22,12 @@ fn current_cursor(bus: &EventBus) -> Cursor {
 }
 
 fn read_events_after(bus: &EventBus, cursor: &Cursor) -> (Vec<Event>, Cursor) {
-    let now =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
-            as i64;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
     match bus.read("roym", Some(cursor), 100, now) {
         ReadOutcome::Events { events, last } => (events, last),
-        ReadOutcome::Reload { now: head } => (Vec::new(), head),
+        ReadOutcome::Reload { now: head } => {
+            panic!("unexpected reload at cursor {head:?}")
+        }
     }
 }
 
@@ -74,11 +81,13 @@ async fn a_request_card_records_a_card_event_in_both_builds() {
     let params = json!({
         "conversation": conv,
         "description": "Paint fence",
-        "data_use_notice": syneroym_roym_core::transaction::DEFAULT_DATA_USE_NOTICE,
+        "data_use_notice": DEFAULT_DATA_USE_NOTICE,
     });
     let (rw, rn) = both_rpc(&h, "request.set", params).await;
     assert!(rw["result"]["request_id"].is_string());
     assert!(rn["result"]["request_id"].is_string());
+    let wasm_msg_id = rw["result"]["message_id"].as_str().unwrap();
+    let native_msg_id = rn["result"]["message_id"].as_str().unwrap();
 
     let (events_w, _) = read_events_after(&h.wasm_event_bus, &c_w);
     let (events_n, _) = read_events_after(&h.native_event_bus, &c_n);
@@ -92,8 +101,8 @@ async fn a_request_card_records_a_card_event_in_both_builds() {
     assert_eq!(events_n[1].service, "transaction");
     assert_eq!(events_w[1].subject, conv);
     assert_eq!(events_n[1].subject, conv);
-    assert!(events_w[1].item.is_some());
-    assert!(events_n[1].item.is_some());
+    assert_eq!(events_w[1].item.as_deref(), Some(wasm_msg_id));
+    assert_eq!(events_n[1].item.as_deref(), Some(native_msg_id));
 }
 
 #[tokio::test]
@@ -127,8 +136,8 @@ async fn accepting_an_agreement_records_card_and_booking_events_in_both_builds()
         &format!("m-agr-{agr_id}"),
         &conv,
         &peer_did(),
-        syneroym_roym_core::transaction::RECORD_AGREEMENT_RECEIPT,
-        syneroym_roym_core::transaction::AGREEMENT_RECEIPT_VERSION,
+        RECORD_AGREEMENT_RECEIPT,
+        AGREEMENT_RECEIPT_VERSION,
         &agr_env,
     )
     .await;
@@ -141,12 +150,38 @@ async fn accepting_an_agreement_records_card_and_booking_events_in_both_builds()
     let (events_w, _) = read_events_after(&h.wasm_event_bus, &c_w);
     let (events_n, _) = read_events_after(&h.native_event_bus, &c_n);
 
-    let kinds_w: Vec<&str> = events_w.iter().map(|e| e.kind.as_str()).collect();
-    let kinds_n: Vec<&str> = events_n.iter().map(|e| e.kind.as_str()).collect();
+    let normalize_items = |events: &[Event]| -> Vec<(String, String, String, Option<String>)> {
+        let mut msg_map: HashMap<String, String> = HashMap::new();
+        let mut next_id = 0;
+        events
+            .iter()
+            .map(|e| {
+                let item_norm = e.item.as_ref().map(|item| {
+                    if item.starts_with("msg:") {
+                        msg_map
+                            .entry(item.clone())
+                            .or_insert_with(|| {
+                                let s = format!("<msg:{next_id}>");
+                                next_id += 1;
+                                s
+                            })
+                            .clone()
+                    } else {
+                        item.clone()
+                    }
+                });
+                (e.kind.clone(), e.service.clone(), e.subject.clone(), item_norm)
+            })
+            .collect()
+    };
 
-    assert!(kinds_w.contains(&"transaction.card"));
-    assert!(kinds_w.contains(&"transaction.booking"));
-    assert_eq!(kinds_w, kinds_n);
+    let tuples_w = normalize_items(&events_w);
+    let tuples_n = normalize_items(&events_n);
+
+    assert_eq!(tuples_w, tuples_n);
+    let kinds: Vec<&str> = tuples_w.iter().map(|(k, ..)| k.as_str()).collect();
+    assert!(kinds.contains(&"transaction.card"));
+    assert!(kinds.contains(&"transaction.booking"));
 }
 
 #[tokio::test]
@@ -162,8 +197,8 @@ async fn syncing_an_inbound_card_records_one_card_event_and_a_second_sync_none()
         &format!("m-req-{req_id}"),
         &conv,
         &peer_did(),
-        syneroym_roym_core::transaction::RECORD_REQUEST,
-        syneroym_roym_core::transaction::REQUEST_VERSION,
+        RECORD_REQUEST,
+        REQUEST_VERSION,
         &req_env,
     )
     .await;
@@ -205,7 +240,7 @@ async fn a_transaction_import_records_no_event() {
     let params = json!({
         "conversation": conv,
         "description": "Request for import test",
-        "data_use_notice": syneroym_roym_core::transaction::DEFAULT_DATA_USE_NOTICE,
+        "data_use_notice": DEFAULT_DATA_USE_NOTICE,
     });
     both_rpc(&h, "request.set", params).await;
 
@@ -217,8 +252,8 @@ async fn a_transaction_import_records_no_event() {
     let imp_w = one_rpc(&h, true, "transaction.import", json!({ "bundle": exp_w["result"] })).await;
     let imp_n =
         one_rpc(&h, false, "transaction.import", json!({ "bundle": exp_n["result"] })).await;
-    assert!(!is_err(&imp_w, -32602));
-    assert!(!is_err(&imp_n, -32602));
+    assert!(imp_w["result"].is_object(), "WASM import failed: {imp_w:?}");
+    assert!(imp_n["result"].is_object(), "native import failed: {imp_n:?}");
 
     let (events_w, _) = read_events_after(&h.wasm_event_bus, &c_w);
     let (events_n, _) = read_events_after(&h.native_event_bus, &c_n);

@@ -102,6 +102,29 @@ describe("Event feed", () => {
       kind: "conversation.message",
       subject: "conv-1",
       item: "m3",
+      kinds: ["conversation.message"],
+    });
+  });
+
+  it("a_burst_with_multiple_kinds_preserves_all_seen_kinds", () => {
+    startFeed();
+    const es = _getCurrentEventSourceForTest() as unknown as FakeEventSource;
+    expect(es).toBeDefined();
+
+    const calls: unknown[] = [];
+    onFeed((ev) => calls.push(ev));
+
+    es.emit("change", JSON.stringify({ kind: "conversation.message", subject: "conv-1", item: "m1" }), "cur-1");
+    vi.advanceTimersByTime(50);
+    es.emit("change", JSON.stringify({ kind: "transaction.card", subject: "conv-1", item: "c1" }), "cur-2");
+
+    vi.advanceTimersByTime(150);
+    expect(calls.length).toBe(1);
+    expect(calls[0]).toEqual({
+      kind: "transaction.card",
+      subject: "conv-1",
+      item: "c1",
+      kinds: ["conversation.message", "transaction.card"],
     });
   });
 

@@ -198,13 +198,11 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
 
   // Resolves to the rows when this run drew the list, else `undefined` (the
   // load failed, or a newer run replaced this one).
-  let latestRows: ConversationRow[] = [];
   const fillList = refiller(listItems, async (into: DocumentFragment, select?: string) => {
     let rows: ConversationRow[] = [];
     try {
       const res = await call<{ conversations: ConversationRow[] }>("conversation.list", { kind: "direct" });
       rows = res.conversations;
-      latestRows = rows;
     } catch (err) {
       into.appendChild(text("p", `Could not load: ${errText(err)}`));
       return undefined;
@@ -232,8 +230,10 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
 
   async function reloadList(select?: string) {
     if (select) activeConvId = select;
-    await fillList(select ?? activeConvId ?? undefined);
-    const rows = latestRows;
+    const rows = await fillList(select ?? activeConvId ?? undefined);
+    if (rows === undefined) {
+      return;
+    }
     if (rows.length === 0) {
       activeConvId = null;
       activeFillHistory = null;
@@ -266,7 +266,10 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       if (activeConvId && event.subject === activeConvId && activeFillHistory) {
         await activeFillHistory();
       }
-      if (event.kind.startsWith("conversation.")) {
+      const hasConv =
+        event.kind.startsWith("conversation.") ||
+        ("kinds" in event && Boolean(event.kinds?.some((k) => k.startsWith("conversation."))));
+      if (hasConv) {
         if (!activeConvId) {
           await reloadList();
         } else {

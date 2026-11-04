@@ -1288,6 +1288,7 @@ test.describe('Roym Hub', () => {
 
     // On page 2, the message appears with no reload.
     await expect(threadMessage(page2, messageText)).toBeVisible({ timeout: 15_000 });
+    expect(failedOnce).toBe(true);
 
     await page2.close();
   });

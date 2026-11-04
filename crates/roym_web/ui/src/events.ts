@@ -4,6 +4,7 @@ export type FeedChangeEvent = {
   kind: string;
   subject: string;
   item: string | null;
+  kinds?: string[];
 };
 
 export type FeedReloadEvent = {
@@ -22,7 +23,12 @@ let feedStarted = false;
 let visibilityListenerInstalled = false;
 
 const listeners = new Set<FeedListener>();
-const pendingBySubject = new Map<string, ReturnType<typeof setTimeout>>();
+type PendingBurst = {
+  timer: ReturnType<typeof setTimeout>;
+  lastEvent: FeedChangeEvent;
+  kinds: Set<string>;
+};
+const pendingBySubject = new Map<string, PendingBurst>();
 
 export function onFeed(listener: FeedListener): () => void {
   listeners.add(listener);
@@ -111,15 +117,27 @@ export function openFeed(): void {
         item: data.item ?? null,
       };
 
-      const existingTimer = pendingBySubject.get(data.subject);
-      if (existingTimer !== undefined) {
-        clearTimeout(existingTimer);
+      const existing = pendingBySubject.get(data.subject);
+      const kinds = existing ? existing.kinds : new Set<string>();
+      kinds.add(data.kind);
+      if (existing) {
+        clearTimeout(existing.timer);
       }
       const timer = setTimeout(() => {
+        const burst = pendingBySubject.get(data.subject);
         pendingBySubject.delete(data.subject);
-        notifyListeners(changeEvent);
+        if (burst) {
+          notifyListeners({
+            ...burst.lastEvent,
+            kinds: Array.from(burst.kinds),
+          });
+        }
       }, 150);
-      pendingBySubject.set(data.subject, timer);
+      pendingBySubject.set(data.subject, {
+        timer,
+        lastEvent: changeEvent,
+        kinds,
+      });
     } catch (err) {
       console.error("malformed event data", err);
     }
@@ -173,8 +191,8 @@ export function startFeed(): void {
 }
 
 function clearPendingChanges(): void {
-  for (const timer of pendingBySubject.values()) {
-    clearTimeout(timer);
+  for (const burst of pendingBySubject.values()) {
+    clearTimeout(burst.timer);
   }
   pendingBySubject.clear();
 }

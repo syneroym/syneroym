@@ -182,14 +182,61 @@ fn register_accept_notifier(service: &crate::ConversationService) -> Arc<FixedNo
 async fn sending_a_message_records_one_message_event() {
     let dir = tempfile::tempdir().unwrap();
     let (service, bus) = event_service(dir.path()).await;
+    let store = service.store_for(ME).await.unwrap();
+
+    let probe_called = Arc::new(AtomicUsize::new(0));
+    {
+        let store = store.clone();
+        let count = probe_called.clone();
+        service.set_announce_probe(Some(Box::new(move |kind, _conv_id| {
+            assert!(store.conn_is_free(), "connection lock was held when announce was called");
+            if kind == "conversation.message" {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        })));
+    }
+
     let conv = service.open_direct(ME, PEER).await.unwrap();
     let msg_id = service.send(ME, &conv, "text/plain", b"hi".to_vec()).await.unwrap();
 
+    assert_eq!(probe_called.load(Ordering::SeqCst), 1);
     let events = read_events(&bus, "app-1");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, "conversation.message");
     assert_eq!(events[0].service, "conversation");
     assert_eq!(events[0].subject, conv);
+    assert_eq!(events[0].item.as_deref(), Some(msg_id.as_str()));
+}
+
+#[tokio::test]
+async fn sending_a_group_message_records_one_message_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let (service, bus) = event_service(dir.path()).await;
+    let store = service.store_for(ME).await.unwrap();
+    let alice = SigningKey::generate(&mut rand_core::OsRng);
+    let me = SigningKey::generate(&mut rand_core::OsRng);
+    let conv = group_with(&store, &[(ME, &me), ("svc:alice", &alice)]);
+
+    let probe_called = Arc::new(AtomicUsize::new(0));
+    {
+        let store = store.clone();
+        let count = probe_called.clone();
+        service.set_announce_probe(Some(Box::new(move |kind, _conv_id| {
+            assert!(store.conn_is_free(), "connection lock was held when announce was called");
+            if kind == "conversation.message" {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        })));
+    }
+
+    let msg_id =
+        service.send_group(ME, &store, &conv, "text/plain", b"group send text").await.unwrap();
+
+    assert_eq!(probe_called.load(Ordering::SeqCst), 1);
+    let events = read_events(&bus, "app-1");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, "conversation.message");
+    assert_eq!(events[0].subject, conv.id);
     assert_eq!(events[0].item.as_deref(), Some(msg_id.as_str()));
 }
 
@@ -429,7 +476,8 @@ async fn a_group_deletion_entry_is_visible_to_history_when_its_event_arrives() {
     let store = service.store_for(ME).await.unwrap();
 
     let alice = SigningKey::generate(&mut rand_core::OsRng);
-    let conv = group_with(&store, &[("svc:alice", &alice)]);
+    let me = SigningKey::generate(&mut rand_core::OsRng);
+    let conv = group_with(&store, &[(ME, &me), ("svc:alice", &alice)]);
     let msg_entry = make_entry(&alice, "svc:alice", 1000, "text/plain", b"group msg to delete");
     let target_id = msg_entry.entry_id.clone();
 
@@ -476,9 +524,25 @@ async fn a_group_deletion_entry_is_visible_to_history_when_its_event_arrives() {
 async fn a_peer_refusal_records_a_delivery_event() {
     let dir = tempfile::tempdir().unwrap();
     let (service, bus) = event_service(dir.path()).await;
+    let store = service.store_for(ME).await.unwrap();
 
     let conv = service.open_direct(ME, PEER).await.unwrap();
     let msg_id = service.send(ME, &conv, "text/plain", b"will refuse".to_vec()).await.unwrap();
+
+    let probe_called = Arc::new(AtomicUsize::new(0));
+    {
+        let store = store.clone();
+        let target = msg_id.clone();
+        let count = probe_called.clone();
+        service.set_announce_probe(Some(Box::new(move |kind, _conv_id| {
+            assert!(store.conn_is_free(), "connection lock was held when announce was called");
+            if kind == "conversation.delivery" {
+                count.fetch_add(1, Ordering::SeqCst);
+                let row = store.get_message(&target).unwrap().unwrap();
+                assert!(row.refused.is_some(), "row was not marked refused");
+            }
+        })));
+    }
 
     let refusal_notice = test_message(
         "m:refusal-notice-1",
@@ -489,11 +553,96 @@ async fn a_peer_refusal_records_a_delivery_event() {
     );
     service.deliver_inbound(ME, refusal_notice).await.unwrap();
 
+    assert_eq!(probe_called.load(Ordering::SeqCst), 1);
     let events = read_events(&bus, "app-1");
     assert_eq!(events.len(), 2);
     assert_eq!(events[1].kind, "conversation.delivery");
     assert_eq!(events[1].subject, conv);
     assert_eq!(events[1].item.as_deref(), Some(msg_id.as_str()));
+}
+
+#[derive(Debug)]
+struct RefusingDeliveryProxy {
+    peer: Arc<crate::ConversationService>,
+}
+
+#[async_trait::async_trait]
+impl syneroym_rpc::ServiceProxy for RefusingDeliveryProxy {
+    async fn invoke(
+        &self,
+        request: syneroym_rpc::ProxyRequest,
+    ) -> std::result::Result<serde_json::Value, syneroym_rpc::ProxyError> {
+        if request.method == "prekey-bundle" {
+            let bundle = self
+                .peer
+                .prekey_bundle(&request.target_service, ME)
+                .await
+                .map_err(|e| syneroym_rpc::ProxyError::Transport(e.to_string()))?;
+            return Ok(serde_json::from_slice(&bundle).unwrap());
+        }
+        if request.method == "deliver" {
+            let ack = serde_json::json!({
+                "message_id": request.idempotency_key.unwrap_or_default(),
+                "refused": "refused by policy"
+            });
+            return Ok(ack);
+        }
+        Err(syneroym_rpc::ProxyError::Transport("unsupported".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn a_refused_delivery_ack_records_a_delivery_event() {
+    let dir1 = tempfile::tempdir().unwrap();
+    let dir2 = tempfile::tempdir().unwrap();
+    let (service, bus) = event_service(dir1.path()).await;
+    let peer = event_service(dir2.path()).await.0;
+    let store = service.store_for(ME).await.unwrap();
+
+    let master = syneroym_identity::Identity::generate().unwrap();
+    let instance = syneroym_identity::Identity::generate().unwrap();
+    let cert = syneroym_identity::DelegationCertificate::issue(
+        &master,
+        instance.public_key(),
+        3600,
+        syneroym_identity::delegation::SCOPE_SERVICE_INSTANCE.to_string(),
+    )
+    .unwrap();
+    service.registry().set_owner(ME.to_string(), "did:key:zOwner".to_string()).await.unwrap();
+    service.registry().set_instance_cert(ME.to_string(), cert).await.unwrap();
+
+    let proxy: Arc<dyn syneroym_rpc::ServiceProxy> = Arc::new(RefusingDeliveryProxy { peer });
+    service.set_service_proxy(Arc::downgrade(&proxy));
+
+    let conv = service.open_direct(ME, "svc:bob").await.unwrap();
+    let msg_id = service.send(ME, &conv, "text/plain", b"refuse me".to_vec()).await.unwrap();
+
+    let probe_called = Arc::new(AtomicUsize::new(0));
+    {
+        let store = store.clone();
+        let target = msg_id.clone();
+        let count = probe_called.clone();
+        service.set_announce_probe(Some(Box::new(move |kind, _conv_id| {
+            assert!(store.conn_is_free(), "connection lock was held when announce was called");
+            if kind == "conversation.delivery" {
+                count.fetch_add(1, Ordering::SeqCst);
+                let row = store.get_message(&target).unwrap().unwrap();
+                assert!(row.refused.is_some(), "row was not marked refused");
+            }
+        })));
+    }
+
+    service.drain_once().await;
+
+    assert_eq!(probe_called.load(Ordering::SeqCst), 2);
+    let events = read_events(&bus, "app-1");
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[1].kind, "conversation.delivery");
+    assert_eq!(events[1].subject, conv);
+    assert_eq!(events[1].item.as_deref(), Some(msg_id.as_str()));
+    assert_eq!(events[2].kind, "conversation.delivery");
+    assert_eq!(events[2].subject, conv);
+    assert_eq!(events[2].item.as_deref(), Some(msg_id.as_str()));
 }
 
 #[tokio::test]
@@ -504,7 +653,8 @@ async fn an_accepted_group_entry_records_a_message_event() {
     let store = service.store_for(ME).await.unwrap();
 
     let alice = SigningKey::generate(&mut rand_core::OsRng);
-    let conv = group_with(&store, &[("svc:alice", &alice)]);
+    let me = SigningKey::generate(&mut rand_core::OsRng);
+    let conv = group_with(&store, &[(ME, &me), ("svc:alice", &alice)]);
     let msg_entry = make_entry(&alice, "svc:alice", 1000, "text/plain", b"group welcome");
     let target_id = msg_entry.entry_id.clone();
 
