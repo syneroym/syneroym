@@ -4,6 +4,11 @@ use super::*;
 /// request carries a valid session token issued by the local auth service.
 pub(super) const SESSION_CALLER_MARKER: &str = "__syneroym_session_caller";
 
+/// Claim that carries the session's expiry time (seconds). A time is not a
+/// credential. The token string itself is never put in the claims, because
+/// guest code receives them.
+pub(super) const SESSION_EXPIRES_AT_CLAIM: &str = "__syneroym_session_expires_at_secs";
+
 /// The router's view of `CallerContext` as a guest may see it. `Err` on a
 /// substrate-injected `AuthLevel`, which cannot legitimately reach an
 /// inbound HTTP request -- fail closed rather than report a level that
@@ -113,9 +118,8 @@ pub(super) fn resolve_effective_session_caller(
     let mut session = caller.map(|c| c.session.clone()).unwrap_or_default();
     session.subject_did = claims.person_did.clone();
     session.claims.insert(SESSION_CALLER_MARKER.to_string(), serde_json::Value::Bool(true));
-    session.claims.insert("roym.session.token".to_string(), serde_json::Value::String(token_str));
     session.claims.insert(
-        "roym.session.exp".to_string(),
+        SESSION_EXPIRES_AT_CLAIM.to_string(),
         serde_json::Value::Number(claims.expires_at_secs.into()),
     );
 

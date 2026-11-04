@@ -33,9 +33,11 @@ use syneroym_sandbox_wasm::AppSandboxEngine;
 
 use super::{
     super::auth::extract_session_token_from_hyper_headers, FeedGuard, HttpHandler,
-    SESSION_CALLER_MARKER,
+    SESSION_CALLER_MARKER, SESSION_EXPIRES_AT_CLAIM,
 };
 use crate::{RouteHandler, RouteHandlerDeps, RoutePreamble, route_handler::http::HttpBody};
+
+mod session;
 
 #[derive(Debug, Default)]
 struct NoopControlPlane;
@@ -519,35 +521,4 @@ impl SessionRevocationCheck for DynamicRevocation {
     fn is_revoked(&self, _token: &str) -> bool {
         self.0.load(Ordering::SeqCst)
     }
-}
-
-#[tokio::test]
-async fn a_revoked_session_terminates_an_open_feed_stream() {
-    let revocation = Arc::new(DynamicRevocation(AtomicBool::new(false)));
-    let fix = TestFixture::with_revocation(Some(revocation.clone())).await;
-
-    let mut caller = fix.session_caller(None);
-    caller.session.claims.insert(
-        "roym.session.token".to_string(),
-        serde_json::Value::String("token-123".to_string()),
-    );
-
-    let handler = fix.make_handler(Some(caller), None);
-    let resp = handler.handle_event_feed_parts(&sse_headers(), None).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let mut body = resp.into_body();
-
-    let ready = read_frame_text(&mut body).await.unwrap();
-    assert!(ready.starts_with("event: ready\n"));
-
-    revocation.0.store(true, Ordering::SeqCst);
-
-    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-    fix.bus.record(&fix.service_id, "conversation.message", "conv1", Some("m1"), now_ms).unwrap();
-
-    let next_frame = read_frame_text(&mut body).await;
-    assert!(
-        next_frame.is_none(),
-        "feed stream must terminate on revocation, but got: {next_frame:?}"
-    );
 }

@@ -22,7 +22,10 @@ use syneroym_core::{
 };
 use tokio::sync::{OwnedSemaphorePermit, watch};
 
-use super::{HttpBody, HttpHandler, SESSION_CALLER_MARKER, http_error};
+use super::{
+    HttpBody, HttpHandler, SESSION_CALLER_MARKER, SESSION_EXPIRES_AT_CLAIM,
+    auth::extract_session_token_from_hyper_headers, http_error,
+};
 
 #[cfg(test)]
 mod tests;
@@ -367,17 +370,11 @@ impl HttpHandler {
         let (last_cursor, buffered_frames) =
             init_initial_buffered_frames(bus, &app_instance, cursor_state, now_ms);
 
-        let session_token = self.caller.as_ref().and_then(|c| {
-            c.session
-                .claims
-                .get("roym.session.token")
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string)
-        });
+        let session_token = extract_session_token_from_hyper_headers(headers);
         let session_exp_secs = self
             .caller
             .as_ref()
-            .and_then(|c| c.session.claims.get("roym.session.exp").and_then(|v| v.as_u64()));
+            .and_then(|c| c.session.claims.get(SESSION_EXPIRES_AT_CLAIM).and_then(|v| v.as_u64()));
         let session_revocation = self.route_handler.inner.session_revocation.clone();
 
         if is_session_expired_or_revoked(
