@@ -581,7 +581,7 @@ WIT signature, so the call is typed at the dispatch boundary even though the wir
 is JSON-RPC. Set `options.idempotent = true` only for calls safe to retry on
 transport failure; a callee-returned error is never retried. A component cannot
 use this import to reach *another* service's native capabilities (`data-layer`,
-`vault`, `app-config`, `blob-store`, `messaging`, `events`) — that's refused with
+`vault`, `app-config`, `blob-store`, `messaging`) — that's refused with
 `permission-denied` — only its own, via its regular host imports.
 
 ##### Batched Outbound Calls (`call-all`)

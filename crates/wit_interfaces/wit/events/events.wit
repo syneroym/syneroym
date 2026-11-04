@@ -52,8 +52,8 @@ interface events {
 
     /// Reads the events of the caller's app instance after `after`, at most
     /// `limit` (the host caps it at 500). With no cursor, or with `limit` 0,
-    /// returns no events and the current cursor (a cursor that would get
-    /// `reload` still gets `reload`). Never waits.
+    /// returns no events and the cursor it was given (the head when no cursor is given)
+    /// (a cursor that would get `reload` still gets `reload`). Never waits.
     read: func(after: option<string>, limit: u32)
         -> result<read-result, events-error>;
 }
