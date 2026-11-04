@@ -503,7 +503,7 @@ did not run the full suite. I ran `npx vitest run` in `crates/roym_web/ui`
 (155 passed) and `grep`, `wc` and `git` checks. Each finding below follows
 from the code as written.
 
-**Summary:** 0 blocker, 3 major (R1, R2, R3), 7 minor (R4 to R10). 10 items: 9 Fixed, 1 Rejected (R3). 0 open.
+**Summary:** 0 blocker, 3 major (R1, R2, R3), 7 minor (R4 to R10). 10 open.
 
 ### What was checked and found correct
 
@@ -633,7 +633,7 @@ record the answer in the change doc. Add a router test: a request with a
 revoked cookie and a valid `Bearer` is accepted (or the cookie is ignored off
 the events path).
 
-*Status:* Fixed (efd0f620). The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, the owner confirmed the choice on 2026-11-04, and the deviation line and ADR-0027 record it.
+*Status:* Fixed (efd0f620), confirmed in the fixes check below. The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, the owner confirmed the choice on 2026-11-04, and the deviation line and ADR-0027 record it.
 
 #### R2 — major — an open feed keeps streaming after its session is revoked or expired
 
@@ -659,7 +659,7 @@ client then reconnects and gets `401`. Add a router test with a revocation
 checker that turns revoked after the first frame: the next tick ends the
 body. Say in ADR-0027 that a feed ends when its session ends.
 
-*Status:* Fixed (efd0f620). An open feed ends when its token is revoked or past `exp`, checked at connect, on every change and on every keep-alive tick. Proof: with the revocation check disabled, `a_revoked_session_terminates_an_open_feed_stream` fails; restored, it passes.
+*Status:* Fixed (efd0f620), confirmed in the fixes check below (its implementation adds R11). An open feed ends when its token is revoked or past `exp`, checked at connect, on every change and on every keep-alive tick. Proof: with the revocation check disabled, `a_revoked_session_terminates_an_open_feed_stream` fails; restored, it passes.
 
 #### R3 — major — CI has not passed on this PR
 
@@ -684,7 +684,7 @@ compare `du -sh target` of shard 1 on `main` and on this branch) and free
 space in the CI job, or add the new e2e file as a module of an existing test
 binary. Record a green run and the 20-run result in `status.md`.
 
-*Status:* Rejected: not a code defect. The failure was a full runner disk in Test 1/6 (17 MB free). CI run [41751830065](https://github.com/syneroym/syneroym/actions/runs/41751830065) on 0b38ce71 (the same code as 4cfd96a0, only docs differ) passed every job, Test 1/6 included. No code changed for this item. The disk margin stays small; if it fails again, move `roym_event_feed_e2e` into an existing test binary. The 20-run result is in `status.md`.
+*Status:* Rejected: not a code defect. Rejection accepted in the fixes check below. The failure was a full runner disk in Test 1/6 (17 MB free). CI run [41751830065](https://github.com/syneroym/syneroym/actions/runs/41751830065) on 0b38ce71 (the same code as 4cfd96a0, only docs differ) passed every job, Test 1/6 included. No code changed for this item. The disk margin stays small; if it fails again, move `roym_event_feed_e2e` into an existing test binary. The 20-run result is in `status.md`.
 
 #### R4 — minor — the change doc's D-A5 decisions do not match the plan, and four docs give the wrong field cap
 
@@ -716,7 +716,7 @@ from a service, and gets `invalid-argument("subject")`.
 (short is fine, but the same meaning and values). Change 256 to 128 in the
 change doc design text, ADR-0027 and the backlog row.
 
-*Status:* Fixed (bf4fe2f3). D-A5-1 to D-A5-13 in the change doc now match the plan; `subject` and `item` say 128 bytes in the change doc, ADR-0027 and the backlog row.
+*Status:* Fixed (bf4fe2f3), confirmed in the fixes check below. D-A5-1 to D-A5-13 in the change doc now match the plan; `subject` and `item` say 128 bytes in the change doc, ADR-0027 and the backlog row.
 
 #### R5 — minor — the evidence names tests that do not exist, and the counts are wrong
 
@@ -748,7 +748,7 @@ to check OF-8 and runs zero tests.
 plan 7.6, which also makes a failure name its case). Correct the counts in
 `status.md` and `task.md`, add the conversation count and the 20-run result.
 
-*Status:* Fixed (47b7e9d6). OF-8 to OF-10 name tests that exist (the one e2e test and its five steps, `tests_events.rs`, `sending_a_message_records_the_same_event_in_both_builds`). The counts in `status.md` and `task.md` are corrected, the conversation count is added, and the 20-run result is in `status.md`.
+*Status:* Fixed (47b7e9d6), confirmed in the fixes check below. OF-8 to OF-10 name tests that exist (the one e2e test and its five steps, `tests_events.rs`, `sending_a_message_records_the_same_event_in_both_builds`). The counts in `status.md` and `task.md` are corrected, the conversation count is added, and the 20-run result is in `status.md`.
 
 #### R6 — minor — some tests cannot fail or do not cover what the plan names
 
@@ -787,7 +787,7 @@ every test.
 
 *Fix:* As in each point above.
 
-*Status:* Fixed (15c06200). Proofs, each broken locally and restored: the gauge test fails when `FeedGuard` does not lower the gauge; `a_refused_delivery_ack_records_a_delivery_event` fails when the ack path announces before the refusal is stored; `a_peer_refusal_records_a_delivery_event` fails when the notice path announces inside the transaction; `sending_a_group_message_records_one_message_event` fails when the announce moves into the group transaction; the card parity test and the agreement parity test fail when the card event names the conversation instead of the message; `a_transaction_import_records_no_event` fails when the import returns an error; Hub case 41 fails when the 503 route does not match (`failedOnce` stays false). Not proven: the `Reload` panic in the parity helper (a one-line `panic!` arm), and the direct-send announce (the store runs its own transaction there, so no probe-visible mutation exists).
+*Status:* Fixed (15c06200), confirmed in the fixes check below. Proofs, each broken locally and restored: the gauge test fails when `FeedGuard` does not lower the gauge; `a_refused_delivery_ack_records_a_delivery_event` fails when the ack path announces before the refusal is stored; `a_peer_refusal_records_a_delivery_event` fails when the notice path announces inside the transaction; `sending_a_group_message_records_one_message_event` fails when the announce moves into the group transaction; the card parity test and the agreement parity test fail when the card event names the conversation instead of the message; `a_transaction_import_records_no_event` fails when the import returns an error; Hub case 41 fails when the 503 route does not match (`failedOnce` stays false). Not proven: the `Reload` panic in the parity helper (a one-line `panic!` arm), and the direct-send announce (the store runs its own transaction there, so no probe-visible mutation exists).
 
 #### R7 — minor — the Hub misses list refreshes after a burst, and draws a thread from stale rows
 
@@ -820,7 +820,7 @@ refiller result: when it is `undefined` because a newer run replaced this
 one, let the newer run draw the thread; when the load failed, do not draw
 it. Record the final rule in the Deviations line.
 
-*Status:* Fixed (15c06200). The debounce keeps every kind of a burst in `kinds`, and Messages and Groups refresh the list when any kind is `conversation.*`. `reloadList` uses the rows that `fillList` returns and draws nothing when it returns `undefined`. Proof: with `kinds` reduced to the last kind, `a_burst_with_multiple_kinds_preserves_all_seen_kinds` fails; restored, it passes. The thread-draw rule has no unit test; the final rule is in the change doc deviation line.
+*Status:* Fixed (15c06200), confirmed in the fixes check below. The debounce keeps every kind of a burst in `kinds`, and Messages and Groups refresh the list when any kind is `conversation.*`. `reloadList` uses the rows that `fillList` returns and draws nothing when it returns `undefined`. Proof: with `kinds` reduced to the last kind, `a_burst_with_multiple_kinds_preserves_all_seen_kinds` fails; restored, it passes. The thread-draw rule has no unit test; the final rule is in the change doc deviation line.
 
 #### R8 — minor — why-comments were lost in a refactor of `build_route_handler_deps`
 
@@ -843,7 +843,7 @@ resolver use, because nothing says the order matters.
 small named struct instead of the 6-tuple. Record the split in the
 Deviations if it stays.
 
-*Status:* Fixed (c42b1fe3). `init_base_capabilities` returns a named `BaseCapabilities` struct, the four why-comments are back beside their code, and the split is recorded in the change doc deviations (47b7e9d6).
+*Status:* Fixed (c42b1fe3), confirmed in the fixes check below. `init_base_capabilities` returns a named `BaseCapabilities` struct, the four why-comments are back beside their code, and the split is recorded in the change doc deviations (47b7e9d6).
 
 #### R9 — minor — three living-doc and interface statements are false or missing
 
@@ -872,7 +872,7 @@ guide and expects a refusal that never comes.
 `events` to the `AGENTS.md` list. Change the WIT text to "returns no events
 and the cursor it was given (the head when no cursor is given)".
 
-*Status:* Fixed (bf4fe2f3). `events` is out of the developer guide's refusal sentence (it is not in `NATIVE_CAPABILITY_INTERFACES`, so no refusal exists), it is in the `AGENTS.md` WIT list, and the WIT text for `read` says that `limit` 0 returns the cursor it was given.
+*Status:* Fixed (bf4fe2f3), confirmed in the fixes check below. `events` is out of the developer guide's refusal sentence (it is not in `NATIVE_CAPABILITY_INTERFACES`, so no refusal exists), it is in the `AGENTS.md` WIT list, and the WIT text for `read` says that `limit` 0 returns the cursor it was given.
 
 #### R10 — minor — widened APIs, a dead parameter, a lost event, and import-rule breaks
 
@@ -907,4 +907,163 @@ again.
 
 *Fix:* As in each point.
 
-*Status:* Fixed (e7682c8a, 149509de, efd0f620). `drain_once`, `registry()` and `event_bus()` are crate-private (the getters test-only); `refuse_card` lost `_msg_id`, and the unused message id is gone from the whole card filing chain; a missing message row logs a warning instead of sending an empty subject; the dead `last-event-id` lookup is gone and the 25 s keep-alive is `FEED_KEEP_ALIVE_INTERVAL`; the listed inline paths are imports now, in the router tests too.
+*Status:* Fixed (e7682c8a, 149509de, efd0f620), confirmed in the fixes check below. `drain_once`, `registry()` and `event_bus()` are crate-private (the getters test-only); `refuse_card` lost `_msg_id`, and the unused message id is gone from the whole card filing chain; a missing message row logs a warning instead of sending an empty subject; the dead `last-event-id` lookup is gone and the 25 s keep-alive is `FEED_KEEP_ALIVE_INTERVAL`; the listed inline paths are imports now, in the router tests too.
+
+## Code review round 1 — fixes checked — Claude Opus 5.5, 2026-11-04
+
+I checked the fix commits efd0f620, bf4fe2f3, 15c06200, e7682c8a, 149509de,
+c42b1fe3 and 47b7e9d6 on `feat/m08a-a5-event-feed` (main checkout, not a
+worktree; `git pull` said "Already up to date"). 2d138ec0 and 27f0c9f9 set
+the statuses and the `status.md` row. 2d138ec0 also changed the counts line
+of round 1. That line is the record of the review, so I put it back. The new
+counts are below. Line numbers below are at `27f0c9f9`. No code was changed.
+
+CI: [run 41751830065](https://github.com/syneroym/syneroym/actions/runs/41751830065)
+on 0b38ce71 passed every job, Test 1/6 included. The fix commits are in
+[run 41773466844](https://github.com/syneroym/syneroym/actions/runs/41773466844)
+on 27f0c9f9, which is still pending, so CI has not yet passed on the fixed
+code. I ran only targeted tests: router `events` 17 passed, conversation
+`events` 15 passed, sandbox_wasm `events` 5 passed, Hub vitest 156 passed.
+I did not run the parity tests (they need a WASM rebuild) or the e2e tests.
+
+**Confirmed Fixed.**
+- **R1.** The Hub cookie has `path=/_syneroym/events`, `Max-Age` and
+  `SameSite=Lax` (`login.ts:62-71`). `setToken`, `whoami` and `openFeed` all
+  use `setEventFeedCookie`. `clearEventFeedCookie` also deletes the old
+  `path=/` cookie. The router now reads `Authorization` before the cookie
+  (`auth.rs:56-64`). So `/rpc` no longer carries an ambient session, and a
+  stale cookie can no longer override a valid `Bearer`. Each tab writes its
+  own token before it connects, so a logout in one tab does not end another
+  tab's next reconnect. ADR-0027 and the change doc record the choice, and
+  the `status.md` row records the owner's answer. See R12 for the `Max-Age`
+  value.
+- **R2.** The stream checks expiry and revocation at connect, on every
+  wake-up and on every keep-alive tick (`events.rs:209-216`, `:226-233`,
+  `:384-389`). `a_revoked_session_terminates_an_open_feed_stream` passes.
+  The behaviour is right. The way the token reaches the stream is not: see
+  R11. See R13 for the paths with no test.
+- **R3.** Rejection accepted. Run 41751830065 is green on every job on code
+  that equals 4cfd96a0. The new run on the fixes must still pass before
+  merge.
+- **R4.** D-A5-1 to D-A5-13 now match the plan. The 128-byte caps agree in
+  the change doc, ADR-0027 and the backlog row.
+- **R5.** OF-8 to OF-10 name tests that exist. The counts in `status.md` and
+  `task.md` (18, 15, 5, 16, 5, 1, 9) match what I ran.
+- **R6.** The gauge test uses a local recorder and checks 0 → 1 → 0. The
+  refused ack, the peer refusal and the group send are probed with
+  `conn_is_free`. The card parity test compares the message id, and the
+  agreement parity test compares (kind, service, subject, item) with message
+  ids mapped. `read_events_after` panics on `Reload`. Hub case 41 asserts
+  `failedOnce`. The two gaps the fixer names (the `Reload` arm and the direct
+  send) are acceptable.
+- **R7.** The burst keeps every kind (`events.ts:120-140`), both screens
+  refresh the list on any `conversation.*` kind, and `reloadList` uses the
+  rows that `fillList` returns (`messages.ts:231-236`). `refiller` returns
+  `undefined` when a newer run replaced it, so no stale rows are drawn.
+- **R8.** `BaseCapabilities` replaces the 6-tuple, and the four
+  why-comments are back beside their code.
+- **R9.** The developer guide's refusal list no longer names `events`.
+  `AGENTS.md` lists `events`. The WIT text for `limit` 0 matches
+  `event_bus.rs:205-218`.
+- **R10.** `drain_once` is `pub(crate)`, and the two getters are
+  `#[cfg(test)] pub(crate)`. No caller outside the crate uses them.
+  `_msg_id` and the unused message id in the card chain are gone. A missing
+  message row logs a warning and sends no event. The dead
+  `last-event-id` lookup is gone, and the keep-alive is a named constant.
+  The inline paths named in R10 are imports now.
+
+### New findings
+
+#### R11 — major — the raw session token is copied into `session.claims`, which guest code receives
+
+*Where:* `crates/router/src/route_handler/http/auth.rs:116-120` (inserts
+`roym.session.token` and `roym.session.exp`);
+`crates/router/src/route_handler/http.rs:293-305` (this caller becomes the
+caller of every guest call, WebSocket and blob request);
+`crates/sandbox_wasm/src/host_capabilities/capabilities_store.rs:210`,
+`:257`, `:402` (`self.caller.session` goes to `apply_stage4`);
+`crates/rpc/src/fdae_abac.rs:88` (`claims_json` is all of
+`session.claims`); `crates/sandbox_wasm/src/engine/auth.rs:574` (passed to
+the guest as `claims-json`).
+
+*Problem:* To check revocation on an open feed, the fix stores the bearer
+session token string in `CallerContext.session.claims`. This happens in
+`resolve_effective_session_caller`, so it applies to every session request,
+not only to the feed. `session.claims` is not router-private. The FDAE row
+authorizer (a WASM export of the app's own component) gets
+`session.claims` serialized as `claims-json` on each data-layer read that
+has an ABAC rule. The same `CallerContext` is also cloned into cross-service
+FDAE fetches (`host_capabilities.rs:611`). `CallerContext` derives `Debug`,
+so any future `?caller` log line prints the token too.
+
+*Failure case:* The owner opens an app's page on their node with the Hub
+session. The app's guest has an ABAC rule on a collection it reads. Its
+`authorize-rows` export reads `claims-json` and gets the owner's live session
+token. The token is valid for every service on the node whose owner is that
+person, until it expires. So the guest can send it as `Authorization:
+Bearer` to the Roym services (or any other app of the owner) and act as the
+owner there. A guest is never meant to hold a credential of its caller.
+
+*Fix:* Do not put the token in `session.claims`. The feed handler already
+has the request headers (`handle_event_feed_parts(headers, …)`), so read the
+token there with `extract_session_token_from_hyper_headers(headers)`, and
+read the expiry from `SessionToken::verify` (or keep only `roym.session.exp`
+in claims, since a time is not a credential, under a named constant). Keep
+the token in `FeedState` only. Add a test that a session caller's
+`AbacAuthContext.claims_json` does not contain the token.
+
+*Status:* Open.
+
+#### R12 — minor — `tokenMaxAge` parses a JWT, but the session token is z-base-32 JSON, so `Max-Age` is always 3600
+
+*Where:* `crates/roym_web/ui/src/session/login.ts:45-59`;
+`crates/ucan/src/session_token.rs:100-103` (`to_token_string` is
+`z32::encode(serde_json::to_vec(..))`, with no `.`); the R1 status line and
+ADR-0027 ("lifetime bounded by the session token's `exp`").
+
+*Problem:* `tokenMaxAge` splits the token on `.` and reads `payload.exp`.
+The real token has no `.` and its field is `expires_at_secs`, not `exp`. So
+the parse always fails and the cookie always gets `Max-Age=3600`. The
+behaviour is safe (the router still rejects an expired token, and `openFeed`
+writes the cookie again before each connect), but the code is dead, the
+docs and the R1 status say something that is not true, and no test covers
+the function.
+
+*Failure case:* A session that ends in 10 minutes leaves a cookie that lives
+for 1 hour. The docs say the cookie never outlives the token.
+
+*Fix:* Either use the expiry the login reply already gives the Hub (if it
+has one), or drop the parse and say in the comment and in ADR-0027 that the
+cookie lives 1 hour and is rewritten on each connect. Add a vitest for the
+cookie string that `setEventFeedCookie` writes.
+
+*Status:* Open.
+
+#### R13 — minor — the expiry checks and the keep-alive check have no test
+
+*Where:* `crates/router/src/route_handler/http/events.rs:169-187`
+(`is_session_expired_or_revoked`), `:226-233` (keep-alive path), `:384-389`
+(check at connect); `events/tests.rs` (only
+`a_revoked_session_terminates_an_open_feed_stream`, which wakes on a change).
+
+*Problem:* R2 asked that both a revoked and an expired session end the
+stream, also when no event arrives. Only revocation on a change wake-up is
+tested. The expiry branch, the 401 at connect, and the keep-alive branch
+are not. Removing the check from the keep-alive arm, or swapping `>=` for
+`>` on `exp`, would pass every test.
+
+*Failure case:* A later refactor drops the keep-alive check. A revoked
+session on a quiet conversation keeps its feed open with no limit, and CI
+stays green.
+
+*Fix:* Add three tests: a session whose `exp` is in the past gets 401 at
+connect; an open stream with `exp` reached ends on the next change; and with
+`tokio::time::pause` plus `advance(FEED_KEEP_ALIVE_INTERVAL)`, a revoked
+session ends without any event. Write them after the R11 change, since R11
+changes where the token and the expiry come from.
+
+*Status:* Open.
+
+**Counts.** Fixes check: 9 confirmed (R1, R2, R4 to R10), 1 rejection
+accepted (R3), 3 new (R11 major, R12 and R13 minor). Code review round 1
+now has 13 items: 0 blocker, 4 major, 9 minor. **3 open** (R11, R12, R13).
