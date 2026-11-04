@@ -633,7 +633,7 @@ record the answer in the change doc. Add a router test: a request with a
 revoked cookie and a valid `Bearer` is accepted (or the cookie is ignored off
 the events path).
 
-*Status:* Fixed (efd0f620), confirmed in the fixes check below. The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, the owner confirmed the choice on 2026-11-04, and the deviation line and ADR-0027 record it.
+*Status:* Open (reopened in the second fixes check below: the header order change breaks `test_22_cookie_takes_priority_over_bearer`). Fixer note: Fixed (efd0f620). The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, the owner confirmed the choice on 2026-11-04, and the deviation line and ADR-0027 record it.
 
 #### R2 — major — an open feed keeps streaming after its session is revoked or expired
 
@@ -1069,3 +1069,105 @@ accepted (R3), 3 new (R11 major, R12 and R13 minor). Code review round 1
 now has 13 items: 0 blocker, 4 major, 9 minor. **3 open** (R11, R12, R13).
 
 **Counts after the fix of the fixes check.** Code review round 1 has 13 items: 12 Fixed, 1 Rejected (R3). 0 open.
+
+## Code review round 1 — second fixes check — Claude Opus 5.5, 2026-11-04
+
+I checked the fix commits 5ffabf4d and 324244d9 on
+`feat/m08a-a5-event-feed` (main checkout; `git pull` said "Already up to
+date"). 469135ae and 944dc20b set the statuses, the counts and the
+`status.md` row. Line numbers below are at `944dc20b`. No code was changed.
+
+I ran only targeted tests: router `events` 21 passed, Hub vitest 158
+passed, and `cargo clippy -p syneroym-router --all-targets -- -D warnings`
+is clean.
+
+CI: I read the runs since the first fixes check.
+- [Run 41774258531](https://github.com/syneroym/syneroym/actions/runs/41774258531)
+  on b487ecde (the fix commits of round 1, before R11 to R13) **failed**.
+  Test 4/6 failed `syneroym-substrate::gateway_session_e2e
+  test_22_cookie_takes_priority_over_bearer` on all 3 tries (`left:
+  "self-asserted"`, `right: "delegated"`). See the reopened R1. Every other
+  job passed.
+- [Run 41773466844](https://github.com/syneroym/syneroym/actions/runs/41773466844)
+  on 27f0c9f9: Test 5/6 failed because the runner ran out of disk again
+  (`No space left on device`), and the other jobs were cancelled by the
+  next push. The R3 rejection stands (it is not a code defect), but the
+  fallback in the R3 status ("if it fails again, move
+  `roym_event_feed_e2e` into an existing test binary") now applies.
+- [Run 41779449516](https://github.com/syneroym/syneroym/actions/runs/41779449516)
+  on 944dc20b is still running. Nothing in 5ffabf4d or 324244d9 changes the
+  header order, so I expect the same Test 4/6 failure.
+
+**Confirmed Fixed.**
+- **R11.** `resolve_effective_session_caller` no longer puts the token in
+  `session.claims` (`auth.rs:118-124`). Only the expiry time is there,
+  under `SESSION_EXPIRES_AT_CLAIM`. The feed reads the token from the
+  request headers (`events.rs:373`) and keeps it in `FeedState`. No
+  `roym.session.*` key is left in the code.
+  `a_session_caller_carries_no_token_in_its_claims` mints a real token,
+  runs the real `resolve_effective_session_caller`, and checks both the
+  serialized claims and the `Debug` text of the caller. See the reopened R1
+  for one more condition on the feed's token.
+- **R12.** The JWT parse is gone. `EVENT_FEED_COOKIE_MAX_AGE_SECS` is 3600,
+  and the comment, ADR-0027 and the change doc say the cookie lives one hour
+  and is written again before every connect. Two vitest tests check the
+  exact cookie strings written by set and clear.
+- **R13.** `events/tests/session.rs` covers the 401 at connect for an
+  expired session, the end of an open feed on the first change after
+  expiry, and the end of a quiet feed at the keep-alive with a paused clock.
+  The revocation test now sends the token in `Authorization`, as a real
+  client would.
+
+### Reopened
+
+#### R1 — major — reopened: reading `Bearer` first breaks an app that has its own `Bearer` token
+
+*Where:* `crates/router/src/route_handler/http/auth.rs:58-80`
+(`extract_session_token_from_hyper_headers` returns the `Bearer` value and
+never tries the cookie), `:98` (one candidate only, then `verify` with `?`);
+`crates/router/src/route_handler/http/events.rs:373` (the feed reads the
+token again, separately); `crates/substrate/tests/gateway_session_e2e.rs:694-719`
+(`test_22_cookie_takes_priority_over_bearer`, red in CI);
+`docs/developer-guide.md:1819` ("Cookie takes priority when both are
+present"); `crates/router/src/route_handler/http/events/tests.rs:512` (the
+unit test checks only the extractor).
+
+*Problem:* The gateway forwards an app's own `Authorization: Bearer` token
+to the guest untouched. An app may use it for its own login, while the
+platform session comes in the `syneroym_session` cookie. That is the case
+`test_22` protects, and the developer guide documents it. The R1 fix makes
+the extractor return the `Bearer` value whenever there is one. That value
+is not a session token, so `SessionToken::verify` fails, and the function
+returns `None` without trying the cookie. My round 1 fix text said "read
+Bearer first". That advice was wrong for this case. The real goal of that
+point was only that a stale cookie must not hide a valid `Bearer`.
+
+*Failure case:* `test_22` in CI: a request with a valid session cookie of
+person A and `Authorization: Bearer app_bearer_secret_xyz123` now reaches
+the guest as `self-asserted` instead of `delegated` person A. Any app that
+uses its own bearer token behind the gateway loses the person's session.
+
+*Fix:* Try both candidates, cookie first, and use the first one that is not
+revoked and verifies. Put this in one helper, for example
+`select_session_token(route_handler, headers) -> Option<(String,
+SessionTokenClaims)>`. Then:
+- `resolve_effective_session_caller` uses the helper. So a stale or revoked
+  cookie falls through to a valid `Bearer` (the R1 case), and a valid cookie
+  plus an app `Bearer` keeps the cookie (`test_22`).
+- The feed calls the same helper, so the token it watches for revocation is
+  the token that authenticated the request. Today `events.rs:373` re-reads
+  the headers with the extractor, which can pick a different value than the
+  one that verified.
+- Replace the extractor-only unit test with two tests through the helper: a
+  revoked cookie plus a valid `Bearer` gives the `Bearer` person, and a valid
+  cookie plus a non-session `Bearer` gives the cookie person.
+- Run `cargo nextest run -p syneroym-substrate --test gateway_session_e2e`
+  before pushing. The developer guide line can stay as it is. Add the "falls
+  through when the cookie does not verify" rule to it and to the change doc
+  deviation line.
+
+*Status:* Open.
+
+**Counts.** Second fixes check: 3 confirmed (R11, R12, R13), 1 reopened
+(R1), 0 new. Code review round 1 has 13 items: 0 blocker, 4 major, 9 minor.
+**1 open** (R1). CI is red on the fixes (Test 4/6).
