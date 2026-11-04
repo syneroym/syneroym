@@ -503,7 +503,7 @@ did not run the full suite. I ran `npx vitest run` in `crates/roym_web/ui`
 (155 passed) and `grep`, `wc` and `git` checks. Each finding below follows
 from the code as written.
 
-**Summary:** 0 blocker, 3 major (R1, R2, R3), 7 minor (R4 to R10). 10 open.
+**Summary:** 0 blocker, 3 major (R1, R2, R3), 7 minor (R4 to R10). 10 items: 9 Fixed, 1 Rejected (R3). 0 open.
 
 ### What was checked and found correct
 
@@ -633,7 +633,7 @@ record the answer in the change doc. Add a router test: a request with a
 revoked cookie and a valid `Bearer` is accepted (or the cookie is ignored off
 the events path).
 
-*Status:* Open
+*Status:* Fixed (efd0f620). The Hub writes the cookie with `Path=/_syneroym/events` and a `Max-Age` from the token's `exp` (`setEventFeedCookie`), and the router reads `Authorization` before the cookie. Proof: with the extractor reading the cookie first, `a_request_with_a_revoked_cookie_and_a_valid_bearer_uses_the_bearer_token` fails; restored, it passes. The choice changes ADR-0024's session model for the feed, so the owner still has to confirm it (the review asks for that); the deviation line and ADR-0027 record it.
 
 #### R2 — major — an open feed keeps streaming after its session is revoked or expired
 
@@ -659,7 +659,7 @@ client then reconnects and gets `401`. Add a router test with a revocation
 checker that turns revoked after the first frame: the next tick ends the
 body. Say in ADR-0027 that a feed ends when its session ends.
 
-*Status:* Open
+*Status:* Fixed (efd0f620). An open feed ends when its token is revoked or past `exp`, checked at connect, on every change and on every keep-alive tick. Proof: with the revocation check disabled, `a_revoked_session_terminates_an_open_feed_stream` fails; restored, it passes.
 
 #### R3 — major — CI has not passed on this PR
 
@@ -684,7 +684,7 @@ compare `du -sh target` of shard 1 on `main` and on this branch) and free
 space in the CI job, or add the new e2e file as a module of an existing test
 binary. Record a green run and the 20-run result in `status.md`.
 
-*Status:* Open
+*Status:* Rejected: not a code defect. The failure was a full runner disk in Test 1/6 (17 MB free). CI run [41751830065](https://github.com/syneroym/syneroym/actions/runs/41751830065) on 0b38ce71 (the same code as 4cfd96a0, only docs differ) passed every job, Test 1/6 included. No code changed for this item. The disk margin stays small; if it fails again, move `roym_event_feed_e2e` into an existing test binary. The 20-run result is in `status.md`.
 
 #### R4 — minor — the change doc's D-A5 decisions do not match the plan, and four docs give the wrong field cap
 
@@ -716,7 +716,7 @@ from a service, and gets `invalid-argument("subject")`.
 (short is fine, but the same meaning and values). Change 256 to 128 in the
 change doc design text, ADR-0027 and the backlog row.
 
-*Status:* Open
+*Status:* Fixed (bf4fe2f3). D-A5-1 to D-A5-13 in the change doc now match the plan; `subject` and `item` say 128 bytes in the change doc, ADR-0027 and the backlog row.
 
 #### R5 — minor — the evidence names tests that do not exist, and the counts are wrong
 
@@ -748,7 +748,7 @@ to check OF-8 and runs zero tests.
 plan 7.6, which also makes a failure name its case). Correct the counts in
 `status.md` and `task.md`, add the conversation count and the 20-run result.
 
-*Status:* Open
+*Status:* Fixed (47b7e9d6). OF-8 to OF-10 name tests that exist (the one e2e test and its five steps, `tests_events.rs`, `sending_a_message_records_the_same_event_in_both_builds`). The counts in `status.md` and `task.md` are corrected, the conversation count is added, and the 20-run result is in `status.md`.
 
 #### R6 — minor — some tests cannot fail or do not cover what the plan names
 
@@ -787,7 +787,7 @@ every test.
 
 *Fix:* As in each point above.
 
-*Status:* Open
+*Status:* Fixed (15c06200). Proofs, each broken locally and restored: the gauge test fails when `FeedGuard` does not lower the gauge; `a_refused_delivery_ack_records_a_delivery_event` fails when the ack path announces before the refusal is stored; `a_peer_refusal_records_a_delivery_event` fails when the notice path announces inside the transaction; `sending_a_group_message_records_one_message_event` fails when the announce moves into the group transaction; the card parity test and the agreement parity test fail when the card event names the conversation instead of the message; `a_transaction_import_records_no_event` fails when the import returns an error; Hub case 41 fails when the 503 route does not match (`failedOnce` stays false). Not proven: the `Reload` panic in the parity helper (a one-line `panic!` arm), and the direct-send announce (the store runs its own transaction there, so no probe-visible mutation exists).
 
 #### R7 — minor — the Hub misses list refreshes after a burst, and draws a thread from stale rows
 
@@ -820,7 +820,7 @@ refiller result: when it is `undefined` because a newer run replaced this
 one, let the newer run draw the thread; when the load failed, do not draw
 it. Record the final rule in the Deviations line.
 
-*Status:* Open
+*Status:* Fixed (15c06200). The debounce keeps every kind of a burst in `kinds`, and Messages and Groups refresh the list when any kind is `conversation.*`. `reloadList` uses the rows that `fillList` returns and draws nothing when it returns `undefined`. Proof: with `kinds` reduced to the last kind, `a_burst_with_multiple_kinds_preserves_all_seen_kinds` fails; restored, it passes. The thread-draw rule has no unit test; the final rule is in the change doc deviation line.
 
 #### R8 — minor — why-comments were lost in a refactor of `build_route_handler_deps`
 
@@ -843,7 +843,7 @@ resolver use, because nothing says the order matters.
 small named struct instead of the 6-tuple. Record the split in the
 Deviations if it stays.
 
-*Status:* Open
+*Status:* Fixed (c42b1fe3). `init_base_capabilities` returns a named `BaseCapabilities` struct, the four why-comments are back beside their code, and the split is recorded in the change doc deviations (47b7e9d6).
 
 #### R9 — minor — three living-doc and interface statements are false or missing
 
@@ -872,7 +872,7 @@ guide and expects a refusal that never comes.
 `events` to the `AGENTS.md` list. Change the WIT text to "returns no events
 and the cursor it was given (the head when no cursor is given)".
 
-*Status:* Open
+*Status:* Fixed (bf4fe2f3). `events` is out of the developer guide's refusal sentence (it is not in `NATIVE_CAPABILITY_INTERFACES`, so no refusal exists), it is in the `AGENTS.md` WIT list, and the WIT text for `read` says that `limit` 0 returns the cursor it was given.
 
 #### R10 — minor — widened APIs, a dead parameter, a lost event, and import-rule breaks
 
@@ -907,4 +907,4 @@ again.
 
 *Fix:* As in each point.
 
-*Status:* Open
+*Status:* Fixed (e7682c8a, 149509de, efd0f620). `drain_once`, `registry()` and `event_bus()` are crate-private (the getters test-only); `refuse_card` lost `_msg_id`, and the unused message id is gone from the whole card filing chain; a missing message row logs a warning instead of sending an empty subject; the dead `last-event-id` lookup is gone and the 25 s keep-alive is `FEED_KEEP_ALIVE_INTERVAL`; the listed inline paths are imports now, in the router tests too.
