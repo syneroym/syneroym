@@ -2259,7 +2259,7 @@ Words used here:
 
 You need these things:
 
-1. **Roym deployed on the node, and the gateway in `identity_mode = "login"`.** See "The Roym Hub" above. Without login mode every call is anonymous and gets `-32010`. If you gave the Hub a nickname when you registered it (`--nickname <name>`), set `HUB_NICKNAME=<name>` before the `address` block below.
+1. **Roym deployed on the node, and the gateway in `identity_mode = "login"`.** See "The Roym Hub" above. Without login mode every call is anonymous and gets `-32010`. The Hub must be in the registry, so that the gateway can find its host. Run this once: `roymctl --dir <DIR> --api-url <registry URL> registry register --identity member-roym#web-0 --substrate <node DID> [--nickname <name>]`. `<node DID>` is the `--substrate` value that you pass to `roymctl` (see "Identifying your Substrate"). A service has one registry alias, so a second run replaces the nickname of the first. If you gave the Hub a nickname (`--nickname <name>`), set `HUB_NICKNAME=<name>` before the `address` block below.
 2. **Record signing enrolled once.** The owner runs `roymctl roym enrol-signing` (see "Enrolling record signing and finding your address" above). Without it, a service that must sign a record refuses.
 3. **A session key file for the owner of the installation.** Every Roym method needs the owner, except `profile.policy`. A session of any other person gets `-32011`. One installation has one person; there is no second user.
 4. **A key file that has not expired.** The file lasts `--expires-hours` (24 hours by default). After that, `login` answers `401` with "delegation certificate has expired". Make a new file with `roymctl session delegate`.
