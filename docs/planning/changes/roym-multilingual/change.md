@@ -29,12 +29,12 @@ Roym users in India speak many languages. Many people want to use Roym fully in 
 
 Today Roym is English only:
 
-- The Hub has hard-coded English strings. There is no string catalog. The 37 Hub source files have about 104 `textContent = "..."` assignments alone. `index.html` says `lang="en"`.
-- Dates use `toLocaleString()` with the browser default (`screens/listings.ts:468`). Money shows as `35.50 INR` (`money.ts:66`, `formatMinor`), not as `₹35.50` with Indian digit grouping.
-- `ProfilePayload.locale: Option<String>` exists (`crates/roym_core/src/person.rs:26`). `profile.set` stores it (`crates/roym_profile/src/app/profile_ops.rs:99`). Nothing reads it.
-- Listing categories are free-form English tokens of `[a-z0-9-]` (`crates/roym_core/src/listing.rs:185`). Each group picks its own words. A Hindi speaker cannot search for "plumber" in Hindi.
+- The Hub has hard-coded English strings. There is no string catalog. The 41 Hub source files set visible text in about 420 places: literal `textContent` assignments, calls of the `text()` helper, `field()` labels, and `placeholder` and `title` values. `index.html` says `lang="en"`.
+- Dates use `toLocaleString()` with the browser default (`screens/listings.ts:487`). Money shows as `35.50 INR` (`money.ts:66`, `formatMinor`), not as `₹35.50` with Indian digit grouping.
+- `ProfilePayload.locale: Option<String>` exists (`crates/roym_core/src/person.rs:26`). `profile.set` stores it (`crates/roym_profile/src/app/profile_ops.rs:140`). Nothing reads it.
+- Listing categories are free-form English tokens of `[a-z0-9-]` (`crates/roym_core/src/listing.rs:188`). Each group picks its own words. A Hindi speaker cannot search for "plumber" in Hindi.
 - No signed record says which language its free text is in.
-- Directory text search keeps only ASCII letters, digits, spaces and hyphens (`normalize_text`, `crates/roym_core/src/directory.rs:232`). A query in Devanagari or Tamil script has no searchable characters. `directory.search` refuses it with `-32602` (`crates/roym_directory/src/app/search_ops.rs:256`). A listing title in Hindi is never found by text search. The [deferred backlog](../../deferred-backlog.md) already has a row for this.
+- Directory text search keeps only ASCII letters, digits, spaces and hyphens (`normalize_text`, `crates/roym_core/src/directory.rs:225`). A query in Devanagari or Tamil script has no searchable characters. `directory.search` refuses it with `-32602` (`crates/roym_directory/src/app/search_ops.rs:265`). A listing title in Hindi is never found by text search. The [deferred backlog](../../deferred-backlog.md) already has a row for this.
 
 The requirement `[APP-A11Y]` in [system-requirements-spec.md](../../../system-requirements-spec.md) lists localisation as "Envisioned".
 
@@ -128,7 +128,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 1. **The signed original always wins.** A record means what its author signed, in the language its author tagged. A translation by software is for display only. It is labelled. It is never signed as the author's words.
 2. **Translation runs on the reader's own node.** Chat is end-to-end encrypted. Roym never sends user content to a server for translation by default. A remote engine is allowed only if the node owner chooses it by name, and its output is labelled with that name.
 3. **Structure before text.** If a field can be a code, it is a code. Codes are never translated. Only their labels are.
-4. **No migrations.** The product is not released. Records change in place. Every signed record already has an explicit `version`. This change keeps `version` at 1 for each record type it changes, as earlier unreleased changes did (`unverified`: confirm the team's rule for an in-place change before release).
+4. **No migrations.** The product is not released. Records change in place. Every signed record already has an explicit `version`. This change keeps `version` at 1 for each record type it changes, as earlier unreleased changes did. The project-wide position is no migration before release ([ADR-0018](../../../decisions/0018-service-record-visibility.md) section 5).
 
 ### A. UI localisation
 
@@ -145,7 +145,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 
 **Fonts.** Today the Hub uses `font-family: system-ui, -apple-system, sans-serif` (`style.css:2`). Android, iOS, macOS and Windows ship fonts for the major Indic scripts (`unverified` for older Android versions). The first step uses system fonts and the correct `lang` attribute (ML-5). A bundled web font is added only if a test device shows broken shaping. See [Open questions](#open-questions).
 
-**Errors.** Services return English error text. The Hub maps known error codes to catalog messages (ML-6). About 25 places in the Hub read `.message` from an error today. Each one is checked.
+**Errors.** Services return English error text. The Hub maps known error codes to catalog messages (ML-6). 22 places in the Hub read `.message` from an error today. Each one is checked.
 
 ### B. Language-neutral structure
 
@@ -192,7 +192,25 @@ Names (`display_name`, `payee`) and addresses are not translated. They are cover
 
 **Author translations.** A record may carry `translations`: a short list. Each entry has its own `lang` and the same translatable fields as the record (for a listing: `title` and `summary`). The author signs them with the record. The Hub shows them as "translated by the author". The original `lang` text still binds. The maximum number of entries is set in the plan (a small number such as 4, to keep record size bounded, as other limits in `listing.rs` do).
 
-**Tag validation.** The Rust side checks that each tag is a well-formed BCP 47 tag and stores it in canonical form. Recommended crate: `icu_locale_core` from the ICU4X project. It is pure Rust and widely used. `unverified`: that it builds for `wasm32-wasip2` with no extra features. The Hub uses `Intl.Locale` to parse tags.
+**Tag validation.** The Rust side is the new crate `syneroym-text-lang` (see `## Deviations`). It checks that each tag is a well-formed BCP 47 tag and stores it in syntax form: fixed letter case and order, so `HI-latn` becomes `hi-Latn`. It uses `icu_locale_core` 2.4.0 from the ICU4X project, with `default-features = false, features = ["alloc"]`. The parse functions need `alloc`. No other feature is needed (no `serde`, `zerovec` or `databake`). Decided 2026-11-01: the node does not use the CLDR form, where old codes are replaced by new ones (`iw` becomes `he`). That form needs the larger `icu_locale` crate and its CLDR data, and the cost would land in every Roym guest.
+
+Checked: `icu_locale_core` builds for `wasm32-wasip2` and runs in `wasmtime`. It has no C code. Its normal dependencies are `litemap`, `tinystr` and `writeable`, and the `displaydoc` proc-macro. It adds about 17 KB to a test component built with the workspace release profile. The underscore form `hi_IN` is refused. The Hub uses `Intl.Locale` to parse tags. The same 15 inputs went through both parsers:
+
+| Input | `icu_locale_core` | `Intl.Locale` (Node 22) |
+| --- | --- | --- |
+| `hi`, `HI` | `hi` | `hi` |
+| `hi-latn` | `hi-Latn` | `hi-Latn` |
+| `hi-Latn-IN`, `ta-IN`, `und`, `hi-Deva`, `zh-hant-tw` (printed `zh-Hant-TW`), `en-u-nu-deva` | syntax form, same as `Intl.Locale` | syntax form |
+| `en-us` | `en-US` | `en-US` |
+| `iw` | `iw` | `he` |
+| `hi_IN`, `x-private`, `toolongsubtag`, empty string | refused | refused |
+
+The only input where the two differ is `iw`: Rust keeps it and `Intl.Locale` turns it into `he`. A record from another node can carry any tag, so the Hub follows two rules:
+
+1. The Hub wraps every `new Intl.Locale(tag)` in `try`/`catch`. A throw means "unknown tag": the Hub shows the raw tag and does no best-match.
+2. Language matching in the Hub compares both the stored tag and its `Intl.Locale` form. A stored `iw` then matches a reader whose browser asks for `he`.
+
+The [deferred backlog](../../deferred-backlog.md) records that tags are not CLDR-canonicalised.
 
 **Profile languages.** `ProfilePayload.locale: Option<String>` is replaced by:
 
@@ -278,7 +296,7 @@ viewed_lang: string          // the language tag of the text shown
 viewed_via_mt: bool          // true if it was a machine translation
 ```
 
-Today an `agreement-receipt` is made of halves, one signed by each party (`ReceiptHalf`, `crates/roym_core/src/transaction.rs:205`). The two fields go into the payload each party signs. The deal core (M08C) changes the canonical bytes of the quote and the receipt for selective disclosure (see the [Value Exchange](../roym-value-exchange/change.md) change, "Agreements made of commitments"). This change adds these fields first. M08C keeps them.
+Today an `agreement-receipt` is made of halves, one signed by each party (`ReceiptHalf`, `crates/roym_core/src/transaction.rs:220`). The two fields go into the payload each party signs. The deal core (M08C) changes the canonical bytes of the quote and the receipt for selective disclosure (see the [Value Exchange](../roym-value-exchange/change.md) change, "Agreements made of commitments"). This change adds these fields first. M08C keeps them.
 
 Before acceptance through MT, the Hub shows: the original binds, it is in the named language, and the shown text is a machine translation (ML-19). An author translation (layer C) is not MT. It is signed by the author, so `viewed_via_mt` is false. The original still binds.
 
@@ -291,12 +309,12 @@ Category search is language-neutral after layer B. Text search is not. Today:
 
 **Decision (2026-10-26): search moves to SQLite FTS5 over search keys, in this change.**
 
-- **Search key.** Each indexed text is turned into a search key: Unicode NFC, lower case, then a Latin transliteration for every non-Latin script, then a loose folding of Latin spelling (for example long and short vowels fold together, doubled letters fold to one). Combining marks (Unicode `Mn` and `Mc`, such as Devanagari vowel signs and the virama) are kept until the transliteration step, so words do not break. The index stores both the NFC original and the key.
+- **Search key.** Each indexed text is turned into a search key: Unicode NFC, lower case, then a Latin transliteration for every non-Latin script, then a loose folding of Latin spelling (for example long and short vowels fold together, doubled letters fold to one). Combining marks (Unicode `Mn` and `Mc`, such as Devanagari vowel signs and the virama) are kept until the transliteration step, so words do not break. The index stores both the NFC original and the key. NFC comes from `icu_normalizer` 2.4.0, with `default-features = false, features = ["compiled_data"]`. It is already in the host build (through `url` and `idna`) and comes from the same project as the tag crate. It builds for `wasm32-wasip2`. It gave the expected result on six test inputs, including the Devanagari nukta forms and the Tamil two-part vowel sign. `unicode-normalization` 0.1.26 gave the same results but was larger (a test component grew by 124 KB, against 69 KB for `icu_normalizer`). A guest that holds the tag type does not pay for NFC code it never calls: a test component was the same size (92,994 bytes) with and without the `icu_normalizer` dependency.
 - **The query gets the same treatment.** A query in Devanagari and a query in Latin letters both become the same kind of key. So `nal wala`, `naal waala` and `नल वाला` meet (ML-21, ML-22).
 - **FTS5 with the trigram tokenizer.** It works for any script, with no word list per language, and finds a word inside a longer word. It replaces the `$regex` and `LIKE` path for text search. Category, area and attribute filters stay structured.
 - **Short words.** The trigram index cannot match a query term shorter than 3 characters, and short transliterated words are common (`ek`, `do`, `na`). So each text field is also indexed in a second FTS5 table with the `unicode61` word tokenizer and a prefix index for 1 and 2 characters, over the same search keys. Search keys are in Latin letters, so word tokens work for every script. A query term of 1 or 2 characters goes to this index as a whole-word or prefix match. Longer terms go to the trigram index. A query with only short terms never falls back to a scan (ML-29).
-- **The transliteration table** is a fixed table in `roym_core`, one per script, starting with Devanagari and Tamil. It is lossy by design: it only has to make two spellings of the same word meet. ISO 15919 is the starting point. The folding rules are tested with a set of real spellings collected for the test data (`unverified`: whether a pure-Rust crate already does this well enough; the plan checks before writing one).
-- `unverified`: that the SQLite build used by `data_db` (`rusqlite` with `bundled-sqlcipher`) has FTS5 and the trigram tokenizer enabled. SQLite always runs in the host, so this one build serves both the native and the WASM build of Roym. The plan checks this first.
+- **The transliteration table** is a fixed table in `syneroym-text-lang`, one per script, starting with Devanagari and Tamil. It is lossy by design: it only has to make two spellings of the same word meet. ISO 15919 is the starting point. The folding rules are tested with a set of real spellings collected for the test data. Decided 2026-11-01, after a survey of seven crates: we write our own tables. No crate met every rule we set (pure Rust, builds for `wasm32-wasip2`, allowed license, covers Devanagari and Tamil, recent release, fixed output, stable output over time). The closest, `lipilekhika`, gives plain letter-by-letter ISO 15919 output, which our tables give just as well. Every stored search key depends on the exact output, so we want it to change only in a reviewed change to our own table, not with a crate upgrade.
+- The SQLite build used by `data_db` (`rusqlite` with `bundled-sqlcipher`) has FTS5 and the trigram tokenizer enabled. The chat store already creates a trigram table (`crates/conversation/src/store/schema.rs:115`). SQLite always runs in the host, so this one build serves both the native and the WASM build of Roym. `unverified`: the second table, with the `unicode61` tokenizer and `prefix='1 2'`. Nothing in `crates/` uses it today. The plan for the full-text option checks it first.
 - **A guest cannot create an FTS5 table today.** Guests reach storage only through `data-layer` collections. `execute-ddl` is unreachable from a service method (deferred-backlog §11). So `data-layer` gains a full-text option on a collection (the fields to index, kept in sync by the host) and a text-match filter operator. This is a substrate change, and it is planned first.
 - The index shape changes. The product is unreleased, so the index is rebuilt in place.
 
@@ -336,7 +354,7 @@ Considered:
 - **Unicode MessageFormat 2**: the new standard, and partly based on Fluent's ideas. Browser support (`Intl.MessageFormat`) is still a proposal (`unverified` as of this writing). A later move from Fluent to MF2 is a file conversion.
 - **A plain JSON map of id to string**: simplest, but it has no plurals or gender. Every such case would become code in the Hub.
 
-Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice is final.
+Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,205 bytes after `gzip -9` to the Hub JavaScript (31,769 to 35,974 bytes; 11,443 bytes more before `gzip`). The limit was 25 KB after `gzip -9`, so Fluent stays. The built code has no `eval`, `Function(...)` or `new Function`, so it works with the Hub's Content Security Policy (`script-src 'self'`). The 25 KB limit covers the library only. The slice that adds the catalogs reports the total, library and catalogs together, because Hindi text is 3 bytes per character before `gzip`.
 
 ## Rejected options
 
@@ -351,11 +369,11 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 ## Open questions
 
 - **Search over Indic scripts, and cross-script search.** Decided 2026-10-26: in scope, with FTS5 and search keys (see [Search](#search)).
-- **Spelling test data.** The folding rules need real samples of Hindi and Tamil typed in Latin letters. Decided 2026-11-05: 200 word pairs per language. An agent drafts them, and the owner checks them before search is built.
+- **Spelling test data.** The folding rules need real samples of Hindi and Tamil typed in Latin letters. Decided 2026-11-05: 200 word pairs per language. An agent drafts them, and the owner checks them before search is built. Drafted in `spelling-pairs.tsv` (in the M08B task folder); owner check pending.
 - **Who maintains the taxonomy and its labels.** Decided 2026-11-05: the Roym project maintains the base taxonomy in the repository. A group can use its own codes at once (they show as raw codes). A group then proposes a code for the base taxonomy through the normal contribution process. Labels in a new language come with that language's string catalog. A later option: an exchange (M8) publishes labels for its own group codes.
 - **The first taxonomy.** Decided 2026-11-05: a small hand-made list of local services and goods, 50 to 150 codes. No existing product taxonomy is adapted.
 - **Named area codes.** Is a PIN code the right language-neutral code for `Area::Named.code`? Or a code from India's Local Government Directory? Not decided.
-- **Font size and bundle cost.** If system fonts are not enough on some devices, a Noto font for each script must be bundled or loaded on demand. Size per script is `unverified`. Loading on demand means a network fetch from the node, which is allowed (the Hub is served by the node).
+- **Font size and bundle cost.** If system fonts are not enough on some devices, a Noto font for each script must be bundled or loaded on demand. Size per script is `unverified`. A font file is loaded only if `index.html` also gets `font-src 'self'`; today `default-src 'none'` blocks every font.
 - **Native digits.** Decided 2026-11-05: `123` by default in every language. Native digits (`१२३`) are a later user option. Users have not been asked yet.
 - **Catalog format.** Decided 2026-11-05: Fluent.
 - **Who checks the Hindi text.** Decided 2026-11-05: an agent writes the first Hindi catalog and taxonomy labels, and the owner reviews them before they merge.

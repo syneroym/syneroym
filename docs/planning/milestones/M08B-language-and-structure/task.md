@@ -72,10 +72,45 @@ Every slice is one PR that passes `mise run verify`. Sizes are S, M and L, as in
 ### S0 — Checks and owner decisions (docs only, S)
 
 - Check that `icu_locale_core` builds for `wasm32-wasip2` with no extra features. Check the size `@fluent/bundle` adds to the Hub bundle.
+  - **Result ([PR](PR_LINK)):** `icu_locale_core` 2.4.0 builds for `wasm32-wasip2` and runs in `wasmtime` with `default-features = false, features = ["alloc"]`. The parse functions need `alloc`. No other feature is needed. A test component grows by 17,317 bytes (75,645 to 92,962). The canonical form is the syntax form only: `hi-latn` becomes `hi-Latn`, and `iw` and `hi-Deva` stay as given. `hi_IN` (underscore) is refused. Of 15 inputs, the only difference from the browser's `Intl.Locale` is `iw` (Rust keeps `iw`, the browser gives `he`). The table is in the change doc, "Tag validation" (D-S0-1).
+  - **Result:** NFC (added to S0 by owner question Q3): `icu_normalizer` 2.4.0 with `default-features = false, features = ["compiled_data"]` builds for `wasm32-wasip2`, runs natively, and gave the expected output for six inputs (`U+0958` becomes `U+0915 U+093C`; `U+0B95 U+0BC6 U+0BBE` becomes `U+0B95 U+0BCA`; `U+0065 U+0301` becomes `U+00E9`; the others do not change). `unicode-normalization` 0.1.26 gave the same output. Size added to a test component: 68,734 bytes for `icu_normalizer`, 124,338 bytes for `unicode-normalization`. D-S0-2: `icu_normalizer`. A guest that holds the tag type and also depends on `icu_normalizer`, with no call to it, is the same size as the tag type alone: 92,994 bytes both ways.
+  - **Result:** `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 11,443 bytes raw and 4,205 bytes after `gzip -9` to the Hub JavaScript (114,463 to 125,906 raw; 31,769 to 35,974 gzipped). The limit was 25 KB after `gzip -9`. There is no `eval`, `Function(` or `new Function` in the built code, before or after. The lock file gains only `@fluent/bundle`, and Vite 5.4.21 and Rollup 4.63.0 do not change. D-S0-4: Fluent stays.
 - Look for a pure-Rust transliteration crate for Devanagari and Tamil that builds for `wasm32-wasip2`. Decide: use it, or write fixed tables (ISO 15919 as the start).
+  - **Result ([PR](PR_LINK)):** D-S0-3: we write our own tables, with ISO 15919 as the start. No crate met all seven rules, and none gives output that our tables cannot give. Seven crates were tried in one `wasm32-wasip2` build (dates from crates.io, 2026-11-05). "P" is pass, "F" is fail, "?" is not clear, "-" is not checked because an earlier rule failed.
+
+    | Crate | Version | License | Last release | 1 | 2 | 3 | 4 | 5 | 6 | 7 | Adds to a test component |
+    | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+    | `icu_experimental` | 0.7.0 | Unicode-3.0 | 2026-10-22 | P | P | P | P | P | P | F | 2,212,625 bytes |
+    | `lipilekhika` | 1.1.2 | MIT | 2026-05-31 | P | P | P | P | P | P | P | 194,388 bytes |
+    | `vidyut-lipi` | 0.2.0 | MIT | 2025-01-08 | P | P | P | P | F | P | - | 189,990 bytes |
+    | `shlesha` | 0.5.7 | MIT OR Apache-2.0 | 2026-07-06 | ? | P | P | F | P | P | F | 648,864 bytes |
+    | `transliteratio` | 0.1.0 | MIT OR Apache-2.0 | 2026-10-19 | P | P | P | F | P | P | - | 294,200 bytes |
+    | `deunicode` | 1.6.2 | BSD-3-Clause | 2025-04-27 | P | P | P | F | F | P | - | 484,210 bytes |
+    | `any_ascii` | 0.3.3 | ISC | 2025-06-29 | P | P | P | F | F | P | - | 583,903 bytes |
+
+    Why each failure: `icu_experimental` has Devanagari and Tamil rule sets (`und-Latn-t-und-deva`, `und-Latn-t-und-taml`) but is a 0.x crate with an unstable data API (`try_new_unstable`), and it had four minor releases (0.4 to 0.7) in the last 12 months, where a 0.x minor release may change the API or the data (rule 7). We did not compare its output across versions. It is also the largest. `vidyut-lipi` has had no release for 22 months. `shlesha` writes wrong Tamil (`சென்னை` gives `ceனனai`), its 0.5.5 release changed Tamil output, and the `cc` crate is in its build graph through `blake3` and `psm` (we did not check whether it compiles C for this target). `transliteratio` leaves Tamil unchanged. `deunicode` and `any_ascii` drop vowels (`नल` gives `nl`) and are older than 12 months. `lipilekhika` passes all rules: its build script is pure Rust, and its changelog for 1.0.8, 1.1.0 and 1.1.2 lists no output change. The 1.1.0 release did break its API. Its output is plain letter-by-letter ISO 15919, so our own tables give the same.
+
+    Sample output (as printed; `lipilekhika` is the `Romanized` target):
+
+    | Input | `lipilekhika` | `vidyut-lipi` | `icu_experimental` | `shlesha` | `transliteratio` | `deunicode` | `any_ascii` |
+    | --- | --- | --- | --- | --- | --- | --- | --- |
+    | `नल वाला` | `nala vālā` | `nala vālā` | `nala vālā` | `nala vālā` | `nala vālā` | `nl vaalaa` | `nl vala` |
+    | `राम` | `rāma` | `rāma` | `rāma` | `rāma` | `rāma` | `raam` | `ram` |
+    | `कमला` | `kamalā` | `kamalā` | `kamalā` | `kamalā` | `kamalā` | `kmlaa` | `kmla` |
+    | `क़िला` | `kzilā` | `qilā` | `qilā` | `kailā` | `qilā` | `k'ilaa` | `k'ila` |
+    | `प्लंबर` | `plaṁbara` | `plaṁbara` | `plambara` | `plaṁbara` | `plaṁbara` | `plNbr` | `plmbr` |
+    | `தமிழ்` | `tamiḻ` | `tamiḻ` | `tamiḻ` | `tamiḻ` | `தமிழ்` | `tmilll` | `tmil` |
+    | `காந்தி` | `kānti` | `kānti` | `kānti` | `kānti` | `காந்தி` | `kaanti` | `kanti` |
+    | `சென்னை` | `cheṉṉai` | `ceṉṉai` | `ceṉṉai` | `ceனனai` | `சென்னை` | `cennnnnnai` | `cennai` |
+    | `பிளம்பர்` | `piḷaṁpar` | `piḷampar` | `piḷampar` | `piளmpar` | `பிளம்பர்` | `pillmpr` | `pilmpr` |
+
+    The three crates that work (`lipilekhika`, `vidyut-lipi`, `icu_experimental`) agree on the letters. They differ on the nukta (`क़`), on `ं` before `ब` (`ṁ` or `m`) and on a few Tamil letters. These are the places where the folding rules must be tested.
 - The owner answered questions 1 to 7 in section 6 (2026-11-05).
+  - **Result:** the S0-only questions (Q1 to Q7 in the S0 plan) were answered on 2026-11-01 and are recorded in the S0 plan, section 2.1. D-S0-5: record versions stay at 1 (ADR-0018 section 5 is the project-wide "no migration" position).
 - Draft the spelling test set: 200 word pairs per language, for Hindi and Tamil typed in Latin letters. Each pair is a word in its own script and one common Latin spelling. Add spelling variants that must match each other (for example `nal wala`, `naal waala`, `nalwala`). Write it to `spelling-pairs.tsv` in this folder. The owner checks it before the B4b plan is written. B4b then moves it into the test data of `syneroym-text-lang`.
+  - **Result ([PR](PR_LINK)):** [spelling-pairs.tsv](spelling-pairs.tsv) has 200 `pair` rows per language, plus 274 Hindi and 266 Tamil `variant` rows, 20 `joined` rows each, and 44 Hindi and 29 Tamil `distinct` rows. The check script found no format error and reported 18 conflicts: a spelling edit that a `variant` or `joined` row says must meet, and a `distinct` row in another group says must not meet (for example `a→e` and `u→a`). They are listed in the file's `# conflicts:` block, each with "owner decision: pending". The file says `# owner check: pending`.
 - Record the results in this file and in the change doc. The FTS5 and trigram check is done (section 2).
+  - **Result:** done. The change doc's `unverified` notes for the four checks, the trigram tokenizer and the record version rule are replaced by the results above. The `unicode61` table with `prefix='1 2'` is not checked yet; B4a checks it first. The old code facts in the change doc were corrected. One backlog row was added ("Language tags are not CLDR-canonicalised").
 
 Change doc: roym-multilingual.
 
@@ -87,6 +122,7 @@ Change doc: roym-multilingual.
 - `lang` on the page.
 - Error codes to catalog messages, through `errText()` and the 22 `.message` reads.
 - Move the four word tables and the card text into the catalog. Screens follow in B1b.
+- B1a reports the `gzip -9` size of `@fluent/bundle` and the two catalogs together, not only the library (S0 measured the library alone: +4,205 bytes; the limit is 25 KB for the library, D-S0-4).
 - Criteria: ML-2, ML-3, ML-4, ML-5 (page `lang` only), ML-6.
 - Demo: starts story 40 (switch to Hindi, reload, still Hindi).
 
@@ -115,6 +151,8 @@ Change doc: roym-multilingual.
 ### B3a — Language-tagged records (M)
 
 - Y3, in `syneroym-text-lang` (section 1). `lang` (required) and author `translations` on `profile`, `listing`, `request` and `quote`. `languages` replaces `locale` in `ProfilePayload` and `ProfileSetInput`.
+- Y3 uses `icu_locale_core` 2.4.0 with `default-features = false, features = ["alloc"]`, syntax form only (D-S0-1). The underscore form `hi_IN` is refused. `iw` stays `iw`. The Hub follows two rules for tags from other nodes: it wraps every `new Intl.Locale(tag)` in `try`/`catch` and treats a throw as an unknown tag, and it compares both the stored tag and its `Intl.Locale` form when it matches languages.
+- A test component with only the tag type is 92,994 bytes. With the NFC crate also in the dependency list and not called, it is also 92,994 bytes. So a cargo feature to split the two is not needed on size grounds (the plan decides).
 - Typed method inputs and `method_contract` rows change to match.
 - Best-match display in the Hub, with "translated by the author" and a way to open the original. `lang` on each block of record text.
 - Criteria: ML-5 (record text), ML-10, ML-11, ML-12, ML-13.
@@ -132,6 +170,7 @@ Change doc: roym-multilingual.
 ### B4a — Full-text option in `data-layer` (M)
 
 - Y5, a substrate change only: the `data-layer` WIT gains a text-field declaration on a collection and a text-match filter operator. `data_db` keeps the two FTS5 tables in sync on create, update and delete. It indexes the search key of each declared field, from `syneroym-text-lang`. In B4a the key is NFC and lower case only. B4b adds transliteration and folding, and B4a's tables need no change for it. The native shim and the WASM host behave the same (parity tests).
+- NFC comes from `icu_normalizer` 2.4.0 (D-S0-2). First check that the `rusqlite` `bundled-sqlcipher` build supports a `unicode61` table with `prefix='1 2'` (one- and two-letter prefix queries return the right rows). S0 checked only the trigram table.
 - A query term of 1 or 2 characters goes to the `unicode61` prefix index. Longer terms go to the trigram index. No query falls back to a scan.
 - Check whether [ADR-0007](../../../decisions/0007-data-layer-wit-interface.md) needs an amendment for the new operator.
 - Criteria: none alone. Its tests are the storage half of ML-20 and ML-29.
@@ -140,7 +179,8 @@ Change doc: roym-multilingual.
 
 ### B4b — Search in every script (L)
 
-- Y4, in `syneroym-text-lang` (section 1): transliteration tables and Latin folding on top of B4a's NFC and lower-case key.
+- Y4, in `syneroym-text-lang` (section 1): transliteration tables and Latin folding on top of B4a's NFC and lower-case key. We write our own tables, ISO 15919 as the start (D-S0-3). The test data is `spelling-pairs.tsv` after the owner check.
+- Joined words: a trigram match finds the query as a substring of the key, and `nalwala` is not a substring of `nal wala`. So the trigram table can index the key with spaces removed, and the `unicode61` table the key with spaces. That changes the key function, not the table shape.
 - The directory server half moves from `normalize_text` and `$regex` to the B4a text-match operator over search keys. The `-32602` refusal for a non-Latin query goes away. The index is rebuilt in place (no migration).
 - Chat search in `crates/conversation` indexes search keys and gets the short-word index, which removes the `LIKE` scan.
 - `contacts.list` gains a text query over name search keys.
