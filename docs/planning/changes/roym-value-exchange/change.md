@@ -685,7 +685,7 @@ These are correct to leave out of the overview. They are listed so the module au
 
 Milestone 8 is split into sub-milestones, in dependency order. Each has a folder under `docs/planning/milestones/` and a row in [roadmap.md](../../roadmap.md). Each module below gets its own change document before its sub-milestone starts.
 
-- [ ] **M08A, open foundation.** [Roym open foundation](../roym-open-foundation/change.md): the participant rename, the federated query library, the event feed, remote clients, typed methods.
+- [x] **M08A, open foundation.** [Roym open foundation](../roym-open-foundation/change.md): the participant rename, the federated query library, the event feed, remote clients, typed methods.
 - [ ] **M08B, language and structure.** [Roym multilingual foundation](../roym-multilingual/change.md): string catalog, local formats, taxonomy with attributes, language tags, search keys and FTS5, translation hook points.
 - [ ] **M08C, deal core and extensions.** Resource kinds. Commitments with kinds, states (each with a failure end), details and declared values, in one currency. Quote author as the single writer. Reserve and release hooks. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. [Roym extensions](../roym-extensions/change.md), with scheduling and one-shot. [Message forwarding](../roym-message-forwarding/change.md).
 - [ ] **M08D, intents and shop.** Offerings and wants as one intent record in `catalog`, with in-return terms. [Roym shop](../roym-shop/change.md).
