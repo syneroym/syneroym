@@ -564,3 +564,32 @@ warning, and no exit criterion catches it.
 sentences of D-A7-13".
 
 *Status:* Fixed (8a59807d)
+
+## Plan review round 3 (closing check) — Claude Sonnet 5.5, 2026-11-05
+
+Checked the plan at `b81c8b91` (fixes in 8a59807d). I read the diff of the plan
+since round 2 and the three open items. I did not run anything.
+
+**Summary:** P1, P12 and P13 are confirmed. **0 blocker, 0 major, 0 open.**
+All 13 items are Fixed and confirmed.
+
+- **P1 — confirmed.** The `address` block now starts with
+  `GATEWAY_PORT=${GATEWAY_PORT:-7960}`, so the port the story sets from `$S1_GW`
+  before `eval` is kept, and a reader without the variable gets 7960. D-A7-3
+  says so, and says that `roymctl roym address` runs as the node owner, so a
+  client on another machine gets the Hub host from the owner (6.10).
+- **P12 — confirmed.** The snippet is now `rc2 roym directory serve …`.
+  `rc2` passes `--as owner` itself
+  ([lib.sh:50](../../../../crates/substrate/tests/e2e/demo/lib.sh#L50)) and the
+  plan says why it is not repeated. `BOB_HUB_HOST` is `BOB_HUB_URL` without
+  `http://` and without `:<port>`; the two `${…#…}` and `${…%:*}` expansions give
+  that for the `http://<host>:<port>` form story 20 writes, and a host label has
+  no colon.
+- **P13 — confirmed.** Step 4 now reads "D-A7-1 to D-A7-7, D-A7-12 and
+  D-A7-13", and exit criterion 2 checks the six items of D-A7-12 and the three
+  sentences of D-A7-13.
+
+No new item. The plan is ready for the implementer. One cosmetic point, not an
+item: the D-A7-3 paragraph after the `address` block is now one long run of
+sentences; the implementer can split it when the decisions are copied to the
+change doc.
