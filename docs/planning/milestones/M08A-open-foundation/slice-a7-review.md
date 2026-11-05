@@ -167,7 +167,7 @@ URL answers. Better still, tag a small `roym-client=address` block in 6.1 with
 the `roym address` command and the `sed`, and run it. Then Step 2 item 1 only
 has to repeat the check on macOS and the CI image, not prove it.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P2 — The guide's feed text misses that a feed ends with its session token (major)
 
@@ -203,7 +203,7 @@ token (the old one is not revoked). Optional: have the story check that
 `feed.txt`'s stream has ended within about 30 s after the logout (one keep-alive
 tick plus margin). If that adds too much time, leave it out and keep the text.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P3 — The directory set-up for Q4 (a) is not specified, and one outcome is unverified (minor)
 
@@ -236,7 +236,7 @@ to an end user" and Step 5: "The story runs once per `demo:up`. Run
 whether the story writes its own values with `demo_set` (the env file grows on
 each run) or keeps them in shell variables; prefer shell variables.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P4 — Q7's audit counts one gate; `skip_on_docs_only` is on three (minor)
 
@@ -262,7 +262,7 @@ for example a `runs_for: &[&str]` list on `Gate` so `e2e` also runs when
 about 10 more lines and one more test; (i) is acceptable if the owner prefers
 the smaller change. Update D-A7-11, 7.2 and the size table to match.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P5 — Closing the change doc leaves OF-1 and OF-2 without evidence (minor)
 
@@ -286,7 +286,7 @@ cell of the criteria table is empty." If the A1 evidence is too thin to support
 OF-2 ("the user docs say participant"), say so in Deviations instead of writing
 a weak claim.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P6 — The guide's prerequisites (6.1) are not listed, and an outside reader needs terms defined (minor)
 
@@ -324,7 +324,7 @@ to read the error.
 carry, and a sentence in D-A7-1 that every term of an outside reader is defined
 at first use. Keep each item to one or two short sentences.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P7 — The guide has no security text for a client author (minor)
 
@@ -349,7 +349,7 @@ users share the machine; (3) a token cannot be limited to fewer methods (link
 the backlog row `:177` only by describing it, no row number in the guide). Keep
 the story's blocks as they are; this is text.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P8 — The `curl` minimum is inconsistent with `*.localhost` (minor)
 
@@ -371,7 +371,7 @@ error on the first command, although they meet the documented minimum.
 "auth.localhost:7960:127.0.0.1"` style options through a `CURL_OPTS` variable
 for all older versions. Do not leave two different minimums.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P9 — The guide's blocks lean on `set -euo pipefail`, which a reader's shell does not have (minor)
 
@@ -396,7 +396,7 @@ with `[ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "login failed" >&2; fals
 (or `jq -e`). Do the same for `CONV` and `MESSAGE_ID`. In the story's checks use
 `jq -e` against the JSON, not a string match on formatted text.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P10 — The error table does not say what a client sees after a node restart (minor)
 
@@ -417,7 +417,7 @@ without a redeploy, what does `POST /rpc` answer?" If row `:478` is still open,
 add a row to the 6.8 table with the exact answer and the action (redeploy, or
 wait for the supervisor's reconcile). If it is closed, say so in the PR.
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
 
 #### P11 — The guide must not cite planning ids; D-A7-4 invites it (minor)
 
@@ -439,4 +439,4 @@ captions cite a decision id, criterion id, milestone or slice; ADR ids and
 links to other parts of the developer guide are fine." Reword `search` to "name
 the fields of `hits`, `outcomes` and `refused` in the guide's own words".
 
-*Status:* Open
+*Status:* Fixed (4aa27d01)
