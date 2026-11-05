@@ -297,9 +297,10 @@ fn check_remote_access(
     }
     if identity_mode == IdentityMode::Open || !connection_auth_gate {
         warn!(
-            "remote_access is on, but identity_mode is not \"login\" with connection_auth_gate = \
-             true: every client on the network acts as this node; that setting stops it for API \
-             clients, but the gate also refuses a Hub page load that has no session"
+            "remote_access is on and requests with no session are allowed: they reach their \
+             target with this node's DID as caller. That DID has no owner or admin rights, but \
+             calls to other nodes use this node's identity. Use identity_mode = \"login\" with \
+             connection_auth_gate = true on a node that serves only API clients"
         );
     }
     Ok(())

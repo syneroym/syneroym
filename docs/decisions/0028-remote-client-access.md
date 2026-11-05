@@ -60,14 +60,17 @@ machine.
    fixed person.
 6. **`open` mode, or `login` mode without `connection_auth_gate`, with remote
    access:** startup succeeds with a warning. In these modes a request with no
-   session reaches its target as this node's DID, self-asserted. With remote
-   access, every client on the network can act as this node, on this node and on
-   other nodes the gateway reaches. `login` with `connection_auth_gate = true`
-   stops this, but the gate answers `401` to every request that has no session,
-   including the Hub's page and script files, so a browser cannot load the Hub.
-   Use the gate on a node that serves only API clients (`roymctl`, scripts). A
-   node that serves the Hub to remote browsers runs `login` without the gate,
-   and the warning stays. The public community node uses `open` on purpose.
+   session reaches its target with this node's DID as caller, self-asserted.
+   That DID has no owner or admin rights: node administration needs the
+   controller's DID, and Roym owner checks need the owner person. The effect is
+   on other nodes the gateway reaches: a stranger's calls use this node's
+   identity and per-caller quota there, and a service that trusts the node DID
+   accepts them. A node that serves the Hub runs in this way on purpose, so a
+   visitor with no login can load the page and use the open methods. `login`
+   with `connection_auth_gate = true` answers `401` to every request that has
+   no session, including the Hub's page and script files. Use the gate on a
+   node that serves only API clients (`roymctl`, scripts). The public community
+   node uses `open` on purpose.
 7. **Plain HTTP warning.** The gateway has no TLS. A non-loopback
    `bind_address` logs a warning. A remote Hub needs HTTPS: a browser offers
    `crypto.subtle`, which the Hub needs to sign in, only in a secure context.
