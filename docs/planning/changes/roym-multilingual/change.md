@@ -358,7 +358,7 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 - **Font size and bundle cost.** If system fonts are not enough on some devices, a Noto font for each script must be bundled or loaded on demand. Size per script is `unverified`. Loading on demand means a network fetch from the node, which is allowed (the Hub is served by the node).
 - **Native digits.** Decided 2026-11-05: `123` by default in every language. Native digits (`१२३`) are a later user option. Users have not been asked yet.
 - **Catalog format.** Decided 2026-11-05: Fluent.
-- **Who checks the Hindi text.** Decided 2026-11-05: an agent writes the first Hindi catalog and taxonomy labels, and a person who reads Hindi reviews them before they merge. That person is not named yet.
+- **Who checks the Hindi text.** Decided 2026-11-05: an agent writes the first Hindi catalog and taxonomy labels, and the owner reviews them before they merge.
 
 ## Tasks
 

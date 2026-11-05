@@ -198,7 +198,7 @@ These come from the change doc's open questions and from section 2. Each names t
 
 1. **Where Y3 and Y4 live.** Answered 2026-11-05: one new substrate crate, `syneroym-text-lang` (section 1).
 2. **Catalog format.** Answered 2026-11-05: Fluent (`@fluent/bundle`).
-3. **Who checks the Hindi text.** Answered 2026-11-05: an agent writes the first Hindi catalog and the Hindi taxonomy labels. A person who reads Hindi reviews them before B1b merges (catalog) and before B2 merges (labels). That person is not named yet.
+3. **Who checks the Hindi text.** Answered 2026-11-05: an agent writes the first Hindi catalog and the Hindi taxonomy labels. The owner reviews them before B1b merges (catalog) and before B2 merges (labels).
 4. **Native digits.** Answered 2026-11-05: Latin digits (`123`) by default in every language.
 5. **Who maintains the taxonomy, and the first taxonomy.** Answered 2026-11-05: the Roym project keeps a small hand-made base taxonomy, 50 to 150 codes, in the repository. A group may use its own codes at once (they show as raw codes) and proposes them for the base taxonomy through the normal contribution process.
 6. **Spelling test data.** Answered 2026-11-05: 200 word pairs per language (Hindi and Tamil in Latin letters). An agent drafts them in S0, and the owner checks them before the B4b plan is written.
