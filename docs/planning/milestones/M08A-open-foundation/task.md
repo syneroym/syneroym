@@ -2,7 +2,7 @@
 
 *Reader: developers who build this sub-milestone.*
 
-**Status: planning (2026-10-26).** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
+**Status: done (2026-11-05). Every slice is merged.** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
 
 This sub-milestone makes Roym usable by any client, not only the Hub. It builds one change doc. Read it first: [roym-open-foundation](../../changes/roym-open-foundation/change.md) (criteria `OF-*`).
 
@@ -112,7 +112,19 @@ S0 (during A1) ───────▶ A3 ────────────�
 - A3 (substrate and engine) and A6 (auth, gateway and the Hub's login) touch few Roym service files. They can run beside A2.
 - A4 needs A3 and A2c (the directory's typed methods). A5 needs A2a's types for event payloads. If S0 chooses the fallback, A4 also needs A5.
 
-## 5. Not in this plan
+## 5. Close-out (2026-11-05)
+
+All slices are merged ([status.md](status.md)). Every criterion `OF-1` to `OF-18` is met. Two are met in part, as the change doc says: OF-2 (the user docs are checked by review only) and OF-14 to OF-18 (nested record types and the `status` exports are not typed). The change doc is `status: done`.
+
+Moved to later milestones (each is a row in the [deferred backlog](../../deferred-backlog.md)):
+
+- **M08C:** giver and receiver on commitments; services that react to events (push, not pull).
+- **M08F:** the federated query library for more than one method; a guest that reads the `call-all` limits.
+- **M08G:** rewrite of `docs/reputation-design-note.md`, which still says provider and consumer.
+- **First M8 change that adds a field to a list:** `contacts.list`, `block.list` and `report.list` return a bare array.
+- **TBD:** a published API contract and client SDK, cross-version compatibility of records (G5), TLS in the gateway, a `roymctl` command for the client signing step.
+
+## 6. Not in this plan
 
 - Publishing the API contract (OpenRPC or JSON Schema). A2 makes it possible. A backlog row tracks it.
 - A client SDK package.
