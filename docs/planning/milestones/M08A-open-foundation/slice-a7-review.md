@@ -167,7 +167,11 @@ URL answers. Better still, tag a small `roym-client=address` block in 6.1 with
 the `roym address` command and the `sed`, and run it. Then Step 2 item 1 only
 has to repeat the check on macOS and the CI image, not prove it.
 
-*Status:* Fixed (4aa27d01)
+*Status:* Open (reopened in round 2). Fixed in 4aa27d01, but the fix has a
+defect: the `address` block in D-A7-3 starts with `GATEWAY_PORT=7960`, and the
+story runs that block with `eval`, so the line overwrites the `GATEWAY_PORT` the
+story set from `$S1_GW`. The story would use port 7960 and fail at the first
+call. See the round 2 section.
 
 #### P2 — The guide's feed text misses that a feed ends with its session token (major)
 
@@ -440,3 +444,123 @@ links to other parts of the developer guide are fine." Reword `search` to "name
 the fields of `hits`, `outcomes` and `refused` in the guide's own words".
 
 *Status:* Fixed (4aa27d01)
+
+## Plan review round 2 (fixes check) — Claude Sonnet 5.5, 2026-11-05
+
+Checked the plan at `e2b93b95` (fixes in 4aa27d01, close-out in e2b93b95)
+against the round 1 items and against the code. I read the whole plan again for
+new problems. I did not run the demo nodes, `curl`, `jq` or `cargo`.
+
+**Summary:** 11 round 1 items checked: 10 confirmed, 1 reopened (P1). 2 new
+minor items (P12, P13). **0 blocker, 0 major, 3 open (all minor):** P1, P12,
+P13.
+
+**Owner answers.** The plan records (a) for Q1 to Q8 (2026-11-05), with the
+review's notes, and Q7 as the per-gate rule (a′). I agree with that choice.
+D-A7-11 is a sound design: `skip_on_docs_only` and `is_docs_only_change` stay,
+a per-gate list can only make a gate run more often, and the run loop already
+computes the changed paths once
+([verify.rs:253-266](../../../../xtask/src/verify.rs#L253)), so the helper needs
+no new git calls.
+
+### Round 1 items
+
+- **P1 — reopened.** The story now finds the Hub host with a tagged `address`
+  block (D-A7-2, D-A7-3, D-A7-8 item 3), which is what P1 asked for. The block
+  as written sets `GATEWAY_PORT=7960` as its first line, so the story's own
+  `GATEWAY_PORT=$S1_GW` is lost when the block is evaluated. Fix: write the line
+  as `GATEWAY_PORT=${GATEWAY_PORT:-7960}`, or move it to the untagged variables
+  block and let the `address` block only read it. (The guide text then still
+  shows `7960` as the default.) Also say in one line that `roymctl roym
+  address` needs the master key, so a client on another machine gets the Hub
+  host from the node owner (6.10).
+- **P2 — confirmed.** D-A7-4 `feed` carries the "closes the feed with no frame
+  when the token ends" text with the `events.rs` reference. `refresh-logout`
+  now refreshes, then logs out both tokens, says the old token is not revoked
+  by `refresh`, and D-A7-8 checks that **both** tokens answer `-32010`. The
+  optional "feed has ended within 30 s" check is allowed to be left out. One
+  cosmetic point: the `refresh-logout` bullet has a stray "Text: refresh never
+  goes past the certificate." in the middle of a sentence; the implementer
+  writes the final text, so this is not an item.
+- **P3 — confirmed.** D-A7-8 item 3 uses the recipe of `docs/demo/demo.md`
+  (lines 1298 to 1304; I checked them), Step 2 item 2 tests the empty
+  directory, the identity name is no longer an open fact, the values stay in
+  shell variables, and the "once per `demo:up`" rule is in "How this is shown",
+  D-A7-8 and Step 5. The claim that `directory.add-source` keeps a source that
+  is already there is right (`existing_row` is read and reused,
+  [client_sources.rs:172-185](../../../../crates/roym_directory/src/app/client_sources.rs#L172)).
+  The snippet has one defect, see P12.
+- **P4 — confirmed.** Q7 now states the three-gate cost; (a′) is the owner's
+  choice; D-A7-11, 3.8, section 4, 7.2, the size table (393 lines is right) and
+  exit criterion 6 all describe the same per-gate rule. The "Docs-only change
+  detected" line at `verify.rs:255` is named in D-A7-11, so it will not keep
+  saying "skipping nextest, doctests and e2e".
+- **P5 — confirmed.** OF-1 and OF-2 are in section 9 and in exit criterion 9.
+  One note for the implementer: `assert_no_old_words` is a helper
+  ([wire_words.rs:59](../../../../crates/roym_core/src/record/tests/wire_words.rs#L59)),
+  not a test. The tests that call it are, for example,
+  `the_deal_enums_say_no_old_word_in_any_variant`,
+  `a_request_and_a_quote_say_no_old_word` and
+  `a_listing_says_no_old_word_for_any_place_or_audience`. The Hub side
+  (`wording.test.ts`, "keeps … free of the old words") matches the plan.
+- **P6 — confirmed.** D-A7-12 has the six items, and D-A7-1 asks for every
+  term to be defined at first use. I checked the references: `--expires-hours`
+  default 24 is at `session.rs:31`, `write_secret_file` at `commands.rs:233`,
+  and `profile.get` returns `conversation_address`.
+- **P7 — confirmed.** D-A7-13 has the three sentences and is placed in 6.2 and
+  6.10 (D-A7-3, D-A7-7). It cites no backlog row.
+- **P8 — confirmed.** Step 2 item 1 now finds the first curl version that
+  resolves `*.localhost` and uses the larger of that and 7.76 as the one minimum;
+  7.3 and D-A7-12 say the same.
+- **P9 — confirmed.** `login` and `open-send` start with `set -o pipefail` and
+  end with a check that fails with a message; the story's checks use `jq -e`.
+- **P10 — confirmed.** D-A7-6 has the restart row, Step 2 item 4 reads the real
+  answer, and 7.3, 7.4 and exit criterion 5 say "four facts". I looked for a
+  change that rehydrates the route tables on boot and found none, so the plan's
+  statement that row `:478` is still open fits the code; Step 2 item 4 is still
+  the proof.
+- **P11 — confirmed.** Section 0 now bans decision, criterion, milestone and
+  slice ids in the guide and the story's captions, and `search` says to name
+  the fields in the guide's own words.
+
+### New findings
+
+#### P12 — The directory set-up snippet passes `--as owner` twice (minor)
+
+*Where:* D-A7-8 item 3.
+
+*Problem:* The snippet is `rc2 --as owner roym directory serve …`. `rc2` in
+[lib.sh](../../../../crates/substrate/tests/e2e/demo/lib.sh) already expands to
+`roymctl … --as owner "$@"`. `--as` is a single-value global option
+([main.rs:37](../../../../apps/roymctl/src/main.rs#L37)), and clap refuses an
+option that is given twice. I did not run it. The snippet's note "copy the exact
+`rc2` and `--host` form from demo.md and story 20" does not help, because
+demo.md writes `roymctl --dir … --as owner` (no `rc2`) and story 20 uses its
+own `ctl` array.
+
+*Failure case:* The implementer pastes the snippet. `directory serve` fails
+with an argument error and the story stops before the first guide block.
+
+*Fix:* Write the snippet as `rc2 roym directory serve --name …` (no `--as`).
+Say that `--host` is Bob's Hub host, taken from `BOB_HUB_URL` without the
+scheme and the port.
+
+*Status:* Open
+
+#### P13 — Step 4 lists the wrong decisions for the guide (minor)
+
+*Where:* Step 4 ("Write section 6 (D-A7-1 to D-A7-7)").
+
+*Problem:* The text of 6.1 (what a reader needs) is D-A7-12, and the security
+text of 6.2 and 6.10 is D-A7-13. Both were added after D-A7-7. Step 4 still
+stops at D-A7-7, and exit criterion 2 checks only "every part of D-A7-1". An
+implementer who follows Step 4 literally can skip both.
+
+*Failure case:* The merged guide has no prerequisites list and no `https`
+warning, and no exit criterion catches it.
+
+*Fix:* Step 4: "D-A7-1 to D-A7-7, D-A7-12 and D-A7-13". Exit criterion 2: add
+"6.1 carries the six items of D-A7-12, and 6.2 and 6.10 carry the three
+sentences of D-A7-13".
+
+*Status:* Open
