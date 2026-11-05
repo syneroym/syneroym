@@ -593,3 +593,233 @@ No new item. The plan is ready for the implementer. One cosmetic point, not an
 item: the D-A7-3 paragraph after the `address` block is now one long run of
 sentences; the implementer can split it when the decisions are copied to the
 change doc.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-05
+
+Checked `git diff origin/main...HEAD` at `4414e3bd` on
+`feat/m08a-a7-client-guide` (main checkout, not a worktree; `git pull` said
+"Already up to date"). The code was written by Claude Sonnet 5.5. I read
+`AGENTS.md`, session-strategy.md ("The review file"), the plan, the plan
+review rounds above, the code review rounds of A2a to A6, and the change doc.
+No code was changed. Line numbers below are at `4414e3bd`.
+
+CI: `gh pr checks 345` on `4414e3bd`
+([run 41986450249](https://github.com/syneroym/syneroym/actions/runs/41986450249))
+was still running when this review was written (every job "pending"; the
+run on `1bc0b690` was cancelled by the newer push). So CI is **not yet
+proof** that the suite passes on this branch. The next round must check it.
+I did not run the full suite. I ran `cargo nextest run -p xtask verify`: 14
+passed, the number in `status.md`. I counted the demo tests: stories 10, 20
+and 30 have 2 + 2 + 1 = 5, the number in `status.md`. `wire_words.rs` has 8
+tests (the 7 that the change doc names, plus the guard's own test), and
+`wording.test.ts` has the 6 cases the change doc names.
+
+**Summary:** 0 blocker, 1 major (R1), 5 minor (R2 to R6). 6 open.
+
+### What was checked and found correct
+
+- **The files (exit criterion 11).** Only the files the plan lists changed:
+  the guide, the integrated spec, the change doc, the backlog, the matrix,
+  `task.md`, `status.md`, the plan and this file, the two story files,
+  `mise.toml` and `xtask/src/verify.rs`. No product code, WIT file or wire
+  shape changed, so there is no wire change to record.
+- **The verify rule (D-A7-11).** `Gate.docs_paths_that_run` is on all 15
+  gates; only `e2e` names `docs/developer-guide.md`, with a comment that says
+  why and cites no plan. `is_docs_only_path` and `is_docs_only_change` are
+  unchanged. `skips_on_docs_only` is the plan's three-part condition. The run
+  loop computes the paths once, and the "Docs-only change detected" line names
+  the gates it really skips. The two tests have the plan's names and inputs,
+  and a non-docs change still runs every gate.
+- **`jq` (D-A7-10).** `jq = "1.8"` beside `node`, `major.minor`, with a
+  comment.
+- **The guide (D-A7-1, D-A7-2, D-A7-4, D-A7-5).** `## 6. Build a Roym client`
+  is at the end, with the reader line and parts 6.1 to 6.10 in the plan's
+  order. Each of the 11 block names occurs exactly once (the story's
+  `guide_block` counts them, and I grepped). The signing script is the plan's
+  text, byte for byte. Each block that pipes starts with `set -o pipefail`,
+  and each block that sets a value ends with a check. No planning id is in the
+  guide, the story or its captions.
+- **Facts in the guide that I checked in code.** The frame formats and the
+  `change` data fields (`cursor`, `kind`, `service`, `subject`, `item`,
+  `at_ms`; `format_change_frame`, `events.rs:122`); the window of 10 000
+  events or 24 hours (`MAX_WINDOW_EVENTS`, `WINDOW_AGE_MS`,
+  `event_bus.rs:15-16`); the forwarding codes `-32001`, `-32002` and `-32603`
+  (`forward_rpc_call`, `roym_web/src/app.rs:217`); `roymctl app reconcile`
+  exists (`commands/app.rs:184`).
+- **The story (D-A7-8, D-A7-9).** It reads every block from the guide, runs
+  them in the plan's order (the feed before `open-send`), checks each result
+  with `jq -e`, keeps its values in shell variables, kills the background
+  feeds on exit, and checks that both tokens answer `-32010` after the two
+  logouts. The spec has the plan's test title and names `20-roym-setup.sh`
+  when the env file lacks a key. The `ERR` trap names the last block, and the
+  deviation records the block broken on purpose.
+- **Q6 and the backlog (section 8).** The unknown-field row has the new
+  target "TBD, with G5" and the note. The Node.js row is new. A third new row
+  records the `roym address` gap (see R1).
+- **The change doc.** `status: done`, the two tasks ticked, `demo:` lists both
+  story files, OF-1, OF-2 and OF-16 have Test cells, D-A7-1 to D-A7-13 and
+  the Q1–Q8 line keep the plan's numbers and meaning (shortened, not
+  changed), and each Step 2 result is a deviation. All A7 decisions belong to
+  this change doc; no other change doc owns a design that A7 touches.
+- **Living docs.** The integrated spec's new sentence and the `[ROY-CLI]` row
+  claim no more than the story shows.
+
+### Findings
+
+#### R1 — The guide's first step deletes the Hub's nickname host (major)
+
+*Where:* `docs/developer-guide.md:2260` (6.1 item 1);
+`crates/substrate/tests/e2e/demo/30-roym-client.sh:81-84`; the change doc
+deviation "the short Hub host needs a registry record with no nickname".
+
+*Problem:* 6.1 tells the reader to run `roymctl registry register --identity
+member-roym#web-0 --substrate <node DID>` with no `--nickname`. A new
+registration deletes every earlier alias of the service
+(`register_endpoint`, `crates/community_registry/src/registry.rs:223-225`:
+`state.aliases.retain(|_, id| *id != service_id)`). So a reader whose Hub has
+a nickname (the way story 20 and the demo register it) loses the Hub host
+they use in the browser, for example `roym-s<hash>.localhost`. The guide says
+"this replaces a nickname", but not that the old Hub URL then stops working.
+The story does the same, which the plan's "Stays the same" (section 4) did
+not allow. The step is also not needed. The gateway reads a nickname from the
+host name itself: `parse_target_host` (`crates/core/src/protocol_utils.rs:216`)
+turns `roym-s<hash>` into the lookup alias `roym-<hash>`, which is exactly the
+alias that `generate_alias(Some("roym"), …)` (`crates/core/src/util.rs:95`)
+registered. The `-i` part is optional. So the working host is the printed
+host with `<nickname>-` in front. The guide's text "the form
+`<nickname>-s<hash>-i<interface hash>.<domain>`" is also more than needed.
+
+*Failure case:* A developer follows "The Roym Hub" (Hub registered as
+`roym`), then 6.1. After the register step, the browser Hub at
+`http://roym-s<hash>.localhost:7960` answers `502` "Endpoint not found in
+registry or DHT", and nothing in the guide explains why.
+
+*Fix:*
+1. In the `address` block, add one line after `HUB_HOST=…`:
+   `HUB_HOST=${HUB_NICKNAME:+$HUB_NICKNAME-}$HUB_HOST`, with a comment "the
+   nickname the Hub was registered with, if any".
+2. In 6.1 item 1, delete the `registry register` sentence and the
+   "replaces a nickname" sentence. Say instead: if the Hub was registered with
+   `--nickname <name>`, set `HUB_NICKNAME=<name>` before the `address` block.
+   Add `HUB_NICKNAME` to the untagged variables block.
+3. In the story, delete the `registry register` set-up (lines 81-84) and
+   set `HUB_NICKNAME=roym` (the nickname story 20 uses). Now the story tests
+   the reader's normal case and leaves the demo state as it was.
+4. Change the change-doc deviation to the new text: the printed host needs
+   the nickname in front, the guide's block adds it. Keep the backlog row for
+   `roym address`, and change its text from "the client guide tells the reader
+   to register the Hub without a nickname" to "the client guide adds the
+   nickname".
+5. At `docs/developer-guide.md:1686`, add one line under the `roym address`
+   example: a Hub registered with a nickname is at `<nickname>-s<hash>…`.
+
+*Status:* Open
+
+#### R2 — The feed and catch-up blocks use values the guide never sets (minor)
+
+*Where:* `docs/developer-guide.md:2410-2440`;
+`crates/substrate/tests/e2e/demo/30-roym-client.sh:46-52` (`start_block`).
+
+*Problem:* 6.5 says "Open it in a second terminal". A new terminal has no
+`HUB_URL` or `TOKEN`, so the `feed` block there sends
+`curl … "/_syneroym/events"` with no host. The `catch-up` block uses
+`$CURSOR`, but no part of the guide says to set `CURSOR`. The story hides
+both: `start_block` passes `HUB_URL`, `TOKEN` and `CURSOR` into the new shell,
+and the story sets `CURSOR` itself. Also, 6.5 says `ready` "has no earlier
+position", but a `ready` frame carries `id: <cursor>` and
+`data: {"cursor": …}` (`format_ready_frame`, `events.rs:108`), and that id is
+a valid cursor to keep (the story uses it).
+
+*Failure case:* A reader follows 6.5 as written. The feed in the second
+terminal fails with a curl URL error. The catch-up block sends an empty
+`Last-Event-ID` and gets `ready` again, not the missed events.
+
+*Fix:* In 6.5, before the `feed` block, add: "In the second terminal, set
+`HUB_URL` and `TOKEN` to the same values first (print them in the first
+terminal with `echo "$HUB_URL" "$TOKEN"`)." Change the `ready` line to "the
+stream is open. Its `id:` is the current position; keep it like any other
+`id:`." Before the `catch-up` block, add `CURSOR=<the last id: you saw>` in
+the text. In the story, start the feed with `bash -c` and an empty
+environment except what the guide tells the reader to set
+(`env -i PATH="$PATH" CURL_HOME="$CURL_HOME" HUB_URL=… TOKEN=…`), so a new
+variable that a block needs, and the guide does not name, fails the story.
+
+*Status:* Open
+
+#### R3 — The OF-1 Test cell gives stale parity counts (minor)
+
+*Where:* `docs/planning/changes/roym-open-foundation/change.md:71`.
+
+*Problem:* The cell says "The dual-build parity harness (24 modules, 222
+scenarios)". Those are A1's numbers from `status.md`. Today
+`crates/roym_web/tests/dual_build_parity.rs` declares 22 modules, and the
+harness has about 241 test functions. The plan (section 9) asked to "check
+that each still exists and passes". Earlier slices had findings of this kind
+(A3 R2, A5 R5).
+
+*Failure case:* A reader checks the cell against `cargo nextest list` and
+finds other numbers, so the evidence looks wrong.
+
+*Fix:* Drop the two numbers, or write the count that
+`cargo nextest list -p syneroym-roym-web --test dual_build_parity` prints
+today, with the date.
+
+*Status:* Open
+
+#### R4 — 6.8 lists `-32013`, which a client on `/rpc` cannot get (minor)
+
+*Where:* `docs/developer-guide.md:2496`.
+
+*Problem:* `web` forwards every `/rpc` call with
+`CallTarget::Dependency` (`forward_rpc_call`, `roym_web/src/app.rs:233`), a
+local dispatch that `admit::require_internal` admits. `-32013` (`NOT_LOCAL`,
+`roym_core/src/admit.rs:15`) answers only a call that comes from another node
+straight to a service. The row's advice "You called a method that works only
+on the person's own node" is wrong for a client that calls its own node. The
+plan's D-A7-6 listed the code, so this is a plan error carried into the guide.
+
+*Failure case:* A client author writes a handler for `-32013` that tells the
+person to "use your own node", for an error that cannot come from `/rpc`.
+
+*Fix:* Delete the row. Or, if it stays for a client that calls a service of
+another node, change the text to "Only for a call from another node straight
+to a service. A call through `POST /rpc` does not get it."
+
+*Status:* Open
+
+#### R5 — The CI image's `*.localhost` answer is still unknown (minor)
+
+*Where:* `crates/substrate/tests/e2e/demo/30-roym-client.sh:89-92`; the change
+doc deviation "`curl` does not resolve `*.localhost` itself".
+
+*Problem:* Step 2 item 1 asked to check the CI image. The deviation says it
+was not checked. The story always writes the `connect-to` line, so the CI log
+cannot answer it either. The guide's sentence "Many systems send
+`*.localhost` to `127.0.0.1`" stays unchecked for Linux.
+
+*Failure case:* None in the test. A reader on Linux cannot tell from the
+guide whether they will need the workaround.
+
+*Fix:* Before the story writes `.curlrc`, add one probe that never fails:
+`curl -sS -o /dev/null --max-time 5 "http://auth.localhost:$S1_GW/_syneroym/session/methods" && echo "this machine resolves *.localhost" || echo "this machine needs connect-to"`.
+Read the answer in the Playwright E2E log of the next CI run, and write it in
+the deviation.
+
+*Status:* Open
+
+#### R6 — The doc comment of `skip_on_docs_only` is no longer true (minor)
+
+*Where:* `xtask/src/verify.rs:20-22`.
+
+*Problem:* The comment says the gate is "Skipped … when the change under
+verification touches only `*.md` files and `docs/`". With
+`docs_paths_that_run`, `e2e` is not skipped when one of those files is
+`docs/developer-guide.md`.
+
+*Failure case:* A reader trusts the comment and believes that a guide-only
+change skips `e2e`.
+
+*Fix:* Add "unless a changed path is in `docs_paths_that_run`" to the
+comment.
+
+*Status:* Open
