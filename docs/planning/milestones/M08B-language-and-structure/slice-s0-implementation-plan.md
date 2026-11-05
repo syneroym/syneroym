@@ -124,7 +124,7 @@ Options:
 - (b) A crate for the script-to-Latin step, with our own folding rules on
   top.
 
-**Owner answer: (a), 2026-11-01.** The owner also agrees with the plan
+**Owner answer: (a), 2026-11-05.** The owner also agrees with the plan
 review: the second reason below is the weak one, because a crate can be
 pinned to an exact version with a `# patch-pin:` reason (AGENTS.md). The
 first and third reasons carry the choice. The survey also lists
@@ -157,7 +157,7 @@ needs the `icu_locale` crate and its CLDR data, which is much larger.
 
 Options: (a) syntax form only; (b) CLDR form.
 
-**Owner answer: (a), 2026-11-01.** The owner notes that review item P2
+**Owner answer: (a), 2026-11-05.** The owner notes that review item P2
 weakens the premise below. A record from another node can carry any tag.
 And the browser's `Intl.Locale` turns `iw` into `he`, while
 `icu_locale_core` keeps `iw`. So Step 2 also runs the same inputs through
@@ -179,7 +179,7 @@ crates can do it. `icu_normalizer` 2.4.0 is already in `Cargo.lock`
 `url` and `idna` in the host crates (for example `syneroym-data-db` and
 `syneroym-conversation`). `unicode-normalization` is not in `Cargo.lock`.
 
-**Owner answer: yes, prefer `icu_normalizer`, 2026-11-01.** Step 2b also
+**Owner answer: yes, prefer `icu_normalizer`, 2026-11-05.** Step 2b also
 measures what a guest pays when `syneroym-text-lang` holds both
 dependencies but the guest uses only the tag type.
 
@@ -203,7 +203,7 @@ Two parts go beyond task.md and need a yes:
   `p`, `t` and `k`, every test would still pass). At least 20 per
   language, each one guarding one folding rule.
 
-**Owner answer: yes to both, 2026-11-01, with two changes from the plan
+**Owner answer: yes to both, 2026-11-05, with two changes from the plan
 review (P3, P11).** `joined` rows exist only for groups of more than one
 word. And the check script reports conflicts between the `variant` rows
 of one group and the `distinct` rows of another, across both languages
@@ -224,7 +224,7 @@ away: an asset archive may be up to 2 MiB compressed
 and the packed Hub is 34,257 bytes today. The real cost is the first load
 on a slow phone.
 
-**Owner answer: yes, 25 KB after `gzip -9` and no `eval`, 2026-11-01.**
+**Owner answer: yes, 25 KB after `gzip -9` and no `eval`, 2026-11-05.**
 The 25 KB covers the library only. The two catalogs add more (Hindi text
 is 3 bytes per character before gzip). So B1a reports the total (library
 and catalogs) as well; Step 6 writes this into task.md's B1a bullet.
@@ -249,7 +249,7 @@ the project-wide position, not a rule about `version`. Every record type
 is at version 1 today
 ([record.rs:18](../../../../crates/roym_core/src/record.rs#L18)).
 
-**Owner answer: yes, 2026-11-01.** Cite ADR-0018 §5 as the project-wide
+**Owner answer: yes, 2026-11-05.** Cite ADR-0018 §5 as the project-wide
 "no migration" position, not as a rule about `version`.
 
 *Recommendation:* S0 removes the `unverified` note and cites ADR-0018 §5
@@ -263,7 +263,7 @@ or counts that are now known to be wrong (section 2.2 lists them).
 Options: (a) fix them in place; (b) fix them and add a `## Deviations`
 entry for each.
 
-**Owner answer: (a), 2026-11-01.** The same edit also fixes the font
+**Owner answer: (a), 2026-11-05.** The same edit also fixes the font
 sentence (the last row of the table in section 2.2) and keeps the
 font-size `unverified` note (exit criterion 4).
 
