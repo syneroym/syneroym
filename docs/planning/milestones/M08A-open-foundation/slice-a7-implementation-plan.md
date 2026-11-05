@@ -642,16 +642,21 @@ see them.
   The tagged `address` block finds the Hub host the way the guide tells a
   reader to, so the story tests it:
   ```bash
-  GATEWAY_PORT=7960
+  GATEWAY_PORT=${GATEWAY_PORT:-7960}       # the node's gateway port
   HUB_HOST=$(roymctl roym address | sed -n 's/^Hub gateway host: *//p')
   [ -n "$HUB_HOST" ] || { echo "roymctl roym address printed no Hub host" >&2; false; }
   HUB_URL=http://$HUB_HOST:$GATEWAY_PORT
   AUTH_URL=http://auth.localhost:$GATEWAY_PORT
   ```
-  The story sets `GATEWAY_PORT=$S1_GW` and runs the block with Alice's
-  `roymctl --dir "$S1_DIR"` (a shell function `roymctl` that adds the
-  flags, or the block takes them from `ROYMCTL_ARGS`; the implementer picks
-  the simpler). The URLs use host names, as a browser does, so 6.10 only
+  The story sets `GATEWAY_PORT=$S1_GW` before it runs the block. The block
+  only falls back to `7960` when `GATEWAY_PORT` is not set, so the story's
+  port is kept (the block runs with `eval`). The story runs the block with
+  Alice's `roymctl --dir "$S1_DIR"` (a shell function `roymctl` that adds
+  the flags, or the block takes them from `ROYMCTL_ARGS`; the implementer
+  picks the simpler). The guide says in one line that `roymctl roym
+  address` lists the node's services as the node owner's identity (`--as`,
+  on the node owner's machine), so a client on another machine gets the
+  Hub host from the node owner (6.10). The URLs use host names, as a browser does, so 6.10 only
   changes them to `https://auth.<domain>` and `https://<hub host>`. Use
   `http://` only for `localhost`; any other host must be `https://`, or the
   signature, the token and every message cross the network in clear text
@@ -810,13 +815,18 @@ see them.
      recipe that already works in `docs/demo/demo.md` (`:1298-1304`):
      ```bash
      printf 'Be kind. Keep your listings honest.\n' > "$DEMO_HOME/client/rules.txt"
-     rc2 --as owner roym directory serve --name "Bob's guild" \
+     BOB_HUB_HOST=${BOB_HUB_URL#http://}; BOB_HUB_HOST=${BOB_HUB_HOST%:*}
+     rc2 roym directory serve --name "Bob's guild" \
        --rules-file "$DEMO_HOME/client/rules.txt" --category gardening \
        --support support@example.org --dispute "Write to support." \
-       --gateway-url "http://127.0.0.1:$S2_GW" --host <Bob's hub host>
+       --gateway-url "http://127.0.0.1:$S2_GW" --host "$BOB_HUB_HOST"
      DIRECTORY_DID=$(did_of "$S2_DIR" "member-roym#directory-0")
      ```
-     (copy the exact `rc2` and `--host` form from demo.md and story 20).
+     `rc2` already passes `--as owner` (`lib.sh:50`), and `--as` takes one
+     value ([main.rs:37](../../../../apps/roymctl/src/main.rs#L37)), so the
+     snippet does not pass it again. `--host` is Bob's Hub host:
+     `BOB_HUB_URL` (story 20 writes it as `http://<host>:<port>`) without
+     the scheme and the port.
      Then `SESSION_KEY=$ALICE_KEY`, `PEER_ADDR=$BOB_ADDR` and
      `GATEWAY_PORT=$S1_GW`. `HUB_URL` and `AUTH_URL` come from the tagged
      `address` block (D-A7-3), not from `ALICE_HUB_URL`, so the story tests
@@ -967,7 +977,8 @@ Check: `cargo nextest run -p xtask verify`.
 
 ### Step 4 — The guide section
 
-Write section 6 (D-A7-1 to D-A7-7) in `docs/developer-guide.md`. Run each
+Write section 6 (D-A7-1 to D-A7-7, D-A7-12 and D-A7-13) in
+`docs/developer-guide.md`. Run each
 block by hand on the demo nodes as you write it.
 
 ### Step 5 — The story
@@ -1123,7 +1134,9 @@ A7 is done when all of these are true:
 
 1. The owner has answered Q1 to Q8, and sections 4 to 9 match the answers.
 2. `docs/developer-guide.md` has `## 6. Build a Roym client` with every part
-   of D-A7-1, and every block name of D-A7-2 exactly once.
+   of D-A7-1, and every block name of D-A7-2 exactly once. 6.1 carries the
+   six items of D-A7-12, and 6.2 and 6.10 carry the three sentences of
+   D-A7-13.
 3. `mise run demo` passes, and story 30 runs every tagged block (OF-16).
 4. Story 30 failed when a block was broken on purpose (Step 5).
 5. The four facts of Step 2 are checked and written in the PR description.
