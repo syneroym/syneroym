@@ -3,9 +3,10 @@
 *Reader: the developer (or AI) who implements slice A7. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written 2026-11-05. The owner has not answered Q1–Q8 yet.
-Each question has a recommendation, (a). Sections 4 to 10 are written for
-the recommendations; change them if the owner picks another option.**
+**Status: plan written 2026-11-05. Plan review round 1 folded in
+2026-11-05 ([slice-a7-review.md](slice-a7-review.md), P1–P11). The owner
+answered Q1–Q8 on 2026-11-05: (a) for each, with notes on Q1, Q4, Q6 and
+Q7. Sections 4 to 10 follow the answers.**
 
 **Size and PR.** S. One PR on `feat/m08a-a7-client-guide`, with the commits
 of section 6 in that order. The branch starts from `main` at `ac6826f6`
@@ -30,7 +31,11 @@ All links are to `main` at `ac6826f6`.
     last slice of the change doc, so it also sets `status: done`.
   - New tools in the build pipeline go into `mise.toml` (Q3).
   - No planning ids ("M08A", "A7", "OF-16", "D-A7-3") in code, comments,
-    scripts or test names. ADR ids are fine.
+    scripts or test names. Neither the guide nor the story's captions cite
+    a decision id, criterion id, milestone or slice: the guide is a living
+    doc. ADR ids and links to other parts of the developer guide are fine.
+    No tool checks the guide or a shell script for this, so check it by
+    hand.
   - Tests never hardcode a port. The demo story reads every port from the
     demo env file.
 - [task.md](task.md): "A7 — Client guide and close-out" and section 4 (A7
@@ -89,9 +94,10 @@ that the section prints in full (Q2). A new demo story,
 section's tagged code blocks out of the guide and runs them against
 Alice's demo node, so the guide's text is the test (Q1). `jq` goes into
 `mise.toml` (Q3). The guide says what happens with an unknown field and
-why (Q6). `xtask verify` stops treating a change to
-`docs/developer-guide.md` as docs-only, so it runs the story (Q7). The
-change doc gets OF-16's evidence and `status: done`.
+why (Q6). `xtask verify` runs its `e2e` gate, and only that gate, when
+`docs/developer-guide.md` changed, so a guide-only change still runs the
+story (Q7). The change doc gets OF-16's evidence (and OF-1's and OF-2's,
+which were left empty) and `status: done`.
 
 ## How this is shown to an end user
 
@@ -113,7 +119,10 @@ A developer can see the work in these ways:
   a caption, then the `curl` command and the node's answer.
 - With the demo nodes up (`mise run demo:up`, then the Roym setup script),
   `bash crates/substrate/tests/e2e/demo/30-roym-client.sh` runs only this
-  story. `DEMO_STEP=1` waits for Enter after each caption.
+  story. `DEMO_STEP=1` waits for Enter after each caption. `jq` must be on
+  `PATH` (`mise run demo` puts the mise tools there). The story runs once
+  per `demo:up`, like story 20: run `mise run demo:down` and `demo:up`
+  before you run it again.
 - Any reader can follow section 6 of `docs/developer-guide.md` by hand
   against their own node.
 
@@ -154,6 +163,12 @@ stale without a red test. It reuses the demo nodes, `lib.sh` and
 `steps.ts`, so it adds no node boot code. It also meets the Mandatory Demo
 close-out with a story a viewer can watch.
 
+**Owner answer: (a), 2026-11-05**, once P1 and P9 of the plan review are
+fixed. Both are fixed in this plan: the story finds the Hub host the way
+the guide says, with the tagged `address` block (D-A7-2, D-A7-3, D-A7-8),
+and each block checks its own result, so it behaves the same in a
+reader's shell as under `set -euo pipefail` (D-A7-4).
+
 ### Q2. How does the guide sign the login challenge?
 
 A `delegated-key` login needs an Ed25519 signature over the challenge
@@ -175,6 +190,8 @@ z-base-32 still needs code.
 **Recommendation: (a).** It shows the whole protocol in a form any
 language can copy, needs no new product code, and is tested.
 
+**Owner answer: (a), 2026-11-05.**
+
 ### Q3. How do the commands read JSON?
 
 - **(a) `jq`, added to `mise.toml` as `jq = "1.8"`.** `jq` is what most
@@ -187,6 +204,8 @@ language can copy, needs no new product code, and is tested.
   runtime.
 
 **Recommendation: (a).**
+
+**Owner answer: (a), 2026-11-05.**
 
 ### Q4. What does "run a search" search?
 
@@ -207,6 +226,10 @@ node (section 3.5).
 
 **Recommendation: (a).** A reader sees a real fan-out to another node and
 how an outcome reads, for two extra set-up commands.
+
+**Owner answer: (a), 2026-11-05**, with P3 of the plan review. The
+set-up copies the working recipe of `docs/demo/demo.md` (D-A7-8 item 3),
+and Step 2 checks that a directory with no listings gives `error: null`.
 
 ### Q5. Does the guide cover cards?
 
@@ -229,6 +252,8 @@ conversations, send a message, search and the feed, not cards.
 **Recommendation: (a).** The scope line asks for it, and a client that
 cannot read cards cannot show a deal.
 
+**Owner answer: (a), 2026-11-05.**
+
 ### Q6. Unknown fields on local-only methods (backlog row `:521`)
 
 The row says the rule "assumes a client built with the node" and is to be
@@ -238,13 +263,16 @@ decided in A6 or A7. A6 did not decide it.
   unknown field with `-32602` and `data.field`; send only the fields the
   method lists; a client for a newer node may fail on an older node, so
   read `data.field` and tell the person to update the node. The row stays
-  open, with its target changed to G5 (cross-version compatibility), and a
-  note that the guide now says it.
+  open, with its target changed to "TBD, with G5", and a note that the
+  guide now says it.
 - (b) Make local-only methods ignore unknown fields. This reverses OF-18
   and D-A2a-4 for 137 method rows, and hides client bugs. Out of scope for
   a docs slice.
 
 **Recommendation: (a).**
+
+**Owner answer: (a), 2026-11-05.** The new backlog target is written
+"TBD, with G5", the same way as the neighbouring rows (section 8).
 
 ### Q7. Should `xtask verify` run the e2e gate when only the guide changes?
 
@@ -255,13 +283,24 @@ tagged blocks would skip the only test of those blocks locally. (CI runs
 "Playwright E2E" on every PR, `.github/workflows/ci.yml`, so CI still
 catches it.)
 
-- **(a) Yes.** `is_docs_only_path` returns `false` for
-  `docs/developer-guide.md`, with a one-line comment that a demo story runs
-  its code blocks, and one unit test.
+The docs-only switch is shared: it skips three gates, `nextest`,
+`doctests` and `e2e` (`skip_on_docs_only: true` at `verify.rs:91`, `:106`,
+`:121`).
+
+- **(a) Yes.** As first written: `is_docs_only_path` returns `false` for
+  `docs/developer-guide.md`. Cost: every guide-only edit (a typo in any
+  part of the 2 200-line guide) then also runs `nextest` and `doctests`,
+  about 15 minutes more.
+- (a′) Yes, per gate. A `Gate` names the docs paths that still run it.
+  Only `e2e` names `docs/developer-guide.md`; `nextest` and `doctests`
+  still skip. About 10 more lines and one more test than (a).
 - (b) No. Rely on CI.
 
-**Recommendation: (a).** One line and one test, and the local gate says
-the truth.
+**Recommendation: (a′).** Same result for the guide's test, without the
+15-minute cost on every guide edit.
+
+**Owner answer: (a) in intent, 2026-11-05**, with a per-gate rule that
+adds only `e2e`: that is (a′). D-A7-11 describes it.
 
 ### Q8. Where does the section go?
 
@@ -275,6 +314,8 @@ the truth.
   part about operators.
 
 **Recommendation: (a).**
+
+**Owner answer: (a), 2026-11-05.**
 
 ## 3. Facts checked in the code
 
@@ -499,8 +540,10 @@ From the method table
 
 ### 3.8 Verify and CI
 
-- `xtask verify`'s `e2e` gate has `skip_on_docs_only: true`
-  ([verify.rs:121](../../../../xtask/src/verify.rs#L121));
+- `xtask verify`'s `nextest`, `doctests` and `e2e` gates have
+  `skip_on_docs_only: true`
+  ([verify.rs:91](../../../../xtask/src/verify.rs#L91), `:106`, `:121`).
+  One switch, `is_docs_only_change`, skips all three (`:266`).
   `is_docs_only_path` is `path.ends_with(".md") || path.starts_with("docs/")`
   (`:162`), tested at `:309-323`.
 - CI runs "Playwright E2E" on every push and PR to `main`, after
@@ -551,8 +594,10 @@ None. No method, field, status code, header or frame changes.
 
 ### Behaviour changes that are not wire changes
 
-- `xtask verify` runs the `e2e` gate when `docs/developer-guide.md` is the
-  only changed file (Q7). Before: skipped.
+- `xtask verify` runs the `e2e` gate when a docs-only change includes
+  `docs/developer-guide.md` (Q7). Before: skipped. `nextest` and
+  `doctests` still skip on every docs-only change, and `e2e` still skips
+  on a docs-only change that does not touch the guide.
 - `mise install` installs `jq` (Q3).
 - The demo suite has one more story; `mise run demo` and `npm test` take
   about 20 to 40 s longer (section 7.5).
@@ -574,31 +619,59 @@ see them.
   Call a method, 6.4 Conversations, 6.5 Follow the event feed, 6.6 Search,
   6.7 Show cards, 6.8 Errors and unknown fields, 6.9 End the session, 6.10
   A client on another machine. Each part starts with what the reader can
-  do, then the command, then what the answer means.
+  do, then the command, then what the answer means. The reader has no
+  project knowledge, so every project term is defined where it first
+  appears, in one short sentence: master key, delegation certificate,
+  session key file, session token, app instance, Hub host, SSE (or a link
+  to [TERMINOLOGY.md](../../../TERMINOLOGY.md)).
 - **D-A7-2. Tagged blocks.** Info string `bash roym-client=<name>` for a
   shell block, `js roym-client=sign-challenge.mjs` for the script. Names,
-  in this order: `sign-challenge.mjs`, `login`, `rpc`, `list`, `open-send`,
-  `feed`, `catch-up`, `search`, `cards`, `refresh-logout`. Each name occurs
-  once. The variables block of 6.1 is **not** tagged (the story sets the
-  variables itself).
+  in this order: `address`, `sign-challenge.mjs`, `login`, `rpc`, `list`,
+  `open-send`, `feed`, `catch-up`, `search`, `cards`, `refresh-logout`.
+  Each name occurs once. The variables block of 6.1 is **not** tagged (the
+  story sets `SESSION_KEY`, `PEER_ADDR` and `DIRECTORY_DID` itself), but
+  the `address` block that finds the two URLs is.
 - **D-A7-3. The variables.** Set once in 6.1:
   ```bash
   AUTH_URL=http://auth.localhost:7960      # the node's auth service
-  HUB_URL=http://s<web-did-hash>.localhost:7960  # `roymctl roym address` prints the host
+  HUB_URL=http://s<web-did-hash>.localhost:7960  # the `address` block finds it
   SESSION_KEY=./session-key.json           # from `roymctl session delegate`
   PEER_ADDR=did:key:z...                   # the other person's conversation service id
   DIRECTORY_DID=did:key:z...               # a directory you trust
   ```
-  The URLs use host names, as a browser does, so 6.10 only changes them to
-  `https://auth.<domain>` and `https://<hub host>`. Step 2 checks that the
-  `curl` on the CI runner and on macOS sends `*.localhost` to `127.0.0.1`
-  (current `curl` does this without DNS). If one does not, the guide adds
-  `--connect-to ::127.0.0.1:` through a `CURL_OPTS` variable, and records a
-  deviation.
+  The tagged `address` block finds the Hub host the way the guide tells a
+  reader to, so the story tests it:
+  ```bash
+  GATEWAY_PORT=7960
+  HUB_HOST=$(roymctl roym address | sed -n 's/^Hub gateway host: *//p')
+  [ -n "$HUB_HOST" ] || { echo "roymctl roym address printed no Hub host" >&2; false; }
+  HUB_URL=http://$HUB_HOST:$GATEWAY_PORT
+  AUTH_URL=http://auth.localhost:$GATEWAY_PORT
+  ```
+  The story sets `GATEWAY_PORT=$S1_GW` and runs the block with Alice's
+  `roymctl --dir "$S1_DIR"` (a shell function `roymctl` that adds the
+  flags, or the block takes them from `ROYMCTL_ARGS`; the implementer picks
+  the simpler). The URLs use host names, as a browser does, so 6.10 only
+  changes them to `https://auth.<domain>` and `https://<hub host>`. Use
+  `http://` only for `localhost`; any other host must be `https://`, or the
+  signature, the token and every message cross the network in clear text
+  (said in 6.2 and 6.10). Step 2 checks that the `curl` on the CI runner
+  and on macOS sends `*.localhost` to `127.0.0.1`, and finds the first
+  `curl` version that does this without DNS. If one does not, the guide
+  adds `--connect-to ::127.0.0.1:` through a `CURL_OPTS` variable, and
+  records a deviation.
 - **D-A7-4. The blocks.** The implementer writes the final text; these are
   the commands and the facts each block must keep:
+  - Every block checks its own result, so it behaves the same in a
+    reader's interactive shell as in the story's `set -euo pipefail`
+    shell. A block that pipes starts with `set -o pipefail` (6.1 says why
+    in one line). A block that sets a value ends with a check that fails
+    with a message, for example
+    `[ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "login failed" >&2; false; }`,
+    or reads it with `jq -e`.
   - `login`:
     ```bash
+    set -o pipefail
     MASTER_DID=$(jq -r .certificate.master_did "$SESSION_KEY")
     CHALLENGE=$(curl -sS --fail-with-body -X POST "$AUTH_URL/_syneroym/session/challenge" \
       -H 'Content-Type: application/json' -d "{\"master_did\":\"$MASTER_DID\"}")
@@ -609,11 +682,13 @@ see them.
       | curl -sS --fail-with-body -X POST "$AUTH_URL/_syneroym/session/login" \
           -H 'Content-Type: application/json' -d @- \
       | jq -r .token)
+    [ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "login failed" >&2; false; }
     ```
     Text: the nonce lives 60 s and works once; 409 means the master anchor
     is not in the registry (run `session delegate` with `--registry-url`);
     the session lasts at most `session_ttl_secs` (8 h by default) and never
-    past the certificate.
+    past the certificate; 401 "delegation certificate has expired" means
+    the key file is too old (D-A7-12 item 4).
   - `rpc`: a shell function `roym <method> [params-json]` that posts
     `{"jsonrpc":"2.0","id":1,"method":…,"params":…}` to `$HUB_URL/rpc`
     with `Authorization: Bearer $TOKEN` and prints the whole JSON-RPC
@@ -623,9 +698,12 @@ see them.
     kind, peer_address, message_count}'`.
   - `open-send`:
     ```bash
+    set -o pipefail
     CONV=$(roym conversation.open "{\"address\":\"$PEER_ADDR\"}" | jq -r .result.conversation_id)
     MESSAGE_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Hello from curl\"}" \
       | jq -r .result.message_id)
+    [ -n "$CONV" ] && [ "$CONV" != null ] && [ -n "$MESSAGE_ID" ] && [ "$MESSAGE_ID" != null ] \
+      || { echo "open or send failed" >&2; false; }
     ```
     Text: `state` starts `pending`, then `deposited` or `delivered`, or
     `failed`; `conversation.delivery-status` reads it again.
@@ -637,7 +715,13 @@ see them.
     `transaction.thread`, `booking.get`); the feed carries no content;
     `ready` and `reload` mean "load your state again"; keep the last `id:`
     you saw; at most 16 open feeds per app instance; a browser holds one
-    connection per feed, so close it when the page is hidden.
+    connection per feed, so close it when the page is hidden. And: "The
+    node closes the feed, with no frame, when the session token that
+    opened it expires or is logged out (it checks on every change and on
+    each 25 s keep-alive). This is normal. Reconnect with a valid token and
+    `Last-Event-ID: <last id>`. If the answer is `reload`, load your state
+    again." (`is_session_expired_or_revoked`, `make_feed_stream`,
+    [events.rs:172-231](../../../../crates/router/src/route_handler/http/events.rs#L172).)
   - `catch-up`: the same command with `-H "Last-Event-ID: $CURSOR"`. Text:
     you get every event after the cursor, or `reload`; the window is 10 000
     events or 24 hours and is lost on restart.
@@ -649,12 +733,20 @@ see them.
     Text: one call asks every source at once and merges the answers; one
     outcome per source with `error` `null`, `not-found`, `timed-out`,
     `not-started`, `refused` or `unreadable`; each hit is checked on this
-    node; how to read `hits` (point to the D-A4 fields only by name).
+    node; how to read `hits`, `outcomes` and `refused`, with their fields
+    named in the guide's own words.
   - `cards`: `roym transaction.sync "{\"conversation\":\"$CONV\"}"`, then
     `roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq
     .result.cards`. Text: Q5 (a).
-  - `refresh-logout`: `POST $AUTH_URL/_syneroym/session/refresh` and
-    `/logout` with `Bearer`. Text: refresh never goes past the certificate.
+  - `refresh-logout`: `POST $AUTH_URL/_syneroym/session/refresh` with
+    `Bearer $TOKEN` sets `NEW_TOKEN`; then `/logout` with
+    `Bearer $NEW_TOKEN` and `/logout` with `Bearer $TOKEN`. Text: refresh never goes past the certificate.
+    "`refresh` gives a new token. The old token stays valid until it
+    expires; log it out too if you want it to stop working
+    (`AuthService::refresh`,
+    [service.rs:372](../../../../crates/auth/src/service.rs#L372), does not
+    revoke it). A feed opened with the old token ends at the old token's
+    end, so open the next feed with the new token."
 - **D-A7-5. The signing script**, printed in full in 6.2:
   ```js
   // Signs a Syneroym login challenge with the temporary key of a session key file.
@@ -693,12 +785,20 @@ see them.
   (`-32010`, `-32011`, `-32012`, `-32013`, `-32601`, `-32602` with
   `data.field`, `-32001`, `-32002`, `-32603`, HTTP 503 from the node's
   own admission). Q6 (a)'s text on unknown fields. Point to the bad-input
-  reference at `:1756` for nested blocks.
+  reference at `:1756` for nested blocks. One more row for a node restart:
+  backlog row "A bare substrate restart does not rehydrate the route
+  tables" (`deferred-backlog.md:478`) is still open, so a restarted node
+  that runs Roym as WASM may serve no `POST /rpc` until Roym is deployed
+  again or the supervisor reconciles it. The row gives the exact answer
+  Step 2 item 4 sees, and the action (ask the node owner to redeploy, or
+  wait for the reconcile). If Step 2 finds the gap closed, leave the row
+  out and say so in the PR.
 - **D-A7-7. A client on another machine (6.10).** Three sentences and a
   link: the node owner turns on remote access (the remote-access part of
   section 4, ADR-0028); the client uses `https://auth.<domain>` and
   `https://<hub host>`; `local` login is off, so this guide's
-  `delegated-key` login is the one to use. Not tested (7.3).
+  `delegated-key` login is the one to use. Not tested (7.3). The security
+  text of D-A7-13 goes here too.
 - **D-A7-8. The story script** `crates/substrate/tests/e2e/demo/30-roym-client.sh`:
   1. `source "$(dirname "$0")/lib.sh"`.
   2. A function `guide_block <name>` that prints the body of the one block
@@ -706,22 +806,41 @@ see them.
      `$REPO/docs/developer-guide.md` with `awk`. It fails with a message
      that names the block when there is none, or more than one.
   3. Set-up (captions say "Set-up, not part of the guide"): a work
-     directory `$DEMO_HOME/client`; Bob's node serves a directory
-     (`rc2 roym directory serve --name "Bob's guild" --rules-file … --support
-     … --dispute … --gateway-url http://127.0.0.1:$S2_GW --host <Bob's hub
-     host>`); `DIRECTORY_DID=$(did_of "$S2_DIR" "member-roym#directory-0")`
-     (Step 2 confirms the identity name); the variables of D-A7-3 from the
-     env file: `HUB_URL` from `ALICE_HUB_URL`, `AUTH_URL` from `S1_GW`,
-     `SESSION_KEY=$ALICE_KEY`, `PEER_ADDR=$BOB_ADDR`.
+     directory `$DEMO_HOME/client`; Bob's node serves a directory, with the
+     recipe that already works in `docs/demo/demo.md` (`:1298-1304`):
+     ```bash
+     printf 'Be kind. Keep your listings honest.\n' > "$DEMO_HOME/client/rules.txt"
+     rc2 --as owner roym directory serve --name "Bob's guild" \
+       --rules-file "$DEMO_HOME/client/rules.txt" --category gardening \
+       --support support@example.org --dispute "Write to support." \
+       --gateway-url "http://127.0.0.1:$S2_GW" --host <Bob's hub host>
+     DIRECTORY_DID=$(did_of "$S2_DIR" "member-roym#directory-0")
+     ```
+     (copy the exact `rc2` and `--host` form from demo.md and story 20).
+     Then `SESSION_KEY=$ALICE_KEY`, `PEER_ADDR=$BOB_ADDR` and
+     `GATEWAY_PORT=$S1_GW`. `HUB_URL` and `AUTH_URL` come from the tagged
+     `address` block (D-A7-3), not from `ALICE_HUB_URL`, so the story tests
+     the guide's way of finding the Hub host. The story keeps its values
+     in shell variables, not in the env file (`demo_set`), so the env file
+     does not grow. The story runs once per `demo:up`, like story 20
+     (`directory serve` creates or updates, and `directory.add-source`
+     keeps a source that is already there, `client_sources.rs:175`, but
+     story 20 itself cannot run twice).
   4. Write the `sign-challenge.mjs` block into the work directory and `cd`
      there.
   5. For each block, `caption "<guide part title>"`, print the block, and
      `eval` it. The `feed` block runs in the background, with its output in
      `feed.txt`, before `open-send`; the script kills it on exit (`trap`).
-  6. Checks, each with a message that names the step:
-     - after `login`: `$TOKEN` is not empty and not `null`;
-     - after `rpc`: `session.whoami` answers `"did": "$ALICE_DID"` and
-       `"auth": "delegated"` (`WhoamiOutput { did, auth, app_instance }`,
+  6. Checks, each with a message that names the step. Every check on a
+     JSON answer uses `jq -e` on the JSON, never a string match on
+     formatted `jq` output:
+     - after `address`: `$HUB_URL` and `$AUTH_URL` are set, and the
+       `session.whoami` call below goes through that `HUB_URL`;
+     - after `login`: `$TOKEN` is not empty and not `null` (the block
+       checks it too);
+     - after `rpc`: `roym session.whoami | jq -e --arg d "$ALICE_DID"
+       '.result.did == $d and .result.auth == "delegated"'`
+       (`WhoamiOutput { did, auth, app_instance }`,
        [roym_web/app.rs:34](../../../../crates/roym_web/src/app.rs#L34));
      - after `list`: the answer has a `conversations` list;
      - after `open-send`: `$CONV` and `$MESSAGE_ID` are set;
@@ -734,10 +853,16 @@ see them.
        Then the script kills it. (A `curl --max-time` would end with exit
        code 28, which `set -e` turns into a failure.)
      - after `search`: one outcome, for `$DIRECTORY_DID`, with
-       `"error": null`;
+       `error` `null` (`jq -e`; Step 2 item 2 confirms this for a
+       directory with no listings);
      - after `cards`: the answer has a `cards` list;
-     - after `refresh-logout`: a `/rpc` call with the token that the block
-       logged out answers `-32010`.
+     - after `refresh-logout`: a `/rpc` call with `$NEW_TOKEN` answers
+       `-32010`, and so does one with `$TOKEN`. Both are checked because
+       `refresh` does not revoke the old token; only the block's second
+       `/logout` does. Optional: `feed.txt`'s `curl` (opened with
+       `$TOKEN`) has ended within about 30 s after that logout (one
+       keep-alive tick plus margin). Leave this check out if it adds too
+       much time; the guide's text stays.
 - **D-A7-9. The spec** `30-roym-client.spec.ts`: one test,
   `'Roym client story: follow the client guide with curl'`, that calls
   `runScript('30-roym-client.sh')`. Like story 20, it names the script it
@@ -745,10 +870,57 @@ see them.
 - **D-A7-10. `jq`.** `jq = "1.8"` in `[tools]` of `mise.toml`, beside
   `node`. The guide's 6.1 says that `mise install` installs `jq` and
   `node`, and that `curl` comes with the system.
-- **D-A7-11. Verify.** In `xtask/src/verify.rs`, `is_docs_only_path`
-  returns `false` for `docs/developer-guide.md`. Comment: "a demo story
-  runs the client guide's code blocks". Unit test
-  `the_developer_guide_is_not_docs_only`.
+- **D-A7-11. Verify (Q7 (a′)).** In `xtask/src/verify.rs`, `Gate` gets a
+  field `docs_paths_that_run: &'static [&'static str]`: docs paths that
+  still run this gate on a docs-only change. `e2e` sets it to
+  `&["docs/developer-guide.md"]`, with the comment "a demo story runs the
+  client guide's code blocks"; every other gate sets `&[]`.
+  `is_docs_only_path` and `is_docs_only_change` stay as they are. The run
+  loop computes the changed paths once and skips a gate only when the
+  change is docs-only, the gate has `skip_on_docs_only`, and no changed
+  path is in its `docs_paths_that_run` (a small `fn skips_on_docs_only(gate,
+  paths) -> bool`, so it can be unit tested). The "Docs-only change
+  detected" line names the gates it really skips. Unit tests:
+  `a_guide_change_runs_only_the_e2e_gate` and
+  `other_docs_changes_skip_all_three_gates`.
+- **D-A7-12. What a reader needs (6.1).** 6.1 lists these, one or two
+  short sentences each, each with the error a reader sees when it is
+  missing:
+  1. Roym deployed on the node, and the gateway in `identity_mode =
+     "login"`. Without login mode every call is anonymous and gets
+     `-32010` (developer guide `:1642`).
+  2. `roym enrol-signing` run once by the owner, only if Step 2 item 3
+     shows that `conversation.send` needs it.
+  3. A session key file for the **owner** of the installation. Every Roym
+     method needs the owner (except `profile.policy`), so a session of any
+     other person gets `-32011`. One installation has one person; there is
+     no second user.
+  4. The key file lasts `--expires-hours` (default 24,
+     [session.rs:31](../../../../apps/roymctl/src/commands/session.rs#L31)).
+     After that, `login` answers 401 "delegation certificate has expired".
+     Make a new file with `roymctl session delegate`.
+  5. The key file is a secret. `roymctl` writes it with mode `0600`
+     (`write_secret_file`,
+     [commands.rs:233](../../../../apps/roymctl/src/commands.rs#L233)).
+     Whoever holds it can sign in as the person until it expires.
+  6. `PEER_ADDR` is the other person's conversation service id. They get
+     it from `roymctl roym address` ("conversation service id"), or a
+     client reads `conversation_address` from their `profile.get`.
+  `jq`, `node` (20 or later) and `curl` (the minimum version Step 2 item 1
+  finds) are listed too (D-A7-10).
+- **D-A7-13. Security text for a client author** (6.2 and 6.10), three
+  short sentences:
+  1. Use `http://` only for `localhost`. Any other host must be
+     `https://`.
+  2. The session token and the key file are secrets. Do not log them and
+     do not put them in a URL. When other users share the machine, pass
+     the header with `curl -H @file` or a `--config` file instead of
+     `-H "Authorization: …"`, which `ps` shows. The guide's blocks keep
+     `-H "Authorization: Bearer $TOKEN"` for clarity on a one-person
+     machine.
+  3. A session token cannot be limited to fewer methods: it can do
+     everything the person can do on their installation. (Describe this
+     in words; the guide cites no backlog row.)
 
 ## 6. Step-by-step changes
 
@@ -764,12 +936,24 @@ On the demo nodes (`mise run demo:up`, then `bash
 crates/substrate/tests/e2e/demo/20-roym-setup.sh`, then the Hub part of
 story 20 or the same set-up by `curl`), by hand:
 
-1. `curl http://s<hash>.localhost:<S1_GW>/rpc` reaches the gateway (D-A7-3).
-   Do it on macOS and in the CI image (`ubuntu-latest`).
-2. The identity name of Bob's directory service under `S2_DIR`.
+1. The `address` block's `HUB_URL` (`http://s<hash>.localhost:<S1_GW>`)
+   and `AUTH_URL` reach the gateway (D-A7-3). Do it on macOS and in the CI
+   image (`ubuntu-latest`). Look up, in the curl changelog, the first curl
+   version that sends `*.localhost` to the loopback address without DNS.
+   The guide's curl minimum (6.1, 7.3) is the larger of that version and
+   7.76 (`--fail-with-body`): one minimum, not two.
+2. `directory.find` on Bob's directory, which has no listings, gives one
+   outcome with `error: null`. If it does not, publish one listing in the
+   set-up, or accept the outcome the node gives and change the check and
+   the guide's text. (The identity name of Bob's directory is known:
+   `member-roym#directory-0`, as in `docs/demo/demo.md:1304`.)
 3. A `conversation.send` from Alice to Bob's address works without
    `roym enrol-signing` on a fresh owner. If it does not, 6.1 lists
    `roym enrol-signing` as a step of "What you need".
+4. After `mise run demo:down` and `demo:up` with no redeploy, what does
+   `POST /rpc` on Alice's Hub host answer? Backlog row `:478` says it
+   serves nothing. Write the exact answer into the 6.8 restart row
+   (D-A7-6), or, if the gap is closed, say so in the PR.
 
 Write each answer into the PR description. A wrong guess becomes a
 deviation in the change doc.
@@ -777,7 +961,7 @@ deviation in the change doc.
 ### Step 3 — `jq` and the verify rule
 
 1. `mise.toml`: `jq = "1.8"` (D-A7-10). `mise install` locally.
-2. `xtask/src/verify.rs`: D-A7-11 and its unit test.
+2. `xtask/src/verify.rs`: D-A7-11 and its two unit tests.
 
 Check: `cargo nextest run -p xtask verify`.
 
@@ -793,6 +977,9 @@ block by hand on the demo nodes as you write it.
 3. Break one guide block on purpose (a wrong method name in `list`) and
    see the story fail with a message that names the step. Then put it back.
    Write the result in the PR description.
+
+The story runs once per `demo:up`: run `mise run demo:down` and `demo:up`
+before each new run by hand.
 
 Check: `mise run demo` (all stories, in order), then
 `mise run test:e2e > target/e2e-run.log 2>&1; echo "exit=$?"; tail -n 15
@@ -819,8 +1006,11 @@ pipefail`, `curl --fail-with-body`), or if a check fails.
 
 ### 7.2 `xtask` unit test
 
-- `the_developer_guide_is_not_docs_only`: `["docs/developer-guide.md"]` is
-  not a docs-only change; `["docs/planning/deferred-backlog.md"]` still is.
+- `a_guide_change_runs_only_the_e2e_gate`: for
+  `["docs/developer-guide.md", "docs/planning/deferred-backlog.md"]`,
+  `e2e` runs and `nextest` and `doctests` skip.
+- `other_docs_changes_skip_all_three_gates`: for
+  `["docs/planning/deferred-backlog.md"]`, all three skip.
 
 ### 7.3 Not tested
 
@@ -832,26 +1022,29 @@ pipefail`, `curl --fail-with-body`), or if a check fails.
   covered by the A5 tests named in OF-8.
 - A search that returns hits (Q4 (a)); covered by Hub cases 22 and 23 and
   `dual_build_parity/directory_find.rs`.
-- Node versions below 20, and `curl` versions without `--fail-with-body`
-  (added in curl 7.76). The guide names Node 20 and curl 7.76 as the
-  minimum.
+- Node versions below 20, and `curl` versions below the minimum that Step
+  2 item 1 finds (the larger of 7.76, for `--fail-with-body`, and the first
+  version that resolves `*.localhost` itself). The guide names Node 20 and
+  that one curl version as the minimum.
+- A client after a node restart (the 6.8 restart row). Step 2 item 4
+  checks it by hand once.
 
 ### 7.4 How A7 avoids the kinds of findings earlier slices had
 
 - **Wrong facts or counts** (A2b R2, A3 R3, A4 R8, A5 R5): every fact in
-  section 3 has a link checked on `ac6826f6`; Step 2 checks the three facts
+  section 3 has a link checked on `ac6826f6`; Step 2 checks the four facts
   this plan could not check without running the nodes.
 - **Evidence that names tests that do not exist** (A3 R2, A5 R5): OF-16's
   Test column names the story file and its test title after the run.
 - **Change-doc decisions that do not match the plan** (A3 R9, A4 R7, A5
-  R4): D-A7-1 to D-A7-11 are copied at close-out, not rewritten.
+  R4): D-A7-1 to D-A7-13 are copied at close-out, not rewritten.
 - **Living-doc statements left false** (A4 P22, A5 R9, A6 R1): section 3.9
   lists each doc and why it changes or not.
 - **Tests that cannot fail** (A5 R6): Step 5 item 3 breaks a block on
   purpose and sees the story fail.
 - **The end-user story and the developer checks miss set-up steps** (A6
-  P10): 6.1 lists every thing a reader needs before 6.2, and Step 2 item 3
-  checks the one doubtful step.
+  P10): 6.1 lists every thing a reader needs before 6.2 (D-A7-12), and
+  Step 2 item 3 checks the one doubtful step.
 - **Docs that recommend a setup that does not work** (A6 R1): every
   command in the guide runs in the story, except 6.10, which only links to
   the tested remote-access text.
@@ -862,15 +1055,15 @@ pipefail`, `curl --fail-with-body`), or if a check fails.
 | File | Today | Risk |
 | --- | --- | --- |
 | `docs/developer-guide.md` | 2 236 lines | About +250. Markdown has no size gate. |
-| `xtask/src/verify.rs` | under 800 | About +10. |
+| `xtask/src/verify.rs` | 393 lines | About +40 (the field on 15 gates, the helper, two tests). |
 | Demo suite time | story 20 deploys Roym twice | About +20 to 40 s, under the 180 s test limit and the 900 s suite limit. |
 
 ## 8. Deferred backlog
 
 Change:
 - §10 "Local-only methods refuse unknown fields, which assumes a client
-  built with the node" (`:521`): target "Decide in A6 or A7" becomes "G5
-  (cross-version compatibility)". Add: "The client guide (developer guide
+  built with the node" (`:521`): target "Decide in A6 or A7" becomes "TBD,
+  with G5" (owner, Q6). Add: "The client guide (developer guide
   section 6) tells clients to send only the listed fields and to read
   `data.field`; the rule stays (owner, Q6)."
 
@@ -889,9 +1082,19 @@ No new `TODO` or `FIXME` marker.
     (`Roym client story: follow the client guide with curl`), which runs
     the tagged blocks of `docs/developer-guide.md` section 6 through
     `30-roym-client.sh`.
+  - OF-1 and OF-2 Test column (empty today,
+    [change.md:69-70](../../changes/roym-open-foundation/change.md#L69)):
+    fill them from the A1 evidence in [status.md](status.md). Name the test
+    functions, not only the files, and check that each still exists and
+    passes: `crates/roym_core/src/record/tests/wire_words.rs` (the
+    `assert_no_old_words` tests) and the parity harness for OF-1;
+    `crates/roym_web/ui/src/cards/wording.test.ts` (the "keeps … free of
+    the old words" cases) for OF-2. If that evidence does not cover OF-2's
+    "the user docs say participant", say so in Deviations instead of a
+    weak claim.
   - Tasks: tick "Write the M08A slice plans" and "Build a Roym client".
   - Decisions: "Q1–Q8 (A7): …" with the owner's answers, and D-A7-1 to
-    D-A7-11 as written in section 5.
+    D-A7-13 as written in section 5.
   - Deviations: F1 (a small Node.js script signs the challenge), F6 (a card
     from the other person is first a message event), and anything Step 2
     finds.
@@ -923,13 +1126,16 @@ A7 is done when all of these are true:
    of D-A7-1, and every block name of D-A7-2 exactly once.
 3. `mise run demo` passes, and story 30 runs every tagged block (OF-16).
 4. Story 30 failed when a block was broken on purpose (Step 5).
-5. The three facts of Step 2 are checked and written in the PR description.
-6. `is_docs_only_path("docs/developer-guide.md")` is `false`, with its test.
+5. The four facts of Step 2 are checked and written in the PR description.
+6. A docs-only change that includes `docs/developer-guide.md` runs the
+   `e2e` gate and still skips `nextest` and `doctests`, with the two tests
+   of 7.2.
 7. `jq` is in `mise.toml`.
 8. The backlog row `:521` has its new target and note, and the new row
    exists.
 9. The change doc has OF-16's evidence, the ticked tasks, the A7 decisions
-   and deviations, and `status: done`; `cargo xtask check-change-docs`
+   and deviations, and `status: done`; no Test cell of the criteria table
+   is empty (OF-1 and OF-2 included); `cargo xtask check-change-docs`
    passes.
 10. The traceability matrix, the integrated spec, `task.md` and
     `status.md` are updated as in section 9.
