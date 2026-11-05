@@ -112,6 +112,8 @@ Every slice is one PR that passes `mise run verify`. Sizes are S, M and L, as in
 - Record the results in this file and in the change doc. The FTS5 and trigram check is done (section 2).
   - **Result:** done. The change doc's `unverified` notes for the four checks, the trigram tokenizer and the record version rule are replaced by the results above. The `unicode61` table with `prefix='1 2'` is not checked yet; B4a checks it first. The old code facts in the change doc were corrected. One backlog row was added ("Language tags are not CLDR-canonicalised").
 
+**S0 result:** done, docs only ([PR #348](https://github.com/syneroym/syneroym/pull/348)). D-S0-1 to D-S0-5 are recorded, and `spelling-pairs.tsv` is drafted. The owner check of the spelling file and its 17 conflicts is still to do, before the B4b plan. No end user sees a change.
+
 Change doc: roym-multilingual.
 
 ### B1a — Hub localisation: the mechanism (M)

@@ -1,6 +1,9 @@
 ---
 status: draft
 living-docs-touched:
+  - docs/planning/deferred-backlog.md
+demo:
+  - none: library checks, recorded decisions and spelling test data only; nothing a viewer can see yet
 ---
 # Roym multilingual foundation
 
