@@ -16,12 +16,12 @@ M08A is done. Every record and method that this sub-milestone changes already ha
 | --- | --- | --- | --- |
 | Y1 | **String catalog and the `t()` lookup** in the Hub, with English fallback. | All Hub text; taxonomy labels (B2); widget and extension labels (M08C) | B1a |
 | Y2 | **Taxonomy data file** in `roym_core`: category codes with parents, attribute definitions, unit codes, payment-method codes, labels per language. | Pickers (B2); shop attributes and facets (M08D); hard filters (M08F) | B2 |
-| Y3 | **Language tag type**: parse, check, canonical form (BCP 47). | Records (B3a); chat tags (B3b); forwarding origin (M08C) | B3a |
-| Y4 | **Search keys**: NFC, transliteration tables, Latin folding. | Directory search, conversation search, contacts (B4b); exchange relevance (M08F) | B4b |
+| Y3 | **Language tag type** in `syneroym-text-lang`: parse, check, canonical form (BCP 47). | Records (B3a); chat tags (B3b); forwarding origin (M08C) | B3a |
+| Y4 | **Search keys** in `syneroym-text-lang`: NFC, transliteration tables, Latin folding. | Directory search, conversation search, contacts (B4b); exchange relevance (M08F) | B4b |
 | Y5 | **Full-text option in `data-layer`**: a collection declares text fields; the host keeps two FTS5 tables in sync (trigram, and `unicode61` with a 1 and 2 character prefix index); a text-match filter operator. | Directory (B4b); later the exchange and the shop browse (M08D) | B4a |
 | Y6 | **`syneroym:translation` WIT and the no-op host.** | Every hook point that exists (B5); later engines (M9A) | B5 |
 
-**Where Y3 and Y4 live.** The change doc puts both in `roym_core`. But the chat store and its search run in the host crate `crates/conversation`, and that crate cannot depend on `roym_core` (`roym_core` depends on `app_host`). Chat search (B4b) needs Y4 in the host, and chat tags (B3b) need Y3 there. So Y4, and probably Y3, must live in a substrate crate that both the host and `roym_core` can use. This is an open question for the owner (see section 6). The answer goes into the change doc's `## Deviations`.
+**Where Y3 and Y4 live (owner decision, 2026-11-05).** The change doc puts both in `roym_core`. But the chat store and its search run in the host crate `crates/conversation`, and that crate cannot depend on `roym_core` (`roym_core` depends on `app_host`). Chat search (B4b) needs Y4 in the host, and chat tags (B3b) need Y3 there. So Y3 and Y4 live in one new substrate crate, `crates/text_lang` (package `syneroym-text-lang`). `roym_core`, `data_db` and `crates/conversation` all use it. `data_db` computes the search keys itself for a declared text field, so a guest sends raw text, both when it writes and when it queries. The crate is created by whichever of B3a and B4a merges first. The other slice adds to it. The change doc's `## Deviations` records this.
 
 ## 2. Facts checked in the code for this plan
 
@@ -114,7 +114,7 @@ Change doc: roym-multilingual.
 
 ### B3a — Language-tagged records (M)
 
-- Y3. `lang` (required) and author `translations` on `profile`, `listing`, `request` and `quote`. `languages` replaces `locale` in `ProfilePayload` and `ProfileSetInput`.
+- Y3, in `syneroym-text-lang` (section 1). `lang` (required) and author `translations` on `profile`, `listing`, `request` and `quote`. `languages` replaces `locale` in `ProfilePayload` and `ProfileSetInput`.
 - Typed method inputs and `method_contract` rows change to match.
 - Best-match display in the Hub, with "translated by the author" and a way to open the original. `lang` on each block of record text.
 - Criteria: ML-5 (record text), ML-10, ML-11, ML-12, ML-13.
@@ -131,7 +131,7 @@ Change doc: roym-multilingual.
 
 ### B4a — Full-text option in `data-layer` (M)
 
-- Y5, a substrate change only: the `data-layer` WIT gains a text-field declaration on a collection and a text-match filter operator. `data_db` keeps the two FTS5 tables in sync on create, update and delete. The native shim and the WASM host behave the same (parity tests).
+- Y5, a substrate change only: the `data-layer` WIT gains a text-field declaration on a collection and a text-match filter operator. `data_db` keeps the two FTS5 tables in sync on create, update and delete. It indexes the search key of each declared field, from `syneroym-text-lang`. In B4a the key is NFC and lower case only. B4b adds transliteration and folding, and B4a's tables need no change for it. The native shim and the WASM host behave the same (parity tests).
 - A query term of 1 or 2 characters goes to the `unicode61` prefix index. Longer terms go to the trigram index. No query falls back to a scan.
 - Check whether [ADR-0007](../../../decisions/0007-data-layer-wit-interface.md) needs an amendment for the new operator.
 - Criteria: none alone. Its tests are the storage half of ML-20 and ML-29.
@@ -140,7 +140,7 @@ Change doc: roym-multilingual.
 
 ### B4b — Search in every script (L)
 
-- Y4, in the crate the owner picks (section 1).
+- Y4, in `syneroym-text-lang` (section 1): transliteration tables and Latin folding on top of B4a's NFC and lower-case key.
 - The directory server half moves from `normalize_text` and `$regex` to the B4a text-match operator over search keys. The `-32602` refusal for a non-Latin query goes away. The index is rebuilt in place (no migration).
 - Chat search in `crates/conversation` indexes search keys and gets the short-word index, which removes the `LIKE` scan.
 - `contacts.list` gains a text query over name search keys.
@@ -196,7 +196,7 @@ Some `ML-*` criteria name things that do not exist until later. M08B builds the 
 
 These come from the change doc's open questions and from section 2. Each names the first slice it blocks.
 
-1. **Where Y3 and Y4 live** (blocks B3a, B3b, B4b). Recommendation: one new substrate crate (for example `crates/text_lang`, package `syneroym-text-lang`) that holds the language tag type and the search keys. `roym_core`, `data_db` and `crates/conversation` all use it. Then `data_db` computes the search keys itself for a declared text field, and a guest sends raw text.
+1. **Where Y3 and Y4 live.** Answered 2026-11-05: one new substrate crate, `syneroym-text-lang` (section 1).
 2. **Catalog format: Fluent** (blocks B1a). The change doc recommends it.
 3. **Who checks the Hindi text** (blocks B1a and B2). An agent can write the first Hindi catalog. A person who reads Hindi should review it before B1b merges.
 4. **Native digits** (blocks B1a). Recommendation: Latin digits (`123`) by default.

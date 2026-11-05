@@ -385,6 +385,8 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 
 ## Deviations
 
+- **The language tag type and the search keys live in a new substrate crate, not in `roym_core`.** The chat store and chat search run in the host crate `crates/conversation`, which cannot depend on `roym_core`. Both chat tags and chat search need these parts in the host. So they go into `crates/text_lang` (package `syneroym-text-lang`), which `roym_core`, `data_db` and `crates/conversation` use. `data_db` computes the search key for each declared text field, so a guest sends raw text when it writes and when it queries. Owner decision, 2026-11-05.
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, user guide) so they describe the result. Then set `status: done` and fill in `living-docs-touched`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).
