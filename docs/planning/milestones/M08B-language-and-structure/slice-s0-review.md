@@ -398,3 +398,233 @@ All seven were answered on 2026-11-05. My view of each answer:
   the owner to allow the command outside the sandbox; the crate sources are then
   under that `CARGO_HOME/registry/src`."
 - *Status:* Fixed (3040e6fc).
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-05
+
+Reviewed `git diff origin/main...HEAD` on `feat/m08b-s0-checks` at `b09111ad`
+(PR #348), in the main checkout (not a worktree). The work was done by Claude
+Sonnet 5.5. The prompt listed two change docs:
+[roym-multilingual](../../changes/roym-multilingual/change.md) and
+[roym-open-foundation](../../changes/roym-open-foundation/change.md). I read
+both. roym-open-foundation (M08A, `status: done`) says nothing about language
+tags, NFC, transliteration or Fluent. S0 changes nothing in it, and nothing
+in S0 belongs there. Every S0 decision belongs to roym-multilingual, and that
+is where it is written.
+
+**Summary:** 0 blocker, 1 major, 4 minor. 5 items, all Open.
+
+### What was checked and found correct
+
+- **Scope.** The diff changes 7 files, all under `docs/`: the change doc,
+  the backlog, the plan, the review file, `spelling-pairs.tsv`, `status.md`
+  and `task.md`. No code, `Cargo.toml`, `Cargo.lock`, `package.json` or
+  `package-lock.json` change (exit criterion 6). No wire, WIT, record, method,
+  error code, config or CLI change, so there is nothing for security, access
+  control or "both builds" to check.
+- **CI.** `gh pr checks 348`: every job passes on `b09111ad` (Lints, licenses
+  & checks; Test 1/6 to 6/6; Playwright E2E; CI Pipeline; CLA). Benchmarks and
+  Code Coverage skip, as for every PR. This is the proof that the full suite
+  passes (exit criterion 7).
+- **Tag table (D-S0-1).** I re-ran the 15 inputs through Node 22.11
+  `Intl.Locale` and through `icu_locale_core` 2.4.0 with only `alloc`
+  (native build, same parser as the `wasm32-wasip2` build). Both columns of
+  the table in change.md "Tag validation" match my output, including the four
+  refusals (`hi_IN`, `x-private`, `toolongsubtag` and the empty string all
+  give `InvalidLanguage` in Rust and `RangeError` in Node). `iw` is the only
+  difference. The two Hub rules and the backlog row say what the plan asked
+  for.
+- **Number arithmetic.** 92,962 − 75,645 = 17,317; 125,906 − 114,463 =
+  11,443; 35,974 − 31,769 = 4,205. The change doc's rounded numbers (17 KB,
+  69 KB, 124 KB) match task.md.
+- **Guest cost of an unused NFC function.** The plan's method (the NFC crate
+  in the dependency list, no code that names it) gives 0 bytes by
+  construction: `rustc` does not link a crate that nothing references. So I
+  measured the case B3a really has. A library crate with `pub fn tag()` and
+  `pub fn nfc()` (which calls `icu_normalizer`), and a `wasm32-wasip2` binary
+  with the workspace release profile that calls only `tag()`: 93,827 bytes,
+  with or without `nfc()` in the library. When the binary also calls `nfc()`:
+  162,486 bytes (+68,659, close to S0's +68,734). So the conclusion in task.md
+  (no cargo feature is needed on size grounds) holds. R4 asks to write this
+  down.
+- **`spelling-pairs.tsv`.** My own script (not committed) agrees with the
+  PR's summary: 200 `pair` rows per language; Hindi 274 `variant`, 20
+  `joined`, 44 `distinct`; Tamil 266, 20, 29. Six columns on every data line,
+  LF line ends, NFC everywhere, `latin` only `[a-z]` and single spaces,
+  `native` only in `pair` rows and only in its script block, 3 Hindi ZWNJ/ZWJ
+  rows with the right `note`, 0 Tamil. 20 multi-word groups per language;
+  every `joined` row is exactly its `pair` value without spaces. No `distinct`
+  value repeats a spelling of its own group. No `pair` Latin value repeats
+  inside one language. The required rows (`nal-wala` with `naal waala` and
+  `nalwala`; `ram`) are there. At least 10 Hindi and 5 Tamil `pair` values are
+  1 or 2 letters long. The header matches the plan's template, with
+  `# owner check: pending` and the 18 conflicts, each "owner decision:
+  pending".
+- **Plan review fixes are in the results.** P1 (`alloc` feature list), P2
+  (Node column and the two Hub rules), P3 (conflict report and header), P4
+  (`npm ci`, baseline reproduced, Vite 5.4.21 and Rollup 4.63.0 unchanged),
+  P5 (`grep -o … | wc -l`, 0 before and after), P6 (font sentence), P7
+  (`icu_experimental` and `lipilekhika` surveyed, rule 7), P8 (`unicode61`
+  note kept, first check of B4a), P10 (five `unverified` notes left: change.md
+  lines 142, 146, 317, 354, 376, exactly the plan's list), P11 (ZWNJ/ZWJ rows,
+  `joined` only in multi-word groups), P12 (`CARGO_HOME` fallback used).
+- **Change doc edits.** The Q7 facts are fixed in place (eight rows of the
+  plan's table). Rule 4 cites ADR-0018 §5 as the project-wide position; the
+  link resolves and §5 is "No migration". The NFC and FTS5 bullets say what
+  the plan asked. `status` stays `draft`, `## Tasks` is untouched, and no
+  `## Deviations` entry is added (no crate was chosen). The
+  `## Deviations` entry that "Tag validation" points to exists.
+- **Backlog row.** §10, four columns like the rest of the table, target TBD,
+  source links the change doc. It is the only deferral S0 makes.
+- **Living docs.** None change, and none needs to: S0 changes no behaviour.
+- **Status row.** The counts in the S0 row match the script output. Plan,
+  plan review and implementation tools are recorded; the code reviewer
+  (Claude Opus 5.5) is not the implementer.
+- **Branch name.** The plan names `feat/m08b-s0-checks-decisions`; the PR is
+  from `feat/m08b-s0-checks`. The PR text records this. Not a finding.
+
+### Findings
+
+#### R1 (major) — The change doc says no crate met every rule, but the survey table says `lipilekhika` met all seven
+
+- **Where:** at `b09111ad`:
+  [change.md:316](../../changes/roym-multilingual/change.md#L316) ("No crate
+  met every rule we set … The closest, `lipilekhika`, gives plain
+  letter-by-letter ISO 15919 output"); [task.md:79](task.md#L79) ("No crate
+  met all seven rules"); against [task.md:84](task.md#L84) (`lipilekhika`
+  row: P for rules 1 to 7) and [task.md:91](task.md#L91) ("`lipilekhika`
+  passes all rules"). The PR text repeats "none met all seven rules".
+- **Problem:** Two parts of the decision record contradict each other. The
+  change doc is the design record for D-S0-3, and it gives a reason that the
+  survey table says is false. By the owner's rule for Q1, the decision is
+  own tables *unless* a crate meets every rule **and** gives output that our
+  folding cannot easily get. If `lipilekhika` passes every rule, the decision
+  rests only on the second condition, and the doc must say so. The second
+  reason is also not right as written: `lipilekhika`'s sample output is not
+  plain ISO 15919. It gives `kzilā` for `क़िला` (ISO 15919: `qilā`),
+  `cheṉṉai` for `சென்னை` (ISO 15919: `ceṉṉai`, as the other two working
+  crates give) and `piḷaṁpar` for `பிளம்பர்` (an anusvara that Tamil does not
+  have). Rule 7 for it rests on a `WebFetch` summary of the changelog, and
+  its 1.1.0 release broke its API inside a 1.x line (the PR says both).
+- **Failure case:** The B4b planner, or a later reader who wants to swap our
+  tables for a crate, reads the change doc: "no crate met every rule". They
+  do not look at `lipilekhika` again, or they find the task.md table and
+  cannot tell which of the two records is right. The reason "it gives
+  ISO 15919, which our tables give just as well" also hides the three places
+  where the crate's output differs, which are the places our folding tests
+  must cover.
+- **Fix:** Make the three places say the same thing. Recommended text for
+  change.md:316: "One crate, `lipilekhika`, passed all seven rules (rule 7
+  from a summary of its changelog only; its 1.1.0 release broke the API). We
+  still write our own tables, by the owner's rule for this choice: its output
+  is not something our tables cannot give. It is close to ISO 15919, and
+  where it differs (`kzilā` for `क़िला`, `cheṉṉai`, `ṁ` for Tamil `ம்`) we do
+  not want its form." Change task.md:79 the same way ("One crate,
+  `lipilekhika`, met all seven rules; …"). If the fix session instead decides
+  that rule 7 is not proven for `lipilekhika`, mark it `?` in the table at
+  task.md:84 and say why at :91; then "no crate met every rule" is true and
+  can stay. Either way, fix the PR text.
+- *Status:* Open.
+
+#### R2 (minor) — The owner-answer date 2026-11-01 is before the questions existed
+
+- **Where:** at `b09111ad`: plan lines 127, 160, 182, 206, 227, 252, 266
+  ("Owner answer: …, 2026-11-01"); [task.md:109](task.md#L109) ("answered on
+  2026-11-01"); [change.md:195](../../changes/roym-multilingual/change.md#L195)
+  and [:316](../../changes/roym-multilingual/change.md#L316) ("Decided
+  2026-11-01"); [deferred-backlog.md:535](../../deferred-backlog.md#L535)
+  ("Owner decision 2026-11-01").
+- **Problem:** The plan with Q1 to Q7 was first committed on 2026-11-05 16:11
+  (`4ba8325c`). The answers were committed on 2026-11-05 17:05 (`b2bf4e1c`).
+  The plan review round 1 above says "All seven were answered on 2026-11-05",
+  and [task.md:108](task.md#L108) says the same. change.md:316 says "Decided
+  2026-11-01, after a survey of seven crates", but the survey ran on
+  2026-11-05 (task.md:79 says the crates.io dates are from 2026-11-05). So the
+  date is wrong, and it is now in a change doc and the backlog.
+- **Failure case:** A reader orders events by these dates, for example to see
+  whether the owner decided D-S0-3 before or after the survey. The record says
+  the decision came first, four days before the questions were written.
+- **Fix:** Ask the owner for the real date. If it is 2026-11-05 (the commit
+  history says so), replace 2026-11-01 with 2026-11-05 in all the places
+  above. In change.md:316, also put the survey before the decision ("After a
+  survey of seven crates (2026-11-05), we write our own tables").
+- *Status:* Open.
+
+#### R3 (minor) — `spelling-pairs.tsv` has one `distinct` row that no key can pass, and one that guards two rules
+
+- **Where:** at `b09111ad`,
+  [spelling-pairs.tsv:61](spelling-pairs.tsv#L61) (`hi nai distinct nahi`)
+  and [:210](spelling-pairs.tsv#L210) (`hi pankha distinct banka`, note
+  "consonant p/b, aspiration h/-"); the `edit h→` entry of the `# conflicts:`
+  block ([:21](spelling-pairs.tsv#L21)).
+- **Problem:** (1) `nai` is the `pair` of `नाई` (barber) and a `variant` of
+  `नहीं` (`hi/nahi`, line 510). `nahi` is the `pair` of `नहीं`. Search applies
+  the same key function to the query and to the text. So key(`nai`) =
+  key(`नाई`) and key(`nai`) = key(`नहीं`) = key(`nahi`). Then the query `nahi`
+  meets `नाई`, and the `distinct` row at line 61 fails for every possible key
+  function. The edit-level conflict report does show `hi/nai` under `edit →h`,
+  but as one side of a choice ("keep must meet or must not meet"), not as a
+  row that cannot pass. (2) The plan (Q4) says each `distinct` row guards one
+  folding rule. `banka` differs from `pankha` by two rules. The script counts
+  both edits as "must not meet", so `hi/pankha` appears on the "must not meet"
+  side of `edit h→`, against 32 groups on the "must meet" side. That entry is
+  partly false: `banka` is already kept apart by `p/b` alone.
+- **Failure case:** (1) The owner signs the file off with this row. B4b's
+  test for it fails whatever folding B4b writes, and B4b must change
+  owner-checked data, which the file header forbids. (2) The owner reads the
+  `h→` conflict as "aspiration must sometimes be kept", and may keep a rule
+  that the data does not need.
+- **Fix:** (1) Delete line 61, or replace `nahi` with a one-rule spelling that
+  no other group uses as `pair`, `variant` or `joined`. (2) Change line 210 to
+  `bankha` (guards `p/b` only). Re-run the check script and rewrite the
+  `# conflicts:` block from its output. Add one check to the script: join
+  every Latin value to its group's word through `pair`, `variant` and `joined`
+  rows of all groups (union-find over both languages), and report a `distinct`
+  row whose value is already joined to its own word. Paste the new summary
+  into the PR text. Two points for the owner check, not for the fix session to
+  decide: `ta venum` pairs the written `வேண்டும்` with the spoken spelling
+  `venum` (the spoken word is `வேணும்`), and `ta sakkarai` pairs the written
+  `சர்க்கரை` with the spoken `sakkarai`. Each adds a "must meet" edit (drop
+  `d`, drop `r`) that the folding then needs.
+- *Status:* Open.
+
+#### R4 (minor) — task.md gives two sizes for the same "tag type alone" build, and the size-0 method is not explained
+
+- **Where:** at `b09111ad`: [task.md:75](task.md#L75) ("75,645 to 92,962"),
+  [task.md:76](task.md#L76) and [task.md:155](task.md#L155) ("92,994 bytes"
+  for the tag type alone and with the NFC crate), and
+  [change.md:312](../../changes/roym-multilingual/change.md#L312) ("the same
+  size (92,994 bytes)").
+- **Problem:** The same build appears as 92,962 and 92,994 bytes. Only the PR
+  text explains the 32 bytes (a different `CARGO_HOME`, so different paths in
+  the binary). The PR text is not a lasting record. Also, the method behind
+  "92,994 both ways" (the crate in the dependency list, no code that names it)
+  gives 0 bytes by construction, because `rustc` does not link an unreferenced
+  crate. The real case for B3a is a `syneroym-text-lang` with a public NFC
+  function that a guest does not call. My check in this round measured that
+  case and got the same answer (93,827 bytes both ways; +68,659 when called).
+- **Failure case:** The B3a planner sees two numbers for one build and cannot
+  tell which to compare against. Or a reviewer of B3a sees that the S0 method
+  could not have shown a cost, and asks for the measurement again.
+- **Fix:** In task.md:76, add one sentence: "92,994 and 92,962 (line above)
+  are the same build with a different `CARGO_HOME`; the paths in the binary
+  differ by 32 bytes. Compare only numbers from one build folder." In
+  task.md:155, replace "With the NFC crate also in the dependency list and not
+  called" with the case measured in this review: "With a library that also
+  has a public `nfc()` calling `icu_normalizer`, not called by the guest, the
+  size does not change (93,827 bytes both ways in code review round 1;
+  +68,659 bytes when the guest calls it)." Keep "the plan decides".
+- *Status:* Open.
+
+#### R5 (minor) — Step 7: the scratch folder is not deleted
+
+- **Where:** plan Step 7, first bullet ("Delete `$TMPDIR/m08b-s0/`"). The PR
+  text says the delete command was denied.
+- **Problem:** `/tmp/claude-501/m08b-s0` still exists and holds 1.1 GB (build
+  output for 4 harnesses, 7 crates and a copy of the Hub with
+  `node_modules`).
+- **Failure case:** Disk space is lost until a reboot clears `/tmp`. A later
+  S0 re-run in the same folder may reuse old build output and lock files.
+- **Fix:** The owner runs `rm -rf /tmp/claude-501/m08b-s0` (outside the
+  sandbox if needed). No repository change. Mark this item `Fixed (no
+  commit)` when done.
+- *Status:* Open.
