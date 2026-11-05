@@ -616,6 +616,8 @@ tests (the 7 that the change doc names, plus the guard's own test), and
 
 **Summary:** 0 blocker, 1 major (R1), 5 minor (R2 to R6). 6 open.
 
+**Fixes, round 1 (Claude Sonnet 5.5, 2026-11-05):** all 6 items fixed, 0 open.
+
 ### What was checked and found correct
 
 - **The files (exit criterion 11).** Only the files the plan lists changed:
@@ -713,7 +715,7 @@ registry or DHT", and nothing in the guide explains why.
 5. At `docs/developer-guide.md:1686`, add one line under the `roym address`
    example: a Hub registered with a nickname is at `<nickname>-s<hash>…`.
 
-*Status:* Open
+*Status:* Fixed (dad0cff7). Checked in `parse_target_host` and `generate_alias`: the nickname host `roym-s<hash>` is the registered alias. The story now sets `HUB_NICKNAME=roym` and passes on fresh demo nodes. Without the nickname the same host answered 502 earlier in this slice.
 
 #### R2 — The feed and catch-up blocks use values the guide never sets (minor)
 
@@ -744,7 +746,7 @@ environment except what the guide tells the reader to set
 (`env -i PATH="$PATH" CURL_HOME="$CURL_HOME" HUB_URL=… TOKEN=…`), so a new
 variable that a block needs, and the guide does not name, fails the story.
 
-*Status:* Open
+*Status:* Fixed (dad0cff7). Proof: the `feed` block with `$FEED_URL` in place of `$HUB_URL` failed the story ("curl: (3) URL rejected", "Last guide block: roym-client=feed"); put back, the story passes.
 
 #### R3 — The OF-1 Test cell gives stale parity counts (minor)
 
@@ -764,7 +766,7 @@ finds other numbers, so the evidence looks wrong.
 `cargo nextest list -p syneroym-roym-web --test dual_build_parity` prints
 today, with the date.
 
-*Status:* Open
+*Status:* Fixed (dad0cff7). The two counts are removed from the OF-1 cell.
 
 #### R4 — 6.8 lists `-32013`, which a client on `/rpc` cannot get (minor)
 
@@ -785,7 +787,7 @@ person to "use your own node", for an error that cannot come from `/rpc`.
 another node, change the text to "Only for a call from another node straight
 to a service. A call through `POST /rpc` does not get it."
 
-*Status:* Open
+*Status:* Fixed (dad0cff7). `forward_rpc_call` uses `CallTarget::Dependency`, which `require_internal` admits, so a `/rpc` client cannot get `-32013`. The row is deleted.
 
 #### R5 — The CI image's `*.localhost` answer is still unknown (minor)
 
@@ -805,7 +807,7 @@ guide whether they will need the workaround.
 Read the answer in the Playwright E2E log of the next CI run, and write it in
 the deviation.
 
-*Status:* Open
+*Status:* Fixed (dad0cff7). The story prints whether the machine resolves `*.localhost` before it writes the `.curlrc` (macOS: resolves). The CI answer is in the Playwright E2E log of the next CI run; the deviation says where to read it.
 
 #### R6 — The doc comment of `skip_on_docs_only` is no longer true (minor)
 
@@ -822,4 +824,4 @@ change skips `e2e`.
 *Fix:* Add "unless a changed path is in `docs_paths_that_run`" to the
 comment.
 
-*Status:* Open
+*Status:* Fixed (b0e8170a)
