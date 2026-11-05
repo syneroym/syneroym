@@ -807,7 +807,8 @@ guide whether they will need the workaround.
 Read the answer in the Playwright E2E log of the next CI run, and write it in
 the deviation.
 
-*Status:* Fixed (dad0cff7). The story prints whether the machine resolves `*.localhost` before it writes the `.curlrc` (macOS: resolves). The CI answer is in the Playwright E2E log of the next CI run; the deviation says where to read it.
+*Status:* Open (reopened in the fixes check below: the CI answer is known now
+and is not yet in the deviation). Earlier note: Fixed (dad0cff7). The story prints whether the machine resolves `*.localhost` before it writes the `.curlrc` (macOS: resolves). The CI answer is in the Playwright E2E log of the next CI run; the deviation says where to read it.
 
 #### R6 — The doc comment of `skip_on_docs_only` is no longer true (minor)
 
@@ -825,3 +826,87 @@ change skips `e2e`.
 comment.
 
 *Status:* Fixed (b0e8170a)
+
+## Code review round 1 — fixes checked — Claude Opus 5.5, 2026-11-05
+
+I checked the fix commits b0e8170a (the `verify.rs` comment), dad0cff7 (the
+guide, the story, the change doc and the backlog) and 6f6dd14f (statuses) on
+`feat/m08a-a7-client-guide` (main checkout, not a worktree; `git pull` said
+"Already up to date"). No code was changed.
+
+CI: [run 41988806670](https://github.com/syneroym/syneroym/actions/runs/41988806670)
+on `6f6dd14f` (the branch head with the fixes). When I checked, "Lints,
+licenses & checks", "Playwright E2E" and "Test 6/6" had passed, and Test 1/6
+to 5/6 were still running. The Playwright E2E log shows main 68 passed,
+multihop 4 passed and demo 5 passed. Story 30 passed
+(`demo/30-roym-client.spec.ts:9:5`), and it printed "This machine resolves
+*.localhost." The earlier runs on `4414e3bd` and `38e86d11` were cancelled by
+newer pushes. So CI has not yet passed every job on the fixed code; the slice
+close must check the Rust test jobs.
+
+**Summary:** R1, R2, R3, R4 and R6 confirmed. R5 reopened (minor). One new
+item, R7 (minor). **0 blocker, 0 major, 2 open.**
+
+**Confirmed Fixed.**
+- **R1.** The `address` block adds `${HUB_NICKNAME:+$HUB_NICKNAME-}` in front
+  of the printed host. `${…:+…}` is safe under `set -u`, so an unset
+  `HUB_NICKNAME` works in a reader's shell and in the story. 6.1 item 1 and
+  the variables block name `HUB_NICKNAME`. The story sets `HUB_NICKNAME=roym`
+  and no longer registers the Hub again, so the demo state stays as story 20
+  left it. The line under the `roym address` example
+  (`docs/developer-guide.md:1689`), the change-doc deviation and the backlog
+  row say the same thing. The CI run above shows the story passes with the
+  nickname host.
+- **R2.** 6.5 tells the reader to set `HUB_URL` and `TOKEN` in the second
+  terminal, says the `ready` frame's `id:` is a position to keep, and tells the
+  reader to set `CURSOR` before `catch-up`. `start_block` now runs the block
+  with `env -i` and only `PATH`, `CURL_HOME`, `HUB_URL`, `TOKEN` and `CURSOR`.
+  `CURL_HOME` is the story's stand-in for the reader's `~/.curlrc`, which the
+  guide names, so it is not a hidden value.
+- **R3.** The two counts are gone from the OF-1 cell.
+- **R4.** The `-32013` row is gone, and no other text of section 6 names the
+  code.
+- **R6.** The comment now says "unless a changed path is in
+  `docs_paths_that_run`".
+
+**Reopened.**
+- **R5 (minor).** The probe is in the story, and `runScript` runs it with
+  `stdio: 'inherit'`, so the line is in the CI log, as the fix intended. But
+  the fix asked to write the CI answer into the deviation. The deviation
+  still says only where to read it. The answer is known now. *Fix:* in the
+  change-doc deviation "`curl` does not resolve `*.localhost` itself", replace
+  "so the answer for the CI image is in the Playwright E2E log" with "On the CI
+  image (`ubuntu-latest`), `curl` resolved `*.localhost` by itself (CI run
+  41988806670, Playwright E2E)."
+
+### New findings
+
+#### R7 — 6.1 no longer says that the Hub must be in the registry (minor)
+
+*Where:* `docs/developer-guide.md:2262` (6.1 item 1) at `6f6dd14f`.
+
+*Problem:* The R1 fix removed the whole `registry register` sentence. The
+part that told the reader to *re-register* was wrong, but the step itself is
+needed: the gateway finds a Hub host only through the Hub's registry alias
+(`register_endpoint`, `crates/community_registry/src/registry.rs:209-225`;
+the gateway answers `502` "Endpoint not found in registry or DHT" without
+it). `app deploy` does not do it: story 20 runs `roymctl registry register
+--identity member-roym#web-0 … --nickname roym` as its own step, "Give
+<name>'s Hub a host name" (`20-roym-setup.sh:20-24`). "The Roym Hub" part
+of the guide, which 6.1 points to, does not say it either. Section 6 is meant
+to stand alone (OF-16).
+
+*Failure case:* A reader deploys Roym with `roymctl app deploy` and follows
+section 6. `roymctl roym address` prints the Hub host, the `address` block
+succeeds, and the first call in `rpc` fails with `502`. Nothing in the guide
+says why.
+
+*Fix:* In 6.1 item 1, add one sentence before the `HUB_NICKNAME` sentence:
+"The Hub must be in the registry, so that the gateway can find its host. Run
+this once: `roymctl registry register --identity member-roym#web-0
+--substrate <node DID> [--nickname <name>]`. A service has one registry
+alias, so a second run replaces the first one's nickname." Give the place to
+find `<node DID>` (for example the `--substrate` value the reader already
+passes to `roymctl`).
+
+*Status:* Open
