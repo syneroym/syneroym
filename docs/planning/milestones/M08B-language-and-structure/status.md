@@ -8,7 +8,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 
 | Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| S0 | Plan written | Claude Opus 5.5 | — | — | — | — |
+| S0 | Plan reviewed | Claude Opus 5.5 | Claude Sonnet 5.5 | — | — | Plan review round 1 (2026-11-05): 0 blocker, 3 major, 9 minor; 12 open ([review](slice-s0-review.md)) |
 | B1a | Not started | — | — | — | — | — |
 | B1b | Not started | — | — | — | — | — |
 | B2 | Not started | — | — | — | — | — |
