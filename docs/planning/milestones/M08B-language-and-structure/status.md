@@ -8,7 +8,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 
 | Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| S0 | Plan reviewed | Claude Opus 5.5 | Claude Sonnet 5.5 | — | — | Plan review round 1 (2026-11-05): 12 items, all fixed in `3040e6fc`; owner answers to Q1 to Q7 recorded in the plan ([review](slice-s0-review.md)) |
+| S0 | Implemented | Claude Opus 5.5 | Claude Sonnet 5.5 | Claude Sonnet 5.5 | — | Plan review round 1 (2026-11-05): 12 items, all fixed in `3040e6fc`; owner answers to Q1 to Q7 recorded in the plan ([review](slice-s0-review.md)). Implemented in [draft PR #348](https://github.com/syneroym/syneroym/pull/348); results in task.md S0. Docs only, no automated tests. `spelling-pairs.tsv` check script: 200 pairs per language, 0 errors, 18 conflicts waiting for the owner. Full `mise run verify` not run yet |
 | B1a | Not started | — | — | — | — | — |
 | B1b | Not started | — | — | — | — | — |
 | B2 | Not started | — | — | — | — | — |
