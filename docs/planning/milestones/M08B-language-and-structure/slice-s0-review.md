@@ -153,7 +153,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   decide on a cargo feature from a number, not a guess. In item 4 of "Record",
   say that `_` is expected to be refused (docs line above), and record what the
   run shows.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P2 (major) — The Hub and Rust disagree on tags, and S0 does not measure it
 
@@ -186,7 +186,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   its `Intl.Locale` form. Note the result under the Q2 backlog row too: the row
   says "the Hub shows the raw tag for them", which is not what `Intl.Locale`
   does for `iw`.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P3 (major) — The spelling file says variants "must match", but the folding is shared by both languages and the plan has no check for conflicts
 
@@ -219,7 +219,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   decision (keep which side), and that B4b may not change a row without the
   owner. (3) The owner check (`# owner check: done`) must come after the
   conflict list is empty or decided.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P4 (minor) — Step 4 may not reproduce the baseline
 
@@ -239,7 +239,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   section 2.1); if not, stop and find why. After `npm install
   @fluent/bundle@latest`, run `git diff --no-index` on the two `package-lock.json`
   files (or `npm ls vite rollup`) and record that only `@fluent/bundle` was added.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P5 (minor) — The `eval` check counts lines, and a minified bundle is one line
 
@@ -253,7 +253,7 @@ All seven were answered on 2026-11-05. My view of each answer:
 - **Fix:** Use `grep -o -E 'new Function|[^a-zA-Z_.]Function\(|[^a-zA-Z_]eval\('
   dist/assets/*.js | wc -l`, and record the count before and after. Q5's stop
   rule stays: any new match stops S0 and asks the owner.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P6 (minor) — The Hub's real CSP is narrower than the plan says, and the change doc's font sentence is wrong under it
 
@@ -277,7 +277,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   (today `default-src 'none'` blocks fonts)". In section 2.2 of the plan, name
   both CSP tags (`index.html:16` and `boot-csp.ts`) and say that `.ftl` through
   `fetch` or `?raw` is allowed by both.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P7 (minor) — The transliteration survey leaves out two candidates, and has no rule for stability
 
@@ -300,7 +300,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   not change in the last three releases" (read the changelog; record it). For
   `icu_experimental`, also record whether a Devanagari-to-Latin rule set is
   baked into the compiled data at all, and the data size.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P8 (minor) — The `unicode61` prefix index (ML-29) is not checked by anything
 
@@ -323,7 +323,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   Step 6 that the change doc note is closed for trigram only and that B4a's first
   step must check `unicode61` and `prefix='1 2'` before the plan is final.
   Either way, say which in the closing text for the FTS5 line.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P9 (minor) — Step 1, the commit count and the base are out of date
 
@@ -340,7 +340,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   criterion 8 to "the commits after the plan: the spelling set, the results, and
   the review fixes". Say "Base: `main` at `0e016d8c`; the branch also holds the
   plan commits".
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P10 (minor) — Exit criterion 4 forgets one `unverified` note
 
@@ -354,7 +354,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   one more than the plan lists, and cannot tell if it is a missed check.
 - **Fix:** Add "font size per script (line 358)" to the list. P6 changes the
   same line, so keep the `unverified` word in the rewritten sentence.
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P11 (minor) — The spelling file format has three gaps
 
@@ -381,7 +381,7 @@ All seven were answered on 2026-11-05. My view of each answer:
   `note = zwj` or `zwnj`, and say that B4b's key removes them. In the script:
   `distinct` ∩ own-group spellings = ∅; no repeated `latin` in `pair` rows of one
   language unless the `note` says "homophone".
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
 
 #### P12 (minor) — The network note may not be enough for `cargo` in the sandbox
 
@@ -397,4 +397,4 @@ All seven were answered on 2026-11-05. My view of each answer:
   `CARGO_HOME` and `npm_config_cache` to folders under `$TMPDIR/m08b-s0/`, or ask
   the owner to allow the command outside the sandbox; the crate sources are then
   under that `CARGO_HOME/registry/src`."
-- *Status:* Open.
+- *Status:* Fixed (3040e6fc).
