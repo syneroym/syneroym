@@ -18,7 +18,8 @@ use anyhow::{Result, anyhow, bail};
 struct Gate {
     name: &'static str,
     /// Skipped, along with the other docs-only-skippable gates, when the
-    /// change under verification touches only `*.md` files and `docs/`.
+    /// change under verification touches only `*.md` files and `docs/`,
+    /// unless a changed path is in `docs_paths_that_run`.
     skip_on_docs_only: bool,
     /// Docs paths that still run this gate on a docs-only change.
     docs_paths_that_run: &'static [&'static str],
