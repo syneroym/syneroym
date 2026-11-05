@@ -627,7 +627,7 @@ is where it is written.
 - **Fix:** The owner runs `rm -rf /tmp/claude-501/m08b-s0` (outside the
   sandbox if needed). No repository change. Mark this item `Fixed (no
   commit)` when done.
-- *Status:* Open. Needs the owner: the delete command was denied in the sandbox in the implementation session, and the fix session did not retry it. Run `rm -rf /private/tmp/claude-501/m08b-s0` outside the sandbox. Then set this item to `Fixed (no commit)`.
+- *Status:* Fixed (no commit). The owner deleted `/tmp/claude-501/m08b-s0` on 2026-11-05; confirmed gone by Claude Opus 5.5 (code review round 2).
 
 ## Code review round 2 — Claude Opus 5.5, 2026-11-05
 
@@ -637,7 +637,8 @@ Checked the round 1 fix commits `0fb74f5f`, `75502bd1`, `3fac0f9c` and
 Coverage skip as usual). The fix commits change only `docs/`.
 
 **Summary:** 0 blocker, 0 major, 0 minor new. R1 to R4 confirmed fixed. R5
-is still Open. 1 open.
+was still Open at first; the owner then deleted the folder, so it is fixed
+too (see R5 below). 0 open.
 
 ### Round 1 items
 
@@ -675,3 +676,6 @@ is still Open. 1 open.
 - The S0 row in status.md still said "18 conflicts" in its first part after
   the fix (the later part said 17). I changed it to 17 while setting the row
   for this round, so it is not a finding.
+- **R5 — fixed after this round was first written.** The owner deleted the
+  folder. `ls -d /tmp/claude-501/m08b-s0` now says "No such file or
+  directory". R5 is `Fixed (no commit)`.
