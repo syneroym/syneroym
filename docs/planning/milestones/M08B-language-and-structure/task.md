@@ -73,7 +73,8 @@ Every slice is one PR that passes `mise run verify`. Sizes are S, M and L, as in
 
 - Check that `icu_locale_core` builds for `wasm32-wasip2` with no extra features. Check the size `@fluent/bundle` adds to the Hub bundle.
 - Look for a pure-Rust transliteration crate for Devanagari and Tamil that builds for `wasm32-wasip2`. Decide: use it, or write fixed tables (ISO 15919 as the start).
-- The owner answered questions 1 to 7 in section 6 (2026-11-05). Only one part is open: who collects the spelling test set. Record the answer, and when the set is due (before B4b).
+- The owner answered questions 1 to 7 in section 6 (2026-11-05).
+- Draft the spelling test set: 200 word pairs per language, for Hindi and Tamil typed in Latin letters. Each pair is a word in its own script and one common Latin spelling. Add spelling variants that must match each other (for example `nal wala`, `naal waala`, `nalwala`). Write it to `spelling-pairs.tsv` in this folder. The owner checks it before the B4b plan is written. B4b then moves it into the test data of `syneroym-text-lang`.
 - Record the results in this file and in the change doc. The FTS5 and trigram check is done (section 2).
 
 Change doc: roym-multilingual.
@@ -200,7 +201,7 @@ These come from the change doc's open questions and from section 2. Each names t
 3. **Who checks the Hindi text.** Answered 2026-11-05: an agent writes the first Hindi catalog and the Hindi taxonomy labels. A person who reads Hindi reviews them before B1b merges (catalog) and before B2 merges (labels). That person is not named yet.
 4. **Native digits.** Answered 2026-11-05: Latin digits (`123`) by default in every language.
 5. **Who maintains the taxonomy, and the first taxonomy.** Answered 2026-11-05: the Roym project keeps a small hand-made base taxonomy, 50 to 150 codes, in the repository. A group may use its own codes at once (they show as raw codes) and proposes them for the base taxonomy through the normal contribution process.
-6. **Spelling test data.** Answered 2026-11-05 in part: 200 word pairs per language (Hindi and Tamil in Latin letters). Still open: who collects them. Needed before B4b.
+6. **Spelling test data.** Answered 2026-11-05: 200 word pairs per language (Hindi and Tamil in Latin letters). An agent drafts them in S0, and the owner checks them before the B4b plan is written.
 7. **The demo story 40 plan above.** Answered 2026-11-05: confirmed.
 8. **Named area codes.** No M08B slice needs this. It stays open in the change doc.
 

@@ -351,7 +351,7 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 ## Open questions
 
 - **Search over Indic scripts, and cross-script search.** Decided 2026-10-26: in scope, with FTS5 and search keys (see [Search](#search)).
-- **Spelling test data.** The folding rules need real samples of Hindi and Tamil typed in Latin letters. Decided 2026-11-05: 200 word pairs per language. Still open: who collects them.
+- **Spelling test data.** The folding rules need real samples of Hindi and Tamil typed in Latin letters. Decided 2026-11-05: 200 word pairs per language. An agent drafts them, and the owner checks them before search is built.
 - **Who maintains the taxonomy and its labels.** Decided 2026-11-05: the Roym project maintains the base taxonomy in the repository. A group can use its own codes at once (they show as raw codes). A group then proposes a code for the base taxonomy through the normal contribution process. Labels in a new language come with that language's string catalog. A later option: an exchange (M8) publishes labels for its own group codes.
 - **The first taxonomy.** Decided 2026-11-05: a small hand-made list of local services and goods, 50 to 150 codes. No existing product taxonomy is adapted.
 - **Named area codes.** Is a PIN code the right language-neutral code for `Area::Named.code`? Or a code from India's Local Government Directory? Not decided.
