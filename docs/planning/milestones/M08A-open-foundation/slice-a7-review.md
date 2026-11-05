@@ -167,11 +167,11 @@ URL answers. Better still, tag a small `roym-client=address` block in 6.1 with
 the `roym address` command and the `sed`, and run it. Then Step 2 item 1 only
 has to repeat the check on macOS and the CI image, not prove it.
 
-*Status:* Open (reopened in round 2). Fixed in 4aa27d01, but the fix has a
-defect: the `address` block in D-A7-3 starts with `GATEWAY_PORT=7960`, and the
-story runs that block with `eval`, so the line overwrites the `GATEWAY_PORT` the
-story set from `$S1_GW`. The story would use port 7960 and fail at the first
-call. See the round 2 section.
+*Status:* Fixed (8a59807d). Round 1 fix in 4aa27d01 was reopened in round 2:
+the `address` block's `GATEWAY_PORT=7960` overwrote the story's port. The
+block now uses `GATEWAY_PORT=${GATEWAY_PORT:-7960}`, and the guide says that
+`roymctl roym address` runs as the node owner, so a remote client gets the Hub
+host from the owner.
 
 #### P2 — The guide's feed text misses that a feed ends with its session token (major)
 
@@ -545,7 +545,7 @@ with an argument error and the story stops before the first guide block.
 Say that `--host` is Bob's Hub host, taken from `BOB_HUB_URL` without the
 scheme and the port.
 
-*Status:* Open
+*Status:* Fixed (8a59807d)
 
 #### P13 — Step 4 lists the wrong decisions for the guide (minor)
 
@@ -563,4 +563,4 @@ warning, and no exit criterion catches it.
 "6.1 carries the six items of D-A7-12, and 6.2 and 6.10 carry the three
 sentences of D-A7-13".
 
-*Status:* Open
+*Status:* Fixed (8a59807d)
