@@ -3,15 +3,18 @@
 *Reader: the developer (or AI) who implements slice S0. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-05. The owner accepted the
-recommendations for Q1 to Q7 (section 2.1) on 2026-11-05.**
+**Status: plan written, 2026-11-05. Plan review round 1 folded in. The
+owner's answers to Q1 to Q7 are recorded under each question (section
+2.1).**
 
-**Size and PR.** S. One PR on `feat/m08b-s0-checks-decisions`, three
-commits: this plan, the spelling test set, the results (written into the
-docs).
+**Size and PR.** S. One PR on `feat/m08b-s0-checks-decisions`. The branch
+already holds the plan commits (the plan, the owner answers, the review and
+its fixes). The commits after them: the spelling test set, and the results
+(written into the docs).
 
-**Base.** `main` at `0e016d8c` (2026-11-05). Every file path and line
-number below was checked on that commit. The commits after `76b52fe6`
+**Base.** `main` at `0e016d8c` (2026-11-05). The branch also holds the
+plan commits. Every file path and line number below was checked on that
+commit. The commits after `76b52fe6`
 (the commit that task.md section 2 was checked on) change only planning
 docs, so task.md's code facts still hold.
 
@@ -70,8 +73,8 @@ repository (section 4). The only new file in the repository is
 
 S0 answers four technical questions before any M08B code is written, and
 drafts one test data file. The questions: does `icu_locale_core` build for
-`wasm32-wasip2` with no extra features, and what canonical form does it
-give; which crate gives NFC (added by Q3 below); is there a pure-Rust
+`wasm32-wasip2` with only its `alloc` feature, what canonical form does it
+give, and where does the browser's `Intl.Locale` disagree with it; which crate gives NFC (added by Q3 below); is there a pure-Rust
 transliteration crate for Devanagari and Tamil that M08B should use, or
 does M08B write its own fixed tables; and how many bytes does
 `@fluent/bundle` add to the Hub. The data file is `spelling-pairs.tsv`:
@@ -99,7 +102,7 @@ How a developer can see it work:
 
 ## 2. Points for the owner
 
-### 2.1 Questions (all recommendations accepted by the owner, 2026-11-05)
+### 2.1 Questions (answered; see "Owner answer" under each)
 
 task.md section 6 has the owner's questions 1 to 8 for the whole
 sub-milestone. The questions below are new, for S0 only. Each names the
@@ -121,7 +124,11 @@ Options:
 - (b) A crate for the script-to-Latin step, with our own folding rules on
   top.
 
-*Answered 2026-11-05: the owner accepted the recommendation below.*
+**Owner answer: (a), 2026-11-01.** The owner also agrees with the plan
+review: the second reason below is the weak one, because a crate can be
+pinned to an exact version with a `# patch-pin:` reason (AGENTS.md). The
+first and third reasons carry the choice. The survey also lists
+`icu_experimental` and `lipilekhika` (Step 3).
 
 *Recommendation:* (a), unless the survey finds a crate that meets every
 rule in Step 3 **and** gives output that our folding cannot easily get
@@ -150,12 +157,17 @@ needs the `icu_locale` crate and its CLDR data, which is much larger.
 
 Options: (a) syntax form only; (b) CLDR form.
 
-*Answered 2026-11-05: the owner accepted the recommendation below.*
+**Owner answer: (a), 2026-11-01.** The owner notes that review item P2
+weakens the premise below. A record from another node can carry any tag.
+And the browser's `Intl.Locale` turns `iw` into `he`, while
+`icu_locale_core` keeps `iw`. So Step 2 also runs the same inputs through
+`Intl.Locale`, and D-S0-1 gets two rules for the Hub (Step 6).
 
 *Recommendation:* (a). The Hub offers a fixed list of tags (from its
-catalogs and a language picker), so people do not type old codes. A
-record with `iw` stays readable; the Hub then shows the tag, not a
-language name. The size cost of (b) would land in every Roym guest,
+catalogs and a language picker), so people on this node do not type old
+codes. Tags on records from other nodes can still be anything: Step 2
+records where the two parsers differ. A record with `iw` stays readable.
+The size cost of (b) would land in every Roym guest,
 because `roym_core` validates tags (task.md B3a). With (a), S0 adds a
 backlog row "Language tags are not CLDR-canonicalised" (target TBD).
 
@@ -167,7 +179,9 @@ crates can do it. `icu_normalizer` 2.4.0 is already in `Cargo.lock`
 `url` and `idna` in the host crates (for example `syneroym-data-db` and
 `syneroym-conversation`). `unicode-normalization` is not in `Cargo.lock`.
 
-*Answered 2026-11-05: the owner accepted the recommendation below.*
+**Owner answer: yes, prefer `icu_normalizer`, 2026-11-01.** Step 2b also
+measures what a guest pays when `syneroym-text-lang` holds both
+dependencies but the guest uses only the tag type.
 
 *Recommendation:* yes. It costs one more build in the same scratch
 harness. Prefer `icu_normalizer`, because it is already in the host build
@@ -189,7 +203,11 @@ Two parts go beyond task.md and need a yes:
   `p`, `t` and `k`, every test would still pass). At least 20 per
   language, each one guarding one folding rule.
 
-*Answered 2026-11-05: the owner accepted the recommendation below.*
+**Owner answer: yes to both, 2026-11-01, with two changes from the plan
+review (P3, P11).** `joined` rows exist only for groups of more than one
+word. And the check script reports conflicts between the `variant` rows
+of one group and the `distinct` rows of another, across both languages
+(Step 5).
 
 *Recommendation:* yes to both. And the file starts with
 `# owner check: pending`. S0 merges with this line. The owner changes it
@@ -206,12 +224,16 @@ away: an asset archive may be up to 2 MiB compressed
 and the packed Hub is 34,257 bytes today. The real cost is the first load
 on a slow phone.
 
-*Answered 2026-11-05: the owner accepted the recommendation below.*
+**Owner answer: yes, 25 KB after `gzip -9` and no `eval`, 2026-11-01.**
+The 25 KB covers the library only. The two catalogs add more (Hindi text
+is 3 bytes per character before gzip). So B1a reports the total (library
+and catalogs) as well; Step 6 writes this into task.md's B1a bullet.
 
 *Recommendation:* Fluent stays chosen if it adds at most 25 KB after
 `gzip -9`. If it adds more, S0 stops and asks the owner, with the number.
-S0 also checks that the built code has no `eval` and no `new Function`,
-because the Hub's Content Security Policy is `script-src 'self'`
+S0 also checks that the built code has no `eval`, no `Function(...)` and
+no `new Function`, because the Hub's Content Security Policy is
+`script-src 'self'`
 ([index.html:16](../../../../crates/roym_web/ui/index.html#L16)). If it
 has either, S0 stops and asks, whatever the size.
 
@@ -219,16 +241,19 @@ has either, S0 stops and asks, whatever the size.
 
 The change doc's rule 4 says that M08B keeps `version` at 1 for every
 record type it changes, and marks it `unverified` ("confirm the team's
-rule"). The rule is written down: no migrations before release
-([ADR-0018 §5](../../../decisions/0018-service-record-visibility.md);
-[developer-guide.md:1049](../../../developer-guide.md#L1049)). Every
-record type is at version 1 today
+rule"). The project's position is written down: no migrations before
+release
+([ADR-0018 §5](../../../decisions/0018-service-record-visibility.md),
+"No migration"). That ADR is about endpoint-record visibility, so it is
+the project-wide position, not a rule about `version`. Every record type
+is at version 1 today
 ([record.rs:18](../../../../crates/roym_core/src/record.rs#L18)).
 
-*Answered 2026-11-05: the owner accepted the recommendation below.*
+**Owner answer: yes, 2026-11-01.** Cite ADR-0018 §5 as the project-wide
+"no migration" position, not as a rule about `version`.
 
-*Recommendation:* S0 removes the `unverified` note and cites ADR-0018 §5.
-No other change.
+*Recommendation:* S0 removes the `unverified` note and cites ADR-0018 §5
+as the project-wide "no migration" position. No other change.
 
 **Q7. Old facts in the change doc. (blocks Step 6)**
 
@@ -238,7 +263,9 @@ or counts that are now known to be wrong (section 2.2 lists them).
 Options: (a) fix them in place; (b) fix them and add a `## Deviations`
 entry for each.
 
-*Answered 2026-11-05: the owner accepted the recommendation below.*
+**Owner answer: (a), 2026-11-01.** The same edit also fixes the font
+sentence (the last row of the table in section 2.2) and keeps the
+font-size `unverified` note (exit criterion 4).
 
 *Recommendation:* (a). `## Deviations` records where the code differs from
 the design. A wrong line number about today's code is not a design
@@ -252,7 +279,11 @@ tables, Q1) do get a Deviations entry.
   (the chat store already creates a trigram table,
   [schema.rs:115](../../../../crates/conversation/src/store/schema.rs#L115)).
   The change doc's "Search" section still says `unverified`. Step 6
-  replaces it with the result.
+  replaces it with the result. That result covers the trigram table only.
+  Y5 also needs a second table with the `unicode61` tokenizer and
+  `prefix='1 2'` (ML-29), and nothing in `crates/` uses either today
+  (`grep -rn 'unicode61\|prefix=' crates` finds nothing). S0 does not check
+  it. Step 6 says so, and makes it the first check of B4a.
 - **The change doc still puts the transliteration table in `roym_core`**
   ("Search", "The transliteration table is a fixed table in `roym_core`").
   The owner moved it to `syneroym-text-lang` (task.md section 1; change
@@ -270,6 +301,7 @@ tables, Q1) do get a Deviations entry.
   | `ReceiptHalf` at `transaction.rs:205` | [transaction.rs:220](../../../../crates/roym_core/src/transaction.rs#L220) |
   | "37 Hub source files", "about 104 `textContent` assignments" | 41 files and about 420 places (task.md section 2) |
   | "About 25 places in the Hub read `.message`" | 22 |
+  | a font loaded on demand from the node "is allowed" (change.md line 358) | blocked: the CSP has `default-src 'none'` and no `font-src` ([index.html:16](../../../../crates/roym_web/ui/index.html#L16)) |
 
 - **`icu_locale_core` is not new to the build, but it is new to the
   guests.** `icu_locale_core` 2.4.0 is in `Cargo.lock`
@@ -288,7 +320,9 @@ tables, Q1) do get a Deviations entry.
   The release profile uses `lto = true` and `opt-level = "s"`
   ([Cargo.toml:42](../../../../Cargo.toml#L42)), so code a guest never
   calls is removed from its `.wasm`. B3a's plan decides whether a cargo
-  feature is still needed. S0 only records the build result.
+  feature is still needed. S0 records the build result, and Step 2b
+  measures the guest cost of both dependencies, so B3a decides from a
+  number.
 - **Joined words and the trigram index (for the B4a and B4b plans).** A
   trigram match finds the query as a substring of the key. `nalwala` is
   not a substring of `nal wala`. So ML-22's `nalwala` case cannot pass
@@ -298,10 +332,17 @@ tables, Q1) do get a Deviations entry.
   so task.md's claim "B4a's tables need no change for B4b" can still
   hold. S0 does not decide this. Step 6 writes one sentence about it under
   task.md's B4b bullet, so the B4a and B4b plans see it.
-- **Fluent and the CSP.** If B1a loads `.ftl` catalog files with `fetch`,
-  the Hub's `connect-src 'self'` allows it. If B1a imports them as text
-  with Vite's `?raw`, they are inside the JavaScript. Either works with the
-  current CSP. B1a decides. S0 only checks `eval` (Q5).
+- **Fluent and the CSP.** The Hub has two CSP tags, and the browser
+  applies both. [index.html:16](../../../../crates/roym_web/ui/index.html#L16)
+  sets `default-src 'none'`, `script-src 'self'` and a wide `connect-src`.
+  [boot-csp.ts](../../../../crates/roym_web/ui/src/boot-csp.ts) adds a
+  second tag at run time ([csp.ts](../../../../crates/roym_web/ui/src/csp.ts))
+  that narrows `connect-src` to `'self'` and the auth origin. If B1a loads
+  `.ftl` catalog files with `fetch`, both tags allow it (`'self'`). If B1a
+  imports them as text with Vite's `?raw`, they are inside the JavaScript.
+  Either works. B1a decides. S0 only checks `eval` (Q5). There is no
+  `font-src`, so `default-src 'none'` blocks every web font, even from the
+  node itself. Step 6 fixes the change doc's font sentence (Q7).
 
 ## 3. What S0 meets, and what it decides
 
@@ -319,10 +360,10 @@ tables, Q1) do get a Deviations entry.
 
 | Decision | Change doc | task.md | Backlog |
 | --- | --- | --- | --- |
-| D-S0-1 tag crate and canonical form (Q2) | "C. Language-tagged free text", tag validation paragraph | S0 result line; B3a bullet | new row, §10, if Q2 (a) |
+| D-S0-1 tag crate, its features, canonical form, and the two Hub rules (Q2) | "C. Language-tagged free text", tag validation paragraph | S0 result line; B3a bullet | new row, §10, if Q2 (a) |
 | D-S0-2 NFC crate (Q3) | "Search", search key bullet | S0 result line; B4a bullet | — |
 | D-S0-3 transliteration: tables or crate (Q1) | "Search", transliteration bullet; `## Deviations` only if a crate is chosen | S0 result line; B4b bullet | — |
-| D-S0-4 Fluent stays (Q5) | "Which catalog format": the size line | S0 result line | — |
+| D-S0-4 Fluent stays (Q5) | "Which catalog format": the size line | S0 result line; B1a bullet (report the total with catalogs) | — |
 | D-S0-5 record versions stay 1 (Q6) | "Rules for every layer", rule 4 | — | — |
 
 The change doc has no `## Decisions` section. S0 does not add one. Each
@@ -353,13 +394,17 @@ because every step changes only docs.
 sandbox, give the commands `allowed_domains` for `index.crates.io`,
 `static.crates.io`, `crates.io` and `registry.npmjs.org`. If a download is
 refused, stop and tell the owner. Do not copy packages in by another way.
+If a build fails with a write error (not a network error), set
+`CARGO_HOME` and `npm_config_cache` to folders under `$TMPDIR/m08b-s0/`,
+or ask the owner to allow the command outside the sandbox. The cached
+crate sources are then under that `$CARGO_HOME/registry/src`.
 
-### Step 1 — Commit this plan
+### Step 1 — Commit this plan (done)
 
-- Commit this file and the S0 row in [status.md](status.md):
-  `docs(planning): plan M08B slice S0`.
-- The owner answered section 2.1 on 2026-11-05 (all recommendations
-  accepted). Step 2 can start.
+- Done: `4ba8325c` (the plan and the S0 row in [status.md](status.md))
+  and `b2bf4e1c` (the owner's first answers). The plan review and its
+  fixes are also committed. Do not run this step again.
+- The owner answered section 2.1. Step 2 can start.
 
 ### Step 2 — Language tags: `icu_locale_core` for `wasm32-wasip2`
 
@@ -372,7 +417,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-icu_locale_core = { version = "2.4", default-features = false, optional = true }
+icu_locale_core = { version = "2.4", default-features = false, features = ["alloc"], optional = true }
 
 [features]
 icu = ["dep:icu_locale_core"]
@@ -392,7 +437,11 @@ strip = true
 Without the feature, the result is the argument in lower case (a
 baseline of about the same code size, so the size difference is the
 crate). Check the exact constructor name in the cached crate source, not
-on docs.rs.
+on docs.rs. In 2.4.0, `Locale::try_from_str`, `try_from_utf8` and
+`normalize` all need the `alloc` feature
+(`icu_locale_core-2.4.0/src/locale.rs:154`, `:162`, `:205`), and the
+crate has no parse API without it. Its default features are empty. Do
+not add `serde`, `zerovec` or `databake`.
 
 **Commands and what to record:**
 
@@ -410,19 +459,37 @@ wasmtime run target/wasm32-wasip2/release/tag-check.wasm \
 
 The `wasmtime` CLI is installed on this machine (`~/.wasmtime/bin`).
 
+Then run the same 15 inputs through the browser's parser, with Node
+(Node 22 uses the same `Intl.Locale` as current browsers):
+
+```bash
+node -e 'for (const t of process.argv.slice(1)) { try { console.log(t + "\t" + new Intl.Locale(t).toString()) } catch (e) { console.log(t + "\tERR " + e.name) } }' \
+  hi HI hi-latn hi-Latn-IN ta-IN en-us hi_IN iw und hi-Deva \
+  zh-hant-tw en-u-nu-deva x-private toolongsubtag ""
+```
+
 Record:
 
-1. Builds: yes or no, with the `icu_locale_core` version and the
-   `cargo tree` list (no C code, no `build.rs` that needs a C compiler).
+1. Builds: yes or no, with the `icu_locale_core` version, the exact
+   feature list that B3a must write in `Cargo.toml` (expected:
+   `default-features = false, features = ["alloc"]`), and the `cargo tree`
+   list (no C code, no `build.rs` that needs a C compiler).
 2. Size: the two `.wasm` sizes and the difference, in bytes.
-3. The output table for the 15 inputs, run inside `wasmtime`.
-4. Whether `hi_IN` (underscore) is accepted. B3a must know whether to
-   refuse it.
-5. Whether `iw` and `hi-Deva` stay as given (they should, with no data).
-   This confirms Q2's premise.
+3. The output table for the 15 inputs, with two result columns: Rust
+   (inside `wasmtime`) and `Intl.Locale` (Node). Then list every input
+   where the two differ: one accepts and the other refuses, or the
+   spelling differs.
+4. Whether `hi_IN` (underscore) is accepted. The crate's docs say the old
+   `_` separator is refused since 2.0 (`locale.rs:142`), so expect `ERR`.
+   Record what the run shows. B3a must know whether to refuse it.
+5. Whether `iw` and `hi-Deva` stay as given in Rust (they should, with no
+   data). This confirms Q2's premise for the Rust side. For `Intl.Locale`,
+   expect `iw` to become `he`.
 
-**Pass rule:** builds with no extra features, runs in `wasmtime`, and
-gives the syntax form for valid tags. If it fails, stop and ask the owner
+**Pass rule:** builds for `wasm32-wasip2` with only the `alloc` feature
+(no `serde`, `zerovec` or `databake`), runs in `wasmtime`, and gives the
+syntax form for valid tags. A difference from `Intl.Locale` does not fail
+the step; it goes into D-S0-1 (Step 6). If it fails, stop and ask the owner
 (no fallback is planned; a fallback would be our own small BCP 47 parser,
 which is a design change).
 
@@ -451,14 +518,23 @@ the output table. Also run it natively (`cargo run --features icu`),
 because B4a uses NFC in the host. **Pass rule:** `icu_normalizer` builds
 and gives the expected output. Then D-S0-2 is `icu_normalizer`.
 
+**Guest cost of both dependencies.** `syneroym-text-lang` may hold both
+the tag type and NFC, while a guest uses only the tag type. To measure
+that case, add the chosen NFC crate to `tag-check` as a second
+dependency under the `icu` feature, with no code that calls it. Build
+for `wasm32-wasip2` as in Step 2 and record the `.wasm` size next to the
+Step 2 size. B3a uses the two numbers to decide on a cargo feature.
+
 ### Step 3 — Transliteration crate survey
 
 **Find candidates.** Search crates.io for: `transliteration`,
 `transliterate`, `devanagari`, `tamil`, `indic`, `iso 15919`,
-`romanization`, `unidecode`. Also check by name: `vidyut-lipi`,
-`deunicode`, `any_ascii` (`unverified`: these names exist and do what
-their names suggest). Keep at most the 6 best by downloads and by recent
-releases.
+`romanization`, `unidecode`. Also check by name: `icu_experimental` (the
+ICU4X crate with a `transliterate` module; same project as the tag and
+NFC crates), `lipilekhika`, `vidyut-lipi`, `deunicode`, `any_ascii`
+(`unverified`: these names exist and do what their names suggest). Keep
+`icu_experimental` in the table whatever its downloads. Keep at most 6
+others, the best by downloads and by recent releases.
 
 **Rules a crate must meet** (all of them):
 
@@ -472,6 +548,14 @@ releases.
    finished and kept.
 6. Its output for the same input is fixed for a fixed version (no data
    downloaded at run time).
+7. Stable output over time: the API is not marked unstable, or the
+   version can be pinned exactly with a `# patch-pin:` reason. And its
+   output for the sample words does not change in the last three
+   releases (read the changelog; record what it says).
+
+For `icu_experimental`, also record whether its compiled data has a
+Devanagari-to-Latin and a Tamil-to-Latin rule set at all, and the data
+size.
 
 **Samples** (the output of each candidate is recorded, unchanged):
 
@@ -479,7 +563,7 @@ releases.
 `சென்னை`, `பிளம்பர்`.
 
 **Record** a table: crate, version, license, last release date, rules 1
-to 6 (pass or fail each), `.wasm` size difference, and the sample
+to 7 (pass or fail each), `.wasm` size difference, and the sample
 outputs. Then apply Q1's answer. With Q1 (a) and no crate that is clearly
 better, D-S0-3 is "own tables, ISO 15919 as the start". If a crate is
 chosen, add a `## Deviations` entry to the change doc (the design said
@@ -489,13 +573,26 @@ chosen, add a `## Deviations` entry to the change doc (the design said
 
 ```bash
 mkdir -p "$TMPDIR/m08b-s0"
-rsync -a --exclude dist --exclude bundle.tar.gz \
+rsync -a --exclude dist --exclude bundle.tar.gz --exclude node_modules \
   crates/roym_web/ui/ "$TMPDIR/m08b-s0/hub/"
 cd "$TMPDIR/m08b-s0/hub"
-npx vite build
+npm ci
+npx --no-install vite build
 for f in dist/assets/*.js; do ls -l "$f"; gzip -9c "$f" | wc -c; done
+grep -o -E 'new Function|[^a-zA-Z_.]Function\(|[^a-zA-Z_]eval\(' dist/assets/*.js | wc -l
+cp package-lock.json package-lock.before.json
 npm install @fluent/bundle@latest
+git diff --no-index --stat package-lock.before.json package-lock.json
+npm ls vite rollup
 ```
+
+`npm ci` installs the exact versions from the lock file, so the build
+uses the Hub's own Vite (`^5.2.0` in `package.json`; 5.4.21 on this
+machine). Before adding Fluent, check that the scratch build gives
+114,463 bytes raw and 31,769 bytes after `gzip -9` (the figures in Q5).
+If not, stop and find why. After the `npm install`, check that the lock
+file diff adds only `@fluent/bundle` and its own dependencies, and that
+`npm ls` shows the same Vite and Rollup as before.
 
 Then add these lines at the end of `src/main.ts` in the scratch copy, so
 the bundler keeps the code (a real use, not only an import):
@@ -508,20 +605,25 @@ const msg = probe.getMessage("hello");
 if (msg?.value) console.log(probe.formatPattern(msg.value, { name: "x" }));
 ```
 
-Build again and measure the same way. Then:
+Build again (`npx --no-install vite build`) and measure the same way.
+Then count the matches (not the lines: the built file is one long line,
+so `grep -c` would give only 0 or 1):
 
 ```bash
-grep -c -E 'new Function|eval\(' dist/assets/*.js
+grep -o -E 'new Function|[^a-zA-Z_.]Function\(|[^a-zA-Z_]eval\(' dist/assets/*.js | wc -l
 npm ls --omit=dev --all
 ```
+
+The first block above already counted the "before" build the same way.
 
 Record: the `@fluent/bundle` version and license, its runtime
 dependencies (`npm ls`), the JavaScript size before and after (raw and
 `gzip -9`), the difference, and the `eval` count (before and after). Use
-`npx vite build` and not `npm run build`: lint and `tsc` do not change
-the size, and the scratch `main.ts` lines are not lint-clean.
+`npx --no-install vite build` and not `npm run build`: lint and `tsc` do
+not change the size, and the scratch `main.ts` lines are not lint-clean.
 
-**Pass rule:** Q5. If it fails, stop and ask the owner.
+**Pass rule:** Q5. Any new `eval` or `Function` match stops S0 and asks
+the owner, whatever the size. If it fails, stop and ask the owner.
 
 ### Step 5 — Draft `spelling-pairs.tsv`
 
@@ -537,9 +639,14 @@ Lines that start with `#` are comments. Then one header line, then data:
 # written by: <tool name>, <date>
 # owner check: pending
 # kinds: pair = a word in its script and one common Latin spelling;
-#   variant = another Latin spelling that must match the group's word;
-#   joined = the same words with spaces removed, must match;
+#   variant = another Latin spelling that people expect to match the group's word;
+#   joined = the words of a multi-word group with spaces removed, expected to match;
 #   distinct = a Latin spelling that must NOT match the group's word.
+# A Latin query has no language, so one set of Latin folding rules serves
+# Hindi and Tamil. A rule that makes a variant meet in one group can make
+# a distinct row meet in another. The check script lists these conflicts.
+# The owner decides each one below. B4b may not change a row without the owner.
+# conflicts: (none yet)
 lang	group	kind	native	latin	note
 hi	nal-wala	pair	नल वाला	nal wala	plumber (spoken)
 hi	nal-wala	variant		naal waala
@@ -552,14 +659,15 @@ Column rules:
 | --- | --- |
 | `lang` | `hi` or `ta`: the language of the native word. |
 | `group` | `[a-z0-9-]`, unique within one `lang`. One group is one word or one short phrase. |
-| `kind` | `pair`, `variant`, `joined` or `distinct`. |
-| `native` | Only in `pair` rows. Characters of the language's script block (Devanagari U+0900 to U+097F, Tamil U+0B80 to U+0BFF) and spaces. Empty in every other row. |
+| `kind` | `pair`, `variant`, `joined` or `distinct`. A `joined` row only in a group whose `pair` Latin value has a space. |
+| `native` | Only in `pair` rows. Characters of the language's script block (Devanagari U+0900 to U+097F, Tamil U+0B80 to U+0BFF) and spaces. Also U+200C (ZWNJ) and U+200D (ZWJ), which phones put inside Hindi conjuncts: at most 5 such rows per language, each with `note` = `zwnj` or `zwj`. B4b's key is expected to remove them. Empty in every other row. |
 | `latin` | Lower-case `a` to `z` and single spaces only (no accents, no digits). |
-| `note` | Optional. English meaning, and for a `distinct` row, the folding rule it guards. |
+| `note` | Optional. English meaning, and for a `distinct` row, the folding rule it guards. `homophone` when two groups of one language share a `pair` Latin value on purpose. |
 
 **Counts per language:** exactly 200 `pair` rows (one per group). At least
 100 `variant` rows, at least 20 `joined` rows, at least 20 `distinct`
-rows (if Q4 is yes).
+rows. At least 20 groups per language have a `pair` Latin value with a
+space (so the 20 `joined` rows have groups to belong to).
 
 **What the 200 pairs cover, per language:**
 
@@ -570,6 +678,9 @@ rows (if Q4 is yes).
 | Person names | 40 | common given and family names |
 | Place names | 30 | cities, and parts like `nagar`, `puram`, `colony` |
 | Common chat and query words | 40 | at least 10 Hindi and 5 Tamil words that are 1 or 2 letters long in Latin (`ek`, `do`, `na`), for ML-29 |
+
+Across these parts, at least 20 groups per language are two or more
+words (for example `nal wala`, or a trade and its place).
 
 **Required rows** (from the criteria): Hindi group `nal-wala` with
 `नल वाला` / `nal wala`, variant `naal waala` and joined `nalwala`
@@ -589,16 +700,35 @@ rows (if Q4 is yes).
   or spelling that a careless rule would merge with the group's word (for
   example vowels of a different quality, or a consonant from a different
   place in the mouth). Write the rule in `note`.
-- Do not mark which variants should match by which rule. B4b's tests
-  decide whether its rules make them meet. The file says only what people
-  expect.
+- Do not mark which variants should match by which rule. The file says
+  what people expect. Where two expectations conflict, the conflict
+  report below finds it, and the owner decides.
 
 **Check the file** with a short throwaway script in the scratch folder
 (not committed; for example `python3 -I check.py spelling-pairs.tsv`):
-column count 6 on every data line, the kinds, the counts above, unique
-groups, one `pair` per group, NFC (`unicodedata.is_normalized`), the
-character rules for `native` and `latin`, and the required rows. Paste
-its summary output into the PR text.
+
+- Format: column count 6 on every data line, the kinds, the counts
+  above, unique groups, one `pair` per group, NFC
+  (`unicodedata.is_normalized`), the character rules for `native` and
+  `latin` (with the ZWNJ/ZWJ limit), and the required rows.
+- `joined` rows only in groups whose `pair` Latin value has a space.
+- A `distinct` Latin value differs from every `pair`, `variant` and
+  `joined` value of its own group.
+- No Latin value is used by two `pair` rows of one language, unless
+  both rows have `note` = `homophone`.
+- **Conflict report.** For every `variant` and `joined` row, compute the
+  character edits from the group's `pair` Latin value
+  (`difflib.SequenceMatcher(None, pair, row).get_opcodes()`, giving
+  edits such as `k→g` or `aa→a`). These are "must meet" edits. Do the
+  same for every `distinct` row: "must not meet" edits. Print every edit
+  that is "must meet" in one group and "must not meet" in another, in
+  either language, with both group names.
+
+Paste the script's summary output, with the conflict report, into the
+PR text. Each conflict goes into the file's `# conflicts:` block with the
+owner's decision (which side to keep). The owner changes the line to
+`# owner check: done <date>` only when that block is empty or every
+conflict in it is decided.
 
 **Commit:** `docs(planning): draft M08B spelling test set`.
 
@@ -608,9 +738,17 @@ its summary output into the PR text.
 
 - S0's five bullets each get a "Result:" line: the number or decision and
   a link to the PR.
-- B3a bullet: "Y3 uses `icu_locale_core` <version>, syntax form only
-  (D-S0-1)". Note whether `_` is accepted.
-- B4a bullet: "NFC from `icu_normalizer` <version> (D-S0-2)".
+- B3a bullet: "Y3 uses `icu_locale_core` <version> with
+  `default-features = false, features = [<list from Step 2>]`, syntax
+  form only (D-S0-1)". Note whether `_` is accepted. Add the two Hub
+  rules from D-S0-1 (see the change doc item below), and the two `.wasm`
+  sizes from Step 2b (tag type alone, and with the NFC crate added).
+- B1a bullet: B1a reports the gzip size of `@fluent/bundle` and the two
+  catalogs together, not only the library (D-S0-4, Q5).
+- B4a bullet: "NFC from `icu_normalizer` <version> (D-S0-2)". And: "First
+  check that the `rusqlite` `bundled-sqlcipher` build supports a
+  `unicode61` table with `prefix='1 2'` (one- and two-letter prefix
+  queries return the right rows). S0 checked only the trigram table."
 - B4b bullet: the transliteration decision (D-S0-3), and one sentence on
   joined words (section 2.2, last point but one).
 - Section 2 "Search": no change (its FTS5 line is already the result).
@@ -618,15 +756,32 @@ its summary output into the PR text.
 **Change doc** ([change.md](../../changes/roym-multilingual/change.md)):
 
 - "Tag validation": the `unverified` sentence becomes the Step 2 result,
-  and the text names `syneroym-text-lang` in place of "the Rust side".
+  with the exact feature list (only `alloc` is expected; "no extra
+  features" is not true, because the parse API needs `alloc`). The text
+  names `syneroym-text-lang` in place of "the Rust side". Add D-S0-1's
+  two rules for the Hub, with the list of inputs where Rust and
+  `Intl.Locale` differ: (1) the Hub wraps every `new Intl.Locale(tag)`
+  in `try`/`catch`, and treats a throw as "unknown tag" (it shows the
+  raw tag and does no best-match); (2) language matching in the Hub
+  compares both the stored tag and its `Intl.Locale` form (so a stored
+  `iw` matches a reader whose browser asks for `he`).
 - "Search": the transliteration bullet names `syneroym-text-lang` and
   D-S0-3 in place of "a fixed table in `roym_core`" and its `unverified`
-  note. The FTS5 `unverified` bullet becomes the checked fact (task.md
-  section 2). The search key bullet names the NFC crate.
+  note. The FTS5 `unverified` bullet becomes the checked fact for the
+  trigram tokenizer (task.md section 2), and says that the `unicode61`
+  table with `prefix='1 2'` is not checked yet: B4a checks it first.
+  The search key bullet names the NFC crate.
 - "Which catalog format": "Bundle size of `@fluent/bundle` is
-  `unverified`" becomes the measured number and the CSP result.
-- "Rules for every layer", rule 4: per Q6.
+  `unverified`" becomes the measured number and the CSP result. Add that
+  the 25 KB limit covers the library only, and B1a reports the total
+  with the catalogs.
+- "Rules for every layer", rule 4: per Q6. Cite ADR-0018 §5 as the
+  project-wide "no migration" position, not as a rule about `version`.
 - "Problem" and the design text: the old facts in section 2.2, per Q7.
+- "Open questions", "Font size and bundle cost" (line 358): rewrite the
+  last sentence to "A font file is loaded only if `index.html` also gets
+  `font-src 'self'`; today `default-src 'none'` blocks every font." Keep
+  "Size per script is `unverified`": S0 does not measure it.
 - "Open questions", "Spelling test data": add "Drafted in
   `spelling-pairs.tsv` (M08B task folder); owner check pending."
 - `## Deviations`: an entry only if D-S0-3 chose a crate.
@@ -639,9 +794,12 @@ task.md S0".
 **Deferred backlog** ([deferred-backlog.md](../../deferred-backlog.md)):
 
 - If Q2 is (a): new row in §10 (Product surfaces & UX), "Language tags
-  are not CLDR-canonicalised": old codes such as `iw` are stored as
-  given, and the Hub shows the raw tag for them. Target TBD. Source:
-  the change doc's tag validation paragraph.
+  are not CLDR-canonicalised": the node stores old codes such as `iw` as
+  given. The Hub's `Intl.Locale` reads `iw` as `he`, so the Hub matches
+  on both forms, and it shows the raw tag only for a tag that
+  `Intl.Locale` refuses. Add the list of inputs where the two parsers
+  differ (Step 2). Target TBD. Source: the change doc's tag validation
+  paragraph.
 - Nothing else. The rows M08B closes (task.md section 7) stay as they
   are; their own slices change them.
 
@@ -687,14 +845,17 @@ S0 is done when all of these are true:
 3. `spelling-pairs.tsv` exists, passes the Step 5 check, and has
    `# owner check: pending` (or `done`, if the owner checked it already).
 4. The change doc has no `unverified` note left about the four checks,
-   FTS5 or rule 4. Its other `unverified` notes (Indian digit grouping in
-   every browser, Indic fonts on older Android, `Intl.MessageFormat`)
-   stay: S0 does not check them.
+   the trigram tokenizer or rule 4. Its other `unverified` notes stay,
+   because S0 does not check them: Indian digit grouping in every browser
+   (line 142), Indic fonts on older Android (line 146),
+   `Intl.MessageFormat` (line 336), font size per script (line 358), and
+   the new note that the `unicode61` prefix table is not checked yet.
 5. task.md, status.md and the backlog are updated as in Step 6.
 6. Nothing outside `docs/` changed.
 7. `mise run verify` passes with no `--skip`.
-8. One PR with the three commits, after the plan review and a code (docs)
-   review by a different tool.
+8. One PR with the plan commits and the commits after them (the spelling
+   set and the results), after the plan review and a code (docs) review
+   by a different tool.
 
 ## 9. What S0 does not do
 
