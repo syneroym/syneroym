@@ -457,6 +457,8 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **A7: the story names its last guide block on failure, and the captions have no part numbers.** An `ERR` trap prints "Last guide block: roym-client=<name>". Captions use the guide's part titles without numbers, so a renumbered guide does not make them wrong. A block broken on purpose (`conversation.lst`) failed the story with that message.
 - **A7: the optional check that the feed ends after logout is left out.** The guide's text says it; the story does not check it, to keep the story short.
 
+- **A7: `podman_lifecycle` never released its probe ports.** CI failed on this branch and on `main` (run 41967304798) in `test_podman_lifecycle`: "Failed to bind server socket to 0.0.0.0:<port>: Address already in use", on all three tries, each with a different port. The test took its ports from `alloc_ports`, which holds a listener on each port until `release_held_ports` runs, and the test did not call it. On Linux the relay's `0.0.0.0` bind then fails. It also left the QUIC listener on the fixed default `7965`. The test now calls `release_held_ports` and uses its own QUIC port. It skips where podman is not available, so this was not run locally with podman.
+
 ### Planned wire changes (plan section 4)
 
 - **Hub profile_envelope format (B1):** The Hub's object parameter was a bug and was updated to send trimmed string text.
