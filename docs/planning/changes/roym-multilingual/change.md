@@ -351,13 +351,14 @@ Bundle size of `@fluent/bundle` is `unverified`. It is checked before the choice
 ## Open questions
 
 - **Search over Indic scripts, and cross-script search.** Decided 2026-10-26: in scope, with FTS5 and search keys (see [Search](#search)).
-- **Spelling test data.** The folding rules need real samples of Hindi and Tamil typed in Latin letters. Who collects them, and how many are enough (a first value: 200 word pairs per language).
-- **Who maintains the taxonomy and its labels.** Recommendation: the Roym project maintains the base taxonomy in the repository. A group can use its own codes at once (they show as raw codes). A group then proposes a code for the base taxonomy through the normal contribution process. Labels in a new language come with that language's string catalog. The owner decides. A later option: an exchange (M8) publishes labels for its own group codes.
-- **The first taxonomy.** Start from a small hand-made list of local services and goods (for example 50 to 150 codes), or adapt an existing product taxonomy. The licence of any existing taxonomy is `unverified`.
+- **Spelling test data.** The folding rules need real samples of Hindi and Tamil typed in Latin letters. Decided 2026-11-05: 200 word pairs per language. Still open: who collects them.
+- **Who maintains the taxonomy and its labels.** Decided 2026-11-05: the Roym project maintains the base taxonomy in the repository. A group can use its own codes at once (they show as raw codes). A group then proposes a code for the base taxonomy through the normal contribution process. Labels in a new language come with that language's string catalog. A later option: an exchange (M8) publishes labels for its own group codes.
+- **The first taxonomy.** Decided 2026-11-05: a small hand-made list of local services and goods, 50 to 150 codes. No existing product taxonomy is adapted.
 - **Named area codes.** Is a PIN code the right language-neutral code for `Area::Named.code`? Or a code from India's Local Government Directory? Not decided.
 - **Font size and bundle cost.** If system fonts are not enough on some devices, a Noto font for each script must be bundled or loaded on demand. Size per script is `unverified`. Loading on demand means a network fetch from the node, which is allowed (the Hub is served by the node).
-- **Native digits.** Do Hindi users want `१२३` or `123` by default? Recommendation: `123`, with a later option. `unverified`; ask users.
-- **Catalog format.** Fluent is recommended above. The owner confirms.
+- **Native digits.** Decided 2026-11-05: `123` by default in every language. Native digits (`१२३`) are a later user option. Users have not been asked yet.
+- **Catalog format.** Decided 2026-11-05: Fluent.
+- **Who checks the Hindi text.** Decided 2026-11-05: an agent writes the first Hindi catalog and taxonomy labels, and a person who reads Hindi reviews them before they merge. That person is not named yet.
 
 ## Tasks
 

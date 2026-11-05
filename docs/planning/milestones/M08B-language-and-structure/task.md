@@ -8,7 +8,7 @@ This sub-milestone lets people use Roym in their own language and script. It als
 
 M08A is done. Every record and method that this sub-milestone changes already has its M08A names and typed inputs.
 
-**Demo:** a new story `demo/40-roym-languages.spec.ts`, built up by three slices. B1a: a person switches the Hub to Hindi, and the Hub stays in Hindi after a reload. B2: the person picks a category by its Hindi label. B4b: a search in Latin letters finds a listing with a Devanagari title. The other Hub stories stay in English. Several Hub steps in `hub-helpers.ts` find buttons by their English text (see [demo-stories](../../changes/demo-stories/change.md)). Playwright sets no locale, so the browser asks for `en-US` and the Hub shows English. If a slice changes an English string that a step uses, it updates the step in the same PR.
+**Demo** (owner confirmed, 2026-11-05)**:** a new story `demo/40-roym-languages.spec.ts`, built up by three slices. B1a: a person switches the Hub to Hindi, and the Hub stays in Hindi after a reload. B2: the person picks a category by its Hindi label. B4b: a search in Latin letters finds a listing with a Devanagari title. The other Hub stories stay in English. Several Hub steps in `hub-helpers.ts` find buttons by their English text (see [demo-stories](../../changes/demo-stories/change.md)). Playwright sets no locale, so the browser asks for `en-US` and the Hub shows English. If a slice changes an English string that a step uses, it updates the step in the same PR.
 
 ## 1. Shared parts
 
@@ -73,8 +73,7 @@ Every slice is one PR that passes `mise run verify`. Sizes are S, M and L, as in
 
 - Check that `icu_locale_core` builds for `wasm32-wasip2` with no extra features. Check the size `@fluent/bundle` adds to the Hub bundle.
 - Look for a pure-Rust transliteration crate for Devanagari and Tamil that builds for `wasm32-wasip2`. Decide: use it, or write fixed tables (ISO 15919 as the start).
-- Get the owner's answers to the open questions in section 6 that block B1a, B2, B3a or B4b.
-- Collect the first spelling test set, or record who collects it and when it is due (before B4b).
+- The owner answered questions 1 to 7 in section 6 (2026-11-05). Only one part is open: who collects the spelling test set. Record the answer, and when the set is due (before B4b).
 - Record the results in this file and in the change doc. The FTS5 and trigram check is done (section 2).
 
 Change doc: roym-multilingual.
@@ -197,12 +196,12 @@ Some `ML-*` criteria name things that do not exist until later. M08B builds the 
 These come from the change doc's open questions and from section 2. Each names the first slice it blocks.
 
 1. **Where Y3 and Y4 live.** Answered 2026-11-05: one new substrate crate, `syneroym-text-lang` (section 1).
-2. **Catalog format: Fluent** (blocks B1a). The change doc recommends it.
-3. **Who checks the Hindi text** (blocks B1a and B2). An agent can write the first Hindi catalog. A person who reads Hindi should review it before B1b merges.
-4. **Native digits** (blocks B1a). Recommendation: Latin digits (`123`) by default.
-5. **Who maintains the taxonomy, and the first taxonomy** (blocks B2). Recommendation: the Roym project keeps a small hand-made base taxonomy (50 to 150 codes) in the repository.
-6. **Spelling test data** (blocks B4b). Who collects it, and how many pairs (the change doc suggests 200 per language).
-7. **The demo story 40 plan above** (B1a). Confirm it.
+2. **Catalog format.** Answered 2026-11-05: Fluent (`@fluent/bundle`).
+3. **Who checks the Hindi text.** Answered 2026-11-05: an agent writes the first Hindi catalog and the Hindi taxonomy labels. A person who reads Hindi reviews them before B1b merges (catalog) and before B2 merges (labels). That person is not named yet.
+4. **Native digits.** Answered 2026-11-05: Latin digits (`123`) by default in every language.
+5. **Who maintains the taxonomy, and the first taxonomy.** Answered 2026-11-05: the Roym project keeps a small hand-made base taxonomy, 50 to 150 codes, in the repository. A group may use its own codes at once (they show as raw codes) and proposes them for the base taxonomy through the normal contribution process.
+6. **Spelling test data.** Answered 2026-11-05 in part: 200 word pairs per language (Hindi and Tamil in Latin letters). Still open: who collects them. Needed before B4b.
+7. **The demo story 40 plan above.** Answered 2026-11-05: confirmed.
 8. **Named area codes.** No M08B slice needs this. It stays open in the change doc.
 
 ## 7. Deferred-backlog rows for M08B
