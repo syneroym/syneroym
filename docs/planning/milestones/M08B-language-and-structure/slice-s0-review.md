@@ -411,7 +411,7 @@ tags, NFC, transliteration or Fluent. S0 changes nothing in it, and nothing
 in S0 belongs there. Every S0 decision belongs to roym-multilingual, and that
 is where it is written.
 
-**Summary:** 0 blocker, 1 major, 4 minor. 5 items, all Open.
+**Summary:** 0 blocker, 1 major, 4 minor. 5 items. Fixes round 1: 4 fixed, 1 open (R5, needs the owner).
 
 ### What was checked and found correct
 
@@ -523,7 +523,7 @@ is where it is written.
   that rule 7 is not proven for `lipilekhika`, mark it `?` in the table at
   task.md:84 and say why at :91; then "no crate met every rule" is true and
   can stay. Either way, fix the PR text.
-- *Status:* Open.
+- *Status:* Fixed (75502bd1). Took the first option: `lipilekhika` did pass all seven rules, so task.md, the change doc and the PR text now say that, mark rule 7 as read from a changelog summary only, and name the three places its output differs from ISO 15919. The decision to write our own tables stays.
 
 #### R2 (minor) — The owner-answer date 2026-11-01 is before the questions existed
 
@@ -547,7 +547,7 @@ is where it is written.
   history says so), replace 2026-11-01 with 2026-11-05 in all the places
   above. In change.md:316, also put the survey before the decision ("After a
   survey of seven crates (2026-11-05), we write our own tables").
-- *Status:* Open.
+- *Status:* Fixed (0fb74f5f). The plan, the commit times and the earlier A4 fix (2026-11-01 to 2026-11-02) all show the answers cannot be older than 2026-11-05. Changed the date in the plan (7 places), task.md, change.md (2 places) and the backlog row. The survey now comes before the decision in change.md. I did not ask the owner: the commit history is clear. Please say so if the real date is different. `docs/planning/prompt-templates.md:248` still shows `ANSWER_DATE: 2026-11-01` as an example; I left it, because it is a template and not in this slice.
 
 #### R3 (minor) — `spelling-pairs.tsv` has one `distinct` row that no key can pass, and one that guards two rules
 
@@ -585,7 +585,7 @@ is where it is written.
   `venum` (the spoken word is `வேணும்`), and `ta sakkarai` pairs the written
   `சர்க்கரை` with the spoken `sakkarai`. Each adds a "must meet" edit (drop
   `d`, drop `r`) that the folding then needs.
-- *Status:* Open.
+- *Status:* Fixed (3fac0f9c). Deleted the `hi nai distinct nahi` row. Changed `banka` to `bankha`. Added the union-find check to the throwaway script and rebuilt the `# conflicts:` block: 17 conflicts now (the `→h` entry is gone and `pankha` left the `h→` entry); Hindi `distinct` rows 44 to 43. Proof: the new check run on the file before the fix printed `ERROR line 61: distinct 'nahi' is already joined to 'nai'` and nothing else (1 error); after the fix it printed 0 errors. The two points for the owner (`ta venum`, `ta sakkarai`) are not changed.
 
 #### R4 (minor) — task.md gives two sizes for the same "tag type alone" build, and the size-0 method is not explained
 
@@ -613,7 +613,7 @@ is where it is written.
   has a public `nfc()` calling `icu_normalizer`, not called by the guest, the
   size does not change (93,827 bytes both ways in code review round 1;
   +68,659 bytes when the guest calls it)." Keep "the plan decides".
-- *Status:* Open.
+- *Status:* Fixed (75502bd1). Re-measured the case B3a has (a library with a public `nfc()`, a guest that calls only the tag function): 93,305 bytes with and without `nfc()`, and 162,069 bytes (+68,764) when the guest calls `nfc()`. This agrees with the review (93,827 and +68,659; the difference is the build folder). task.md and change.md now use this case, and task.md explains the 32-byte path difference between 92,962 and 92,994.
 
 #### R5 (minor) — Step 7: the scratch folder is not deleted
 
@@ -627,4 +627,4 @@ is where it is written.
 - **Fix:** The owner runs `rm -rf /tmp/claude-501/m08b-s0` (outside the
   sandbox if needed). No repository change. Mark this item `Fixed (no
   commit)` when done.
-- *Status:* Open.
+- *Status:* Open. Needs the owner: the delete command was denied in the sandbox in the implementation session, and the fix session did not retry it. Run `rm -rf /private/tmp/claude-501/m08b-s0` outside the sandbox. Then set this item to `Fixed (no commit)`.
