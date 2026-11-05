@@ -2,14 +2,19 @@
 
 *Reader: developers who build this sub-milestone.*
 
-The plan and the slice order are in [task.md](task.md). This file records what is done, with evidence, and which tool implemented and reviewed each slice.
+The plan and the slice order are in [task.md](task.md). This file records what is done, with evidence, and which tool did each step of each slice.
 
-| Slice | Status | Implemented by | Reviewed by | Evidence |
-| --- | --- | --- | --- | --- |
-| S0 | Not started | — | — | — |
-| B1 | Not started | — | — | — |
-| B2 | Not started | — | — | — |
-| B3 | Not started | — | — | — |
-| B4 | Not started | — | — | — |
-| B5 | Not started | — | — | — |
-| B6 | Not started | — | — | — |
+**Step** is one of: Not started, Plan written, Plan reviewed, Implemented, Code reviewed, Fixes done, Merged. "—" means the step has not happened yet.
+
+| Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| S0 | Not started | — | — | — | — | — |
+| B1a | Not started | — | — | — | — | — |
+| B1b | Not started | — | — | — | — | — |
+| B2 | Not started | — | — | — | — | — |
+| B3a | Not started | — | — | — | — | — |
+| B3b | Not started | — | — | — | — | — |
+| B4a | Not started | — | — | — | — | — |
+| B4b | Not started | — | — | — | — | — |
+| B5 | Not started | — | — | — | — | — |
+| B6 | Not started | — | — | — | — | — |
