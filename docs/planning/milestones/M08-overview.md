@@ -34,7 +34,7 @@ The Value Exchange document is an overview. Before each of M08C, M08E, M08F and 
 | 8 | M08H EEP transfer | [M08H](M08H-eep-transfer/task.md) | Endorsement and reissue, bundles, two-party swaps, EEPs listed for trade |
 | later | Analytics and insight extensions | — | Exchange aggregates, suggestions on the node, insight extensions. Backlog rows. |
 
-**Progress:** M08A is done (2026-11-05). M08B is next. See [M08A task.md](M08A-open-foundation/task.md) for what moved to later sub-milestones.
+**Progress:** M08A is done (2026-11-05). M08B started (2026-11-05): its [task.md](M08B-language-and-structure/task.md) is refreshed, and slice S0 is next. See [M08A task.md](M08A-open-foundation/task.md) for what moved to later sub-milestones.
 
 ## Why this order
 
