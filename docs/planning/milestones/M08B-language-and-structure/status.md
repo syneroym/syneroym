@@ -8,7 +8,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 
 | Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| S0 | Not started | — | — | — | — | — |
+| S0 | Plan written | Claude Opus 5.5 | — | — | — | — |
 | B1a | Not started | — | — | — | — | — |
 | B1b | Not started | — | — | — | — | — |
 | B2 | Not started | — | — | — | — | — |
