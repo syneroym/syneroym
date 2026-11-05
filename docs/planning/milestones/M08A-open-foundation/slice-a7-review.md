@@ -807,8 +807,7 @@ guide whether they will need the workaround.
 Read the answer in the Playwright E2E log of the next CI run, and write it in
 the deviation.
 
-*Status:* Open (reopened in the fixes check below: the CI answer is known now
-and is not yet in the deviation). Earlier note: Fixed (dad0cff7). The story prints whether the machine resolves `*.localhost` before it writes the `.curlrc` (macOS: resolves). The CI answer is in the Playwright E2E log of the next CI run; the deviation says where to read it.
+*Status:* Fixed (178b32f7). The deviation now says that `curl` resolved `*.localhost` by itself on `ubuntu-latest` (CI run 41988806670, Playwright E2E; I read the line "This machine resolves *.localhost." in the job log). Earlier note: Fixed (dad0cff7). The story prints whether the machine resolves `*.localhost` before it writes the `.curlrc` (macOS: resolves). The CI answer is in the Playwright E2E log of the next CI run; the deviation says where to read it.
 
 #### R6 — The doc comment of `skip_on_docs_only` is no longer true (minor)
 
@@ -909,4 +908,4 @@ alias, so a second run replaces the first one's nickname." Give the place to
 find `<node DID>` (for example the `--substrate` value the reader already
 passes to `roymctl`).
 
-*Status:* Open
+*Status:* Fixed (178b32f7). 6.1 item 1 tells the reader to run `roymctl registry register --identity member-roym#web-0 --substrate <node DID> [--nickname <name>]` once, says where `<node DID>` comes from, and says that a second run replaces the nickname. Text only: no tagged block changed, and story 20 runs the same step.
