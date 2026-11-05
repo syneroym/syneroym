@@ -909,3 +909,39 @@ find `<node DID>` (for example the `--substrate` value the reader already
 passes to `roymctl`).
 
 *Status:* Fixed (178b32f7). 6.1 item 1 tells the reader to run `roymctl registry register --identity member-roym#web-0 --substrate <node DID> [--nickname <name>]` once, says where `<node DID>` comes from, and says that a second run replaces the nickname. Text only: no tagged block changed, and story 20 runs the same step.
+
+## Code review round 1 — closing check — Claude Opus 5.5, 2026-11-05
+
+I checked the fix commit 178b32f7 (the guide and the change doc) and the
+status commits 6937be05 and 65deb091 on `feat/m08a-a7-client-guide` (main
+checkout, not a worktree; `git pull` said "Already up to date"). No code was
+changed.
+
+**Summary:** R5 and R7 confirmed. No new item. **0 blocker, 0 major, 0 open.**
+All 7 items of code review round 1 are Fixed and confirmed.
+
+- **R5 — confirmed.** The deviation "`curl` does not resolve `*.localhost`
+  itself" now gives the CI answer: on `ubuntu-latest`, `curl` resolved
+  `*.localhost` by itself (run 41988806670, Playwright E2E). That matches the
+  job log line "This machine resolves *.localhost." that I read in the fixes
+  check. One cosmetic point, not an item: the sentence before it ends in
+  `…for *.localhost."),` and the next sentence starts after the comma. A
+  period would read better.
+- **R7 — confirmed.** 6.1 item 1 (`docs/developer-guide.md:2262`) says the
+  Hub must be in the registry, gives the command to run once
+  (`roymctl --dir <DIR> --api-url <registry URL> registry register --identity
+  member-roym#web-0 --substrate <node DID> [--nickname <name>]`), says where
+  `<node DID>` comes from with a link to "Identifying your Substrate" (the
+  heading exists, `:249`), and says a second run replaces the nickname. The
+  flags match what story 20 runs (`20-roym-setup.sh:23-24`). No tagged block
+  changed, so the story does not need to change.
+
+CI: no run on this branch has passed every job yet. Each new push cancelled
+the Rust test jobs of the run before it. On `6f6dd14f`
+([run 41988806670](https://github.com/syneroym/syneroym/actions/runs/41988806670),
+cancelled) "Lints, licenses & checks", "Playwright E2E" and "Test 6/6"
+passed, and Test 1/6 to 5/6 were cancelled. The run on the head `65deb091`
+([run 41991787164](https://github.com/syneroym/syneroym/actions/runs/41991787164))
+was still pending when I checked. The fixes since `6f6dd14f` change only
+Markdown, so the slice close needs one full green run on the final head and
+`mise run verify` with no `--skip`.
