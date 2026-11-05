@@ -20,6 +20,8 @@ struct Gate {
     /// Skipped, along with the other docs-only-skippable gates, when the
     /// change under verification touches only `*.md` files and `docs/`.
     skip_on_docs_only: bool,
+    /// Docs paths that still run this gate on a docs-only change.
+    docs_paths_that_run: &'static [&'static str],
     /// argv (program, then its args) run in sequence; the gate fails at the
     /// first non-zero exit, and later commands in the list are not run.
     commands: &'static [&'static [&'static str]],
@@ -29,11 +31,13 @@ const GATES: &[Gate] = &[
     Gate {
         name: "fmt",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "+nightly-2026-04-06", "fmt", "--all", "--", "--check"]],
     },
     Gate {
         name: "clippy",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&[
             "cargo",
             "clippy",
@@ -49,46 +53,55 @@ const GATES: &[Gate] = &[
     Gate {
         name: "file-lengths",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "xtask", "check-file-lengths"]],
     },
     Gate {
         name: "lint-suppressions",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "xtask", "check-lint-suppressions"]],
     },
     Gate {
         name: "module-layout",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "xtask", "check-module-layout"]],
     },
     Gate {
         name: "change-docs",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "xtask", "check-change-docs"]],
     },
     Gate {
         name: "duplication",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "xtask", "check-duplication"]],
     },
     Gate {
         name: "dep-versions",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "xtask", "check-dep-versions"]],
     },
     Gate {
         name: "roym-deps",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "xtask", "check-roym-deps"]],
     },
     Gate {
         name: "planning-refs",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["python3", ".github/scripts/check-planning-refs.py"]],
     },
     Gate {
         name: "nextest",
         skip_on_docs_only: true,
+        docs_paths_that_run: &[],
         // Some suites (e.g. `dual_build_parity`) load pre-built
         // `wasm32-wasip2` artifacts straight from disk; nothing in `cargo
         // nextest run` builds them, so build them first, same as CI does.
@@ -104,6 +117,7 @@ const GATES: &[Gate] = &[
     Gate {
         name: "doctests",
         skip_on_docs_only: true,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "test", "--workspace", "--doc"]],
     },
     // `--deny warnings`: a warning (an unmaintained crate, for example) exits 0
@@ -111,14 +125,23 @@ const GATES: &[Gate] = &[
     Gate {
         name: "audit",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "audit", "--deny", "warnings"]],
     },
     Gate {
         name: "deny-licenses",
         skip_on_docs_only: false,
+        docs_paths_that_run: &[],
         commands: &[&["cargo", "deny", "check", "licenses"]],
     },
-    Gate { name: "e2e", skip_on_docs_only: true, commands: &[&["mise", "run", "test:e2e"]] },
+    Gate {
+        name: "e2e",
+        skip_on_docs_only: true,
+        // A demo story runs the code blocks of the client guide, so a guide
+        // change must still run this gate.
+        docs_paths_that_run: &["docs/developer-guide.md"],
+        commands: &[&["mise", "run", "test:e2e"]],
+    },
 ];
 
 /// A passing gate that printed more than this to its log is worth flagging:
@@ -165,6 +188,14 @@ pub(crate) fn is_docs_only_path(path: &str) -> bool {
 
 pub(crate) fn is_docs_only_change(paths: &[String]) -> bool {
     !paths.is_empty() && paths.iter().all(|p| is_docs_only_path(p))
+}
+
+/// True when a docs-only change lets this gate be skipped. A gate that names a
+/// changed docs path in `docs_paths_that_run` still runs.
+fn skips_on_docs_only(gate: &Gate, paths: &[String]) -> bool {
+    is_docs_only_change(paths)
+        && gate.skip_on_docs_only
+        && !paths.iter().any(|p| gate.docs_paths_that_run.contains(&p.as_str()))
 }
 
 /// Every path touched relative to `main`, plus anything uncommitted
@@ -250,9 +281,11 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<()> {
     let log_dir = workspace_root.join("target/gates");
     fs::create_dir_all(&log_dir)?;
 
-    let docs_only = is_docs_only_change(&changed_paths(&workspace_root));
-    if docs_only {
-        println!("Docs-only change detected -- skipping nextest, doctests and e2e.");
+    let paths = changed_paths(&workspace_root);
+    let skipped_on_docs: Vec<&str> =
+        GATES.iter().filter(|g| skips_on_docs_only(g, &paths)).map(|g| g.name).collect();
+    if is_docs_only_change(&paths) {
+        println!("Docs-only change detected -- skipping {}.", skipped_on_docs.join(", "));
     }
 
     let mut ran = 0;
@@ -263,7 +296,7 @@ pub fn run(args: impl Iterator<Item = String>) -> Result<()> {
             println!("- {} (skipped: --skip)", gate.name);
             continue;
         }
-        if docs_only && gate.skip_on_docs_only {
+        if skipped_on_docs.contains(&gate.name) {
             println!("- {} (skipped: docs-only change)", gate.name);
             continue;
         }
@@ -327,6 +360,35 @@ mod tests {
         assert!(is_docs_only_path("AGENTS.md"));
         assert!(is_docs_only_path("docs/VISION.md"));
         assert!(!is_docs_only_path("crates/router/src/lib.rs"));
+    }
+
+    fn skips(name: &str, paths: &[String]) -> Result<bool> {
+        let gate = GATES
+            .iter()
+            .find(|g| g.name == name)
+            .ok_or_else(|| anyhow!("no gate named `{name}`"))?;
+        Ok(skips_on_docs_only(gate, paths))
+    }
+
+    #[test]
+    fn a_guide_change_runs_only_the_e2e_gate() -> Result<()> {
+        let paths = vec![
+            "docs/developer-guide.md".to_string(),
+            "docs/planning/deferred-backlog.md".to_string(),
+        ];
+        assert!(!skips("e2e", &paths)?);
+        assert!(skips("nextest", &paths)?);
+        assert!(skips("doctests", &paths)?);
+        Ok(())
+    }
+
+    #[test]
+    fn other_docs_changes_skip_all_three_gates() -> Result<()> {
+        let paths = vec!["docs/planning/deferred-backlog.md".to_string()];
+        for name in ["e2e", "nextest", "doctests"] {
+            assert!(skips(name, &paths)?, "{name} should skip");
+        }
+        Ok(())
     }
 
     #[test]

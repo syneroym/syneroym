@@ -24,6 +24,9 @@ rust = ["stable", "nightly-2026-04-06"]
 # `mise install`.
 "cargo:cargo-nextest" = "latest"
 node = "20"
+# JSON on the command line: the client guide's code blocks and the demo story
+# that runs them use it.
+jq = "1.8"
 
 [settings]
 experimental = true
