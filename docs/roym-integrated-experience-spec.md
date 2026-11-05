@@ -154,7 +154,7 @@ The entrypoint reaches the other four services by declared dependency, which is
 intra-app and works today.
 
 - Every Roym capability the UI uses is a public JSON-RPC method. If the UI
-  needs something the API cannot do, the API is wrong, not the UI.
+  needs something the API cannot do, the API is wrong, not the UI. The developer guide's "Build a Roym client" section shows a client that uses this API with `curl`.
 - The UI holds no user private key and no business logic it cannot recompute
   from the API.
 - ~~The entrypoint is the **only** part of Roym exempt from D2 and D3.~~

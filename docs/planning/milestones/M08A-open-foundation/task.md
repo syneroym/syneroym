@@ -96,6 +96,7 @@ This slice decides the design that A3, A4 and A5 build. It is not optional.
 - "Build a Roym client" in the developer guide, tested by following it with `curl` and `curl -N` (or a small script) against a test node.
 - Living docs updated. Change doc `status: done`.
 - Criteria: OF-16.
+- A7 result: the developer guide has `## 6. Build a Roym client`. It shows sign in (a 25-line Node.js script signs the challenge), `POST /rpc`, conversations, the event feed with a cursor, search, cards, errors and unknown fields, refresh and logout. The demo story `30-roym-client.sh` runs the guide's own tagged code blocks against the demo nodes. `xtask verify` runs the `e2e` gate for a guide-only change. `jq` is in `mise.toml`. See the Deviations of the [change doc](../../changes/roym-open-foundation/change.md).
 
 ## 4. Order and parallel work
 

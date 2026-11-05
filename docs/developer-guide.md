@@ -1686,6 +1686,8 @@ roymctl --dir <DIR> roym address
 # Hub gateway host:        s<web-did-hash>.localhost
 ```
 
+A Hub that was registered with a nickname is at `<nickname>-s<web-did-hash>.localhost`.
+
 ##### The Directory: running a SynOrg and finding listing owners
 
 `directory` signs nothing (its settings and roster are unsigned app
@@ -2234,3 +2236,294 @@ The image runs `syneroym-substrate`. With no config (`run` alone) it starts a de
 4. Put a TLS proxy in front of the gateway for browser clients (see Remote access above). For QUIC address discovery, set `[roles.coordinator.tls]` to certificate files under the mounted `/etc/letsencrypt`.
 
 If you run a node in Docker with your own config and no `remote_access` table, its gateway is local-only after upgrading to this version. Add the table to restore access from other machines.
+
+## 6. Build a Roym client
+
+*Reader: a developer who writes a program that uses Roym for one person: a phone app, a bot, a script, or another web UI.*
+
+A client can sign in, call every Roym method, list conversations, send a message, follow changes as they happen, run a search and show cards. This section does it with `curl` and `jq`, so you see every request. It uses only the public HTTP API of the node. It does not need any Hub code. The Hub (the Roym web UI) is one client of the same API.
+
+Some code blocks below have a name in their first line, for example `bash roym-client=login`. A demo story runs these blocks against two real nodes, so a command that stops working fails a test. Your Markdown viewer shows them as normal code blocks.
+
+### 6.1. What you need
+
+Words used here:
+
+- **Master key:** the long-term key of the person. It stays on the machine where the person runs `roymctl`.
+- **Delegation certificate:** a short statement that the master key signed. It says that a temporary key may act for the person until a given time.
+- **Session key file:** the file `roymctl session delegate` writes (`session-key.json`). It holds the temporary key and the delegation certificate. The Hub uses the same file.
+- **Session token:** the token the node returns after a login. A client sends it as `Authorization: Bearer <token>`.
+- **App instance:** one deployed copy of the Roym app on a node. One node can run one or more instances. Each instance has one owner.
+- **Hub host:** the gateway host name of the Roym `web` service. Every Roym method is called as `POST /rpc` on this host. `web` passes the call to the service that owns the method.
+- **SSE (Server-Sent Events):** a long HTTP answer that sends small text frames, one after the other.
+
+You need these things:
+
+1. **Roym deployed on the node, and the gateway in `identity_mode = "login"`.** See "The Roym Hub" above. Without login mode every call is anonymous and gets `-32010`. The Hub must be in the registry, so that the gateway can find its host. Run this once: `roymctl --dir <DIR> --api-url <registry URL> registry register --identity member-roym#web-0 --substrate <node DID> [--nickname <name>]`. `<node DID>` is the `--substrate` value that you pass to `roymctl` (see "Identifying your Substrate"). A service has one registry alias, so a second run replaces the nickname of the first. If you gave the Hub a nickname (`--nickname <name>`), set `HUB_NICKNAME=<name>` before the `address` block below.
+2. **Record signing enrolled once.** The owner runs `roymctl roym enrol-signing` (see "Enrolling record signing and finding your address" above). Without it, a service that must sign a record refuses.
+3. **A session key file for the owner of the installation.** Every Roym method needs the owner, except `profile.policy`. A session of any other person gets `-32011`. One installation has one person; there is no second user.
+4. **A key file that has not expired.** The file lasts `--expires-hours` (24 hours by default). After that, `login` answers `401` with "delegation certificate has expired". Make a new file with `roymctl session delegate`.
+5. **A key file that you keep secret.** `roymctl` writes it with mode `0600`. Whoever holds it can sign in as the person until it expires.
+6. **The address of the other person.** `PEER_ADDR` below is the other person's Roym conversation service id. They get it from `roymctl roym address` ("conversation service id"). A client can also read `conversation_address` from their `profile.get` answer.
+
+The tools are `curl` 7.76 or later (for `--fail-with-body`), `jq` 1.6 or later, and Node.js 20 or later (for one small signing script in 6.2). `mise install` installs `jq` and `node` for this repository. `curl` comes with your system.
+
+Set these variables once in your shell:
+
+```bash
+AUTH_URL=http://auth.localhost:7960             # the node's auth service
+HUB_URL=http://s<web-did-hash>.localhost:7960   # the Hub host; the next block finds it
+HUB_NICKNAME=                                    # the nickname the Hub was registered with, if any
+SESSION_KEY=./session-key.json                  # from `roymctl session delegate`
+PEER_ADDR=did:key:z...                          # the other person's conversation service id
+DIRECTORY_DID=did:key:z...                      # a directory you trust (6.6)
+```
+
+The next block finds the Hub host. `roymctl roym address` runs as the node owner, so it belongs on the machine of the node owner. A client on another machine gets the Hub host from the node owner (see 6.10). Add `--dir <DIR>` and the other `roymctl` flags that your node needs.
+
+```bash roym-client=address
+GATEWAY_PORT=${GATEWAY_PORT:-7960}       # the node's gateway port
+HUB_HOST=$(roymctl roym address | sed -n 's/^Hub gateway host: *//p')
+[ -n "$HUB_HOST" ] || { echo "roymctl roym address printed no Hub host" >&2; false; }
+HUB_HOST=${HUB_NICKNAME:+$HUB_NICKNAME-}$HUB_HOST   # a nickname goes in front of the host
+HUB_URL=http://$HUB_HOST:$GATEWAY_PORT
+AUTH_URL=http://auth.localhost:$GATEWAY_PORT
+```
+
+Notes for the commands in this section:
+
+- A block that sets a value ends with a check that fails with a message. Blocks that use a pipe start with `set -o pipefail`. Without it, your shell reports only the last command of a pipe, so a failed `curl` can look like success. The setting stays on in your shell.
+- The URLs use host names (`auth.localhost`, `s<hash>.localhost`), as a browser does. Many systems send `*.localhost` to `127.0.0.1`. If `curl` says "could not resolve host", add `--connect-to ::127.0.0.1:` to each `curl` command, or put the line `connect-to = "::127.0.0.1:"` in your `~/.curlrc`.
+- Use `http://` only for `localhost`. Any other host must use `https://`. Otherwise the signature, the token and every message cross the network in clear text.
+
+### 6.2. Sign in
+
+A client signs in with the `delegated-key` method. The node proves it is fresh with a challenge. The client signs the challenge with the temporary key from the session key file. The node checks the signature and the delegation certificate, then returns a session token.
+
+1. `POST /_syneroym/session/challenge` with your master DID. The answer has a `nonce`, the node DID and an `assertion`. The `assertion` is a text. The nonce lives 60 seconds and works once.
+2. Sign the `assertion` text exactly as the node sent it. Never build it yourself. `curl` cannot sign, so this guide uses a small Node.js script. It reads the temporary key from the session key file and prints an Ed25519 signature, in z-base-32. This is the encoding Syneroym uses for signatures. Any language with Ed25519 can do the same.
+3. `POST /_syneroym/session/login` with the method, the certificate, the nonce and the signature.
+
+Save the script as `sign-challenge.mjs`:
+
+```js roym-client=sign-challenge.mjs
+// Signs a Syneroym login challenge with the temporary key of a session key file.
+// Usage: node sign-challenge.mjs <session-key.json> <assertion>
+import { createPrivateKey, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+const [keyFile, assertion] = process.argv.slice(2);
+const bundle = JSON.parse(readFileSync(keyFile, "utf8"));
+// A raw 32-byte Ed25519 seed inside the fixed PKCS#8 framing (RFC 8410).
+const pkcs8 = Buffer.concat([
+  Buffer.from("302e020100300506032b657004220420", "hex"),
+  Buffer.from(bundle.temp_secret_key_hex, "hex"),
+]);
+const key = createPrivateKey({ key: pkcs8, format: "der", type: "pkcs8" });
+const signature = sign(null, Buffer.from(assertion, "utf8"), key);
+
+// z-base-32, the encoding Syneroym uses for signatures.
+const alphabet = "ybndrfg8ejkmcpqxot1uwisza345h769";
+let value = 0, bits = 0, out = "";
+for (const byte of signature) {
+  value = (value << 8) | byte;
+  bits += 8;
+  while (bits >= 5) {
+    out += alphabet[(value >>> (bits - 5)) & 31];
+    bits -= 5;
+  }
+}
+if (bits > 0) out += alphabet[(value << (5 - bits)) & 31];
+process.stdout.write(out);
+```
+
+Then sign in:
+
+```bash roym-client=login
+set -o pipefail
+MASTER_DID=$(jq -r .certificate.master_did "$SESSION_KEY")
+CHALLENGE=$(curl -sS --fail-with-body -X POST "$AUTH_URL/_syneroym/session/challenge" \
+  -H 'Content-Type: application/json' -d "{\"master_did\":\"$MASTER_DID\"}")
+SIGNATURE=$(node sign-challenge.mjs "$SESSION_KEY" "$(jq -r .assertion <<<"$CHALLENGE")")
+TOKEN=$(jq -n --slurpfile key "$SESSION_KEY" --argjson ch "$CHALLENGE" --arg sig "$SIGNATURE" \
+    '{method: "delegated-key", temp_did: $key[0].temp_did, delegation: $key[0].certificate,
+      nonce: $ch.nonce, signature: $sig}' \
+  | curl -sS --fail-with-body -X POST "$AUTH_URL/_syneroym/session/login" \
+      -H 'Content-Type: application/json' -d @- \
+  | jq -r .token)
+[ -n "$TOKEN" ] && [ "$TOKEN" != null ] || { echo "login failed" >&2; false; }
+```
+
+The login answer is `{token, person_did, expires_at_secs}`. The node also sets a `syneroym_session` cookie. A program that is not a browser can ignore the cookie and send the token in a header.
+
+If the login fails, the error body is `{"error": "<text>"}`:
+
+| Status | Meaning |
+| --- | --- |
+| 400 | The request body or the login method is wrong. |
+| 401 | The nonce is unknown, used already or expired (ask for a new challenge), or the signature or the delegation certificate is wrong. "delegation certificate has expired" means the key file is too old (6.1, item 4). |
+| 409 | The node cannot find the master anchor of this person in the registry. Run `roymctl session delegate` with `--registry-url`, which publishes it. |
+
+The session lasts at most `session_ttl_secs` (8 hours by default). It never lasts longer than the delegation certificate.
+
+Keep the token and the key file secret. Do not write them to logs and do not put them in a URL. On a machine that other users share, `ps` shows command line arguments, so pass the header from a file (`curl -H @headers.txt`) or from a `--config` file instead of `-H "Authorization: …"`. The blocks in this section use `-H "Authorization: Bearer $TOKEN"` to stay short, for a one-person machine. A token cannot be limited to fewer methods. It can do everything the person can do on this installation.
+
+### 6.3. Call a method
+
+Every Roym method is a JSON-RPC 2.0 call: `POST /rpc` on the Hub host, with the token in the `Authorization` header. The answer is the whole JSON-RPC answer, with `result` or `error`. This function sends a call and prints the answer:
+
+```bash roym-client=rpc
+roym() {
+  local params=${2:-'{}'}
+  curl -sS --fail-with-body -X POST "$HUB_URL/rpc" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$params}"
+}
+roym session.whoami | jq .result
+```
+
+`session.whoami` is answered by `web` itself. It returns `{did, auth, app_instance}`. `did` is the person. `auth` is `delegated` for a signed-in session and `anonymous` when the token is missing or not valid. A call to any other method with no valid token answers `-32010`.
+
+### 6.4. Conversations
+
+List the conversations of the person:
+
+```bash roym-client=list
+roym conversation.list | jq '.result.conversations[] | {id, kind, peer_address, message_count}'
+```
+
+`kind` is `direct` or `group`. An empty list prints nothing. To see only some, pass `{"kind":"direct"}`. The other fields are `peer_person_did`, `opened_at_secs`, `last_activity_ms`, `name`, `restored` and `group`.
+
+Open a conversation with the other person and send a message:
+
+```bash roym-client=open-send
+set -o pipefail
+CONV=$(roym conversation.open "{\"address\":\"$PEER_ADDR\"}" | jq -r .result.conversation_id)
+MESSAGE_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Hello from curl\"}" \
+  | jq -r .result.message_id)
+[ -n "$CONV" ] && [ "$CONV" != null ] && [ -n "$MESSAGE_ID" ] && [ "$MESSAGE_ID" != null ] \
+  || { echo "open or send failed" >&2; false; }
+```
+
+`conversation.open` returns `{conversation_id, peer_address}`. If you open the same address again, you get the same conversation. `conversation.send` returns `{message_id, state, sender_timestamp_ms}`. The `state` starts as `pending`. It becomes `deposited` when the message waits at the other node, and `delivered` when the other node has it. `failed` means it could not be sent. `conversation.delivery-status` with `{"message_id": "…"}` reads the state again.
+
+To read messages, call `conversation.history` (`{conversation, limit?, cursor?}`, with a `next_cursor` for the next page), or `conversation.changes` (`{conversation, after_seq?, limit?}`) to get only what is new after a `visible_seq` you already know. Each message has `id`, `direction`, `state`, `visible_seq`, `content_type`, `body_encoding` and `body`.
+
+### 6.5. Follow the event feed
+
+A client should not ask again and again whether something changed. The node tells it. `GET /_syneroym/events` on the Hub host is an SSE stream. It sends one small frame each time a message, a delivery state, a card or a booking changes. Open it in a second terminal. In that terminal, first set `HUB_URL` and `TOKEN` to the same values (print them in the first terminal with `echo "$HUB_URL" "$TOKEN"`). Then send a message in the first terminal:
+
+```bash roym-client=feed
+curl -sS --fail-with-body -N "$HUB_URL/_syneroym/events" \
+  -H 'Accept: text/event-stream' -H "Authorization: Bearer $TOKEN"
+```
+
+The frames:
+
+- `ready`: the stream is open. Its `id:` is the current position; keep it like any other `id:`. Load your state with the normal methods.
+- `change`: one event. Its `data` is JSON: `cursor`, `kind`, `service`, `subject`, `item` and `at_ms`. The `id:` line has the same cursor.
+- `reload`: your cursor is too old, or from another run of the node. Load your state with the normal methods again.
+- `: keep-alive`: a comment every 25 seconds, so you can see that the stream is alive.
+
+An event carries no content. It says what changed, and you fetch the content with the normal methods:
+
+| `kind` | `subject` | `item` | What to call |
+| --- | --- | --- | --- |
+| `conversation.message` | conversation id | message id | `conversation.changes` with `after_seq`. If the message is a card, see 6.7. |
+| `conversation.delivery` | conversation id | message id | `conversation.delivery-status` with the `message_id` |
+| `transaction.card` | conversation id | message id of the card | `transaction.thread` |
+| `transaction.booking` | conversation id | agreement id | `booking.get` with `{"agreement": "…"}` |
+
+A card from the other person arrives first as a `conversation.message` event. The `transaction.card` event comes after your client calls `transaction.sync` (6.7).
+
+Keep the last `id:` you saw. If the stream ends, set `CURSOR` to that value and open the feed again with it in the `Last-Event-ID` header (a browser `EventSource` does this by itself):
+
+```bash roym-client=catch-up
+curl -sS --fail-with-body -N "$HUB_URL/_syneroym/events" \
+  -H 'Accept: text/event-stream' -H "Authorization: Bearer $TOKEN" \
+  -H "Last-Event-ID: $CURSOR"
+```
+
+You get every event after the cursor, or a `reload` frame. The node keeps the newest 10 000 events of an app instance, or 24 hours of them, whichever is smaller. It keeps them in memory, so a restart of the node loses them. A cursor from before a restart gets `reload`. You can also pass the cursor as `?after=<cursor>`.
+
+More things to know:
+
+- The node closes the feed, with no frame, when the session token that opened it expires or is logged out. It checks on every change and on each 25-second keep-alive. This is normal. Get a token that is valid, then connect again with `Last-Event-ID: <last id>`. If the answer is `reload`, load your state again.
+- A feed fails before it starts with these statuses: `401` (no valid session), `403` (the person is not the owner), `404` (no event feed on this node, or the service is not part of an app instance), `406` (no `Accept: text/event-stream` header), `503` with `Retry-After: 1` (there are already 16 open feeds for this app instance).
+- A browser keeps one connection for each open feed, and allows about six connections to one host. A web client should close the feed when its page is hidden, and open it again with the last cursor when the page is shown.
+- See "Event Feed" above for the reference text.
+
+### 6.6. Search
+
+A person searches the directories they trust. A directory is a Roym service of a group (a SynOrg) that lists the services of its members. Add a directory by its service DID. You find the DID outside Roym: word of mouth, a link, a referral.
+
+```bash roym-client=search
+roym directory.add-source "{\"did\":\"$DIRECTORY_DID\",\"label\":\"My guild\"}" | jq .result.source
+roym directory.find '{"query":{"text":"plumber"}}' | jq '.result | {outcomes, hits}'
+```
+
+`directory.add-source` asks the directory for its public information first, and returns the saved `source` and the `probe` answer. `directory.find` asks every saved source at the same time, checks every answer on this node, and returns one merged page:
+
+- `outcomes`: one entry for each source: `source`, `verified` (how many listings passed the checks), `refused` (how many did not), `truncated`, and `error`. `error` is `null` when the source answered. Otherwise it names why: `not-found` (the node of the source could not be reached or has no such service), `timed-out`, `not-started` (this node could not start the search), `refused` (the source refused the call), or `unreadable` (the answer was too large or not valid).
+- `hits`: the listings that passed the checks, from all sources, without duplicates. Show these to the person. `hits_truncated` says that more existed than the page holds.
+- `refused`: evidence that failed a check, for example a listing with a wrong signature. Show it apart from `hits`; never mix the two. `refused_truncated` is the same flag for this list.
+- `run_id`: the id of this search.
+
+A source with no listings that match gives `error: null` and adds no hit. The query fields are `text`, `categories`, `area`, `open_to`, `booking_mode` and `limit`. All are optional.
+
+### 6.7. Show cards
+
+A card is a message with the content type `application/vnd.roym.card+json`. Deals between two people are cards: a request, a quote and so on. A conversation holds them together with the normal messages.
+
+To get the cards of a conversation, first ask `transaction` to read the new messages and file the cards it finds. Then read the cards:
+
+```bash roym-client=cards
+roym transaction.sync "{\"conversation\":\"$CONV\"}"
+roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
+```
+
+`transaction.thread` takes `{conversation, limit?, cursor?}`. Each card has `message_id`, `direction`, `card_type`, `version`, `known`, `verified`, `expired`, `reason` and `data`. Show a card only when `known` and `verified` are true. The card types of the first version, all with `version` 1, are `request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. For any other type or version, and for a card that is not verified, show a plain notice with the `reason`, and do not guess what the `data` means.
+
+### 6.8. Errors and unknown fields
+
+`POST /rpc` answers HTTP 200 with a JSON-RPC `error` object for most wrong calls. These are the codes a client meets:
+
+| Code | Meaning | What to do |
+| --- | --- | --- |
+| `-32700` | The body is not valid JSON. | Fix the request. |
+| `-32600` | The call has no `method`. | Fix the request. |
+| `-32601` | The method prefix is unknown. | Check the method name. |
+| `-32602` | A parameter is wrong. `data.field` names the first wrong field. | See below. |
+| `-32010` | Not signed in. | Sign in again (6.2). |
+| `-32011` | This installation belongs to another person. | Use the key file of the owner. |
+| `-32012` | This installation has no recorded owner. | The node owner must finish the set-up. |
+| `-32001` | The service is not available. | Try again later. |
+| `-32002` | The service did not answer in time. | Try again later. |
+| `-32603` | Another error inside the service. | Read the message. |
+
+An HTTP `503` means the node has too many calls at the moment. Wait and try again. An HTTP `500` with the text "Native service not found" is described below, under "After a node restart".
+
+**Unknown fields.** A method that works only on the person's own node refuses a field it does not list. It answers `-32602` with `data.field` set to that field. So send only the fields that the method lists. This rule assumes that a client and its node have the same version. A client for a newer node can fail on an older node. When that happens, read `data.field` and tell the person to update the node. A nested record, for example `query` in `directory.find`, ignores a key it does not know. See "Bad input and parameter validation" above for more.
+
+**After a node restart.** The event feed starts empty, so an old cursor gets `reload` (6.5). A node that was only restarted, with no new deploy, may answer every `POST /rpc` with HTTP `500` and `{"error":{"code":-32603,"message":"Native service not found for did:key:…"},"id":null,"jsonrpc":"2.0"}`. The sign-in still works. The Roym services are not running on the node yet. Ask the node owner to deploy the Roym app again (`roymctl app deploy`, or `roymctl app reconcile` on a supervised app), then call again.
+
+### 6.9. End the session
+
+`refresh` returns a new token. It does not go past the end of the delegation certificate. The old token stays valid until it expires, so log it out too if you want it to stop working. A feed opened with the old token ends when the old token ends, so open the next feed with the new token. `logout` ends a token at once.
+
+```bash roym-client=refresh-logout
+set -o pipefail
+NEW_TOKEN=$(curl -sS --fail-with-body -X POST "$AUTH_URL/_syneroym/session/refresh" \
+  -H "Authorization: Bearer $TOKEN" | jq -r .token)
+[ -n "$NEW_TOKEN" ] && [ "$NEW_TOKEN" != null ] || { echo "refresh failed" >&2; false; }
+curl -sS --fail-with-body -X POST "$AUTH_URL/_syneroym/session/logout" \
+  -H "Authorization: Bearer $NEW_TOKEN"
+curl -sS --fail-with-body -X POST "$AUTH_URL/_syneroym/session/logout" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Each `logout` answers `{"status":"ended"}`. After both, every call with either token answers `-32010`.
+
+### 6.10. A client on another machine
+
+A node serves clients on other machines only when its owner turns on remote access (see "Remote access to the client gateway" above and ADR-0028). Then the client uses `https://auth.<domain>` and `https://<hub host>` in place of the `http://…localhost` URLs, and the owner gives the client the Hub host, because `roymctl roym address` runs as the node owner. The `local` login is off in this case, so the `delegated-key` login of 6.2 is the one to use. Keep `https://`: the signature, the token and every message would cross the network in clear text with `http://`. This section does not test a client over TLS.

@@ -51,7 +51,7 @@ impl SubstrateTestContext {
         format!("http://localhost:{}", self.gateway_port)
     }
 
-    async fn setup(iroh_port: u16, registry_port: u16, gateway_port: u16) -> Self {
+    async fn setup(iroh_port: u16, registry_port: u16, gateway_port: u16, quic_port: u16) -> Self {
         use syneroym_core::config::{
             CoordinatorIrohConfig, CoordinatorRole, PodmanSandboxRole, RolesConfig,
             ServiceRegistryRole,
@@ -75,6 +75,7 @@ impl SubstrateTestContext {
                 iroh: Some(CoordinatorIrohConfig {
                     enable_relay: true,
                     http_bind_address: format!("0.0.0.0:{iroh_port}"),
+                    quic_bind_address: format!("127.0.0.1:{quic_port}"),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -108,6 +109,7 @@ impl SubstrateTestContext {
         let substrate_service_id = substrate_identity_state.did.clone();
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        common::release_held_ports(&[iroh_port, registry_port, gateway_port, quic_port]);
         let runtime =
             syneroym_substrate::init(config.clone()).await.expect("Failed to initialize runtime");
 
@@ -169,8 +171,9 @@ async fn test_podman_lifecycle() {
         return;
     }
 
-    let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
-    let mut ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
+    let [iroh_port, registry_port, gateway_port, quic_port] = common::alloc_ports::<4>();
+    let mut ctx =
+        SubstrateTestContext::setup(iroh_port, registry_port, gateway_port, quic_port).await;
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
